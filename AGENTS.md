@@ -17,6 +17,5 @@
 
 # Collaboration Guideline
 
-- Before committing, run `pnpm format` on the files you touched (or `pnpm format:check` to verify). Markdown is excluded by `.prettierignore`.
 - When writing commit titles, use conventional prefixes such as `feat(risu):`, `fix(ai):`, and `refactor(metatron):`.
 - Describe what you did in the commit message.
