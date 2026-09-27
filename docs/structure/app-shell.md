@@ -32,7 +32,7 @@
 Boot:
 1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`.
 2. `main.ts` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
-3. `bootstrap.ts:loadData` loads the database: `forageStorage.Init()` (`AutoStorage`), account or remote load, `registerSw`, then `characterURLImport`.
+3. `bootstrap.ts:loadData` loads the database: `forageStorage.Init()` (`AutoStorage`), local load with backup fallback, `registerSw`, then `characterURLImport`.
 4. Common tail of `loadData`:
    1. `loadPlugins`.
    2. `checkNewFormat`, which ends in `setDatabase`.
@@ -76,7 +76,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 ## Coupling
 - `stores.svelte.ts` is imported almost everywhere, with the highest fan-out in the repo. Changing a store's semantics affects the UI, process, plugins, and sync code.
-- `bootstrap.ts` depends on storage, `globalApi.svelte.ts`, plugins, drive/account/kei, cold storage, model registry, modules, and observers.
+- `bootstrap.ts` depends on storage, `globalApi.svelte.ts`, plugins, cold storage, model registry, modules, and observers.
 - Platform flags are consumed by storage, network, drive, cards, parser, translator, and settings.
 
 ## Invariants

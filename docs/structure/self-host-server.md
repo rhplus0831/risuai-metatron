@@ -17,7 +17,7 @@
 
 ## Files
 - `server/node/server.cjs`:
-  - Key identifiers: `app`, `savePath` (= `cwd/save`), `checkAuth`, `checkProxyAuth`, `isAuthorizedJwtHeader`, `reverseProxyFunc`, `reverseProxyFunc_get`, `hubProxyFunc`, `getSionywAccessToken`, `sanitizeTargetUrl`, `isLocalNetworkHost`, `normalizeForwardHeaders`, `createProxyStreamJob`, `runProxyStreamJob`, `setupProxyStreamWebSocket`, `getHttpsOptions`, `startServer`.
+  - Key identifiers: `app`, `savePath` (= `cwd/save`), `checkAuth`, `checkProxyAuth`, `isAuthorizedJwtHeader`, `reverseProxyFunc`, `reverseProxyFunc_get`, `hubProxyFunc`, `sanitizeTargetUrl`, `isLocalNetworkHost`, `normalizeForwardHeaders`, `createProxyStreamJob`, `runProxyStreamJob`, `setupProxyStreamWebSocket`, `getHttpsOptions`, `startServer`.
   - Environment: `PORT` (default 6001), `TRUST_PROXY`.
 - `server/node/ssl/Generate Certificate.sh|.bat`, `ca.conf`, `server.conf`: generate a local CA and server certificate. `startServer` uses HTTPS when `server.key`/`server.crt` exist.
 - `server/hono/*`:
@@ -37,7 +37,7 @@
 | static | `dist/*` | none | none | built frontend (`express.static`, `index:false`) |
 | GET | `/` | none | none | serves `dist/index.html` with `globalThis.__NODE__ = true` injected |
 | GET/POST | `/proxy`, `/proxy2` | `checkProxyAuth` (stored password in `risu-auth`, or a registered ES256 JWT) | 2000/min | arbitrary reverse proxy (`risu-url`, `risu-header`) |
-| GET/POST | `/hub-proxy/*` | none, except the sentinel path | 2000/min | proxies to `x-risu-node-path` or `https://sv.risuai.xyz` |
+| GET/POST | `/hub-proxy/*` | none | 2000/min | proxies to `x-risu-node-path` or `https://sv.risuai.xyz` |
 | POST | `/proxy-stream-jobs` | `checkProxyAuth` | 2000/min | creates a local-network streaming job. `sanitizeTargetUrl` allows local/private targets only. Body ≤ 8 MiB base64, ≤ 64 active jobs. |
 | DELETE | `/proxy-stream-jobs/:jobId` | yes | 2000/min | aborts a job |
 | WS upgrade | `/proxy-stream-jobs/:jobId/ws` | `risu-auth` query or header | none | event stream (`ProxyJobWsEvent`) |
@@ -47,7 +47,6 @@
 | POST | `/api/set_password` | **none**, only works while unset | **none** | first-run password setup |
 | GET | `/api/read`, `/api/remove`, `/api/list` | `checkAuth` (JWT) | 2000/min | storage. The `file-path` header is hex; `remove` splits it on `$$`. |
 | POST | `/api/write` | `checkAuth` | 2000/min | storage write, binary body |
-| GET | `/api/oauth_login`, `/api/oauth_callback` | none | none | Sionyw OAuth; writes `save/__authcode` |
 
 ## Flows
 Boot:
@@ -72,14 +71,12 @@ Proxying:
 Disk, under `save/`:
 - `__password`: the client-side SHA-256 digest via `/api/crypto`.
 - `__known_public_key_hashes.json`.
-- `__authcode`.
-- `__sionyw_client_data.json`: expected to already exist; the server does not create it.
 - User files, named by their hex-encoded logical key: `database/database.bin`, `database/dbbackup-*.bin`, `assets/*`, `remotes/*`, `coldstorage/*`.
 
-Process memory: `password`, `knownPublicKeysHashes`, `oauthData` (global, so concurrent logins overwrite each other), `accessTokenCache`, `proxyStreamJobs` (a Map).
+Process memory: `password`, `knownPublicKeysHashes`, `proxyStreamJobs` (a Map).
 
 ## Coupling
-- Server dependencies: Express, `express-rate-limit`, `ws`, `node-html-parser`, `openid-client`, Node `crypto`/`fs`/`http`/`https`.
+- Server dependencies: Express, `express-rate-limit`, `ws`, `node-html-parser`, Node `crypto`/`fs`/`http`/`https`.
 - Client dependencies that use this server: `NodeStorage`, `AutoStorage`, `globalApi` proxy code, `characterCards.hubURL` (`/hub-proxy`), `coldstorage.svelte.ts`, `util.ts` DPoP storage.
 
 ## Invariants
@@ -96,7 +93,7 @@ Preserve all of the following:
 - the binary, JSON, and text body parsers,
 - the hex `file-path` protocol,
 - ES256 JWT verification against the known key hashes,
-- the proxy auth (stored password or JWT) and the hub sentinel logic,
+- the proxy auth (stored password or JWT),
 - the `sanitizeTargetUrl` policy for jobs,
 - the WebSocket upgrade path and its auth,
 - the job limits, heartbeat, and GC interval,
@@ -127,6 +124,4 @@ Also update `package.json` `runserver`, `Dockerfile`, `server.sh`, and `server.b
 - `/api/set_password` and `/api/crypto` have no auth and no rate limit. The first caller can set the password, and an empty password leaves the server effectively unset.
 - `/proxy`, `/proxy2`, and the edge proxies forward to arbitrary targets. Only proxy jobs are restricted to local targets.
 - The server `isLocalNetworkHost` rejects bare single-label hosts, which the client accepts.
-- The `hubProxyFunc` sentinel checks `headersToSend['Authorization']`, but Node lowercases header names, so that branch may be unreachable.
-- The Sionyw token URL in `getSionywAccessToken` lacks a scheme (unverified).
 - JWT validation checks no issuer, audience, `typ`, or `iat`.

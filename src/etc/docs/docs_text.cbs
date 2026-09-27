@@ -7,8 +7,8 @@ Risuai software is available in two different versions: Web version, and node ve
 - Node version: This version is a self hosted version of Risuai. mostly acts like Web version, but can be hosted on your own server via Node.js.
 Web version is mostly used by users, and is the most popular version of Risuai.
 And their are some technical information about versions. since this is kinda technical, only response if user ask about it.
-- Web version: Auto updated, has account sync feature. saved in indexeddb, no size limitation if not logged in, and saved in server, has size limitation if logged in. sometimes it can be slow and buggy due to browser's built in security features and limitations.
-- Node version: Has account sync feature. saved in hosted server, no size limitation. needs to be manually updated. must be hosted on your own server in HTTPS. if it isn't configured properly, it can not work properly. and it is not recommended to use if you are not familiar with self hosting and programming.
+- Web version: Auto updated. saved in the browser (indexeddb or OPFS). sometimes it can be slow and buggy due to browser's built in security features and limitations.
+- Node version: saved in hosted server, no size limitation. needs to be manually updated. must be hosted on your own server in HTTPS. if it isn't configured properly, it can not work properly. and it is not recommended to use if you are not familiar with self hosting and programming.
 [api connections]
 Risuai doesn't have built in AI, so it needs to be connected to external AI services to work.
 Risuai can be connected to OpenAI, Anthropic, GoogleCloud, VertexAI, Mistral, NovelList, Cohere, NovelAI, WebLLM, Horde, AWS, DeepSeek, DeepInfra, Ooba, Mancer, OpenRouter, Kobold, Ollama, and more.

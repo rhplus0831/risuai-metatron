@@ -3,7 +3,6 @@ import { isNodeServer } from "src/ts/platform"
 import { DBState } from "../stores.svelte"
 import type { NodeStorage } from "../storage/nodeStorage"
 import { compress as fflateCompress, decompress as fflateDecompress } from "fflate"
-import { fetchProtectedResource } from "../sionyw"
 import { alertClear, alertConfirm, alertError, alertWait } from "../alert"
 import { language } from "src/lang"
 import type { Database, character } from "../storage/database.svelte"
@@ -29,28 +28,9 @@ async function decompress(data:Uint8Array) {
     })
 }
 
-export async function getColdStorageItem(key:string, opts:{
-    accountFallback?:boolean
-} = {}) {
+export async function getColdStorageItem(key:string) {
 
-    if(forageStorage.isAccount && !opts.accountFallback){
-        const d = await fetchProtectedResource('/hub/account/coldstorage', {
-            method: 'GET',
-            headers: {
-                'x-risu-key': key,
-            }
-        })
-
-        if(d.status === 200){
-            const buf = await d.arrayBuffer()
-            const text = new TextDecoder().decode(await decompress(new Uint8Array(buf)))
-            return JSON.parse(text)
-        }
-        return await getColdStorageItem(key, {
-            accountFallback: true
-        })
-    }
-    else if(isNodeServer){
+    if(isNodeServer){
         try {
             const storage = forageStorage.realStorage as NodeStorage
             const f = await storage.getItem('coldstorage/' + key)
@@ -102,38 +82,8 @@ async function compressColdStorageValue(value:any):Promise<Uint8Array | null> {
     }
 }
 
-export async function setAccountColdStorageItem(key:string, value:any):Promise<boolean> {
-    const compressed = await compressColdStorageValue(value)
-    if(!compressed){
-        return false
-    }
-
-    try {
-        const res = await fetchProtectedResource('/hub/account/coldstorage', {
-            method: 'POST',
-            headers: {
-                'x-risu-key': key,
-                'content-type': 'application/octet-stream'
-            },
-            body: compressed as any
-        })
-        if(res.status !== 200){
-            console.error('Error setting cold storage item:', await res.text().catch(() => 'unknown'))
-            return false
-        }
-        return true
-    } catch (error) {
-        console.error('Cold storage account write failed:', error)
-        return false
-    }
-}
-
 export async function setColdStorageItem(key:string, value:any):Promise<boolean> {
     console.log("setting cold storage item", key, value)
-
-    if(forageStorage.isAccount){
-        return await setAccountColdStorageItem(key, value)
-    }
 
     const compressed = await compressColdStorageValue(value)
     if(!compressed){
@@ -168,21 +118,7 @@ export async function setColdStorageItem(key:string, value:any):Promise<boolean>
 }
 
 export async function listColdStorageItems():Promise<{items:string[]}> {
-    if(forageStorage.isAccount){
-        const d = await fetchProtectedResource('/hub/account/coldstorage', {
-            method: 'GET',
-            headers: {
-                'x-risu-key': '@list-keys',
-            }
-        })
-
-        if(d.status === 200){
-            return await d.json()
-        }
-        return null
-    }
-
-    else if(isNodeServer){
+    if(isNodeServer){
         const fullKeys = await (forageStorage.realStorage as NodeStorage).keys()
         const keys = fullKeys.filter(k => k.startsWith('coldstorage/')).map(k => k.replace('coldstorage/', ''))
         return {
@@ -211,7 +147,7 @@ export async function cleanColdStorage(){
     const unusedKeys = allKeys.filter(k => !actualUsedKeys.includes(k))
     console.log('Cleaning cold storage, actual used keys:', actualUsedKeys, 'all keys:', allKeys, 'unused keys:', unusedKeys)
 
-    if(forageStorage.isAccount || isNodeServer){
+    if(isNodeServer){
         await removeColdStorageItems(unusedKeys)
     }
     else{
@@ -226,25 +162,7 @@ export async function cleanColdStorage(){
 }
 
 async function removeColdStorageItems(keys:string[]) {
-    
-    if(forageStorage.isAccount){
-        try {
-            const res = await fetchProtectedResource('/hub/account/coldstorage', {
-                method: 'POST',
-                headers: {
-                    'x-risu-key': 'remove',
-                    'x-action': 'remove'
-                },
-                body: JSON.stringify({ keys })
-            })
-            if(res.status !== 200){
-                console.error('Error removing cold storage item:', await res.text().catch(() => 'unknown'))
-            }
-        } catch (error) {
-            console.error('Cold storage account remove failed:', error)
-        }
-    }
-    else if(isNodeServer){
+    if(isNodeServer){
         try {
             const storage = forageStorage.realStorage as NodeStorage
             const deleteKeys = keys.map(k => 'coldstorage/' + k);

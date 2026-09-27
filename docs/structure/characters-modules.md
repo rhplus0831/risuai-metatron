@@ -39,7 +39,6 @@
 - `process/processzip.ts`:
   - `CharXWriter`: sanitizes and uniquifies asset names, skips files over 50 MiB.
   - `CharXImporter`: `parse`, then `done()` must be awaited.
-  - `CharXSkippableChecker`.
   - `processZip`: used by NovelAI image ZIPs.
 - `process/modules.ts`: modules.
   - `RisuModule`.

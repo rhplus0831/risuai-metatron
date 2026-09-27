@@ -36,7 +36,7 @@ TTS:
 Image generation:
 - `process/stableDiff.ts`:
   - `stableDiff(char, text)`: builds a prompt with `requestChatData(..., 'submodel')`, then calls `generateAIImage`.
-  - `generateAIImage(prompt, char, neg, returnSdData)` dispatches on `db.sdProvider`: `webui`, `novelai` (ZIP → `processZip`), `dalle`, `stability`, `comfy`/`comfyui`, `kei`, `fal`, `Imagen`, `openai-compat`, `wavespeed` (polling).
+  - `generateAIImage(prompt, char, neg, returnSdData)` dispatches on `db.sdProvider`: `webui`, `novelai` (ZIP → `processZip`), `dalle`, `stability`, `comfy`/`comfyui`, `fal`, `Imagen`, `openai-compat`, `wavespeed` (polling).
 
 Translation:
 - `translator/translator.ts`:

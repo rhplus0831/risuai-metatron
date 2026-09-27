@@ -116,7 +116,7 @@
                         $SettingsMenuIndex = 0
                 }}>
                     <UserIcon />
-                    <span>{language.account} & {language.files}</span>
+                    <span>{language.files}</span>
                 </button>
                 <button class="flex gap-2 items-center hover:text-textcolor"
                         class:text-textcolor={$SettingsMenuIndex === 15}

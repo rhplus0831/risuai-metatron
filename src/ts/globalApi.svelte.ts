@@ -9,19 +9,16 @@ import { alertConfirm, alertError, alertMd, alertNormal, alertNormalWait, alertS
 import { hasher } from "./parser/parser.svelte";
 import { characterURLImport, hubURL } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
-import { loadRisuAccountData } from "./drive/accounter";
 import { decodeRisuSave, encodeRisuSaveLegacy, RisuSaveEncoder, type toSaveType } from "./storage/risuSave";
 import { AutoStorage } from "./storage/autoStorage";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
-import { autoServerBackup, saveDbKei } from "./kei/backup";
 import { language } from "src/lang";
 import { startObserveDom } from "./observer.svelte";
 import { updateGuisize } from "./gui/guisize";
 import { updateLorebooks } from "./characters";
 import { initMobileGesture } from "./hotkey";
 import { moduleUpdate } from "./process/modules";
-import type { AccountStorage } from "./storage/accountStorage";
 import { getColdStorageItem, makeColdData } from "./process/coldstorage.svelte";
 import { isNodeServer } from "./platform";
 import { isLocalNetworkUrl } from "./network/localNetwork";
@@ -83,9 +80,6 @@ let fileCache: {
  * @returns {Promise<string>} - A promise that resolves to the source URL of the file.
  */
 export async function getFileSrc(loc: string) {
-    if (forageStorage.isAccount && loc.startsWith('assets')) {
-        return hubURL + `/rs/` + loc
-    }
     try {
         if (usingSw) {
             const encoded = Buffer.from(loc, 'utf-8').toString('hex')
@@ -186,10 +180,7 @@ export async function saveAsset(data: Uint8Array, customId: string = '', fileNam
         fileExtension = fileName.split('.').pop()
     }
     let form = `assets/${id}.${fileExtension}`
-    const replacer = await forageStorage.setItem(form, data)
-    if (replacer) {
-        return replacer
-    }
+    await forageStorage.setItem(form, data)
     return form
 }
 
@@ -249,9 +240,7 @@ export async function saveDb() {
     }
 
     let encoder = new RisuSaveEncoder()
-    await encoder.init(getDatabase(), {
-        compression: forageStorage.isAccount
-    })
+    await encoder.init(getDatabase())
 
     $effect.root(() => {
 
@@ -345,7 +334,6 @@ export async function saveDb() {
             if (requiresFullEncoderReload.state) {
                 encoder = new RisuSaveEncoder()
                 await encoder.init(getDatabase(), {
-                    compression: forageStorage.isAccount,
                     skipRemoteSavingOnCharacters: false
                 })
                 requiresFullEncoderReload.state = false
@@ -378,17 +366,9 @@ export async function saveDb() {
             }
             const dbData = new Uint8Array(encoded)
             await forageStorage.setItem('database/database.bin', dbData)
-            if (!forageStorage.isAccount) {
-                await forageStorage.setItem(`database/dbbackup-${(Date.now() / 100).toFixed()}.bin`, dbData)
-            }
-            if (forageStorage.isAccount) {
-                await sleep(3000)
-            }
-            if (!forageStorage.isAccount) {
-                await getDbBackups()
-            }
+            await forageStorage.setItem(`database/dbbackup-${(Date.now() / 100).toFixed()}.bin`, dbData)
+            await getDbBackups()
             savetrys = 0
-            await saveDbKei()
             await sleep(500)
         } catch (error) {
             savetrys += 1
@@ -410,10 +390,6 @@ export async function saveDb() {
  * @returns {Promise<number[]>} - A promise that resolves to an array of backup timestamps.
  */
 export async function getDbBackups() {
-    let db = getDatabase()
-    if (db?.account?.useSync && !isNodeServer) {
-        return []
-    }
     const keys = await forageStorage.keys()
 
     const backups = keys
@@ -901,50 +877,6 @@ export function getUncleanablesSync(db: Database, uptype: 'basename' | 'pure' = 
     return Array.from(uncleanable);
 }
 
-
-/**
- * Replaces database resources with the provided replacer object.
- * 
- * @param {Database} db - The database object containing resources to be replaced.
- * @param {{[key: string]: string}} replacer - An object mapping original resource keys to their replacements.
- * @returns {Database} - The updated database object with replaced resources.
- */
-export function replaceDbResources(db: Database, replacer: { [key: string]: string }): Database {
-    /**
-     * Replaces a given data string with its corresponding value from the replacer object.
-     * 
-     * @param {string} data - The data string to be replaced.
-     * @returns {string} - The replaced data string or the original data if no replacement is found.
-     */
-    function replaceData(data: string): string {
-        if (!data) {
-            return data;
-        }
-        return replacer[data] ?? data;
-    }
-
-    db.customBackground = replaceData(db.customBackground);
-    db.userIcon = replaceData(db.userIcon);
-
-    for (const cha of db.characters) {
-        if (cha.image) {
-            cha.image = replaceData(cha.image);
-        }
-        if (cha.emotionImages) {
-            for (let i = 0; i < cha.emotionImages.length; i++) {
-                cha.emotionImages[i][1] = replaceData(cha.emotionImages[i][1]);
-            }
-        }
-        if (cha.type !== 'group') {
-            if (cha.additionalAssets) {
-                for (let i = 0; i < cha.additionalAssets.length; i++) {
-                    cha.additionalAssets[i][1] = replaceData(cha.additionalAssets[i][1]);
-                }
-            }
-        }
-    }
-    return db;
-}
 
 /**
  * Checks and updates the character order in the database.

@@ -3,14 +3,11 @@
 ## Scope
 - Owns:
   - local `.bin` backup export and import (full and partial),
-  - Risu Account data and backups,
-  - Kei server auto-backup,
   - PeerJS multiuser chat sync,
   - Realm hub browse, download, and upload,
   - the settings report export.
 - Paths:
-  - `src/ts/drive/{backuplocal,accounter}.ts` (the folder name is historical; Google Drive sync was removed)
-  - `src/ts/kei/{kei,backup}.ts`
+  - `src/ts/drive/backuplocal.ts` (the folder name is historical; Google Drive sync, Risu Account sync, and Kei auto-backup were removed)
   - `src/ts/sync/multiuser.ts`
   - `src/ts/realm.ts`
   - `src/lib/UI/Realm/*`
@@ -25,13 +22,8 @@
 - `drive/backuplocal.ts`:
   - `SaveLocalBackup`: all assets, cold-storage payloads, and `database.risudat` (legacy compressed DB without `account`).
   - `SavePartialLocalBackup`: profile, persona, background, folder, and preset images only, plus cold payloads and the DB.
-  - `LoadLocalBackup`: stream parse, restore, `setDatabaseLite`, persist, reload.
+  - `LoadLocalBackup`: stream parse, restore, `setDatabaseLite`, persist, reload. It still decrypts legacy account-origin archives (`encryption.risudat` with `type: 'account'`) by fetching the key from `https://sv.risuai.xyz/cryptokey`; nothing writes that record anymore.
   - The record framing is `globalApi.svelte.ts:LocalWriter.writeBackup`: `u32 nameLen`, `utf8 basename`, `u32 dataLen`, bytes. No header or version.
-- `drive/accounter.ts`: `risuLogin`, `loadRisuAccountData` (`/hub/account/load`), `loadRisuAccountBackup` (`/hub/backup/list|get`).
-- `kei/kei.ts` `keiServerURL`: `db.keiServerURL`, or `hubURL + '/kei'`.
-- `kei/backup.ts`:
-  - `autoServerBackup`: bootstrap recovery only, via `/autobackup/list|restore`.
-  - `saveDbKei`: called from `saveDb`, throttled to once per 5 minutes, POSTs the full DB to `/autobackup/save`.
 - `sync/multiuser.ts`:
   - `createMultiuserRoom`: host, PeerJS ID ends with `-rmh`.
   - `joinMultiuserRoom`: joiner, uses the temp character `§temp`.
@@ -48,9 +40,7 @@
 
 ## Flows
 - Entry points:
-  - `UserSettings.svelte`: local backup buttons, account login and backup.
-  - `bootstrap.ts`: `loadRisuAccountData`, and `autoServerBackup` (only when local recovery fails).
-  - `globalApi.saveDb`: `saveDbKei`.
+  - `UserSettings.svelte`: local backup buttons, internal backup restore, cold-storage cleanup, dataset export.
 - Multiuser:
   1. The host answers `request-char` with a clone of the selected character that contains only the current chat, plus its assets.
   2. The joiner sends `request-chat-sync` from `peerSync`.
@@ -59,19 +49,19 @@
 - Realm: `MainMenu`/`MobileBody` → `RealmMain` → `getRisuHub(search, page, nsfw, sort)`. Export sets `ShowRealmFrameStore`, which shows `RealmFrame`. Success writes `realmId`.
 
 ## State
-- DB: `account`, `keiServerURL`, `skipSavingAssetsOnWebSync`, `localNetworkMode`, `localNetworkTimeoutSec`, character `realmId`.
+- DB: `account` (legacy; no login UI remains, but old saves may still carry a token that Realm upload/delete reads), `localNetworkMode`, `localNetworkTimeoutSec`, character `realmId`.
 - Module state: the multiuser `conn`/`peer`/`connections`/`requestChatSafeQueue`.
 - Stores: `OpenRealmStore`, `ShowRealmFrameStore`, `RealmInitialOpenChar`.
 - `ColdStorageBackupPayload` = `{key, backupName, value, encoded}`.
 
 ## Coupling
-- Depends on `database.svelte.ts`, `globalApi.svelte.ts` (writers, `forageStorage`, fetch), `risuSave.ts` (`encodeRisuSaveLegacy`, `decodeRisuSave`), `coldstorage.svelte.ts`, `characterCards.ts` (`hubURL` and hub APIs), `alert.ts`, `platform.ts`, `sionyw.ts`.
+- Depends on `database.svelte.ts`, `globalApi.svelte.ts` (writers, `forageStorage`, fetch), `risuSave.ts` (`encodeRisuSaveLegacy`, `decodeRisuSave`), `coldstorage.svelte.ts`, `characterCards.ts` (`hubURL` and hub APIs), `alert.ts`, `platform.ts`.
 - `process/index.svelte.ts` owns the order of the multiuser calls.
 
 ## Invariants
 - The local backup format has no header. `LocalWriter.writeBackup` and `LoadLocalBackup` must change together, and old archives should still load.
 - Every backup flow must carry the cold-storage payloads and validate them with `isColdStorageBackupData`. Missing keys prompt for confirmation.
-- Full local backups strip `account`. Account-origin backups encrypt only the DB bytes (`encryption.risudat`).
+- Full local backups strip `account`. Keep `LoadLocalBackup` able to read legacy account-origin archives, where only the DB bytes are encrypted (`encryption.risudat`).
 - Multiuser code must snapshot before mutating and then call `setDatabase`/`setCurrentChat` for reactivity.
 - `getLocalNetworkRequestOptions` must stay paired with `isLocalNetworkUrl`. Browsers reject the local route.
 
@@ -83,7 +73,7 @@
 
 ## Tests
 - Adjacent: `src/ts/network/localNetwork.test.ts`, `src/ts/network/proxyJobWs.test.ts`, `src/ts/process/coldstorageData.test.ts`.
-- Not tested: backup framing and encryption, Account, Kei, multiuser, Realm, settings redaction.
+- Not tested: backup framing and encryption, multiuser, Realm, settings redaction.
 
 ## Known Hazards
 - `LoadLocalBackup` writes `assets/` plus the record name, which is untrusted. The writer strips names to their basename, but the importer does not sanitize path separators.

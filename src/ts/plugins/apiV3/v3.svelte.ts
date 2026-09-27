@@ -8,7 +8,7 @@ import { v4 } from "uuid";
 import { sleep } from "src/ts/util";
 import { alertConfirm, alertError, alertNormal } from "src/ts/alert";
 import { language } from "src/lang";
-import { checkCharOrder, forageStorage, getFetchLogs } from "src/ts/globalApi.svelte";
+import { checkCharOrder, getFetchLogs } from "src/ts/globalApi.svelte";
 import { changeColorScheme, updateColorScheme, updateTextThemeAndCSS, type ColorScheme } from "src/ts/gui/colorscheme";
 import { isNodeServer } from "src/ts/platform";
 import { get } from "svelte/store";
@@ -1239,9 +1239,7 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
                 platform: 
                     isNodeServer ? 'node' :
                     'web',
-                saveMethod:
-                    forageStorage.isAccount ? 'account' :
-                    'local',
+                saveMethod: 'local',
             }
         },
         getLocalPluginStorage: () => {

@@ -7,7 +7,7 @@ import { alertStore as alertStoreImported } from "./stores.svelte"
 
 export interface alertData{
     type: 'error'|'normal'|'none'|'ask'|'wait'|'selectChar'
-            |'input'|'toast'|'wait2'|'markdown'|'select'|'login'
+            |'input'|'toast'|'wait2'|'markdown'|'select'
             |'tos'|'cardexport'|'requestdata'|'addchar'|'hypaV2'|'selectModule'
             |'chatOptions'|'pukmakkurit'|'branches'|'progress'|'pluginconfirm'|'requestlogs',
     msg: string,
@@ -115,16 +115,6 @@ export async function alertChatOptions() {
     await waitAlert()
 
     return parseInt(get(alertStoreImported).msg)
-}
-
-export async function alertLogin(){
-    alertStoreImported.set({
-        'type': 'login',
-        'msg': 'login'
-    })
-    await waitAlert()
-
-    return get(alertStoreImported).msg
 }
 
 export async function alertSelect(msg:string[], display?:string){

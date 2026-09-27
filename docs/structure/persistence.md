@@ -5,7 +5,6 @@
   - the persisted DB model and its migrations,
   - the save-file encoding,
   - the choice of storage backend per platform,
-  - account storage,
   - cold storage (offloading old chats and characters),
   - chat paging defaults.
 - Paths: `src/ts/storage/*`, `src/ts/process/coldstorage.svelte.ts`, `src/ts/process/coldstorageData.ts`, `src/ts/chatLoadPages.ts`, plus their tests.
@@ -27,10 +26,9 @@
   - Legacy: `encodeRisuSaveLegacy`, `encodeRisuSaveCompressionStream`.
   - `decodeRisuSave` detects every format.
   - `toSaveType`: the change-tracker shape.
-- `src/ts/storage/autoStorage.ts` `AutoStorage`: the backend selector, plus local-to-account migration.
+- `src/ts/storage/autoStorage.ts` `AutoStorage`: the backend selector, plus the one-time localforage-to-OPFS migration.
 - `src/ts/storage/nodeStorage.ts` `NodeStorage`: the Node server backend over `/api/read|write|list|remove`, with ES256 JWT auth. Also exports `getNodeServerProxyAuth` and `digestPassword`.
 - `src/ts/storage/opfsStorage.ts` `OpfsStorage`: OPFS backend with hex-encoded file names.
-- `src/ts/storage/accountStorage.ts` `AccountStorage`: remote account backend. It caches reads, uses 303/304/403 semantics, and `removeItem` throws. Also `unMigrationAccount`.
 - `src/ts/storage/persistant.ts`: persistent-storage request helpers. No callers.
 - `src/ts/storage/defaultPrompts.ts`: default main/jailbreak prompts.
 - `src/ts/storage/exportAsDataset.ts`: exports chats and lore as `dataset.json`, unredacted.
@@ -49,8 +47,7 @@
 Load:
 1. `bootstrap.ts:loadData` reads `database/database.bin` from `forageStorage`.
 2. `decodeRisuSave` decodes it.
-3. `setDatabase` normalizes the result.
-4. Account sync may then replace it.
+3. `setDatabase` normalizes the result. If decoding fails, `loadData` walks `database/dbbackup-*.bin` newest first but does not stop at the first success, so the oldest readable retained backup ends up loaded.
 
 Access:
 - UI reads and mutates `DBState.db` reactively.
@@ -63,7 +60,7 @@ Save (`globalApi.svelte.ts:saveDb`):
    - only the selected character (`selIdState`) and its current chat.
 2. Changes are debounced 500 ms and polled.
 3. `RisuSaveEncoder.set(db, tracker)` re-encodes the changed blocks. `requiresFullEncoderReload.state` forces a fresh `init`.
-4. The encoded bytes are written to `database/database.bin`, then a `database/dbbackup-<ts>.bin` backup (at most 20 kept), then `saveDbKei`.
+4. The encoded bytes are written to `database/database.bin`, then a `database/dbbackup-<ts>.bin` backup (at most 20 kept).
 
 Block format:
 - The file starts with the `RISUSAVE\0` magic, followed by typed blocks.
@@ -75,10 +72,10 @@ Block format:
 - Remote characters are stored as `REMOTE` descriptor blocks. Their payload lives at `remotes/<chaId>.local.bin`.
 
 Backend selection (`AutoStorage.Init`):
-1. Account storage, when `localStorage.accountst === 'able'`.
-2. `NodeStorage`, when `isNodeServer`.
-3. OPFS, when supported and the `opfs_flag!` flag is set.
-4. Otherwise localforage `risuai` (IndexedDB).
+1. `NodeStorage`, when `isNodeServer`.
+2. OPFS, when supported and the `opfs_flag!` flag is set.
+3. Otherwise localforage `risuai` (IndexedDB).
+- Risu Account sync was removed. A leftover `localStorage.accountst === 'able'` flag is ignored, so such a browser falls through to local storage.
 
 Cold storage:
 - Evicting a character writes the full `{character}` payload out, then replaces the DB entry with a skeleton.
@@ -90,7 +87,7 @@ Cold storage:
   - characters, prompts and templates,
   - provider keys and URLs, model/memory/translator/image/TTS settings,
   - `botPresets` + `botPresetsId`, `modules` + `enabledModules`, `personas` + `selectedPersona`, `plugins` + `pluginCustomStorage`, `loadouts`,
-  - `account`, `coldstorage`, `enableRemoteSaving`, `characterOrder`, `globalChatVariables`, `hotkeys`.
+  - `account` (legacy, kept in the type because old saves carry it), `coldstorage`, `enableRemoteSaving`, `characterOrder`, `globalChatVariables`, `hotkeys`.
 - `character | groupChat`: groups have `type:'group'` and member `characters: string[]`. Both own `chats`, `chatPage`, `chaId`, and optional `coldstorage`.
 - `Chat`:
   - `message`, `note`, `localLore`, `scriptstate` (keys prefixed with `$`), `modules`, `bindedPersona`, `fmIndex`, `id`,
@@ -100,12 +97,10 @@ Cold storage:
 - Cold storage key conventions differ by platform and are part of the format:
   - Node: `coldstorage/<key>`.
   - OPFS: `coldstorage_<key>.json`.
-  - Account: protected `/hub/account/coldstorage`.
 - Plugin cold storage is `pluginCustomStorage._coldplugin`, mapping key to UUID.
 
 ## Coupling
 - The chain is `DBState` → `database.svelte.ts` helpers → `forageStorage` (in `globalApi`) → `AutoStorage` → backend.
-- `accountStorage.ts` imports `getUncleanables` from `globalApi`, so storage and `globalApi` initialization are mutually coupled.
 - Callers:
   - `bootstrap.ts`: load and migrate.
   - `globalApi.saveDb`: save.
@@ -133,7 +128,7 @@ Cold storage:
   3. If it is preset-owned, update the preset functions listed above.
   4. Verify by loading an old save: `getDatabase()` has the default after normalization.
 - Add a split save collection: `RisuSaveEncoder.init/set`, `RisuSaveDecoder.decode`, `toSaveType`, and the `saveDb` watchers. Verify an encode/decode round trip, an incremental update, and a backup restore.
-- Change backend selection: `AutoStorage.Init` and the backend class. Keep logical keys and the account migration filters.
+- Change backend selection: `AutoStorage.Init` and the backend class. Keep logical keys.
 - Change cold eviction: `makeColdData`, `makeColdDataForCharacter`/`makeColdDataForChat`, `preLoadChat`, `characters.ts:changeChar`, and `coldstorageData.ts`.
 - Change remote retention: `risuSave.ts` (`encodeRemoteBlock`, decoder) and `bootstrap.ts:cleanChunks`, which gives orphaned `remotes/*.local.bin` payloads a seven-day grace period through a `.meta` `lastUsed` file.
 

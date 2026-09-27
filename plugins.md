@@ -1196,7 +1196,7 @@ if (logs) {
 const info = await Risuai.getRuntimeInfo();
 console.log(info.apiVersion);  // e.g., '3.0'
 console.log(info.platform);    // 'web' or 'node'
-console.log(info.saveMethod);  // 'local' or 'account'
+console.log(info.saveMethod);  // always 'local' ('account' was returned before Risu Account sync was removed)
 ```
 
 #### Unwrap SafeClassArray

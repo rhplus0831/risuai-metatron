@@ -444,7 +444,6 @@ export function setDatabase(data:Database){
         customChainOfThought: false,
         maxThoughtTagDepth: -1
     }
-    data.keiServerURL ??= ''
     data.top_k ??= 0
     data.promptSettings.maxThoughtTagDepth ??= -1
     data.openrouterFallback ??= true
@@ -709,7 +708,6 @@ export function setDatabase(data:Database){
     data.longPressToPopupEditor ??= false
     data.customSidebarItems ??= []
     data.moveInsteadOfCopyOnCMPConvert ??= false
-    data.skipSavingAssetsOnWebSync ??= true
     data.coldstorage ??= data?.plugins?.length === 0
     for(const char of data.characters){
         for(const chat of char.chats ?? []){
@@ -927,8 +925,6 @@ export interface Database{
             access_token?:string
             expires_in?: number
         }
-        useSync?:boolean
-        kei?:boolean
     },
     classicMaxWidth: boolean,
     useChatSticker:boolean,
@@ -1006,7 +1002,6 @@ export interface Database{
     chainOfThought?:boolean
     genTime:number
     promptSettings: PromptSettings
-    keiServerURL:string
     top_k:number
     repetition_penalty:number
     min_p:number
@@ -1119,7 +1114,6 @@ export interface Database{
     }
     translateBeforeHTMLFormatting:boolean
     autoTranslateCachedOnly:boolean
-    lightningRealmImport:boolean
     notification: boolean
     customFlags: LLMFlags[]
     enableCustomFlags: boolean
@@ -1274,7 +1268,6 @@ export interface Database{
     customSidebarItems: CustomSideBarItem[]
     lastLoadedLoadoutName: string
     moveInsteadOfCopyOnCMPConvert?:boolean
-    skipSavingAssetsOnWebSync?:boolean
 }
 
 export interface CustomSideBarItem{

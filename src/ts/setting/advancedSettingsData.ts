@@ -34,10 +34,6 @@ export const advancedSettingsItems: SettingItem[] = [
         helpKey: 'emotionPrompt', options: { placeholder: 'Leave it blank to use default' }
     },
     {
-        id: 'adv.keiUrl', type: 'text', fallbackLabel: 'Kei Server URL', bindKey: 'keiServerURL',
-        options: { placeholder: 'Leave it blank to use default' }
-    },
-    {
         id: 'adv.presetChain', type: 'text', labelKey: 'presetChain', bindKey: 'presetChain',
         helpKey: 'presetChain', options: { placeholder: 'Leave it blank to not use' }
     },
@@ -226,12 +222,6 @@ export const advancedSettingsItems: SettingItem[] = [
         condition: (ctx) => ctx.db.useExperimental, helpKey: 'unrecommended', helpUnrecommended: true, classes: 'mt-4'
     },
 
-    // Sync (Condition: db.account.useSync)
-    {
-        id: 'adv.sync.realm', type: 'check', fallbackLabel: 'Lightning Realm Import', bindKey: 'lightningRealmImport',
-        condition: (ctx) => !!ctx.db.account?.useSync, showExperimental: true, classes: 'mt-4'
-    },
-
     // Dynamic Assets Edit (Condition: dynamicAssets)
     {
         id: 'adv.dynAssetsEdit', type: 'check', labelKey: 'dynamicAssetsEditDisplay', bindKey: 'dynamicAssetsEditDisplay',
@@ -245,10 +235,6 @@ export const advancedSettingsItems: SettingItem[] = [
     },
     {
         id: 'adv.depTrig', type: 'check', labelKey: 'showDeprecatedTriggerV1', bindKey: 'showDeprecatedTriggerV1',
-        condition: (ctx) => ctx.db.showUnrecommended, helpKey: 'unrecommended', helpUnrecommended: true, classes: 'mt-4'
-    },
-    {
-        id: 'adv.skipSavingAssetsOnWebSync', type: 'check', labelKey: 'skipSavingAssetsOnWebSync', bindKey: 'skipSavingAssetsOnWebSync',
         condition: (ctx) => ctx.db.showUnrecommended, helpKey: 'unrecommended', helpUnrecommended: true, classes: 'mt-4'
     },
 

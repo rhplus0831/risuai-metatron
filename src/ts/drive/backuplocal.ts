@@ -1,13 +1,11 @@
-import localforage from "localforage";
 import { alertError, alertNormal, alertStore, alertWait, alertMd, alertConfirm } from "../alert";
 import { LocalWriter, forageStorage, requiresFullEncoderReload } from "../globalApi.svelte";
 import { decodeRisuSave, encodeRisuSaveLegacy } from "../storage/risuSave";
 import { getDatabase, setDatabaseLite } from "../storage/database.svelte";
-import { decryptBuffer, encryptBuffer, sleep } from "../util";
+import { decryptBuffer, sleep } from "../util";
 import { hubURL } from "../characterCards";
 import { language } from "src/lang";
 import { collectColdStorageBackupPayloads, confirmIncompleteColdStorageOperation, getColdStorageBackupKey, getColdStorageItem, isColdStorageBackupData, listColdDataKeys, setColdStorageItem } from "../process/coldstorage.svelte";
-import { DBState } from "../stores.svelte";
 
 function getBasename(data:string){
     const baseNameRegex = /\\/g
@@ -91,31 +89,12 @@ export async function SaveLocalBackup(){
         if(!key || !key.endsWith('.png')){
             continue
         }
-        let data: Uint8Array | undefined;
-        let isCached = false;
-        if(forageStorage.isAccount && key.startsWith('assets/')){
-            if(DBState.db.skipSavingAssetsOnWebSync){
-                continue
-            }
-
-            const cached = await localforage.getItem(key) as ArrayBuffer;
-            if(cached) {
-                isCached = true;
-                data = new Uint8Array(cached);
-            }
-        }
-        
-        if (!data) {
-            data = await forageStorage.getItem(key) as unknown as Uint8Array
-        }
+        const data = await forageStorage.getItem(key) as unknown as Uint8Array
 
         if (data) {
             await writer.writeBackup(key, data)
         } else {
             missingAssets.push(key)
-        }
-        if(forageStorage.isAccount && !isCached){
-            await sleep(1000)
         }
     }
 
@@ -127,15 +106,7 @@ export async function SaveLocalBackup(){
     }
 
     const dbWithoutAccount = { ...db, account: undefined }
-    let dbData = encodeRisuSaveLegacy(dbWithoutAccount, 'compression')
-
-    if(forageStorage.isAccount && location.origin.endsWith('risuai.xyz')){
-        const time = Date.now()
-        const key = (await (await fetch(`https://sv.risuai.xyz/cryptokey?key=${time}`)).json()).key
-        const encrypted = await encryptBuffer(dbData, key)
-        await writer.writeBackup('encryption.risudat', new TextEncoder().encode(JSON.stringify({ time, type: 'account' })))
-        dbData = new Uint8Array(encrypted)
-    }
+    const dbData = encodeRisuSaveLegacy(dbWithoutAccount, 'compression')
 
     alertWait(`Saving local Backup... (Saving database)`) 
 
@@ -274,28 +245,13 @@ export async function SavePartialLocalBackup(){
         if(!key || !key.endsWith('.png')){
             continue
         }
-        
-        let data: Uint8Array | undefined;
-        let isCached = false;
-        if(forageStorage.isAccount && key.startsWith('assets/')){
-            const cached = await localforage.getItem(key) as ArrayBuffer;
-            if(cached) {
-                isCached = true;
-                data = new Uint8Array(cached);
-            }
-        }
-        
-        if (!data) {
-            data = await forageStorage.getItem(key) as unknown as Uint8Array
-        }
+
+        const data = await forageStorage.getItem(key) as unknown as Uint8Array
 
         if (data) {
             await writer.writeBackup(key, data)
         } else {
             missingAssets.push(key)
-        }
-        if(forageStorage.isAccount && !isCached){
-            await sleep(100)
         }
     }
 
@@ -439,9 +395,6 @@ export function LoadLocalBackup(){
                         }
                     }
                     await sleep(10);
-                    if (forageStorage.isAccount) {
-                        await sleep(1000);
-                    }
 
                     offset += 4 + nameLength + 4 + dataLength;
                 }
