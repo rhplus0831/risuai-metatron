@@ -13,7 +13,6 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json",
     "test": "vitest run",
-    "buildsite": "vite build --outDir dist",
     "runserver": "node server/src/main.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
