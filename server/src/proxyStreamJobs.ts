@@ -4,6 +4,7 @@ import https from "node:https";
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import type { Context, Hono, MiddlewareHandler } from "hono";
+import ipaddr from "ipaddr.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { AuthStore } from "./auth.ts";
 import { readJsonBody } from "./body.ts";
@@ -60,60 +61,36 @@ function normalizeHeartbeatSec(heartbeatSec: number): number {
     return Math.min(PROXY_STREAM_HEARTBEAT_MAX_SEC, Math.max(PROXY_STREAM_HEARTBEAT_MIN_SEC, parsed));
 }
 
-function isPrivateIPv4Host(hostname: string): boolean {
-    const parts = hostname.split(".");
-    if (parts.length !== 4) {
-        return false;
-    }
-    const octets = parts.map((part) => Number.parseInt(part, 10));
-    if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
-        return false;
-    }
-    const [a, b] = octets;
-    if (a === 10 || a === 127 || a === 0) {
-        return true;
-    }
-    if (a === 192 && b === 168) {
-        return true;
-    }
-    if (a === 172 && b >= 16 && b <= 31) {
-        return true;
-    }
-    if (a === 169 && b === 254) {
-        return true;
-    }
-    return false;
-}
+const localIPv4Ranges = new Set(["private", "loopback", "unspecified", "linkLocal"]);
+const localIPv6Ranges = new Set(["uniqueLocal", "linkLocal", "loopback"]);
 
+/**
+ * localhost, `*.local`, and IP literals in 10/8, 172.16/12, 192.168/16, 127/8, 0/8, 169.254/16,
+ * fc00::/7, fe80::/10, ::1, or IPv4-mapped IPv6 of those IPv4 ranges.
+ */
 export function isLocalNetworkHost(hostname: unknown): boolean {
     if (typeof hostname !== "string" || hostname.trim() === "") {
         return false;
     }
 
     const normalizedHost = hostname.toLowerCase().replace(/\.$/, "").split("%")[0];
-    if (normalizedHost === "localhost" || normalizedHost === "::1" || normalizedHost.endsWith(".local")) {
+    if (normalizedHost === "localhost" || normalizedHost.endsWith(".local")) {
         return true;
     }
 
-    if (net.isIP(normalizedHost) === 4) {
-        return isPrivateIPv4Host(normalizedHost);
+    const family = net.isIP(normalizedHost);
+    if (family === 0) {
+        return false;
     }
-
-    if (net.isIP(normalizedHost) === 6) {
-        if (normalizedHost.startsWith("::ffff:")) {
-            const mapped = normalizedHost.substring(7);
-            return net.isIP(mapped) === 4 && isPrivateIPv4Host(mapped);
-        }
-        if (normalizedHost.startsWith("fc") || normalizedHost.startsWith("fd")) {
-            return true;
-        }
-        if (/^fe[89ab]/.test(normalizedHost)) {
-            return true;
-        }
-        return normalizedHost === "::1";
+    const address = ipaddr.parse(normalizedHost);
+    if (family === 4) {
+        return localIPv4Ranges.has(address.range());
     }
-
-    return false;
+    const v6 = address as ipaddr.IPv6;
+    if (v6.isIPv4MappedAddress()) {
+        return localIPv4Ranges.has(v6.toIPv4Address().range());
+    }
+    return localIPv6Ranges.has(v6.range());
 }
 
 /** Proxy jobs may only target local/private http(s) hosts. */
@@ -142,10 +119,11 @@ function normalizeForwardHeaders(input: unknown): Record<string, string> {
     if (!input || typeof input !== "object" || Array.isArray(input)) {
         return {};
     }
+    // Header names are case-insensitive: lowercase them so the deletes and lookups below match.
     const normalized: Record<string, string> = {};
     for (const [key, value] of Object.entries(input)) {
         if (typeof value === "string") {
-            normalized[key] = value;
+            normalized[key.toLowerCase()] = value;
         }
     }
     delete normalized["risu-auth"];
@@ -189,13 +167,13 @@ function requestLocalTargetStream(
         }
 
         let settled = false;
+        let response: http.IncomingMessage | undefined;
         let cleanupAbort = () => {};
         const finishReject = (error: Error) => {
             if (settled) {
                 return;
             }
             settled = true;
-            cleanupAbort();
             reject(error);
         };
 
@@ -205,7 +183,10 @@ function requestLocalTargetStream(
                 return;
             }
             settled = true;
-            cleanupAbort();
+            response = res;
+            // The abort listener stays attached while the body streams, so DELETE/GC/dispose
+            // also stop an upstream that sent headers and then stalled.
+            res.once("close", () => cleanupAbort());
             resolve({
                 status: res.statusCode || 502,
                 headers: normalizeProxyResponseHeaders(res.headers),
@@ -214,6 +195,7 @@ function requestLocalTargetStream(
         });
 
         req.on("error", (error) => {
+            cleanupAbort();
             finishReject(error);
         });
 
@@ -227,6 +209,7 @@ function requestLocalTargetStream(
                 const abortError = new Error("Proxy stream job aborted");
                 abortError.name = "AbortError";
                 req.destroy(abortError);
+                response?.destroy(abortError);
             };
             if (signal.aborted) {
                 onAbort();
@@ -253,7 +236,7 @@ export function createProxyStreamJobs(arg: { auth: AuthStore }) {
     const { auth } = arg;
     const jobs = new Map<string, ProxyStreamJob>();
     let gcTimer: NodeJS.Timeout | undefined;
-    const wsServers = new Set<WebSocketServer>();
+    const attachments = new Map<http.Server, { wsServer: WebSocketServer; onUpgrade: (...args: any[]) => void }>();
 
     function createJob(timeoutMsRaw: unknown, heartbeatSec: number): ProxyStreamJob {
         const timeoutMs = normalizeProxyStreamTimeoutMs(Number(timeoutMsRaw));
@@ -314,6 +297,8 @@ export function createProxyStreamJobs(arg: { auth: AuthStore }) {
         if (!job) {
             return;
         }
+        // Stop any upstream work before the job becomes unreachable.
+        job.abortController.abort();
         for (const client of job.clients) {
             try {
                 client.close();
@@ -381,7 +366,8 @@ export function createProxyStreamJobs(arg: { auth: AuthStore }) {
             pushJobEvent(job, { type: "done" });
             markJobDone(job);
         } catch (error) {
-            const message = (error as Error)?.name === "AbortError" ? "Proxy stream job aborted" : `${error}`;
+            const aborted = job.abortController.signal.aborted || (error as Error)?.name === "AbortError";
+            const message = aborted ? "Proxy stream job aborted" : `${error}`;
             pushJobEvent(job, { type: "error", status: 504, message });
             markJobDone(job);
         }
@@ -450,10 +436,12 @@ export function createProxyStreamJobs(arg: { auth: AuthStore }) {
 
     /** Handles `upgrade` on the Node server for `/proxy-stream-jobs/:jobId/ws`. */
     function attachWebSocket(server: http.Server) {
+        if (attachments.has(server)) {
+            return;
+        }
         const wsServer = new WebSocketServer({ noServer: true });
-        wsServers.add(wsServer);
 
-        server.on("upgrade", async (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
+        const onUpgrade = async (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
             try {
                 const reqUrl = new URL(req.url ?? "", `http://${req.headers.host}`);
                 if (!reqUrl.pathname.startsWith("/proxy-stream-jobs/") || !reqUrl.pathname.endsWith("/ws")) {
@@ -483,7 +471,9 @@ export function createProxyStreamJobs(arg: { auth: AuthStore }) {
                 socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
                 socket.destroy();
             }
-        });
+        };
+        server.on("upgrade", onUpgrade);
+        attachments.set(server, { wsServer, onUpgrade });
     }
 
     function onConnection(ws: WebSocket, jobId: string) {
@@ -526,6 +516,9 @@ export function createProxyStreamJobs(arg: { auth: AuthStore }) {
     }
 
     function startGc() {
+        if (gcTimer) {
+            return;
+        }
         gcTimer = setInterval(() => {
             const now = Date.now();
             for (const [jobId, job] of jobs.entries()) {
@@ -545,14 +538,15 @@ export function createProxyStreamJobs(arg: { auth: AuthStore }) {
 
     function dispose() {
         clearInterval(gcTimer);
-        for (const job of jobs.values()) {
-            job.abortController.abort();
-            cleanupJob(job.id);
+        gcTimer = undefined;
+        for (const jobId of [...jobs.keys()]) {
+            cleanupJob(jobId);
         }
-        for (const wsServer of wsServers) {
+        for (const [server, { wsServer, onUpgrade }] of attachments) {
+            server.off("upgrade", onUpgrade);
             wsServer.close();
         }
-        wsServers.clear();
+        attachments.clear();
     }
 
     return { registerRoutes, attachWebSocket, startGc, dispose };

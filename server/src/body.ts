@@ -5,7 +5,8 @@ export type JsonBodyResult = { ok: true; body: Record<string, any> } | { ok: fal
 
 /**
  * Reads a JSON body the way Express's global `express.json()` exposed it: a non-JSON content
- * type or an empty body yields `{}`; malformed JSON or a top-level primitive is a 400.
+ * type or a zero-length body yields `{}`; malformed JSON (including whitespace only) or a top-level
+ * primitive is a 400.
  */
 export async function readJsonBody(c: Context<AppEnv>): Promise<JsonBodyResult> {
     const contentType = (c.req.header("content-type") || "").split(";")[0].trim().toLowerCase();
@@ -13,7 +14,7 @@ export async function readJsonBody(c: Context<AppEnv>): Promise<JsonBodyResult> 
         return { ok: true, body: {} };
     }
     const text = await c.req.text();
-    if (text.trim() === "") {
+    if (text.length === 0) {
         return { ok: true, body: {} };
     }
     const first = text.trimStart()[0];

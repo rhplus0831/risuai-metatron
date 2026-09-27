@@ -19,12 +19,36 @@ const strippedHubResponseHeaders = ["content-encoding", "content-length", "trans
 const strippedProxyRequestHeaders = [
     "host",
     "connection",
-    "content-length",
-    "transfer-encoding",
     "keep-alive",
+    "proxy-connection",
+    "transfer-encoding",
+    "te",
+    "trailer",
+    "upgrade",
+    "content-length",
     "risu-auth",
 ];
 const nullBodyStatuses = new Set([101, 204, 205, 304]);
+
+/**
+ * Upstream request headers for `/proxy*`: the decoded `risu-header` object (or the incoming
+ * headers), minus hop-by-hop fields, fields nominated by `Connection`, and `risu-auth`. All
+ * matching is case-insensitive. A `risu-header` that is not a plain object throws (500).
+ */
+function buildUpstreamHeaders(source: unknown): Headers {
+    if (!source || typeof source !== "object" || Array.isArray(source)) {
+        throw new TypeError("risu-header must be a JSON object");
+    }
+    const headers = new Headers(source as Record<string, string>);
+    const nominated = (headers.get("connection") ?? "")
+        .split(",")
+        .map((token) => token.trim())
+        .filter((token) => token !== "");
+    for (const name of [...nominated, ...strippedProxyRequestHeaders]) {
+        headers.delete(name);
+    }
+    return headers;
+}
 
 function getRequestTimeoutMs(raw: string | undefined): number | null {
     if (!raw) {
@@ -128,15 +152,12 @@ export function registerProxyRoutes(
             return c.json({ error: "URL has no param" }, 400);
         }
         const risuHeader = c.req.header("risu-header");
-        const header: Record<string, string> = risuHeader
-            ? JSON.parse(decodeURIComponent(risuHeader))
-            : Object.fromEntries(c.req.raw.headers);
-        for (const name of strippedProxyRequestHeaders) {
-            delete header[name];
-        }
+        const header = buildUpstreamHeaders(
+            risuHeader ? JSON.parse(decodeURIComponent(risuHeader)) : c.req.raw.headers,
+        );
         const ip = clientIp(c);
-        if (!header["x-forwarded-for"] && ip) {
-            header["x-forwarded-for"] = ip;
+        if (!header.has("x-forwarded-for") && ip) {
+            header.set("x-forwarded-for", ip);
         }
 
         const timeoutMs = getRequestTimeoutMs(c.req.header("risu-timeout-ms"));
@@ -165,6 +186,14 @@ export function registerProxyRoutes(
             throw error;
         }
 
+        const headers = filterHeaders(upstream.headers, strippedProxyResponseHeaders);
+        // Hono runs GET handlers for HEAD and drops the body without cancelling it.
+        if (c.req.method === "HEAD") {
+            timeout.cleanup();
+            await upstream.body?.cancel().catch(() => {});
+            return new Response(null, { status: upstream.status, headers });
+        }
+
         // The timeout keeps covering the body until it finishes streaming.
         const body = ownBody(nullBodyStatuses.has(upstream.status) ? null : upstream.body, {
             onFinish: timeout.cleanup,
@@ -173,10 +202,7 @@ export function registerProxyRoutes(
         if (nullBodyStatuses.has(upstream.status)) {
             await upstream.body?.cancel().catch(() => {});
         }
-        return new Response(body, {
-            status: upstream.status,
-            headers: filterHeaders(upstream.headers, strippedProxyResponseHeaders),
-        });
+        return new Response(body, { status: upstream.status, headers });
     };
 
     app.get("/proxy", limiter, reverseProxy("GET"));
@@ -201,10 +227,17 @@ export function registerProxyRoutes(
             delete headersToSend.connection;
             delete headersToSend["content-length"];
             delete headersToSend["x-risu-node-path"];
+            delete headersToSend["risu-auth"];
             headersToSend.origin = new URL(hubURL).origin;
 
             const request = (target: string) =>
-                fetch(target, { method: c.req.method, headers: headersToSend, redirect: "manual" });
+                fetch(target, {
+                    method: c.req.method,
+                    headers: headersToSend,
+                    redirect: "manual",
+                    // A client abort cancels the upstream request, including before headers arrive.
+                    signal: c.req.raw.signal,
+                });
 
             let response = await request(externalURL);
             const location = response.headers.get("location");

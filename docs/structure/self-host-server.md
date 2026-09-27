@@ -86,14 +86,44 @@ Auth:
 Proxying:
 
 - The client sends `risu-url` and `risu-header` (encoded JSON) to same-origin `/proxy2`.
-- The request body is forwarded as raw bytes.
-- Hop-by-hop headers, `content-length`, and `risu-auth` are never forwarded upstream.
-- Response headers drop CSP, `clear-site-data`, `cache-control`, `content-encoding`, `content-length`, and `transfer-encoding`.
-- `risu-timeout-ms` covers the whole exchange:
+- The request body is forwarded as raw bytes. `HEAD` fetches upstream with GET and returns headers only.
+- Upstream request headers (`buildUpstreamHeaders`, case-insensitive):
+  - The decoded `risu-header` must be a JSON object. Anything else is a 500.
+  - Stripped: `host`, `connection`, `keep-alive`, `proxy-connection`, `transfer-encoding`, `te`, `trailer`, `upgrade`, `content-length`, `risu-auth`, and every field named in `Connection`. A `Connection: authorization` therefore drops `Authorization`.
+  - `x-forwarded-for` is added only when absent.
+- `/hub-proxy` forwards the incoming headers minus `host`, `connection`, `content-length`, `x-risu-node-path`, and `risu-auth`, and sets `origin`.
+- `/proxy` and `/proxy2` response headers drop CSP, `clear-site-data`, `cache-control`, `content-encoding`, `content-length`, and `transfer-encoding`.
+- On `/proxy` and `/proxy2`, `risu-timeout-ms` covers the whole exchange (`/hub-proxy` has no timeout):
   - Before upstream headers it returns 504 `{error}`.
   - Mid-stream it ends the response cleanly.
-- A client disconnect aborts the upstream fetch.
+- A client disconnect aborts the upstream fetch on `/proxy`, `/proxy2`, and `/hub-proxy`. Proxy stream jobs are different: a WebSocket client disconnecting does not abort the job; only DELETE, the deadline, GC, or `dispose()` does.
 - Node local-network streaming uses the job and WebSocket protocol with events `job_accepted`, `upstream_headers`, `chunk` (base64), `error`, `done`, and `ping`. Heartbeat is 5–60 s. Jobs have a 30 s done-grace period.
+- Stream-job targets must pass `sanitizeTargetUrl`/`isLocalNetworkHost` (`ipaddr.js` ranges):
+  - allowed: `localhost` and `*.local`;
+  - IPv4 in 10/8, 172.16/12, 192.168/16, 127/8, 0/8, or 169.254/16;
+  - IPv6 in fc00::/7 or fe80::/10, `::1`, and IPv4-mapped forms of those IPv4 ranges (bracketed URL hosts are accepted).
+  - Single-label hosts other than `localhost` are rejected, although the client's `localNetwork.ts` treats them as local. The client also rejects IPv4-mapped IPv6.
+- Stream-job forwarded headers are lowercased, then `risu-auth`, `risu-timeout-ms`, `host`, `connection`, and `content-length` are dropped.
+- DELETE, the deadline, GC cleanup, and `dispose()` abort the job's upstream request and response even after upstream headers arrived. Deadline cancellation can deliver an `error` event to connected clients (`proxyJobWs.ts` shows every 504 as a timeout). DELETE, GC cleanup, and `dispose()` close the WebSockets without guaranteeing a final event.
+
+### Changes from the former Express server
+
+- `/proxy` and `/proxy2` POST forward raw bytes. Express re-serialized parsed JSON and turned urlencoded bodies into `"{}"`.
+- `risu-auth` is never forwarded upstream by `/proxy`, `/proxy2`, or `/hub-proxy`, and header stripping is case-insensitive.
+- `HEAD` on `/proxy` and `/proxy2` returns headers only and closes the upstream.
+- The proxy timeout spans the streamed body; a mid-stream timeout ends the response cleanly.
+- A client disconnect aborts `/proxy`, `/proxy2`, and `/hub-proxy` upstreams.
+- Batch `/api/remove` works. A missing `file-path` is a 400; Express never answered it.
+- JSON bodies: malformed, whitespace-only, or primitive JSON is a 400. `set_password` persists before updating memory. Zero-length `/api/write` bodies are written.
+- Stream-job targets use `ipaddr.js` ranges, which adds bracketed and IPv4-mapped IPv6 literals. Stream-job DELETE, deadline, GC, and dispose stop active upstreams.
+- Static files use `@hono/node-server` `serveStatic`:
+  - supported: ranges and `Last-Modified`;
+  - no ETag, conditional requests, or `Cache-Control`;
+  - a directory path serves its `index.html`, where Express had `index: false`.
+- `/api/read` has no ranges or ETag.
+- No request decompression or charset-aware decoding; JSON text is read as UTF-8.
+- `/api/crypto` and `already set` are `text/plain`, not `text/html`. The 404 and 500 bodies are plain text.
+- Paths are case-sensitive, a trailing slash is tolerated, and there is no automatic `OPTIONS`.
 
 ## State
 
@@ -138,8 +168,8 @@ Process memory, inside the `createServerContext` closure:
   - a string is a comma list for `proxy-addr` (`loopback`, CIDRs, ...);
   - an invalid value fails at startup.
 - `JSON` routes (`readJsonBody`):
-  - a non-JSON content type or an empty body is `{}`;
-  - malformed JSON or a top-level primitive is 400 `{error:"Invalid JSON body"}`.
+  - a non-JSON content type or a zero-length body is `{}`;
+  - malformed JSON (including whitespace only) or a top-level primitive is 400 `{error:"Invalid JSON body"}`.
 - Streaming job protocol: the event names, base64 chunks, authentication on the WebSocket upgrade, and timeouts must all match `src/ts/network/proxyJobWs.ts` and `fetchViaProxyJobWs`.
 - The WebSocket upgrade handler is `ws` attached directly to the server returned by `serve()`. Do not also pass `websocket` to `serve()` or add `@hono/node-ws`: two upgrade listeners conflict.
 - Docker persistence depends on `/app/save`. Removing the volume loses the password, registered keys, and all data.
@@ -159,10 +189,13 @@ Process memory, inside the `createServerContext` closure:
 
 ## Tests
 
-- Client helpers only: `src/ts/network/proxyJobWs.test.ts`, `src/ts/network/localNetwork.test.ts`.
-- Server route tests can use `createServerContext({ rootDir: <tmp> }).app.request()` (Vitest `// @vitest-environment node`).
-  - Socket-level behavior (client IP, aborts, TLS, WebSocket) needs a real listening server.
-  - Call `dispose()` afterwards.
+- Server (`// @vitest-environment node`, type-checked by `pnpm check` through `server/tsconfig.json`):
+  - `server/src/app.test.ts`: `__NODE__` injection, auth flow and JWT failure bodies, JSON rules, login limiter, storage, hex guard, batch remove.
+  - `server/src/proxy.test.ts`: proxy auth, raw bodies, header filtering, SSE, timeout, HEAD, hub proxy.
+  - `server/src/proxyStreamJobs.test.ts`: target allowlist, job validation, a real `serve()` WebSocket lifecycle, DELETE and `dispose()` closing upstreams.
+  - `server/src/testSupport.ts`: temp-root context, ES256 signer, recording upstream.
+- In-process tests use `createServerContext({ rootDir: <tmp> }).app.request()` (no socket, so the client IP is undefined). Socket-level behavior (client IP, aborts, TLS, WebSocket) needs a real listening server. Call `dispose()` afterwards.
+- Client helpers: `src/ts/network/proxyJobWs.test.ts`, `src/ts/network/localNetwork.test.ts`.
 - No Docker tests.
 
 ## Known Hazards
