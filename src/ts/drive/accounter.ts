@@ -19,25 +19,6 @@ export function risuLogin() {
     })
 }
 
-export async function saveRisuAccountData() {
-    const db = getDatabase()
-    if(!db.account){
-        alertError("Not logged in error")
-        return
-    }
-    const s = await fetch(hubURL + '/hub/account/save', {
-        method: "POST",
-        body: JSON.stringify({
-            token: db.account.token,
-            save: db.account.data
-        })
-    })
-    if(s.status !== 200){
-        alertError(await s.text())
-        return
-    }
-}
-
 export async function loadRisuAccountData() {
     const db = getDatabase()
     if(!db.account){

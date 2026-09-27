@@ -5,7 +5,6 @@ import { setDatabase, defaultSdDataFunc, getDatabase } from "./storage/database.
 import { MobileGUI, botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, alertTOS, waitAlert, alertConfirm, alertInput } from "./alert";
-import { checkDriverInit } from "./drive/drive";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
 import { loadRisuAccountData } from "./drive/accounter";
@@ -106,11 +105,6 @@ export async function loadData() {
             }
             LoadingStatusState.text = "Rechecking Account Sync..."
             await forageStorage.checkAccountSync()
-            LoadingStatusState.text = "Checking Drive Sync..."
-            const isDriverMode = await checkDriverInit()
-            if (isDriverMode) {
-                return
-            }
             LoadingStatusState.text = "Checking Service Worker..."
             if (navigator.serviceWorker) {
                 setUsingSw(true)

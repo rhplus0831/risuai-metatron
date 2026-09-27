@@ -3,21 +3,18 @@
 ## Scope
 - Owns:
   - local `.bin` backup export and import (full and partial),
-  - Google Drive backup and restore,
   - Risu Account data and backups,
   - Kei server auto-backup,
   - PeerJS multiuser chat sync,
   - Realm hub browse, download, and upload,
   - the settings report export.
 - Paths:
-  - `src/ts/drive/{backuplocal,drive,accounter}.ts`
+  - `src/ts/drive/{backuplocal,accounter}.ts` (the folder name is historical; Google Drive sync was removed)
   - `src/ts/kei/{kei,backup}.ts`
   - `src/ts/sync/multiuser.ts`
   - `src/ts/realm.ts`
   - `src/lib/UI/Realm/*`
-  - `src/lib/Setting/Pages/FilesSettings.svelte`
   - `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`
-  - `public/functions/drive.js`
 - Not here:
   - The save format and backends → `persistence.md`.
   - Hub URL and card codecs → `characters-modules.md` (`characterCards.ts`).
@@ -30,14 +27,7 @@
   - `SavePartialLocalBackup`: profile, persona, background, folder, and preset images only, plus cold payloads and the DB.
   - `LoadLocalBackup`: stream parse, restore, `setDatabaseLite`, persist, reload.
   - The record framing is `globalApi.svelte.ts:LocalWriter.writeBackup`: `u32 nameLen`, `utf8 basename`, `u32 dataLen`, bytes. No header or version.
-- `drive/drive.ts`:
-  - `checkDriver(mode)`: Google OAuth. Browser modes are `save`/`load`. Node modes are `savetauri`/`loadtauri`, with a pasted code. Keep these `*tauri` names and the `accesstauri` state: they round-trip through the OAuth `state` parameter handled at `https://risuai.xyz/`.
-  - `checkDriverInit`: the browser callback. Exchanges the code at `hubURL + '/drive/token'`.
-  - Private `backupDrive`/`loadDrive` use `appDataFolder`:
-    - Assets are uploaded as `<basename>.bin`. `formatKeys` handles the legacy `.png` naming.
-    - The DB is `<unixSeconds>-database.risudat`.
-  - `syncDrive` is a dormant sync mode.
-- `drive/accounter.ts`: `risuLogin`, `saveRisuAccountData`/`loadRisuAccountData` (`/hub/account/*`), `loadRisuAccountBackup` (`/hub/backup/list|get`).
+- `drive/accounter.ts`: `risuLogin`, `loadRisuAccountData` (`/hub/account/load`), `loadRisuAccountBackup` (`/hub/backup/list|get`).
 - `kei/kei.ts` `keiServerURL`: `db.keiServerURL`, or `hubURL + '/kei'`.
 - `kei/backup.ts`:
   - `autoServerBackup`: bootstrap recovery only, via `/autobackup/list|restore`.
@@ -55,13 +45,11 @@
 - `RealmHubIcon.svelte`, `RealmLicense.svelte` (`CCLicenseData`).
 - `RealmUpload.svelte`: unimported legacy.
 - `SettingsExportButtons.svelte`: a redacted settings report (strips account, characters, and keys), request logs, and statistics.
-- `public/functions/drive.js` `onRequest`: edge Google token exchange using `CLIENT_ID`/`CLIENT_SECRET`.
 
 ## Flows
 - Entry points:
   - `UserSettings.svelte`: local backup buttons, account login and backup.
-  - `FilesSettings.svelte`: Drive.
-  - `bootstrap.ts`: `checkDriverInit`, `loadRisuAccountData`, and `autoServerBackup` (only when local recovery fails).
+  - `bootstrap.ts`: `loadRisuAccountData`, and `autoServerBackup` (only when local recovery fails).
   - `globalApi.saveDb`: `saveDbKei`.
 - Multiuser:
   1. The host answers `request-char` with a clone of the selected character that contains only the current chat, plus its assets.
@@ -72,7 +60,7 @@
 
 ## State
 - DB: `account`, `keiServerURL`, `skipSavingAssetsOnWebSync`, `localNetworkMode`, `localNetworkTimeoutSec`, character `realmId`.
-- Module state: `localStorage.risu_lastsaved`, the unused `BackupDb`, and the multiuser `conn`/`peer`/`connections`/`requestChatSafeQueue`.
+- Module state: the multiuser `conn`/`peer`/`connections`/`requestChatSafeQueue`.
 - Stores: `OpenRealmStore`, `ShowRealmFrameStore`, `RealmInitialOpenChar`.
 - `ColdStorageBackupPayload` = `{key, backupName, value, encoded}`.
 
@@ -90,17 +78,15 @@
 ## Recipes
 - Add a backup asset category: the asset map or scan in `SaveLocalBackup`/`SavePartialLocalBackup`, and `LoadLocalBackup` if record naming changes. Verify web and Node `forageStorage` restores.
 - Change the archive format: `LocalWriter.writeBackup` and `LoadLocalBackup` together. Add a round-trip test.
-- Change Drive: `checkDriver`/`checkDriverInit`/`backupDrive`/`loadDrive` plus the token exchange endpoint. Verify both the browser callback and the Node paste-code flow.
 - Add a multiuser message: extend `ReciveData`, and handle it in both the host and joiner `conn.on('data')` switches.
 - Change Realm: `characterCards.ts` hub functions and the matching `Realm*` component together. Check `hubURL` on Node (`/hub-proxy`).
 
 ## Tests
 - Adjacent: `src/ts/network/localNetwork.test.ts`, `src/ts/network/proxyJobWs.test.ts`, `src/ts/process/coldstorageData.test.ts`.
-- Not tested: backup framing and encryption, Drive, Account, Kei, multiuser, Realm, settings redaction.
+- Not tested: backup framing and encryption, Account, Kei, multiuser, Realm, settings redaction.
 
 ## Known Hazards
 - `LoadLocalBackup` writes `assets/` plus the record name, which is untrusted. The writer strips names to their basename, but the importer does not sanitize path separators.
-- Drive assets use basename-only `.bin` names, so duplicate basenames collide. `lastSaved` is in milliseconds while Drive file names use seconds.
 - On the host, `peerSafeCheck` can wait forever when `connections.length === 0`.
 - `RealmFrame` accepts messages without checking `event.origin` and posts with `'*'`. `MainMenu` renders `hubAdditionalHTML` via `{@html}`.
 - `shareRisuHub2` has `testMode = true`, so its server POST is unreachable.

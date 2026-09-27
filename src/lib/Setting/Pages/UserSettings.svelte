@@ -1,15 +1,13 @@
 <script lang="ts">
     import { language } from "src/lang";
     import { hubURL } from "src/ts/characterCards";
-    import { loadRisuAccountBackup, loadRisuAccountData, saveRisuAccountData } from "src/ts/drive/accounter";
+    import { loadRisuAccountBackup } from "src/ts/drive/accounter";
     
     import { DBState } from 'src/ts/stores.svelte';
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { alertConfirm} from "src/ts/alert";
     import { forageStorage, loadInternalBackup } from "src/ts/globalApi.svelte";
-    import { isNodeServer } from "src/ts/platform"
     import { unMigrationAccount } from "src/ts/storage/accountStorage";
-    import { checkDriver } from "src/ts/drive/drive";
     import { LoadLocalBackup, SaveLocalBackup, SavePartialLocalBackup } from "src/ts/drive/backuplocal";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import { exportAsDataset } from "src/ts/storage/exportAsDataset";
@@ -17,20 +15,11 @@
     import { cleanColdStorage } from "src/ts/process/coldstorage.svelte";
     let openIframe = $state(false)
     let openIframeURL = $state('')
-    let popup:Window = null
 </script>
 
 <svelte:window onmessage={async (e) => {
     if(e.origin.startsWith("https://nightly.sv.risuai.xyz") || e.origin.startsWith("https://sv.risuai.xyz") || e.origin.startsWith("http://127.0.0.1") || e.origin === window.location.origin){
-        if(e.data.msg?.type === 'drive'){
-            await loadRisuAccountData()
-            DBState.db.account.data.refresh_token = e.data.msg.data.refresh_token
-            DBState.db.account.data.access_token = e.data.msg.data.access_token
-            DBState.db.account.data.expires_in = (e.data.msg.data.expires_in * 700) + Date.now()
-            await saveRisuAccountData()
-            popup.close()
-        }
-        else if(e.data.msg?.data.vaild){
+        if(e.data.msg?.data.vaild){
             openIframe = false
             DBState.db.account = {
                 id: e.data.msg.id,
@@ -96,38 +85,6 @@
         }
     }} className="mt-2">
     {language.cleanColdStorage}
-</Button>
-
-<Button
-    onclick={async () => {
-        if(await alertConfirm(language.backupConfirm)){
-            localStorage.setItem('backup', 'save')
-            
-            if(isNodeServer){
-                checkDriver('savetauri')
-            }
-            else{
-                checkDriver('save')
-            }
-        }
-    }} className="mt-2">
-    {language.savebackup}
-</Button>
-
-<Button
-    onclick={async () => {
-        if((await alertConfirm(language.backupLoadConfirm)) && (await alertConfirm(language.backupLoadConfirm2))){
-            localStorage.setItem('backup', 'load')
-            if(isNodeServer){
-                checkDriver('loadtauri')
-            }
-            else{
-                checkDriver('load')
-            }
-        }
-    }}
-    className="mt-2">
-    {language.loadbackup}
 </Button>
 
 <Button onclick={exportAsDataset} className="mt-2">

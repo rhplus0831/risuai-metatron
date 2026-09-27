@@ -6,7 +6,6 @@
     import BotSettings from "./Pages/BotSettings.svelte";
     import OtherBotSettings from "./Pages/OtherBotSettings.svelte";
     import PluginSettings from "./Pages/PluginSettings.svelte";
-    import FilesSettings from "./Pages/FilesSettings.svelte";
     import AdvancedSettings from "./Pages/AdvancedSettings.svelte";
     import { additionalSettingsMenu, easyPanelStore, MobileGUI, SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
     import { DBState } from "src/ts/stores.svelte";
@@ -198,8 +197,6 @@
                         <DisplaySettings />
                     {:else if $SettingsMenuIndex === 4}
                         <PluginSettings />
-                    {:else if $SettingsMenuIndex === 5}
-                        <FilesSettings />
                     {:else if $SettingsMenuIndex === 6}
                         <AdvancedSettings />
                     {:else if $SettingsMenuIndex === 7}

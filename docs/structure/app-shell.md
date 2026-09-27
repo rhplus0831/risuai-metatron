@@ -32,7 +32,7 @@
 Boot:
 1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`.
 2. `main.ts` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
-3. `bootstrap.ts:loadData` loads the database: `forageStorage.Init()` (`AutoStorage`), account or remote load, the Drive callback check (`checkDriverInit`), `registerSw`, then `characterURLImport`.
+3. `bootstrap.ts:loadData` loads the database: `forageStorage.Init()` (`AutoStorage`), account or remote load, `registerSw`, then `characterURLImport`.
 4. Common tail of `loadData`:
    1. `loadPlugins`.
    2. `checkNewFormat`, which ends in `setDatabase`.
