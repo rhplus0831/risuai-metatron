@@ -5,8 +5,8 @@ roleplay chat client shipped as a web app (installable PWA) and a Node self-host
 There is no desktop (Tauri) or mobile (Capacitor) build. Anchors are `path` + identifier. Line numbers are deliberately omitted because
 they drift. Grep the identifier instead.
 
-Snapshot: verified against commit `1494fb83` (2026-09-27). At that commit `pnpm check` reports 0
-errors and `pnpm test` passes 24 files / 230 tests (3 skipped).
+Last full audited: 2026-09-27.
+Last scoped updated: wait for first writing
 
 ## Agent Read Protocol
 
