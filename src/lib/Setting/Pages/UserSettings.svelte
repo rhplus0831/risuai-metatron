@@ -7,7 +7,7 @@
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { alertConfirm} from "src/ts/alert";
     import { forageStorage, loadInternalBackup } from "src/ts/globalApi.svelte";
-    import { isTauri, isNodeServer } from "src/ts/platform"
+    import { isNodeServer } from "src/ts/platform"
     import { unMigrationAccount } from "src/ts/storage/accountStorage";
     import { checkDriver } from "src/ts/drive/drive";
     import { LoadLocalBackup, SaveLocalBackup, SavePartialLocalBackup } from "src/ts/drive/backuplocal";
@@ -103,7 +103,7 @@
         if(await alertConfirm(language.backupConfirm)){
             localStorage.setItem('backup', 'save')
             
-            if(isTauri || isNodeServer){
+            if(isNodeServer){
                 checkDriver('savetauri')
             }
             else{
@@ -118,7 +118,7 @@
     onclick={async () => {
         if((await alertConfirm(language.backupLoadConfirm)) && (await alertConfirm(language.backupLoadConfirm2))){
             localStorage.setItem('backup', 'load')
-            if(isTauri || isNodeServer){
+            if(isNodeServer){
                 checkDriver('loadtauri')
             }
             else{
@@ -156,24 +156,22 @@
     </div>
     {#if DBState.db.account}
         <span class="mb-4 text-textcolor2">ID: {DBState.db.account.id}</span>
-        {#if !isTauri}
-            <div class="flex items-center mt-2">
-                {#if DBState.db.account.useSync || forageStorage.isAccount}
-                    <Check check={true} name={language.SaveDataInAccount} onChange={(v) => {
-                        if(v){
-                            unMigrationAccount()
-                        }
-                    }}/>
-                {:else}
-                    <Check check={false} name={language.SaveDataInAccount} onChange={(v) => {
-                        if(v){
-                            localStorage.setItem('dosync', 'sync')
-                            location.reload()
-                        }
-                    }}/>
-                {/if}
-            </div>
-        {/if}
+        <div class="flex items-center mt-2">
+            {#if DBState.db.account.useSync || forageStorage.isAccount}
+                <Check check={true} name={language.SaveDataInAccount} onChange={(v) => {
+                    if(v){
+                        unMigrationAccount()
+                    }
+                }}/>
+            {:else}
+                <Check check={false} name={language.SaveDataInAccount} onChange={(v) => {
+                    if(v){
+                        localStorage.setItem('dosync', 'sync')
+                        location.reload()
+                    }
+                }}/>
+            {/if}
+        </div>
     {:else}
         <span>{language.notLoggedIn}</span>
         <button class="bg-selected p-2 rounded-md mt-2 hover:bg-blue-500 transition-colors" onclick={() => {

@@ -5,7 +5,6 @@
  */
 
 import type { SettingItem } from './types';
-import { changeFullscreen } from '../util';
 import { updateAnimationSpeed } from '../gui/animation';
 import { guiSizeText, updateGuisize } from '../gui/guisize';
 import { updateTextThemeAndCSS } from '../gui/colorscheme';
@@ -248,14 +247,6 @@ export const displaySizeSettingsItems: SettingItem[] = [
 ];
 
 export const displayOtherSettingsItems: SettingItem[] = [
-    {
-        id: 'display.fullScreen',
-        type: 'check',
-        labelKey: 'fullscreen',
-        bindKey: 'fullScreen',
-        onChange: () => changeFullscreen(),
-        keywords: ['fullscreen'],
-    },
     { id: 'display.showMemoryLimit', type: 'check', labelKey: 'showMemoryLimit', bindKey: 'showMemoryLimit', keywords: ['memory', 'limit'] },
     { id: 'display.showFirstMessagePages', type: 'check', labelKey: 'showFirstMessagePages', bindKey: 'showFirstMessagePages', keywords: ['first', 'message', 'pages'] },
     { id: 'display.hideRealm', type: 'check', labelKey: 'hideRealm', bindKey: 'hideRealm', keywords: ['realm', 'hide'] },

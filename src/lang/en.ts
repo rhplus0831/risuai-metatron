@@ -26,7 +26,7 @@ export const languageEnglish = {
         vertexAuthError: "Vertex AI authentication details are missing.",
         networkFetch: "This happens when the network is unstable or the server is down.",
         networkFetchWeb:
-            "This can be a CORS error. this only happens when using web version due to limitations of the browser. try using desktop local version, or other version of Risuai.",
+            "This can be a CORS error. this only happens when using web version due to limitations of the browser. try using the self-hosted Node version of Risuai.",
         networkFetchPlain: "This can be a plain fetch error. try disabling force plain fetch option in settings.",
         requestLogRemoved: "This request log is removed.",
         requestLogRemovedDesc: "This request log removes when client is refreshed or reloaded.",
@@ -148,7 +148,6 @@ export const languageEnglish = {
             "**How it works**\n" +
             "- Applies only when Local Network Mode is enabled and the target URL is detected as local/private.\n" +
             "- Node self-host: streaming uses experimental Job+WebSocket relay first (fallback to `/proxy2` on failure); non-streaming uses `/proxy2`.\n" +
-            "- Tauri: uses native/direct path.\n" +
             "- Public web mode: blocked for local/private direct calls by design.\n\n" +
             "**Constraints**\n" +
             "- Scope is OpenAI-compatible request paths only.\n" +
@@ -788,18 +787,10 @@ export const languageEnglish = {
     noPluginSelected: "Model selected as plugin, but no plugin selected.",
     text: "Text",
     UISize: "Chat Text Size",
-    newVersion: "Update found, do you want to install?",
-    remindLaterQuestion: "When should I remind you?",
-    remindIgnore: "Ignore",
-    remindLater1Day: "Remind in 1 day",
-    remindLater3Days: "Remind in 3 days",
-    remindLater5Days: "Remind in 5 days",
-    remindLater1Week: "Remind in 1 week",
     display: "Display & Audio",
     useCustomBackground: "Custom Background",
     translateInput: "Translate Input",
     autoTranslation: "Auto Translation",
-    fullscreen: "Fullscreen",
     playMessage: "Play Message Audio",
     iconSize: "Icon Size",
     createGroup: "Create Group Chat",

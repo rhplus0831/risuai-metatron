@@ -110,7 +110,7 @@ Theme and GUI helpers:
   - Custom CSS is injected via `CustomCSSStore` and must stay disabled in `SafeModeStore`.
 - Runes and legacy stores are mixed: `$state`/`$derived`/`$props`/`$bindable`/snippets alongside `writable` stores, `.subscribe`, `createEventDispatcher`, and `on:save`. Match the local component.
 - Primitive prop convention: an `interface Props`, destructured with `$props()`, `$bindable()` for mutable values, callback props (`onclick`, `onchange`), and `children: Snippet`.
-- Platform branches to keep: `Suggestion` avoids `AbortController` on Tauri, and the mobile shell is separate.
+- Platform branches to keep: the mobile shell is separate.
 
 ## Recipes
 - Change message rendering: `DefaultChatScreen` props → `Chats.updateChatBody` (hash and props) → `Chat`/`ChatBody`. Verify streaming, reroll, the first greeting, and custom HTML manually.

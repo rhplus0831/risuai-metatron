@@ -1,8 +1,8 @@
 # STRUCTURE
 
 Agent-oriented map of this repository (RisuAI fork "metatron"): a Svelte 5 + TypeScript AI
-roleplay chat client shipped as a web app, a Tauri desktop app, a Capacitor wrapper, and a Node
-self-hosted server. Anchors are `path` + identifier. Line numbers are deliberately omitted because
+roleplay chat client shipped as a web app, a Capacitor wrapper, and a Node self-hosted server.
+There is no desktop (Tauri) build. Anchors are `path` + identifier. Line numbers are deliberately omitted because
 they drift. Grep the identifier instead.
 
 Snapshot: verified against commit `1494fb83` (2026-09-27). At that commit `pnpm check` reports 0
@@ -38,8 +38,8 @@ Tooling
 
 Verification
 - V1. `pnpm check` (svelte-check, about 20 s) and `pnpm test` (`vitest run`, happy-dom, about 5 s)
-  are the standard gates. `pnpm build` bundles. Desktop, Capacitor, service-worker, and server
-  paths have no automated tests and need manual verification.
+  are the standard gates. `pnpm build` bundles. Capacitor, service-worker, and server paths
+  have no automated tests and need manual verification.
 - V2. Tests are `*.test.ts`, colocated next to the code or in a sibling `tests/` folder.
   `vitest.setup.ts` mocks KaTeX and replaces `safeStructuredClone` with a JSON clone.
 
@@ -62,12 +62,12 @@ Data and persistence (details: `docs/structure/persistence.md`)
   trigger effect `type`, or `PromptItem.type`.
 
 Platform and network (details: `docs/structure/global-api.md`)
-- P1. Platform flags live in `src/ts/platform.ts`: `isTauri` (`__TAURI_INTERNALS__`),
-  `isNodeServer` (`globalThis.__NODE__`, injected by `server/node/server.cjs`), `isMobile`
-  (user-agent based), and `isWeb`, which is true only when the host is exactly `risuai.xyz`. Every
-  storage or network change must keep the Tauri, Node, and plain-browser branches working.
+- P1. Platform flags live in `src/ts/platform.ts`: `isNodeServer` (`globalThis.__NODE__`,
+  injected by `server/node/server.cjs`), `isMobile` (user-agent based), and `isWeb`, which is true
+  only when the host is exactly `risuai.xyz`. Every storage or network change must keep the Node
+  and plain-browser branches working.
 - P2. Outbound HTTP goes through `globalFetch` (buffered) or `fetchNative` (streaming/bytes) in
-  `src/ts/globalApi.svelte.ts`. They handle proxying (`/proxy2`), Tauri native transport,
+  `src/ts/globalApi.svelte.ts`. They handle proxying (`/proxy2`), the userscript transport,
   local-network policy, and request logs. Do not call raw `fetch` for provider or remote calls.
 
 Security
@@ -93,9 +93,9 @@ UI conventions (details: `docs/structure/ui-theming.md`, `docs/structure/setting
   means the home screen.
 
 Release
-- R1. The app version lives in three places: `version.json`, `src-tauri/tauri.conf.json`
-  `version`, and `appVer` in `src/ts/storage/database.svelte.ts` (marked `APP_VERSION_POINT`).
-  `package.json` `version` (1.0.0) is unused.
+- R1. The app version lives in two places: `version.json` and `appVer` in
+  `src/ts/storage/database.svelte.ts` (marked `APP_VERSION_POINT`). `package.json` `version`
+  (1.0.0) is unused.
 
 ## Choose By Task
 
@@ -116,7 +116,7 @@ Release
 | TTS, image generation, translation, media compression, playground tools | `docs/structure/media-aux.md` |
 | Local/Drive/Account/Kei backups, PeerJS multiuser, Realm hub browse/upload | `docs/structure/backup-sync-hub.md` |
 | Node self-host server routes/auth/storage, Hono skeleton, Docker, server migration (e.g. Fastify) | `docs/structure/self-host-server.md` |
-| Scripts, Vite/Vitest config, test inventory, Tauri commands, Python sidecar, service worker, version bump | `docs/structure/build-test-platforms.md` |
+| Scripts, Vite/Vitest config, test inventory, service worker, version bump | `docs/structure/build-test-platforms.md` |
 
 ## Path Ownership
 
@@ -137,10 +137,10 @@ The first matching row wins. Scan from the top.
 | `src/ts/drive/`, `src/ts/kei/`, `src/ts/sync/`, `src/ts/realm.ts`, `src/lib/UI/Realm/`, `src/lib/Setting/Pages/FilesSettings.svelte`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`, `public/functions/drive.js` | backup-sync-hub |
 | `src/ts/globalApi.svelte.ts`, `src/ts/util.ts`, `src/ts/util/`, `src/ts/alert.ts`, `src/ts/network/`, `src/ts/dragTypes.ts`, `src/ts/sourcemap.ts`, `src/ts/sionyw.ts`, `src/ts/iris.ts`, `src/ts/licenses.ts`, `src/lib/Others/AlertComp.svelte`, `src/lib/Others/IrisModal.svelte` | global-api |
 | `src/ts/setting/`, `src/lib/Setting/` (the rest), `src/lang/`, `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/{PromptDiffModal,AllSeperateParameters,QuickSettingsGUI}.svelte`, `src/lib/Others/ProTools/` | settings-i18n |
-| `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/ts/bootstrap.ts`, `src/ts/stores.svelte.ts`, `src/ts/platform.ts`, `src/ts/polyfill.ts`, `src/ts/hotkey.ts`, `src/ts/defaulthotkeys.ts`, `src/ts/observer.svelte.ts`, `src/ts/mutex.ts`, `src/ts/update.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte` | app-shell |
+| `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/ts/bootstrap.ts`, `src/ts/stores.svelte.ts`, `src/ts/platform.ts`, `src/ts/polyfill.ts`, `src/ts/hotkey.ts`, `src/ts/defaulthotkeys.ts`, `src/ts/observer.svelte.ts`, `src/ts/mutex.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte` | app-shell |
 | `src/lib/` (everything else), `src/styles.css`, `src/ts/gui/` | ui-theming |
 | `server/`, `Dockerfile`, `docker-compose.yml`, `server.sh`, `server.bat`, `public/functions/proxy*.js` | self-host-server |
-| `package.json`, `vite.config.ts`, `vitest.*`, `tsconfig*.json`, `src-tauri/`, `capacitor.config.ts`, `public/sw.js`, `public/manifest.json`, `util/`, `version.json`, `t.py`, `resources/` | build-test-platforms |
+| `package.json`, `vite.config.ts`, `vitest.*`, `tsconfig*.json`, `capacitor.config.ts`, `public/sw.js`, `public/manifest.json`, `util/`, `version.json`, `t.py`, `resources/` | build-test-platforms |
 | `src/types.d.ts`, `src/vite-env.d.ts`, `src/etc/patchNote.ts` | app-shell |
 | `src/etc/airisu.cbs`, `src/etc/docs/` | cbs-rendering |
 | `public/token/`, `src/etc/o200k_base.json` (tokenizer data) | llm-requests |
@@ -196,7 +196,7 @@ Do not extend these without first confirming intent.
 - `memoryAlgorithmType`: written by the settings UI, never read. The memory branch is chosen by
   boolean flags.
 - `server/hono/`: Hello-world skeleton with none of the Node server's routes.
-- `src-tauri/src/mainx.txt`, `src-tauri/key.txt`, `t.py`: legacy, no readers.
+- `t.py`: legacy, no readers.
 
 ## Doc Maintenance
 

@@ -31,7 +31,7 @@
   - `LoadLocalBackup`: stream parse, restore, `setDatabaseLite`, persist, reload.
   - The record framing is `globalApi.svelte.ts:LocalWriter.writeBackup`: `u32 nameLen`, `utf8 basename`, `u32 dataLen`, bytes. No header or version.
 - `drive/drive.ts`:
-  - `checkDriver(mode)`: Google OAuth. Browser modes are `save`/`load`. Tauri/Node modes are `savetauri`/`loadtauri`, with a pasted code.
+  - `checkDriver(mode)`: Google OAuth. Browser modes are `save`/`load`. Node modes are `savetauri`/`loadtauri`, with a pasted code. Keep these `*tauri` names and the `accesstauri` state: they round-trip through the OAuth `state` parameter handled at `https://risuai.xyz/`.
   - `checkDriverInit`: the browser callback. Exchanges the code at `hubURL + '/drive/token'`.
   - Private `backupDrive`/`loadDrive` use `appDataFolder`:
     - Assets are uploaded as `<basename>.bin`. `formatKeys` handles the legacy `.png` naming.
@@ -88,9 +88,9 @@
 - `getLocalNetworkRequestOptions` must stay paired with `isLocalNetworkUrl`. Browsers reject the local route.
 
 ## Recipes
-- Add a backup asset category: the asset map or scan in `SaveLocalBackup`/`SavePartialLocalBackup`, and `LoadLocalBackup` if record naming changes. Verify Tauri AppData and web `forageStorage` restores.
+- Add a backup asset category: the asset map or scan in `SaveLocalBackup`/`SavePartialLocalBackup`, and `LoadLocalBackup` if record naming changes. Verify web and Node `forageStorage` restores.
 - Change the archive format: `LocalWriter.writeBackup` and `LoadLocalBackup` together. Add a round-trip test.
-- Change Drive: `checkDriver`/`checkDriverInit`/`backupDrive`/`loadDrive` plus the token exchange endpoint. Verify both the browser callback and the Tauri paste-code flow.
+- Change Drive: `checkDriver`/`checkDriverInit`/`backupDrive`/`loadDrive` plus the token exchange endpoint. Verify both the browser callback and the Node paste-code flow.
 - Add a multiuser message: extend `ReciveData`, and handle it in both the host and joiner `conn.on('data')` switches.
 - Change Realm: `characterCards.ts` hub functions and the matching `Realm*` component together. Check `hubURL` on Node (`/hub-proxy`).
 
@@ -99,7 +99,7 @@
 - Not tested: backup framing and encryption, Drive, Account, Kei, multiuser, Realm, settings redaction.
 
 ## Known Hazards
-- `LoadLocalBackup` writes `assets/` plus the record name, which is untrusted. The writer strips names to their basename, but the importer does not sanitize path separators. This is sensitive on Tauri.
+- `LoadLocalBackup` writes `assets/` plus the record name, which is untrusted. The writer strips names to their basename, but the importer does not sanitize path separators.
 - Drive assets use basename-only `.bin` names, so duplicate basenames collide. `lastSaved` is in milliseconds while Drive file names use seconds.
 - On the host, `peerSafeCheck` can wait forever when `connections.length === 0`.
 - `RealmFrame` accepts messages without checking `event.origin` and posts with `'*'`. `MainMenu` renders `hubAdditionalHTML` via `{@html}`.

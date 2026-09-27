@@ -6,7 +6,6 @@
  */
 
 import type { SettingItem } from './types';
-import { isTauri } from '../platform';
 import { changeLanguage, language } from 'src/lang';
 import { languageEnglish } from 'src/lang/en';
 import { sleep } from '../util';
@@ -140,7 +139,7 @@ export const languageSettingsItems: SettingItem[] = [
         type: 'header',
         labelKey: 'webdeeplwarn',
         options: { level: 'warning' },
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === 'deepl' && !isTauri,
+        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === 'deepl',
     },
 
     {

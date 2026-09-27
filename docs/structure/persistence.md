@@ -31,7 +31,6 @@
 - `src/ts/storage/nodeStorage.ts` `NodeStorage`: the Node server backend over `/api/read|write|list|remove`, with ES256 JWT auth. Also exports `getNodeServerProxyAuth` and `digestPassword`.
 - `src/ts/storage/opfsStorage.ts` `OpfsStorage`: OPFS backend with hex-encoded file names.
 - `src/ts/storage/accountStorage.ts` `AccountStorage`: remote account backend. It caches reads, uses 303/304/403 semantics, and `removeItem` throws. Also `unMigrationAccount`.
-- `src/ts/storage/remoteSaveCleanup.ts` `getRemoteSaveCleanupAction`: orphaned `remotes/*.local.bin` payloads get a seven-day grace period.
 - `src/ts/storage/persistant.ts`: persistent-storage request helpers. No callers.
 - `src/ts/storage/defaultPrompts.ts`: default main/jailbreak prompts.
 - `src/ts/storage/exportAsDataset.ts`: exports chats and lore as `dataset.json`, unredacted.
@@ -48,7 +47,7 @@
 
 ## Flows
 Load:
-1. `bootstrap.ts:loadData` reads `database/database.bin`, from Tauri fs or `forageStorage`.
+1. `bootstrap.ts:loadData` reads `database/database.bin` from `forageStorage`.
 2. `decodeRisuSave` decodes it.
 3. `setDatabase` normalizes the result.
 4. Account sync may then replace it.
@@ -80,7 +79,6 @@ Backend selection (`AutoStorage.Init`):
 2. `NodeStorage`, when `isNodeServer`.
 3. OPFS, when supported and the `opfs_flag!` flag is set.
 4. Otherwise localforage `risuai` (IndexedDB).
-- Tauri bypasses `AutoStorage` for `database.bin` and uses AppData files directly.
 
 Cold storage:
 - Evicting a character writes the full `{character}` payload out, then replaces the DB entry with a skeleton.
@@ -101,7 +99,6 @@ Cold storage:
 - `Message`: `role` (`'user' | 'char'`), `data`, `chatId`, `time`, `saying`, `generationInfo`, `promptInfo`, `disabled`.
 - Cold storage key conventions differ by platform and are part of the format:
   - Node: `coldstorage/<key>`.
-  - Tauri: `coldstorage/<key>.json`.
   - OPFS: `coldstorage_<key>.json`.
   - Account: protected `/hub/account/coldstorage`.
 - Plugin cold storage is `pluginCustomStorage._coldplugin`, mapping key to UUID.
@@ -136,12 +133,11 @@ Cold storage:
   3. If it is preset-owned, update the preset functions listed above.
   4. Verify by loading an old save: `getDatabase()` has the default after normalization.
 - Add a split save collection: `RisuSaveEncoder.init/set`, `RisuSaveDecoder.decode`, `toSaveType`, and the `saveDb` watchers. Verify an encode/decode round trip, an incremental update, and a backup restore.
-- Change backend selection: `AutoStorage.Init`, the backend class, and the direct Tauri branches in `bootstrap.ts:loadData` and `globalApi.saveDb`. Keep logical keys and the account migration filters.
+- Change backend selection: `AutoStorage.Init` and the backend class. Keep logical keys and the account migration filters.
 - Change cold eviction: `makeColdData`, `makeColdDataForCharacter`/`makeColdDataForChat`, `preLoadChat`, `characters.ts:changeChar`, and `coldstorageData.ts`.
-- Change remote retention: `risuSave.ts` (`encodeRemoteBlock`, decoder), `bootstrap.ts:cleanChunks`, `remoteSaveCleanup.ts`, and its test.
+- Change remote retention: `risuSave.ts` (`encodeRemoteBlock`, decoder) and `bootstrap.ts:cleanChunks`, which gives orphaned `remotes/*.local.bin` payloads a seven-day grace period through a `.meta` `lastUsed` file.
 
 ## Tests
-- `src/ts/storage/remoteSaveCleanup.test.ts`.
 - `src/ts/process/coldstorageData.test.ts`.
 - `src/ts/chatLoadPages.test.ts`.
 - Not tested: `setDatabase` migrations, `RisuSaveEncoder`/`Decoder` compatibility, `saveDb` tracking, `AutoStorage` selection, and any backend class.

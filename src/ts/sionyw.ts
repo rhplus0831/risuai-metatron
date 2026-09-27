@@ -1,8 +1,6 @@
 import { hubURL } from "./characterCards";
 import { fetchNative } from "./globalApi.svelte";
 import { DBState } from "./stores.svelte";
-import { readFile, BaseDirectory, writeFile } from "@tauri-apps/plugin-fs";
-import { isTauri } from "src/ts/platform"
 import * as client from 'openid-client'
 import { getKeypairStore, saveKeypairStore } from "./util";
 
@@ -63,7 +61,7 @@ export async function fetchProtectedResource(url: string, options: RequestInit =
     return fetchProtectedResourceSPA(url, options, arg)
 }
 
-const readFileInsecure = isTauri ? readFile : (path:string, options:any) => {
+const readFileInsecure = (path:string) => {
     const data = localStorage.getItem(path)
     if(!data){
         throw new Error("File not found")
@@ -71,13 +69,11 @@ const readFileInsecure = isTauri ? readFile : (path:string, options:any) => {
     return Buffer.from(data, 'base64')
 }
 
-const writeFileUnSecure = isTauri ? writeFile : (path:string, data:Uint8Array, options:any) => {
+const writeFileUnSecure = (path:string, data:Uint8Array) => {
     localStorage.setItem(path, Buffer.from(data).toString('base64'))
 }
 
 
-//Tauri version of fetchProtectedResource
-//We can contect javascript safely because its hard to intercept the requests in Tauri
 async function fetchProtectedResourceSPA(url: string, options: RequestInit = {}, arg:ProtectedResourceArg = {}) {
     const retries = arg.retries || 0
     if(tokenExpiry - Date.now() < 60000){ // If token expires in less than 60 seconds
@@ -86,7 +82,7 @@ async function fetchProtectedResourceSPA(url: string, options: RequestInit = {},
     
     if(!tokenInitalized || arg.forceRefresh){
 
-        const oauthDataText = await readFileInsecure('oauthData.json', { baseDir: BaseDirectory.AppData })
+        const oauthDataText = await readFileInsecure('oauthData.json')
         const oauthData: SionywOauthData = JSON.parse(new TextDecoder().decode(oauthDataText))
 
         refreshToken = oauthData.refresh_token
@@ -132,7 +128,7 @@ async function fetchProtectedResourceSPA(url: string, options: RequestInit = {},
                         refresh_token: newRefresh,
                         client_id: oauthData.client_id,
                         client_secret: oauthData.client_secret,
-                    })), { baseDir: BaseDirectory.AppData })
+                    })))
                 }
 
                 break
@@ -292,7 +288,7 @@ async function loginToSionywSPAVersion(){
                 refresh_token: exchanged.refresh_token,
                 client_id: registration.client_id,
                 client_secret: registration.client_secret,
-            })), { baseDir: BaseDirectory.AppData })
+            })))
 
             accessToken = exchanged.access_token!
             refreshToken = exchanged.refresh_token!

@@ -43,7 +43,7 @@ Plugins:
 
 MCP:
 - `mcp/mcp.ts`: the client registry and tool dispatch.
-  - `initializeMCPs`: sets up internal, `plugin:`, Tauri `stdio:`, and remote clients.
+  - `initializeMCPs`: sets up internal, `plugin:`, and remote clients. A `stdio:` entry with `url` is treated as remote; one with `command`/`args` is rejected (`stdio MCPs are not supported`).
   - `MCPs`, `callOnlyMCPs`.
   - `getMCPTools`, `getTools`, `callTool`, `callMCPTool`.
   - `importMCPModule`.
@@ -98,7 +98,6 @@ MCP:
 - Main-document DOM access requires the v3 `getRootDocument` permission plus the Safe wrappers.
 - Any new v3 UI or hook must call `addPluginUnloadCallback` and must sanitize external HTML and URLs.
 - Tool names are resolved globally, first match wins. Adapters usually keep only text content.
-- `stdio:` MCP servers require Tauri shell spawn permission (see `src-tauri/capabilities/migrated.json`).
 
 ## Recipes
 - Add a v3 API function:

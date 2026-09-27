@@ -10,7 +10,7 @@ import { alertConfirm, alertError, alertNormal } from "src/ts/alert";
 import { language } from "src/lang";
 import { checkCharOrder, forageStorage, getFetchLogs } from "src/ts/globalApi.svelte";
 import { changeColorScheme, updateColorScheme, updateTextThemeAndCSS, type ColorScheme } from "src/ts/gui/colorscheme";
-import { isNodeServer, isTauri } from "src/ts/platform";
+import { isNodeServer } from "src/ts/platform";
 import { get } from "svelte/store";
 import { registerMCPModule, unregisterMCPModule } from "src/ts/process/mcp/pluginmcp";
 import { getColdStorageItem, setColdStorageItem } from "src/ts/process/coldstorage.svelte";
@@ -1238,10 +1238,8 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
                 apiVersion: "3.0",
                 platform: 
                     isNodeServer ? 'node' :
-                    isTauri ? 'tauri' :
                     'web',
                 saveMethod:
-                    isTauri ? 'tauri' :
                     forageStorage.isAccount ? 'account' :
                     'local',
             }

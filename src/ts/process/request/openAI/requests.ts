@@ -5,7 +5,7 @@ import { LLMFlags, LLMFormat, LLMProvider } from "src/ts/model/modellist"
 import { strongBan, tokenizeNum } from "src/ts/tokenizer"
 import { getFreeOpenRouterModels } from "src/ts/model/openrouter"
 import { addFetchLog, fetchNative, globalFetch, textifyReadableStream } from "src/ts/globalApi.svelte"
-import { isNodeServer, isTauri } from "src/ts/platform"
+import { isNodeServer } from "src/ts/platform"
 import { simplifySchema } from "src/ts/util"
 
 import { extractJSON, getOpenAIJSONSchema } from "../../templates/jsonSchema"
@@ -588,7 +588,7 @@ export async function requestOpenAI(arg:RequestDataArgumentExtended):Promise<req
         body.stream = true
         let urlHost = new URL(replacerURL).host
         if(urlHost.includes("localhost") || urlHost.includes("172.0.0.1") || urlHost.includes("0.0.0.0")){
-            if(!isTauri && !isNodeServer){
+            if(!isNodeServer){
                 return {
                     type: 'fail',
                     result: 'You are trying local request on streaming. this is not allowed dude to browser/os security policy. turn off streaming.',

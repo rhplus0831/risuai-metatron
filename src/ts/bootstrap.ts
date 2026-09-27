@@ -1,18 +1,7 @@
-import {
-    writeFile,
-    BaseDirectory,
-    readFile,
-    exists,
-    mkdir,
-    readDir,
-    remove
-} from "@tauri-apps/plugin-fs"
-import { changeFullscreen, checkNullish, sleep } from "./util"
+import { checkNullish, sleep } from "./util"
 import { v4 as uuidv4 } from 'uuid';
 import { get } from "svelte/store";
 import { setDatabase, defaultSdDataFunc, getDatabase } from "./storage/database.svelte";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { checkRisuUpdate } from "./update";
 import { MobileGUI, botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, alertTOS, waitAlert, alertConfirm, alertInput } from "./alert";
@@ -32,7 +21,6 @@ import { initMobileGesture } from "./hotkey";
 import { moduleUpdate } from "./process/modules";
 import type { AccountStorage } from "./storage/accountStorage";
 import { makeColdData } from "./process/coldstorage.svelte";
-import { getRemoteSaveCleanupAction, getRemoteSavePayloadName } from "./storage/remoteSaveCleanup";
 import {
     forageStorage,
     saveDb,
@@ -42,12 +30,7 @@ import {
     setUsingSw,
     checkCharOrder
 } from "./globalApi.svelte";
-import { isTauri } from "./platform";
 import { registerModelDynamic } from "./model/modellist";
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { appDataDir, join } from "@tauri-apps/api/path";
-
-const appWindow = isTauri ? getCurrentWebviewWindow() : null
 
 /**
  * Loads the application data.
@@ -56,85 +39,52 @@ export async function loadData() {
     const loaded = get(loadedStore)
     if (!loaded) {
         try {
-            if (isTauri) {
-                LoadingStatusState.text = "Checking Files..."
-                appWindow.maximize()
-                if (!await exists('', { baseDir: BaseDirectory.AppData })) {
-                    await mkdir('', { baseDir: BaseDirectory.AppData })
-                }
-                if (!await exists('database', { baseDir: BaseDirectory.AppData })) {
-                    await mkdir('database', { baseDir: BaseDirectory.AppData })
-                }
-                if (!await exists('assets', { baseDir: BaseDirectory.AppData })) {
-                    await mkdir('assets', { baseDir: BaseDirectory.AppData })
-                }
-                if (!await exists('database/database.bin', { baseDir: BaseDirectory.AppData })) {
-                    await writeFile('database/database.bin', encodeRisuSaveLegacy({}), { baseDir: BaseDirectory.AppData });
-                }
-                const appDataDirPath = await appDataDir();
-                try {
-                    LoadingStatusState.text = "Reading Save File..."
-                    const dbPath = await join(appDataDirPath, 'database/database.bin');
-                    const assetUrl = convertFileSrc(dbPath);
-                    const response = await fetch(assetUrl);
-                    if (!response.ok) {
-                        throw new Error(`Failed to load database: ${response.status}`);
-                    }
-                    const readed = new Uint8Array(await response.arrayBuffer());
-                    LoadingStatusState.text = "Cleaning Unnecessary Files..."
-                    getDbBackups() //this also cleans the backups
-                    LoadingStatusState.text = "Decoding Save File..."
-                    const decoded = await decodeRisuSave(readed)
-                    setDatabase(decoded)
-                } catch (error) {
-                    LoadingStatusState.text = "Reading Backup Files..."
-                    const backups = await getDbBackups()
-                    let backupLoaded = false
-                    for (const backup of backups) {
-                        if (!backupLoaded) {
-                            try {
-                                LoadingStatusState.text = `Reading Backup File ${backup}...`
-                                const backupPath = await join(appDataDirPath, `database/dbbackup-${backup}.bin`);
-                                const backupAssetUrl = convertFileSrc(backupPath);
-                                const backupResponse = await fetch(backupAssetUrl);
-                                if (!backupResponse.ok) {
-                                    throw new Error(`Failed to load backup ${backup}: ${backupResponse.status}`);
-                                }
-                                const backupData = new Uint8Array(await backupResponse.arrayBuffer());
-                                setDatabase(
-                                    await decodeRisuSave(backupData)
-                                )
-                                backupLoaded = true
-                            } catch (error) {
-                                console.error(error)
-                            }
-                        }
-                    }
-                    if (!backupLoaded) {
-                        throw "Your save file is corrupted"
-                    }
-                }
-                LoadingStatusState.text = "Checking Update..."
-                await checkRisuUpdate()
-                await changeFullscreen()
+            await forageStorage.Init()
 
+            LoadingStatusState.text = "Loading Local Save File..."
+            let gotStorage: Uint8Array = await forageStorage.getItem('database/database.bin') as unknown as Uint8Array
+            LoadingStatusState.text = "Decoding Local Save File..."
+            if (checkNullish(gotStorage)) {
+                gotStorage = encodeRisuSaveLegacy({})
+                await forageStorage.setItem('database/database.bin', gotStorage)
             }
-            else {
-                await forageStorage.Init()
+            try {
+                const decoded = await decodeRisuSave(gotStorage)
+                console.log(decoded)
+                setDatabase(decoded)
+            } catch (error) {
+                console.error(error)
+                const backups = await getDbBackups()
+                let backupLoaded = false
+                for (const backup of backups) {
+                    try {
+                        LoadingStatusState.text = `Reading Backup File ${backup}...`
+                        const backupData: Uint8Array = await forageStorage.getItem(`database/dbbackup-${backup}.bin`) as unknown as Uint8Array
+                        setDatabase(
+                            await decodeRisuSave(backupData)
+                        )
+                        backupLoaded = true
+                    } catch (error) { }
+                }
+                if (!backupLoaded) {
+                    throw "Forage: Your save file is corrupted"
+                }
+            }
 
-                LoadingStatusState.text = "Loading Local Save File..."
-                let gotStorage: Uint8Array = await forageStorage.getItem('database/database.bin') as unknown as Uint8Array
-                LoadingStatusState.text = "Decoding Local Save File..."
+            if (await forageStorage.checkAccountSync()) {
+                LoadingStatusState.text = "Checking Account Sync..."
+                let gotStorage: Uint8Array = await (forageStorage.realStorage as AccountStorage).getItem('database/database.bin', (v) => {
+                    LoadingStatusState.text = `Loading Remote Save File ${(v * 100).toFixed(2)}%`
+                })
                 if (checkNullish(gotStorage)) {
                     gotStorage = encodeRisuSaveLegacy({})
                     await forageStorage.setItem('database/database.bin', gotStorage)
                 }
                 try {
-                    const decoded = await decodeRisuSave(gotStorage)
-                    console.log(decoded)
-                    setDatabase(decoded)
+                    setDatabase(
+                        await decodeRisuSave(gotStorage)
+                    )
                 } catch (error) {
-                    console.error(error)
                     const backups = await getDbBackups()
                     let backupLoaded = false
                     for (const backup of backups) {
@@ -148,61 +98,29 @@ export async function loadData() {
                         } catch (error) { }
                     }
                     if (!backupLoaded) {
-                        throw "Forage: Your save file is corrupted"
+                        // throw "Your save file is corrupted"
+                        await autoServerBackup()
+                        await sleep(10000)
                     }
                 }
-
-                if (await forageStorage.checkAccountSync()) {
-                    LoadingStatusState.text = "Checking Account Sync..."
-                    let gotStorage: Uint8Array = await (forageStorage.realStorage as AccountStorage).getItem('database/database.bin', (v) => {
-                        LoadingStatusState.text = `Loading Remote Save File ${(v * 100).toFixed(2)}%`
-                    })
-                    if (checkNullish(gotStorage)) {
-                        gotStorage = encodeRisuSaveLegacy({})
-                        await forageStorage.setItem('database/database.bin', gotStorage)
-                    }
-                    try {
-                        setDatabase(
-                            await decodeRisuSave(gotStorage)
-                        )
-                    } catch (error) {
-                        const backups = await getDbBackups()
-                        let backupLoaded = false
-                        for (const backup of backups) {
-                            try {
-                                LoadingStatusState.text = `Reading Backup File ${backup}...`
-                                const backupData: Uint8Array = await forageStorage.getItem(`database/dbbackup-${backup}.bin`) as unknown as Uint8Array
-                                setDatabase(
-                                    await decodeRisuSave(backupData)
-                                )
-                                backupLoaded = true
-                            } catch (error) { }
-                        }
-                        if (!backupLoaded) {
-                            // throw "Your save file is corrupted"
-                            await autoServerBackup()
-                            await sleep(10000)
-                        }
-                    }
-                }
-                LoadingStatusState.text = "Rechecking Account Sync..."
-                await forageStorage.checkAccountSync()
-                LoadingStatusState.text = "Checking Drive Sync..."
-                const isDriverMode = await checkDriverInit()
-                if (isDriverMode) {
-                    return
-                }
-                LoadingStatusState.text = "Checking Service Worker..."
-                if (navigator.serviceWorker) {
-                    setUsingSw(true)
-                    await registerSw()
-                }
-                else {
-                    setUsingSw(false)
-                }
-                if (getDatabase().didFirstSetup) {
-                    characterURLImport()
-                }
+            }
+            LoadingStatusState.text = "Rechecking Account Sync..."
+            await forageStorage.checkAccountSync()
+            LoadingStatusState.text = "Checking Drive Sync..."
+            const isDriverMode = await checkDriverInit()
+            if (isDriverMode) {
+                return
+            }
+            LoadingStatusState.text = "Checking Service Worker..."
+            if (navigator.serviceWorker) {
+                setUsingSw(true)
+                await registerSw()
+            }
+            else {
+                setUsingSw(false)
+            }
+            if (getDatabase().didFirstSetup) {
+                characterURLImport()
             }
             LoadingStatusState.text = "Loading Plugins..."
             try {
@@ -521,116 +439,46 @@ async function cleanChunks(options:{
     }
 
     const uncleanable = new Set(await getUncleanables(db))
-    if (isTauri) {
-        const assets = await readDir('assets', { baseDir: BaseDirectory.AppData })
-        console.log(assets)
-        for (const asset of assets) {
-            try {
-                const n = getBasename(asset.name)
-                if (!uncleanable.has(n)) {
-                    await remove('assets/' + asset.name, { baseDir: BaseDirectory.AppData })
-                }
-            } catch (error) {
-                console.log('error', asset.name)
+    const indexes = await forageStorage.keys()
+    const characterIds = new Set<string>(
+        db.characters.map((v) => v.chaId)
+    )
+    for (const asset of indexes) {
+        if (asset.startsWith('assets/')) {
+            const n = getBasename(asset)
+            if(!uncleanable.has(n)) {
+                await forageStorage.removeItem(asset)
             }
         }
-
-        
-        if(!await exists('remotes', { baseDir: BaseDirectory.AppData })) {
-            await mkdir('remotes', { baseDir: BaseDirectory.AppData })
+        else if (asset.endsWith('.meta')){
+            continue
         }
-
-        const remotes = await readDir('remotes', { baseDir: BaseDirectory.AppData })
-
-        const remoteUncleanables = new Set<string>(
-            db.characters.map((v) => v.chaId)
-        )
-        for (const remote of remotes) {
-            try {
-                const remoteFileName = getBasename(remote.name)
-                const remotePayloadName = getRemoteSavePayloadName(remoteFileName)
-                if(!remotePayloadName){
-                    continue
-                }
-                const fexists = remoteUncleanables.has(remotePayloadName)
-                if(!fexists){
-
-                    const metaPath = 'remotes/' + remote.name + '.meta'
-                    let metaExists = false
-                    let metaLastUsed:unknown
-                    try {
-                        metaExists = await exists(metaPath, { baseDir: BaseDirectory.AppData })
-                        if (metaExists) {
-                            const meta = await readFile(metaPath, { baseDir: BaseDirectory.AppData })
-                            const metaJson = JSON.parse(new TextDecoder().decode(meta))
-                            metaLastUsed = metaJson.lastUsed
+        else if (asset.startsWith('remotes/')) {
+            const name = getBasename(asset).slice(0, -10) //remove .local.bin
+            const exists = characterIds.has(name)
+            if(!exists){
+                let okayToDelete = false
+                try {
+                    const metaPath = asset + '.meta'
+                    const metaExists = (await forageStorage.keys()).includes(metaPath)
+                    if (metaExists) {
+                        const metaData: Uint8Array = await forageStorage.getItem(metaPath) as unknown as Uint8Array
+                        const metaJson = JSON.parse(new TextDecoder().decode(metaData))
+                        const lastUsed = metaJson.lastUsed as number
+                        if(Date.now() - lastUsed > 1000 * 60 * 60 * 24 * 7) { //not used for 7 days
+                            okayToDelete = true
                         }
-                    } catch (error) {}
-
-                    const cleanupAction = getRemoteSaveCleanupAction({
-                        fileName: remoteFileName,
-                        activeCharacterIds: remoteUncleanables,
-                        hasMeta: metaExists,
-                        metaLastUsed
-                    })
-                    if(cleanupAction === 'create-meta'){
+                    }
+                    else{
+                        //write meta for next time
                         const metaJson = {
                             lastUsed: Date.now()
                         }
-                        await writeFile(metaPath, new TextEncoder().encode(JSON.stringify(metaJson)), { baseDir: BaseDirectory.AppData })
+                        await forageStorage.setItem(metaPath, new TextEncoder().encode(JSON.stringify(metaJson)))
                     }
-                    else if(cleanupAction === 'delete'){
-                        await remove('remotes/' + remote.name, { baseDir: BaseDirectory.AppData })
-                        await remove(metaPath, { baseDir: BaseDirectory.AppData })
-                    }
-                }
-            } catch (error) {
-                console.log('error', remote.name)
-            }
-        }
-    }
-    else {
-        const indexes = await forageStorage.keys()
-        const characterIds = new Set<string>(
-            db.characters.map((v) => v.chaId)
-        )
-        for (const asset of indexes) {
-            if (asset.startsWith('assets/')) {
-                const n = getBasename(asset)
-                if(!uncleanable.has(n)) {
+                } catch (error) {}
+                if (okayToDelete) {
                     await forageStorage.removeItem(asset)
-                }
-            }
-            else if (asset.endsWith('.meta')){
-                continue
-            }
-            else if (asset.startsWith('remotes/')) {
-                const name = getBasename(asset).slice(0, -10) //remove .local.bin
-                const exists = characterIds.has(name)
-                if(!exists){
-                    let okayToDelete = false
-                    try {
-                        const metaPath = asset + '.meta'
-                        const metaExists = (await forageStorage.keys()).includes(metaPath)
-                        if (metaExists) {
-                            const metaData: Uint8Array = await forageStorage.getItem(metaPath) as unknown as Uint8Array
-                            const metaJson = JSON.parse(new TextDecoder().decode(metaData))
-                            const lastUsed = metaJson.lastUsed as number
-                            if(Date.now() - lastUsed > 1000 * 60 * 60 * 24 * 7) { //not used for 7 days
-                                okayToDelete = true
-                            }
-                        }
-                        else{
-                            //write meta for next time
-                            const metaJson = {
-                                lastUsed: Date.now()
-                            }
-                            await forageStorage.setItem(metaPath, new TextEncoder().encode(JSON.stringify(metaJson)))
-                        }
-                    } catch (error) {}
-                    if (okayToDelete) {
-                        await forageStorage.removeItem(asset)
-                    }
                 }
             }
         }

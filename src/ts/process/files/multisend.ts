@@ -3,7 +3,6 @@ import { DBState, selectedCharID } from 'src/ts/stores.svelte';
 import { get } from 'svelte/store';
 import { doingChat, sendChat } from '../index.svelte';
 import { downloadFile } from 'src/ts/globalApi.svelte';
-import { isTauri } from "src/ts/platform"
 import { HypaProcesser } from '../memory/hypamemory';
 import { BufferToText as BufferToText, selectMultipleFile } from 'src/ts/util';
 import { postInlayAsset } from './inlays';
@@ -58,9 +57,6 @@ async function sendPofile(arg:sendFileArg){
             note = ''
             speaker = ''
             msgId = ''
-            if(isTauri){
-                await downloadFile('translated.po', result)
-            }
             continue
         }
         if(line.startsWith('#. Note =')){

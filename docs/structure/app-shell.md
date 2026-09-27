@@ -1,8 +1,8 @@
 # App Shell
 
 ## Scope
-- Owns: boot sequence, top-level screen selection, global stores, platform flags, hotkeys, Tauri update prompt, DOM observers, `Mutex`.
-- Paths: `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/ts/{bootstrap,stores.svelte,platform,polyfill,update,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
+- Owns: boot sequence, top-level screen selection, global stores, platform flags, hotkeys, DOM observers, `Mutex`.
+- Paths: `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/ts/{bootstrap,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
 - Not here: DB shape and migrations → `persistence.md`. The save loop and `globalFetch` → `global-api.md`. Chat UI below `ChatScreen` → `ui-theming.md`.
 
 ## Files
@@ -10,11 +10,11 @@
 - `src/preload.ts` `preLoadCheck`: pre-mount step that sets `localStorage.mainpage`. On `isWeb` it registers `beforeunload`.
 - `src/App.svelte`: the "router" (ordered `{#if}` chain), plus drag/drop import, overlays (alerts, popups, modals), and keep-alive audio.
 - `src/ts/bootstrap.ts`:
-  - `loadData`: platform-specific DB load, then migrations, plugins, theme, `makeColdData`, `loadedStore = true`, then services such as `saveDb`.
+  - `loadData`: `forageStorage` DB load, then migrations, plugins, theme, `makeColdData`, `loadedStore = true`, then services such as `saveDb`.
   - `checkNewFormat`: legacy data repair.
   - `registerSw`: service worker.
 - `src/ts/stores.svelte.ts`: all global UI stores plus the `DBState` rune (see State).
-- `src/ts/platform.ts`: `isTauri`, `isNodeServer`, `isWeb`, `isMobile`, `isFirefox`, `isIOS()`, `getRisuEnvironmentLabel`, `getDetailedOSLabel`, `isInStandaloneMode` (unused).
+- `src/ts/platform.ts`: `isNodeServer`, `isWeb`, `isMobile`, `isFirefox`, `isIOS()`, `getRisuEnvironmentLabel`, `getDetailedOSLabel`, `isInStandaloneMode` (unused).
 - `src/ts/polyfill.ts`: `safeStructuredClone` (native `structuredClone`, then an `rfdc` fallback), plus `Buffer` and stream polyfills and the mobile drag/drop polyfill.
 - `src/ts/hotkey.ts`:
   - `initHotkey`: keydown dispatch switch.
@@ -24,7 +24,6 @@
 - `src/ts/observer.svelte.ts`:
   - `startObserveDom`: an infinite 100 ms polling loop.
   - `registerClaudeObserver`: Claude cache keep-alive pings, called from `process/request/anthropic.ts`.
-- `src/ts/update.ts` `checkRisuUpdate`: Tauri updater prompt only.
 - `src/ts/mutex.ts` `Mutex`: FIFO lock used by the scripting engines. `runExclusive` must keep its `finally` release.
 - `src/lib/UI/MainMenu.svelte`: home screen. Switches to `RealmMain` via `OpenRealmStore`. Renders `hubAdditionalHTML` with `{@html}`.
 - `src/lib/UI/Title.svelte`: seasonal logo and mini-game. Only used by MainMenu.
@@ -33,9 +32,7 @@
 Boot:
 1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`.
 2. `main.ts` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
-3. `bootstrap.ts:loadData` loads the database:
-   - Tauri: reads `database/database.bin` through `@tauri-apps/plugin-fs`, falls back to backups, then runs `checkRisuUpdate`.
-   - Everything else: `forageStorage.Init()` (`AutoStorage`), account or remote load, the Drive callback check (`checkDriverInit`), `registerSw`, then `characterURLImport`.
+3. `bootstrap.ts:loadData` loads the database: `forageStorage.Init()` (`AutoStorage`), account or remote load, the Drive callback check (`checkDriverInit`), `registerSw`, then `characterURLImport`.
 4. Common tail of `loadData`:
    1. `loadPlugins`.
    2. `checkNewFormat`, which ends in `setDatabase`.
@@ -108,7 +105,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 - Add a platform-specific behavior:
   1. Add or adjust the flag in `platform.ts`.
   2. Update every consumer.
-  3. Make sure Tauri filesystem code never runs in the browser or on Node.
+  3. Keep the Node and plain-browser branches working.
 - Add a hotkey: `defaulthotkeys.ts`, `hotkey.ts:initHotkey`, `database.svelte.ts:setDatabase` (merge behavior).
 
 ## Tests

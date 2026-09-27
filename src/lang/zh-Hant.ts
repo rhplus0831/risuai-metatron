@@ -26,7 +26,7 @@ export const languageChineseTraditional = {
         "vertexAuthError": "缺少 Vertex AI 驗證資訊",
         "networkFetch": "通常是網路連線不穩定，或伺服器暫時無法使用所致",
         "networkFetchWeb":
-            "這可能是 CORS 錯誤。由於瀏覽器限制，此問題只會在網頁版發生。請嘗試使用桌面本機版或其他版本的 Risuai",
+            "這可能是 CORS 錯誤。由於瀏覽器限制，此問題只會在網頁版發生。請嘗試使用自架（Node）版本的 Risuai",
         "networkFetchPlain": "這可能是一般 Fetch 錯誤。請嘗試在設定中停用「強制一般 Fetch」",
         "requestLogRemoved": "此請求記錄已被移除",
         "requestLogRemovedDesc": "重新整理或重新載入用戶端後，請求記錄會被移除",
@@ -148,7 +148,6 @@ export const languageChineseTraditional = {
             "**運作方式**\n" +
             "- 只有在啟用本機網路模式，且目標 URL 被判定為本機／私有網路位址時才會套用。\n" +
             "- Node 自架：串流會優先使用實驗性的 Job + WebSocket 中繼（失敗時改用 `/proxy2`）；非串流使用 `/proxy2`。\n" +
-            "- Tauri：使用原生直接連線路徑。\n" +
             "- 公開網頁模式：基於設計，不允許直接存取本機／私有網路位址。\n\n" +
             "**限制**\n" +
             "- 僅適用於 OpenAI 相容的請求路徑。\n" +
@@ -787,18 +786,10 @@ export const languageChineseTraditional = {
     "noPluginSelected": "已選擇外掛模型，但尚未選擇外掛",
     "text": "文字",
     "UISize": "對話文字大小",
-    "newVersion": "發現更新，要立即安裝嗎？",
-    "remindLaterQuestion": "要在什麼時候再次提醒？",
-    "remindIgnore": "忽略",
-    "remindLater1Day": "1 天後提醒",
-    "remindLater3Days": "3 天後提醒",
-    "remindLater5Days": "5 天後提醒",
-    "remindLater1Week": "1 週後提醒",
     "display": "顯示與音訊",
     "useCustomBackground": "自訂背景",
     "translateInput": "翻譯輸入",
     "autoTranslation": "自動翻譯",
-    "fullscreen": "全螢幕",
     "playMessage": "播放訊息音訊",
     "iconSize": "圖示大小",
     "createGroup": "建立群組對話",

@@ -59,7 +59,6 @@
   - `requestClaudeHTTP`: SSE parsing, thinking → `<Thoughts>`, and the tool loop.
 - `request/google.ts`: `requestGoogleCloudVertex` (Gemini and Vertex, with OAuth refresh), `getTranStream`, and handling of thought signatures and tools.
 - `process/models/nai.ts`: NovelAI serialization and `NovelAIBadWordIds`.
-- `process/models/local.ts`: Tauri Python/llama.cpp install and `tokenizeGGUFModel`.
 - `process/models/modelString.ts`: display labels.
 - `process/webllm.ts`: MLC WebLLM engine, used by Hypa summarization.
 - `tokenizer.ts`: tokenizer selection and counting.
@@ -110,7 +109,7 @@
   - `json::` parses a JSON value.
   - Dotted keys address nested fields.
   - Treat these as trusted user configuration.
-- Browser streaming to localhost or private endpoints is rejected unless running on Tauri or Node.
+- Browser streaming to localhost or private endpoints is rejected unless running on Node.
 - `requestChatDataMain` mutates its argument object. Do not reuse it after the call.
 
 ## Recipes
