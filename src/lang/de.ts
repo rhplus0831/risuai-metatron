@@ -266,11 +266,6 @@ export const languageGerman = {
         inputApiKey: "Geben Sie Ihren API-Schlüssel hier ein",
         apiKeyhelp: "Sie können den API-Schlüssel erhalten von: ",
         setupSelfHelp: "Richten Sie sich nach dem Willkommensbildschirm selbst ein",
-        theme: "Wählen Sie Ihr bevorzugtes Design aus",
-        themeDescWifulike: "Für Mobilgeräte ungeeignet",
-        themeDescWifuCut: "Geeignet auch für Mobilgeräte",
-        themeDescClassic: "Geeignet für alle Geräte",
-        texttheme: "Wählen Sie Ihre Textfarbe",
         inputName: "Geben Sie abschließend Ihren Spitznamen ein",
         welcome:
             "Willkommen bei Risuai! Ich bin Airisu und werde Sie durch die Einrichtung von Risuai führen. Zuerst, wie darf ich Sie nennen?",

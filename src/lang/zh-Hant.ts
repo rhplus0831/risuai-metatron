@@ -309,11 +309,6 @@ export const languageChineseTraditional = {
         inputApiKey: "在此輸入 API 金鑰",
         apiKeyhelp: "可從此處取得 API 金鑰：",
         setupSelfHelp: "歡迎畫面結束後，可前往「設定」自行完成其餘設定",
-        theme: "選擇主題",
-        themeDescWifulike: "不適合行動裝置",
-        themeDescWifuCut: "適合行動裝置",
-        themeDescClassic: "適合所有裝置",
-        texttheme: "選擇文字顏色",
         inputName: "最後，請輸入您的暱稱",
         welcome: "歡迎使用 Risuai！我是 Airisu，會帶您完成 Risuai 的初始設定。首先，我該怎麼稱呼您？",
         welcome2:

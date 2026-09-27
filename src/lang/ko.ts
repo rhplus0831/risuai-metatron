@@ -267,11 +267,6 @@ export const languageKorean = {
         inputApiKey: "여기에 API 키를 입력해주세요",
         apiKeyhelp: "이곳에서 API키를 얻을 수 있습니다: ",
         setupSelfHelp: "첫 셋업 화면이 끝난 뒤, 설정에서 직접 수정해 주세요",
-        theme: "테마를 입력해 주세요",
-        themeDescWifulike: "모바일에 적합하지 않습니다",
-        themeDescWifuCut: "모바일 환경에 적합합니다",
-        themeDescClassic: "모든 기기에 적합합니다",
-        texttheme: "텍스트 색상을 선택해주세요",
         inputName: "마지막으로, 닉네임을 입력해 주세요",
         welcome:
             "Risuai에 오신 것을 환영해요! 저는 Risuai 셋업을 도와줄 아이리스라고 해요. 먼저 닉네임을 입력해 주세요!",

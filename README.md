@@ -29,7 +29,7 @@ Risuai, or Risu for short, is a cross platform AI chatting software / web applic
 - **Regex Script**: Modify model's output by regex, to make a custom GUI and others
 - **Powerful Translators**: Automatically translate the input/output, so you can roleplay without knowing model's language.
 - **Lorebook**: Also known as world infos or memory book, which can make character memorize more.
-- **Themes**: Choose it from 3 themes, Classic, WaifuLike, WaifuCut.
+- **Themes**: Choose from Standard Risu, Waifulike, Mobile Chat, CardBoard, and Custom HTML.
 - **Powerful Prompting**: Change the prompting order easily, Impersonate inside prompts, Use conditions, variables... and more!
 - **Customizable, Friendly UI**: Great Accessibility and mobile friendly
 - **TTS**: Use TTS to make the output text into voice.

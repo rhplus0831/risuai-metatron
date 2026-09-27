@@ -7,7 +7,7 @@
 
     interface Props {
         src?: string[] | Promise<string[]>;
-        classType: "waifu" | "risu" | "mobile";
+        classType: "waifu" | "risu";
     }
 
     let { src = [], classType }: Props = $props();
@@ -47,12 +47,7 @@
 </script>
 
 {#if currentSrc && currentSrc.length > 0}
-    <div
-        class="image-container"
-        class:img-waifu={classType === "waifu"}
-        class:img-risu={classType === "risu"}
-        class:img-mobile={classType === "mobile"}
-    >
+    <div class="image-container" class:img-waifu={classType === "waifu"} class:img-risu={classType === "risu"}>
         {#if !showOldImage}
             {#each currentSrc as img, i}
                 {#if styleType === "normal"}
@@ -156,11 +151,6 @@
         width: 100%;
         height: 90vh;
         margin-top: 10vh;
-    }
-
-    .img-mobile {
-        width: 100%;
-        height: 100%;
     }
 
     .img-risu {

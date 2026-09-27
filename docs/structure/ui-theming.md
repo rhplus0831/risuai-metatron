@@ -29,7 +29,7 @@
 
 Chat:
 
-- `ChatScreen.svelte`: layout theme switch (`waifu`, `waifuMobile`, classic). Mounts `BackgroundDom`, `TransitionImage`, `ResizeBox`, `ChatList`, and the module menu.
+- `ChatScreen.svelte`: layout theme switch (`waifu`, classic). Mounts `BackgroundDom`, `TransitionImage`, `ResizeBox`, `ChatList`, and the module menu.
 - `DefaultChatScreen.svelte`: input box, send/reroll (see `chat-pipeline.md`), and menus. Chooses home, playground, or chat.
 - `Chats.svelte`: mounts `Chat` instances imperatively, keyed by message hash.
   - `updateChatBody` diffs mount, update, and remove, keeping reverse-chronological DOM order.
@@ -137,6 +137,5 @@ Theme and GUI helpers:
 
 ## Known Hazards
 
-- `waifuMobile` is handled by `ChatScreen` but not offered in the display settings. Its origin is unclear, so do not remove it as dead code.
 - The `display.customGui` condition checks `theme === 'custom'`, while the options use `customHTML`.
 - `LazyPortal` and the generic `tooltip` action have no active callers found.

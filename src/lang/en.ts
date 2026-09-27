@@ -346,11 +346,6 @@ export const languageEnglish = {
         inputApiKey: "Input API Key Here",
         apiKeyhelp: "You can get API key from: ",
         setupSelfHelp: "Setup yourself in settings, after Welcome screen ends.",
-        theme: "Select your theme",
-        themeDescWifulike: "Not suitable for mobile",
-        themeDescWifuCut: "Suitable for mobile",
-        themeDescClassic: "Suitable for All devices",
-        texttheme: "Select your text color",
         inputName: "Lastly, input your Nickname.",
         welcome:
             "Welcome to Risuai! I am Airisu, I am here to guide you through the Risuai setup. First, what may I call you?",

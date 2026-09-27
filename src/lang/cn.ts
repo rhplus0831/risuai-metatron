@@ -217,11 +217,6 @@ export const languageChinese = {
         inputApiKey: "请在此输入 API 密钥",
         apiKeyhelp: "可在以下获取 API 密钥：",
         setupSelfHelp: "欢迎画面结束后，可前往设置中自行配置。",
-        theme: "选择介面主题",
-        themeDescWifulike: "不适合在行动设备上使用",
-        themeDescWifuCut: "适合在行动设备上使用",
-        themeDescClassic: "适用于所有设备",
-        texttheme: "设置文字颜色",
         inputName: "最后，请输入你的昵称。",
         welcome: "欢迎使用 Risu（叡苏）！我将引导你进行设置。请问我该如何称呼你？",
         welcome2:

@@ -252,11 +252,6 @@ export const languageVietnamese = {
         inputApiKey: "Nhập khóa API tại đây",
         apiKeyhelp: "Bạn có thể lấy khóa api từ:",
         setupSelfHelp: "Tự thiết lập trong cài đặt, sau khi màn hình Chào mừng kết thúc.",
-        theme: "Chọn chủ đề của bạn",
-        themeDescWifulike: "Không phù hợp với di động",
-        themeDescWifuCut: "Thích hợp cho di động",
-        themeDescClassic: "Thích hợp cho mọi thiết bị",
-        texttheme: "Chọn màu văn bản của bạn",
         inputName: "Cuối cùng, nhập Biệt hiệu của bạn.",
         welcome:
             "Chào mừng đến với Risuai! Tôi là Airisu, tôi ở đây để hướng dẫn bạn cài đặt Risuai. Trước tiên, tôi có thể gọi bạn là gì?",

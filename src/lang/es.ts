@@ -258,11 +258,6 @@ export const languageSpanish = {
         inputApiKey: "Ingresa la Clave API Aquí",
         apiKeyhelp: "Puedes obtener la clave API en: ",
         setupSelfHelp: "Configúralo tú mismo en la configuración, después de que termine la pantalla de bienvenida.",
-        theme: "Selecciona tu tema",
-        themeDescWifulike: "No apto para móviles",
-        themeDescWifuCut: "Apto para móviles",
-        themeDescClassic: "Apto para todos los dispositivos",
-        texttheme: "Selecciona el color del texto",
         inputName: "Por último, ingresa tu apodo.",
         welcome: "¡Bienvenido a Risuai! Aquí te guiaré para configurarlo. Primero, ¿cómo puedo llamarte?",
         welcome2:
