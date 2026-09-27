@@ -94,7 +94,7 @@ Cold storage (removed):
   - memory fields: `supaMemoryData`, `hypaV2Data`, `hypaV3Data`,
   - `isStreaming`, bookmarks.
 - `Message`: `role` (`'user' | 'char'`), `data`, `chatId`, `time`, `saying`, `generationInfo`, `promptInfo`, `disabled`.
-- `pluginCustomStorage` holds v2.1 plugin custom DB properties and v2.1 `pluginStorage` values at its top level. v3 `pluginStorage` values live under its reserved `_pluginStorage` key, JSON-normalized on write.
+- `pluginCustomStorage` holds, at its top level, the custom DB properties that the plugin `setDatabase`/`setDatabaseLite` APIs route there (keys outside `allowedDbKeys`). Plugin `pluginStorage` values live under its reserved `_pluginStorage` key, JSON-normalized on write.
 
 ## Coupling
 
@@ -104,7 +104,7 @@ Cold storage (removed):
   - `globalApi.saveDb`: save.
   - `drive/*` and `backuplocal.ts`: backups.
   - `characterCards.ts`: snapshots.
-  - `plugins.svelte.ts`: DB API.
+  - `plugins/apiV3/v3.svelte.ts`: plugin DB API.
 
 ## Invariants
 

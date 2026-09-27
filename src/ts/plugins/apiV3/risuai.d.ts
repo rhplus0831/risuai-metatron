@@ -299,7 +299,7 @@ interface RisuPlugin {
     /** Actual argument values */
     realArg: { [key: string]: number | string };
     /** API version */
-    version?: 1 | 2 | '2.1' | '3.0';
+    version?: '3.0';
     /** Custom links for plugin UI */
     customLink: {
         link: string;
@@ -378,8 +378,6 @@ interface DatabaseSubset {
     enabledModules?: string[];
     /** Module integration settings */
     moduleIntergration?: string;
-    /** Plugin V2 instances */
-    pluginV2?: RisuPlugin[];
     /** User personas */
     personas?: Persona[];
     /** Plugin instances */
@@ -1470,7 +1468,7 @@ interface RisuaiPluginAPI {
      * @returns DatabaseSubset object (limited to allowed keys) or null if consent not given
      *
      * Allowed keys: characters, modules, enabledModules, moduleIntergration,
-     * pluginV2, personas, plugins, pluginCustomStorage, temperature, askRemoval,
+     * personas, plugins, pluginCustomStorage, temperature, askRemoval,
      * maxContext, maxResponse, frequencyPenalty, PresensePenalty, theme,
      * textTheme, lineHeight, seperateModelsForAxModels, seperateModels,
      * customCSS, guiHTML, colorSchemeName, characterOrder, selectedPersona
@@ -1485,7 +1483,7 @@ interface RisuaiPluginAPI {
      * }
      * ```
      */
-    getDatabase(includeOnly:string[]|'all' = 'all'): Promise<DatabaseSubset|null>;
+    getDatabase(includeOnly?: string[]|'all'): Promise<DatabaseSubset|null>;
 
     /**
      * Sets the database (lightweight save)
@@ -1760,7 +1758,7 @@ interface RisuaiPluginAPI {
      * ```typescript
      * await risuai.addTTSPreprocessor(async (ctx) => {
      *   if (ctx.ttsMode !== 'openai') return;
-     *   return { text: ctx.text.replace(/\*(.*?)\*/g, '') };
+     *   return { text: ctx.text.replaceAll('*', '') };
      * });
      * ```
      */

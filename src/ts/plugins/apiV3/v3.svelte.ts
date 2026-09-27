@@ -1,16 +1,16 @@
+import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
 import {
-    allowedDbKeys,
     customProviderStore,
-    getV2PluginAPIs,
-    handlePluginInstallViaPlugin,
-    pluginV2,
-    type PluginV2ProviderArgument,
-    type PluginV2ProviderOptions,
-    type RisuPlugin,
-} from "../plugins.svelte";
+    pluginHooks,
+    type ChatOutputListener,
+    type EditFunction,
+    type PluginProviderArgument,
+    type PluginProviderOptions,
+    type ReplacerFunction,
+} from "../pluginHooks";
 import { SandboxHost } from "./factory";
-import { getDatabase } from "src/ts/storage/database.svelte";
-import { SafeLocalPluginStorage, tagWhitelist } from "../pluginSafeClass";
+import { getCurrentCharacter, getDatabase, setDatabase, setDatabaseLite } from "src/ts/storage/database.svelte";
+import { SafeLocalPluginStorage, SafeLocalStorage, tagWhitelist } from "../pluginSafeClass";
 import DOMPurify from "dompurify";
 import {
     additionalChatMenu,
@@ -27,7 +27,7 @@ import { v4 } from "uuid";
 import { sleep } from "src/ts/util";
 import { alertConfirm, alertError, alertNormal } from "src/ts/alert";
 import { language } from "src/lang";
-import { checkCharOrder, getFetchLogs } from "src/ts/globalApi.svelte";
+import { checkCharOrder, fetchNative, getFetchLogs, globalFetch, readImage, saveAsset } from "src/ts/globalApi.svelte";
 import { changeColorScheme, updateColorScheme, updateTextThemeAndCSS, type ColorScheme } from "src/ts/gui/colorscheme";
 import { isNodeServer } from "src/ts/platform";
 import { get } from "svelte/store";
@@ -41,6 +41,7 @@ import { sendChat as processSendChat, doingChat } from "src/ts/process/index.sve
 import { processScriptFull } from "src/ts/process/scripts";
 import { getModelInfo } from "src/ts/model/modellist";
 import type { ModelModeExtended } from "src/ts/process/request/shared";
+import type { ScriptMode } from "src/ts/process/scripts";
 import { requestChatDataMain } from "src/ts/process/request/request";
 import { getModuleLorebooks } from "src/ts/process/modules";
 import {
@@ -579,7 +580,7 @@ const permissionForage = localforage.createInstance({
     storeName: "plugin_permissions",
 });
 
-type PluginV3ProviderOptions = PluginV2ProviderOptions & {
+type PluginV3ProviderOptions = PluginProviderOptions & {
     model?: LLMModel;
 };
 
@@ -659,10 +660,135 @@ const urlBlacklist = ["risuai.xyz", "risuai.net", "sionyw.com"];
 
 const authorizationHeaders = ["x-api-key", "authorization", "proxy-authorization"];
 
+const getChar = () => {
+    return getCurrentCharacter({ snapshot: true });
+};
+
+const setChar = (char: any) => {
+    const db = getDatabase();
+    const charid = get(selectedCharID);
+    db.characters[charid] = char;
+    setDatabaseLite(db);
+};
+
+const getArg = (arg: string) => {
+    const db = getDatabase();
+    const [name, realArg] = arg.split("::");
+    for (const plugin of db.plugins) {
+        if (plugin.name === name) {
+            return plugin.realArg[realArg];
+        }
+    }
+};
+
+const setArg = (arg: string, value: string | number) => {
+    const db = getDatabase();
+    const [name, realArg] = arg.split("::");
+    for (const plugin of db.plugins) {
+        if (plugin.name === name) {
+            plugin.realArg[realArg] = value;
+        }
+    }
+};
+
+const addRisuScriptHandler = (name: ScriptMode, func: EditFunction) => {
+    if (pluginHooks["edit" + name]) {
+        pluginHooks["edit" + name].add(func);
+    } else {
+        throw `script handler named ${name} not found`;
+    }
+};
+
+const removeRisuScriptHandler = (name: ScriptMode, func: EditFunction) => {
+    if (pluginHooks["edit" + name]) {
+        pluginHooks["edit" + name].delete(func);
+    } else {
+        throw `script handler named ${name} not found`;
+    }
+};
+
+const addRisuReplacer = (name: string, func: ReplacerFunction) => {
+    if (pluginHooks["replacer" + name]) {
+        pluginHooks["replacer" + name].add(func);
+    } else {
+        throw `replacer handler named ${name} not found`;
+    }
+};
+
+const removeRisuReplacer = (name: string, func: ReplacerFunction) => {
+    if (pluginHooks["replacer" + name]) {
+        pluginHooks["replacer" + name].delete(func);
+    } else {
+        throw `replacer handler named ${name} not found`;
+    }
+};
+
+const addRisuChatListener = (mode: string, func: ChatOutputListener) => {
+    if (mode === "output") {
+        pluginHooks.chatOutput.add(func);
+    } else {
+        throw `chat listener mode ${mode} not found`;
+    }
+};
+
+const removeRisuChatListener = (mode: string, func: ChatOutputListener) => {
+    if (mode === "output") {
+        pluginHooks.chatOutput.delete(func);
+    } else {
+        throw `chat listener mode ${mode} not found`;
+    }
+};
+
+//Keys outside allowedDbKeys are stored at the top level of db.pluginCustomStorage
+const setPluginDatabaseLite = (newDb: any) => {
+    const db = getDatabase();
+    db.pluginCustomStorage ??= {};
+    for (const key of Object.keys(newDb)) {
+        if (allowedDbKeys.includes(key)) {
+            (db as any)[key] = newDb[key];
+        } else {
+            db.pluginCustomStorage[key] = newDb[key];
+        }
+    }
+    DBState.db = db;
+};
+
+const setPluginDatabase = async (newDb: any) => {
+    const db = getDatabase();
+    db.pluginCustomStorage ??= {};
+    for (const key of Object.keys(newDb)) {
+        if (key === "plugins") {
+            console.warn(
+                "[WARN] Plugin attempted to access plugin directly. this would be blocked in future versions. Instead, use the provided APIs to manage plugins. Attempting to handle plugin installation via plugin for new plugins in the provided database object.",
+            );
+            newDb[key] = await handlePluginInstallViaPlugin(newDb.plugins);
+        }
+
+        if (allowedDbKeys.includes(key)) {
+            (db as any)[key] = newDb[key];
+        } else {
+            db.pluginCustomStorage[key] = newDb[key];
+        }
+    }
+    setDatabase(db);
+};
+
+const readAssetImage = (path: string) => {
+    if (path.startsWith("assets/")) {
+        //trim assets/ prefix temporarily
+        path = path.slice(7);
+    }
+    if (path.includes("/") || path.includes("\\")) {
+        throw new Error("readImage path cannot contain '/' or '\\' for security reasons, except assets/ prefix.");
+    }
+    //re-add assets/ prefix
+    return readImage("assets/" + path);
+};
+
 const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
-    const oldApis = getV2PluginAPIs();
+    const safeLocalStorage = new SafeLocalStorage();
     return {
-        //Old APIs from v2.1
+        //Older API names, kept for compatibility
         risuFetch: (url, options) => {
             console.error(
                 `[DEPRECATION WARNING] risuFetch is deprecated and will be removed in future versions. Please use nativeFetch instead.`,
@@ -682,7 +808,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                     );
                 }
             }
-            return oldApis.risuFetch(url, options);
+            return globalFetch(url, options);
         },
         nativeFetch: (url, options) => {
             for (const blocked of urlBlacklist) {
@@ -700,14 +826,14 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                     );
                 }
             }
-            return oldApis.nativeFetch(url, options);
+            return fetchNative(url, options);
         },
-        getChar: oldApis.getChar,
-        setChar: oldApis.setChar,
+        getChar: getChar,
+        setChar: setChar,
         addProvider: (
             name: string,
             func: (
-                arg: PluginV2ProviderArgument,
+                arg: PluginProviderArgument,
                 abortSignal?: AbortSignal,
             ) => Promise<{ success: boolean; content: string | ReadableStream<string> }>,
             options?: PluginV3ProviderOptions,
@@ -717,14 +843,14 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             );
             let provs = get(customProviderStore);
             provs.push(name);
-            (pluginV2.providers.set(name, async (arg, abortSignal) => {
+            (pluginHooks.providers.set(name, async (arg, abortSignal) => {
                 await getPluginPermission(plugin.name, "provider", "periodically");
                 //mode is overridden to v3, due to vulnerabilities using mode.
                 //Alternative to mode will be added in future
                 arg.mode = "v3";
                 return await func(arg, abortSignal);
             }),
-                pluginV2.providerOptions.set(name, options ?? {}));
+                pluginHooks.providerOptions.set(name, options ?? {}));
             customProviderStore.set(provs);
 
             const modelData: LLMModel = {
@@ -759,31 +885,31 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             registerTTSPostprocessor(func);
             addPluginUnloadCallback(plugin.name, () => unregisterTTSPostprocessor(func));
         },
-        addRisuScriptHandler: oldApis.addRisuScriptHandler,
-        removeRisuScriptHandler: oldApis.removeRisuScriptHandler,
+        addRisuScriptHandler: addRisuScriptHandler,
+        removeRisuScriptHandler: removeRisuScriptHandler,
         addRisuReplacer: async (name: string, func: Function) => {
             //permission check for replacer
             const conf = await getPluginPermission(plugin.name, "replacer", "periodically");
             if (!conf) {
                 return;
             }
-            oldApis.addRisuReplacer(name, func as any);
+            addRisuReplacer(name, func as any);
         },
-        removeRisuReplacer: oldApis.removeRisuReplacer,
+        removeRisuReplacer: removeRisuReplacer,
         addRisuChatListener: async (mode: "output", func: Function) => {
             //permission check, lets use same as replacer
             const conf = await getPluginPermission(plugin.name, "replacer", "periodically");
             if (!conf) {
                 return;
             }
-            oldApis.addRisuChatListener(mode, func as any);
-            addPluginUnloadCallback(plugin.name, () => oldApis.removeRisuChatListener(mode, func as any));
+            addRisuChatListener(mode, func as any);
+            addPluginUnloadCallback(plugin.name, () => removeRisuChatListener(mode, func as any));
         },
-        removeRisuChatListener: oldApis.removeRisuChatListener,
-        setDatabaseLite: oldApis.setDatabaseLite,
-        setDatabase: oldApis.setDatabase,
-        loadPlugins: oldApis.loadPlugins,
-        readImage: oldApis.readImage,
+        removeRisuChatListener: removeRisuChatListener,
+        setDatabaseLite: setPluginDatabaseLite,
+        setDatabase: setPluginDatabase,
+        loadPlugins: loadPlugins,
+        readImage: readAssetImage,
         readInlay: async (id: string) => {
             const conf = await getPluginPermission(plugin.name, "inlay", "periodically");
             if (!conf) {
@@ -791,7 +917,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
             return await getInlayAsset(id);
         },
-        saveAsset: oldApis.saveAsset,
+        saveAsset: (data: Uint8Array) => {
+            return saveAsset(data);
+        },
         //Same functionality, but new implementation
         getDatabase: async (includeOnly: string[] | "all" = "all") => {
             const conf = await getPluginPermission(plugin.name, "db", "periodically");
@@ -893,10 +1021,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             };
         },
 
-        //Deprecated APIs from v2.1
+        //Deprecated APIs
         //Use getArgument / setArgument instead if possible
-        getArg: oldApis.getArg,
-        setArg: oldApis.setArg,
+        getArg: getArg,
+        setArg: setArg,
 
         //New APIs for v3
         getArgument: async (key: string) => {
@@ -1022,8 +1150,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             return $state.snapshot(characterLore.concat(chatLore).concat(moduleLore));
         },
         //New names for character APIs, to match API naming conventions
-        getCharacter: oldApis.getChar,
-        setCharacter: oldApis.setChar,
+        getCharacter: getChar,
+        setCharacter: setChar,
 
         showContainer: (
             //more types may be added in future
@@ -1292,9 +1420,6 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             return getPluginPermission(plugin.name, permission as any);
         },
         //Internal use APIs
-        _getOldKeys: () => {
-            return Object.keys(oldApis);
-        },
         _getPropertiesForInitialization: () => {
             const v = {
                 apiVersion: "3.0",
@@ -1306,7 +1431,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             return v;
         },
         //v3 pluginStorage lives under its own key in db.pluginCustomStorage,
-        //apart from the v2.1 getDatabase/setDatabase custom properties stored there
+        //apart from the custom properties setDatabase/setDatabaseLite store at its top level
         _getPluginStorage: async (key: string) => {
             const db = getDatabase();
             return $state.snapshot(db.pluginCustomStorage?._pluginStorage?.[key]) ?? null;
@@ -1343,12 +1468,12 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             const db = getDatabase();
             return Object.keys(db.pluginCustomStorage?._pluginStorage ?? {}).length;
         },
-        _getSafeLocalStorage: oldApis.safeLocalStorage.getItem,
-        _setSafeLocalStorage: oldApis.safeLocalStorage.setItem,
-        _removeSafeLocalStorage: oldApis.safeLocalStorage.removeItem,
-        _clearSafeLocalStorage: oldApis.safeLocalStorage.clear,
-        _keySafeLocalStorage: oldApis.safeLocalStorage.key,
-        _keysSafeLocalStorage: oldApis.safeLocalStorage.keys,
+        _getSafeLocalStorage: (key: string) => safeLocalStorage.getItem(key),
+        _setSafeLocalStorage: (key: string, value: string) => safeLocalStorage.setItem(key, value),
+        _removeSafeLocalStorage: (key: string) => safeLocalStorage.removeItem(key),
+        _clearSafeLocalStorage: () => safeLocalStorage.clear(),
+        _keySafeLocalStorage: (index: number) => safeLocalStorage.key(index),
+        _keysSafeLocalStorage: () => safeLocalStorage.keys(),
         searchTranslationCache: async (partialKey: string) => {
             return searchLLMCache(partialKey);
         },

@@ -31,10 +31,6 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     risuChatParser: (text: string) => text,
 }));
 
-vi.mock("src/ts/plugins/plugins.svelte", () => ({
-    pluginV2: { providerOptions: new Map() },
-}));
-
 vi.mock("src/ts/process/files/inlays", () => ({
     supportsInlayImage: () => false,
 }));

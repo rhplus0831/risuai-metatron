@@ -1138,7 +1138,6 @@ export interface Database {
     assetMaxDifference: number;
     auxModelUnderModelSettings: boolean;
     menuSideBar: boolean;
-    pluginV2: RisuPlugin[];
     showSavingIcon: boolean;
     presetRegex: customscript[];
     banCharacterset: string[];

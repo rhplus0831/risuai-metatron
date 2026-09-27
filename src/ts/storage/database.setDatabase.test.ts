@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // leftovers of old saves are dropped: the root `coldstorage` flag and the
 // orphaned `pluginCustomStorage._coldplugin` key -> uuid map, whose values are
 // unreachable now. Everything else in `pluginCustomStorage`, including the v3
-// `_pluginStorage` sub-object and v2.1 top-level entries, must survive.
+// `_pluginStorage` sub-object and the top-level entries written through the
+// plugin `setDatabase`/`setDatabaseLite` APIs, must survive.
 
 vi.mock("../globalApi.svelte", () => ({
     downloadFile: vi.fn(),

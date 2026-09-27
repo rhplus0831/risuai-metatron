@@ -1220,8 +1220,6 @@ export const languageSpanish = {
     menuSideBar: "Barra Lateral del Menú",
     home: "Inicio",
     showSavingIcon: "Mostrar Icono de Guardado",
-    pluginVersionWarn:
-        "Esta es la versión {{plugin_version}} del plugin, que no es compatible con esta versión de Risuai. Por favor, actualiza el plugin a la versión {{required_version}}.",
     imageTranslation: "Traducción de Imagen",
     banCharacterset: "Regeneración Automática en Conjunto de Caracteres",
     realmDirectOpen: "Abrir personaje directamente en RisuRealm",
@@ -1428,30 +1426,6 @@ export const languageSpanish = {
     add: "Agregar",
     nightlyWarning:
         "## Builds Nightly\n\nTe estás conectando a una build nightly del software. Esta versión está destinada a pruebas y muy probablemente contiene errores. **En esta versión, incluso si encuentras problemas, no admitimos resolverlos directamente.**",
-    pluginRiskDetectedAlert:
-        "Risuai detectó código que puede ser dañino y que podría ROBAR TU CLAVE API O DATOS PERSONALES. te recomendamos NO INSTALAR ESTE PLUGIN.",
-    doNotInstall: "No Instalar",
-    continueAnyway: "Continuar de Todos Modos",
-    pluginNoRiskButAlert:
-        "Risuai no detectó código dañino, pero ten en cuenta que instalar plugins de fuentes no confiables puede plantear riesgos de seguridad.",
-    pluginRisksInuserFriendly: {
-        eval: "Evaluando Código desde Cadenas",
-        globalAccess: "Accediendo a Variables Globales",
-        thisOutsideClass: "Usando 'this' Fuera del Contexto de Clase",
-        errorInVerification: "Errores Durante el Proceso de Verificación",
-        storageAccess: "Accediendo al Almacenamiento",
-    },
-    pluginRisksInuserFriendlyDesc: {
-        eval: "El plugin intenta ejecutar código desde cadenas, las cadenas pueden ser ofuscadas para ocultar código malicioso.",
-        globalAccess:
-            "El plugin intenta acceder a variables globales, lo que puede llevar a efectos secundarios no deseados o vulnerabilidades de seguridad.",
-        thisOutsideClass:
-            "El plugin usa la palabra clave 'this' fuera del contexto de clase, lo que puede llevar a un comportamiento no deseado o problemas de seguridad.",
-        errorInVerification:
-            "Hay errores durante el proceso de verificación del plugin, indicando problemas potenciales con su funcionalidad.",
-        storageAccess:
-            "El plugin intenta acceder al almacenamiento, lo que podría llevar a fugas de datos o manipulación de datos no autorizada.",
-    },
     generatedByAIDisclaimer: "Este contenido fue generado por IA y puede contener inexactitudes o sesgos.",
     aiGenerationWarning: "El contenido será generado por IA y puede contener inexactitudes o sesgos.",
     loadMore: "Cargar más",

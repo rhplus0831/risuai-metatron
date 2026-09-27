@@ -1,8 +1,7 @@
 <script lang="ts">
     import { PlusIcon, TrashIcon, LinkIcon, CodeXmlIcon, PowerIcon, PowerOffIcon } from "@lucide/svelte";
     import { language } from "src/lang";
-    import { alertConfirm, alertMd, alertSelect } from "src/ts/alert";
-    import { TriangleAlert } from "@lucide/svelte";
+    import { alertConfirm, alertSelect } from "src/ts/alert";
 
     import { DBState, hotReloading } from "src/ts/stores.svelte";
     import {
@@ -57,17 +56,6 @@
                     <span class="text-sm rounded bg-amber-700 ml-2 px-2 py-1 text-white"> Hot </span>
                 {/if}
             </div>
-            {#if plugin.version === 2 || plugin.version === "2.1"}
-                <button
-                    class="text-yellow-400 hover:gray-200 cursor-pointer"
-                    onclick={() => {
-                        alertMd(language.pluginV2Warning);
-                    }}
-                >
-                    <TriangleAlert />
-                </button>
-            {/if}
-
             {#if plugin.customLink}
                 {#each plugin.customLink as link}
                     {#if typeof link.link === "string" && (link.link.startsWith("http://") || link.link.startsWith("https://"))}
@@ -137,14 +125,8 @@
                 <TrashIcon />
             </button>
         </div>
-        {#if plugin.version === 1}
-            <span class="text-draculared text-xs">
-                {language.pluginVersionWarn
-                    .replace("{{plugin_version}}", "API V1")
-                    .replace("{{required_version}}", "API V3")}
-            </span>
-            <!--List up args-->
-        {:else if Object.keys(plugin.arguments).filter((i) => !i.startsWith("hidden_")).length > 0 && showParams.includes(i)}
+        <!--List up args-->
+        {#if Object.keys(plugin.arguments).filter((i) => !i.startsWith("hidden_")).length > 0 && showParams.includes(i)}
             <div class="flex flex-col mt-2 bg-dark-900/50 p-3">
                 {#each Object.keys(plugin.arguments) as arg}
                     {#if !arg.startsWith("hidden_")}

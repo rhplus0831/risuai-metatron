@@ -1209,8 +1209,6 @@ export const languageVietnamese = {
     menuSideBar: "Thanh bên menu",
     home: "Trang chủ",
     showSavingIcon: "Hiển thị biểu tượng đang lưu",
-    pluginVersionWarn:
-        "Đây là phiên bản {{plugin_version}} của plugin, không tương thích với phiên bản Risuai này. Vui lòng cập nhật plugin lên phiên bản {{required_version}}.",
     imageTranslation: "Dịch hình ảnh",
     banCharacterset: "Tự động tạo lại khi gặp bộ ký tự",
     realmDirectOpen: "Mở trực tiếp nhân vật trong RisuRealm",
@@ -1416,30 +1414,6 @@ export const languageVietnamese = {
     add: "Thêm",
     nightlyWarning:
         "## Bản dựng Nightly\n\nBạn đang kết nối với bản dựng Nightly của phần mềm. Phiên bản này dùng để thử nghiệm và rất có thể có lỗi. **Trong phiên bản này, ngay cả khi bạn gặp sự cố, chúng tôi không hỗ trợ giải quyết trực tiếp.**",
-    pluginRiskDetectedAlert:
-        "Risuai phát hiện mã có thể gây hại, có thể ĂN CẮP KHÓA API HOẶC DỮ LIỆU CÁ NHÂN CỦA BẠN. Chúng tôi khuyên bạn KHÔNG NÊN CÀI ĐẶT PLUGIN NÀY.",
-    doNotInstall: "Không cài đặt",
-    continueAnyway: "Vẫn tiếp tục",
-    pluginNoRiskButAlert:
-        "Risuai không phát hiện mã độc hại, nhưng xin lưu ý rằng việc cài đặt plugin từ các nguồn không tin cậy có thể gây rủi ro bảo mật.",
-    pluginRisksInuserFriendly: {
-        eval: "Đánh giá mã từ chuỗi",
-        globalAccess: "Truy cập biến toàn cục",
-        thisOutsideClass: "Sử dụng 'this' bên ngoài ngữ cảnh lớp",
-        errorInVerification: "Lỗi trong quá trình xác minh",
-        storageAccess: "Truy cập bộ nhớ",
-    },
-    pluginRisksInuserFriendlyDesc: {
-        eval: "Plugin cố gắng thực thi mã từ chuỗi, chuỗi có thể bị làm mờ để ẩn mã độc hại.",
-        globalAccess:
-            "Plugin cố gắng truy cập các biến toàn cục, điều này có thể dẫn đến các tác dụng phụ không mong muốn hoặc lỗ hổng bảo mật.",
-        thisOutsideClass:
-            "Plugin sử dụng từ khóa 'this' bên ngoài ngữ cảnh lớp, điều này có thể dẫn đến hành vi không mong muốn hoặc các vấn đề bảo mật.",
-        errorInVerification:
-            "Có lỗi trong quá trình xác minh plugin, cho thấy các vấn đề tiềm ẩn với chức năng của nó.",
-        storageAccess:
-            "Plugin cố gắng truy cập bộ nhớ, điều này có thể dẫn đến rò rỉ dữ liệu hoặc thao tác dữ liệu trái phép.",
-    },
     generatedByAIDisclaimer: "Nội dung này được tạo bởi AI và có thể chứa thông tin không chính xác hoặc thiên kiến.",
     aiGenerationWarning: "Nội dung sẽ được tạo bởi AI và có thể chứa thông tin không chính xác hoặc thiên kiến.",
     noRequestLogs: "Không có nhật ký yêu cầu nào.",

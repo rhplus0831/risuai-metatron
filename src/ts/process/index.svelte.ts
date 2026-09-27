@@ -49,7 +49,7 @@ import { getModelInfo, LLMFlags } from "../model/modellist";
 import { hypaMemoryV3 } from "./memory/hypav3";
 import { getModuleAssets, getModuleToggles } from "./modules";
 import { readImage } from "../globalApi.svelte";
-import { pluginV2 } from "../plugins/plugins.svelte";
+import { pluginHooks } from "../plugins/pluginHooks";
 
 export interface OpenAIChat {
     role: "system" | "user" | "assistant" | "function";
@@ -78,13 +78,13 @@ async function runChatOutputListeners(
     chatIndex: number,
     messageIndex: number,
 ) {
-    if (pluginV2.chatOutput.size === 0) {
+    if (pluginHooks.chatOutput.size === 0) {
         return;
     }
 
     const charSnapshot = $state.snapshot(char);
     const chatSnapshot = $state.snapshot(chat);
-    for (const listener of pluginV2.chatOutput) {
+    for (const listener of pluginHooks.chatOutput) {
         try {
             await listener({
                 char: charSnapshot,

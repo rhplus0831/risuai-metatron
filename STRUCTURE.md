@@ -117,7 +117,7 @@ Release
 | Add a model or provider, request/stream parsing, tool calls, parameters, tokenizers, aux-model routing                     | `docs/structure/llm-requests.md`         |
 | CBS `{{...}}` functions, message rendering/markdown/sanitization, chat variables, partial edit, editor highlighting        | `docs/structure/cbs-rendering.md`        |
 | Regex scripts, triggers v2, Lua scripting                                                                                  | `docs/structure/scripts-triggers.md`     |
-| Plugin API (v2.1 legacy, v3 iframe sandbox), plugin providers/hooks, MCP tools                                             | `docs/structure/plugins-mcp.md`          |
+| Plugin API (v3 iframe sandbox), plugin providers/hooks, MCP tools                                                          | `docs/structure/plugins-mcp.md`          |
 | Character cards import/export, characters/groups CRUD, modules, personas, loadouts, lorebook editor UI                     | `docs/structure/characters-modules.md`   |
 | Chat screen components, sidebar, GUI primitives, popups/portals, theme/colors                                              | `docs/structure/ui-theming.md`           |
 | Settings pages, declarative settings registry, bot presets, prompt template editor, i18n                                   | `docs/structure/settings-i18n.md`        |
@@ -196,8 +196,6 @@ Do not extend these without first confirming intent.
   `src/ts/gui/highlight.ts`.
 - `src/lib/Setting/Pages/GlobalRegex.svelte`: edits `DBState.db.globalscript`, which the regex
   runtime never applies. The runtime uses `presetRegex`.
-- `src/lib/Others/PluginAlertModal.svelte`: mounted in `App.svelte`, but nothing writes
-  `pluginAlertModalStore`.
 - `memoryAlgorithmType`: written by the settings UI, never read. The memory branch is chosen by
   boolean flags.
 - `server/hono/`: Hello-world skeleton with none of the Node server's routes.

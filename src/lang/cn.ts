@@ -1146,8 +1146,6 @@ export const languageChinese = {
     menuSideBar: "菜单侧边栏",
     home: "主页",
     showSavingIcon: "显示保存图标",
-    pluginVersionWarn:
-        "这是插件的 {{plugin_version}} 版本。它与此版本的 Risuai 不兼容。请将插件更新到 {{required_version}} 版本。",
     imageTranslation: "图片翻译",
     banCharacterset: "字符集自动重新生成",
     realmDirectOpen: "在 RisuRealm 中直接打开角色",
@@ -1349,25 +1347,6 @@ export const languageChinese = {
     add: "追加",
     nightlyWarning:
         "## Nightly Builds\n\n您正在连接到软件的每夜构建版本。此版本用于测试，很可能包含错误。**在此版本中，即使您遇到问题，我们也不支持直接解决它们。**",
-    pluginRiskDetectedAlert:
-        "Risuai 检测到可能有害的代码，这可能会窃取您的 API 密钥或个人数据。我们建议您不要安装此插件。",
-    doNotInstall: "不要安装",
-    continueAnyway: "仍然继续",
-    pluginNoRiskButAlert: "Risuai 没有检测到有害代码，但请注意，从不受信任的来源安装插件可能会带来安全风险。",
-    pluginRisksInuserFriendly: {
-        eval: "从字符串评估代码",
-        globalAccess: "访问全局变量",
-        thisOutsideClass: "在类上下文之外使用 'this'",
-        errorInVerification: "验证过程中出错",
-        storageAccess: "访问存储",
-    },
-    pluginRisksInuserFriendlyDesc: {
-        eval: "该插件尝试从字符串执行代码，字符串可能会被混淆以隐藏恶意代码。",
-        globalAccess: "该插件尝试访问全局变量，这可能导致意外的副作用或安全漏洞。",
-        thisOutsideClass: "该插件在类上下文之外使用 'this' 关键字，这可能导致意外行为或安全问题。",
-        errorInVerification: "插件验证过程中出现错误，表明其功能可能存在问题。",
-        storageAccess: "该插件尝试访问存储，这可能导致数据泄露或未经授权的数据操作。",
-    },
     generatedByAIDisclaimer: "此内容由 AI 生成，可能包含不准确信息或偏见。",
     aiGenerationWarning: "内容将由 AI 生成，可能包含不准确信息或偏见。",
     bookmark: "书签",

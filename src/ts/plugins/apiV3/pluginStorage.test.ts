@@ -4,9 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // storage behind a `pluginCustomStorage._coldplugin` key -> uuid map; it now keeps
 // them inline under the reserved `pluginCustomStorage._pluginStorage` sub-object.
 // These tests pin the replacement contract:
-// - values are isolated from the v2.1 API, which uses the top level of
-//   `pluginCustomStorage` for both `pluginStorage` and `getDatabase()` custom
-//   properties, so a v3 key can neither read nor clobber a v2.1 key,
+// - values are isolated from the top level of `pluginCustomStorage`, where the
+//   `setDatabase`/`setDatabaseLite` APIs route custom (non-`allowedDbKeys`)
+//   properties, so a `pluginStorage` key can neither read nor clobber one,
 // - `setItem` JSON-normalizes the value and rejects what the save file cannot
 //   hold (BigInt) without touching the database,
 // - falsy stored values survive `getItem`; only a missing key yields null.
@@ -76,7 +76,7 @@ async function makeApi(): Promise<CapturedApi> {
     await executePluginV3({
         name: `pluginStorage-test-${Math.random().toString(36).slice(2)}`,
         script: "",
-        version: 3,
+        version: "3.0",
     } as any);
     expect(captured.api).not.toBeNull();
     return captured.api!;
@@ -128,11 +128,11 @@ describe("v3 pluginStorage without cold storage", () => {
         expect(await api._lengthPluginStorage()).toBe(4);
     });
 
-    it("does not read, overwrite, or clear v2.1 top-level pluginCustomStorage entries", async () => {
-        // v2.1 `getDatabase().settings = ...` and v2.1 `pluginStorage.setItem('settings', ...)`
-        // both write `pluginCustomStorage.settings`. `characters` is a real DB key that a
-        // v3 plugin may plausibly pick as a storage key; it must not land at the top level,
-        // where the v2.1 database proxy's `ownKeys` would report it twice.
+    it("does not read, overwrite, or clear top-level pluginCustomStorage entries", async () => {
+        // `setDatabase({ settings: ... })` writes `pluginCustomStorage.settings` at the top
+        // level. `characters` is a real DB key that a plugin may plausibly pick as a storage
+        // key; it must not land at the top level either, where `setDatabase` would later
+        // treat it as a routed custom property.
         db.pluginCustomStorage = { settings: "legacy", characters: "legacy-list" };
         const api = await makeApi();
 

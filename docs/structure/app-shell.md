@@ -77,7 +77,7 @@ All of these live in `src/ts/stores.svelte.ts`.
   - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetScriptCache`.
   - `ReloadChatPointer`.
   - `selIdState`: rune mirror of `selectedCharID`.
-- Overlays: `alertStore`, `popupStore`, `popUpEditorStore`, `easyPanelStore`, `loadoutModalStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, `customSideBarConfigDialogStore`, `QuickSettings`, `pluginAlertModalStore`.
+- Overlays: `alertStore`, `popupStore`, `popUpEditorStore`, `easyPanelStore`, `loadoutModalStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, `customSideBarConfigDialogStore`, `QuickSettings`.
 - Plugin extension arrays (runes): `additionalSettingsMenu`, `additionalFloatingActionButtons`, `additionalHamburgerMenu`, `additionalChatMenu`, `chatPanelStore`, `bodyIntercepterStore`. Types are `MenuDef` and `ChatPanelDef`.
 - Misc: `CustomCSSStore` (its subscriber injects CSS with `innerHTML`), `SafeModeStore`, `CharEmotion`, `ScrollToMessageStore`, `hotReloading`, `disableHighlight`.
 - Root `$effect`: mirrors `selectedCharID` into `selIdState` and reruns `moduleUpdate` when module, chat, or background dependencies change.

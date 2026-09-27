@@ -15,7 +15,6 @@ import { AnthropicModels } from "./providers/anthropic";
 import { GoogleModels } from "./providers/google";
 import { fetchNative } from "../globalApi.svelte";
 import { DBState } from "../stores.svelte";
-import { customProviderStore, pluginV2 } from "../plugins/plugins.svelte";
 import { get } from "svelte/store";
 import { customV3ProviderMetaStore } from "../plugins/apiV3/v3.svelte";
 

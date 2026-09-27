@@ -6,7 +6,7 @@ import { supportsInlayImage } from "./process/files/inlays";
 import { risuChatParser } from "./parser/parser.svelte";
 import { globalFetch } from "./globalApi.svelte";
 import { getModelInfo, LLMTokenizer, type LLMModel } from "./model/modellist";
-import { pluginV2 } from "./plugins/plugins.svelte";
+import { pluginHooks } from "./plugins/pluginHooks";
 import type { GemmaTokenizer } from "@huggingface/transformers";
 import { LRUMap } from "mnemonist";
 
@@ -82,7 +82,7 @@ export async function encodeWithTokenizer(
 export async function encode(data: string): Promise<number[] | Uint32Array | Int32Array> {
     const db = getDatabase();
     const modelInfo = getModelInfo(db.aiModel);
-    const pluginTokenizer = pluginV2.providerOptions.get(db.currentPluginProvider)?.tokenizer ?? "none";
+    const pluginTokenizer = pluginHooks.providerOptions.get(db.currentPluginProvider)?.tokenizer ?? "none";
 
     let cacheKey = "";
     if (db.useTokenizerCaching) {
@@ -190,7 +190,9 @@ export async function encode(data: string): Promise<number[] | Uint32Array | Int
                 result = await tikJS(data, "cl100k_base");
                 break;
             case "custom":
-                result = (await pluginV2.providerOptions.get(db.currentPluginProvider)?.tokenizerFunc?.(data)) ?? [0];
+                result = (await pluginHooks.providerOptions.get(db.currentPluginProvider)?.tokenizerFunc?.(data)) ?? [
+                    0,
+                ];
                 break;
             default:
                 result = await tikJS(data, "o200k_base");

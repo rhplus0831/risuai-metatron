@@ -1213,8 +1213,6 @@ export const languageKorean = {
     menuSideBar: "메뉴 사이드바",
     home: "홈",
     showSavingIcon: "저장 아이콘 표시",
-    pluginVersionWarn:
-        "이 플러그인은 {{plugin_version}} 버전입니다. 이 버전의 Risuai와 호환되지 않습니다. 플러그인을 {{required_version}} 버전으로 업데이트하세요.",
     imageTranslation: "이미지 번역",
     banCharacterset: "문자 집합으로 자동 재생성",
     realmDirectOpen: "RisuRealm 미리보기에서 바로 열기",
@@ -1421,29 +1419,6 @@ export const languageKorean = {
     add: "추가",
     nightlyWarning:
         "## 나이틀리 빌드\n\n나이틀리 빌드에 연결하려고 합니다. 이 버전은 테스트용이며 버그가 포함되어 있을 수 있습니다. **이 버전에서는 버그 등 문제가 발생하더라도 직접적으로 해결하는 것을 지원하지 않습니다.**",
-    pluginRiskDetectedAlert:
-        "Risuai가 API 키나 개인 데이터를 훔칠 수도 있는 위험한 코드를 감지했습니다. 이 플러그인을 설치하지 않는 것을 권장합니다.",
-    doNotInstall: "설치하지 않음",
-    continueAnyway: "무시하고 계속",
-    pluginNoRiskButAlert:
-        "Risuai가 위험한 코드를 감지하지 못했지만, 신뢰할 수 없는 출처의 플러그인을 설치하면 보안 위험이 발생할 수 있습니다.",
-    pluginRisksInuserFriendly: {
-        eval: "문자열에서 코드 실행",
-        globalAccess: "글로벌 변수 접근",
-        thisOutsideClass: "클래스 컨텍스트 외부에서 'this' 사용",
-        errorInVerification: "검증 과정 중 오류 발생",
-        storageAccess: "스토리지 접근",
-    },
-    pluginRisksInuserFriendlyDesc: {
-        eval: "플러그인이 문자열에서 코드를 실행하려고 합니다. 악성 코드를 숨기기 위해 문자열이 난독화되었을 수 있습니다.",
-        globalAccess:
-            "플러그인이 글로벌 변수에 접근하려고 합니다. 이는 의도치 않은 부작용이나 보안 취약점으로 이어질 수 있습니다.",
-        thisOutsideClass:
-            "플러그인이 클래스 컨텍스트 외부에서 'this' 키워드를 사용하고 있습니다. 이는 의도치 않은 동작이나 보안 문제로 이어질 수 있습니다.",
-        errorInVerification: "플러그인의 검증 과정 중 오류가 발생했습니다. 이는 기능상의 잠재적인 문제를 나타냅니다.",
-        storageAccess:
-            "플러그인이 스토리지에 접근하려고 합니다. 이는 데이터 유출이나 무단 데이터 조작으로 이어질 수 있습니다.",
-    },
     generatedByAIDisclaimer: "이 콘텐츠는 AI에 의해 생성되었으며 부정확하거나 편향된 정보가 포함될 수 있습니다.",
     aiGenerationWarning: "콘텐츠는 AI로 생성되며 부정확하거나 편향된 정보가 포함될 수 있습니다.",
     autoScrollToNewMessage: "새 메시지로 자동 스크롤",

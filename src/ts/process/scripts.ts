@@ -21,7 +21,7 @@ import {
 import { getModuleAssets, getModuleRegexScripts } from "./modules";
 import { HypaProcesser } from "./memory/hypamemory";
 import { runLuaEditTrigger } from "./scriptings";
-import { pluginV2 } from "../plugins/plugins.svelte";
+import { pluginHooks } from "../plugins/pluginHooks";
 import { runTrigger } from "./triggers";
 
 const dreg = /{{data}}/g;
@@ -149,8 +149,8 @@ export async function processScriptFull(
         }
     }
 
-    if (pluginV2[mode].size > 0) {
-        for (const plugin of pluginV2[mode]) {
+    if (pluginHooks[mode].size > 0) {
+        for (const plugin of pluginHooks[mode]) {
             const res = await plugin(data);
             if (res !== null && res !== undefined) {
                 data = res;

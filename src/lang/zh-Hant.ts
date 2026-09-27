@@ -1245,7 +1245,6 @@ export const languageChineseTraditional = {
     menuSideBar: "側邊選單",
     home: "首頁",
     showSavingIcon: "顯示儲存中圖示",
-    pluginVersionWarn: "此外掛版本為 {{plugin_version}}，與目前 Risuai 版本不相容。請將外掛更新至 {{required_version}}",
     imageTranslation: "圖片翻譯",
     banCharacterset: "出現指定字元集時自動重新產生",
     realmDirectOpen: "直接在 RisuRealm 開啟角色",
@@ -1453,26 +1452,6 @@ export const languageChineseTraditional = {
     add: "加入",
     nightlyWarning:
         "## 測試版\n\n您目前使用的是測試版。此版本僅供測試，可能包含尚未修正的問題。**測試版不提供個別問題排除支援**",
-    pluginRiskDetectedAlert:
-        "Risuai 偵測到可能有害的程式碼，**可能竊取您的 API 金鑰或個人資料**。強烈建議**不要安裝此外掛**",
-    doNotInstall: "不要安裝",
-    continueAnyway: "仍要繼續",
-    pluginNoRiskButAlert: "Risuai 未偵測到有害程式碼，但從不可信來源安裝外掛仍可能帶來安全風險",
-
-    pluginRisksInuserFriendly: {
-        eval: "從字串執行程式碼",
-        globalAccess: "存取全域變數",
-        thisOutsideClass: "在 class 範圍外使用 `this`",
-        errorInVerification: "驗證過程發生錯誤",
-        storageAccess: "存取儲存空間",
-    },
-    pluginRisksInuserFriendlyDesc: {
-        eval: "此外掛嘗試執行字串中的程式碼；字串可能經過混淆，用來隱藏惡意程式碼",
-        globalAccess: "此外掛嘗試存取全域變數，可能造成非預期副作用或安全漏洞",
-        thisOutsideClass: "此外掛在 class 範圍外使用 `this`，可能造成非預期行為或安全問題",
-        errorInVerification: "外掛驗證過程中發生錯誤，可能代表功能或安全性存在問題",
-        storageAccess: "此外掛嘗試存取儲存空間，可能導致資料外洩或未授權的資料修改",
-    },
     generatedByAIDisclaimer: "此內容由 AI 生成，可能包含不準確資訊或偏見",
     aiGenerationWarning: "內容將由 AI 生成，可能包含不準確資訊或偏見",
     duplicatePluginFoundUpdateIt: "已安裝相同外掛。要更新現有外掛嗎？",
@@ -1504,8 +1483,6 @@ export const languageChineseTraditional = {
     providerPermissionConsent: "外掛 {} 正要求使用模型供應商功能，這可能讓它發出未經授權的 API 請求。要允許嗎？",
     inlayPermissionConsent: "外掛 {} 正要求存取內嵌內容，這可能讓它讀取、寫入或編輯內嵌資料。要允許嗎？",
     sendChatConsent: "外掛 {} 正要求以您的名義送出對話訊息，這會觸發 AI 回應。要允許嗎？",
-    pluginV2Warning:
-        "外掛 V2 與 V2.1 被視為不安全，並會在未來版本停止運作。**請勿使用這些版本的外掛。** 若您是此外掛的開發者，請儘快升級至 V3",
     createFolderOnBranch: "在分支上建立資料夾",
     hamburgerButtonBottom: "將選單按鈕移至側邊欄底部",
     partialBackupFirstConfirm:

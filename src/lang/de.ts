@@ -1237,8 +1237,6 @@ export const languageGerman = {
     menuSideBar: "Menü-Seitenleiste",
     home: "Startseite",
     showSavingIcon: "Speichersymbol anzeigen",
-    pluginVersionWarn:
-        "Dies ist Version {{plugin_version}} des Plugins, die nicht mit dieser Version von Risuai kompatibel ist. Bitte aktualisieren Sie das Plugin auf Version {{required_version}}.",
     imageTranslation: "Bildübersetzung",
     banCharacterset: "Bei Zeichensatz automatisch neu generieren",
     realmDirectOpen: "Charakter in RisuRealm direkt öffnen",
@@ -1446,30 +1444,6 @@ export const languageGerman = {
     add: "Hinzufügen",
     nightlyWarning:
         "## Nightly Builds\n\nSie verbinden sich mit einem Nightly Build der Software. Diese Version ist zu Testzwecken gedacht und enthält höchstwahrscheinlich Fehler. **In dieser Version unterstützen wir die Lösung von Problemen nicht direkt, auch wenn Sie auf Probleme stoßen.**",
-    pluginRiskDetectedAlert:
-        "Risuai hat Code erkannt, der schädlich sein könnte und IHREN API-SCHLÜSSEL ODER PERSÖNLICHE DATEN STEHLEN KANN. Wir empfehlen Ihnen, DIESES PLUGIN NICHT ZU INSTALLIEREN.",
-    doNotInstall: "Nicht installieren",
-    continueAnyway: "Trotzdem fortfahren",
-    pluginNoRiskButAlert:
-        "Risuai hat keinen schädlichen Code erkannt, aber beachten Sie bitte, dass die Installation von Plugins aus nicht vertrauenswürdigen Quellen Sicherheitsrisiken bergen kann.",
-    pluginRisksInuserFriendly: {
-        eval: "Code aus Strings auswerten",
-        globalAccess: "Zugriff auf globale Variablen",
-        thisOutsideClass: "'this' außerhalb des Klassenkontexts verwenden",
-        errorInVerification: "Fehler während des Überprüfungsprozesses",
-        storageAccess: "Zugriff auf Speicher",
-    },
-    pluginRisksInuserFriendlyDesc: {
-        eval: "Das Plugin versucht, Code aus Strings auszuführen. Strings können verschleiert werden, um schädlichen Code zu verbergen.",
-        globalAccess:
-            "Das Plugin versucht, auf globale Variablen zuzugreifen, was zu unbeabsichtigten Nebenwirkungen oder Sicherheitslücken führen kann.",
-        thisOutsideClass:
-            "Das Plugin verwendet das Schlüsselwort 'this' außerhalb des Klassenkontexts, was zu unbeabsichtigtem Verhalten oder Sicherheitsproblemen führen kann.",
-        errorInVerification:
-            "Während des Überprüfungsprozesses des Plugins sind Fehler aufgetreten, was auf potenzielle Probleme mit seiner Funktionalität hinweist.",
-        storageAccess:
-            "Das Plugin versucht, auf den Speicher zuzugreifen, was zu Datenlecks oder unbefugter Datenmanipulation führen kann.",
-    },
     generatedByAIDisclaimer:
         "Dieser Inhalt wurde von einer KI generiert und kann Ungenauigkeiten oder Verzerrungen enthalten.",
     aiGenerationWarning:

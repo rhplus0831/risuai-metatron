@@ -3,7 +3,7 @@ import { language } from "../../../lang";
 import { fetchNative, globalFetch } from "../../globalApi.svelte";
 import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/modellist";
 import { risuChatParser, risuEscape, risuUnescape } from "../../parser/parser.svelte";
-import { pluginProcess, pluginV2 } from "../../plugins/plugins.svelte";
+import { pluginHooks } from "../../plugins/pluginHooks";
 import { getCurrentCharacter, getCurrentChat, getDatabase, type character } from "../../storage/database.svelte";
 import { tokenizeNum } from "../../tokenizer";
 import { sleep } from "../../util";
@@ -247,8 +247,8 @@ export async function requestChatData(
                 };
             }
 
-            if (pluginV2.replacerbeforeRequest.size > 0) {
-                for (const replacer of pluginV2.replacerbeforeRequest) {
+            if (pluginHooks.replacerbeforeRequest.size > 0) {
+                for (const replacer of pluginHooks.replacerbeforeRequest) {
                     arg.formated = await replacer(arg.formated, model);
                 }
             }
@@ -295,8 +295,8 @@ export async function requestChatData(
                 da.result = risuEscape(da.result);
             }
 
-            if (da.type === "success" && pluginV2.replacerafterRequest.size > 0) {
-                for (const replacer of pluginV2.replacerafterRequest) {
+            if (da.type === "success" && pluginHooks.replacerafterRequest.size > 0) {
+                for (const replacer of pluginHooks.replacerafterRequest) {
                     da.result = await replacer(da.result, model);
                 }
             }
@@ -888,9 +888,8 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
     try {
         const formated = arg.formated;
         const maxTokens = arg.maxTokens;
-        const bias = arg.biasString;
         const model = isV3Model ? arg.aiModel.replace("pluginmodel:::", "") : db.currentPluginProvider;
-        const v2Function = pluginV2.providers.get(model);
+        const providerFunction = pluginHooks.providers.get(model);
 
         if (arg.previewBody) {
             return {
@@ -901,8 +900,8 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
             };
         }
 
-        const d = v2Function
-            ? await v2Function(
+        const d = providerFunction
+            ? await providerFunction(
                   applyParameters(
                       {
                           prompt_chat: formated,
@@ -927,14 +926,10 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
                   ) as any,
                   arg.abortSignal,
               )
-            : await pluginProcess({
-                  bias: bias,
-                  prompt_chat: formated,
-                  temperature: db.temperature / 100,
-                  max_tokens: maxTokens,
-                  presence_penalty: db.PresensePenalty / 100,
-                  frequency_penalty: db.frequencyPenalty / 100,
-              });
+            : {
+                  success: false,
+                  content: language.pluginProviderNotFound,
+              };
 
         if (!d) {
             return {
