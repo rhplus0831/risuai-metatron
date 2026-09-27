@@ -1,0 +1,5 @@
+# Commits skipped by git blame. Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# chore: add Prettier and format the repo
+058da60e5d7e2e06da488e172f7a327c76a26e35
