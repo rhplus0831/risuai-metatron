@@ -11,7 +11,6 @@ import {
     appSubVer,
 } from "./storage/database.svelte";
 import {
-    MobileGUI,
     botMakerMode,
     selectedCharID,
     loadedStore,
@@ -34,7 +33,6 @@ import { language } from "src/lang";
 import { startObserveDom } from "./observer.svelte";
 import { updateGuisize } from "./gui/guisize";
 import { updateLorebooks } from "./characters";
-import { initMobileGesture } from "./hotkey";
 import { moduleUpdate } from "./process/modules";
 import { isNodeServer } from "./platform";
 import { isLocalNetworkUrl } from "./network/localNetwork";

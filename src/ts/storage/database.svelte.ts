@@ -1095,7 +1095,6 @@ export interface Database {
     falLoraScale: number;
     moduleIntergration: string;
     customCSS: string;
-    betaMobileGUI: boolean;
     jsonSchemaEnabled: boolean;
     jsonSchema: string;
     strictJsonSchema: boolean;

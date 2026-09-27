@@ -2,7 +2,7 @@ import { checkNullish, sleep } from "./util";
 import { v4 as uuidv4 } from "uuid";
 import { get } from "svelte/store";
 import { setDatabase, defaultSdDataFunc, getDatabase } from "./storage/database.svelte";
-import { MobileGUI, botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState } from "./stores.svelte";
+import { botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./alert";
 import { characterURLImport } from "./characterCards";
@@ -14,7 +14,6 @@ import { language } from "src/lang";
 import { startObserveDom } from "./observer.svelte";
 import { updateGuisize } from "./gui/guisize";
 import { updateLorebooks } from "./characters";
-import { initMobileGesture } from "./hotkey";
 import { moduleUpdate } from "./process/modules";
 import { forageStorage, saveDb, getDbBackups, setUsingSw, checkCharOrder } from "./globalApi.svelte";
 import { registerModelDynamic } from "./model/modellist";
@@ -102,10 +101,6 @@ export async function loadData() {
             }
             if (db.botSettingAtStart) {
                 botMakerMode.set(true);
-            }
-            if (db.betaMobileGUI && window.innerWidth <= 800) {
-                initMobileGesture();
-                MobileGUI.set(true);
             }
             loadedStore.set(true);
             selectedCharID.set(-1);

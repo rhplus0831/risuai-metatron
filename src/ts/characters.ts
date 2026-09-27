@@ -21,7 +21,7 @@ import {
 } from "./util";
 import { v4 as uuidv4, v4 } from "uuid";
 import { getImageType } from "./media";
-import { DBState, MobileGUIStack, OpenRealmStore, selectedCharID } from "./stores.svelte";
+import { DBState, OpenRealmStore, selectedCharID } from "./stores.svelte";
 import {
     AppendableBuffer,
     changeChatTo,
@@ -905,13 +905,11 @@ export async function addCharacter(
         reseter?: () => any;
     } = {},
 ) {
-    MobileGUIStack.set(100);
     const reseter = arg.reseter ?? (() => {});
     const r = await alertAddCharacter();
     if (r === "importFromRealm") {
         selectedCharID.set(-1);
         OpenRealmStore.set(true);
-        MobileGUIStack.set(0);
         return;
     }
     reseter();
@@ -926,14 +924,12 @@ export async function addCharacter(
             await importCharacter();
             break;
         default:
-            MobileGUIStack.set(1);
             return;
     }
     let db = getDatabase();
     if (db.characters[db.characters.length - 1]) {
         changeChar(db.characters.length - 1);
     }
-    MobileGUIStack.set(1);
 }
 
 export async function changeChar(

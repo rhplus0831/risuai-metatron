@@ -4,7 +4,7 @@
     import { alertInput } from "src/ts/alert";
     import { language } from "src/lang";
     import RisuHubIcon from "./RealmHubIcon.svelte";
-    import { MobileGUI, RealmInitialOpenChar } from "src/ts/stores.svelte";
+    import { RealmInitialOpenChar } from "src/ts/stores.svelte";
     import RealmPopUp from "./RealmPopUp.svelte";
 
     let openedData: null | hubType = $state(null);
@@ -75,100 +75,55 @@
         </button>
     </div>
 </div>
-{#if $MobileGUI}
-    <div class="ml-4 flex items-start">
-        <div class="p-2 flex mb-3 overflow-x-auto rounded-lg border-darkborderc border gap-2">
-            <button
-                onclick={() => {
-                    nsfw = !nsfw;
-                    getHub();
-                }}
-            >
-                {nsfw ? "NSFW" : "SFW"}
-            </button>
-            <div class="h-full border-r border-r-selected"></div>
-            <button
-                onclick={() => {
-                    switch (sort) {
-                        case "":
-                            sort = "trending";
-                            break;
-                        case "trending":
-                            sort = "downloads";
-                            break;
-                        case "downloads":
-                            sort = "random";
-                            break;
-                        default:
-                            sort = "";
-                            break;
-                    }
-                    getHub();
-                }}
-            >
-                {sort === "recommended"
-                    ? language.recommended
-                    : sort === ""
-                      ? language.recent
-                      : sort === "trending"
-                        ? language.trending
-                        : sort === "downloads"
-                          ? language.downloads
-                          : language.random}
-            </button>
-        </div>
-    </div>
-{:else}
-    <div class="w-full p-1 flex mb-3 overflow-x-auto sm:justify-center">
-        <button
-            class="bg-darkbg p-2 rounded-lg ml-2 flex justify-center items-center hover:bg-selected transition-shadow"
-            class:ring-3={nsfw}
-            onclick={() => {
-                nsfw = !nsfw;
-                getHub();
-            }}
-        >
-            NSFW
-        </button>
-        <div class="ml-2 mr-2 h-full border-r border-r-selected"></div>
-        <button
-            class="bg-darkbg p-2 rounded-lg ml-2 flex justify-center items-center hover:bg-selected transition-shadow"
-            class:ring-3={sort === ""}
-            onclick={() => {
-                changeSort("");
-            }}
-        >
-            {language.recent}
-        </button>
-        <button
-            class="bg-darkbg p-2 rounded-lg ml-2 flex justify-center items-center hover:bg-selected transition-shadow"
-            class:ring-3={sort === "trending"}
-            onclick={() => {
-                changeSort("trending");
-            }}
-        >
-            {language.trending}
-        </button>
-        <button
-            class="bg-darkbg p-2 rounded-lg ml-2 flex justify-center items-center hover:bg-selected transition-shadow"
-            class:ring-3={sort === "downloads"}
-            onclick={() => {
-                changeSort("downloads");
-            }}
-        >
-            {language.downloads}
-        </button>
-        <button
-            class="bg-darkbg p-2 rounded-lg ml-2 flex justify-center items-center hover:bg-selected transition-shadow min-w-0 max-w-full"
-            class:ring-3={sort === "random"}
-            onclick={() => {
-                changeSort("random");
-            }}
-        >
-            {language.random}
-        </button>
-    </div>
-{/if}
+<div class="w-full p-1 flex mb-3 overflow-x-auto sm:justify-center">
+    <button
+        class="bg-darkbg p-2 rounded-lg ml-2 flex justify-center items-center hover:bg-selected transition-shadow"
+        class:ring-3={nsfw}
+        onclick={() => {
+            nsfw = !nsfw;
+            getHub();
+        }}
+    >
+        NSFW
+    </button>
+    <div class="ml-2 mr-2 h-full border-r border-r-selected"></div>
+    <button
+        class="bg-darkbg p-2 rounded-lg ml-2 flex justify-center items-center hover:bg-selected transition-shadow"
+        class:ring-3={sort === ""}
+        onclick={() => {
+            changeSort("");
+        }}
+    >
+        {language.recent}
+    </button>
+    <button
+        class="bg-darkbg p-2 rounded-lg ml-2 flex justify-center items-center hover:bg-selected transition-shadow"
+        class:ring-3={sort === "trending"}
+        onclick={() => {
+            changeSort("trending");
+        }}
+    >
+        {language.trending}
+    </button>
+    <button
+        class="bg-darkbg p-2 rounded-lg ml-2 flex justify-center items-center hover:bg-selected transition-shadow"
+        class:ring-3={sort === "downloads"}
+        onclick={() => {
+            changeSort("downloads");
+        }}
+    >
+        {language.downloads}
+    </button>
+    <button
+        class="bg-darkbg p-2 rounded-lg ml-2 flex justify-center items-center hover:bg-selected transition-shadow min-w-0 max-w-full"
+        class:ring-3={sort === "random"}
+        onclick={() => {
+            changeSort("random");
+        }}
+    >
+        {language.random}
+    </button>
+</div>
 {@html hubAdditionalHTML}
 <div class="w-full flex gap-4 p-2 flex-wrap justify-center">
     {#key charas}

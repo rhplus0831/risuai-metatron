@@ -458,14 +458,6 @@ export const displayOtherSettingsItems: SettingItem[] = [
         keywords: ["quote", "single", "trailing"],
     },
     {
-        id: "display.betaMobileGUI",
-        type: "check",
-        labelKey: "betaMobileGUI",
-        helpKey: "betaMobileGUI",
-        bindKey: "betaMobileGUI",
-        keywords: ["beta", "mobile", "gui"],
-    },
-    {
         id: "display.menuSideBar",
         type: "check",
         labelKey: "menuSideBar",

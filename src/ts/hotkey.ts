@@ -5,8 +5,6 @@ import {
     alertStore,
     DBState,
     loadoutModalStore,
-    MobileGUIStack,
-    MobileSideBar,
     openPersonaList,
     openPresetList,
     OpenRealmStore,
@@ -377,67 +375,6 @@ function focusQuery(query: string) {
     if (ele) {
         ele.focus();
     }
-}
-
-export function initMobileGesture() {
-    let pressingPointers = new Map<number, { x: number; y: number }>();
-
-    document.addEventListener(
-        "touchstart",
-        (ev) => {
-            for (const touch of ev.changedTouches) {
-                const ele = touch.target as HTMLElement;
-                if (
-                    ele.tagName === "BUTTON" ||
-                    ele.tagName === "INPUT" ||
-                    ele.tagName === "SELECT" ||
-                    ele.tagName === "TEXTAREA"
-                ) {
-                    return;
-                }
-                pressingPointers.set(touch.identifier, { x: touch.clientX, y: touch.clientY });
-            }
-        },
-        {
-            passive: true,
-        },
-    );
-    document.addEventListener(
-        "touchend",
-        (ev) => {
-            for (const touch of ev.changedTouches) {
-                const d = pressingPointers.get(touch.identifier);
-                const moveX = touch.clientX - d.x;
-                const moveY = touch.clientY - d.y;
-                pressingPointers.delete(touch.identifier);
-
-                if (moveX > 50 && Math.abs(moveY) < Math.abs(moveX)) {
-                    if (get(selectedCharID) === -1) {
-                        if (get(MobileGUIStack) > 0) {
-                            MobileGUIStack.update((v) => v - 1);
-                        }
-                    } else {
-                        if (get(MobileSideBar) > 0) {
-                            MobileSideBar.update((v) => v - 1);
-                        }
-                    }
-                } else if (moveX < -50 && Math.abs(moveY) < Math.abs(moveX)) {
-                    if (get(selectedCharID) === -1) {
-                        if (get(MobileGUIStack) < 2) {
-                            MobileGUIStack.update((v) => v + 1);
-                        }
-                    } else {
-                        if (get(MobileSideBar) < 3) {
-                            MobileSideBar.update((v) => v + 1);
-                        }
-                    }
-                }
-            }
-        },
-        {
-            passive: true,
-        },
-    );
 }
 
 function changeToPreset(num: number) {

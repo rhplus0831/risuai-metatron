@@ -182,7 +182,6 @@ export const languageVietnamese = {
         moduleIntergration:
             "Bạn có thể kích hoạt các mô-đun bằng cách đặt namespace mô-đun vào phần tích hợp mô-đun. Nếu bạn muốn kích hoạt nhiều mô-đun, bạn có thể phân tách chúng bằng dấu phẩy. Ví dụ, `module1,module2,module3`. Điều này dành cho người dùng nâng cao, những người muốn thay đổi việc sử dụng các mô-đun theo cài đặt trước.",
         customCSS: "CSS tùy chỉnh để tạo kiểu. Bạn cũng có thể tắt/bật nó bằng cách nhấn (Ctrl + .) nếu có sự cố.",
-        betaMobileGUI: "Nếu được bật, nó sẽ sử dụng GUI di động beta trên màn hình nhỏ (nhỏ hơn 800px). Cần làm mới.",
         unrecommended: "Đây là cài đặt không được khuyến nghị. Không nên sử dụng cài đặt này.",
         jsonSchema:
             'Đây là JSON Schema sẽ được gửi đến mô hình AI nếu mô hình AI hỗ trợ JSON Schema.\n\nTuy nhiên, vì JSON Schema khó học, trong Risuai, bạn có thể sử dụng tập hợp con của giao diện TypeScript thay vì JSON Schema. Risuai sẽ chuyển đổi nó trong thời gian chạy. Ví dụ, nếu bạn muốn gửi một JSON như thế này:\n\n```js\n{\n  "name": "Risuai", //tên phải là Risuai,\n  "age": 1, //tuổi phải là số,\n  "icon": "slim", //biểu tượng phải là \'slim\' hoặc \'rounded\'\n  "thoughts": ["Good View!", "Lorem"] //suy nghĩ phải là mảng chuỗi\n}\n```\n\nBạn có thể đặt giao diện TypeScript này:\n\n```typescript\ninterface Schema {\n  name: string;\n  age: number;\n  icon: \'slim\'|\'rounded\'\n  thoughts: string[]\n}\n```\n\nTên của giao diện không quan trọng. Để biết thêm thông tin, xem tài liệu typescript. (https://www.typescriptlang.org/docs/handbook/interfaces.html), và để kiểm tra tập hợp con nào của TypeScript được hỗ trợ, hãy xem bên dưới.<details><summary>Tập hợp con TypeScript được hỗ trợ</summary>\n\nCác loại được hỗ trợ là `boolean`, `number`, `string`, `Array`. Các kiểu nâng cao như kiểu đơn vị, kiểu giao nhau, kiểu hợp, tùy chọn, kiểu chữ, v.v. không được hỗ trợ ngoại trừ các trường hợp sau:\n\n        - Mảng các kiểu nguyên thủy: (ví dụ: `string[]`, `Array<boolean>)`\n        - Kiểu đơn vị giữa các chuỗi: (ví dụ: `\'slim\'|\'rounded\'`).\n\n        Các thuộc tính phải nằm trên một dòng. Nếu có nhiều thuộc tính trên một dòng, nó sẽ báo lỗi. Thuộc tính và tên của giao diện chỉ được dùng các ký tự latin, trong phạm vi ASCII. Tên của các thuộc tính không được bao quanh bởi dấu ngoặc đơn hoặc dấu ngoặc kép. Lồng nhau bên trong giao diện không được hỗ trợ. Không được phép đặt `{` hoặc `}` trong dòng mà các thuộc tính được xác định. Nếu bạn muốn sử dụng các kiểu nâng cao hơn, hãy sử dụng JSON Schema thay thế.\n        </details>',
@@ -1188,8 +1187,6 @@ export const languageVietnamese = {
     promptConvertion: "Chuyển đổi lời nhắc",
     convertionStep1: "Chọn tất cả tập tin liên quan đến lời nhắc (Context, Instruct và Sampler JSON được hỗ trợ)",
     customCSS: "CSS tùy chỉnh",
-    betaMobileGUI: "GUI di động Beta",
-    menu: "Menu",
     jsonSchema: "JSON Schema",
     enableJsonSchema: "Bật Schema",
     strictJsonSchema: "Schema nghiêm ngặt",

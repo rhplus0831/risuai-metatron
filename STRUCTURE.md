@@ -119,7 +119,7 @@ Release
 | Regex scripts, triggers v1/v2, Lua/Python scripting                                                                        | `docs/structure/scripts-triggers.md`     |
 | Plugin API (v2.1 legacy, v3 iframe sandbox), plugin providers/hooks, MCP tools                                             | `docs/structure/plugins-mcp.md`          |
 | Character cards import/export, characters/groups CRUD, modules, personas, loadouts, lorebook editor UI                     | `docs/structure/characters-modules.md`   |
-| Chat screen components, sidebar, mobile shell, GUI primitives, popups/portals, theme/colors                                | `docs/structure/ui-theming.md`           |
+| Chat screen components, sidebar, GUI primitives, popups/portals, theme/colors                                              | `docs/structure/ui-theming.md`           |
 | Settings pages, declarative settings registry, bot presets, prompt template editor, i18n                                   | `docs/structure/settings-i18n.md`        |
 | TTS, image generation, translation, media compression, playground tools                                                    | `docs/structure/media-aux.md`            |
 | Local backups, Realm hub browse, settings report export                                                                    | `docs/structure/backup-sync-hub.md`      |

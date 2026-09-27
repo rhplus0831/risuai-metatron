@@ -172,7 +172,6 @@ export const languageKorean = {
         moduleIntergration:
             "모듈 통합 섹션에 모듈 네임스페이스를 입력하여 모듈을 활성화할 수 있습니다. 여러 모듈을 활성화하려면 쉼표로 구분하세요. 예: `module1,module2,module3`. 프리셋에 따라 모듈 사용을 다르게 하고 싶은 고급 사용자를 위한 기능입니다.",
         customCSS: "스타일링을 위한 커스텀 CSS입니다. 문제가 발생하면 (Ctrl + .)을 눌러 비활성화/활성화할 수 있습니다.",
-        betaMobileGUI: "활성화되면 작은 화면(800px 미만)에서 베타 모바일 GUI를 사용합니다. 새로고침이 필요합니다.",
         enableScrollToActiveChar:
             "활성화되면 단축키를 누르거나 캐릭터를 드래그하는 동안 Ctrl을 누르면 현재 활성 캐릭터로 스크롤합니다. 폴더가 닫혀있으면 자동으로 열립니다.",
         unrecommended: "비권장 설정입니다. 이 설정을 사용하는 것은 권장되지 않습니다.",
@@ -1190,9 +1189,7 @@ export const languageKorean = {
     promptConvertion: "프롬프트 변환",
     convertionStep1: "프롬프트와 관련된 모든 파일을 선택하세요 (컨텍스트, 인스트럭트, 샘플러 JSON을 지원합니다)",
     customCSS: "커스텀 CSS",
-    betaMobileGUI: "베타 모바일 GUI",
     enableScrollToActiveChar: "활성 캐릭터로 스크롤 활성화",
-    menu: "메뉴",
     jsonSchema: "JSON 스키마",
     enableJsonSchema: "스키마 활성화",
     strictJsonSchema: "엄격한 스키마",

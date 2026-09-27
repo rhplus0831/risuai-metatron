@@ -33,7 +33,7 @@
 - Entry points:
   - `UserSettings.svelte`: local backup buttons, internal backup restore, dataset export.
 - PeerJS multiuser chat (rooms, peer sync, and the `peerjs` dependency) was removed.
-- Realm: `MainMenu`/`MobileBody` → `RealmMain` → `getRisuHub(search, page, nsfw, sort)` → `RealmPopUp` → `downloadRisuHub`. There is no upload path.
+- Realm: `MainMenu` → `RealmMain` → `getRisuHub(search, page, nsfw, sort)` → `RealmPopUp` → `downloadRisuHub`. There is no upload path.
 
 ## State
 

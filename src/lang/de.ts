@@ -193,8 +193,6 @@ export const languageGerman = {
             "Sie können Module aktivieren, indem Sie den Modul-Namespace in die Modul-Integrationsabschnitte eingeben. Wenn Sie mehrere Module aktivieren möchten, können Sie diese durch Kommas trennen. Zum Beispiel `Modul1,Modul2,Modul3`. Dies ist für fortgeschrittene Benutzer gedacht, die die Verwendung von Modulen je nach Voreinstellung variieren möchten.",
         customCSS:
             "Benutzerdefiniertes CSS für das Styling. Sie können es auch deaktivieren/aktivieren, indem Sie (Strg + .) drücken, wenn etwas schief läuft.",
-        betaMobileGUI:
-            "Wenn aktiviert, wird die Beta-Mobil-Benutzeroberfläche auf kleinen (weniger als 800px) Bildschirmen verwendet. Erfordert eine Aktualisierung.",
         unrecommended:
             "Dies ist eine nicht empfohlene Einstellung. Es wird nicht empfohlen, diese Einstellung zu verwenden.",
         jsonSchema:
@@ -1215,8 +1213,6 @@ export const languageGerman = {
     convertionStep1:
         "Wählen Sie alle Dateien aus, die sich auf die Anweisung beziehen (Kontext, Anweisung und Sampler-JSON werden unterstützt)",
     customCSS: "Benutzerdefiniertes CSS",
-    betaMobileGUI: "Beta-Mobil-GUI",
-    menu: "Menü",
     jsonSchema: "JSON-Schema",
     enableJsonSchema: "Schema aktivieren",
     strictJsonSchema: "Striktes Schema",

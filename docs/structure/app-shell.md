@@ -21,7 +21,6 @@
 - `src/ts/hotkey.ts`:
   - `initHotkey`: keydown dispatch switch.
   - `hotkeyMatches`.
-  - `initMobileGesture`: swipes.
 - `src/ts/defaulthotkeys.ts`: the `Hotkey` type and `defaultHotkeys`.
 - `src/ts/observer.svelte.ts`:
   - `startObserveDom`: an infinite 100 ms polling loop.
@@ -41,9 +40,8 @@ Boot:
    1. `loadPlugins`.
    2. `checkNewFormat`, which ends in `setDatabase`.
    3. Theme functions: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`.
-   4. `MobileGUI` when `betaMobileGUI && innerWidth <= 800`.
-   5. `loadedStore.set(true)` and `selectedCharID.set(-1)`.
-   6. Observers, ID assignment, `registerModelDynamic`, `saveDb()` (exactly once), `moduleUpdate`, `cleanLegacyAccountData`. There is no boot-time asset cleanup: orphaned `assets/*` and `remotes/*` files are never purged automatically.
+   4. `loadedStore.set(true)` and `selectedCharID.set(-1)`.
+   5. Observers, ID assignment, `registerModelDynamic`, `saveDb()` (exactly once), `moduleUpdate`, `cleanLegacyAccountData`. There is no boot-time asset cleanup: orphaned `assets/*` and `remotes/*` files are never purged automatically.
 
 Screen selection. `App.svelte` checks these in order:
 
@@ -52,8 +50,7 @@ Screen selection. `App.svelte` checks these in order:
 3. `CustomGUISettingMenuStore`.
 4. `!DBState.db.didFirstSetup` → `WelcomeRisu`.
 5. `$settingsOpen` → `Settings`.
-6. `$MobileGUI` → `MobileHeader`/`MobileBody`/`MobileFooter`.
-7. Otherwise `Sidebar` + `ChatScreen`.
+6. Otherwise `Sidebar` + `ChatScreen`.
 
 Inside `DefaultChatScreen.svelte`:
 
@@ -69,7 +66,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 - Navigation:
   - `selectedCharID`: `-1` means home.
   - `settingsOpen`, `SettingsMenuIndex`.
-  - `MobileGUI`, `MobileGUIStack`, `MobileSideBar`, `sideBarStore`, `DynamicGUI`.
+  - `sideBarStore`, `DynamicGUI`.
   - `PlaygroundStore`, `OpenRealmStore`, `RealmInitialOpenChar`.
   - `CharConfigSubMenu`, `botMakerMode`.
 - Reload signals:

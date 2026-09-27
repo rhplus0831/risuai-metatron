@@ -1,6 +1,6 @@
 <script lang="ts">
     import { getModuleToggles } from "src/ts/process/modules";
-    import { DBState, MobileGUI, selectedCharID } from "src/ts/stores.svelte";
+    import { DBState, selectedCharID } from "src/ts/stores.svelte";
     import { parseToggleSyntax, type sidebarToggle, type sidebarToggleGroup } from "src/ts/util";
     import { language } from "src/lang";
     import type { PromptItem } from "src/ts/process/prompt";
@@ -132,7 +132,7 @@
                 </Accordion>
             </div>
         {:else if toggle.type === "select"}
-            <div class="w-full flex gap-2 mt-2 items-center" class:justify-end={$MobileGUI}>
+            <div class="w-full flex gap-2 mt-2 items-center">
                 <span>{@render getToggleDisplayName(toggle)}</span>
                 <SelectInput
                     className="w-32"
@@ -147,7 +147,7 @@
                 </SelectInput>
             </div>
         {:else if toggle.type === "text"}
-            <div class="w-full flex gap-2 mt-2 items-center" class:justify-end={$MobileGUI}>
+            <div class="w-full flex gap-2 mt-2 items-center">
                 <span>{@render getToggleDisplayName(toggle)}</span>
                 <TextInput
                     className="w-32"
@@ -158,7 +158,7 @@
                 />
             </div>
         {:else if toggle.type === "textarea"}
-            <div class="w-full flex gap-2 mt-2 items-start" class:justify-end={$MobileGUI}>
+            <div class="w-full flex gap-2 mt-2 items-start">
                 <span class="mt-1.5">{@render getToggleDisplayName(toggle)}</span>
                 <TextAreaInput
                     className="w-32"
@@ -189,7 +189,7 @@
                 </div>
             {/if}
         {:else}
-            <div class="w-full flex mt-2 items-center" class:justify-end={$MobileGUI}>
+            <div class="w-full flex mt-2 items-center">
                 <CheckInput
                     check={getGlobalChatVarNH(`toggle_${toggle.key}`) === "1"}
                     {reverse}
@@ -213,14 +213,14 @@
         <CustomSideBar />
 
         {#if hasJailbreakPrompt}
-            <div class="flex mt-2 items-center w-full" class:justify-end={$MobileGUI}>
+            <div class="flex mt-2 items-center w-full">
                 <CheckInput bind:check={DBState.db.jailbreakToggle} name={language.jailbreakToggle} reverse />
             </div>
         {/if}
 
         {@render toggles(groupedToggles, true)}
         {#if chara && (DBState.db.supaModelType !== "none" || DBState.db.hanuraiEnable || DBState.db.hypaV3)}
-            <div class="flex mt-2 items-center w-full" class:justify-end={$MobileGUI}>
+            <div class="flex mt-2 items-center w-full">
                 <CheckInput
                     bind:check={chara.supaMemory}
                     reverse
@@ -260,7 +260,7 @@
     {/if}
 
     {#if chara}
-        <div class="flex mt-2 items-center w-full" class:justify-end={$MobileGUI}>
+        <div class="flex mt-2 items-center w-full">
             <CheckInput
                 check={getCurrentChat()?.useLocallySetGlobalVariables}
                 name={language.localToggles}

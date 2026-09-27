@@ -202,7 +202,6 @@ export const languageChineseTraditional = {
         moduleIntergration:
             "可在模組整合區塊填入模組 Namespace 以啟用模組；若要同時啟用多個模組，請以逗號分隔，例如 `module1,module2,module3`。此功能提供給希望依不同預設集切換模組的進階使用者",
         customCSS: "自訂 CSS 樣式。若設定造成問題，也可按 Ctrl + . 快速停用／啟用",
-        betaMobileGUI: "啟用後，小於 800px 的螢幕會使用 Beta 行動版 GUI。需要重新整理",
         enableScrollToActiveChar:
             "啟用後，按下快捷鍵，或按住 Ctrl 拖曳角色時，會捲動至目前啟用的角色；若角色所在資料夾已收合，會自動展開",
         unrecommended: "此為不建議使用的設定",
@@ -1224,9 +1223,7 @@ export const languageChineseTraditional = {
     promptConvertion: "提示詞轉換",
     convertionStep1: "選擇所有與提示詞相關的檔案（支援 Context、Instruct 與 Sampler JSON）",
     customCSS: "自訂 CSS",
-    betaMobileGUI: "Beta 行動版 GUI",
     enableScrollToActiveChar: "啟用捲動至目前角色",
-    menu: "選單",
     jsonSchema: "JSON Schema",
     enableJsonSchema: "啟用 Schema",
     strictJsonSchema: "嚴格 Schema",

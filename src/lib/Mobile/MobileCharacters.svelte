@@ -3,7 +3,6 @@
     import { DBState } from "src/ts/stores.svelte";
     import BarIcon from "../SideBars/BarIcon.svelte";
     import { addCharacter, changeChar, getCharImage } from "src/ts/characters";
-    import { MobileSearch } from "src/ts/stores.svelte";
     import { MessageSquareIcon, PlusIcon } from "@lucide/svelte";
 
     interface Props {
@@ -15,7 +14,7 @@
     const agoFormatter = new Intl.RelativeTimeFormat(navigator.languages, { style: "short" });
 
     let { endGrid = () => {}, search, hideTrash = false }: Props = $props();
-    let normalizedSearch = $derived(normalizeSearch(search ?? $MobileSearch));
+    let normalizedSearch = $derived(normalizeSearch(search ?? ""));
 
     function normalizeSearch(value: string) {
         return value.replace(/ /g, "").toLocaleLowerCase();

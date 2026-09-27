@@ -3,7 +3,7 @@
 ## Scope
 
 - Owns:
-  - the Svelte component tree below `App.svelte` (chat screen, message rendering components, sidebar, mobile shell),
+  - the Svelte component tree below `App.svelte` (chat screen, message rendering components, sidebar),
   - the reusable GUI primitives,
   - popups and portals,
   - theme colors and CSS tokens,
@@ -69,7 +69,7 @@ Other UI:
 
 Mobile:
 
-- `Mobile/MobileHeader.svelte`, `MobileBody.svelte`, `MobileFooter.svelte`, `MobileCharacters.svelte`: driven by `MobileGUIStack` and `MobileSideBar`.
+- `Mobile/MobileCharacters.svelte`: the list view of the character grid (`Others/GridCatalog.svelte`). The separate beta mobile shell was removed; small screens use the desktop layout.
 
 Theme and GUI helpers:
 
@@ -92,7 +92,6 @@ Theme and GUI helpers:
 ## Flows
 
 - Desktop: `App` → `Sidebar` + `ChatScreen` → `DefaultChatScreen` → `Chats` → `Chat` → `ChatBody`.
-- Mobile: `App` → `MobileHeader`/`MobileBody`/`MobileFooter`. `MobileBody` picks `SideChatList`, `CharConfig`, `DevTool`, `ChatScreen`, Realm, or settings.
 - First greeting: rendered as a separate `Chat` with `idx: -1`. `fmIndex: -1` means `firstMessage`. `fmIndex >= 0` selects `alternateGreetings[fmIndex]`.
 - Popups: `PopupButton` → `popupStore` → `App` renders `PopupList`, which closes on the next document click.
 - Theme: at boot `bootstrap.ts` calls `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, and `updateGuisize`. The display settings call the same functions. Plugins can call them via `apiV3`.
@@ -123,7 +122,6 @@ Theme and GUI helpers:
   - Custom CSS is injected via `CustomCSSStore` and must stay disabled in `SafeModeStore`.
 - Runes and legacy stores are mixed: `$state`/`$derived`/`$props`/`$bindable`/snippets alongside `writable` stores, `.subscribe`, `createEventDispatcher`, and `on:save`. Match the local component.
 - Primitive prop convention: an `interface Props`, destructured with `$props()`, `$bindable()` for mutable values, callback props (`onclick`, `onchange`), and `children: Snippet`.
-- Platform branches to keep: the mobile shell is separate.
 
 ## Recipes
 
@@ -131,7 +129,6 @@ Theme and GUI helpers:
 - Add a sidebar chat operation: `SideChatList.svelte`, plus `Chat` in `database.svelte.ts` if the shape changes. Use `changeChatTo` and bump `ReloadGUIPointer`.
 - Add a form primitive: follow the prop convention in `src/lib/UI/GUI/` and add cases to `guiRendering.test.ts`.
 - Add a popup or portal: a store in `stores.svelte.ts`, then the trigger and host (`PopupButton`/`PopupList` or `Portal`). Clean up mounts and listeners.
-- Add mobile navigation: update `MobileBody`, `MobileHeader`, and `MobileFooter` together with the `Mobile*` stores.
 
 ## Tests
 

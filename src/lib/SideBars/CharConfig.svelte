@@ -9,7 +9,7 @@
     } from "../../ts/storage/database.svelte";
     import { DBState } from "src/ts/stores.svelte";
     import { untrack } from "svelte";
-    import { CharConfigSubMenu, MobileGUI, selectedCharID, hypaV3ModalOpen } from "../../ts/stores.svelte";
+    import { CharConfigSubMenu, selectedCharID, hypaV3ModalOpen } from "../../ts/stores.svelte";
     import {
         PlusIcon,
         SmileIcon,
@@ -299,7 +299,7 @@
     }
 </script>
 
-{#if licensed !== "private" && !$MobileGUI}
+{#if licensed !== "private"}
     <div class="flex mb-2" class:gap-2={iconButtonSize === 24} class:gap-1={iconButtonSize < 24}>
         <button
             class={$CharConfigSubMenu === 0 ? "text-textcolor " : "text-textcolor2"}
@@ -468,17 +468,15 @@
     />
     <span class="text-textcolor2 mb-6 text-sm">{tokens.localNote} {language.tokens}</span>
 
-    {#if !$MobileGUI}
-        <Toggles bind:chara={DBState.db.characters[$selectedCharID]} noContainer />
+    <Toggles bind:chara={DBState.db.characters[$selectedCharID]} noContainer />
 
-        {#if DBState.db.characters[$selectedCharID].type === "group"}
-            <div class="flex mt-2 items-center">
-                <Check
-                    bind:check={(DBState.db.characters[$selectedCharID] as groupChat).orderByOrder}
-                    name={language.orderByOrder}
-                />
-            </div>
-        {/if}
+    {#if DBState.db.characters[$selectedCharID].type === "group"}
+        <div class="flex mt-2 items-center">
+            <Check
+                bind:check={(DBState.db.characters[$selectedCharID] as groupChat).orderByOrder}
+                name={language.orderByOrder}
+            />
+        </div>
     {/if}
 {:else if licensed === "private"}
     <span>You are not allowed</span>
@@ -486,9 +484,7 @@
         $CharConfigSubMenu = 0;
     })()}
 {:else if $CharConfigSubMenu === 1}
-    {#if !$MobileGUI}
-        <h2 class="mb-2 text-2xl font-bold mt-2">{language.characterDisplay}</h2>
-    {/if}
+    <h2 class="mb-2 text-2xl font-bold mt-2">{language.characterDisplay}</h2>
 
     <div class="flex w-full rounded-md border border-selected mb-4">
         <button
@@ -955,15 +951,11 @@
         </div>
     {/if}
 {:else if $CharConfigSubMenu === 3}
-    {#if !$MobileGUI}
-        <h2 class="mb-2 text-2xl font-bold mt-2">{language.loreBook} <Help key="lorebook" /></h2>
-    {/if}
+    <h2 class="mb-2 text-2xl font-bold mt-2">{language.loreBook} <Help key="lorebook" /></h2>
     <LoreBook />
 {:else if $CharConfigSubMenu === 4}
     {#if DBState.db.characters[$selectedCharID].type === "character"}
-        {#if !$MobileGUI}
-            <h2 class="mb-2 text-2xl font-bold mt-2">{language.scripts}</h2>
-        {/if}
+        <h2 class="mb-2 text-2xl font-bold mt-2">{language.scripts}</h2>
 
         <span class="text-textcolor mt-2">{language.backgroundHTML} <Help key="backgroundHTML" /></span>
         <TextAreaInput
@@ -1045,9 +1037,7 @@
     >
 {:else if $CharConfigSubMenu === 5}
     {#if DBState.db.characters[$selectedCharID].type === "character"}
-        {#if !$MobileGUI}
-            <h2 class="mb-2 text-2xl font-bold mt-2">TTS</h2>
-        {/if}
+        <h2 class="mb-2 text-2xl font-bold mt-2">TTS</h2>
         <span class="text-textcolor">{language.provider}</span>
         <SelectInput
             className="mb-4 mt-2"
@@ -1469,9 +1459,7 @@
         {/if}
     {/if}
 {:else if $CharConfigSubMenu === 2}
-    {#if !$MobileGUI}
-        <h2 class="mb-2 text-2xl font-bold mt-2">{language.advancedSettings}</h2>
-    {/if}
+    <h2 class="mb-2 text-2xl font-bold mt-2">{language.advancedSettings}</h2>
     {#if DBState.db.characters[$selectedCharID].type !== "group"}
         <span class="text-textcolor mt-2">Bias <Help key="bias" /></span>
         <div class="w-full max-w-full border border-selected rounded-md p-2 mb-2">
