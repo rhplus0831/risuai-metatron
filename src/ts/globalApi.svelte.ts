@@ -1,9 +1,26 @@
-import { checkNullish, sleep } from "./util"
-import { v4 as uuidv4, v4 } from 'uuid';
+import { checkNullish, sleep } from "./util";
+import { v4 as uuidv4, v4 } from "uuid";
 import { get } from "svelte/store";
-import streamSaver from 'streamsaver';
-import { setDatabase, defaultSdDataFunc, getDatabase, appVer, getCurrentCharacter, appSubVer } from "./storage/database.svelte";
-import { MobileGUI, botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState, selIdState, ReloadGUIPointer, bodyIntercepterStore } from "./stores.svelte";
+import streamSaver from "streamsaver";
+import {
+    setDatabase,
+    defaultSdDataFunc,
+    getDatabase,
+    appVer,
+    getCurrentCharacter,
+    appSubVer,
+} from "./storage/database.svelte";
+import {
+    MobileGUI,
+    botMakerMode,
+    selectedCharID,
+    loadedStore,
+    DBState,
+    LoadingStatusState,
+    selIdState,
+    ReloadGUIPointer,
+    bodyIntercepterStore,
+} from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertConfirm, alertError, alertMd, alertNormal, alertNormalWait, alertSelect, waitAlert } from "./alert";
 import { hasher } from "./parser/parser.svelte";
@@ -24,208 +41,202 @@ import { isLocalNetworkUrl } from "./network/localNetwork";
 import { decodeProxyJobWsChunk, formatProxyStreamErrorMessage, parseProxyJobWsEvent } from "./network/proxyJobWs";
 import { getNodeServerProxyAuth } from "./storage/nodeStorage";
 
-export const forageStorage = new AutoStorage()
+export const forageStorage = new AutoStorage();
 
 interface fetchLog {
-    body: string
-    header: string
-    response: string
-    success: boolean,
-    date: string
-    url: string
-    responseType?: string
-    chatId?: string
-    status?: number
+    body: string;
+    header: string;
+    response: string;
+    success: boolean;
+    date: string;
+    url: string;
+    responseType?: string;
+    chatId?: string;
+    status?: number;
 }
 
-let fetchLog: fetchLog[] = []
+let fetchLog: fetchLog[] = [];
 
 export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer | string) {
-    if (typeof (dat) === 'string') {
-        dat = Buffer.from(dat, 'utf-8')
+    if (typeof dat === "string") {
+        dat = Buffer.from(dat, "utf-8");
     }
-    const data = new Uint8Array(dat)
+    const data = new Uint8Array(dat);
     const downloadURL = (data: string, fileName: string) => {
-        const a = document.createElement('a')
-        a.href = data
-        a.download = fileName
-        document.body.appendChild(a)
-        a.style.display = 'none'
-        a.click()
-        a.remove()
-    }
+        const a = document.createElement("a");
+        a.href = data;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.style.display = "none";
+        a.click();
+        a.remove();
+    };
 
-    const blob = new Blob([data], { type: 'application/octet-stream' })
-    const url = URL.createObjectURL(blob)
+    const blob = new Blob([data], { type: "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
 
-    downloadURL(url, name)
+    downloadURL(url, name);
 
     setTimeout(() => {
-        URL.revokeObjectURL(url)
-    }, 10000)
+        URL.revokeObjectURL(url);
+    }, 10000);
 }
 
 let fileCache: {
-    origin: string[], res: (Uint8Array | 'loading' | 'done')[]
+    origin: string[];
+    res: (Uint8Array | "loading" | "done")[];
 } = {
     origin: [],
-    res: []
-}
+    res: [],
+};
 
 /**
  * Gets the source URL of a file.
- * 
+ *
  * @param {string} loc - The location of the file.
  * @returns {Promise<string>} - A promise that resolves to the source URL of the file.
  */
 export async function getFileSrc(loc: string) {
     try {
         if (usingSw) {
-            const encoded = Buffer.from(loc, 'utf-8').toString('hex')
-            let ind = fileCache.origin.indexOf(loc)
+            const encoded = Buffer.from(loc, "utf-8").toString("hex");
+            let ind = fileCache.origin.indexOf(loc);
             if (ind === -1) {
-                ind = fileCache.origin.length
-                fileCache.origin.push(loc)
-                fileCache.res.push('loading')
+                ind = fileCache.origin.length;
+                fileCache.origin.push(loc);
+                fileCache.res.push("loading");
                 try {
-                    const hasCache: boolean = (await (await fetch("/sw/check/" + encoded)).json()).able
+                    const hasCache: boolean = (await (await fetch("/sw/check/" + encoded)).json()).able;
                     if (hasCache) {
-                        fileCache.res[ind] = 'done'
-                        return "/sw/img/" + encoded
-                    }
-                    else {
-                        const f: Uint8Array = await forageStorage.getItem(loc) as unknown as Uint8Array
+                        fileCache.res[ind] = "done";
+                        return "/sw/img/" + encoded;
+                    } else {
+                        const f: Uint8Array = (await forageStorage.getItem(loc)) as unknown as Uint8Array;
                         await fetch("/sw/register/" + encoded, {
                             method: "POST",
-                            body: f as any
-                        })
-                        fileCache.res[ind] = 'done'
-                        await sleep(10)
+                            body: f as any,
+                        });
+                        fileCache.res[ind] = "done";
+                        await sleep(10);
                     }
-                    return "/sw/img/" + encoded
-                } catch (error) {
-
-                }
-            }
-            else {
-                const f = fileCache.res[ind]
-                if (f === 'loading') {
-                    while (fileCache.res[ind] === 'loading') {
-                        await sleep(10)
+                    return "/sw/img/" + encoded;
+                } catch (error) {}
+            } else {
+                const f = fileCache.res[ind];
+                if (f === "loading") {
+                    while (fileCache.res[ind] === "loading") {
+                        await sleep(10);
                     }
                 }
-                return "/sw/img/" + encoded
+                return "/sw/img/" + encoded;
             }
-        }
-        else {
-            let ind = fileCache.origin.indexOf(loc)
+        } else {
+            let ind = fileCache.origin.indexOf(loc);
             if (ind === -1) {
-                ind = fileCache.origin.length
-                fileCache.origin.push(loc)
-                fileCache.res.push('loading')
-                const f: Uint8Array = await forageStorage.getItem(loc) as unknown as Uint8Array
-                fileCache.res[ind] = f
-                return `data:image/png;base64,${Buffer.from(f).toString('base64')}`
-            }
-            else {
-                const f = fileCache.res[ind]
-                if (f === 'loading') {
-                    while (fileCache.res[ind] === 'loading') {
-                        await sleep(10)
+                ind = fileCache.origin.length;
+                fileCache.origin.push(loc);
+                fileCache.res.push("loading");
+                const f: Uint8Array = (await forageStorage.getItem(loc)) as unknown as Uint8Array;
+                fileCache.res[ind] = f;
+                return `data:image/png;base64,${Buffer.from(f).toString("base64")}`;
+            } else {
+                const f = fileCache.res[ind];
+                if (f === "loading") {
+                    while (fileCache.res[ind] === "loading") {
+                        await sleep(10);
                     }
-                    return `data:image/png;base64,${Buffer.from(fileCache.res[ind]).toString('base64')}`
+                    return `data:image/png;base64,${Buffer.from(fileCache.res[ind]).toString("base64")}`;
                 }
-                return `data:image/png;base64,${Buffer.from(f).toString('base64')}`
+                return `data:image/png;base64,${Buffer.from(f).toString("base64")}`;
             }
         }
     } catch (error) {
-        console.error(error)
-        return ''
+        console.error(error);
+        return "";
     }
 }
 
 /**
  * Reads an image file and returns its data.
- * 
+ *
  * @param {string} data - The path to the image file.
  * @returns {Promise<Uint8Array>} - A promise that resolves to the data of the image file.
  */
 export async function readImage(data: string) {
-    return (await forageStorage.getItem(data) as unknown as Uint8Array)
+    return (await forageStorage.getItem(data)) as unknown as Uint8Array;
 }
 
 /**
  * Saves an asset file with the given data, custom ID, and file name.
- * 
+ *
  * @param {Uint8Array} data - The data of the asset file.
  * @param {string} [customId=''] - The custom ID for the asset file.
  * @param {string} [fileName=''] - The name of the asset file.
  * @returns {Promise<string>} - A promise that resolves to the path of the saved asset file.
  */
-export async function saveAsset(data: Uint8Array, customId: string = '', fileName: string = '') {
-    let id = ''
-    if (customId !== '') {
-        id = customId
-    }
-    else {
+export async function saveAsset(data: Uint8Array, customId: string = "", fileName: string = "") {
+    let id = "";
+    if (customId !== "") {
+        id = customId;
+    } else {
         try {
-            id = await hasher(data)
+            id = await hasher(data);
         } catch (error) {
-            id = uuidv4()
+            id = uuidv4();
         }
     }
-    let fileExtension: string = 'png'
-    if (fileName && fileName.split('.').length > 0) {
-        fileExtension = fileName.split('.').pop()
+    let fileExtension: string = "png";
+    if (fileName && fileName.split(".").length > 0) {
+        fileExtension = fileName.split(".").pop();
     }
-    let form = `assets/${id}.${fileExtension}`
-    await forageStorage.setItem(form, data)
-    return form
+    let form = `assets/${id}.${fileExtension}`;
+    await forageStorage.setItem(form, data);
+    return form;
 }
 
 /**
  * Loads an asset file with the given ID.
- * 
+ *
  * @param {string} id - The ID of the asset file to load.
  * @returns {Promise<Uint8Array>} - A promise that resolves to the data of the loaded asset file.
  */
 export async function loadAsset(id: string) {
-    return await forageStorage.getItem(id) as unknown as Uint8Array
+    return (await forageStorage.getItem(id)) as unknown as Uint8Array;
 }
 
-let lastSave = ''
+let lastSave = "";
 export let saving = $state({
-    state: false
-})
+    state: false,
+});
 
 /**
  * Saves the current state of the database.
- * 
+ *
  * @returns {Promise<void>} - A promise that resolves when the database has been saved.
  */
 export let requiresFullEncoderReload = $state({
-    state: false
-})
+    state: false,
+});
 export async function saveDb() {
-    let changed = false
-    let gotChannel = false
-    const sessionID = v4()
-    let channel: BroadcastChannel
+    let changed = false;
+    let gotChannel = false;
+    const sessionID = v4();
+    let channel: BroadcastChannel;
     if (window.BroadcastChannel) {
-        channel = new BroadcastChannel('risu-db')
+        channel = new BroadcastChannel("risu-db");
     }
     if (channel) {
         channel.onmessage = (ev) => {
             if (ev.data === sessionID) {
-                return
+                return;
             }
             if (!gotChannel) {
-                gotChannel = true
+                gotChannel = true;
                 alertNormalWait(language.activeTabChange).then(() => {
-                    location.reload()
-                })
+                    location.reload();
+                });
             }
-        }
+        };
     }
 
     const changeTracker: toSaveType = {
@@ -235,22 +246,21 @@ export async function saveDb() {
         modules: false,
         loadouts: false,
         plugins: false,
-        pluginCustomStorage: false
-    }
+        pluginCustomStorage: false,
+    };
 
-    let encoder = new RisuSaveEncoder()
-    await encoder.init(getDatabase())
+    let encoder = new RisuSaveEncoder();
+    await encoder.init(getDatabase());
 
     $effect.root(() => {
-
-        let selIdState = $state(0)
+        let selIdState = $state(0);
 
         const debounceTime = 500; // 500 milliseconds
         let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
         selectedCharID.subscribe((v) => {
-            selIdState = v
-        })
+            selIdState = v;
+        });
 
         function saveTimeoutExecute() {
             if (saveTimeout) {
@@ -262,156 +272,162 @@ export async function saveDb() {
         }
 
         $effect(() => {
-            DBState.db.botPresetsId
-            DBState.db.botPresets.length
-            changeTracker.botPreset = true
-            saveTimeoutExecute()
-        })
+            DBState.db.botPresetsId;
+            DBState.db.botPresets.length;
+            changeTracker.botPreset = true;
+            saveTimeoutExecute();
+        });
         $effect(() => {
-            $state.snapshot(DBState.db.modules)
-            changeTracker.modules = true
-            saveTimeoutExecute()
-        })
+            $state.snapshot(DBState.db.modules);
+            changeTracker.modules = true;
+            saveTimeoutExecute();
+        });
         $effect(() => {
-            $state.snapshot(DBState.db.loadouts)
-            changeTracker.loadouts = true
-            saveTimeoutExecute()
-        })
+            $state.snapshot(DBState.db.loadouts);
+            changeTracker.loadouts = true;
+            saveTimeoutExecute();
+        });
         $effect(() => {
-            $state.snapshot(DBState.db.plugins)
-            changeTracker.plugins = true
-            saveTimeoutExecute()
-        })
+            $state.snapshot(DBState.db.plugins);
+            changeTracker.plugins = true;
+            saveTimeoutExecute();
+        });
         $effect(() => {
-            $state.snapshot(DBState.db.pluginCustomStorage)
-            changeTracker.pluginCustomStorage = true
-            saveTimeoutExecute()
-        })
+            $state.snapshot(DBState.db.pluginCustomStorage);
+            changeTracker.pluginCustomStorage = true;
+            saveTimeoutExecute();
+        });
         $effect(() => {
             for (const key in DBState.db) {
                 if (
-                    key !== 'characters' && key !== 'botPresets' && key !== 'modules' &&
-                    key !== 'loadouts' && key !== 'plugins' && key !== 'pluginCustomStorage'
+                    key !== "characters" &&
+                    key !== "botPresets" &&
+                    key !== "modules" &&
+                    key !== "loadouts" &&
+                    key !== "plugins" &&
+                    key !== "pluginCustomStorage"
                 ) {
-                    $state.snapshot(DBState.db[key])
+                    $state.snapshot(DBState.db[key]);
                 }
             }
             if (DBState?.db?.characters?.[selIdState]) {
                 for (const key in DBState.db.characters[selIdState]) {
-                    if (key !== 'chats') {
-                        $state.snapshot(DBState.db.characters[selIdState][key])
+                    if (key !== "chats") {
+                        $state.snapshot(DBState.db.characters[selIdState][key]);
                     }
                 }
-                $state.snapshot(DBState.db.characters[selIdState].chats)
+                $state.snapshot(DBState.db.characters[selIdState].chats);
                 if (changeTracker.character[0] !== DBState.db.characters[selIdState]?.chaId) {
-                    changeTracker.character.unshift(DBState.db.characters[selIdState]?.chaId)
+                    changeTracker.character.unshift(DBState.db.characters[selIdState]?.chaId);
                 }
                 if (
                     changeTracker.chat[0]?.[0] !== DBState.db.characters[selIdState]?.chaId ||
-                    changeTracker.chat[0]?.[1] !== DBState.db.characters[selIdState]?.chats[DBState.db.characters[selIdState]?.chatPage].id
+                    changeTracker.chat[0]?.[1] !==
+                        DBState.db.characters[selIdState]?.chats[DBState.db.characters[selIdState]?.chatPage].id
                 ) {
-                    changeTracker.chat.unshift([DBState.db.characters[selIdState]?.chaId, DBState.db.characters[selIdState]?.chats[DBState.db.characters[selIdState]?.chatPage].id])
+                    changeTracker.chat.unshift([
+                        DBState.db.characters[selIdState]?.chaId,
+                        DBState.db.characters[selIdState]?.chats[DBState.db.characters[selIdState]?.chatPage].id,
+                    ]);
                 }
             }
-            saveTimeoutExecute()
-        })
-    })
+            saveTimeoutExecute();
+        });
+    });
 
-    let savetrys = 0
-    let lastDbData = new Uint8Array(0)
-    await sleep(1000)
+    let savetrys = 0;
+    let lastDbData = new Uint8Array(0);
+    await sleep(1000);
     while (true) {
         if (!changed) {
-            await sleep(500)
-            continue
+            await sleep(500);
+            continue;
         }
 
-        saving.state = true
-        changed = false
+        saving.state = true;
+        changed = false;
         try {
-
             if (requiresFullEncoderReload.state) {
-                encoder = new RisuSaveEncoder()
+                encoder = new RisuSaveEncoder();
                 await encoder.init(getDatabase(), {
-                    skipRemoteSavingOnCharacters: false
-                })
-                requiresFullEncoderReload.state = false
+                    skipRemoteSavingOnCharacters: false,
+                });
+                requiresFullEncoderReload.state = false;
             }
 
-            let toSave = safeStructuredClone(changeTracker)
-            changeTracker.character = changeTracker.character.length === 0 ? [] : [changeTracker.character[0]]
-            changeTracker.chat = changeTracker.chat.length === 0 ? [] : [changeTracker.chat[0]]
-            changeTracker.botPreset = false
-            changeTracker.modules = false
+            let toSave = safeStructuredClone(changeTracker);
+            changeTracker.character = changeTracker.character.length === 0 ? [] : [changeTracker.character[0]];
+            changeTracker.chat = changeTracker.chat.length === 0 ? [] : [changeTracker.chat[0]];
+            changeTracker.botPreset = false;
+            changeTracker.modules = false;
             if (gotChannel) {
                 //Data is saved in other tab
-                await sleep(1000)
-                continue
+                await sleep(1000);
+                continue;
             }
             if (channel) {
-                channel.postMessage(sessionID)
+                channel.postMessage(sessionID);
             }
-            let db = getDatabase()
+            let db = getDatabase();
             if (!db.characters) {
-                await sleep(1000)
-                continue
+                await sleep(1000);
+                continue;
             }
 
-            await encoder.set(db, toSave)
-            const encoded = encoder.encode()
+            await encoder.set(db, toSave);
+            const encoded = encoder.encode();
             if (!encoded) {
-                await sleep(1000)
-                continue
+                await sleep(1000);
+                continue;
             }
-            const dbData = new Uint8Array(encoded)
-            await forageStorage.setItem('database/database.bin', dbData)
-            await forageStorage.setItem(`database/dbbackup-${(Date.now() / 100).toFixed()}.bin`, dbData)
-            await getDbBackups()
-            savetrys = 0
-            await sleep(500)
+            const dbData = new Uint8Array(encoded);
+            await forageStorage.setItem("database/database.bin", dbData);
+            await forageStorage.setItem(`database/dbbackup-${(Date.now() / 100).toFixed()}.bin`, dbData);
+            await getDbBackups();
+            savetrys = 0;
+            await sleep(500);
         } catch (error) {
-            savetrys += 1
+            savetrys += 1;
             if (savetrys > 4) {
-                alertError(error)
-            }
-            else {
-                console.error(error)
+                alertError(error);
+            } else {
+                console.error(error);
             }
         }
 
-        saving.state = false
+        saving.state = false;
     }
 }
 
 /**
  * Retrieves the database backups.
- * 
+ *
  * @returns {Promise<number[]>} - A promise that resolves to an array of backup timestamps.
  */
 export async function getDbBackups() {
-    const keys = await forageStorage.keys()
+    const keys = await forageStorage.keys();
 
     const backups = keys
-        .filter(key => key.startsWith('database/dbbackup-'))
-        .map(key => parseInt(key.slice(18, -4)))
+        .filter((key) => key.startsWith("database/dbbackup-"))
+        .map((key) => parseInt(key.slice(18, -4)))
         .sort((a, b) => b - a);
 
     while (backups.length > 20) {
-        const last = backups.pop()
-        await forageStorage.removeItem(`database/dbbackup-${last}.bin`)
+        const last = backups.pop();
+        await forageStorage.removeItem(`database/dbbackup-${last}.bin`);
     }
-    return backups
+    return backups;
 }
 
-let usingSw = false
+let usingSw = false;
 
 export function setUsingSw(value: boolean) {
-    usingSw = value
+    usingSw = value;
 }
 
 /**
  * Retrieves fetch data for a given chat ID.
- * 
+ *
  * @param {string} id - The chat ID to search for in the fetch log.
  * @returns {fetchLog | null} - The fetch log entry if found, otherwise null.
  */
@@ -433,14 +449,16 @@ function getProxy2Url() {
 }
 
 function getProxyStreamJobBaseUrl() {
-    return isNodeServer ? '' : `${hubURL}`;
+    return isNodeServer ? "" : `${hubURL}`;
 }
 
 function buildTimeoutSignal(originalSignal?: AbortSignal, timeoutMs?: number) {
     if (!timeoutMs || timeoutMs <= 0) {
         return {
             signal: originalSignal,
-            cleanup: () => { /* no-op */ }
+            cleanup: () => {
+                /* no-op */
+            },
         };
     }
 
@@ -449,9 +467,8 @@ function buildTimeoutSignal(originalSignal?: AbortSignal, timeoutMs?: number) {
     if (originalSignal) {
         if (originalSignal.aborted) {
             controller.abort();
-        }
-        else {
-            originalSignal.addEventListener('abort', onAbort, { once: true });
+        } else {
+            originalSignal.addEventListener("abort", onAbort, { once: true });
         }
     }
 
@@ -461,14 +478,14 @@ function buildTimeoutSignal(originalSignal?: AbortSignal, timeoutMs?: number) {
         signal: controller.signal,
         cleanup: () => {
             clearTimeout(timeoutId);
-            originalSignal?.removeEventListener('abort', onAbort);
-        }
+            originalSignal?.removeEventListener("abort", onAbort);
+        },
     };
 }
 
 /**
  * Interface representing the arguments for the global fetch function.
- * 
+ *
  * @interface GlobalFetchArgs
  * @property {boolean} [plainFetchForce] - Whether to force plain fetch.
  * @property {any} [body] - The body of the request.
@@ -485,18 +502,18 @@ export interface GlobalFetchArgs {
     body?: any;
     headers?: { [key: string]: string };
     rawResponse?: boolean;
-    method?: 'POST' | 'GET';
+    method?: "POST" | "GET";
     abortSignal?: AbortSignal;
     useRisuToken?: boolean;
     chatId?: string;
     interceptor?: string;
     requestTimeoutMs?: number;
-    networkRoute?: 'auto' | 'local_network';
+    networkRoute?: "auto" | "local_network";
 }
 
 /**
  * Interface representing the result of the global fetch function.
- * 
+ *
  * @interface GlobalFetchResult
  * @property {boolean} ok - Whether the request was successful.
  * @property {any} data - The data returned from the request.
@@ -511,7 +528,7 @@ interface GlobalFetchResult {
 
 /**
  * Adds a fetch log entry.
- * 
+ *
  * @param {Object} arg - The arguments for the fetch log entry.
  * @param {any} arg.body - The body of the request.
  * @param {{ [key: string]: string }} [arg.headers] - The headers of the request.
@@ -523,32 +540,32 @@ interface GlobalFetchResult {
  * @returns {number} - The index of the added fetch log entry.
  */
 export function addFetchLog(arg: {
-    body: any,
-    headers?: { [key: string]: string },
-    response: any,
-    success: boolean,
-    url: string,
-    resType?: string,
-    chatId?: string,
-    status?: number
+    body: any;
+    headers?: { [key: string]: string };
+    response: any;
+    success: boolean;
+    url: string;
+    resType?: string;
+    chatId?: string;
+    status?: number;
 }): number {
     fetchLog.unshift({
-        body: typeof (arg.body) === 'string' ? arg.body : JSON.stringify(arg.body, null, 2),
+        body: typeof arg.body === "string" ? arg.body : JSON.stringify(arg.body, null, 2),
         header: JSON.stringify(arg.headers ?? {}, null, 2),
-        response: typeof (arg.response) === 'string' ? arg.response : JSON.stringify(arg.response, null, 2),
-        responseType: arg.resType ?? 'json',
+        response: typeof arg.response === "string" ? arg.response : JSON.stringify(arg.response, null, 2),
+        responseType: arg.resType ?? "json",
         success: arg.success,
-        date: (new Date()).toLocaleTimeString(),
+        date: new Date().toLocaleTimeString(),
         url: arg.url,
         chatId: arg.chatId,
-        status: arg.status
+        status: arg.status,
     });
     return 0;
 }
 
 /**
  * Performs a global fetch request.
- * 
+ *
  * @param {string} url - The URL to fetch.
  * @param {GlobalFetchArgs} [arg={}] - The arguments for the fetch request.
  * @returns {Promise<GlobalFetchResult>} - The result of the fetch request.
@@ -556,35 +573,43 @@ export function addFetchLog(arg: {
 export async function globalFetch(url: string, arg: GlobalFetchArgs = {}): Promise<GlobalFetchResult> {
     try {
         const db = getDatabase();
-        if (arg.abortSignal?.aborted) { return { ok: false, data: 'aborted', headers: {}, status: 400 }; }
+        if (arg.abortSignal?.aborted) {
+            return { ok: false, data: "aborted", headers: {}, status: 400 };
+        }
 
-        const urlHost = new URL(url).hostname
-        const useLocalNetworkRoute = arg.networkRoute === 'local_network' && isLocalNetworkUrl(url)
-        const forcePlainFetch = (knownHostes.includes(urlHost) || db.usePlainFetch || arg.plainFetchForce) && !arg.plainFetchDeforce && !useLocalNetworkRoute
+        const urlHost = new URL(url).hostname;
+        const useLocalNetworkRoute = arg.networkRoute === "local_network" && isLocalNetworkUrl(url);
+        const forcePlainFetch =
+            (knownHostes.includes(urlHost) || db.usePlainFetch || arg.plainFetchForce) &&
+            !arg.plainFetchDeforce &&
+            !useLocalNetworkRoute;
 
         if (useLocalNetworkRoute && !isNodeServer) {
             return { ok: false, headers: {}, status: 400, data: webLocalNetworkBlockedMessage };
         }
 
         if (knownHostes.includes(urlHost) && !isNodeServer) {
-            return { ok: false, headers: {}, status: 400, data: 'You are trying local request on web version. This is not allowed due to browser security policy. Use the self-hosted Node server instead, or use a tunneling service like ngrok and set the CORS to allow all.' };
+            return {
+                ok: false,
+                headers: {},
+                status: 400,
+                data: "You are trying local request on web version. This is not allowed due to browser security policy. Use the self-hosted Node server instead, or use a tunneling service like ngrok and set the CORS to allow all.",
+            };
         }
 
-        if(arg.interceptor){
+        if (arg.interceptor) {
             for (const interceptor of bodyIntercepterStore) {
                 try {
-                    arg.body = await interceptor.callback(arg.body, arg.interceptor) || arg.body
-                }
-                catch (e) {
-                    console.error(e)
+                    arg.body = (await interceptor.callback(arg.body, arg.interceptor)) || arg.body;
+                } catch (e) {
+                    console.error(e);
                 }
             }
         }
 
-        const timeoutSignal = buildTimeoutSignal(arg.abortSignal, arg.requestTimeoutMs)
-        const requestArg = timeoutSignal.signal === arg.abortSignal
-            ? arg
-            : { ...arg, abortSignal: timeoutSignal.signal }
+        const timeoutSignal = buildTimeoutSignal(arg.abortSignal, arg.requestTimeoutMs);
+        const requestArg =
+            timeoutSignal.signal === arg.abortSignal ? arg : { ...arg, abortSignal: timeoutSignal.signal };
 
         try {
             if (useLocalNetworkRoute) {
@@ -601,7 +626,6 @@ export async function globalFetch(url: string, arg: GlobalFetchArgs = {}): Promi
         } finally {
             timeoutSignal.cleanup();
         }
-
     } catch (error) {
         console.error(error);
         return { ok: false, data: `${error}`, headers: {}, status: 400 };
@@ -610,7 +634,7 @@ export async function globalFetch(url: string, arg: GlobalFetchArgs = {}): Promi
 
 /**
  * Adds a fetch log entry in the global fetch log.
- * 
+ *
  * @param {any} response - The response data.
  * @param {boolean} success - Indicates if the fetch was successful.
  * @param {string} url - The URL of the fetch request.
@@ -623,41 +647,45 @@ function addFetchLogInGlobalFetch(response: any, success: boolean, url: string, 
             header: JSON.stringify(arg.headers ?? {}, null, 2),
             response: JSON.stringify(response, null, 2),
             success: success,
-            date: (new Date()).toLocaleTimeString(),
+            date: new Date().toLocaleTimeString(),
             url: url,
             chatId: arg.chatId,
-            status: status
-        })
-    }
-    catch {
+            status: status,
+        });
+    } catch {
         fetchLog.unshift({
             body: JSON.stringify(arg.body, null, 2),
             header: JSON.stringify(arg.headers ?? {}, null, 2),
             response: `${response}`,
             success: success,
-            date: (new Date()).toLocaleTimeString(),
+            date: new Date().toLocaleTimeString(),
             url: url,
             chatId: arg.chatId,
-            status: status
-        })
+            status: status,
+        });
     }
 
     if (fetchLog.length > 20) {
-        fetchLog.pop()
+        fetchLog.pop();
     }
 }
 
 /**
  * Performs a fetch request using plain fetch.
- * 
+ *
  * @param {string} url - The URL to fetch.
  * @param {GlobalFetchArgs} arg - The arguments for the fetch request.
  * @returns {Promise<GlobalFetchResult>} - The result of the fetch request.
  */
 async function fetchWithPlainFetch(url: string, arg: GlobalFetchArgs): Promise<GlobalFetchResult> {
     try {
-        const headers = { 'Content-Type': 'application/json', ...arg.headers };
-        const response = await fetch(new URL(url), { body: JSON.stringify(arg.body), headers, method: arg.method ?? "POST", signal: arg.abortSignal });
+        const headers = { "Content-Type": "application/json", ...arg.headers };
+        const response = await fetch(new URL(url), {
+            body: JSON.stringify(arg.body),
+            headers,
+            method: arg.method ?? "POST",
+            signal: arg.abortSignal,
+        });
         const data = arg.rawResponse ? new Uint8Array(await response.arrayBuffer()) : await response.json();
         const ok = response.ok && response.status >= 200 && response.status < 300;
         addFetchLogInGlobalFetch(data, ok, url, arg, response.status);
@@ -669,15 +697,20 @@ async function fetchWithPlainFetch(url: string, arg: GlobalFetchArgs): Promise<G
 
 /**
  * Performs a fetch request using userscript provided fetch.
- * 
+ *
  * @param {string} url - The URL to fetch.
  * @param {GlobalFetchArgs} arg - The arguments for the fetch request.
  * @returns {Promise<GlobalFetchResult>} - The result of the fetch request.
  */
 async function fetchWithUSFetch(url: string, arg: GlobalFetchArgs): Promise<GlobalFetchResult> {
     try {
-        const headers = { 'Content-Type': 'application/json', ...arg.headers };
-        const response = await userScriptFetch(url, { body: JSON.stringify(arg.body), headers, method: arg.method ?? "POST", signal: arg.abortSignal });
+        const headers = { "Content-Type": "application/json", ...arg.headers };
+        const response = await userScriptFetch(url, {
+            body: JSON.stringify(arg.body),
+            headers,
+            method: arg.method ?? "POST",
+            signal: arg.abortSignal,
+        });
         const data = arg.rawResponse ? new Uint8Array(await response.arrayBuffer()) : await response.json();
         const ok = response.ok && response.status >= 200 && response.status < 300;
         addFetchLogInGlobalFetch(data, ok, url, arg, response.status);
@@ -689,7 +722,7 @@ async function fetchWithUSFetch(url: string, arg: GlobalFetchArgs): Promise<Glob
 
 /**
  * Performs a fetch request using a proxy.
- * 
+ *
  * @param {string} url - The URL to fetch.
  * @param {GlobalFetchArgs} arg - The arguments for the fetch request.
  * @returns {Promise<GlobalFetchResult>} - The result of the fetch request.
@@ -698,14 +731,18 @@ async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<Global
     try {
         const furl = getProxy2Url();
         arg.headers ??= {};
-        arg.headers["Content-Type"] ??= arg.body instanceof URLSearchParams ? "application/x-www-form-urlencoded" : "application/json";
+        arg.headers["Content-Type"] ??=
+            arg.body instanceof URLSearchParams ? "application/x-www-form-urlencoded" : "application/json";
         const nodeProxyAuth = isNodeServer ? await getNodeServerProxyAuth() : null;
         const headers = {
             "risu-header": encodeURIComponent(JSON.stringify(arg.headers)),
             "risu-url": encodeURIComponent(url),
-            "Content-Type": arg.body instanceof URLSearchParams ? "application/x-www-form-urlencoded" : "application/json",
+            "Content-Type":
+                arg.body instanceof URLSearchParams ? "application/x-www-form-urlencoded" : "application/json",
             ...(arg.useRisuToken && { "x-risu-tk": "use" }),
-            ...(arg.requestTimeoutMs && { "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString() }),
+            ...(arg.requestTimeoutMs && {
+                "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString(),
+            }),
             ...(nodeProxyAuth && { "risu-auth": nodeProxyAuth }),
             ...(DBState?.db?.requestLocation && { "risu-location": DBState.db.requestLocation }),
         };
@@ -727,9 +764,16 @@ async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<Global
             addFetchLogInGlobalFetch(data, isSuccess, url, arg, response.status);
             return { ok: isSuccess, data, headers: Object.fromEntries(response.headers), status: response.status };
         } catch (error) {
-            const errorMsg = text.startsWith('<!DOCTYPE') ? "Responded HTML. Is your URL, API key, and password correct?" : text;
+            const errorMsg = text.startsWith("<!DOCTYPE")
+                ? "Responded HTML. Is your URL, API key, and password correct?"
+                : text;
             addFetchLogInGlobalFetch(text, false, url, arg, response.status);
-            return { ok: false, data: errorMsg, headers: Object.fromEntries(response.headers), status: response.status };
+            return {
+                ok: false,
+                data: errorMsg,
+                headers: Object.fromEntries(response.headers),
+                status: response.status,
+            };
         }
     } catch (error) {
         return { ok: false, data: `${error}`, headers: {}, status: 400 };
@@ -738,19 +782,19 @@ async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<Global
 
 /**
  * Regular expression to match backslashes.
- * 
+ *
  * @constant {RegExp}
  */
 const re = /\\/g;
 
 /**
  * Gets the basename of a given path.
- * 
+ *
  * @param {string} data - The path to get the basename from.
  * @returns {string} - The basename of the path.
  */
 export function getBasename(data: string) {
-    const splited = data.replace(re, '/').split('/');
+    const splited = data.replace(re, "/").split("/");
     const lasts = splited[splited.length - 1];
     return lasts;
 }
@@ -760,61 +804,59 @@ export function getBasename(data: string) {
  * Ensures that all characters are properly ordered and removes any invalid entries.
  */
 export function checkCharOrder() {
-    DBState.db.characterOrder = DBState.db.characterOrder ?? []
-    const ordered = new Set<string>()
+    DBState.db.characterOrder = DBState.db.characterOrder ?? [];
+    const ordered = new Set<string>();
     for (let i = 0; i < DBState.db.characterOrder.length; i++) {
-        const folder = DBState.db.characterOrder[i]
-        if (typeof (folder) !== 'string' && folder) {
+        const folder = DBState.db.characterOrder[i];
+        if (typeof folder !== "string" && folder) {
             for (const f of folder.data) {
-                ordered.add(f)
+                ordered.add(f);
             }
         }
-        if (typeof (folder) === 'string') {
-            ordered.add(folder)
+        if (typeof folder === "string") {
+            ordered.add(folder);
         }
     }
 
-    const charIdSet = new Set<string>()
+    const charIdSet = new Set<string>();
 
     for (let i = 0; i < DBState.db.characters.length; i++) {
-        const char = DBState.db.characters[i]
-        const charId = char.chaId
+        const char = DBState.db.characters[i];
+        const charId = char.chaId;
         if (!char.trashTime) {
-            charIdSet.add(charId)
+            charIdSet.add(charId);
         }
         if (!ordered.has(charId)) {
-            if (charId !== '§playground' && !char.trashTime) {
-                DBState.db.characterOrder.push(charId)
+            if (charId !== "§playground" && !char.trashTime) {
+                DBState.db.characterOrder.push(charId);
             }
         }
     }
 
-
     for (let i = 0; i < DBState.db.characterOrder.length; i++) {
-        const data = DBState.db.characterOrder[i]
-        if (typeof (data) !== 'string') {
+        const data = DBState.db.characterOrder[i];
+        if (typeof data !== "string") {
             if (!data) {
-                DBState.db.characterOrder.splice(i, 1)
+                DBState.db.characterOrder.splice(i, 1);
                 i--;
-                continue
+                continue;
             }
             if (data.data.length === 0) {
-                DBState.db.characterOrder.splice(i, 1)
+                DBState.db.characterOrder.splice(i, 1);
                 i--;
-                continue
+                continue;
             }
             for (let i2 = 0; i2 < data.data.length; i2++) {
-                const data2 = data.data[i2]
+                const data2 = data.data[i2];
                 if (!charIdSet.has(data2)) {
-                    data.data.splice(i2, 1)
+                    data.data.splice(i2, 1);
                     i2--;
                 }
             }
-            DBState.db.characterOrder[i] = data
-        }
-        else {
+            DBState.db.characterOrder[i] = data;
+        } else {
             if (!charIdSet.has(data)) {
-                DBState.db.characterOrder.splice(i, 1)
+                DBState.db.characterOrder.splice(i, 1);
                 i--;
             }
         }
@@ -823,19 +865,20 @@ export function checkCharOrder() {
 
 /**
  * Retrieves the request log as a formatted string.
- * 
+ *
  * @returns {string} The formatted request log.
  */
 export function getRequestLog() {
-    let logString = ''
-    const b = '\n\`\`\`json\n'
-    const bend = '\n\`\`\`\n'
+    let logString = "";
+    const b = "\n\`\`\`json\n";
+    const bend = "\n\`\`\`\n";
 
     for (const log of fetchLog) {
-        logString += `## ${log.date}\n\n* Request URL\n\n${b}${log.url}${bend}\n\n* Request Body\n\n${b}${log.body}${bend}\n\n* Request Header\n\n${b}${log.header}${bend}\n\n`
-            + `* Response Body\n\n${b}${log.response}${bend}\n\n* Response Success\n\n${b}${log.success}${bend}\n\n`
+        logString +=
+            `## ${log.date}\n\n* Request URL\n\n${b}${log.url}${bend}\n\n* Request Body\n\n${b}${log.body}${bend}\n\n* Request Header\n\n${b}${log.header}${bend}\n\n` +
+            `* Response Body\n\n${b}${log.response}${bend}\n\n* Response Success\n\n${b}${log.success}${bend}\n\n`;
     }
-    return logString
+    return logString;
 }
 
 /**
@@ -844,21 +887,21 @@ export function getRequestLog() {
  * @returns {fetchLog[]} The fetch logs array.
  */
 export function getFetchLogs() {
-    return fetchLog
+    return fetchLog;
 }
 
 /**
  * Opens a URL in the appropriate environment.
- * 
+ *
  * @param {string} url - The URL to open.
  */
 export function openURL(url: string) {
-    window.open(url, "_blank")
+    window.open(url, "_blank");
 }
 
 /**
  * Converts FormData to a URL-encoded string.
- * 
+ *
  * @param {FormData} formData - The FormData to convert.
  * @returns {string} The URL-encoded string.
  */
@@ -869,58 +912,58 @@ function formDataToString(formData: FormData): string {
         params.push(`${encodeURIComponent(name)}=${encodeURIComponent(value.toString())}`);
     }
 
-    return params.join('&');
+    return params.join("&");
 }
 
 /**
  * Class representing a local writer.
  */
 export class LocalWriter {
-    writer: WritableStreamDefaultWriter
+    writer: WritableStreamDefaultWriter;
 
     /**
      * Initializes the writer.
-     * 
+     *
      * @param {string} [name='Binary'] - The name of the file.
      * @param {string[]} [ext=['bin']] - The file extensions.
      * @returns {Promise<boolean>} - A promise that resolves to a boolean indicating success.
      */
-    async init(name = 'Binary', ext = ['bin']): Promise<boolean> {
-        const writableStream = streamSaver.createWriteStream(name + '.' + ext[0])
-        this.writer = writableStream.getWriter()
-        return true
+    async init(name = "Binary", ext = ["bin"]): Promise<boolean> {
+        const writableStream = streamSaver.createWriteStream(name + "." + ext[0]);
+        this.writer = writableStream.getWriter();
+        return true;
     }
 
     /**
      * Writes backup data to the file.
-     * 
+     *
      * @param {string} name - The name of the backup.
      * @param {Uint8Array} data - The data to write.
      */
     async writeBackup(name: string, data: Uint8Array): Promise<void> {
-        const encodedName = new TextEncoder().encode(getBasename(name))
-        const nameLength = new Uint32Array([encodedName.byteLength])
-        await this.writer.write(new Uint8Array(nameLength.buffer))
-        await this.writer.write(encodedName)
-        const dataLength = new Uint32Array([data.byteLength])
-        await this.writer.write(new Uint8Array(dataLength.buffer))
-        await this.writer.write(data)
+        const encodedName = new TextEncoder().encode(getBasename(name));
+        const nameLength = new Uint32Array([encodedName.byteLength]);
+        await this.writer.write(new Uint8Array(nameLength.buffer));
+        await this.writer.write(encodedName);
+        const dataLength = new Uint32Array([data.byteLength]);
+        await this.writer.write(new Uint8Array(dataLength.buffer));
+        await this.writer.write(data);
     }
 
     /**
      * Writes data to the file.
-     * 
+     *
      * @param {Uint8Array} data - The data to write.
      */
     async write(data: Uint8Array): Promise<void> {
-        await this.writer.write(data)
+        await this.writer.write(data);
     }
 
     /**
      * Closes the writer.
      */
     async close(): Promise<void> {
-        await this.writer.close()
+        await this.writer.close();
     }
 }
 
@@ -928,15 +971,15 @@ export class LocalWriter {
  * Class representing a virtual writer.
  */
 export class VirtualWriter {
-    buf = new AppendableBuffer()
+    buf = new AppendableBuffer();
 
     /**
      * Writes data to the buffer.
-     * 
+     *
      * @param {Uint8Array} data - The data to write.
      */
     write(data: Uint8Array): void {
-        this.buf.append(data)
+        this.buf.append(data);
     }
 
     /**
@@ -951,19 +994,19 @@ export class VirtualWriter {
  * A class to manage a buffer that can be appended to and deappended from.
  */
 export class AppendableBuffer {
-    deapended: number = 0
-    #buffer: Uint8Array
-    #byteLength: number = 0
+    deapended: number = 0;
+    #buffer: Uint8Array;
+    #byteLength: number = 0;
 
     /**
      * Creates an instance of AppendableBuffer.
      */
     constructor() {
-        this.#buffer = new Uint8Array(128)
+        this.#buffer = new Uint8Array(128);
     }
 
     get buffer(): Uint8Array {
-        return this.#buffer.slice(0, this.#byteLength)
+        return this.#buffer.slice(0, this.#byteLength);
     }
 
     /**
@@ -972,18 +1015,18 @@ export class AppendableBuffer {
      */
     append(data: Uint8Array) {
         // New way (faster)
-        const requiredLength = this.#byteLength + data.length
+        const requiredLength = this.#byteLength + data.length;
         if (this.#buffer.byteLength < requiredLength) {
-            let newLength = this.#buffer.byteLength * 2
+            let newLength = this.#buffer.byteLength * 2;
             while (newLength < requiredLength) {
-                newLength *= 2
+                newLength *= 2;
             }
-            const newBuffer = new Uint8Array(newLength)
-            newBuffer.set(this.#buffer)
-            this.#buffer = newBuffer
+            const newBuffer = new Uint8Array(newLength);
+            newBuffer.set(this.#buffer);
+            this.#buffer = newBuffer;
         }
-        this.#buffer.set(data, this.#byteLength)
-        this.#byteLength += data.length
+        this.#buffer.set(data, this.#byteLength);
+        this.#byteLength += data.length;
     }
 
     /**
@@ -991,9 +1034,9 @@ export class AppendableBuffer {
      * @param {number} length - The length to deappend.
      */
     deappend(length: number) {
-        this.#buffer = this.#buffer.slice(length)
-        this.deapended += length
-        this.#byteLength -= length
+        this.#buffer = this.#buffer.slice(length);
+        this.deapended += length;
+        this.#byteLength -= length;
     }
 
     /**
@@ -1003,7 +1046,7 @@ export class AppendableBuffer {
      * @returns {Uint8Array} - The sliced buffer.
      */
     slice(start: number, end: number) {
-        return this.buffer.slice(start - this.deapended, end - this.deapended)
+        return this.buffer.slice(start - this.deapended, end - this.deapended);
     }
 
     /**
@@ -1011,16 +1054,16 @@ export class AppendableBuffer {
      * @returns {number} - The total length.
      */
     length() {
-        return this.#byteLength + this.deapended
+        return this.#byteLength + this.deapended;
     }
 
     /**
      * Clears the buffer.
      */
     clear() {
-        this.#buffer = new Uint8Array(128)
-        this.#byteLength = 0
-        this.deapended = 0
+        this.#buffer = new Uint8Array(128);
+        this.#byteLength = 0;
+        this.deapended = 0;
     }
 }
 
@@ -1031,47 +1074,49 @@ export class AppendableBuffer {
  * @returns {ReadableStream<Uint8Array>} - The new readable stream.
  */
 const pipeFetchLog = (fetchLogIndex: number, readableStream: ReadableStream<Uint8Array>) => {
-    
     const splited = readableStream.tee();
-    
-    (async () => {
-        const text = await (new Response(splited[0])).text()
-        fetchLog[fetchLogIndex].response = text
-    })()
-    
-    return splited[1]
-}
 
-async function fetchViaProxyJobWs(url: string, arg: {
-    body: Uint8Array,
-    headers?: { [key: string]: string },
-    method: "POST" | "GET" | "PUT" | "DELETE",
-    signal?: AbortSignal,
-    requestTimeoutMs?: number,
-    chatId?: string,
-    fetchLogIndex?: number | null
-}): Promise<Response> {
+    (async () => {
+        const text = await new Response(splited[0]).text();
+        fetchLog[fetchLogIndex].response = text;
+    })();
+
+    return splited[1];
+};
+
+async function fetchViaProxyJobWs(
+    url: string,
+    arg: {
+        body: Uint8Array;
+        headers?: { [key: string]: string };
+        method: "POST" | "GET" | "PUT" | "DELETE";
+        signal?: AbortSignal;
+        requestTimeoutMs?: number;
+        chatId?: string;
+        fetchLogIndex?: number | null;
+    },
+): Promise<Response> {
     const auth = await getNodeServerProxyAuth();
 
     const requestSignal = arg.signal;
     const baseUrl = getProxyStreamJobBaseUrl();
 
-    let jobId = '';
+    let jobId = "";
     const createRes = await fetch(`${baseUrl}/proxy-stream-jobs`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-            'Content-Type': 'application/json',
-            'risu-auth': auth
+            "Content-Type": "application/json",
+            "risu-auth": auth,
         },
         body: JSON.stringify({
             url,
             method: arg.method,
             headers: arg.headers ?? {},
-            bodyBase64: Buffer.from(arg.body).toString('base64'),
+            bodyBase64: Buffer.from(arg.body).toString("base64"),
             timeoutMs: arg.requestTimeoutMs,
-            heartbeatSec: defaultProxyJobHeartbeatSec
+            heartbeatSec: defaultProxyJobHeartbeatSec,
         }),
-        signal: requestSignal
+        signal: requestSignal,
     });
 
     if (!createRes.ok) {
@@ -1079,18 +1124,18 @@ async function fetchViaProxyJobWs(url: string, arg: {
         throw new Error(`Proxy stream job creation failed: ${createRes.status} ${errText}`);
     }
 
-    const created = await createRes.json() as { jobId?: string };
+    const created = (await createRes.json()) as { jobId?: string };
     if (!created.jobId) {
-        throw new Error('Proxy stream job creation returned no jobId');
+        throw new Error("Proxy stream job creation returned no jobId");
     }
     jobId = created.jobId;
 
-    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProtocol}//${location.host}/proxy-stream-jobs/${encodeURIComponent(jobId)}/ws?risu-auth=${encodeURIComponent(auth)}`;
 
     let headersReady = false;
     let status = 200;
-    let responseHeaders: HeadersInit = { 'content-type': 'text/event-stream' };
+    let responseHeaders: HeadersInit = { "content-type": "text/event-stream" };
     let settled = false;
     let resolveHeaders: () => void = () => {};
     const waitHeaders = new Promise<void>((resolve) => {
@@ -1110,7 +1155,7 @@ async function fetchViaProxyJobWs(url: string, arg: {
             } catch {
                 // no-op
             }
-        }
+        },
     });
     const pipedReadable = arg.fetchLogIndex != null ? pipeFetchLog(arg.fetchLogIndex, readable) : readable;
 
@@ -1141,33 +1186,33 @@ async function fetchViaProxyJobWs(url: string, arg: {
     };
 
     ws.onmessage = (event) => {
-        const parsed = parseProxyJobWsEvent(typeof event.data === 'string' ? event.data : '');
+        const parsed = parseProxyJobWsEvent(typeof event.data === "string" ? event.data : "");
         if (!parsed || !streamController) {
             return;
         }
         switch (parsed.type) {
-            case 'job_accepted':
-            case 'ping':
+            case "job_accepted":
+            case "ping":
                 return;
-            case 'upstream_headers':
+            case "upstream_headers":
                 status = parsed.status;
                 responseHeaders = parsed.headers ?? {};
                 ensureHeadersReady();
                 return;
-            case 'chunk':
+            case "chunk":
                 ensureHeadersReady();
                 streamController.enqueue(decodeProxyJobWsChunk(parsed.dataBase64));
                 return;
-            case 'error': {
+            case "error": {
                 status = parsed.status ?? 502;
-                responseHeaders = { 'content-type': 'text/plain; charset=utf-8' };
+                responseHeaders = { "content-type": "text/plain; charset=utf-8" };
                 ensureHeadersReady();
                 const msg = formatProxyStreamErrorMessage(parsed.status, parsed.message);
                 streamController.enqueue(encoder.encode(msg));
                 closeAndEnd();
                 return;
             }
-            case 'done':
+            case "done":
                 ensureHeadersReady();
                 closeAndEnd();
                 return;
@@ -1179,16 +1224,16 @@ async function fetchViaProxyJobWs(url: string, arg: {
             return;
         }
         status = 502;
-        responseHeaders = { 'content-type': 'text/plain; charset=utf-8' };
+        responseHeaders = { "content-type": "text/plain; charset=utf-8" };
         ensureHeadersReady();
-        streamController.enqueue(encoder.encode('Proxy WebSocket stream error'));
+        streamController.enqueue(encoder.encode("Proxy WebSocket stream error"));
         closeAndEnd();
     };
 
     ws.onclose = () => {
         if (!headersReady) {
             status = 502;
-            responseHeaders = { 'content-type': 'text/plain; charset=utf-8' };
+            responseHeaders = { "content-type": "text/plain; charset=utf-8" };
             ensureHeadersReady();
         }
         closeAndEnd();
@@ -1196,31 +1241,30 @@ async function fetchViaProxyJobWs(url: string, arg: {
 
     const abortHandler = () => {
         status = 499;
-        responseHeaders = { 'content-type': 'text/plain; charset=utf-8' };
+        responseHeaders = { "content-type": "text/plain; charset=utf-8" };
         ensureHeadersReady();
         if (streamController && !settled) {
-            streamController.enqueue(encoder.encode('Aborted'));
+            streamController.enqueue(encoder.encode("Aborted"));
         }
         void fetch(`${baseUrl}/proxy-stream-jobs/${encodeURIComponent(jobId)}`, {
-            method: 'DELETE',
+            method: "DELETE",
             headers: {
-                'risu-auth': auth
-            }
+                "risu-auth": auth,
+            },
         }).catch(() => {});
         closeAndEnd();
     };
     if (requestSignal?.aborted) {
         abortHandler();
-    }
-    else {
-        requestSignal?.addEventListener('abort', abortHandler, { once: true });
+    } else {
+        requestSignal?.addEventListener("abort", abortHandler, { once: true });
     }
 
     await waitHeaders;
-    requestSignal?.removeEventListener('abort', abortHandler);
+    requestSignal?.removeEventListener("abort", abortHandler);
     return new Response(pipedReadable, {
         status,
-        headers: new Headers(responseHeaders)
+        headers: new Headers(responseHeaders),
     });
 }
 
@@ -1240,161 +1284,160 @@ async function fetchViaProxyJobWs(url: string, arg: {
  * @returns {number} status - The response status code.
  * @throws {Error} - Throws an error if the request is aborted or if there is an error in the response.
  */
-export async function fetchNative(url: string, arg: {
-    body?: string | Uint8Array | ArrayBuffer,
-    headers?: { [key: string]: string },
-    method?: "POST" | "GET" | "PUT" | "DELETE",
-    signal?: AbortSignal,
-    useRisuTk?: boolean,
-    chatId?: string
-    interceptor?: string
-    logFetch?: boolean
-    requestTimeoutMs?: number
-    networkRoute?: 'auto' | 'local_network'
-}): Promise<Response> {
-
-    const useInterceptor = !!arg.interceptor
-    console.log(arg.body, 'body')
-    if (arg.body === undefined && (arg.method === 'POST' || arg.method === 'PUT')) {
-        throw new Error('Body is required for POST and PUT requests')
+export async function fetchNative(
+    url: string,
+    arg: {
+        body?: string | Uint8Array | ArrayBuffer;
+        headers?: { [key: string]: string };
+        method?: "POST" | "GET" | "PUT" | "DELETE";
+        signal?: AbortSignal;
+        useRisuTk?: boolean;
+        chatId?: string;
+        interceptor?: string;
+        logFetch?: boolean;
+        requestTimeoutMs?: number;
+        networkRoute?: "auto" | "local_network";
+    },
+): Promise<Response> {
+    const useInterceptor = !!arg.interceptor;
+    console.log(arg.body, "body");
+    if (arg.body === undefined && (arg.method === "POST" || arg.method === "PUT")) {
+        throw new Error("Body is required for POST and PUT requests");
     }
 
-    arg.method = arg.method ?? 'POST'
+    arg.method = arg.method ?? "POST";
 
-    let headers = arg.headers ?? {}
-    let realBody: Uint8Array
+    let headers = arg.headers ?? {};
+    let realBody: Uint8Array;
 
-    if (arg.method === 'GET' || arg.method === 'DELETE') {
-        realBody = undefined
-    }
-    else if (typeof arg.body === 'string') {
-        let body: string = arg.body
-        if(useInterceptor) {
+    if (arg.method === "GET" || arg.method === "DELETE") {
+        realBody = undefined;
+    } else if (typeof arg.body === "string") {
+        let body: string = arg.body;
+        if (useInterceptor) {
             for (const interceptor of bodyIntercepterStore) {
                 try {
-                    body = await interceptor.callback(body, arg.interceptor) || body
-                }
-                catch (e) {
-                    console.error(e)
+                    body = (await interceptor.callback(body, arg.interceptor)) || body;
+                } catch (e) {
+                    console.error(e);
                 }
             }
         }
-        realBody = new TextEncoder().encode(body)
-    }
-    else if (arg.body instanceof Uint8Array) {
-        realBody = arg.body
-    }
-    else if (arg.body instanceof ArrayBuffer) {
-        realBody = new Uint8Array(arg.body)
-    }
-    else {
-        throw new Error('Invalid body type')
+        realBody = new TextEncoder().encode(body);
+    } else if (arg.body instanceof Uint8Array) {
+        realBody = arg.body;
+    } else if (arg.body instanceof ArrayBuffer) {
+        realBody = new Uint8Array(arg.body);
+    } else {
+        throw new Error("Invalid body type");
     }
 
-    const db = getDatabase()
-    const useLocalNetworkRoute = arg.networkRoute === 'local_network' && isLocalNetworkUrl(url)
+    const db = getDatabase();
+    const useLocalNetworkRoute = arg.networkRoute === "local_network" && isLocalNetworkUrl(url);
     if (useLocalNetworkRoute && !isNodeServer) {
-        throw new Error(webLocalNetworkBlockedMessage)
+        throw new Error(webLocalNetworkBlockedMessage);
     }
-    let throughProxy = (!isNodeServer) && (!db.usePlainFetch)
+    let throughProxy = !isNodeServer && !db.usePlainFetch;
     if (useLocalNetworkRoute && isNodeServer) {
-        throughProxy = true
+        throughProxy = true;
     }
-    const timeoutSignal = buildTimeoutSignal(arg.signal, arg.requestTimeoutMs)
-    const requestSignal = timeoutSignal.signal
-    const shouldLogFetch = arg.logFetch ?? true
-    let fetchLogIndex: number | null = null
+    const timeoutSignal = buildTimeoutSignal(arg.signal, arg.requestTimeoutMs);
+    const requestSignal = timeoutSignal.signal;
+    const shouldLogFetch = arg.logFetch ?? true;
+    let fetchLogIndex: number | null = null;
     if (shouldLogFetch) {
         fetchLogIndex = addFetchLog({
             body: new TextDecoder().decode(realBody),
             headers: arg.headers,
-            response: 'Streamed Fetch',
+            response: "Streamed Fetch",
             success: true,
             url: url,
-            resType: 'stream',
+            resType: "stream",
             chatId: arg.chatId,
-        })
+        });
     }
     try {
         if (window.userScriptFetch && !throughProxy) {
             return await window.userScriptFetch(url, {
-            body: realBody as any,
-            headers: headers,
-            method: arg.method,
-            signal: requestSignal
-        })
-        }
-    else if (throughProxy) {
-        const useProxyJobWs = isNodeServer
-            && arg.interceptor === 'openai_streaming'
-            && arg.method === 'POST'
-            && useLocalNetworkRoute;
-        const nodeProxyAuth = isNodeServer ? await getNodeServerProxyAuth() : null;
+                body: realBody as any,
+                headers: headers,
+                method: arg.method,
+                signal: requestSignal,
+            });
+        } else if (throughProxy) {
+            const useProxyJobWs =
+                isNodeServer && arg.interceptor === "openai_streaming" && arg.method === "POST" && useLocalNetworkRoute;
+            const nodeProxyAuth = isNodeServer ? await getNodeServerProxyAuth() : null;
 
-        if (useProxyJobWs) {
-            try {
-                return await fetchViaProxyJobWs(url, {
-                    body: realBody,
-                    headers,
-                    method: arg.method,
-                    signal: requestSignal,
-                    requestTimeoutMs: arg.requestTimeoutMs,
-                    chatId: arg.chatId,
-                    fetchLogIndex
-                });
-            } catch (wsErr) {
-                console.warn('[ProxyJobWS] fallback to /proxy2 due to error:', wsErr);
+            if (useProxyJobWs) {
+                try {
+                    return await fetchViaProxyJobWs(url, {
+                        body: realBody,
+                        headers,
+                        method: arg.method,
+                        signal: requestSignal,
+                        requestTimeoutMs: arg.requestTimeoutMs,
+                        chatId: arg.chatId,
+                        fetchLogIndex,
+                    });
+                } catch (wsErr) {
+                    console.warn("[ProxyJobWS] fallback to /proxy2 due to error:", wsErr);
+                }
             }
+
+            const r = await fetch(getProxy2Url(), {
+                body: realBody as any,
+                headers: arg.useRisuTk
+                    ? {
+                          "risu-header": encodeURIComponent(JSON.stringify(headers)),
+                          "risu-url": encodeURIComponent(url),
+                          "Content-Type": "application/json",
+                          "x-risu-tk": "use",
+                          ...(arg.requestTimeoutMs && {
+                              "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString(),
+                          }),
+                          ...(nodeProxyAuth ? { "risu-auth": nodeProxyAuth } : {}),
+                          ...(DBState?.db?.requestLocation && { "risu-location": DBState.db.requestLocation }),
+                      }
+                    : {
+                          "risu-header": encodeURIComponent(JSON.stringify(headers)),
+                          "risu-url": encodeURIComponent(url),
+                          "Content-Type": "application/json",
+                          ...(arg.requestTimeoutMs && {
+                              "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString(),
+                          }),
+                          ...(nodeProxyAuth ? { "risu-auth": nodeProxyAuth } : {}),
+                          ...(DBState?.db?.requestLocation && { "risu-location": DBState.db.requestLocation }),
+                      },
+                method: arg.method,
+                signal: requestSignal,
+            });
+
+            return new Response(r.body, {
+                headers: r.headers,
+                status: r.status,
+            });
+        } else {
+            return await fetch(url, {
+                body: realBody as any,
+                headers: headers,
+                method: arg.method,
+                signal: requestSignal,
+            });
         }
-
-        const r = await fetch(getProxy2Url(), {
-            body: realBody as any,
-            headers: arg.useRisuTk ? {
-                "risu-header": encodeURIComponent(JSON.stringify(headers)),
-                "risu-url": encodeURIComponent(url),
-                "Content-Type": "application/json",
-                "x-risu-tk": "use",
-                ...(arg.requestTimeoutMs && { "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString() }),
-                ...(nodeProxyAuth ? { "risu-auth": nodeProxyAuth } : {}),
-                ...(DBState?.db?.requestLocation && { "risu-location": DBState.db.requestLocation }),
-            } : {
-                "risu-header": encodeURIComponent(JSON.stringify(headers)),
-                "risu-url": encodeURIComponent(url),
-                "Content-Type": "application/json",
-                ...(arg.requestTimeoutMs && { "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString() }),
-                ...(nodeProxyAuth ? { "risu-auth": nodeProxyAuth } : {}),
-                ...(DBState?.db?.requestLocation && { "risu-location": DBState.db.requestLocation }),
-            },
-            method: arg.method,
-            signal: requestSignal
-        })
-
-        return new Response(r.body, {
-            headers: r.headers,
-            status: r.status
-        })
-    }
-    else {
-        return await fetch(url, {
-            body: realBody as any,
-            headers: headers,
-            method: arg.method,
-            signal: requestSignal,
-        })
-    }
     } finally {
-        timeoutSignal.cleanup()
+        timeoutSignal.cleanup();
     }
 }
 
 /**
  * Converts a ReadableStream of Uint8Array to a text string.
- * 
+ *
  * @param {ReadableStream<Uint8Array>} stream - The readable stream to convert.
  * @returns {Promise<string>} A promise that resolves to the text content of the stream.
  */
 export function textifyReadableStream(stream: ReadableStream<Uint8Array>) {
-    return new Response(stream).text()
+    return new Response(stream).text();
 }
 
 /**
@@ -1403,36 +1446,38 @@ export function textifyReadableStream(stream: ReadableStream<Uint8Array>) {
  * If the document is not in fullscreen mode, it requests fullscreen with navigation UI hidden.
  */
 export function toggleFullscreen() {
-    const fullscreenElement = document.fullscreenElement
-    fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen({
-        navigationUI: "hide"
-    })
+    const fullscreenElement = document.fullscreenElement;
+    fullscreenElement
+        ? document.exitFullscreen()
+        : document.documentElement.requestFullscreen({
+              navigationUI: "hide",
+          });
 }
 
 /**
  * Removes non-Latin characters from a string, replaces multiple spaces with a single space, and trims the string.
- * 
+ *
  * @param {string} data - The input string to be processed.
  * @returns {string} The processed string with non-Latin characters removed, multiple spaces replaced by a single space, and trimmed.
  */
 export function trimNonLatin(data: string) {
-    return data.replace(/[^\x00-\x7F]/g, "")
-        .replace(/ +/g, ' ')
-        .trim()
+    return data
+        .replace(/[^\x00-\x7F]/g, "")
+        .replace(/ +/g, " ")
+        .trim();
 }
 
 /**
  * A class that provides a blank writer implementation.
- * 
+ *
  * This class is used to provide a no-op implementation of a writer, making it compatible with other writer interfaces.
  */
 export class BlankWriter {
-    constructor() {
-    }
+    constructor() {}
 
     /**
      * Initializes the writer.
-     * 
+     *
      * This method does nothing and is provided for compatibility with other writer interfaces.
      */
     async init() {
@@ -1441,9 +1486,9 @@ export class BlankWriter {
 
     /**
      * Writes data to the writer.
-     * 
+     *
      * This method does nothing and is provided for compatibility with other writer interfaces.
-     * 
+     *
      * @param {string} key - The key associated with the data.
      * @param {Uint8Array|string} data - The data to be written.
      */
@@ -1453,7 +1498,7 @@ export class BlankWriter {
 
     /**
      * Ends the writing process.
-     * 
+     *
      * This method does nothing and is provided for compatibility with other writer interfaces.
      */
     async end() {
@@ -1462,168 +1507,160 @@ export class BlankWriter {
 }
 
 export async function loadInternalBackup() {
-
-    const keys = await forageStorage.keys()
-    let internalBackups: string[] = []
+    const keys = await forageStorage.keys();
+    let internalBackups: string[] = [];
     for (const key of keys) {
-        if (key.includes('dbbackup-')) {
-            internalBackups.push(key)
+        if (key.includes("dbbackup-")) {
+            internalBackups.push(key);
         }
     }
 
     const selectOptions = [
-        'Cancel',
-        ...(internalBackups.map((a) => {
-            return (new Date(parseInt(a.replace('database/dbbackup-', '').replace('dbbackup-', '')) * 100)).toLocaleString()
-        }))
-    ]
+        "Cancel",
+        ...internalBackups.map((a) => {
+            return new Date(
+                parseInt(a.replace("database/dbbackup-", "").replace("dbbackup-", "")) * 100,
+            ).toLocaleString();
+        }),
+    ];
 
-    const alertResult = parseInt(
-        await alertSelect(selectOptions)
-    ) - 1
+    const alertResult = parseInt(await alertSelect(selectOptions)) - 1;
 
     if (alertResult === -1) {
-        return
+        return;
     }
 
-    const selectedBackup = internalBackups[alertResult]
+    const selectedBackup = internalBackups[alertResult];
 
-    const data = await forageStorage.getItem(selectedBackup)
+    const data = await forageStorage.getItem(selectedBackup);
 
-    setDatabase(
-        await decodeRisuSave(Buffer.from(data) as unknown as Uint8Array)
-    )
+    setDatabase(await decodeRisuSave(Buffer.from(data) as unknown as Uint8Array));
 
-    alertNormal('Loaded backup')
-
-
-
+    alertNormal("Loaded backup");
 }
 
 /**
  * A debugging class for performance measurement.
-*/
+ */
 
 export class PerformanceDebugger {
-    kv: { [key: string]: number[] } = {}
-    startTime: number
-    endTime: number
+    kv: { [key: string]: number[] } = {};
+    startTime: number;
+    endTime: number;
 
     /**
      * Starts the timing measurement.
-    */
+     */
     start() {
-        this.startTime = performance.now()
+        this.startTime = performance.now();
     }
 
     /**
      * Ends the timing measurement and records the time difference.
-     * 
+     *
      * @param {string} key - The key to associate with the recorded time.
-    */
+     */
     endAndRecord(key: string) {
-        this.endTime = performance.now()
+        this.endTime = performance.now();
         if (!this.kv[key]) {
-            this.kv[key] = []
+            this.kv[key] = [];
         }
-        this.kv[key].push(this.endTime - this.startTime)
+        this.kv[key].push(this.endTime - this.startTime);
     }
 
     /**
      * Ends the timing measurement, records the time difference, and starts a new timing measurement.
-     * 
+     *
      * @param {string} key - The key to associate with the recorded time.
-    */
+     */
     endAndRecordAndStart(key: string) {
-        this.endAndRecord(key)
-        this.start()
+        this.endAndRecord(key);
+        this.start();
     }
 
     /**
      * Logs the average time for each key to the console.
-    */
+     */
     log() {
-        let table: { [key: string]: number } = {}
+        let table: { [key: string]: number } = {};
 
         for (const key in this.kv) {
-            table[key] = this.kv[key].reduce((a, b) => a + b, 0) / this.kv[key].length
+            table[key] = this.kv[key].reduce((a, b) => a + b, 0) / this.kv[key].length;
         }
 
-
-        console.table(table)
+        console.table(table);
     }
 
     combine(other: PerformanceDebugger) {
         for (const key in other.kv) {
             if (!this.kv[key]) {
-                this.kv[key] = []
+                this.kv[key] = [];
             }
-            this.kv[key].push(...other.kv[key])
+            this.kv[key].push(...other.kv[key]);
         }
     }
 }
 
 export function getLanguageCodes() {
     let languageCodes: {
-        code: string
-        name: string
-    }[] = []
+        code: string;
+        name: string;
+    }[] = [];
 
-    for (let i = 0x41; i <= 0x5A; i++) {
-        for (let j = 0x41; j <= 0x5A; j++) {
+    for (let i = 0x41; i <= 0x5a; i++) {
+        for (let j = 0x41; j <= 0x5a; j++) {
             languageCodes.push({
                 code: String.fromCharCode(i) + String.fromCharCode(j),
-                name: ''
-            })
+                name: "",
+            });
         }
     }
 
-    languageCodes = languageCodes.map(v => {
-        return {
-            code: v.code.toLocaleLowerCase(),
-            name: new Intl.DisplayNames([
-                DBState.db.language === 'cn' ? 'zh' : DBState.db.language
-            ], {
-                type: 'language',
-                fallback: 'none'
-            }).of(v.code)
-        }
-    }).filter((a) => {
-        return a.name
-    }).sort((a, b) => a.name.localeCompare(b.name))
+    languageCodes = languageCodes
+        .map((v) => {
+            return {
+                code: v.code.toLocaleLowerCase(),
+                name: new Intl.DisplayNames([DBState.db.language === "cn" ? "zh" : DBState.db.language], {
+                    type: "language",
+                    fallback: "none",
+                }).of(v.code),
+            };
+        })
+        .filter((a) => {
+            return a.name;
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
 
-    return languageCodes
+    return languageCodes;
 }
 
 export function getVersionString(): string {
-    let versionString = appVer
-    if(appSubVer) {
-        versionString += '-' + appSubVer
+    let versionString = appVer;
+    if (appSubVer) {
+        versionString += "-" + appSubVer;
     }
-    if (import.meta.env.VITE_RISU_NIGHTLY_BUILD === 'TRUE') {
-        versionString = 'Nightly Build ' + import.meta.env.VITE_RISU_BUILD_TIME
+    if (import.meta.env.VITE_RISU_NIGHTLY_BUILD === "TRUE") {
+        versionString = "Nightly Build " + import.meta.env.VITE_RISU_BUILD_TIME;
     }
-    if (window.location.hostname === 'stable.risuai.xyz') {
-        versionString += ' (Stable)';
+    if (window.location.hostname === "stable.risuai.xyz") {
+        versionString += " (Stable)";
     }
-    return versionString
+    return versionString;
 }
 
 export function toGetter<T extends object>(
     getterFn: () => T,
     args?: {
         //blocks this.children from being accessed
-        restrictChildren:string[]
-    }
+        restrictChildren: string[];
+    },
 ): T {
-
-    const dummyTarget = () => { };
+    const dummyTarget = () => {};
 
     return new Proxy(dummyTarget, {
         get(target, prop, receiver) {
-
             const realInstance = getterFn();
-            
+
             if (args?.restrictChildren && args.restrictChildren.includes(prop as string)) {
                 throw new Error(`Access to property '${String(prop)}' is restricted`);
             }
@@ -1634,7 +1671,7 @@ export function toGetter<T extends object>(
 
             const value = Reflect.get(realInstance as object, prop);
 
-            if (typeof value === 'function') {
+            if (typeof value === "function") {
                 return value.bind(realInstance);
             }
 
@@ -1642,8 +1679,7 @@ export function toGetter<T extends object>(
         },
 
         set(target, prop, value, receiver) {
-
-            if(args?.restrictChildren && args.restrictChildren.includes(prop as string)) {
+            if (args?.restrictChildren && args.restrictChildren.includes(prop as string)) {
                 throw new Error(`Access to property '${String(prop)}' is restricted`);
             }
             const realInstance = getterFn();
@@ -1673,16 +1709,15 @@ export function toGetter<T extends object>(
         getPrototypeOf() {
             const realInstance = getterFn();
             return Reflect.getPrototypeOf(realInstance as object);
-        }
+        },
     }) as unknown as T;
 }
 
 const countriesWithAiLaw = new Set<string>([
-
     // EU
     // AI Act
     // https://artificialintelligenceact.eu/
-    
+
     "AT",
     "BE",
     "BG",
@@ -1712,9 +1747,9 @@ const countriesWithAiLaw = new Set<string>([
     "ES",
     "SE",
 
-    //China 
+    //China
     //Measures for Labeling of AI-Generated Synthetic Content
-    // 关于印发《人工智能生成合成内容标识办法》的通知 
+    // 关于印发《人工智能生成合成内容标识办法》的通知
     // https://www.cac.gov.cn/2025-03/14/c_1743654684782215.htm
     "CN",
 
@@ -1725,7 +1760,7 @@ const countriesWithAiLaw = new Set<string>([
     //TW isn't under mainland china jurisdiction
     //de facto, de jure in TW law, unlike HK and MO,
     //So we don't include it for now
-    //"TW", 
+    //"TW",
 
     // Republic of Korea
     // AI Basic Act
@@ -1737,124 +1772,120 @@ const countriesWithAiLaw = new Set<string>([
     // Digital Tech Law
     // Luật Công nghệ số
     "VN",
-
-])
+]);
 
 export function aiLawApplies(): boolean {
-
     //TODO: implement actual logic
     //lets now assume it always applies
     //so we don't have legal issues later
 
-    return true
+    return true;
 }
 
 export function aiWatermarkingLawApplies(): boolean {
-
     //TODO: implement actual logic
     //lets now assume it is false for now,
     //becuase very few countries have it for now
-    return false
+    return false;
 }
 
 export const chatFoldedState = $state<{
-    data: null| {
-        targetCharacterId: string,
-        targetChatId: string,
-        targetMessageId: string,
-    }
+    data: null | {
+        targetCharacterId: string;
+        targetChatId: string;
+        targetMessageId: string;
+    };
 }>({
-    data: null
-})
+    data: null,
+});
 
 //Since its exported, we cannot use $derived here
 export let chatFoldedStateMessageIndex = $state({
-    index: -1
-})
+    index: -1,
+});
 
 $effect.root(() => {
     $effect(() => {
-        if(!chatFoldedState.data){
-            return
+        if (!chatFoldedState.data) {
+            return;
         }
-        const char = DBState.db.characters[selIdState.selId]
-        const chat = char.chats[char.chatPage]
-        if(chatFoldedState.data.targetCharacterId !== char.chaId){
-            chatFoldedState.data = null
+        const char = DBState.db.characters[selIdState.selId];
+        const chat = char.chats[char.chatPage];
+        if (chatFoldedState.data.targetCharacterId !== char.chaId) {
+            chatFoldedState.data = null;
         }
-        if(chatFoldedState.data.targetChatId !== chat.id){
-            chatFoldedState.data = null
+        if (chatFoldedState.data.targetChatId !== chat.id) {
+            chatFoldedState.data = null;
         }
-    })
+    });
 
     $effect(() => {
-        if(chatFoldedState.data === null){
-            chatFoldedStateMessageIndex.index = -1
-            return
+        if (chatFoldedState.data === null) {
+            chatFoldedStateMessageIndex.index = -1;
+            return;
         }
-        const char = DBState.db.characters[selIdState.selId]
-        const chat = char.chats[char.chatPage]
+        const char = DBState.db.characters[selIdState.selId];
+        const chat = char.chats[char.chatPage];
         const messageIndex = chat.message.findIndex((v) => {
-            return chatFoldedState.data?.targetMessageId === v.chatId
-        })
-        if(messageIndex === -1){
-            console.warn('Target message for folding id' + chatFoldedState.data?.targetMessageId + ' not found')
-            chatFoldedStateMessageIndex.index = -1
-            return
+            return chatFoldedState.data?.targetMessageId === v.chatId;
+        });
+        if (messageIndex === -1) {
+            console.warn("Target message for folding id" + chatFoldedState.data?.targetMessageId + " not found");
+            chatFoldedStateMessageIndex.index = -1;
+            return;
         }
-        chatFoldedStateMessageIndex.index = messageIndex
-    })
-})
+        chatFoldedStateMessageIndex.index = messageIndex;
+    });
+});
 
 export function foldChatToMessage(targetMessageIdOrIndex: string | number) {
-    let targetMessageId = ''
-    if (typeof targetMessageIdOrIndex === 'number') {
-        const char = getCurrentCharacter()
-        const chat = char.chats[char.chatPage]
-        const message = chat.message[targetMessageIdOrIndex]
-        targetMessageId = message.chatId
+    let targetMessageId = "";
+    if (typeof targetMessageIdOrIndex === "number") {
+        const char = getCurrentCharacter();
+        const chat = char.chats[char.chatPage];
+        const message = chat.message[targetMessageIdOrIndex];
+        targetMessageId = message.chatId;
+    } else {
+        targetMessageId = targetMessageIdOrIndex;
     }
-    else{
-        targetMessageId = targetMessageIdOrIndex
-    }
-    const char = getCurrentCharacter()
-    const chat = char.chats[char.chatPage]
+    const char = getCurrentCharacter();
+    const chat = char.chats[char.chatPage];
     chatFoldedState.data = {
         targetCharacterId: char.chaId,
         targetChatId: chat.id,
         targetMessageId: targetMessageId,
-    }
+    };
 }
 
 export function changeChatTo(IdOrIndex: string | number) {
-    let index = -1
-    if (typeof IdOrIndex === 'number') {
-        index = IdOrIndex
+    let index = -1;
+    if (typeof IdOrIndex === "number") {
+        index = IdOrIndex;
     }
 
-    if (typeof IdOrIndex === 'string') {
-        const currentCharacter = getCurrentCharacter()
+    if (typeof IdOrIndex === "string") {
+        const currentCharacter = getCurrentCharacter();
         index = currentCharacter.chats.findIndex((v) => {
-            return v.id === IdOrIndex
-        })
+            return v.id === IdOrIndex;
+        });
     }
 
-    if(index === -1){
-        return
+    if (index === -1) {
+        return;
     }
 
-    DBState.db.characters[selIdState.selId].chatPage = index
-    ReloadGUIPointer.set(Math.random())
+    DBState.db.characters[selIdState.selId].chatPage = index;
+    ReloadGUIPointer.set(Math.random());
 }
 
-export function createChatCopyName(originalName: string,type:'Copy'|'Branch'): string {
-    let name = originalName.replaceAll(/\(((Copy|Branch)( \d+)?)\)$/g, '').trim()
-    let copyIndex = 1
-    let newName = `${name} (${type})`
-    const char = getCurrentCharacter()
+export function createChatCopyName(originalName: string, type: "Copy" | "Branch"): string {
+    let name = originalName.replaceAll(/\(((Copy|Branch)( \d+)?)\)$/g, "").trim();
+    let copyIndex = 1;
+    let newName = `${name} (${type})`;
+    const char = getCurrentCharacter();
     while (char.chats.find((v) => v.name === newName)) {
-        copyIndex++
-        newName = `${name} (${type} ${copyIndex})`
+        copyIndex++;
+        newName = `${name} (${type} ${copyIndex})`;
     }
-    return newName
+    return newName;
 }

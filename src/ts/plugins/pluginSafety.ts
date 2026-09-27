@@ -1,4 +1,4 @@
-import { hasher } from '../parser/parser.svelte';
+import { hasher } from "../parser/parser.svelte";
 
 export interface CheckResult {
     isSafe: boolean;
@@ -7,8 +7,8 @@ export interface CheckResult {
     modifiedCode: string;
 }
 
-type DangerousNodeType = 'CallExpression' | 'NewExpression' | 'Identifier' | 'ThisExpression' | 'DefaultWarning'
-type UserFriendlyRuleAlertKey = 'eval' | 'globalAccess' | 'thisOutsideClass' | 'errorInVerification' | 'storageAccess';
+type DangerousNodeType = "CallExpression" | "NewExpression" | "Identifier" | "ThisExpression" | "DefaultWarning";
+type UserFriendlyRuleAlertKey = "eval" | "globalAccess" | "thisOutsideClass" | "errorInVerification" | "storageAccess";
 
 interface BlacklistRule {
     nodeType: DangerousNodeType;
@@ -19,36 +19,35 @@ interface BlacklistRule {
 
 const SAFETY_BLACKLIST: BlacklistRule[] = [
     {
-        nodeType: 'CallExpression',
-        identifierName: 'eval',
+        nodeType: "CallExpression",
+        identifierName: "eval",
         message: 'Usage of "eval()" is forbidden.',
-        userAlertKey: 'eval'
+        userAlertKey: "eval",
     },
     {
-        nodeType: 'NewExpression',
-        identifierName: 'Function',
+        nodeType: "NewExpression",
+        identifierName: "Function",
         message: 'Usage of "new Function()" is forbidden.',
-        userAlertKey: 'eval'
+        userAlertKey: "eval",
     },
     {
-        nodeType: 'Identifier',
-        identifierName: 'sessionStorage',
+        nodeType: "Identifier",
+        identifierName: "sessionStorage",
         message: 'Access to "sessionStorage" is forbidden.',
-        userAlertKey: 'storageAccess'
+        userAlertKey: "storageAccess",
     },
     {
-        nodeType: 'Identifier',
-        identifierName: 'cookieStore',
+        nodeType: "Identifier",
+        identifierName: "cookieStore",
         message: 'Access to "cookieStore" is forbidden.',
-        userAlertKey: 'storageAccess'
+        userAlertKey: "storageAccess",
     },
 ];
 
 export type PluginSafetyErrors = {
     message: string; //message for developers
     userAlertKey: UserFriendlyRuleAlertKey; //key for user-friendly alert messages
-}
-
+};
 
 // Increment this version if the safety rules change to invalidate the cache
 const checkerVersion = 3;
@@ -67,100 +66,101 @@ export async function checkCodeSafety(code: string): Promise<CheckResult> {
             localStorage.removeItem(cacheKey);
         }
     } catch {
-        try { localStorage.removeItem(cacheKey); } catch {}
+        try {
+            localStorage.removeItem(cacheKey);
+        } catch {}
     }
 
     try {
-        const [acorn, walk] = await Promise.all([
-            import('acorn'),
-            import('acorn-walk')
-        ]);
+        const [acorn, walk] = await Promise.all([import("acorn"), import("acorn-walk")]);
 
-        const ast = acorn.parse(code, { ecmaVersion: 'latest' });
+        const ast = acorn.parse(code, { ecmaVersion: "latest" });
 
         walk.ancestor(ast, {
-
             CallExpression(node) {
-                if (node.callee?.type === 'Identifier') {
-                    validateNode(node, 'CallExpression', node.callee.name, errors);
+                if (node.callee?.type === "Identifier") {
+                    validateNode(node, "CallExpression", node.callee.name, errors);
                 }
             },
             NewExpression(node) {
-                if (node.callee?.type === 'Identifier') {
-                    validateNode(node, 'NewExpression', node.callee.name, errors);
+                if (node.callee?.type === "Identifier") {
+                    validateNode(node, "NewExpression", node.callee.name, errors);
                 }
             },
 
-            Identifier(node, state, ancestors:any[]) {
+            Identifier(node, state, ancestors: any[]) {
                 const name = node.name;
 
                 switch (name) {
-                    case 'window':
-                    case 'global':
-                    case 'globalThis':
-                    case 'self':
-                    case 'top':
-                    case 'parent':
-                    case 'frames':
-                        node.name = 'safeGlobalThis';
+                    case "window":
+                    case "global":
+                    case "globalThis":
+                    case "self":
+                    case "top":
+                    case "parent":
+                    case "frames":
+                        node.name = "safeGlobalThis";
                         return;
-                    case 'localStorage':
-                        node.name = 'safeLocalStorage';
+                    case "localStorage":
+                        node.name = "safeLocalStorage";
                         return;
-                    case 'indexedDB':
-                        node.name = 'safeIdbFactory';
+                    case "indexedDB":
+                        node.name = "safeIdbFactory";
                         return;
-                    case 'document':
-                        node.name = 'safeDocument';
+                    case "document":
+                        node.name = "safeDocument";
                         return;
-                    case 'Function':
-                        node.name = 'SafeFunction';
+                    case "Function":
+                        node.name = "SafeFunction";
                         return;
-                    case 'prototype':
-                        node.name = 'safePrototype';
+                    case "prototype":
+                        node.name = "safePrototype";
                         return;
-                    case 'ownerDocument':
-                        node.name = 'safeOwnerDocument';
+                    case "ownerDocument":
+                        node.name = "safeOwnerDocument";
                         return;
-                    case 'constructor':
-                        node.name = 'safeConstructor';
+                    case "constructor":
+                        node.name = "safeConstructor";
                         return;
                 }
-                const isTarget = SAFETY_BLACKLIST.some(r => r.nodeType === 'Identifier' && r.identifierName === name);
+                const isTarget = SAFETY_BLACKLIST.some((r) => r.nodeType === "Identifier" && r.identifierName === name);
                 if (!isTarget) return;
 
-                validateNode(node, 'Identifier', name, errors);
-            }
+                validateNode(node, "Identifier", name, errors);
+            },
         });
 
-        const {generate} = await import('astring');
+        const { generate } = await import("astring");
         const modifiedCode = generate(ast);
         code = modifiedCode;
-
     } catch (err) {
         // Handles syntax errors or import errors
         return {
             isSafe: false,
-            errors: [{
-                message: `Error during code verification: ${(err as Error).message}`,
-                userAlertKey: 'errorInVerification'
-            }],
+            errors: [
+                {
+                    message: `Error during code verification: ${(err as Error).message}`,
+                    userAlertKey: "errorInVerification",
+                },
+            ],
             checkerVersion,
-            modifiedCode: code
+            modifiedCode: code,
         };
     }
 
     errors.push({
-        message: 'Code passed safety checks but may still be unsafe due to limitations in static analysis.',
-        userAlertKey: 'errorInVerification'
-    })
+        message: "Code passed safety checks but may still be unsafe due to limitations in static analysis.",
+        userAlertKey: "errorInVerification",
+    });
 
     const result: CheckResult = { isSafe: errors.length === 0, errors, checkerVersion, modifiedCode: code };
     try {
         localStorage.setItem(cacheKey, JSON.stringify(result));
     } catch {
         purgeSafetyCache(cacheKey);
-        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch {}
+        try {
+            localStorage.setItem(cacheKey, JSON.stringify(result));
+        } catch {}
     }
     return result;
 }
@@ -170,7 +170,7 @@ function purgeSafetyCache(keepKey?: string) {
         const toRemove: string[] = [];
         for (let i = 0; i < localStorage.length; i++) {
             const key = localStorage.key(i);
-            if (key?.startsWith('safety-') && key !== keepKey) {
+            if (key?.startsWith("safety-") && key !== keepKey) {
                 toRemove.push(key);
             }
         }
@@ -181,11 +181,11 @@ function purgeSafetyCache(keepKey?: string) {
 }
 
 function validateNode(node: any, type: DangerousNodeType, name: string | undefined, errors: PluginSafetyErrors[]) {
-    const rule = SAFETY_BLACKLIST.find(r => r.nodeType === type && r.identifierName === name);
+    const rule = SAFETY_BLACKLIST.find((r) => r.nodeType === type && r.identifierName === name);
     if (rule) {
         errors.push({
             message: rule.message,
-            userAlertKey: rule.userAlertKey
+            userAlertKey: rule.userAlertKey,
         });
     }
 }

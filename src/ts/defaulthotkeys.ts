@@ -1,146 +1,144 @@
-
-export interface Hotkey{
-    key: string
-    ctrl?: boolean
-    shift?: boolean
-    alt?: boolean
-    action: string
+export interface Hotkey {
+    key: string;
+    ctrl?: boolean;
+    shift?: boolean;
+    alt?: boolean;
+    action: string;
 }
 
 export const defaultHotkeys: Hotkey[] = [
     {
-        key: 'r',
+        key: "r",
         ctrl: true,
         alt: true,
-        action: 'reroll'
+        action: "reroll",
     },
     {
-        key: 'f',
+        key: "f",
         ctrl: true,
         alt: true,
-        action: 'unreroll'
+        action: "unreroll",
     },
     {
-        key: 't',
+        key: "t",
         ctrl: true,
         alt: true,
-        action: 'translate'
+        action: "translate",
     },
     {
-        key: 'd',
+        key: "d",
         ctrl: true,
         alt: true,
-        action: 'remove'
+        action: "remove",
     },
     {
-        key: 'e',
+        key: "e",
         ctrl: true,
         alt: true,
-        action: 'edit'
+        action: "edit",
     },
     {
-        key: 'c',
+        key: "c",
         ctrl: true,
         alt: true,
-        action: 'copy'
+        action: "copy",
     },
     {
-        key: 'Enter',
+        key: "Enter",
         ctrl: true,
         alt: true,
-        action: 'send'
+        action: "send",
     },
     {
-        key: 's',
+        key: "s",
         ctrl: true,
-        action: 'settings'
+        action: "settings",
     },
     {
-        key: 'h',
+        key: "h",
         ctrl: true,
-        action: 'home'
+        action: "home",
     },
     {
-        key: 'p',
+        key: "p",
         ctrl: true,
-        action: 'presets'
+        action: "presets",
     },
     {
-        key: 'e',
+        key: "e",
         ctrl: true,
-        action: 'persona'
+        action: "persona",
     },
     {
-        key: 'm',
+        key: "m",
         ctrl: true,
-        action: 'modelSelect'
+        action: "modelSelect",
     },
     {
-        key: '.',
+        key: ".",
         ctrl: true,
-        action: 'toggleCSS'
+        action: "toggleCSS",
     },
 
     //Needs to implement after this
 
-
     {
-        key: '[',
+        key: "[",
         ctrl: true,
-        action: 'prevChar'
+        action: "prevChar",
     },
     {
-        key: ']',
+        key: "]",
         ctrl: true,
-        action: 'nextChar'
+        action: "nextChar",
     },
     {
-        key: '`',
+        key: "`",
         ctrl: true,
-        action: 'quickMenu'
+        action: "quickMenu",
     },
     {
-        key: 'q',
+        key: "q",
         ctrl: true,
-        action: 'quickSettings'
+        action: "quickSettings",
     },
     {
-        key: 'v',
+        key: "v",
         ctrl: true,
-        action: 'toggleVoice'
+        action: "toggleVoice",
     },
     {
-        key: 'l',
+        key: "l",
         ctrl: true,
-        action: 'toggleLog'
+        action: "toggleLog",
     },
     {
-        key: 'u',
+        key: "u",
         ctrl: true,
-        action: 'previewRequest'
+        action: "previewRequest",
     },
     {
-        key: 'w',
+        key: "w",
         ctrl: true,
-        action: 'webcam'
+        action: "webcam",
     },
     {
-        key: ' ',
-        action: 'focusInput'
+        key: " ",
+        action: "focusInput",
     },
     {
-        key: 'g',
+        key: "g",
         ctrl: true,
-        action: 'scrollToActiveChar'
+        action: "scrollToActiveChar",
     },
     {
-        key: 'x',
+        key: "x",
         ctrl: true,
-        action: 'popupEditor'
+        action: "popupEditor",
     },
     {
-        key: 'o',
+        key: "o",
         ctrl: true,
-        action: 'loadout'
-    }
-]
+        action: "loadout",
+    },
+];

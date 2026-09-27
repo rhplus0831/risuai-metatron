@@ -1,5 +1,5 @@
-import app from './app/index.js'
+import app from "./app/index.js";
 
 // both vercel and cf
 
-export default app
+export default app;

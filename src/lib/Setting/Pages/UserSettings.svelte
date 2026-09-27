@@ -1,6 +1,6 @@
 <script lang="ts">
     import { language } from "src/lang";
-    import { alertConfirm} from "src/ts/alert";
+    import { alertConfirm } from "src/ts/alert";
     import { loadInternalBackup } from "src/ts/globalApi.svelte";
     import { LoadLocalBackup, SaveLocalBackup, SavePartialLocalBackup } from "src/ts/drive/backuplocal";
     import Button from "src/lib/UI/GUI/Button.svelte";
@@ -11,37 +11,45 @@
 
 <Button
     onclick={async () => {
-        if(await alertConfirm(language.backupConfirm)){
-            SaveLocalBackup()
+        if (await alertConfirm(language.backupConfirm)) {
+            SaveLocalBackup();
         }
-    }} className="mt-2">
+    }}
+    className="mt-2"
+>
     {language.saveBackupLocal}
 </Button>
 
 <Button
     onclick={async () => {
-        if(await alertConfirm(language.backupConfirm)){
-            SavePartialLocalBackup()
+        if (await alertConfirm(language.backupConfirm)) {
+            SavePartialLocalBackup();
         }
-    }} className="mt-2">
+    }}
+    className="mt-2"
+>
     {language.savePartialLocalBackup}
 </Button>
 
 <Button
     onclick={async () => {
-        if((await alertConfirm(language.backupLoadConfirm)) && (await alertConfirm(language.backupLoadConfirm2))){
-            LoadLocalBackup()
+        if ((await alertConfirm(language.backupLoadConfirm)) && (await alertConfirm(language.backupLoadConfirm2))) {
+            LoadLocalBackup();
         }
-    }} className="mt-2">
+    }}
+    className="mt-2"
+>
     {language.loadBackupLocal}
 </Button>
 
 <Button
     onclick={async () => {
-        if((await alertConfirm(language.backupLoadConfirm)) && (await alertConfirm(language.backupLoadConfirm2))){
-            loadInternalBackup()
+        if ((await alertConfirm(language.backupLoadConfirm)) && (await alertConfirm(language.backupLoadConfirm2))) {
+            loadInternalBackup();
         }
-    }} className="mt-2">
+    }}
+    className="mt-2"
+>
     {language.loadInternalBackup}
 </Button>
 

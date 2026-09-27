@@ -1,5 +1,5 @@
-import { checkNullish, sleep } from "./util"
-import { v4 as uuidv4 } from 'uuid';
+import { checkNullish, sleep } from "./util";
+import { v4 as uuidv4 } from "uuid";
 import { get } from "svelte/store";
 import { setDatabase, defaultSdDataFunc, getDatabase } from "./storage/database.svelte";
 import { MobileGUI, botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState } from "./stores.svelte";
@@ -16,126 +16,120 @@ import { updateGuisize } from "./gui/guisize";
 import { updateLorebooks } from "./characters";
 import { initMobileGesture } from "./hotkey";
 import { moduleUpdate } from "./process/modules";
-import {
-    forageStorage,
-    saveDb,
-    getDbBackups,
-    setUsingSw,
-    checkCharOrder
-} from "./globalApi.svelte";
+import { forageStorage, saveDb, getDbBackups, setUsingSw, checkCharOrder } from "./globalApi.svelte";
 import { registerModelDynamic } from "./model/modellist";
 
 /**
  * Loads the application data.
  */
 export async function loadData() {
-    const loaded = get(loadedStore)
+    const loaded = get(loadedStore);
     if (!loaded) {
         try {
-            await forageStorage.Init()
+            await forageStorage.Init();
 
-            LoadingStatusState.text = "Loading Local Save File..."
-            let gotStorage: Uint8Array = await forageStorage.getItem('database/database.bin') as unknown as Uint8Array
-            LoadingStatusState.text = "Decoding Local Save File..."
+            LoadingStatusState.text = "Loading Local Save File...";
+            let gotStorage: Uint8Array = (await forageStorage.getItem(
+                "database/database.bin",
+            )) as unknown as Uint8Array;
+            LoadingStatusState.text = "Decoding Local Save File...";
             if (checkNullish(gotStorage)) {
-                gotStorage = encodeRisuSaveLegacy({})
-                await forageStorage.setItem('database/database.bin', gotStorage)
+                gotStorage = encodeRisuSaveLegacy({});
+                await forageStorage.setItem("database/database.bin", gotStorage);
             }
             try {
-                const decoded = await decodeRisuSave(gotStorage)
-                console.log(decoded)
-                setDatabase(decoded)
+                const decoded = await decodeRisuSave(gotStorage);
+                console.log(decoded);
+                setDatabase(decoded);
             } catch (error) {
-                console.error(error)
-                const backups = await getDbBackups()
-                let backupLoaded = false
+                console.error(error);
+                const backups = await getDbBackups();
+                let backupLoaded = false;
                 for (const backup of backups) {
                     try {
-                        LoadingStatusState.text = `Reading Backup File ${backup}...`
-                        const backupData: Uint8Array = await forageStorage.getItem(`database/dbbackup-${backup}.bin`) as unknown as Uint8Array
-                        setDatabase(
-                            await decodeRisuSave(backupData)
-                        )
-                        backupLoaded = true
-                    } catch (error) { }
+                        LoadingStatusState.text = `Reading Backup File ${backup}...`;
+                        const backupData: Uint8Array = (await forageStorage.getItem(
+                            `database/dbbackup-${backup}.bin`,
+                        )) as unknown as Uint8Array;
+                        setDatabase(await decodeRisuSave(backupData));
+                        backupLoaded = true;
+                    } catch (error) {}
                 }
                 if (!backupLoaded) {
-                    throw "Forage: Your save file is corrupted"
+                    throw "Forage: Your save file is corrupted";
                 }
             }
 
-            LoadingStatusState.text = "Checking Service Worker..."
+            LoadingStatusState.text = "Checking Service Worker...";
             if (navigator.serviceWorker) {
-                setUsingSw(true)
-                await registerSw()
-            }
-            else {
-                setUsingSw(false)
+                setUsingSw(true);
+                await registerSw();
+            } else {
+                setUsingSw(false);
             }
             if (getDatabase().didFirstSetup) {
-                characterURLImport()
+                characterURLImport();
             }
-            LoadingStatusState.text = "Loading Plugins..."
+            LoadingStatusState.text = "Loading Plugins...";
             try {
-                await loadPlugins()
-            } catch (error) { }
+                await loadPlugins();
+            } catch (error) {}
             try {
-                //@ts-expect-error navigator.standalone is iOS Safari non-standard property, not in Navigator interface
-                const isInStandaloneMode = (window.matchMedia('(display-mode: standalone)').matches) || (window.navigator.standalone) || document.referrer.includes('android-app://');
+                const isInStandaloneMode =
+                    window.matchMedia("(display-mode: standalone)").matches ||
+                    //@ts-expect-error navigator.standalone is iOS Safari non-standard property, not in Navigator interface
+                    window.navigator.standalone ||
+                    document.referrer.includes("android-app://");
                 if (isInStandaloneMode) {
-                    await navigator.storage.persist()
+                    await navigator.storage.persist();
                 }
-            } catch (error) {
-
-            }
-            LoadingStatusState.text = "Checking For Format Update..."
-            await checkNewFormat()
+            } catch (error) {}
+            LoadingStatusState.text = "Checking For Format Update...";
+            await checkNewFormat();
             const db = getDatabase();
 
-            LoadingStatusState.text = "Updating States..."
-            updateColorScheme()
-            updateTextThemeAndCSS()
-            updateAnimationSpeed()
-            updateHeightMode()
-            updateErrorHandling()
-            updateGuisize()
-            if (!localStorage.getItem('nightlyWarned') && import.meta.env.VITE_RISU_NIGHTLY_BUILD === 'TRUE') {
-                alertMd(language.nightlyWarning)
-                await waitAlert()
-                localStorage.setItem('nightlyWarned', 'true')
+            LoadingStatusState.text = "Updating States...";
+            updateColorScheme();
+            updateTextThemeAndCSS();
+            updateAnimationSpeed();
+            updateHeightMode();
+            updateErrorHandling();
+            updateGuisize();
+            if (!localStorage.getItem("nightlyWarned") && import.meta.env.VITE_RISU_NIGHTLY_BUILD === "TRUE") {
+                alertMd(language.nightlyWarning);
+                await waitAlert();
+                localStorage.setItem("nightlyWarned", "true");
             }
             if (db.botSettingAtStart) {
-                botMakerMode.set(true)
+                botMakerMode.set(true);
             }
             if (db.betaMobileGUI && window.innerWidth <= 800) {
-                initMobileGesture()
-                MobileGUI.set(true)
+                initMobileGesture();
+                MobileGUI.set(true);
             }
-            loadedStore.set(true)
-            selectedCharID.set(-1)
-            startObserveDom()
-            assignIds()
-            registerModelDynamic()
-            saveDb()
-            moduleUpdate()
-            cleanLegacyAccountData()
-            
+            loadedStore.set(true);
+            selectedCharID.set(-1);
+            startObserveDom();
+            assignIds();
+            registerModelDynamic();
+            saveDb();
+            moduleUpdate();
+            cleanLegacyAccountData();
         } catch (error) {
-            alertError(error)
+            alertError(error);
         }
     }
 }
-
 
 /**
  * Registers the service worker and initializes it.
  */
 async function registerSw() {
     await navigator.serviceWorker.register("/sw.js", {
-        scope: "/"
+        scope: "/",
     });
     await sleep(100);
-    const da = await fetch('/sw/init');
+    const da = await fetch("/sw/init");
     if (!(da.status >= 200 && da.status < 300)) {
         location.reload();
     }
@@ -147,43 +141,43 @@ async function registerSw() {
 function updateErrorHandling() {
     const errorHandler = (event: ErrorEvent) => {
         console.error(event.error);
-        if(!(event.error.target instanceof Worker)){
-            alertError(event.error);            
+        if (!(event.error.target instanceof Worker)) {
+            alertError(event.error);
         }
     };
     const rejectHandler = (event: PromiseRejectionEvent) => {
         console.error(event.reason);
         alertError(event.reason);
     };
-    window.addEventListener('error', errorHandler);
-    window.addEventListener('unhandledrejection', rejectHandler);
+    window.addEventListener("error", errorHandler);
+    window.addEventListener("unhandledrejection", rejectHandler);
 }
 
 /**
  * Updates the height mode of the document based on the value stored in the database.
  */
 function updateHeightMode() {
-    const db = getDatabase()
-    const root = document.querySelector(':root') as HTMLElement;
+    const db = getDatabase();
+    const root = document.querySelector(":root") as HTMLElement;
     switch (db.heightMode) {
-        case 'auto':
-            root.style.setProperty('--risu-height-size', '100%');
-            break
-        case 'vh':
-            root.style.setProperty('--risu-height-size', '100vh');
-            break
-        case 'dvh':
-            root.style.setProperty('--risu-height-size', '100dvh');
-            break
-        case 'lvh':
-            root.style.setProperty('--risu-height-size', '100lvh');
-            break
-        case 'svh':
-            root.style.setProperty('--risu-height-size', '100svh');
-            break
-        case 'percent':
-            root.style.setProperty('--risu-height-size', '100%');
-            break
+        case "auto":
+            root.style.setProperty("--risu-height-size", "100%");
+            break;
+        case "vh":
+            root.style.setProperty("--risu-height-size", "100vh");
+            break;
+        case "dvh":
+            root.style.setProperty("--risu-height-size", "100dvh");
+            break;
+        case "lvh":
+            root.style.setProperty("--risu-height-size", "100lvh");
+            break;
+        case "svh":
+            root.style.setProperty("--risu-height-size", "100svh");
+            break;
+        case "percent":
+            root.style.setProperty("--risu-height-size", "100%");
+            break;
     }
 }
 
@@ -194,110 +188,114 @@ async function checkNewFormat(): Promise<void> {
     let db = getDatabase();
 
     // Check data integrity
-    db.characters = db.characters.map((v) => {
-        if (!v) {
-            return null;
-        }
-        v.chaId ??= uuidv4();
-        v.type ??= 'character';
-        v.chatPage ??= 0;
-        v.chats ??= [];
-        v.customscript ??= [];
-        v.firstMessage ??= '';
-        v.globalLore ??= [];
-        v.name ??= '';
-        v.viewScreen ??= 'none';
-        v.emotionImages = v.emotionImages ?? [];
-
-        if (v.type === 'character') {
-            v.bias ??= [];
-            v.characterVersion ??= '';
-            v.creator ??= '';
-            v.desc ??= '';
-            v.utilityBot ??= false;
-            v.tags ??= [];
-            v.systemPrompt ??= '';
-            v.scenario ??= '';
-        }
-        return v;
-    }).filter((v) => {
-        return v !== null;
-    });
-
-    db.modules = await Promise.all((db.modules ?? []).map(async (v) => {
-        if (v?.lorebook) {
-            if (!Array.isArray(v.lorebook)) {
-                console.error('Critical: Invalid lorebook format detected in module');
-                console.error('Module data:', JSON.stringify(v, null, 2));
-                
-                // Alert user about corrupted data
-                alertError(language.bootstrap.dataCorruptionDetected(v.name || 'Unknown', typeof v.lorebook));
-                await waitAlert();
-                
-                // Ask if user wants to report the issue
-                const shouldReport = await alertConfirm(language.bootstrap.reportErrorQuestion);
-                
-                if (shouldReport) {
-                    try {
-                        // Collect diagnostic information (without personal data)
-                        const diagnosticInfo = {
-                            timestamp: new Date().toISOString(),
-                            moduleName: v.name || 'Unknown',
-                            lorebookType: typeof v.lorebook,
-                            lorebookValue: JSON.stringify(v.lorebook).substring(0, 500), // First 500 chars only
-                            isArray: Array.isArray(v.lorebook),
-                            keys: v.lorebook ? Object.keys(v.lorebook).join(', ') : 'N/A',
-                            formatVersion: db.formatversion || 'Unknown'
-                        };
-                        
-                        // Show the diagnostic info and allow user to copy or send
-                        const reportData = JSON.stringify(diagnosticInfo, null, 2);
-                        await alertMd(language.bootstrap.diagnosticInformation(reportData));
-                        await waitAlert();
-                        
-                        console.log('Diagnostic information for developers:', diagnosticInfo);
-                    } catch (reportError) {
-                        console.error('Failed to generate diagnostic report:', reportError);
-                    }
-                }
-                
-                // Ask if user wants to reset the data
-                const shouldReset = await alertConfirm(language.bootstrap.resetLorebookQuestion);
-                
-                if (shouldReset) {
-                    v.lorebook = [];
-                    console.log('Lorebook reset to empty array by user choice');
-                } else {
-                    console.warn('User chose to keep corrupted lorebook data');
-                }
-            } else {
-                v.lorebook = updateLorebooks(v.lorebook);
+    db.characters = db.characters
+        .map((v) => {
+            if (!v) {
+                return null;
             }
-        }
-        return v
-    }));
-    
+            v.chaId ??= uuidv4();
+            v.type ??= "character";
+            v.chatPage ??= 0;
+            v.chats ??= [];
+            v.customscript ??= [];
+            v.firstMessage ??= "";
+            v.globalLore ??= [];
+            v.name ??= "";
+            v.viewScreen ??= "none";
+            v.emotionImages = v.emotionImages ?? [];
+
+            if (v.type === "character") {
+                v.bias ??= [];
+                v.characterVersion ??= "";
+                v.creator ??= "";
+                v.desc ??= "";
+                v.utilityBot ??= false;
+                v.tags ??= [];
+                v.systemPrompt ??= "";
+                v.scenario ??= "";
+            }
+            return v;
+        })
+        .filter((v) => {
+            return v !== null;
+        });
+
+    db.modules = await Promise.all(
+        (db.modules ?? []).map(async (v) => {
+            if (v?.lorebook) {
+                if (!Array.isArray(v.lorebook)) {
+                    console.error("Critical: Invalid lorebook format detected in module");
+                    console.error("Module data:", JSON.stringify(v, null, 2));
+
+                    // Alert user about corrupted data
+                    alertError(language.bootstrap.dataCorruptionDetected(v.name || "Unknown", typeof v.lorebook));
+                    await waitAlert();
+
+                    // Ask if user wants to report the issue
+                    const shouldReport = await alertConfirm(language.bootstrap.reportErrorQuestion);
+
+                    if (shouldReport) {
+                        try {
+                            // Collect diagnostic information (without personal data)
+                            const diagnosticInfo = {
+                                timestamp: new Date().toISOString(),
+                                moduleName: v.name || "Unknown",
+                                lorebookType: typeof v.lorebook,
+                                lorebookValue: JSON.stringify(v.lorebook).substring(0, 500), // First 500 chars only
+                                isArray: Array.isArray(v.lorebook),
+                                keys: v.lorebook ? Object.keys(v.lorebook).join(", ") : "N/A",
+                                formatVersion: db.formatversion || "Unknown",
+                            };
+
+                            // Show the diagnostic info and allow user to copy or send
+                            const reportData = JSON.stringify(diagnosticInfo, null, 2);
+                            await alertMd(language.bootstrap.diagnosticInformation(reportData));
+                            await waitAlert();
+
+                            console.log("Diagnostic information for developers:", diagnosticInfo);
+                        } catch (reportError) {
+                            console.error("Failed to generate diagnostic report:", reportError);
+                        }
+                    }
+
+                    // Ask if user wants to reset the data
+                    const shouldReset = await alertConfirm(language.bootstrap.resetLorebookQuestion);
+
+                    if (shouldReset) {
+                        v.lorebook = [];
+                        console.log("Lorebook reset to empty array by user choice");
+                    } else {
+                        console.warn("User chose to keep corrupted lorebook data");
+                    }
+                } else {
+                    v.lorebook = updateLorebooks(v.lorebook);
+                }
+            }
+            return v;
+        }),
+    );
+
     db.modules = db.modules.filter((v) => {
         return v !== null && v !== undefined;
     });
 
-    db.personas = (db.personas ?? []).map((v) => {
-        v.id ??= uuidv4()
-        return v
-    }).filter((v) => {
-        return v !== null && v !== undefined;
-    });
+    db.personas = (db.personas ?? [])
+        .map((v) => {
+            v.id ??= uuidv4();
+            return v;
+        })
+        .filter((v) => {
+            return v !== null && v !== undefined;
+        });
 
     if (!db.formatversion) {
         function checkClean(data: string) {
-
-            if (data.startsWith('assets') || (data.length < 3)) {
-                return data
-            }
-            else {
-                const d = 'assets/' + (data.replace(/\\/g, '/').split('assets/')[1])
+            if (data.startsWith("assets") || data.length < 3) {
+                return data;
+            } else {
+                const d = "assets/" + data.replace(/\\/g, "/").split("assets/")[1];
                 if (!d) {
-                    return data
+                    return data;
                 }
                 return d;
             }
@@ -324,7 +322,7 @@ async function checkNewFormat(): Promise<void> {
     if (db.formatversion < 3) {
         for (let i = 0; i < db.characters.length; i++) {
             let cha = db.characters[i];
-            if (cha.type === 'character') {
+            if (cha.type === "character") {
                 if (checkNullish(cha.sdData)) {
                     cha.sdData = defaultSdDataFunc();
                 }
@@ -369,10 +367,10 @@ async function checkNewFormat(): Promise<void> {
  * The `risuaiAccountCached` IndexedDB is kept on purpose: it may hold a former sync user's latest database copy.
  */
 function cleanLegacyAccountData() {
-    for (const key of ['accountst', 'dosync', 'fallbackRisuToken', 'tos2', 'tos4', 'hub']) {
+    for (const key of ["accountst", "dosync", "fallbackRisuToken", "tos2", "tos4", "hub"]) {
         try {
-            localStorage.removeItem(key)
-        } catch (error) { }
+            localStorage.removeItem(key);
+        } catch (error) {}
     }
 }
 
@@ -381,29 +379,29 @@ function cleanLegacyAccountData() {
  */
 function assignIds() {
     if (!DBState?.db?.characters) {
-        return
+        return;
     }
-    const assignedIds = new Set<string>()
+    const assignedIds = new Set<string>();
     for (let i = 0; i < DBState.db.characters.length; i++) {
-        const cha = DBState.db.characters[i]
+        const cha = DBState.db.characters[i];
         if (!cha.chaId) {
-            cha.chaId = uuidv4()
+            cha.chaId = uuidv4();
         }
         if (assignedIds.has(cha.chaId)) {
             console.warn(`Duplicate chaId found: ${cha.chaId}. Assigning new ID.`);
             cha.chaId = uuidv4();
         }
-        assignedIds.add(cha.chaId)
+        assignedIds.add(cha.chaId);
         for (let i2 = 0; i2 < cha.chats.length; i2++) {
-            const chat = cha.chats[i2]
+            const chat = cha.chats[i2];
             if (!chat.id) {
-                chat.id = uuidv4()
+                chat.id = uuidv4();
             }
             if (assignedIds.has(chat.id)) {
                 console.warn(`Duplicate chat ID found: ${chat.id}. Assigning new ID.`);
                 chat.id = uuidv4();
             }
-            assignedIds.add(chat.id)
+            assignedIds.add(chat.id);
         }
     }
 }

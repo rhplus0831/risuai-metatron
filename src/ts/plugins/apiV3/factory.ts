@@ -1,11 +1,11 @@
 type MsgType =
-    | 'CALL_ROOT'
-    | 'CALL_INSTANCE'
-    | 'INVOKE_CALLBACK'
-    | 'CALLBACK_RETURN'
-    | 'RESPONSE'
-    | 'RELEASE_INSTANCE'
-    | 'ABORT_SIGNAL';
+    | "CALL_ROOT"
+    | "CALL_INSTANCE"
+    | "INVOKE_CALLBACK"
+    | "CALLBACK_RETURN"
+    | "RESPONSE"
+    | "RELEASE_INSTANCE"
+    | "ABORT_SIGNAL";
 
 interface RpcMessage {
     type: MsgType;
@@ -19,21 +19,20 @@ interface RpcMessage {
 }
 
 interface RemoteRef {
-    __type: 'REMOTE_REF';
+    __type: "REMOTE_REF";
     id: string;
 }
 
 interface CallbackRef {
-    __type: 'CALLBACK_REF';
+    __type: "CALLBACK_REF";
     id: string;
 }
 
 interface AbortSignalRef {
-    __type: 'ABORT_SIGNAL_REF';
+    __type: "ABORT_SIGNAL_REF";
     abortId: string;
     aborted: boolean;
 }
-
 
 const GUEST_BRIDGE_SCRIPT = `
 await (async function() {
@@ -442,7 +441,7 @@ export class SandboxHost {
     private messageHandlerRef: ((event: MessageEvent) => void) | null = null;
     private callbackWrapperCache = new Map<string, Function>();
 
-    private pendingCallbacks = new Map<string, { resolve: Function, reject: Function }>();
+    private pendingCallbacks = new Map<string, { resolve: Function; reject: Function }>();
 
     // Teardown hooks for streams bridged over MessagePort. MessagePort has no
     // 'close' event in stable browsers, so without these the other side of an
@@ -455,14 +454,14 @@ export class SandboxHost {
 
     public executeInIframe(code: string): Promise<any> {
         return new Promise((resolve, reject) => {
-            const reqId = 'exec_' + Math.random().toString(36).substring(2);
+            const reqId = "exec_" + Math.random().toString(36).substring(2);
 
             const handler = (event: MessageEvent) => {
                 if (event.source !== this.iframe.contentWindow) return;
                 const data = event.data;
 
-                if (data.type === 'EXEC_RESULT' && data.reqId === reqId) {
-                    window.removeEventListener('message', handler);
+                if (data.type === "EXEC_RESULT" && data.reqId === reqId) {
+                    window.removeEventListener("message", handler);
                     if (data.error) {
                         reject(new Error(data.error));
                     } else {
@@ -471,86 +470,78 @@ export class SandboxHost {
                 }
             };
 
-            window.addEventListener('message', handler);
+            window.addEventListener("message", handler);
 
-            this.iframe.contentWindow?.postMessage({
-                type: 'EXECUTE_CODE',
-                reqId,
-                code
-            }, '*');
+            this.iframe.contentWindow?.postMessage(
+                {
+                    type: "EXECUTE_CODE",
+                    reqId,
+                    code,
+                },
+                "*",
+            );
         });
     }
 
     private collectTransferables(obj: any, transferables: Transferable[] = []): Transferable[] {
-        if (!obj || typeof obj !== 'object') return transferables;
+        if (!obj || typeof obj !== "object") return transferables;
 
-        if (obj instanceof ArrayBuffer ||
+        if (
+            obj instanceof ArrayBuffer ||
             obj instanceof MessagePort ||
             obj instanceof ImageBitmap ||
             obj instanceof WritableStream ||
             obj instanceof TransformStream ||
-            (typeof OffscreenCanvas !== 'undefined' && obj instanceof OffscreenCanvas)) {
+            (typeof OffscreenCanvas !== "undefined" && obj instanceof OffscreenCanvas)
+        ) {
             transferables.push(obj);
-        }
-        else if (ArrayBuffer.isView(obj) && obj.buffer instanceof ArrayBuffer) {
+        } else if (ArrayBuffer.isView(obj) && obj.buffer instanceof ArrayBuffer) {
             transferables.push(obj.buffer);
-        }
-        else if (Array.isArray(obj)) {
-            obj.forEach(item => this.collectTransferables(item, transferables));
-        }
-        else if (obj.constructor === Object) {
-            Object.values(obj).forEach(value => this.collectTransferables(value, transferables));
+        } else if (Array.isArray(obj)) {
+            obj.forEach((item) => this.collectTransferables(item, transferables));
+        } else if (obj.constructor === Object) {
+            Object.values(obj).forEach((value) => this.collectTransferables(value, transferables));
         }
 
         return transferables;
     }
 
-
     private serialize(val: any): any {
-        if (
-            val &&
-            (typeof val === 'object' || typeof val === 'function') &&
-            val.__classType === 'REMOTE_REQUIRED'
-        ) {
+        if (val && (typeof val === "object" || typeof val === "function") && val.__classType === "REMOTE_REQUIRED") {
             if (val === null) return null;
             if (Array.isArray(val)) return val;
 
-
-            const id = 'ref_' + Math.random().toString(36).substring(2);
+            const id = "ref_" + Math.random().toString(36).substring(2);
             this.instanceRegistry.set(id, val);
-            return { __type: 'REMOTE_REF', id } as RemoteRef;
+            return { __type: "REMOTE_REF", id } as RemoteRef;
         }
 
-        if(val instanceof Response) {
+        if (val instanceof Response) {
             return {
-                __type: 'CALLBACK_STREAMS',
-                __specialType: 'Response',
+                __type: "CALLBACK_STREAMS",
+                __specialType: "Response",
                 value: val.body,
                 init: {
                     status: val.status,
                     statusText: val.statusText,
-                    headers: Array.from(val.headers.entries())
-                }
+                    headers: Array.from(val.headers.entries()),
+                },
             };
         }
 
-        if(
-            val instanceof WritableStream
-            || val instanceof TransformStream
-        ) {
+        if (val instanceof WritableStream || val instanceof TransformStream) {
             return {
-                __type: 'CALLBACK_STREAMS',
-                __specialType: 'none',
-                value: val
+                __type: "CALLBACK_STREAMS",
+                __specialType: "none",
+                value: val,
             };
         }
         return val;
     }
 
-
     private deserializeArgs(args: any[], usedAbortIds?: string[]) {
-        return args.map(arg => {
-            if (arg && arg.__type === 'CALLBACK_REF') {
+        return args.map((arg) => {
+            if (arg && arg.__type === "CALLBACK_REF") {
                 const cbRef = arg as CallbackRef;
 
                 const cached = this.callbackWrapperCache.get(cbRef.id);
@@ -558,29 +549,38 @@ export class SandboxHost {
 
                 const wrapper = async (...innerArgs: any[]) => {
                     return new Promise((resolve, reject) => {
-                        const reqId = 'cb_req_' + Math.random().toString(36).substring(2);
+                        const reqId = "cb_req_" + Math.random().toString(36).substring(2);
                         this.pendingCallbacks.set(reqId, { resolve, reject });
 
                         // AbortSignal cannot be structured-cloned for postMessage.
                         // Convert to a serializable ref and forward abort events
                         // via a separate ABORT_SIGNAL message.
-                        const sanitizedArgs = innerArgs.map(arg => {
+                        const sanitizedArgs = innerArgs.map((arg) => {
                             if (arg instanceof AbortSignal) {
-                                const abortId = 'abort_' + Math.random().toString(36).substring(2);
+                                const abortId = "abort_" + Math.random().toString(36).substring(2);
                                 const ref: AbortSignalRef = {
-                                    __type: 'ABORT_SIGNAL_REF',
+                                    __type: "ABORT_SIGNAL_REF",
                                     abortId,
-                                    aborted: arg.aborted
+                                    aborted: arg.aborted,
                                 };
                                 if (!arg.aborted) {
-                                    arg.addEventListener('abort', () => {
-                                        try {
-                                            this.iframe.contentWindow?.postMessage({
-                                                type: 'ABORT_SIGNAL',
-                                                abortId
-                                            } as RpcMessage, '*');
-                                        } catch (_) { /* iframe already removed */ }
-                                    }, { once: true });
+                                    arg.addEventListener(
+                                        "abort",
+                                        () => {
+                                            try {
+                                                this.iframe.contentWindow?.postMessage(
+                                                    {
+                                                        type: "ABORT_SIGNAL",
+                                                        abortId,
+                                                    } as RpcMessage,
+                                                    "*",
+                                                );
+                                            } catch (_) {
+                                                /* iframe already removed */
+                                            }
+                                        },
+                                        { once: true },
+                                    );
                                 }
                                 return ref;
                             }
@@ -588,31 +588,32 @@ export class SandboxHost {
                         });
 
                         const message = {
-                            type: 'INVOKE_CALLBACK',
+                            type: "INVOKE_CALLBACK",
                             id: cbRef.id,
                             reqId,
-                            args: sanitizedArgs
+                            args: sanitizedArgs,
                         };
                         const transferables = this.collectTransferables(message);
-                        this.iframe.contentWindow?.postMessage(message, '*', transferables);
+                        this.iframe.contentWindow?.postMessage(message, "*", transferables);
                     });
                 };
                 this.callbackWrapperCache.set(cbRef.id, wrapper);
                 return wrapper;
             }
-            if (arg && arg.__type === 'REMOTE_REF') {
+            if (arg && arg.__type === "REMOTE_REF") {
                 const remoteRef = arg as RemoteRef;
                 const instance = this.instanceRegistry.get(remoteRef.id);
                 if (instance) {
                     return instance;
                 }
             }
-            if (arg && typeof arg === 'object' && arg.constructor === Object) {
+            if (arg && typeof arg === "object" && arg.constructor === Object) {
                 let out: any = null;
                 for (const [key, val] of Object.entries<any>(arg)) {
-                    if (val && val.__type === 'ABORT_SIGNAL_REF') {
+                    if (val && val.__type === "ABORT_SIGNAL_REF") {
                         if (!out) out = { ...arg };
-                        const abortRef = val as AbortSignalRef, controller = new AbortController();
+                        const abortRef = val as AbortSignalRef,
+                            controller = new AbortController();
 
                         if (abortRef.aborted) controller.abort();
                         else this.abortControllers.set(abortRef.abortId, controller);
@@ -627,10 +628,10 @@ export class SandboxHost {
         });
     }
 
-    private replaceStreamsWithPorts(obj: any): { result: any, ports: MessagePort[], cleanups: (() => void)[] } {
+    private replaceStreamsWithPorts(obj: any): { result: any; ports: MessagePort[]; cleanups: (() => void)[] } {
         const ports: MessagePort[] = [];
         const cleanups: (() => void)[] = [];
-        if (!obj || typeof obj !== 'object') return { result: obj, ports, cleanups };
+        if (!obj || typeof obj !== "object") return { result: obj, ports, cleanups };
 
         const replace = (val: any): any => {
             if (!(val instanceof ReadableStream)) return val;
@@ -665,11 +666,17 @@ export class SandboxHost {
                         credits--;
                         const { done, value } = await reader.read();
                         if (finished) return;
-                        if (done) { ch.port1.postMessage({ done: true }); finish(); return; }
+                        if (done) {
+                            ch.port1.postMessage({ done: true });
+                            finish();
+                            return;
+                        }
                         ch.port1.postMessage({ done: false, value });
                     }
                 } catch (e: any) {
-                    try { ch.port1.postMessage({ done: true, error: e.message }); } catch(_) {}
+                    try {
+                        ch.port1.postMessage({ done: true, error: e.message });
+                    } catch (_) {}
                     finish();
                 } finally {
                     reading = false;
@@ -686,7 +693,7 @@ export class SandboxHost {
                 }
             };
 
-            return { __type: 'STREAM_PORT', portIndex: ports.length - 1 };
+            return { __type: "STREAM_PORT", portIndex: ports.length - 1 };
         };
 
         if (obj instanceof ReadableStream) return { result: replace(obj), ports, cleanups };
@@ -700,10 +707,10 @@ export class SandboxHost {
     }
 
     private reconstructStreamsFromPorts(obj: any, ports: readonly MessagePort[]): any {
-        if (!obj || typeof obj !== 'object') return obj;
+        if (!obj || typeof obj !== "object") return obj;
 
         const reconstruct = (val: any): any => {
-            if (val?.__type !== 'STREAM_PORT' || typeof val.portIndex !== 'number') return val;
+            if (val?.__type !== "STREAM_PORT" || typeof val.portIndex !== "number") return val;
 
             const port = ports[val.portIndex];
             if (!port) throw new Error(`Stream port at index ${val.portIndex} not received`);
@@ -731,7 +738,7 @@ export class SandboxHost {
                         }
                     };
                     cleanup = () => {
-                        controller.error(new Error('Sandbox terminated'));
+                        controller.error(new Error("Sandbox terminated"));
                         port.onmessage = null;
                         port.close();
                     };
@@ -745,11 +752,11 @@ export class SandboxHost {
                     port.onmessage = null;
                     port.close();
                     unregister();
-                }
+                },
             });
         };
 
-        if (obj.__type === 'STREAM_PORT') return reconstruct(obj);
+        if (obj.__type === "STREAM_PORT") return reconstruct(obj);
         if (obj.constructor === Object) {
             const out: any = {};
             for (const k of Object.keys(obj)) out[k] = reconstruct(obj[k]);
@@ -761,16 +768,18 @@ export class SandboxHost {
 
     private closeActiveStreams() {
         for (const cleanup of [...this.activeStreamCleanups]) {
-            try { cleanup(); } catch(_) {}
+            try {
+                cleanup();
+            } catch (_) {}
         }
         this.activeStreamCleanups.clear();
     }
 
-    public run(container: HTMLElement|HTMLIFrameElement, userCode: string) {
-        if(container instanceof HTMLIFrameElement) {
+    public run(container: HTMLElement | HTMLIFrameElement, userCode: string) {
+        if (container instanceof HTMLIFrameElement) {
             this.iframe = container;
         } else {
-            this.iframe = document.createElement('iframe');
+            this.iframe = document.createElement("iframe");
             container.appendChild(this.iframe);
         }
 
@@ -779,20 +788,19 @@ export class SandboxHost {
         this.iframe.style.border = "none";
 
         this.iframe.style.backgroundColor = "transparent";
-        this.iframe.setAttribute('allowTransparency', 'true');
+        this.iframe.setAttribute("allowTransparency", "true");
 
-        this.iframe.sandbox.add('allow-scripts');
-        this.iframe.sandbox.add('allow-modals')
-        this.iframe.sandbox.add('allow-downloads')
+        this.iframe.sandbox.add("allow-scripts");
+        this.iframe.sandbox.add("allow-modals");
+        this.iframe.sandbox.add("allow-downloads");
 
-        this.iframe.setAttribute('csp', this.csp);
+        this.iframe.setAttribute("csp", this.csp);
 
         const messageHandler = async (event: MessageEvent) => {
             if (event.source !== this.iframe.contentWindow) return;
             const data = event.data as RpcMessage;
 
-
-            if (data.type === 'CALLBACK_RETURN') {
+            if (data.type === "CALLBACK_RETURN") {
                 const req = this.pendingCallbacks.get(data.reqId!);
                 if (req) {
                     if (data.error) req.reject(new Error(data.error));
@@ -808,7 +816,7 @@ export class SandboxHost {
                 return;
             }
 
-            if (data.type === 'ABORT_SIGNAL') {
+            if (data.type === "ABORT_SIGNAL") {
                 const controller = this.abortControllers.get(data.abortId!);
                 if (controller) {
                     controller.abort();
@@ -817,50 +825,51 @@ export class SandboxHost {
                 return;
             }
 
-
-            if (data.type === 'RELEASE_INSTANCE') {
+            if (data.type === "RELEASE_INSTANCE") {
                 this.instanceRegistry.delete(data.id!);
                 return;
             }
 
-
-            if (data.type === 'CALL_ROOT' || data.type === 'CALL_INSTANCE') {
-                const response: RpcMessage = { type: 'RESPONSE', reqId: data.reqId };
+            if (data.type === "CALL_ROOT" || data.type === "CALL_INSTANCE") {
+                const response: RpcMessage = { type: "RESPONSE", reqId: data.reqId };
                 const usedAbortIds: string[] = [];
                 let transferables: Transferable[] = [];
                 let streamCleanups: (() => void)[] = [];
 
                 const rollbackStreams = () => {
                     for (const cleanup of streamCleanups) {
-                        try { cleanup(); } catch(_) {}
+                        try {
+                            cleanup();
+                        } catch (_) {}
                     }
                     streamCleanups = [];
                 };
 
                 try {
-
                     const args = this.deserializeArgs(data.args || [], usedAbortIds);
                     let result: any;
 
-
-                    if (data.type === 'CALL_ROOT') {
+                    if (data.type === "CALL_ROOT") {
                         const fn = this.apiFactory[data.method!];
-                        if (typeof fn !== 'function') throw new Error(`API method ${data.method} not found`);
+                        if (typeof fn !== "function") throw new Error(`API method ${data.method} not found`);
                         result = await fn(...args);
                     } else {
                         const instance = this.instanceRegistry.get(data.id!);
                         if (!instance) throw new Error("Instance not found or released");
-                        if (typeof instance[data.method!] !== 'function') throw new Error(`Method ${data.method} missing on instance`);
+                        if (typeof instance[data.method!] !== "function")
+                            throw new Error(`Method ${data.method} missing on instance`);
                         result = await instance[data.method!](...args);
                     }
 
-
                     response.result = this.serialize(result);
-                    const { result: streamResult, ports: streamPorts, cleanups } = this.replaceStreamsWithPorts(response.result);
+                    const {
+                        result: streamResult,
+                        ports: streamPorts,
+                        cleanups,
+                    } = this.replaceStreamsWithPorts(response.result);
                     response.result = streamResult;
                     streamCleanups = cleanups;
                     transferables = this.collectTransferables(response, streamPorts);
-
                 } catch (err: any) {
                     rollbackStreams();
                     delete response.result;
@@ -870,26 +879,30 @@ export class SandboxHost {
                 }
 
                 console.log("Original request:", data);
-                console.log('Original response:', response, transferables);
+                console.log("Original response:", response, transferables);
                 try {
-                    this.iframe.contentWindow?.postMessage(response, '*', transferables);
+                    this.iframe.contentWindow?.postMessage(response, "*", transferables);
                 } catch (error) {
                     rollbackStreams();
                     try {
-                        this.iframe.contentWindow?.postMessage({
-                            type: 'RESPONSE',
-                            reqId: data.reqId,
-                            error: 'Failed to post message to iframe: ' + ((error as any)?.message || String(error || "Unknown error"))
-                        }, '*');
-                    } catch(_) {}
-                    console.error('Failed to post message to iframe:', error);
+                        this.iframe.contentWindow?.postMessage(
+                            {
+                                type: "RESPONSE",
+                                reqId: data.reqId,
+                                error:
+                                    "Failed to post message to iframe: " +
+                                    ((error as any)?.message || String(error || "Unknown error")),
+                            },
+                            "*",
+                        );
+                    } catch (_) {}
+                    console.error("Failed to post message to iframe:", error);
                 }
             }
         };
 
         this.messageHandlerRef = messageHandler;
-        window.addEventListener('message', this.messageHandlerRef);
-
+        window.addEventListener("message", this.messageHandlerRef);
 
         const html = `
       <!DOCTYPE html>
@@ -927,7 +940,7 @@ export class SandboxHost {
 
     public terminate() {
         if (this.messageHandlerRef) {
-            window.removeEventListener('message', this.messageHandlerRef);
+            window.removeEventListener("message", this.messageHandlerRef);
             this.messageHandlerRef = null;
         }
         if (this.iframe) {

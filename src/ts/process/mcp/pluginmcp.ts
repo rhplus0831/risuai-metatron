@@ -4,7 +4,6 @@ import type { MCPTool, RPCToolCallContent } from "./mcplib";
 export const registeredCustomPluginMCPs: Map<string, CustomPluginMCPClient> = new Map();
 
 export class CustomPluginMCPClient extends MCPClientLike {
-
     #getToolList: () => Promise<MCPTool[]>;
     #callTool: (toolName: string, content: any) => Promise<RPCToolCallContent[]>;
     constructor(arg: {
@@ -30,19 +29,19 @@ export class CustomPluginMCPClient extends MCPClientLike {
     async callTool(toolName: string, args: any) {
         return await this.#callTool(toolName, args);
     }
-
 }
 
-export async function registerMCPModule(arg: {
-    identifier: string;
-    name: string;
-    version: string;
-    description: string;
-}, 
+export async function registerMCPModule(
+    arg: {
+        identifier: string;
+        name: string;
+        version: string;
+        description: string;
+    },
     getToolList: () => Promise<MCPTool[]>,
     callTool: (toolName: string, content: any) => Promise<RPCToolCallContent[]>,
 ) {
-    if (!arg.identifier.startsWith('plugin:')) {
+    if (!arg.identifier.startsWith("plugin:")) {
         throw new Error(`MCP module identifier must start with 'plugin:'.`);
     }
     const client = new CustomPluginMCPClient({

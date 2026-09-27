@@ -1,73 +1,81 @@
 <script lang="ts">
-    import type { ModelGridItem, ModelGridPinnedItem } from 'src/ts/model/modelGrid'
-    import { language } from 'src/lang'
-    import TextInput from './GUI/TextInput.svelte'
+    import type { ModelGridItem, ModelGridPinnedItem } from "src/ts/model/modelGrid";
+    import { language } from "src/lang";
+    import TextInput from "./GUI/TextInput.svelte";
 
     interface Props {
-        value?: string
-        items?: ModelGridItem[]
-        pinnedItems?: ModelGridPinnedItem[]
-        loading?: boolean
-        showSubBadge?: boolean
-        selectedLabelOverride?: string
-        onselect?: (id: string, displayName: string) => void
+        value?: string;
+        items?: ModelGridItem[];
+        pinnedItems?: ModelGridPinnedItem[];
+        loading?: boolean;
+        showSubBadge?: boolean;
+        selectedLabelOverride?: string;
+        onselect?: (id: string, displayName: string) => void;
     }
 
-    let { value = $bindable(''), items = [], pinnedItems = [], loading = false, showSubBadge = false, selectedLabelOverride, onselect }: Props = $props()
+    let {
+        value = $bindable(""),
+        items = [],
+        pinnedItems = [],
+        loading = false,
+        showSubBadge = false,
+        selectedLabelOverride,
+        onselect,
+    }: Props = $props();
 
-    let searchQuery = $state('')
-    let sortField = $state<'name' | 'price' | 'provider'>('price')
-    let sortDir   = $state<'asc' | 'desc'>('asc')
+    let searchQuery = $state("");
+    let sortField = $state<"name" | "price" | "provider">("price");
+    let sortDir = $state<"asc" | "desc">("asc");
 
     let sortFields = $derived([
-        { key: 'name'     as const, label: language.openRouterSortByName     },
-        { key: 'price'    as const, label: language.openRouterSortByPrice    },
-        { key: 'provider' as const, label: language.openRouterSortByProvider },
-    ])
+        { key: "name" as const, label: language.openRouterSortByName },
+        { key: "price" as const, label: language.openRouterSortByPrice },
+        { key: "provider" as const, label: language.openRouterSortByProvider },
+    ]);
 
     let sortDirs = $derived([
-        { key: 'asc'  as const, label: language.openRouterSortAsc  },
-        { key: 'desc' as const, label: language.openRouterSortDesc },
-    ])
+        { key: "asc" as const, label: language.openRouterSortAsc },
+        { key: "desc" as const, label: language.openRouterSortDesc },
+    ]);
 
     let filteredItems = $derived.by(() => {
         const base = searchQuery.trim()
             ? (() => {
-                const terms = searchQuery.trim().toLowerCase().split(/\s+/)
-                return items.filter(m => {
-                    const text = (m.displayName + ' ' + m.providerName + ' ' + m.id).toLowerCase()
-                    return terms.every(t => text.includes(t))
-                })
+                  const terms = searchQuery.trim().toLowerCase().split(/\s+/);
+                  return items.filter((m) => {
+                      const text = (m.displayName + " " + m.providerName + " " + m.id).toLowerCase();
+                      return terms.every((t) => text.includes(t));
+                  });
               })()
-            : items
+            : items;
 
         return [...base].sort((a, b) => {
-            let cmp = 0
-            if (sortField === 'name')          cmp = a.displayName.localeCompare(b.displayName)
-            else if (sortField === 'price')    cmp = a.sortPrice - b.sortPrice
-            else if (sortField === 'provider') cmp = a.providerName.localeCompare(b.providerName)
-            return sortDir === 'asc' ? cmp : -cmp
-        })
-    })
+            let cmp = 0;
+            if (sortField === "name") cmp = a.displayName.localeCompare(b.displayName);
+            else if (sortField === "price") cmp = a.sortPrice - b.sortPrice;
+            else if (sortField === "provider") cmp = a.providerName.localeCompare(b.providerName);
+            return sortDir === "asc" ? cmp : -cmp;
+        });
+    });
 
     let selectedLabel = $derived.by(() => {
         if (selectedLabelOverride) {
-            return showSubBadge ? `${selectedLabelOverride} [SUB]` : selectedLabelOverride
+            return showSubBadge ? `${selectedLabelOverride} [SUB]` : selectedLabelOverride;
         }
-        const pinned = pinnedItems.find(p => p.id === value)
-        if (pinned) return `${pinned.providerName} / ${pinned.displayName}`
-        const item = items.find(m => m.id === value)
+        const pinned = pinnedItems.find((p) => p.id === value);
+        if (pinned) return `${pinned.providerName} / ${pinned.displayName}`;
+        const item = items.find((m) => m.id === value);
         if (item) {
-            const label = `${item.providerName} / ${item.displayName}`
-            return showSubBadge ? `${label} [SUB]` : label
+            const label = `${item.providerName} / ${item.displayName}`;
+            return showSubBadge ? `${label} [SUB]` : label;
         }
-        return value || '–'
-    })
+        return value || "–";
+    });
 
     function formatContext(length: number): string {
-        if (!length) return ''
-        if (length >= 1_000_000) return `${(length / 1_000_000).toFixed(0)}M`
-        return `${Math.round(length / 1000)}k`
+        if (!length) return "";
+        if (length >= 1_000_000) return `${(length / 1_000_000).toFixed(0)}M`;
+        return `${Math.round(length / 1000)}k`;
     }
 </script>
 
@@ -83,9 +91,14 @@
             <div class="flex gap-1">
                 {#each sortFields as sf}
                     <button
-                        onclick={() => { sortField = sf.key }}
-                        class="rounded px-3 py-1 text-sm transition-colors {sortField === sf.key ? 'bg-selected text-textcolor font-bold ring-2 ring-textcolor/30 ring-offset-1 ring-offset-bgcolor shadow-md' : 'bg-darkbutton text-textcolor2 font-medium hover:bg-darkbutton hover:text-textcolor'}"
-                    >{sf.label}</button>
+                        onclick={() => {
+                            sortField = sf.key;
+                        }}
+                        class="rounded px-3 py-1 text-sm transition-colors {sortField === sf.key
+                            ? 'bg-selected text-textcolor font-bold ring-2 ring-textcolor/30 ring-offset-1 ring-offset-bgcolor shadow-md'
+                            : 'bg-darkbutton text-textcolor2 font-medium hover:bg-darkbutton hover:text-textcolor'}"
+                        >{sf.label}</button
+                    >
                 {/each}
             </div>
 
@@ -94,9 +107,14 @@
             <div class="flex gap-1">
                 {#each sortDirs as sd}
                     <button
-                        onclick={() => { sortDir = sd.key }}
-                        class="rounded px-3 py-1 text-sm transition-colors {sortDir === sd.key ? 'bg-selected text-textcolor font-bold ring-2 ring-textcolor/30 ring-offset-1 ring-offset-bgcolor shadow-md' : 'bg-darkbutton text-textcolor2 font-medium hover:bg-darkbutton hover:text-textcolor'}"
-                    >{sd.label}</button>
+                        onclick={() => {
+                            sortDir = sd.key;
+                        }}
+                        class="rounded px-3 py-1 text-sm transition-colors {sortDir === sd.key
+                            ? 'bg-selected text-textcolor font-bold ring-2 ring-textcolor/30 ring-offset-1 ring-offset-bgcolor shadow-md'
+                            : 'bg-darkbutton text-textcolor2 font-medium hover:bg-darkbutton hover:text-textcolor'}"
+                        >{sd.label}</button
+                    >
                 {/each}
             </div>
         </div>
@@ -114,8 +132,13 @@
                 <!-- Pinned special models: always visible, unaffected by search/sort -->
                 {#each pinnedItems as pinned}
                     <button
-                        onclick={() => { value = pinned.id }}
-                        class="flex cursor-pointer flex-col rounded-md border p-2.5 text-left transition-colors {value === pinned.id ? 'border-selected bg-selected' : 'border-darkborderc hover:bg-selected'}"
+                        onclick={() => {
+                            value = pinned.id;
+                        }}
+                        class="flex cursor-pointer flex-col rounded-md border p-2.5 text-left transition-colors {value ===
+                        pinned.id
+                            ? 'border-selected bg-selected'
+                            : 'border-darkborderc hover:bg-selected'}"
                     >
                         <span class="text-xs text-textcolor2">{pinned.providerName}</span>
                         <span class="text-sm font-semibold leading-tight text-textcolor">{pinned.displayName}</span>
@@ -133,19 +156,32 @@
                 {:else}
                     {#each filteredItems as item}
                         <button
-                            onclick={() => { value = item.id; onselect?.(item.id, item.displayName) }}
-                            class="flex cursor-pointer flex-col rounded-md border p-2.5 text-left transition-colors {value === item.id ? 'border-selected bg-selected' : 'border-darkborderc hover:bg-selected'}"
+                            onclick={() => {
+                                value = item.id;
+                                onselect?.(item.id, item.displayName);
+                            }}
+                            class="flex cursor-pointer flex-col rounded-md border p-2.5 text-left transition-colors {value ===
+                            item.id
+                                ? 'border-selected bg-selected'
+                                : 'border-darkborderc hover:bg-selected'}"
                         >
                             <div class="flex items-center gap-1">
                                 <span class="text-xs text-textcolor2">{item.providerName}</span>
                                 {#if showSubBadge}
-                                    <span class="rounded px-1 text-[0.6rem] font-bold leading-tight bg-selected text-textcolor">SUB</span>
+                                    <span
+                                        class="rounded px-1 text-[0.6rem] font-bold leading-tight bg-selected text-textcolor"
+                                        >SUB</span
+                                    >
                                 {/if}
                             </div>
-                            <span class="line-clamp-2 text-sm font-medium leading-snug text-textcolor">{item.displayName}</span>
+                            <span class="line-clamp-2 text-sm font-medium leading-snug text-textcolor"
+                                >{item.displayName}</span
+                            >
 
                             {#if item.description}
-                                <span class="mt-1 line-clamp-2 text-xs leading-snug text-textcolor2">{item.description}</span>
+                                <span class="mt-1 line-clamp-2 text-xs leading-snug text-textcolor2"
+                                    >{item.description}</span
+                                >
                             {/if}
 
                             {#if item.prices.length > 0}
@@ -157,7 +193,9 @@
                             {/if}
 
                             {#if item.context_length > 0}
-                                <span class="mt-1 text-xs text-textcolor2">{language.modelGridContext(formatContext(item.context_length))}</span>
+                                <span class="mt-1 text-xs text-textcolor2"
+                                    >{language.modelGridContext(formatContext(item.context_length))}</span
+                                >
                             {/if}
                         </button>
                     {/each}

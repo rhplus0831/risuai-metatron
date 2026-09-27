@@ -18,10 +18,10 @@ export async function processZip(dataArray: Uint8Array): Promise<string> {
         });
     });
 
-    const imageFile = Object.keys(unzipped).find(fileName => /\.(jpg|jpeg|png)$/i.test(fileName));
+    const imageFile = Object.keys(unzipped).find((fileName) => /\.(jpg|jpeg|png)$/i.test(fileName));
     if (imageFile) {
         const imageData = unzipped[imageFile];
-        const blob = new Blob([asBuffer(imageData)], { type: 'image/png' });
+        const blob = new Blob([asBuffer(imageData)], { type: "image/png" });
         const base64 = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = () => {
@@ -37,103 +37,101 @@ export async function processZip(dataArray: Uint8Array): Promise<string> {
     }
 }
 
-export class CharXWriter{
-    zip:fflate.Zip
-    writeEnd:boolean = false
-    apb = new AppendableBuffer()
-    #takenFilenames:Set<string> = new Set()
-    constructor(private writer:LocalWriter|WritableStreamDefaultWriter<Uint8Array>|VirtualWriter){
-        const handlerAsync = (err:Error, dat:Uint8Array, final:boolean) => {
-            if(dat){
-                this.apb.append(dat)
+export class CharXWriter {
+    zip: fflate.Zip;
+    writeEnd: boolean = false;
+    apb = new AppendableBuffer();
+    #takenFilenames: Set<string> = new Set();
+    constructor(private writer: LocalWriter | WritableStreamDefaultWriter<Uint8Array> | VirtualWriter) {
+        const handlerAsync = (err: Error, dat: Uint8Array, final: boolean) => {
+            if (dat) {
+                this.apb.append(dat);
             }
-            if(final){
-                this.writeEnd = true
+            if (final) {
+                this.writeEnd = true;
             }
-        }
+        };
 
-        this.zip = new fflate.Zip()
-        this.zip.ondata = handlerAsync
+        this.zip = new fflate.Zip();
+        this.zip.ondata = handlerAsync;
     }
-    async init(){
+    async init() {
         //do nothing, just to make compatible with other writer
     }
 
-    async writeJpeg(img: Uint8Array){
-        const canvas = document.createElement('canvas')
-        const ctx = canvas.getContext('2d')
-        if(!ctx){
-            return
+    async writeJpeg(img: Uint8Array) {
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+            return;
         }
-        const imgBlob = new Blob([asBuffer(img)], {type: 'image/jpeg'})
-        const imgURL = URL.createObjectURL(imgBlob)
-        const imgElement = document.createElement('img')
-        imgElement.src = imgURL
-        await imgElement.decode()
-        canvas.width = imgElement.width
-        canvas.height = imgElement.height
-        ctx.drawImage(imgElement, 0, 0)
-        const blob = await (new Promise((res:BlobCallback, rej) => {
-            canvas.toBlob(res, 'image/jpeg')
-        }))
-        const buf = await blob.arrayBuffer()
-        this.apb.append(new Uint8Array(buf))
-    }
-
-    async write(key:string,data:Uint8Array|string, level?:0|1|2|3|4|5|6|7|8|9){
-        key = this.#sanitizeZipFilename(key)
-        let dat:Uint8Array
-        if(typeof data === 'string'){
-            dat = new TextEncoder().encode(data)
-        }
-        else{
-            dat = data
-        }
-        this.writeEnd = false
-        const file = new fflate.ZipDeflate(key, {
-            level: level ?? 0
+        const imgBlob = new Blob([asBuffer(img)], { type: "image/jpeg" });
+        const imgURL = URL.createObjectURL(imgBlob);
+        const imgElement = document.createElement("img");
+        imgElement.src = imgURL;
+        await imgElement.decode();
+        canvas.width = imgElement.width;
+        canvas.height = imgElement.height;
+        ctx.drawImage(imgElement, 0, 0);
+        const blob = await new Promise((res: BlobCallback, rej) => {
+            canvas.toBlob(res, "image/jpeg");
         });
-        this.zip.add(file)
-        file.push(dat, true)
-        await this.writer.write(this.apb.buffer)
-        this.apb.clear()
-        if(this.writeEnd){
-            await this.writer.close()
-        }
-        
+        const buf = await blob.arrayBuffer();
+        this.apb.append(new Uint8Array(buf));
     }
 
-    #sanitizeZipFilename(filename:string) {
-        let sanitized = filename.replace(/[<>:"\\|?*\x00-\x1F]/g, '_');
-        sanitized = sanitized.replace(/[. ]+$/, '');
+    async write(key: string, data: Uint8Array | string, level?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9) {
+        key = this.#sanitizeZipFilename(key);
+        let dat: Uint8Array;
+        if (typeof data === "string") {
+            dat = new TextEncoder().encode(data);
+        } else {
+            dat = data;
+        }
+        this.writeEnd = false;
+        const file = new fflate.ZipDeflate(key, {
+            level: level ?? 0,
+        });
+        this.zip.add(file);
+        file.push(dat, true);
+        await this.writer.write(this.apb.buffer);
+        this.apb.clear();
+        if (this.writeEnd) {
+            await this.writer.close();
+        }
+    }
+
+    #sanitizeZipFilename(filename: string) {
+        let sanitized = filename.replace(/[<>:"\\|?*\x00-\x1F]/g, "_");
+        sanitized = sanitized.replace(/[. ]+$/, "");
         const reservedNames = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
         if (reservedNames.test(sanitized)) {
-            sanitized = '_' + sanitized;
+            sanitized = "_" + sanitized;
         }
-        if (!sanitized || sanitized === '.' || sanitized === '..') {
-            sanitized = 'file_' + Date.now();
+        if (!sanitized || sanitized === "." || sanitized === "..") {
+            sanitized = "file_" + Date.now();
         }
 
-        const splitName = sanitized.split('.');
-        let baseName = splitName.slice(0, -1).join('.');
-        const extension = splitName.length > 1 ? '.' + splitName[splitName.length - 1] : '';
+        const splitName = sanitized.split(".");
+        let baseName = splitName.slice(0, -1).join(".");
+        const extension = splitName.length > 1 ? "." + splitName[splitName.length - 1] : "";
         let counter = 1;
         let uniqueName = baseName + extension;
         while (this.#takenFilenames.has(uniqueName)) {
             uniqueName = `${baseName}_${counter}${extension}`;
             counter++;
         }
-        
+
         this.#takenFilenames.add(uniqueName);
         return uniqueName;
     }
 
-    async end(){
-        this.zip.end()
-        await this.writer.write(this.apb.buffer)
-        this.apb.clear()
-        if(this.writeEnd){
-            await this.writer.close()
+    async end() {
+        this.zip.end();
+        await this.writer.write(this.apb.buffer);
+        this.apb.clear();
+        if (this.writeEnd) {
+            await this.writer.close();
         }
     }
 }
@@ -151,56 +149,56 @@ export class CharXWriter{
  * - Parsing metadata (card.json, module.risum) synchronously
  * - Saving assets to storage concurrently (limited to prevent memory exhaustion)
  */
-export class CharXImporter{
+export class CharXImporter {
     // ZIP streaming parser
-    unzip:fflate.Unzip
+    unzip: fflate.Unzip;
 
     // Asset save semaphore
-    private semaphore: Semaphore
+    private semaphore: Semaphore;
 
     // Completion tracking
-    private totalEnqueued: number = 0
-    private totalCompleted: number = 0
-    private isFinalized: boolean = false
-    private completionResolver?: () => void
-    private completionRejecter?: (error: Error) => void
-    private completionPromise?: Promise<void>
-    private completionSettled: boolean = false
-    private errors: Error[] = []
-    private onProgress?: (done: number, total: number) => void
+    private totalEnqueued: number = 0;
+    private totalCompleted: number = 0;
+    private isFinalized: boolean = false;
+    private completionResolver?: () => void;
+    private completionRejecter?: (error: Error) => void;
+    private completionPromise?: Promise<void>;
+    private completionSettled: boolean = false;
+    private errors: Error[] = [];
+    private onProgress?: (done: number, total: number) => void;
 
     // Results: filename -> saved asset ID mapping
-    assets:{[key:string]:string} = {}
+    assets: { [key: string]: string } = {};
 
     // Temporary buffers for accumulating file chunks during streaming
-    assetBuffers:{[key:string]:AppendableBuffer} = {}
+    assetBuffers: { [key: string]: AppendableBuffer } = {};
 
     // Files excluded due to size limits (> MAX_ASSET_SIZE_BYTES)
-    excludedFiles:string[] = []
+    excludedFiles: string[] = [];
 
     // Extracted character card JSON content
-    cardData:string|undefined
+    cardData: string | undefined;
 
     // Extracted module binary data
-    moduleData:Uint8Array|undefined
+    moduleData: Uint8Array | undefined;
 
     // Configuration
-    alertInfo:boolean = false  // Show progress alerts to user
+    alertInfo: boolean = false; // Show progress alerts to user
 
-    constructor(){
-        this.unzip = new fflate.Unzip()
-        this.unzip.register(fflate.UnzipInflate)
-        this.unzip.onfile = (file) => this.#handleFile(file)
+    constructor() {
+        this.unzip = new fflate.Unzip();
+        this.unzip.register(fflate.UnzipInflate);
+        this.unzip.onfile = (file) => this.#handleFile(file);
 
-        this.semaphore = new Semaphore(MAX_CONCURRENT_ASSET_SAVES)
+        this.semaphore = new Semaphore(MAX_CONCURRENT_ASSET_SAVES);
         this.onProgress = (done, total) => {
-            if(this.alertInfo){
+            if (this.alertInfo) {
                 alertStore.set({
-                    type: 'wait',
-                    msg: `Loading... (Saving Assets ${done}/${total})`
-                })
+                    type: "wait",
+                    msg: `Loading... (Saving Assets ${done}/${total})`,
+                });
             }
-        }
+        };
     }
 
     /**
@@ -224,22 +222,22 @@ export class CharXImporter{
      * await saveCharacter(card, importer.assets)
      * ```
      */
-    async parse(data:Uint8Array|File|ReadableStream<Uint8Array>){
+    async parse(data: Uint8Array | File | ReadableStream<Uint8Array>) {
         // Create completion promise at the start of parsing
-        this.completionPromise = this.#awaitCompletion()
+        this.completionPromise = this.#awaitCompletion();
 
         // Convert all input types to ReadableStream for uniform processing
-        const stream = this.#toStream(data)
+        const stream = this.#toStream(data);
 
-        const reader = stream.getReader()
-        while(true){
-            const {done, value} = await reader.read()
-            if(value){
-                await this.#feedChunk(value, false)
+        const reader = stream.getReader();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (value) {
+                await this.#feedChunk(value, false);
             }
-            if(done){
-                await this.#feedChunk(new Uint8Array(0), true)
-                break
+            if (done) {
+                await this.#feedChunk(new Uint8Array(0), true);
+                break;
             }
         }
     }
@@ -248,11 +246,11 @@ export class CharXImporter{
      * Feeds a chunk of ZIP data to the streaming parser.
      * When final=true, marks input as complete and finalizes the save queue.
      */
-    async #feedChunk(data:Uint8Array, final:boolean = false){
-        this.unzip.push(data, final)
+    async #feedChunk(data: Uint8Array, final: boolean = false) {
+        this.unzip.push(data, final);
 
-        if(final){
-            await this.#finalize()
+        if (final) {
+            await this.#finalize();
         }
     }
 
@@ -260,64 +258,65 @@ export class CharXImporter{
      * Returns a promise that resolves when all assets have been processed.
      * Must be called after parse() has been invoked.
      */
-    async done(){
+    async done() {
         if (!this.completionPromise) {
-            throw new Error('parse() must be called before done()')
+            throw new Error("parse() must be called before done()");
         }
-        return this.completionPromise
+        return this.completionPromise;
     }
 
     #awaitCompletion(): Promise<void> {
         return new Promise<void>((resolve, reject) => {
-            this.completionResolver = resolve
-            this.completionRejecter = reject
-            this.completionSettled = false
-            this.errors = []
-            this.#checkCompletion()
-        })
+            this.completionResolver = resolve;
+            this.completionRejecter = reject;
+            this.completionSettled = false;
+            this.errors = [];
+            this.#checkCompletion();
+        });
     }
 
     #checkCompletion(): void {
         if (!this.completionSettled && this.isFinalized && this.totalCompleted >= this.totalEnqueued) {
-            this.completionSettled = true
+            this.completionSettled = true;
             if (this.errors.length > 0) {
-                const error = this.errors.length === 1
-                    ? this.errors[0]
-                    : new AggregateError(this.errors, `Failed to save ${this.errors.length} assets`)
-                this.completionRejecter?.(error)
-                return
+                const error =
+                    this.errors.length === 1
+                        ? this.errors[0]
+                        : new AggregateError(this.errors, `Failed to save ${this.errors.length} assets`);
+                this.completionRejecter?.(error);
+                return;
             }
-            this.completionResolver?.()
+            this.completionResolver?.();
         }
     }
 
     /**
      * Converts various data types to ReadableStream for uniform processing.
      */
-    #toStream(data: Uint8Array|File|ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+    #toStream(data: Uint8Array | File | ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
         // Already a stream - return as-is
-        if(data instanceof ReadableStream){
-            return data
+        if (data instanceof ReadableStream) {
+            return data;
         }
 
         // File has built-in stream() method
-        if(data instanceof File){
-            return data.stream()
+        if (data instanceof File) {
+            return data.stream();
         }
 
         // Convert Uint8Array to stream, chunked to prevent blocking
-        let offset = 0
+        let offset = 0;
         return new ReadableStream({
             pull(controller) {
                 if (offset >= data.byteLength) {
-                    controller.close()
-                    return
+                    controller.close();
+                    return;
                 }
-                const end = Math.min(offset + CHUNK_SIZE_BYTES, data.byteLength)
-                controller.enqueue(data.subarray(offset, end))
-                offset = end
-            }
-        })
+                const end = Math.min(offset + CHUNK_SIZE_BYTES, data.byteLength);
+                controller.enqueue(data.subarray(offset, end));
+                offset = end;
+            },
+        });
     }
 
     /**
@@ -325,14 +324,14 @@ export class CharXImporter{
      * Sets up streaming handlers and starts processing if file size is acceptable.
      */
     #handleFile(file: fflate.UnzipFile) {
-        const assetIndex = file.name
-        this.assetBuffers[assetIndex] = new AppendableBuffer()
+        const assetIndex = file.name;
+        this.assetBuffers[assetIndex] = new AppendableBuffer();
 
-        file.ondata = (_err, dat, final) => this.#handleFileData(assetIndex, dat, final)
+        file.ondata = (_err, dat, final) => this.#handleFileData(assetIndex, dat, final);
 
         // Only process files smaller than MAX_ASSET_SIZE_BYTES (50MB)
-        if(file.originalSize ?? 0 < MAX_ASSET_SIZE_BYTES){
-            file.start()
+        if (file.originalSize ?? 0 < MAX_ASSET_SIZE_BYTES) {
+            file.start();
         }
     }
 
@@ -341,9 +340,9 @@ export class CharXImporter{
      * Accumulates chunks into buffer until file is complete.
      */
     #handleFileData(fileName: string, data: Uint8Array, final: boolean) {
-        this.assetBuffers[fileName].append(data)
-        if(final){
-            this.#handleFileComplete(fileName)
+        this.assetBuffers[fileName].append(data);
+        if (final) {
+            this.#handleFileComplete(fileName);
         }
     }
 
@@ -352,50 +351,46 @@ export class CharXImporter{
      * Routes files to appropriate handlers based on filename/extension.
      */
     #handleFileComplete(fileName: string) {
-        const assetData = this.assetBuffers[fileName].buffer
+        const assetData = this.assetBuffers[fileName].buffer;
 
-        if(assetData.byteLength > MAX_ASSET_SIZE_BYTES){
-            this.excludedFiles.push(fileName)
-        }
-        else if(fileName === 'card.json'){
-            this.cardData = new TextDecoder().decode(assetData)
-        }
-        else if(fileName === 'module.risum'){
-            this.moduleData = assetData
-        }
-        else if(fileName.endsWith('.json')){
+        if (assetData.byteLength > MAX_ASSET_SIZE_BYTES) {
+            this.excludedFiles.push(fileName);
+        } else if (fileName === "card.json") {
+            this.cardData = new TextDecoder().decode(assetData);
+        } else if (fileName === "module.risum") {
+            this.moduleData = assetData;
+        } else if (fileName.endsWith(".json")) {
             // Ignore other JSON files
-        }
-        else{
+        } else {
             // All other files are treated as assets (images, etc.)
             this.#processAssetQueue({
                 id: fileName,
-                data: assetData
-            })
+                data: assetData,
+            });
         }
 
-        delete this.assetBuffers[fileName]
+        delete this.assetBuffers[fileName];
     }
 
     /**
      * Queues an asset for saving with concurrency control.
      */
-    async #processAssetQueue(asset:{id:string, data:Uint8Array}){
-        this.totalEnqueued += 1
-        let acquired = false
+    async #processAssetQueue(asset: { id: string; data: Uint8Array }) {
+        this.totalEnqueued += 1;
+        let acquired = false;
         try {
-            await this.semaphore.acquire()
-            acquired = true
-            this.assets[asset.id] = await saveAsset(asset.data)
+            await this.semaphore.acquire();
+            acquired = true;
+            this.assets[asset.id] = await saveAsset(asset.data);
         } catch (error) {
-            this.errors.push(error instanceof Error ? error : new Error(String(error)))
+            this.errors.push(error instanceof Error ? error : new Error(String(error)));
         } finally {
             if (acquired) {
-                this.semaphore.release()
+                this.semaphore.release();
             }
-            this.totalCompleted += 1
-            this.onProgress?.(this.totalCompleted, this.totalEnqueued)
-            this.#checkCompletion()
+            this.totalCompleted += 1;
+            this.onProgress?.(this.totalCompleted, this.totalEnqueued);
+            this.#checkCompletion();
         }
     }
 
@@ -403,8 +398,8 @@ export class CharXImporter{
      * Finalizes processing when all ZIP data has been pushed.
      * Marks the queue as complete.
      */
-    async #finalize(){
-        this.isFinalized = true
-        this.#checkCompletion()
+    async #finalize() {
+        this.isFinalized = true;
+        this.#checkCompletion();
     }
 }

@@ -6,11 +6,10 @@
 -->
 
 <script lang="ts">
-
     interface Props {
         characterIcon: string;
         characterName: string;
-        characterIconType: 'normal'|'portrait'
+        characterIconType: "normal" | "portrait";
 
         onCopy: () => void;
         onBookmark: () => void;
@@ -28,7 +27,6 @@
     }
 
     const props: Props = $props();
-
 </script>
 
 <!-- TODO -->

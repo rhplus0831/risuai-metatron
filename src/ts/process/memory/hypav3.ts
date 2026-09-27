@@ -1,19 +1,10 @@
 import { type memoryVector, HypaProcesser, similarity } from "./hypamemory";
 import { isContextModel, getContextProvider } from "./contextualEmbedding";
 import { TaskRateLimiter } from "./taskRateLimiter";
-import {
-    type EmbeddingText,
-    type EmbeddingResult,
-    HypaProcessorV2,
-} from "./hypamemoryv2";
+import { type EmbeddingText, type EmbeddingResult, HypaProcessorV2 } from "./hypamemoryv2";
 import { type DisplayMode as ModalDisplayMode } from "src/lib/Others/HypaV3Modal/types";
 import { parseChatML } from "src/ts/parser/chatML";
-import {
-    type Chat,
-    type character,
-    type groupChat,
-    getDatabase,
-} from "src/ts/storage/database.svelte";
+import { type Chat, type character, type groupChat, getDatabase } from "src/ts/storage/database.svelte";
 import { type OpenAIChat } from "../index.svelte";
 import { requestChatData } from "../request/request";
 import { chatCompletion, unloadEngine } from "../webllm";
@@ -121,7 +112,7 @@ export async function hypaMemoryV3(
     maxContextTokens: number,
     room: Chat,
     char: character | groupChat,
-    tokenizer: ChatTokenizer
+    tokenizer: ChatTokenizer,
 ): Promise<HypaV3Result> {
     const settings = getCurrentHypaV3Preset().settings;
 
@@ -129,24 +120,10 @@ export async function hypaMemoryV3(
         if (settings.useExperimentalImpl) {
             console.log(logPrefix, "Using experimental implementation.");
 
-            return await hypaMemoryV3MainExp(
-                chats,
-                currentTokens,
-                maxContextTokens,
-                room,
-                char,
-                tokenizer
-            );
+            return await hypaMemoryV3MainExp(chats, currentTokens, maxContextTokens, room, char, tokenizer);
         }
 
-        return await hypaMemoryV3Main(
-            chats,
-            currentTokens,
-            maxContextTokens,
-            room,
-            char,
-            tokenizer
-        );
+        return await hypaMemoryV3Main(chats, currentTokens, maxContextTokens, room, char, tokenizer);
     } catch (error) {
         if (error instanceof Error) {
             // Standard Error instance
@@ -168,7 +145,7 @@ export async function hypaMemoryV3(
         if (settings.summarizationModel !== "subModel") {
             try {
                 await unloadEngine();
-            } catch { }
+            } catch {}
         }
     }
 }
@@ -179,7 +156,7 @@ async function hypaMemoryV3MainExp(
     maxContextTokens: number,
     room: Chat,
     char: character | groupChat,
-    tokenizer: ChatTokenizer
+    tokenizer: ChatTokenizer,
 ): Promise<HypaV3Result> {
     const db = getDatabase();
     const settings = getCurrentHypaV3Preset().settings;
@@ -200,8 +177,8 @@ async function hypaMemoryV3MainExp(
     const data: HypaV3Data = room.hypaV3Data
         ? toHypaV3Data(room.hypaV3Data)
         : {
-            summaries: [],
-        };
+              summaries: [],
+          };
 
     // Clean orphaned summaries
     if (!settings.preserveOrphanedMemory) {
@@ -213,9 +190,7 @@ async function hypaMemoryV3MainExp(
 
     if (data.summaries.length > 0) {
         const lastSummary = data.summaries.at(-1);
-        const lastChatIndex = chats.findIndex(
-            (chat) => chat.memo === [...lastSummary.chatMemos].at(-1)
-        );
+        const lastChatIndex = chats.findIndex((chat) => chat.memo === [...lastSummary.chatMemos].at(-1));
 
         if (lastChatIndex !== -1) {
             startIdx = lastChatIndex + 1;
@@ -235,14 +210,9 @@ async function hypaMemoryV3MainExp(
         role: "system",
         content: wrapWithXml(memoryPromptTag, ""),
     });
-    const memoryTokens = Math.floor(
-        maxContextTokens * settings.memoryTokensRatio
-    );
-    const shouldReserveMemoryTokens =
-        data.summaries.length > 0 || currentTokens > maxContextTokens;
-    let availableMemoryTokens = shouldReserveMemoryTokens
-        ? memoryTokens - emptyMemoryTokens
-        : 0;
+    const memoryTokens = Math.floor(maxContextTokens * settings.memoryTokensRatio);
+    const shouldReserveMemoryTokens = data.summaries.length > 0 || currentTokens > maxContextTokens;
+    let availableMemoryTokens = shouldReserveMemoryTokens ? memoryTokens - emptyMemoryTokens : 0;
 
     if (shouldReserveMemoryTokens) {
         currentTokens += memoryTokens;
@@ -251,8 +221,7 @@ async function hypaMemoryV3MainExp(
 
     // If summarization is needed
     const summarizationMode = currentTokens > maxContextTokens;
-    const targetTokens =
-        maxContextTokens * (1 - settings.extraSummarizationRatio);
+    const targetTokens = maxContextTokens * (1 - settings.extraSummarizationRatio);
     const toSummarizeArray: OpenAIChat[][] = [];
 
     while (summarizationMode) {
@@ -287,7 +256,7 @@ async function hypaMemoryV3MainExp(
             "\nStart Index:",
             startIdx,
             "\nMax Chats Per Summary:",
-            settings.maxChatsPerSummary
+            settings.maxChatsPerSummary,
         );
 
         while (
@@ -307,22 +276,15 @@ async function hypaMemoryV3MainExp(
                 "\nContent:",
                 "\n" + chat.content,
                 "\nTokens:",
-                chatTokens
+                chatTokens,
             );
 
             toSummarizeTokens += chatTokens;
 
             let shouldSummarize = true;
 
-            if (
-                chat.name === "example_user" ||
-                chat.name === "example_assistant" ||
-                chat.memo === "NewChatExample"
-            ) {
-                console.log(
-                    logPrefix,
-                    `Skipping example chat at index ${currentIndex}`
-                );
+            if (chat.name === "example_user" || chat.name === "example_assistant" || chat.memo === "NewChatExample") {
+                console.log(logPrefix, `Skipping example chat at index ${currentIndex}`);
                 shouldSummarize = false;
             }
 
@@ -349,26 +311,18 @@ async function hypaMemoryV3MainExp(
         }
 
         // Stop summarization if further reduction would go below target tokens (unless we're over max tokens)
-        if (
-            currentTokens <= maxContextTokens &&
-            currentTokens - toSummarizeTokens < targetTokens
-        ) {
+        if (currentTokens <= maxContextTokens && currentTokens - toSummarizeTokens < targetTokens) {
             console.log(
                 logPrefix,
                 "Stopping summarization:",
-                `\ncurrentTokens(${currentTokens}) - toSummarizeTokens(${toSummarizeTokens}) < targetTokens(${targetTokens})`
+                `\ncurrentTokens(${currentTokens}) - toSummarizeTokens(${toSummarizeTokens}) < targetTokens(${targetTokens})`,
             );
             break;
         }
 
         // Collect summarization batch
         if (toSummarize.length > 0) {
-            console.log(
-                logPrefix,
-                "Collecting summarization batch:",
-                "\nTarget:",
-                toSummarize
-            );
+            console.log(logPrefix, "Collecting summarization batch:", "\nTarget:", toSummarize);
 
             toSummarizeArray.push([...toSummarize]);
         }
@@ -382,14 +336,8 @@ async function hypaMemoryV3MainExp(
         // Initialize rate limiter
         // Local model must be processed sequentially
         const rateLimiter = new TaskRateLimiter({
-            tasksPerMinute:
-                settings.summarizationModel === "subModel"
-                    ? settings.summarizationRequestsPerMinute
-                    : 1000,
-            maxConcurrentTasks:
-                settings.summarizationModel === "subModel"
-                    ? settings.summarizationMaxConcurrent
-                    : 1,
+            tasksPerMinute: settings.summarizationModel === "subModel" ? settings.summarizationRequestsPerMinute : 1000,
+            maxConcurrentTasks: settings.summarizationModel === "subModel" ? settings.summarizationMaxConcurrent : 1,
         });
 
         rateLimiter.taskQueueChangeCallback = (queuedCount) => {
@@ -401,26 +349,16 @@ async function hypaMemoryV3MainExp(
             });
         };
 
-        const summarizationTasks = toSummarizeArray.map(
-            (item) => () => summarize(item)
-        );
+        const summarizationTasks = toSummarizeArray.map((item) => () => summarize(item));
 
         // Start of performance measurement: summarize
-        console.log(
-            logPrefix,
-            `Starting ${toSummarizeArray.length} summarization.`
-        );
+        console.log(logPrefix, `Starting ${toSummarizeArray.length} summarization.`);
         const summarizeStartTime = performance.now();
 
-        const batchResult = await rateLimiter.executeBatch<string>(
-            summarizationTasks
-        );
+        const batchResult = await rateLimiter.executeBatch<string>(summarizationTasks);
 
         const summarizeEndTime = performance.now();
-        console.debug(
-            `${logPrefix} summarization completed in ${summarizeEndTime - summarizeStartTime
-            }ms`
-        );
+        console.debug(`${logPrefix} summarization completed in ${summarizeEndTime - summarizeStartTime}ms`);
         // End of performance measurement: summarize
 
         hypaV3ProgressStore.set({
@@ -439,9 +377,7 @@ async function hypaMemoryV3MainExp(
 
             // Push consecutive successes
             if (!result.success || !result.data) {
-                const errorMessage = !result.success
-                    ? result.error
-                    : "Empty summary returned";
+                const errorMessage = !result.success ? result.error : "Empty summary returned";
 
                 console.log(logPrefix, "Summarization failed:", `\n${errorMessage}`);
 
@@ -473,7 +409,7 @@ async function hypaMemoryV3MainExp(
         "\nMax Context Tokens:",
         maxContextTokens,
         "\nAvailable Memory Tokens:",
-        availableMemoryTokens
+        availableMemoryTokens,
     );
 
     // Early return if no summaries
@@ -488,7 +424,7 @@ async function hypaMemoryV3MainExp(
             "\nAll chats, including memory prompt:",
             newChats,
             "\nMemory Data:",
-            data
+            data,
         );
 
         return {
@@ -499,8 +435,7 @@ async function hypaMemoryV3MainExp(
     }
 
     const selectedSummaries: Summary[] = [];
-    const randomMemoryRatio =
-        1 - settings.recentMemoryRatio - settings.similarMemoryRatio;
+    const randomMemoryRatio = 1 - settings.recentMemoryRatio - settings.similarMemoryRatio;
     const selectedImportantSummaries: Summary[] = [];
 
     // Select important summaries
@@ -532,22 +467,18 @@ async function hypaMemoryV3MainExp(
             "\nSummaries:",
             selectedImportantSummaries,
             "\nAvailable Memory Tokens:",
-            availableMemoryTokens
+            availableMemoryTokens,
         );
     }
 
     // Select recent summaries
-    const reservedRecentMemoryTokens = Math.floor(
-        availableMemoryTokens * settings.recentMemoryRatio
-    );
+    const reservedRecentMemoryTokens = Math.floor(availableMemoryTokens * settings.recentMemoryRatio);
     let consumedRecentMemoryTokens = 0;
     const selectedRecentSummaries: Summary[] = [];
 
     if (settings.recentMemoryRatio > 0) {
         // Target only summaries that haven't been selected yet
-        const unusedSummaries = data.summaries.filter(
-            (e) => !selectedSummaries.includes(e)
-        );
+        const unusedSummaries = data.summaries.filter((e) => !selectedSummaries.includes(e));
 
         // Add one by one from the end
         for (let i = unusedSummaries.length - 1; i >= 0; i--) {
@@ -557,10 +488,7 @@ async function hypaMemoryV3MainExp(
                 content: summary.text + summarySeparator,
             });
 
-            if (
-                summaryTokens + consumedRecentMemoryTokens >
-                reservedRecentMemoryTokens
-            ) {
+            if (summaryTokens + consumedRecentMemoryTokens > reservedRecentMemoryTokens) {
                 break;
             }
 
@@ -580,50 +508,44 @@ async function hypaMemoryV3MainExp(
             "\nReserved Tokens:",
             reservedRecentMemoryTokens,
             "\nConsumed Tokens:",
-            consumedRecentMemoryTokens
+            consumedRecentMemoryTokens,
         );
     }
 
     // Select similar summaries
-    let reservedSimilarMemoryTokens = Math.floor(
-        availableMemoryTokens * settings.similarMemoryRatio
-    );
+    let reservedSimilarMemoryTokens = Math.floor(availableMemoryTokens * settings.similarMemoryRatio);
     let consumedSimilarMemoryTokens = 0;
     const selectedSimilarSummaries: Summary[] = [];
 
     if (settings.similarMemoryRatio > 0) {
         // Utilize unused token space from recent selection
         if (randomMemoryRatio <= 0) {
-            const unusedRecentTokens =
-                reservedRecentMemoryTokens - consumedRecentMemoryTokens;
+            const unusedRecentTokens = reservedRecentMemoryTokens - consumedRecentMemoryTokens;
 
             reservedSimilarMemoryTokens += unusedRecentTokens;
             console.log(
                 logPrefix,
                 "Additional available token space for similar memory:",
                 "\nFrom recent:",
-                unusedRecentTokens
+                unusedRecentTokens,
             );
         }
 
         // Target only summaries that haven't been selected yet
-        const unusedSummaries = data.summaries.filter(
-            (e) => !selectedSummaries.includes(e)
-        );
+        const unusedSummaries = data.summaries.filter((e) => !selectedSummaries.includes(e));
 
         // Dynamically generate embedding texts
-        const ebdTexts: EmbeddingText<Summary>[] = unusedSummaries.flatMap(
-            (summary, summaryIndex) => {
-                const splitted = splitBySeparator(summary.text, settings.summaryChunkSeparator)
-                    .filter((e) => e.trim().length > 0);
+        const ebdTexts: EmbeddingText<Summary>[] = unusedSummaries.flatMap((summary, summaryIndex) => {
+            const splitted = splitBySeparator(summary.text, settings.summaryChunkSeparator).filter(
+                (e) => e.trim().length > 0,
+            );
 
-                return splitted.map((chunk, chunkIndex) => ({
-                    id: `${summaryIndex}-${chunkIndex}`,
-                    content: chunk.trim(),
-                    metadata: summary,
-                }));
-            }
-        );
+            return splitted.map((chunk, chunkIndex) => ({
+                id: `${summaryIndex}-${chunkIndex}`,
+                content: chunk.trim(),
+                metadata: summary,
+            }));
+        });
 
         // Initialize embedding processor
         const processor = new HypaProcessorV2<Summary>({
@@ -644,18 +566,14 @@ async function hypaMemoryV3MainExp(
 
         try {
             // Start of performance measurement: addTexts
-            console.log(
-                `${logPrefix} Starting addTexts with ${ebdTexts.length} chunks`
-            );
+            console.log(`${logPrefix} Starting addTexts with ${ebdTexts.length} chunks`);
             const addStartTime = performance.now();
 
             // Add EmbeddingTexts to processor for similarity search
             await processor.addTexts(ebdTexts);
 
             const addEndTime = performance.now();
-            console.debug(
-                `${logPrefix} addTexts completed in ${addEndTime - addStartTime}ms`
-            );
+            console.debug(`${logPrefix} addTexts completed in ${addEndTime - addStartTime}ms`);
             // End of performance measurement: addTexts
         } catch (error) {
             return {
@@ -673,19 +591,12 @@ async function hypaMemoryV3MainExp(
             });
         }
 
-        const recentChats = chats
-            .slice(-settings.queryChatCount)
-            .filter((chat) => chat.content.trim().length > 0);
+        const recentChats = chats.slice(-settings.queryChatCount).filter((chat) => chat.content.trim().length > 0);
 
         const queries = recentChats
             .map((chat, index) => {
-                const subQueries = chat.content
-                    .split("\n\n")
-                    .filter((e) => e.trim().length > 0);
-                const weight =
-                    (index + 1) /
-                    ((recentChats.length * (recentChats.length + 1)) / 2) /
-                    subQueries.length;
+                const subQueries = chat.content.split("\n\n").filter((e) => e.trim().length > 0);
+                const weight = (index + 1) / ((recentChats.length * (recentChats.length + 1)) / 2) / subQueries.length;
 
                 return subQueries.map((content) => ({
                     content,
@@ -697,13 +608,11 @@ async function hypaMemoryV3MainExp(
         if (queries.length > 0) {
             try {
                 // Start of performance measurement: similarity search
-                console.log(
-                    `${logPrefix} Starting similarity search with ${recentChats.length} queries`
-                );
+                console.log(`${logPrefix} Starting similarity search with ${recentChats.length} queries`);
                 const searchStartTime = performance.now();
 
                 const batchScoredResults = await processor.similaritySearchScoredBatch(
-                    queries.map((query) => query.content)
+                    queries.map((query) => query.content),
                 );
 
                 /*
@@ -732,21 +641,18 @@ async function hypaMemoryV3MainExp(
                 */
 
                 const searchEndTime = performance.now();
-                console.debug(
-                    `${logPrefix} Similarity search completed in ${searchEndTime - searchStartTime
-                    }ms`
-                );
+                console.debug(`${logPrefix} Similarity search completed in ${searchEndTime - searchStartTime}ms`);
                 // End of performance measurement: similarity search
 
                 const rankedChunks = simpleCC<EmbeddingResult<Summary>>(
                     batchScoredResults,
-                    (listIndex) => queries[listIndex].weight
+                    (listIndex) => queries[listIndex].weight,
                 );
 
-                const rankedSummaries = childToParentRRF<
-                    EmbeddingResult<Summary>,
-                    Summary
-                >(rankedChunks, (chunk) => chunk.metadata);
+                const rankedSummaries = childToParentRRF<EmbeddingResult<Summary>, Summary>(
+                    rankedChunks,
+                    (chunk) => chunk.metadata,
+                );
 
                 while (rankedSummaries.length > 0) {
                     const summary = rankedSummaries.shift();
@@ -755,14 +661,11 @@ async function hypaMemoryV3MainExp(
                         content: summary.text + summarySeparator,
                     });
 
-                    if (
-                        summaryTokens + consumedSimilarMemoryTokens >
-                        reservedSimilarMemoryTokens
-                    ) {
+                    if (summaryTokens + consumedSimilarMemoryTokens > reservedSimilarMemoryTokens) {
                         console.log(
                             logPrefix,
                             "Stopping similar memory selection:",
-                            `\nconsumedSimilarMemoryTokens(${consumedSimilarMemoryTokens}) + summaryTokens(${summaryTokens}) > reservedSimilarMemoryTokens(${reservedSimilarMemoryTokens})`
+                            `\nconsumedSimilarMemoryTokens(${consumedSimilarMemoryTokens}) + summaryTokens(${summaryTokens}) > reservedSimilarMemoryTokens(${reservedSimilarMemoryTokens})`,
                         );
                         break;
                     }
@@ -799,23 +702,19 @@ async function hypaMemoryV3MainExp(
             "\nReserved Tokens:",
             reservedSimilarMemoryTokens,
             "\nConsumed Tokens:",
-            consumedSimilarMemoryTokens
+            consumedSimilarMemoryTokens,
         );
     }
 
     // Select random summaries
-    let reservedRandomMemoryTokens = Math.floor(
-        availableMemoryTokens * randomMemoryRatio
-    );
+    let reservedRandomMemoryTokens = Math.floor(availableMemoryTokens * randomMemoryRatio);
     let consumedRandomMemoryTokens = 0;
     const selectedRandomSummaries: Summary[] = [];
 
     if (randomMemoryRatio > 0) {
         // Utilize unused token space from recent and similar selection
-        const unusedRecentTokens =
-            reservedRecentMemoryTokens - consumedRecentMemoryTokens;
-        const unusedSimilarTokens =
-            reservedSimilarMemoryTokens - consumedSimilarMemoryTokens;
+        const unusedRecentTokens = reservedRecentMemoryTokens - consumedRecentMemoryTokens;
+        const unusedSimilarTokens = reservedSimilarMemoryTokens - consumedSimilarMemoryTokens;
 
         reservedRandomMemoryTokens += unusedRecentTokens + unusedSimilarTokens;
         console.log(
@@ -826,7 +725,7 @@ async function hypaMemoryV3MainExp(
             "\nFrom similar:",
             unusedSimilarTokens,
             "\nTotal added:",
-            unusedRecentTokens + unusedSimilarTokens
+            unusedRecentTokens + unusedSimilarTokens,
         );
 
         // Target only summaries that haven't been selected yet
@@ -840,10 +739,7 @@ async function hypaMemoryV3MainExp(
                 content: summary.text + summarySeparator,
             });
 
-            if (
-                summaryTokens + consumedRandomMemoryTokens >
-                reservedRandomMemoryTokens
-            ) {
+            if (summaryTokens + consumedRandomMemoryTokens > reservedRandomMemoryTokens) {
                 // Trying to select more random memory
                 continue;
             }
@@ -864,20 +760,15 @@ async function hypaMemoryV3MainExp(
             "\nReserved Tokens:",
             reservedRandomMemoryTokens,
             "\nConsumed Tokens:",
-            consumedRandomMemoryTokens
+            consumedRandomMemoryTokens,
         );
     }
 
     // Sort selected summaries chronologically (by index)
-    selectedSummaries.sort(
-        (a, b) => data.summaries.indexOf(a) - data.summaries.indexOf(b)
-    );
+    selectedSummaries.sort((a, b) => data.summaries.indexOf(a) - data.summaries.indexOf(b));
 
     // Generate final memory prompt
-    const memory = wrapWithXml(
-        memoryPromptTag,
-        selectedSummaries.map((e) => e.text).join(summarySeparator)
-    );
+    const memory = wrapWithXml(memoryPromptTag, selectedSummaries.map((e) => e.text).join(summarySeparator));
     const realMemoryTokens = await tokenizer.tokenizeChat({
         role: "system",
         content: memory,
@@ -900,28 +791,28 @@ async function hypaMemoryV3MainExp(
         "\nReal Memory Tokens:",
         realMemoryTokens,
         "\nAvailable Memory Tokens:",
-        availableMemoryTokens
+        availableMemoryTokens,
     );
 
     if (currentTokens > maxContextTokens) {
         throw new Error(
-            `Unexpected error: input token count (${currentTokens}) exceeds max context size (${maxContextTokens})`
+            `Unexpected error: input token count (${currentTokens}) exceeds max context size (${maxContextTokens})`,
         );
     }
 
     // Save last selected summaries
     data.metrics = {
         lastImportantSummaries: selectedImportantSummaries.map((selected) =>
-            data.summaries.findIndex((sum) => sum === selected)
+            data.summaries.findIndex((sum) => sum === selected),
         ),
         lastRecentSummaries: selectedRecentSummaries.map((selected) =>
-            data.summaries.findIndex((sum) => sum === selected)
+            data.summaries.findIndex((sum) => sum === selected),
         ),
         lastSimilarSummaries: selectedSimilarSummaries.map((selected) =>
-            data.summaries.findIndex((sum) => sum === selected)
+            data.summaries.findIndex((sum) => sum === selected),
         ),
         lastRandomSummaries: selectedRandomSummaries.map((selected) =>
-            data.summaries.findIndex((sum) => sum === selected)
+            data.summaries.findIndex((sum) => sum === selected),
         ),
     };
 
@@ -942,7 +833,7 @@ async function hypaMemoryV3MainExp(
         "\nAll chats, including memory prompt:",
         newChats,
         "\nMemory Data:",
-        data
+        data,
     );
 
     return {
@@ -958,7 +849,7 @@ async function hypaMemoryV3Main(
     maxContextTokens: number,
     room: Chat,
     char: character | groupChat,
-    tokenizer: ChatTokenizer
+    tokenizer: ChatTokenizer,
 ): Promise<HypaV3Result> {
     const db = getDatabase();
     const settings = getCurrentHypaV3Preset().settings;
@@ -979,8 +870,8 @@ async function hypaMemoryV3Main(
     const data: HypaV3Data = room.hypaV3Data
         ? toHypaV3Data(room.hypaV3Data)
         : {
-            summaries: [],
-        };
+              summaries: [],
+          };
 
     // Clean orphaned summaries
     if (!settings.preserveOrphanedMemory) {
@@ -992,9 +883,7 @@ async function hypaMemoryV3Main(
 
     if (data.summaries.length > 0) {
         const lastSummary = data.summaries.at(-1);
-        const lastChatIndex = chats.findIndex(
-            (chat) => chat.memo === [...lastSummary.chatMemos].at(-1)
-        );
+        const lastChatIndex = chats.findIndex((chat) => chat.memo === [...lastSummary.chatMemos].at(-1));
 
         if (lastChatIndex !== -1) {
             startIdx = lastChatIndex + 1;
@@ -1014,15 +903,10 @@ async function hypaMemoryV3Main(
         role: "system",
         content: wrapWithXml(memoryPromptTag, ""),
     });
-    const memoryTokens = Math.floor(
-        maxContextTokens * settings.memoryTokensRatio
-    );
+    const memoryTokens = Math.floor(maxContextTokens * settings.memoryTokensRatio);
     const shouldReserveEmptyMemoryTokens =
-        data.summaries.length === 0 &&
-        currentTokens + emptyMemoryTokens <= maxContextTokens;
-    let availableMemoryTokens = shouldReserveEmptyMemoryTokens
-        ? 0
-        : memoryTokens - emptyMemoryTokens;
+        data.summaries.length === 0 && currentTokens + emptyMemoryTokens <= maxContextTokens;
+    let availableMemoryTokens = shouldReserveEmptyMemoryTokens ? 0 : memoryTokens - emptyMemoryTokens;
 
     if (shouldReserveEmptyMemoryTokens) {
         currentTokens += emptyMemoryTokens;
@@ -1034,8 +918,7 @@ async function hypaMemoryV3Main(
 
     // If summarization is needed
     const summarizationMode = currentTokens > maxContextTokens;
-    const targetTokens =
-        maxContextTokens * (1 - settings.extraSummarizationRatio);
+    const targetTokens = maxContextTokens * (1 - settings.extraSummarizationRatio);
 
     while (summarizationMode) {
         if (currentTokens <= targetTokens) {
@@ -1056,10 +939,7 @@ async function hypaMemoryV3Main(
         }
 
         const toSummarize: OpenAIChat[] = [];
-        const endIdx = Math.min(
-            startIdx + settings.maxChatsPerSummary,
-            chats.length - settings.queryChatCount
-        );
+        const endIdx = Math.min(startIdx + settings.maxChatsPerSummary, chats.length - settings.queryChatCount);
         let toSummarizeTokens = 0;
 
         console.log(
@@ -1076,7 +956,7 @@ async function hypaMemoryV3Main(
             "\nChat Count:",
             endIdx - startIdx,
             "\nMax Chats Per Summary:",
-            settings.maxChatsPerSummary
+            settings.maxChatsPerSummary,
         );
 
         for (let i = startIdx; i < endIdx; i++) {
@@ -1093,16 +973,12 @@ async function hypaMemoryV3Main(
                 "\nContent:",
                 "\n" + chat.content,
                 "\nTokens:",
-                chatTokens
+                chatTokens,
             );
 
             toSummarizeTokens += chatTokens;
 
-            if (
-                chat.name === "example_user" ||
-                chat.name === "example_assistant" ||
-                chat.memo === "NewChatExample"
-            ) {
+            if (chat.name === "example_user" || chat.name === "example_assistant" || chat.memo === "NewChatExample") {
                 console.log(logPrefix, `Skipping example chat at index ${i}`);
                 continue;
             }
@@ -1126,26 +1002,18 @@ async function hypaMemoryV3Main(
         }
 
         // Stop summarization if further reduction would go below target tokens (unless we're over max tokens)
-        if (
-            currentTokens <= maxContextTokens &&
-            currentTokens - toSummarizeTokens < targetTokens
-        ) {
+        if (currentTokens <= maxContextTokens && currentTokens - toSummarizeTokens < targetTokens) {
             console.log(
                 logPrefix,
                 "Stopping summarization:",
-                `\ncurrentTokens(${currentTokens}) - toSummarizeTokens(${toSummarizeTokens}) < targetTokens(${targetTokens})`
+                `\ncurrentTokens(${currentTokens}) - toSummarizeTokens(${toSummarizeTokens}) < targetTokens(${targetTokens})`,
             );
             break;
         }
 
         // Attempt summarization
         if (toSummarize.length > 0) {
-            console.log(
-                logPrefix,
-                "Attempting summarization:",
-                "\nTarget:",
-                toSummarize
-            );
+            console.log(logPrefix, "Attempting summarization:", "\nTarget:", toSummarize);
 
             try {
                 const summarizeResult = await summarize(toSummarize);
@@ -1181,7 +1049,7 @@ async function hypaMemoryV3Main(
         "\nMax Context Tokens:",
         maxContextTokens,
         "\nAvailable Memory Tokens:",
-        availableMemoryTokens
+        availableMemoryTokens,
     );
 
     // Early return if no summaries
@@ -1206,7 +1074,7 @@ async function hypaMemoryV3Main(
             "\nAll chats, including memory prompt:",
             newChats,
             "\nMemory Data:",
-            data
+            data,
         );
 
         return {
@@ -1217,8 +1085,7 @@ async function hypaMemoryV3Main(
     }
 
     const selectedSummaries: Summary[] = [];
-    const randomMemoryRatio =
-        1 - settings.recentMemoryRatio - settings.similarMemoryRatio;
+    const randomMemoryRatio = 1 - settings.recentMemoryRatio - settings.similarMemoryRatio;
     const selectedImportantSummaries: Summary[] = [];
 
     // Select important summaries
@@ -1250,22 +1117,18 @@ async function hypaMemoryV3Main(
             "\nSummaries:",
             selectedImportantSummaries,
             "\nAvailable Memory Tokens:",
-            availableMemoryTokens
+            availableMemoryTokens,
         );
     }
 
     // Select recent summaries
-    const reservedRecentMemoryTokens = Math.floor(
-        availableMemoryTokens * settings.recentMemoryRatio
-    );
+    const reservedRecentMemoryTokens = Math.floor(availableMemoryTokens * settings.recentMemoryRatio);
     let consumedRecentMemoryTokens = 0;
     const selectedRecentSummaries: Summary[] = [];
 
     if (settings.recentMemoryRatio > 0) {
         // Target only summaries that haven't been selected yet
-        const unusedSummaries = data.summaries.filter(
-            (e) => !selectedSummaries.includes(e)
-        );
+        const unusedSummaries = data.summaries.filter((e) => !selectedSummaries.includes(e));
 
         // Add one by one from the end
         for (let i = unusedSummaries.length - 1; i >= 0; i--) {
@@ -1275,10 +1138,7 @@ async function hypaMemoryV3Main(
                 content: summary.text + summarySeparator,
             });
 
-            if (
-                summaryTokens + consumedRecentMemoryTokens >
-                reservedRecentMemoryTokens
-            ) {
+            if (summaryTokens + consumedRecentMemoryTokens > reservedRecentMemoryTokens) {
                 break;
             }
 
@@ -1298,49 +1158,45 @@ async function hypaMemoryV3Main(
             "\nReserved Tokens:",
             reservedRecentMemoryTokens,
             "\nConsumed Tokens:",
-            consumedRecentMemoryTokens
+            consumedRecentMemoryTokens,
         );
     }
 
     // Select similar summaries
-    let reservedSimilarMemoryTokens = Math.floor(
-        availableMemoryTokens * settings.similarMemoryRatio
-    );
+    let reservedSimilarMemoryTokens = Math.floor(availableMemoryTokens * settings.similarMemoryRatio);
     let consumedSimilarMemoryTokens = 0;
     const selectedSimilarSummaries: Summary[] = [];
 
     if (settings.similarMemoryRatio > 0) {
         // Utilize unused token space from recent selection
         if (randomMemoryRatio <= 0) {
-            const unusedRecentTokens =
-                reservedRecentMemoryTokens - consumedRecentMemoryTokens;
+            const unusedRecentTokens = reservedRecentMemoryTokens - consumedRecentMemoryTokens;
 
             reservedSimilarMemoryTokens += unusedRecentTokens;
             console.log(
                 logPrefix,
                 "Additional available token space for similar memory:",
                 "\nFrom recent:",
-                unusedRecentTokens
+                unusedRecentTokens,
             );
         }
 
         // Target only summaries that haven't been selected yet
-        const unusedSummaries = data.summaries.filter(
-            (e) => !selectedSummaries.includes(e)
-        );
+        const unusedSummaries = data.summaries.filter((e) => !selectedSummaries.includes(e));
 
         // Dynamically generate summary chunks
         const summaryChunks: SummaryChunk[] = [];
 
         unusedSummaries.forEach((summary) => {
-            const splitted = splitBySeparator(summary.text, settings.summaryChunkSeparator)
-                .filter((e) => e.trim().length > 0);
+            const splitted = splitBySeparator(summary.text, settings.summaryChunkSeparator).filter(
+                (e) => e.trim().length > 0,
+            );
 
             summaryChunks.push(
                 ...splitted.map((e) => ({
                     text: e.trim(),
                     summary,
-                }))
+                })),
             );
         });
 
@@ -1360,9 +1216,7 @@ async function hypaMemoryV3Main(
             };
         }
 
-        const recentChats = chats
-            .slice(-settings.queryChatCount)
-            .filter((chat) => chat.content.trim().length > 0);
+        const recentChats = chats.slice(-settings.queryChatCount).filter((chat) => chat.content.trim().length > 0);
 
         if (recentChats.length > 0) {
             // Raw recent chat search
@@ -1373,12 +1227,7 @@ async function hypaMemoryV3Main(
                 // Summarizing is meaningful when there are more than 2 recent chats
 
                 // Attempt summarization
-                console.log(
-                    logPrefix,
-                    "Attempting summarization for similarity search:",
-                    "\nTarget:",
-                    recentChats
-                );
+                console.log(logPrefix, "Attempting summarization for similarity search:", "\nTarget:", recentChats);
 
                 try {
                     const summarizeResult = await summarize(recentChats);
@@ -1406,17 +1255,11 @@ async function hypaMemoryV3Main(
                     scoredLists.push(scoredChunks);
                 }
 
-                const rankedChunks = simpleCC<SummaryChunk>(
-                    scoredLists,
-                    (listIndex, totalLists) => {
-                        return (listIndex + 1) / ((totalLists * (totalLists + 1)) / 2);
-                    }
-                );
+                const rankedChunks = simpleCC<SummaryChunk>(scoredLists, (listIndex, totalLists) => {
+                    return (listIndex + 1) / ((totalLists * (totalLists + 1)) / 2);
+                });
 
-                const rankedSummaries = childToParentRRF<SummaryChunk, Summary>(
-                    rankedChunks,
-                    (chunk) => chunk.summary
-                );
+                const rankedSummaries = childToParentRRF<SummaryChunk, Summary>(rankedChunks, (chunk) => chunk.summary);
 
                 while (rankedSummaries.length > 0) {
                     const summary = rankedSummaries.shift();
@@ -1425,14 +1268,11 @@ async function hypaMemoryV3Main(
                         content: summary.text + summarySeparator,
                     });
 
-                    if (
-                        summaryTokens + consumedSimilarMemoryTokens >
-                        reservedSimilarMemoryTokens
-                    ) {
+                    if (summaryTokens + consumedSimilarMemoryTokens > reservedSimilarMemoryTokens) {
                         console.log(
                             logPrefix,
                             "Stopping similar memory selection:",
-                            `\nconsumedSimilarMemoryTokens(${consumedSimilarMemoryTokens}) + summaryTokens(${summaryTokens}) > reservedSimilarMemoryTokens(${reservedSimilarMemoryTokens})`
+                            `\nconsumedSimilarMemoryTokens(${consumedSimilarMemoryTokens}) + summaryTokens(${summaryTokens}) > reservedSimilarMemoryTokens(${reservedSimilarMemoryTokens})`,
                         );
                         break;
                     }
@@ -1462,23 +1302,19 @@ async function hypaMemoryV3Main(
             "\nReserved Tokens:",
             reservedSimilarMemoryTokens,
             "\nConsumed Tokens:",
-            consumedSimilarMemoryTokens
+            consumedSimilarMemoryTokens,
         );
     }
 
     // Select random summaries
-    let reservedRandomMemoryTokens = Math.floor(
-        availableMemoryTokens * randomMemoryRatio
-    );
+    let reservedRandomMemoryTokens = Math.floor(availableMemoryTokens * randomMemoryRatio);
     let consumedRandomMemoryTokens = 0;
     const selectedRandomSummaries: Summary[] = [];
 
     if (randomMemoryRatio > 0) {
         // Utilize unused token space from recent and similar selection
-        const unusedRecentTokens =
-            reservedRecentMemoryTokens - consumedRecentMemoryTokens;
-        const unusedSimilarTokens =
-            reservedSimilarMemoryTokens - consumedSimilarMemoryTokens;
+        const unusedRecentTokens = reservedRecentMemoryTokens - consumedRecentMemoryTokens;
+        const unusedSimilarTokens = reservedSimilarMemoryTokens - consumedSimilarMemoryTokens;
 
         reservedRandomMemoryTokens += unusedRecentTokens + unusedSimilarTokens;
         console.log(
@@ -1489,7 +1325,7 @@ async function hypaMemoryV3Main(
             "\nFrom similar:",
             unusedSimilarTokens,
             "\nTotal added:",
-            unusedRecentTokens + unusedSimilarTokens
+            unusedRecentTokens + unusedSimilarTokens,
         );
 
         // Target only summaries that haven't been selected yet
@@ -1503,10 +1339,7 @@ async function hypaMemoryV3Main(
                 content: summary.text + summarySeparator,
             });
 
-            if (
-                summaryTokens + consumedRandomMemoryTokens >
-                reservedRandomMemoryTokens
-            ) {
+            if (summaryTokens + consumedRandomMemoryTokens > reservedRandomMemoryTokens) {
                 // Trying to select more random memory
                 continue;
             }
@@ -1527,20 +1360,15 @@ async function hypaMemoryV3Main(
             "\nReserved Tokens:",
             reservedRandomMemoryTokens,
             "\nConsumed Tokens:",
-            consumedRandomMemoryTokens
+            consumedRandomMemoryTokens,
         );
     }
 
     // Sort selected summaries chronologically (by index)
-    selectedSummaries.sort(
-        (a, b) => data.summaries.indexOf(a) - data.summaries.indexOf(b)
-    );
+    selectedSummaries.sort((a, b) => data.summaries.indexOf(a) - data.summaries.indexOf(b));
 
     // Generate final memory prompt
-    const memory = wrapWithXml(
-        memoryPromptTag,
-        selectedSummaries.map((e) => e.text).join(summarySeparator)
-    );
+    const memory = wrapWithXml(memoryPromptTag, selectedSummaries.map((e) => e.text).join(summarySeparator));
     const realMemoryTokens = await tokenizer.tokenizeChat({
         role: "system",
         content: memory,
@@ -1565,28 +1393,28 @@ async function hypaMemoryV3Main(
         "\nReal Memory Tokens:",
         realMemoryTokens,
         "\nAvailable Memory Tokens:",
-        availableMemoryTokens
+        availableMemoryTokens,
     );
 
     if (currentTokens > maxContextTokens) {
         throw new Error(
-            `Unexpected error: input token count (${currentTokens}) exceeds max context size (${maxContextTokens})`
+            `Unexpected error: input token count (${currentTokens}) exceeds max context size (${maxContextTokens})`,
         );
     }
 
     // Save last selected summaries
     data.metrics = {
         lastImportantSummaries: selectedImportantSummaries.map((selected) =>
-            data.summaries.findIndex((sum) => sum === selected)
+            data.summaries.findIndex((sum) => sum === selected),
         ),
         lastRecentSummaries: selectedRecentSummaries.map((selected) =>
-            data.summaries.findIndex((sum) => sum === selected)
+            data.summaries.findIndex((sum) => sum === selected),
         ),
         lastSimilarSummaries: selectedSimilarSummaries.map((selected) =>
-            data.summaries.findIndex((sum) => sum === selected)
+            data.summaries.findIndex((sum) => sum === selected),
         ),
         lastRandomSummaries: selectedRandomSummaries.map((selected) =>
-            data.summaries.findIndex((sum) => sum === selected)
+            data.summaries.findIndex((sum) => sum === selected),
         ),
     };
 
@@ -1607,7 +1435,7 @@ async function hypaMemoryV3Main(
         "\nAll chats, including memory prompt:",
         newChats,
         "\nMemory Data:",
-        data
+        data,
     );
 
     return {
@@ -1626,9 +1454,7 @@ function toHypaV3Data(serialData: SerializableHypaV3Data): HypaV3Data {
         summaries: serialData.summaries.map((summary) => ({
             ...summary,
             // Convert null back to undefined (JSON serialization converts undefined to null)
-            chatMemos: new Set(
-                summary.chatMemos.map((memo) => (memo === null ? undefined : memo))
-            ),
+            chatMemos: new Set(summary.chatMemos.map((memo) => (memo === null ? undefined : memo))),
         })),
     };
 }
@@ -1682,28 +1508,26 @@ export async function summarize(oaiMessages: OpenAIChat[], isResummarize: boolea
     const db = getDatabase();
     const settings = getCurrentHypaV3Preset().settings;
 
-    const strMessages = oaiMessages
-        .map((chat) => `${chat.role}: ${sanitizeSummaryContent(chat.content)}`)
-        .join("\n");
+    const strMessages = oaiMessages.map((chat) => `${chat.role}: ${sanitizeSummaryContent(chat.content)}`).join("\n");
 
     const summarizationPrompt = isResummarize
-        ? (settings.reSummarizationPrompt.trim() === "" ? "Re-summarize this summaries." : settings.reSummarizationPrompt)
+        ? settings.reSummarizationPrompt.trim() === ""
+            ? "Re-summarize this summaries."
+            : settings.reSummarizationPrompt
         : settings.summarizationPrompt.trim() === ""
-            ? "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
-            : settings.summarizationPrompt;
+          ? "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          : settings.summarizationPrompt;
 
-    const formated: OpenAIChat[] = parseChatML(
-        summarizationPrompt.replaceAll("{{slot}}", strMessages)
-    ) ?? [
-            {
-                role: "user",
-                content: strMessages,
-            },
-            {
-                role: "system",
-                content: summarizationPrompt,
-            },
-        ];
+    const formated: OpenAIChat[] = parseChatML(summarizationPrompt.replaceAll("{{slot}}", strMessages)) ?? [
+        {
+            role: "user",
+            content: strMessages,
+        },
+        {
+            role: "system",
+            content: summarizationPrompt,
+        },
+    ];
 
     // API
     if (settings.summarizationModel === "subModel") {
@@ -1716,7 +1540,7 @@ export async function summarize(oaiMessages: OpenAIChat[], isResummarize: boolea
                 useStreaming: false,
                 noMultiGen: true,
             },
-            "memory"
+            "memory",
         );
 
         if (response.type === "streaming" || response.type === "multiline") {
@@ -1743,7 +1567,7 @@ export async function summarize(oaiMessages: OpenAIChat[], isResummarize: boolea
     }
 
     // Local — ensure system message comes first for WebLLM models
-    const firstSystemIndex = formated.findIndex(m => m.role === 'system');
+    const firstSystemIndex = formated.findIndex((m) => m.role === "system");
     if (firstSystemIndex > 0) {
         const [system] = formated.splice(firstSystemIndex, 1);
         formated.unshift(system);
@@ -1783,10 +1607,7 @@ export function getCurrentHypaV3Preset(): HypaV3Preset {
     return preset;
 }
 
-export function createHypaV3Preset(
-    name = "New Preset",
-    existingSettings = {}
-): HypaV3Preset {
+export function createHypaV3Preset(name = "New Preset", existingSettings = {}): HypaV3Preset {
     const settings: HypaV3Settings = {
         summarizationModel: "subModel",
         summarizationPrompt: "",
@@ -1811,11 +1632,7 @@ export function createHypaV3Preset(
         queryChatCount: 3,
     };
 
-    if (
-        existingSettings &&
-        typeof existingSettings === "object" &&
-        !Array.isArray(existingSettings)
-    ) {
+    if (existingSettings && typeof existingSettings === "object" && !Array.isArray(existingSettings)) {
         for (const [key, value] of Object.entries(existingSettings)) {
             if (key in settings && typeof value === typeof settings[key]) {
                 settings[key] = value;
@@ -1831,15 +1648,13 @@ export function createHypaV3Preset(
 
 function simpleCC<T>(
     scoredLists: [T, number][][],
-    weightFunc?: (listIndex: number, totalLists: number) => number
+    weightFunc?: (listIndex: number, totalLists: number) => number,
 ): T[] {
     const scores = new Map<T, number>();
 
     for (let listIndex = 0; listIndex < scoredLists.length; listIndex++) {
         const list = scoredLists[listIndex];
-        const weight = weightFunc
-            ? weightFunc(listIndex, scoredLists.length)
-            : 1 / scoredLists.length;
+        const weight = weightFunc ? weightFunc(listIndex, scoredLists.length) : 1 / scoredLists.length;
 
         for (const [item, score] of list) {
             scores.set(item, (scores.get(item) || 0) + score * weight);
@@ -1871,11 +1686,7 @@ function simpleRRF<T>(rankedLists: T[][], k: number = 60): T[] {
         .map(([item]) => item);
 }
 
-function childToParentRRF<C, P>(
-    rankedChildren: C[],
-    parentFunc: (child: C) => P,
-    k: number = 60
-): P[] {
+function childToParentRRF<C, P>(rankedChildren: C[], parentFunc: (child: C) => P, k: number = 60): P[] {
     const scores = new Map<P, number>();
 
     for (let childIndex = 0; childIndex < rankedChildren.length; childIndex++) {
@@ -1937,9 +1748,7 @@ class HypaProcesserEx extends HypaProcesser {
         for (const chunk of chunks) {
             const vector = this.vectors.find((v) => v.content === chunk.text);
             if (!vector) {
-                throw new Error(
-                    `Failed to create vector for summary chunk:\n${chunk.text}`
-                );
+                throw new Error(`Failed to create vector for summary chunk:\n${chunk.text}`);
             }
             newSummaryChunkVectors.push({ chunk, vector });
         }
@@ -1965,7 +1774,7 @@ class HypaProcesserEx extends HypaProcesser {
         const cachedVectors = new Map<string, memoryVector>();
 
         for (const [, group] of summaryGroups) {
-            const groupTexts = group.map(c => c.text);
+            const groupTexts = group.map((c) => c.text);
             let allCached = true;
             const groupCache = new Map<string, memoryVector>();
 
@@ -1988,15 +1797,13 @@ class HypaProcesserEx extends HypaProcesser {
         }
 
         if (groupsToEmbed.length > 0) {
-            const groups = groupsToEmbed.map(group =>
-                group.map(chunk => chunk.text)
-            );
+            const groups = groupsToEmbed.map((group) => group.map((chunk) => chunk.text));
 
             const results = await provider.embedDocumentGroups(groups);
 
             for (let i = 0; i < groupsToEmbed.length; i++) {
                 const group = groupsToEmbed[i];
-                const groupTexts = group.map(c => c.text);
+                const groupTexts = group.map((c) => c.text);
                 const embeddings = results[i];
 
                 for (let j = 0; j < group.length; j++) {
@@ -2004,7 +1811,7 @@ class HypaProcesserEx extends HypaProcesser {
                     const embedding = embeddings[j];
                     const vector: memoryVector = {
                         content: chunk.text,
-                        embedding
+                        embedding,
                     };
 
                     await this.forage.setItem(cacheKeyFor(chunk.text, groupTexts), vector);
@@ -2016,9 +1823,7 @@ class HypaProcesserEx extends HypaProcesser {
         for (const chunk of chunks) {
             const vector = cachedVectors.get(chunk.text);
             if (!vector) {
-                throw new Error(
-                    `Failed to create vector for summary chunk:\n${chunk.text}`
-                );
+                throw new Error(`Failed to create vector for summary chunk:\n${chunk.text}`);
             }
 
             this.vectors.push(vector);
@@ -2026,9 +1831,7 @@ class HypaProcesserEx extends HypaProcesser {
         }
     }
 
-    async similaritySearchScoredEx(
-        query: string
-    ): Promise<[SummaryChunk, number][]> {
+    async similaritySearchScoredEx(query: string): Promise<[SummaryChunk, number][]> {
         const queryVector = (await this.getEmbeds(query))[0];
 
         return this.summaryChunkVectors

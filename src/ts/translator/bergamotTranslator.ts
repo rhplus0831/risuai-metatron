@@ -1,5 +1,5 @@
 import { LatencyOptimisedTranslator, TranslatorBacking } from "@browsermt/bergamot-translator";
-import { gunzipSync } from 'fflate';
+import { gunzipSync } from "fflate";
 import { asBuffer } from "../util";
 
 // Cache Translations Models
@@ -78,7 +78,8 @@ class FirefoxBacking extends TranslatorBacking {
     downloadTimeout: number;
 
     constructor(options?) {
-        const registryUrl = 'https://raw.githubusercontent.com/mozilla/firefox-translations-models/refs/heads/main/registry.json';
+        const registryUrl =
+            "https://raw.githubusercontent.com/mozilla/firefox-translations-models/refs/heads/main/registry.json";
         options = options || {};
         options.registryUrl = options.registryUrl || registryUrl;
         super(options);
@@ -86,10 +87,11 @@ class FirefoxBacking extends TranslatorBacking {
     }
 
     async loadModelRegistery() {
-        const modelUrl = 'https://media.githubusercontent.com/media/mozilla/firefox-translations-models/refs/heads/main/models';
+        const modelUrl =
+            "https://media.githubusercontent.com/media/mozilla/firefox-translations-models/refs/heads/main/models";
         const registry = await super.loadModelRegistery();
         for (const entry of registry) {
-            for(const name in entry.files) {
+            for (const name in entry.files) {
                 const file = entry.files[name];
                 file.name = `${modelUrl}/${file.modelType}/${entry.from}${entry.to}/${file.name}.gz`;
             }
@@ -99,9 +101,11 @@ class FirefoxBacking extends TranslatorBacking {
 
     async fetch(url, checksum, extra) {
         const cacheBuffer = await this.cache.load(url, checksum);
-        if (cacheBuffer) { return cacheBuffer; }
+        if (cacheBuffer) {
+            return cacheBuffer;
+        }
         const res = await fetch(url, {
-            credentials: 'omit',
+            credentials: "omit",
         });
         // Decompress GZip
         const buffer = await res.arrayBuffer();
@@ -111,12 +115,13 @@ class FirefoxBacking extends TranslatorBacking {
     }
 }
 
-async function decompressGZip(buffer:ArrayBuffer) {
+async function decompressGZip(buffer: ArrayBuffer) {
     if (typeof DecompressionStream !== "undefined") {
-        const decompressor = new DecompressionStream('gzip');
+        const decompressor = new DecompressionStream("gzip");
         const stream = new Response(buffer).body.pipeThrough(decompressor);
         return await new Response(stream).arrayBuffer();
-    } else {    // GZip decompression fallback
+    } else {
+        // GZip decompression fallback
         return gunzipSync(new Uint8Array(buffer)).buffer;
     }
 }
@@ -125,8 +130,8 @@ let translator = null;
 let translateTask = null;
 
 // Translate
-export async function bergamotTranslate(text:string, from:string, to:string, html:boolean|null) {
-    translator ??= new LatencyOptimisedTranslator({}, new FirefoxBacking())
+export async function bergamotTranslate(text: string, from: string, to: string, html: boolean | null) {
+    translator ??= new LatencyOptimisedTranslator({}, new FirefoxBacking());
     const result = await (translateTask = translate());
     return result.target.text;
 
@@ -134,8 +139,10 @@ export async function bergamotTranslate(text:string, from:string, to:string, htm
     async function translate() {
         await translateTask;
         return translator.translate({
-            from: from, to: to,
-            text: text, html: html,
+            from: from,
+            to: to,
+            text: text,
+            html: html,
         });
     }
 }

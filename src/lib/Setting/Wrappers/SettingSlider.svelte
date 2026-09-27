@@ -1,9 +1,9 @@
 <script lang="ts">
-    import type { SettingItem, SettingContext } from 'src/ts/setting/types';
-    import { UNINITIALIZED, getLabel, getSettingValue, setSettingValue } from 'src/ts/setting/utils';
-    import { untrack } from 'svelte';
-    import SliderInput from 'src/lib/UI/GUI/SliderInput.svelte';
-    import Help from 'src/lib/Others/Help.svelte';
+    import type { SettingItem, SettingContext } from "src/ts/setting/types";
+    import { UNINITIALIZED, getLabel, getSettingValue, setSettingValue } from "src/ts/setting/utils";
+    import { untrack } from "svelte";
+    import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
+    import Help from "src/lib/Others/Help.svelte";
 
     interface Props {
         item: SettingItem;
@@ -31,19 +31,17 @@
     });
 
     let customText = $derived(
-        typeof item.options?.customText === 'function'
-            ? item.options.customText(localValue)
-            : item.options?.customText
+        typeof item.options?.customText === "function" ? item.options.customText(localValue) : item.options?.customText,
     );
 </script>
 
 <span class="text-textcolor {item.classes ?? ''}">
     {getLabel(item)}
-    {#if item.helpKey}<Help key={item.helpKey as any}/>{/if}
+    {#if item.helpKey}<Help key={item.helpKey as any} />{/if}
 </span>
-<SliderInput 
+<SliderInput
     marginBottom={true}
-    min={item.options?.min} 
+    min={item.options?.min}
     max={item.options?.max}
     step={item.options?.step}
     fixed={item.options?.fixed}

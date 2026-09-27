@@ -1,6 +1,7 @@
 # Persistence: Database, Save Format, Storage Backends
 
 ## Scope
+
 - Owns:
   - the persisted DB model and its migrations,
   - the save-file encoding,
@@ -13,6 +14,7 @@
   - Node server storage routes → `self-host-server.md`.
 
 ## Files
+
 - `src/ts/storage/database.svelte.ts`: canonical types and DB helpers.
   - Types: `Database`, `character`, `groupChat`, `Chat`, `Message`, `MessageGenerationInfo`, `loreBook`, `customscript`, `botPreset`, `RisuPersona`.
   - Normalization: `setDatabase` (defaults and migrations), `setDatabaseLite` (assign only).
@@ -34,16 +36,20 @@
 - `src/ts/chatLoadPages.ts`: `normalizeChatLoadPages` (defaults: 30 initial pages, 15 additional).
 
 ## Flows
+
 Load:
+
 1. `bootstrap.ts:loadData` reads `database/database.bin` from `forageStorage`.
 2. `decodeRisuSave` decodes it.
 3. `setDatabase` normalizes the result. If decoding fails, `loadData` walks `database/dbbackup-*.bin` newest first but does not stop at the first success, so the oldest readable retained backup ends up loaded.
 
 Access:
+
 - UI reads and mutates `DBState.db` reactively.
 - Code that serializes, exports, syncs, or hands data to plugins should take `getDatabase({snapshot:true})` or `safeStructuredClone`.
 
 Save (`globalApi.svelte.ts:saveDb`):
+
 1. `$effect` watchers snapshot:
    - every root key except `characters`, `botPresets`, `modules`, `loadouts`, `plugins`, `pluginCustomStorage`,
    - each of those dedicated collections separately,
@@ -53,6 +59,7 @@ Save (`globalApi.svelte.ts:saveDb`):
 4. The encoded bytes are written to `database/database.bin`, then a `database/dbbackup-<ts>.bin` backup (at most 20 kept).
 
 Block format:
+
 - The file starts with the `RISUSAVE\0` magic, followed by typed blocks.
 - Each block is: type, compression flag, name length, name, payload length, payload.
 - Blocks:
@@ -62,16 +69,20 @@ Block format:
 - Remote characters are stored as `REMOTE` descriptor blocks. Their payload lives at `remotes/<chaId>.local.bin`.
 
 Backend selection (`AutoStorage.Init`):
+
 1. `NodeStorage`, when `isNodeServer`.
 2. OPFS, when supported and the `opfs_flag!` flag is set.
 3. Otherwise localforage `risuai` (IndexedDB).
+
 - Risu Account sync was removed. A leftover `localStorage.accountst === 'able'` flag is ignored, so such a browser falls through to local storage.
 
 Cold storage (removed):
+
 - Cold storage was removed without a migration. Data it had offloaded (OPFS `coldstorage_<uuid>.json`, Node `coldstorage/<uuid>`) is no longer read, and those files are left on disk.
 - Old saves may still hold skeleton characters with a stale `coldstorage` field and chats whose only message is a `\uEF01COLDSTORAGE\uEF01<uuid>` pointer. They load as ordinary characters and chats.
 
 ## State
+
 - `Database` covers:
   - characters, prompts and templates,
   - provider keys and URLs, model/memory/translator/image/TTS settings,
@@ -86,6 +97,7 @@ Cold storage (removed):
 - `pluginCustomStorage` holds v2.1 plugin custom DB properties and v2.1 `pluginStorage` values at its top level. v3 `pluginStorage` values live under its reserved `_pluginStorage` key, JSON-normalized on write.
 
 ## Coupling
+
 - The chain is `DBState` → `database.svelte.ts` helpers → `forageStorage` (in `globalApi`) → `AutoStorage` → backend.
 - Callers:
   - `bootstrap.ts`: load and migrate.
@@ -95,6 +107,7 @@ Cold storage (removed):
   - `plugins.svelte.ts`: DB API.
 
 ## Invariants
+
 - Every decoded or imported DB must pass through `setDatabase`. It also deletes the legacy Risu Account `account` token, the legacy `coldstorage` flag, and `pluginCustomStorage._coldplugin`. Initialize nested parents before assigning children (`??=`).
 - `RisuSaveEncoder` serializes root fields by exclusion. If you add a new excluded collection, you must also add its encoder block, a `RisuSaveDecoder` case, a `toSaveType` field, and `saveDb` watchers. Otherwise the collection silently disappears.
 - There is no chat-granular block. A chat change rewrites its whole character block.
@@ -105,6 +118,7 @@ Cold storage (removed):
 - `exportAsDataset` does no redaction. The settings report in `SettingsExportButtons.svelte` does.
 
 ## Recipes
+
 - Add a persisted setting:
   1. Add the field to `Database`.
   2. Add a default or migration in `setDatabase`.
@@ -115,11 +129,13 @@ Cold storage (removed):
 - Change remote retention: `risuSave.ts` (`encodeRemoteBlock`, decoder). Nothing deletes orphaned `remotes/*.local.bin` payloads; the boot-time `cleanChunks` purge was removed together with cold storage.
 
 ## Tests
+
 - `src/ts/chatLoadPages.test.ts`.
 - `src/ts/storage/autoStorage.test.ts`: backend selection.
 - `src/ts/storage/database.setDatabase.test.ts`: `setDatabase` drops the legacy `coldstorage` flag and `pluginCustomStorage._coldplugin` and leaves stale per-character cold pointers alone.
 - Not tested: the rest of the `setDatabase` migrations, `RisuSaveEncoder`/`Decoder` compatibility, `saveDb` tracking, and any backend class.
 
 ## Known Hazards
+
 - `NodeStorage.removeItem(string[])` hex-encodes the `$$`-joined keys, and the server then splits the hex string on `$$`. Batch removal therefore targets one nonexistent combined filename. Fix the client and server together.
 - `getCurrentChat` has no snapshot option, unlike `getDatabase` and `getCurrentCharacter`.

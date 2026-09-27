@@ -1,13 +1,11 @@
 import { getDatabase } from "./database.svelte";
 import { alertNormal } from "../alert";
 import { language } from "src/lang";
-import { isNodeServer, isFirefox } from "src/ts/platform"
+import { isNodeServer, isFirefox } from "src/ts/platform";
 
 async function requestPersistantStorageMain() {
-    
-    if(navigator.storage && navigator.storage.persist) {
-
-        if(await navigator.storage.persisted()) {
+    if (navigator.storage && navigator.storage.persist) {
+        if (await navigator.storage.persisted()) {
             return true;
         }
 
@@ -16,31 +14,31 @@ async function requestPersistantStorageMain() {
         const isChromium = window.chrome;
         if (isChromium) {
             //chromium requires notification to persist
-            alertNormal("For chromium based browsers, you need to allow notifications to persist data")
-            const status = await Notification.requestPermission()
-            
-            if(status === 'granted') {
+            alertNormal("For chromium based browsers, you need to allow notifications to persist data");
+            const status = await Notification.requestPermission();
+
+            if (status === "granted") {
                 return navigator.storage.persist();
             }
         }
 
-        if(isFirefox) {
+        if (isFirefox) {
             //firefox can just ask for persist
             return navigator.storage.persist();
         }
 
         return false;
     }
-    return false
+    return false;
 }
 
 export async function persistantStorageRecommended() {
-    const db = getDatabase()
-    if(navigator.storage && navigator.storage.persist && (!isNodeServer)) {
-        if(await navigator.storage.persisted()) {
+    const db = getDatabase();
+    if (navigator.storage && navigator.storage.persist && !isNodeServer) {
+        if (await navigator.storage.persisted()) {
             return false;
         }
-        if(db.characters.length > 5){
+        if (db.characters.length > 5) {
             return true;
         }
     }
@@ -49,10 +47,10 @@ export async function persistantStorageRecommended() {
 
 export async function requestPersistantStorage() {
     const status = await requestPersistantStorageMain();
-    if(status) {
-        alertNormal(language.persistentStorageSuccess)
+    if (status) {
+        alertNormal(language.persistentStorageSuccess);
     } else {
-        alertNormal(language.persistentStorageFail)
+        alertNormal(language.persistentStorageFail);
     }
     return status;
 }

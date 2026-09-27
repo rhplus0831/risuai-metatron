@@ -1,42 +1,42 @@
-const express = require('express');
+const express = require("express");
 const app = express();
 if (process.env.TRUST_PROXY) {
-    app.set('trust proxy', Number(process.env.TRUST_PROXY) || process.env.TRUST_PROXY);
+    app.set("trust proxy", Number(process.env.TRUST_PROXY) || process.env.TRUST_PROXY);
 }
-const http = require('http');
-const path = require('path');
-const net = require('net');
-const htmlparser = require('node-html-parser');
-const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('fs');
-const fs = require('fs/promises')
-const crypto = require('crypto')
-const rateLimit = require('express-rate-limit');
-const { WebSocketServer } = require('ws');
-app.use(express.static(path.join(process.cwd(), 'dist'), {index: false}));
-app.use(express.json({ limit: '100mb' }));
-app.use(express.raw({ type: 'application/octet-stream', limit: '100mb' }));
-app.use(express.text({ limit: '100mb' }));
-const {pipeline} = require('stream/promises')
-const https = require('https');
-const sslPath = path.join(process.cwd(), 'server/node/ssl/certificate');
-const hubURL = 'https://sv.risuai.xyz'; 
+const http = require("http");
+const path = require("path");
+const net = require("net");
+const htmlparser = require("node-html-parser");
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("fs");
+const fs = require("fs/promises");
+const crypto = require("crypto");
+const rateLimit = require("express-rate-limit");
+const { WebSocketServer } = require("ws");
+app.use(express.static(path.join(process.cwd(), "dist"), { index: false }));
+app.use(express.json({ limit: "100mb" }));
+app.use(express.raw({ type: "application/octet-stream", limit: "100mb" }));
+app.use(express.text({ limit: "100mb" }));
+const { pipeline } = require("stream/promises");
+const https = require("https");
+const sslPath = path.join(process.cwd(), "server/node/ssl/certificate");
+const hubURL = "https://sv.risuai.xyz";
 
-let password = ''
-let knownPublicKeysHashes = []
+let password = "";
+let knownPublicKeysHashes = [];
 
-const savePath = path.join(process.cwd(), "save")
-if(!existsSync(savePath)){
-    mkdirSync(savePath)
-}
-
-const passwordPath = path.join(process.cwd(), 'save', '__password')
-if(existsSync(passwordPath)){
-    password = readFileSync(passwordPath, 'utf-8')
+const savePath = path.join(process.cwd(), "save");
+if (!existsSync(savePath)) {
+    mkdirSync(savePath);
 }
 
-const knownPublicKeysPath = path.join(process.cwd(), 'save', '__known_public_key_hashes.json')
-if(existsSync(knownPublicKeysPath)){
-    const knownPublicKeysRaw = readFileSync(knownPublicKeysPath, 'utf-8');
+const passwordPath = path.join(process.cwd(), "save", "__password");
+if (existsSync(passwordPath)) {
+    password = readFileSync(passwordPath, "utf-8");
+}
+
+const knownPublicKeysPath = path.join(process.cwd(), "save", "__known_public_key_hashes.json");
+if (existsSync(knownPublicKeysPath)) {
+    const knownPublicKeysRaw = readFileSync(knownPublicKeysPath, "utf-8");
     knownPublicKeysHashes = JSON.parse(knownPublicKeysRaw);
 }
 
@@ -58,42 +58,42 @@ const authenticatedRouteLimiter = rateLimit({
     max: 2000,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: 'Too many requests. Please retry shortly.' }
+    message: { error: "Too many requests. Please retry shortly." },
 });
 const authRouteLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 2000,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: 'Too many requests. Please retry shortly.' }
+    message: { error: "Too many requests. Please retry shortly." },
 });
 const loginRouteLimiter = rateLimit({
     windowMs: 30 * 1000,
     max: 10,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: 'Too many attempts. Please wait and try again later.' }
+    message: { error: "Too many attempts. Please wait and try again later." },
 });
 function isHex(str) {
-    return hexRegex.test(str.toUpperCase().trim()) || str === '__password';
+    return hexRegex.test(str.toUpperCase().trim()) || str === "__password";
 }
 
-async function hashJSON(json){
-    const hash = crypto.createHash('sha256');
+async function hashJSON(json) {
+    const hash = crypto.createHash("sha256");
     hash.update(JSON.stringify(json));
-    return hash.digest('hex');
+    return hash.digest("hex");
 }
 
 function isAuthorizedRequest(req) {
-    const authHeader = normalizeAuthHeader(req.headers['risu-auth']);
+    const authHeader = normalizeAuthHeader(req.headers["risu-auth"]);
     return !!authHeader && authHeader.trim() === password.trim();
 }
 
 function normalizeAuthHeader(authHeader) {
     if (Array.isArray(authHeader)) {
-        return authHeader[0] || '';
+        return authHeader[0] || "";
     }
-    return typeof authHeader === 'string' ? authHeader : '';
+    return typeof authHeader === "string" ? authHeader : "";
 }
 
 async function isAuthorizedJwtHeader(authHeader) {
@@ -103,19 +103,15 @@ async function isAuthorizedJwtHeader(authHeader) {
             return false;
         }
 
-        const [
-            jsonHeaderB64,
-            jsonPayloadB64,
-            signatureB64,
-        ] = normalized.split('.');
+        const [jsonHeaderB64, jsonPayloadB64, signatureB64] = normalized.split(".");
 
         if (!jsonHeaderB64 || !jsonPayloadB64 || !signatureB64) {
             return false;
         }
 
-        const jsonHeader = JSON.parse(Buffer.from(jsonHeaderB64, 'base64url').toString('utf-8'));
-        const jsonPayload = JSON.parse(Buffer.from(jsonPayloadB64, 'base64url').toString('utf-8'));
-        const signature = Buffer.from(signatureB64, 'base64url');
+        const jsonHeader = JSON.parse(Buffer.from(jsonHeaderB64, "base64url").toString("utf-8"));
+        const jsonPayload = JSON.parse(Buffer.from(jsonPayloadB64, "base64url").toString("utf-8"));
+        const signature = Buffer.from(signatureB64, "base64url");
 
         const now = Math.floor(Date.now() / 1000);
         if (jsonPayload.exp < now) {
@@ -127,27 +123,27 @@ async function isAuthorizedJwtHeader(authHeader) {
             return false;
         }
 
-        if (jsonHeader.alg !== 'ES256') {
+        if (jsonHeader.alg !== "ES256") {
             return false;
         }
 
         return await crypto.subtle.verify(
             {
-                name: 'ECDSA',
-                hash: { name: 'SHA-256' },
+                name: "ECDSA",
+                hash: { name: "SHA-256" },
             },
             await crypto.subtle.importKey(
-                'jwk',
+                "jwk",
                 jsonPayload.pub,
                 {
-                    name: 'ECDSA',
-                    namedCurve: 'P-256',
+                    name: "ECDSA",
+                    namedCurve: "P-256",
                 },
                 false,
-                ['verify']
+                ["verify"],
             ),
             signature,
-            Buffer.from(`${jsonHeaderB64}.${jsonPayloadB64}`)
+            Buffer.from(`${jsonHeaderB64}.${jsonPayloadB64}`),
         );
     } catch {
         return false;
@@ -158,7 +154,7 @@ async function isAuthorizedProxyRequest(req) {
     if (isAuthorizedRequest(req)) {
         return true;
     }
-    return await isAuthorizedJwtHeader(req.headers['risu-auth']);
+    return await isAuthorizedJwtHeader(req.headers["risu-auth"]);
 }
 
 async function checkProxyAuth(req, res) {
@@ -184,7 +180,7 @@ function createTimeoutController(timeoutMs) {
     if (!timeoutMs) {
         return {
             signal: undefined,
-            cleanup: () => {}
+            cleanup: () => {},
         };
     }
 
@@ -193,7 +189,7 @@ function createTimeoutController(timeoutMs) {
 
     return {
         signal: controller.signal,
-        cleanup: () => clearTimeout(timer)
+        cleanup: () => clearTimeout(timer),
     };
 }
 
@@ -214,7 +210,7 @@ function normalizeHeartbeatSec(heartbeatSec) {
 }
 
 function isPrivateIPv4Host(hostname) {
-    const parts = hostname.split('.');
+    const parts = hostname.split(".");
     if (parts.length !== 4) {
         return false;
     }
@@ -245,12 +241,12 @@ function isPrivateIPv4Host(hostname) {
 }
 
 function isLocalNetworkHost(hostname) {
-    if (typeof hostname !== 'string' || hostname.trim() === '') {
+    if (typeof hostname !== "string" || hostname.trim() === "") {
         return false;
     }
 
-    const normalizedHost = hostname.toLowerCase().replace(/\.$/, '').split('%')[0];
-    if (normalizedHost === 'localhost' || normalizedHost === '::1' || normalizedHost.endsWith('.local')) {
+    const normalizedHost = hostname.toLowerCase().replace(/\.$/, "").split("%")[0];
+    if (normalizedHost === "localhost" || normalizedHost === "::1" || normalizedHost.endsWith(".local")) {
         return true;
     }
 
@@ -259,36 +255,36 @@ function isLocalNetworkHost(hostname) {
     }
 
     if (net.isIP(normalizedHost) === 6) {
-        if (normalizedHost.startsWith('::ffff:')) {
+        if (normalizedHost.startsWith("::ffff:")) {
             const mapped = normalizedHost.substring(7);
             return net.isIP(mapped) === 4 && isPrivateIPv4Host(mapped);
         }
-        if (normalizedHost.startsWith('fc') || normalizedHost.startsWith('fd')) {
+        if (normalizedHost.startsWith("fc") || normalizedHost.startsWith("fd")) {
             return true;
         }
         if (/^fe[89ab]/.test(normalizedHost)) {
             return true;
         }
-        return normalizedHost === '::1';
+        return normalizedHost === "::1";
     }
 
     return false;
 }
 
 function sanitizeTargetUrl(raw) {
-    if (typeof raw !== 'string' || raw.trim() === '') {
+    if (typeof raw !== "string" || raw.trim() === "") {
         return null;
     }
     try {
         const parsed = new URL(raw);
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
             return null;
         }
         if (!isLocalNetworkHost(parsed.hostname)) {
             return null;
         }
-        parsed.username = '';
-        parsed.password = '';
+        parsed.username = "";
+        parsed.password = "";
         return parsed.toString();
     } catch {
         return null;
@@ -296,23 +292,23 @@ function sanitizeTargetUrl(raw) {
 }
 
 function normalizeForwardHeaders(input) {
-    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
         return {};
     }
     const normalized = {};
     for (const [key, value] of Object.entries(input)) {
-        if (typeof key !== 'string') {
+        if (typeof key !== "string") {
             continue;
         }
-        if (typeof value === 'string') {
+        if (typeof value === "string") {
             normalized[key] = value;
         }
     }
-    delete normalized['risu-auth'];
-    delete normalized['risu-timeout-ms'];
-    delete normalized['host'];
-    delete normalized['connection'];
-    delete normalized['content-length'];
+    delete normalized["risu-auth"];
+    delete normalized["risu-timeout-ms"];
+    delete normalized["host"];
+    delete normalized["connection"];
+    delete normalized["content-length"];
     return normalized;
 }
 
@@ -322,7 +318,7 @@ function normalizeProxyResponseHeaders(headers) {
         if (value === undefined) {
             continue;
         }
-        normalized[key.toLowerCase()] = Array.isArray(value) ? value.join(', ') : String(value);
+        normalized[key.toLowerCase()] = Array.isArray(value) ? value.join(", ") : String(value);
     }
     return normalized;
 }
@@ -330,13 +326,13 @@ function normalizeProxyResponseHeaders(headers) {
 function requestLocalTargetStream(targetUrl, arg) {
     return new Promise((resolve, reject) => {
         const parsedUrl = new URL(targetUrl);
-        const client = parsedUrl.protocol === 'https:' ? https : http;
+        const client = parsedUrl.protocol === "https:" ? https : http;
         const headers = normalizeForwardHeaders(arg.headers);
-        if (!headers['host']) {
-            headers['host'] = parsedUrl.host;
+        if (!headers["host"]) {
+            headers["host"] = parsedUrl.host;
         }
-        if (arg.bodyBuffer && !headers['content-length']) {
-            headers['content-length'] = String(arg.bodyBuffer.length);
+        if (arg.bodyBuffer && !headers["content-length"]) {
+            headers["content-length"] = String(arg.bodyBuffer.length);
         }
 
         let settled = false;
@@ -350,24 +346,28 @@ function requestLocalTargetStream(targetUrl, arg) {
             reject(error);
         };
 
-        const req = client.request(parsedUrl, {
-            method: arg.method,
-            headers
-        }, (res) => {
-            if (settled) {
-                res.destroy();
-                return;
-            }
-            settled = true;
-            cleanupAbort();
-            resolve({
-                status: res.statusCode || 502,
-                headers: normalizeProxyResponseHeaders(res.headers),
-                body: res
-            });
-        });
+        const req = client.request(
+            parsedUrl,
+            {
+                method: arg.method,
+                headers,
+            },
+            (res) => {
+                if (settled) {
+                    res.destroy();
+                    return;
+                }
+                settled = true;
+                cleanupAbort();
+                resolve({
+                    status: res.statusCode || 502,
+                    headers: normalizeProxyResponseHeaders(res.headers),
+                    body: res,
+                });
+            },
+        );
 
-        req.on('error', (error) => {
+        req.on("error", (error) => {
             finishReject(error);
         });
 
@@ -377,19 +377,19 @@ function requestLocalTargetStream(targetUrl, arg) {
 
         if (arg.signal) {
             const onAbort = () => {
-                const abortError = new Error('Proxy stream job aborted');
-                abortError.name = 'AbortError';
+                const abortError = new Error("Proxy stream job aborted");
+                abortError.name = "AbortError";
                 req.destroy(abortError);
             };
             if (arg.signal.aborted) {
                 onAbort();
                 return;
             }
-            arg.signal.addEventListener('abort', onAbort, { once: true });
-            cleanupAbort = () => arg.signal.removeEventListener('abort', onAbort);
+            arg.signal.addEventListener("abort", onAbort, { once: true });
+            cleanupAbort = () => arg.signal.removeEventListener("abort", onAbort);
         }
 
-        if (arg.bodyBuffer && arg.method !== 'GET' && arg.method !== 'HEAD') {
+        if (arg.bodyBuffer && arg.method !== "GET" && arg.method !== "HEAD") {
             req.write(arg.bodyBuffer);
         }
         req.end();
@@ -414,7 +414,7 @@ function createProxyStreamJob(arg) {
         abortController: controller,
         deadlineAt: createdAt + timeoutMs,
         heartbeatSec,
-        timeoutMs // lgtm[js/request-forgery]
+        timeoutMs, // lgtm[js/request-forgery]
     };
     proxyStreamJobs.set(jobId, job);
     return job;
@@ -427,8 +427,8 @@ function pushJobEvent(job, event) {
         job.pendingEvents.push(text);
         job.pendingBytes += Buffer.byteLength(text);
         while (
-            job.pendingEvents.length > PROXY_STREAM_MAX_PENDING_EVENTS
-            || job.pendingBytes > PROXY_STREAM_MAX_PENDING_BYTES
+            job.pendingEvents.length > PROXY_STREAM_MAX_PENDING_EVENTS ||
+            job.pendingBytes > PROXY_STREAM_MAX_PENDING_BYTES
         ) {
             const removed = job.pendingEvents.shift();
             if (!removed) {
@@ -472,19 +472,19 @@ async function runProxyStreamJob(job, arg) {
     const targetUrl = sanitizeTargetUrl(arg.targetUrl);
     if (!targetUrl) {
         pushJobEvent(job, {
-            type: 'error',
+            type: "error",
             status: 400,
-            message: 'Blocked non-local target URL'
+            message: "Blocked non-local target URL",
         });
         markJobDone(job);
         return;
     }
 
     const headers = normalizeForwardHeaders(arg.headers);
-    if (!headers['x-forwarded-for']) {
-        headers['x-forwarded-for'] = arg.clientIp;
+    if (!headers["x-forwarded-for"]) {
+        headers["x-forwarded-for"] = arg.clientIp;
     }
-    const bodyBuffer = arg.bodyBase64 ? Buffer.from(arg.bodyBase64, 'base64') : undefined;
+    const bodyBuffer = arg.bodyBase64 ? Buffer.from(arg.bodyBase64, "base64") : undefined;
 
     try {
         const upstreamResponse = await requestLocalTargetStream(targetUrl, {
@@ -492,21 +492,25 @@ async function runProxyStreamJob(job, arg) {
             headers,
             bodyBuffer,
             timeoutMs: job.timeoutMs,
-            signal: job.abortController.signal
+            signal: job.abortController.signal,
         });
 
         const filteredHeaders = {};
         for (const [key, value] of Object.entries(upstreamResponse.headers)) {
-            if (key === 'content-security-policy' || key === 'content-security-policy-report-only' || key === 'clear-site-data') {
+            if (
+                key === "content-security-policy" ||
+                key === "content-security-policy-report-only" ||
+                key === "clear-site-data"
+            ) {
                 continue;
             }
             filteredHeaders[key] = value;
         }
 
         pushJobEvent(job, {
-            type: 'upstream_headers',
+            type: "upstream_headers",
             status: upstreamResponse.status,
-            headers: filteredHeaders
+            headers: filteredHeaders,
         });
 
         if (upstreamResponse.body) {
@@ -516,20 +520,20 @@ async function runProxyStreamJob(job, arg) {
                 }
                 if (value && value.length > 0) {
                     pushJobEvent(job, {
-                        type: 'chunk',
-                        dataBase64: Buffer.from(value).toString('base64')
+                        type: "chunk",
+                        dataBase64: Buffer.from(value).toString("base64"),
                     });
                 }
             }
         }
-        pushJobEvent(job, { type: 'done' });
+        pushJobEvent(job, { type: "done" });
         markJobDone(job);
     } catch (error) {
-        const message = error?.name === 'AbortError' ? 'Proxy stream job aborted' : `${error}`;
+        const message = error?.name === "AbortError" ? "Proxy stream job aborted" : `${error}`;
         pushJobEvent(job, {
-            type: 'error',
+            type: "error",
             status: 504,
-            message
+            message,
         });
         markJobDone(job);
     }
@@ -537,19 +541,19 @@ async function runProxyStreamJob(job, arg) {
 
 async function forwardUpstreamResponse(originalResponse, res) {
     const head = new Headers(originalResponse.headers);
-    head.delete('content-security-policy');
-    head.delete('content-security-policy-report-only');
-    head.delete('clear-site-data');
-    head.delete('Cache-Control');
-    head.delete('Content-Encoding');
+    head.delete("content-security-policy");
+    head.delete("content-security-policy-report-only");
+    head.delete("clear-site-data");
+    head.delete("Cache-Control");
+    head.delete("Content-Encoding");
 
-    const contentType = (head.get('content-type') || '').toLowerCase();
-    const isSSE = contentType.includes('text/event-stream');
+    const contentType = (head.get("content-type") || "").toLowerCase();
+    const isSSE = contentType.includes("text/event-stream");
     if (isSSE) {
-        head.set('Cache-Control', 'no-cache, no-transform');
-        head.set('Connection', 'keep-alive');
-        head.set('X-Accel-Buffering', 'no');
-        head.delete('content-length');
+        head.set("Cache-Control", "no-cache, no-transform");
+        head.set("Connection", "keep-alive");
+        head.set("X-Accel-Buffering", "no");
+        head.delete("content-length");
     }
 
     const headObj = {};
@@ -575,9 +579,9 @@ async function forwardUpstreamResponse(originalResponse, res) {
     const onClose = () => {
         reader.cancel().catch(() => {});
     };
-    res.on('close', onClose);
+    res.on("close", onClose);
 
-    if (typeof res.flushHeaders === 'function') {
+    if (typeof res.flushHeaders === "function") {
         res.flushHeaders();
     }
 
@@ -596,166 +600,161 @@ async function forwardUpstreamResponse(originalResponse, res) {
             throw error;
         }
     } finally {
-        res.off('close', onClose);
+        res.off("close", onClose);
         if (!res.writableEnded) {
             res.end();
         }
     }
 }
 
-app.get('/', async (req, res, next) => {
-
-    const clientIP = req.headers['x-forwarded-for'] || req.ip || req.socket.remoteAddress || 'Unknown IP';
+app.get("/", async (req, res, next) => {
+    const clientIP = req.headers["x-forwarded-for"] || req.ip || req.socket.remoteAddress || "Unknown IP";
     const timestamp = new Date().toISOString();
     console.log(`[Server] ${timestamp} | Connection from: ${clientIP}`);
-    
+
     try {
-        const mainIndex = await fs.readFile(path.join(process.cwd(), 'dist', 'index.html'))
-        const root = htmlparser.parse(mainIndex)
-        const head = root.querySelector('head')
-        head.innerHTML = `<script>globalThis.__NODE__ = true</script>` + head.innerHTML
-        
-        res.send(root.toString())
+        const mainIndex = await fs.readFile(path.join(process.cwd(), "dist", "index.html"));
+        const root = htmlparser.parse(mainIndex);
+        const head = root.querySelector("head");
+        head.innerHTML = `<script>globalThis.__NODE__ = true</script>` + head.innerHTML;
+
+        res.send(root.toString());
     } catch (error) {
-        console.log(error)
-        next(error)
+        console.log(error);
+        next(error);
     }
-})
+});
 
-async function checkAuth(req, res, returnOnlyStatus = false){
+async function checkAuth(req, res, returnOnlyStatus = false) {
     try {
-        const authHeader = normalizeAuthHeader(req.headers['risu-auth']);
+        const authHeader = normalizeAuthHeader(req.headers["risu-auth"]);
 
-        if(!authHeader){
-            console.log('No auth header')
-            if(returnOnlyStatus){
+        if (!authHeader) {
+            console.log("No auth header");
+            if (returnOnlyStatus) {
                 return false;
             }
             res.status(400).send({
-                error:'No auth header'
+                error: "No auth header",
             });
-            return false
+            return false;
         }
 
-
         //jwt token
-        const [
-            jsonHeaderB64,
-            jsonPayloadB64,
-            signatureB64,
-        ] = authHeader.split('.');
+        const [jsonHeaderB64, jsonPayloadB64, signatureB64] = authHeader.split(".");
 
         //alg, typ
-        const jsonHeader = JSON.parse(Buffer.from(jsonHeaderB64, 'base64url').toString('utf-8'));
+        const jsonHeader = JSON.parse(Buffer.from(jsonHeaderB64, "base64url").toString("utf-8"));
 
         //iat, exp, pub
-        const jsonPayload = JSON.parse(Buffer.from(jsonPayloadB64, 'base64url').toString('utf-8'));
+        const jsonPayload = JSON.parse(Buffer.from(jsonPayloadB64, "base64url").toString("utf-8"));
 
         //signature
-        const signature = Buffer.from(signatureB64, 'base64url');
+        const signature = Buffer.from(signatureB64, "base64url");
 
-        
         //check expiration
         const now = Math.floor(Date.now() / 1000);
-        if(jsonPayload.exp < now){
-            console.log('Token expired')
-            if(returnOnlyStatus){
+        if (jsonPayload.exp < now) {
+            console.log("Token expired");
+            if (returnOnlyStatus) {
                 return false;
             }
             res.status(400).send({
-                error:'Token Expired'
+                error: "Token Expired",
             });
-            return false
+            return false;
         }
 
         //check if public key is known
-        const pubKeyHash = await hashJSON(jsonPayload.pub)
-        if(!knownPublicKeysHashes.includes(pubKeyHash)){
-            console.log('Unknown public key')
-            if(returnOnlyStatus){
+        const pubKeyHash = await hashJSON(jsonPayload.pub);
+        if (!knownPublicKeysHashes.includes(pubKeyHash)) {
+            console.log("Unknown public key");
+            if (returnOnlyStatus) {
                 return false;
             }
             res.status(400).send({
-                error:'Unknown Public Key'
+                error: "Unknown Public Key",
             });
-            return false
+            return false;
         }
 
         //check signature
-        if(jsonHeader.alg !== "ES256"){
+        if (jsonHeader.alg !== "ES256") {
             //only support ECDSA for now
-            console.log('Unsupported algorithm')
-            if(returnOnlyStatus){
+            console.log("Unsupported algorithm");
+            if (returnOnlyStatus) {
                 return false;
             }
             res.status(400).send({
-                error:'Unsupported Algorithm'
+                error: "Unsupported Algorithm",
             });
-            return false
+            return false;
         }
 
         const isValid = await crypto.subtle.verify(
             {
-                name: 'ECDSA',
-                hash: {name: 'SHA-256'},
+                name: "ECDSA",
+                hash: { name: "SHA-256" },
             },
             await crypto.subtle.importKey(
-                'jwk',
+                "jwk",
                 jsonPayload.pub,
                 {
-                    name: 'ECDSA',
-                    namedCurve: 'P-256',
+                    name: "ECDSA",
+                    namedCurve: "P-256",
                 },
                 false,
-                ['verify']
+                ["verify"],
             ),
             signature,
-            Buffer.from(`${jsonHeaderB64}.${jsonPayloadB64}`)
+            Buffer.from(`${jsonHeaderB64}.${jsonPayloadB64}`),
         );
 
-        if(!isValid){
-            console.log('Invalid signature')
-            if(returnOnlyStatus){
+        if (!isValid) {
+            console.log("Invalid signature");
+            if (returnOnlyStatus) {
                 return false;
             }
             res.status(400).send({
-                error:'Invalid Signature'
+                error: "Invalid Signature",
             });
-            return false
+            return false;
         }
-        
-        return true   
+
+        return true;
     } catch (error) {
-        console.log(error)
-        if(returnOnlyStatus){
+        console.log(error);
+        if (returnOnlyStatus) {
             return false;
         }
         res.status(500).send({
-            error:'Internal Server Error'
+            error: "Internal Server Error",
         });
-        return false
+        return false;
     }
 }
 
 const reverseProxyFunc = async (req, res, next) => {
-    if(!await checkProxyAuth(req, res)){
+    if (!(await checkProxyAuth(req, res))) {
         return;
     }
-    
-    const urlParam = req.headers['risu-url'] ? decodeURIComponent(req.headers['risu-url']) : req.query.url;
+
+    const urlParam = req.headers["risu-url"] ? decodeURIComponent(req.headers["risu-url"]) : req.query.url;
 
     if (!urlParam) {
         res.status(400).send({
-            error:'URL has no param'
+            error: "URL has no param",
         });
         return;
     }
-    const header = req.headers['risu-header'] ? JSON.parse(decodeURIComponent(req.headers['risu-header'])) : req.headers;
-    if(!header['x-forwarded-for']){
-        header['x-forwarded-for'] = req.ip
+    const header = req.headers["risu-header"]
+        ? JSON.parse(decodeURIComponent(req.headers["risu-header"]))
+        : req.headers;
+    if (!header["x-forwarded-for"]) {
+        header["x-forwarded-for"] = req.ip;
     }
 
-    const timeoutMs = getRequestTimeoutMs(req.headers['risu-timeout-ms']);
+    const timeoutMs = getRequestTimeoutMs(req.headers["risu-timeout-ms"]);
     const timeout = createTimeoutController(timeoutMs);
     let originalResponse;
     try {
@@ -764,17 +763,17 @@ const reverseProxyFunc = async (req, res, next) => {
             method: req.method,
             headers: header,
             body: JSON.stringify(req.body),
-            signal: timeout.signal
+            signal: timeout.signal,
         });
         // get response body as stream
         const originalBody = originalResponse.body;
         // get response headers
         const head = new Headers(originalResponse.headers);
-        head.delete('content-security-policy');
-        head.delete('content-security-policy-report-only');
-        head.delete('clear-site-data');
-        head.delete('Cache-Control');
-        head.delete('Content-Encoding');
+        head.delete("content-security-policy");
+        head.delete("content-security-policy-report-only");
+        head.delete("clear-site-data");
+        head.delete("Cache-Control");
+        head.delete("Content-Encoding");
         const headObj = {};
         for (let [k, v] of head) {
             headObj[k] = v;
@@ -785,15 +784,11 @@ const reverseProxyFunc = async (req, res, next) => {
         res.status(originalResponse.status);
         // send response body to client
         await pipeline(originalResponse.body, res);
-
-    }
-    catch (err) {
-        if (err?.name === 'AbortError') {
+    } catch (err) {
+        if (err?.name === "AbortError") {
             if (!res.headersSent) {
                 res.status(504).send({
-                    error: timeoutMs
-                        ? `Proxy request timed out after ${timeoutMs}ms`
-                        : 'Proxy request aborted'
+                    error: timeoutMs ? `Proxy request timed out after ${timeoutMs}ms` : "Proxy request aborted",
                 });
             } else {
                 res.end();
@@ -805,44 +800,46 @@ const reverseProxyFunc = async (req, res, next) => {
     } finally {
         timeout.cleanup();
     }
-}
+};
 
 const reverseProxyFunc_get = async (req, res, next) => {
-    if(!await checkProxyAuth(req, res)){
+    if (!(await checkProxyAuth(req, res))) {
         return;
     }
-    
-    const urlParam = req.headers['risu-url'] ? decodeURIComponent(req.headers['risu-url']) : req.query.url;
+
+    const urlParam = req.headers["risu-url"] ? decodeURIComponent(req.headers["risu-url"]) : req.query.url;
 
     if (!urlParam) {
         res.status(400).send({
-            error:'URL has no param'
+            error: "URL has no param",
         });
         return;
     }
-    const header = req.headers['risu-header'] ? JSON.parse(decodeURIComponent(req.headers['risu-header'])) : req.headers;
-    if(!header['x-forwarded-for']){
-        header['x-forwarded-for'] = req.ip
+    const header = req.headers["risu-header"]
+        ? JSON.parse(decodeURIComponent(req.headers["risu-header"]))
+        : req.headers;
+    if (!header["x-forwarded-for"]) {
+        header["x-forwarded-for"] = req.ip;
     }
-    const timeoutMs = getRequestTimeoutMs(req.headers['risu-timeout-ms']);
+    const timeoutMs = getRequestTimeoutMs(req.headers["risu-timeout-ms"]);
     const timeout = createTimeoutController(timeoutMs);
     let originalResponse;
     try {
         // make request to original server
         originalResponse = await fetch(urlParam, {
-            method: 'GET',
+            method: "GET",
             headers: header,
-            signal: timeout.signal
+            signal: timeout.signal,
         });
         // get response body as stream
         const originalBody = originalResponse.body;
         // get response headers
         const head = new Headers(originalResponse.headers);
-        head.delete('content-security-policy');
-        head.delete('content-security-policy-report-only');
-        head.delete('clear-site-data');
-        head.delete('Cache-Control');
-        head.delete('Content-Encoding');
+        head.delete("content-security-policy");
+        head.delete("content-security-policy-report-only");
+        head.delete("clear-site-data");
+        head.delete("Cache-Control");
+        head.delete("Content-Encoding");
         const headObj = {};
         for (let [k, v] of head) {
             headObj[k] = v;
@@ -853,14 +850,11 @@ const reverseProxyFunc_get = async (req, res, next) => {
         res.status(originalResponse.status);
         // send response body to client
         await pipeline(originalResponse.body, res);
-    }
-    catch (err) {
-        if (err?.name === 'AbortError') {
+    } catch (err) {
+        if (err?.name === "AbortError") {
             if (!res.headersSent) {
                 res.status(504).send({
-                    error: timeoutMs
-                        ? `Proxy request timed out after ${timeoutMs}ms`
-                        : 'Proxy request aborted'
+                    error: timeoutMs ? `Proxy request timed out after ${timeoutMs}ms` : "Proxy request aborted",
                 });
             } else {
                 res.end();
@@ -872,32 +866,28 @@ const reverseProxyFunc_get = async (req, res, next) => {
     } finally {
         timeout.cleanup();
     }
-}
+};
 
 async function hubProxyFunc(req, res) {
-    const excludedHeaders = [
-        'content-encoding',
-        'content-length',
-        'transfer-encoding'
-    ];
+    const excludedHeaders = ["content-encoding", "content-length", "transfer-encoding"];
 
     try {
-        let externalURL = '';
+        let externalURL = "";
 
-        const pathHeader = req.headers['x-risu-node-path'];
+        const pathHeader = req.headers["x-risu-node-path"];
         if (pathHeader) {
             const decodedPath = decodeURIComponent(pathHeader);
             externalURL = decodedPath;
         } else {
-            const pathAndQuery = req.originalUrl.replace(/^\/hub-proxy/, '');
+            const pathAndQuery = req.originalUrl.replace(/^\/hub-proxy/, "");
             externalURL = hubURL + pathAndQuery;
         }
-        
+
         const headersToSend = { ...req.headers };
         delete headersToSend.host;
         delete headersToSend.connection;
-        delete headersToSend['content-length'];
-        delete headersToSend['x-risu-node-path'];
+        delete headersToSend["content-length"];
+        delete headersToSend["x-risu-node-path"];
 
         const hubOrigin = new URL(hubURL).origin;
         headersToSend.origin = hubOrigin;
@@ -905,11 +895,11 @@ async function hubProxyFunc(req, res) {
         const response = await fetch(externalURL, {
             method: req.method,
             headers: headersToSend,
-            body: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined,
-            redirect: 'manual',
-            duplex: 'half'
+            body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
+            redirect: "manual",
+            duplex: "half",
         });
-        
+
         for (const [key, value] of response.headers.entries()) {
             // Skip encoding-related headers to prevent double decoding
             if (excludedHeaders.includes(key.toLowerCase())) {
@@ -919,15 +909,15 @@ async function hubProxyFunc(req, res) {
         }
         res.status(response.status);
 
-        if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
-            const redirectUrl = response.headers.get('location');
+        if (response.status >= 300 && response.status < 400 && response.headers.get("location")) {
+            const redirectUrl = response.headers.get("location");
             const newHeaders = { ...headersToSend };
             const redirectResponse = await fetch(redirectUrl, {
                 method: req.method,
                 headers: newHeaders,
-                body: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined,
-                redirect: 'manual',
-                duplex: 'half'
+                body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
+                redirect: "manual",
+                duplex: "half",
             });
             for (const [key, value] of redirectResponse.headers.entries()) {
                 if (excludedHeaders.includes(key.toLowerCase())) {
@@ -943,62 +933,63 @@ async function hubProxyFunc(req, res) {
             }
             return;
         }
-        
+
         if (response.body) {
             await pipeline(response.body, res);
         } else {
             res.end();
         }
-        
     } catch (error) {
         console.error("[Hub Proxy] Error:", error);
         if (!res.headersSent) {
-            res.status(502).send({ error: 'Proxy request failed: ' + error.message });
+            res.status(502).send({ error: "Proxy request failed: " + error.message });
         } else {
             res.end();
         }
     }
 }
 
-app.get('/proxy', authenticatedRouteLimiter, reverseProxyFunc_get);
-app.get('/proxy2', authenticatedRouteLimiter, reverseProxyFunc_get);
-app.get('/hub-proxy/*', authenticatedRouteLimiter, hubProxyFunc);
+app.get("/proxy", authenticatedRouteLimiter, reverseProxyFunc_get);
+app.get("/proxy2", authenticatedRouteLimiter, reverseProxyFunc_get);
+app.get("/hub-proxy/*", authenticatedRouteLimiter, hubProxyFunc);
 
-app.post('/proxy', authenticatedRouteLimiter, reverseProxyFunc);
-app.post('/proxy2', authenticatedRouteLimiter, reverseProxyFunc);
-app.post('/proxy-stream-jobs', authenticatedRouteLimiter, async (req, res) => {
-    if (!await checkProxyAuth(req, res)) {
+app.post("/proxy", authenticatedRouteLimiter, reverseProxyFunc);
+app.post("/proxy2", authenticatedRouteLimiter, reverseProxyFunc);
+app.post("/proxy-stream-jobs", authenticatedRouteLimiter, async (req, res) => {
+    if (!(await checkProxyAuth(req, res))) {
         return;
     }
 
-    const rawUrl = typeof req.body?.url === 'string' ? req.body.url : '';
+    const rawUrl = typeof req.body?.url === "string" ? req.body.url : "";
     const encodedUrl = encodeURIComponent(rawUrl);
     const url = sanitizeTargetUrl(decodeURIComponent(encodedUrl));
     if (!url) {
-        res.status(400).send({ error: 'Invalid target URL. Only local/private network http(s) endpoints are allowed.' });
+        res.status(400).send({
+            error: "Invalid target URL. Only local/private network http(s) endpoints are allowed.",
+        });
         return;
     }
 
-    const method = typeof req.body?.method === 'string' ? req.body.method.toUpperCase() : 'POST';
-    if (!['POST', 'GET', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
-        res.status(400).send({ error: 'Invalid method' });
+    const method = typeof req.body?.method === "string" ? req.body.method.toUpperCase() : "POST";
+    if (!["POST", "GET", "PUT", "DELETE", "PATCH"].includes(method)) {
+        res.status(400).send({ error: "Invalid method" });
         return;
     }
 
-    const bodyBase64 = typeof req.body?.bodyBase64 === 'string' ? req.body.bodyBase64 : '';
+    const bodyBase64 = typeof req.body?.bodyBase64 === "string" ? req.body.bodyBase64 : "";
     if (bodyBase64.length > PROXY_STREAM_MAX_BODY_BASE64_BYTES) {
-        res.status(413).send({ error: 'Request body too large' });
+        res.status(413).send({ error: "Request body too large" });
         return;
     }
     if (proxyStreamJobs.size >= PROXY_STREAM_MAX_ACTIVE_JOBS) {
-        res.status(429).send({ error: 'Too many active stream jobs. Retry shortly.' });
+        res.status(429).send({ error: "Too many active stream jobs. Retry shortly." });
         return;
     }
     const headers = normalizeForwardHeaders(req.body?.headers);
     const heartbeatSec = normalizeHeartbeatSec(Number(req.body?.heartbeatSec));
     const job = createProxyStreamJob({
         heartbeatSec,
-        timeoutMs: req.body?.timeoutMs
+        timeoutMs: req.body?.timeoutMs,
     });
 
     void runProxyStreamJob(job, {
@@ -1006,17 +997,17 @@ app.post('/proxy-stream-jobs', authenticatedRouteLimiter, async (req, res) => {
         headers,
         method,
         bodyBase64,
-        clientIp: req.ip
+        clientIp: req.ip,
     });
 
     res.send({
         jobId: job.id,
-        heartbeatSec: job.heartbeatSec
+        heartbeatSec: job.heartbeatSec,
     });
 });
 
-app.delete('/proxy-stream-jobs/:jobId', authenticatedRouteLimiter, async (req, res) => {
-    if (!await checkProxyAuth(req, res)) {
+app.delete("/proxy-stream-jobs/:jobId", authenticatedRouteLimiter, async (req, res) => {
+    if (!(await checkProxyAuth(req, res))) {
         return;
     }
     const job = proxyStreamJobs.get(req.params.jobId);
@@ -1042,81 +1033,74 @@ app.delete('/proxy-stream-jobs/:jobId', authenticatedRouteLimiter, async (req, r
 //     }
 // })
 
-app.get('/api/test_auth', authRouteLimiter, async(req, res) => {
+app.get("/api/test_auth", authRouteLimiter, async (req, res) => {
+    if (!password) {
+        res.send({ status: "unset" });
+    } else if (!(await checkAuth(req, res, true))) {
+        res.send({ status: "incorrect" });
+    } else {
+        res.send({ status: "success" });
+    }
+});
 
-    if(!password){
-        res.send({status: 'unset'})
-    }
-    else if(!await checkAuth(req, res, true)){
-        res.send({status: 'incorrect'})
-    }
-    else{
-        res.send({status: 'success'})
-    }
-})
-
-app.post('/api/login', loginRouteLimiter, async (req, res) => {
-    if(password === ''){
-        res.status(400).send({error: 'Password not set'})
+app.post("/api/login", loginRouteLimiter, async (req, res) => {
+    if (password === "") {
+        res.status(400).send({ error: "Password not set" });
         return;
     }
-    if(req.body.password && req.body.password.trim() === password.trim()){
-        knownPublicKeysHashes.push(await hashJSON(req.body.publicKey))
-        writeFileSync(knownPublicKeysPath, JSON.stringify(knownPublicKeysHashes), 'utf-8')
-        res.send({status:'success'})
+    if (req.body.password && req.body.password.trim() === password.trim()) {
+        knownPublicKeysHashes.push(await hashJSON(req.body.publicKey));
+        writeFileSync(knownPublicKeysPath, JSON.stringify(knownPublicKeysHashes), "utf-8");
+        res.send({ status: "success" });
+    } else {
+        res.status(400).send({ error: "Password incorrect" });
     }
-    else{
-        res.status(400).send({error: 'Password incorrect'})
-    }
-})
+});
 
-app.post('/api/crypto', async (req, res) => {
+app.post("/api/crypto", async (req, res) => {
     try {
-        const hash = crypto.createHash('sha256')
-        hash.update(Buffer.from(req.body.data, 'utf-8'))
-        res.send(hash.digest('hex'))
+        const hash = crypto.createHash("sha256");
+        hash.update(Buffer.from(req.body.data, "utf-8"));
+        res.send(hash.digest("hex"));
     } catch (error) {
-        res.status(500).send({ error: 'Crypto operation failed' });
+        res.status(500).send({ error: "Crypto operation failed" });
     }
-})
+});
 
-
-app.post('/api/set_password', async (req, res) => {
-    if(password === ''){
-        password = req.body.password
-        writeFileSync(passwordPath, password, 'utf-8')
-        res.send({status: 'success'})
+app.post("/api/set_password", async (req, res) => {
+    if (password === "") {
+        password = req.body.password;
+        writeFileSync(passwordPath, password, "utf-8");
+        res.send({ status: "success" });
+    } else {
+        res.status(400).send("already set");
     }
-    else{
-        res.status(400).send("already set")
-    }
-})
+});
 
-app.get('/api/read', authenticatedRouteLimiter, async (req, res, next) => {
-    if(!await checkAuth(req, res)){
+app.get("/api/read", authenticatedRouteLimiter, async (req, res, next) => {
+    if (!(await checkAuth(req, res))) {
         return;
     }
-    const filePath = req.headers['file-path'];
+    const filePath = req.headers["file-path"];
     if (!filePath) {
-        console.log('no path')
+        console.log("no path");
         res.status(400).send({
-            error:'File path required'
+            error: "File path required",
         });
         return;
     }
 
-    if(!isHex(filePath)){
+    if (!isHex(filePath)) {
         res.status(400).send({
-            error:'Invaild Path'
+            error: "Invaild Path",
         });
         return;
     }
     try {
-        if(!existsSync(path.join(savePath, filePath))){
+        if (!existsSync(path.join(savePath, filePath))) {
             res.send();
-        }
-        else{
-            res.setHeader('Content-Type','application/octet-stream');
+        } else {
+            res.setHeader("Content-Type", "application/octet-stream");
             res.sendFile(path.join(savePath, filePath));
         }
     } catch (error) {
@@ -1124,22 +1108,22 @@ app.get('/api/read', authenticatedRouteLimiter, async (req, res, next) => {
     }
 });
 
-app.get('/api/remove', authenticatedRouteLimiter, async (req, res, next) => {
-    if(!await checkAuth(req, res)){
+app.get("/api/remove", authenticatedRouteLimiter, async (req, res, next) => {
+    if (!(await checkAuth(req, res))) {
         return;
     }
-    const filePaths = req.headers['file-path']?.split('$$') || []
+    const filePaths = req.headers["file-path"]?.split("$$") || [];
 
-    for(const filePath of filePaths){
+    for (const filePath of filePaths) {
         if (!filePath) {
             res.status(400).send({
-                error:'File path required'
+                error: "File path required",
             });
             return;
         }
-        if(!isHex(filePath)){
+        if (!isHex(filePath)) {
             res.status(400).send({
-                error:'Invaild Path'
+                error: "Invaild Path",
             });
             return;
         }
@@ -1153,41 +1137,40 @@ app.get('/api/remove', authenticatedRouteLimiter, async (req, res, next) => {
             next(error);
         }
     }
-    
 });
 
-app.get('/api/list', authenticatedRouteLimiter, async (req, res, next) => {
-    if(!await checkAuth(req, res)){
+app.get("/api/list", authenticatedRouteLimiter, async (req, res, next) => {
+    if (!(await checkAuth(req, res))) {
         return;
     }
     try {
         const data = (await fs.readdir(path.join(savePath))).map((v) => {
-            return Buffer.from(v, 'hex').toString('utf-8')
-        })
+            return Buffer.from(v, "hex").toString("utf-8");
+        });
         res.send({
             success: true,
-            content: data
+            content: data,
         });
     } catch (error) {
         next(error);
     }
 });
 
-app.post('/api/write', authenticatedRouteLimiter, async (req, res, next) => {
-    if(!await checkAuth(req, res)){
+app.post("/api/write", authenticatedRouteLimiter, async (req, res, next) => {
+    if (!(await checkAuth(req, res))) {
         return;
     }
-    const filePath = req.headers['file-path'];
-    const fileContent = req.body
+    const filePath = req.headers["file-path"];
+    const fileContent = req.body;
     if (!filePath || !fileContent) {
         res.status(400).send({
-            error:'File path required'
+            error: "File path required",
         });
         return;
     }
-    if(!isHex(filePath)){
+    if (!isHex(filePath)) {
         res.status(400).send({
-            error:'Invaild Path'
+            error: "Invaild Path",
         });
         return;
     }
@@ -1195,7 +1178,7 @@ app.post('/api/write', authenticatedRouteLimiter, async (req, res, next) => {
     try {
         await fs.writeFile(path.join(savePath, filePath), fileContent);
         res.send({
-            success: true
+            success: true,
         });
     } catch (error) {
         next(error);
@@ -1203,65 +1186,59 @@ app.post('/api/write', authenticatedRouteLimiter, async (req, res, next) => {
 });
 
 async function getHttpsOptions() {
-
-    const keyPath = path.join(sslPath, 'server.key');
-    const certPath = path.join(sslPath, 'server.crt');
+    const keyPath = path.join(sslPath, "server.key");
+    const certPath = path.join(sslPath, "server.crt");
 
     try {
- 
         await fs.access(keyPath);
         await fs.access(certPath);
 
-        const [key, cert] = await Promise.all([
-            fs.readFile(keyPath),
-            fs.readFile(certPath)
-        ]);
-       
-        return { key, cert };
+        const [key, cert] = await Promise.all([fs.readFile(keyPath), fs.readFile(certPath)]);
 
+        return { key, cert };
     } catch (error) {
-        console.error('[Server] SSL setup errors:', error.message);
-        console.log('[Server] Start the server with HTTP instead of HTTPS...');
+        console.error("[Server] SSL setup errors:", error.message);
+        console.log("[Server] Start the server with HTTP instead of HTTPS...");
         return null;
     }
 }
 
 function setupProxyStreamWebSocket(server) {
     const wsServer = new WebSocketServer({ noServer: true });
-    server.on('upgrade', async (req, socket, head) => {
+    server.on("upgrade", async (req, socket, head) => {
         try {
             const reqUrl = new URL(req.url, `http://${req.headers.host}`);
-            if (!reqUrl.pathname.startsWith('/proxy-stream-jobs/') || !reqUrl.pathname.endsWith('/ws')) {
+            if (!reqUrl.pathname.startsWith("/proxy-stream-jobs/") || !reqUrl.pathname.endsWith("/ws")) {
                 socket.destroy();
                 return;
             }
 
-            const auth = reqUrl.searchParams.get('risu-auth') || req.headers['risu-auth'];
-            if (!await isAuthorizedProxyRequest({ headers: { 'risu-auth': auth } })) {
-                socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+            const auth = reqUrl.searchParams.get("risu-auth") || req.headers["risu-auth"];
+            if (!(await isAuthorizedProxyRequest({ headers: { "risu-auth": auth } }))) {
+                socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
                 socket.destroy();
                 return;
             }
 
-            const pathParts = reqUrl.pathname.split('/').filter(Boolean);
-            const jobId = pathParts.length >= 3 ? pathParts[1] : '';
+            const pathParts = reqUrl.pathname.split("/").filter(Boolean);
+            const jobId = pathParts.length >= 3 ? pathParts[1] : "";
             const job = proxyStreamJobs.get(jobId);
             if (!job) {
-                socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+                socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
                 socket.destroy();
                 return;
             }
 
             wsServer.handleUpgrade(req, socket, head, (ws) => {
-                wsServer.emit('connection', ws, req, jobId);
+                wsServer.emit("connection", ws, req, jobId);
             });
         } catch {
-            socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+            socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
             socket.destroy();
         }
     });
 
-    wsServer.on('connection', (ws, _req, jobId) => {
+    wsServer.on("connection", (ws, _req, jobId) => {
         const job = proxyStreamJobs.get(jobId);
         if (!job) {
             ws.close();
@@ -1269,7 +1246,7 @@ function setupProxyStreamWebSocket(server) {
         }
 
         job.clients.add(ws);
-        ws.send(JSON.stringify({ type: 'job_accepted', jobId }));
+        ws.send(JSON.stringify({ type: "job_accepted", jobId }));
         for (const event of job.pendingEvents) {
             ws.send(event);
         }
@@ -1280,10 +1257,10 @@ function setupProxyStreamWebSocket(server) {
             if (ws.readyState !== ws.OPEN) {
                 return;
             }
-            ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+            ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
         }, job.heartbeatSec * 1000);
 
-        ws.on('close', () => {
+        ws.on("close", () => {
             clearInterval(pingTimer);
             const currentJob = proxyStreamJobs.get(jobId);
             if (!currentJob) {
@@ -1295,7 +1272,7 @@ function setupProxyStreamWebSocket(server) {
             }
         });
 
-        ws.on('error', () => {
+        ws.on("error", () => {
             clearInterval(pingTimer);
         });
     });
@@ -1303,7 +1280,6 @@ function setupProxyStreamWebSocket(server) {
 
 async function startServer() {
     try {
-      
         const port = process.env.PORT || 6001;
         const httpsOptions = await getHttpsOptions();
         let server = null;
@@ -1326,7 +1302,7 @@ async function startServer() {
             });
         }
     } catch (error) {
-        console.error('[Server] Failed to start server :', error);
+        console.error("[Server] Failed to start server :", error);
         process.exit(1);
     }
 }

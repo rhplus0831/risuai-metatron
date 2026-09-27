@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { tick } from 'svelte';
+    import { tick } from "svelte";
     interface SegmentOption {
         value: string | number;
         label: string;
@@ -8,33 +8,28 @@
     interface Props {
         value: string | number;
         options: SegmentOption[];
-        size?: 'sm' | 'md' | 'lg';
+        size?: "sm" | "md" | "lg";
         className?: string;
     }
 
-    let {
-        value = $bindable(),
-        options = [],
-        size = 'md',
-        className = '',
-    }: Props = $props();
+    let { value = $bindable(), options = [], size = "md", className = "" }: Props = $props();
 
     let containerRef: HTMLDivElement | undefined = $state();
-    let indicatorStyle = $state('');
+    let indicatorStyle = $state("");
     let mounted = $state(false);
 
     // Compute the active index from the current value
-    let activeIndex = $derived(options.findIndex(opt => opt.value === value));
+    let activeIndex = $derived(options.findIndex((opt) => opt.value === value));
 
     function updateIndicator() {
         if (!containerRef || activeIndex < 0) {
-            indicatorStyle = '';
+            indicatorStyle = "";
             return;
         }
-        const buttons = containerRef.querySelectorAll<HTMLButtonElement>('[data-segment-btn]');
+        const buttons = containerRef.querySelectorAll<HTMLButtonElement>("[data-segment-btn]");
         const activeBtn = buttons[activeIndex];
         if (!activeBtn) {
-            indicatorStyle = '';
+            indicatorStyle = "";
             return;
         }
         const containerRect = containerRef.getBoundingClientRect();
@@ -62,16 +57,9 @@
     }
 </script>
 
-<div
-    class="segmented-control-container {className}"
-    bind:this={containerRef}
->
+<div class="segmented-control-container {className}" bind:this={containerRef}>
     <!-- Sliding indicator -->
-    <div
-        class="segmented-indicator"
-        class:no-transition={!mounted}
-        style={indicatorStyle}
-    ></div>
+    <div class="segmented-indicator" class:no-transition={!mounted} style={indicatorStyle}></div>
 
     {#each options as opt (opt.value)}
         <button
@@ -79,15 +67,15 @@
             type="button"
             class="segmented-btn"
             class:segmented-btn-active={opt.value === value}
-            class:text-xs={size === 'sm'}
-            class:text-sm={size === 'md'}
-            class:text-base={size === 'lg'}
-            class:px-2={size === 'sm'}
-            class:py-1={size === 'sm'}
-            class:px-4={size === 'md'}
-            class:py-2={size === 'md'}
-            class:px-6={size === 'lg'}
-            class:py-3={size === 'lg'}
+            class:text-xs={size === "sm"}
+            class:text-sm={size === "md"}
+            class:text-base={size === "lg"}
+            class:px-2={size === "sm"}
+            class:py-1={size === "sm"}
+            class:px-4={size === "md"}
+            class:py-2={size === "md"}
+            class:px-6={size === "lg"}
+            class:py-3={size === "lg"}
             onclick={() => handleSelect(opt)}
         >
             {opt.label}
@@ -121,8 +109,9 @@
         bottom: 4px;
         border-radius: 0.375rem;
         background-color: var(--risu-theme-borderc);
-        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-                    width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        transition:
+            transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+            width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         will-change: transform, width;
         pointer-events: none;
         z-index: 0;

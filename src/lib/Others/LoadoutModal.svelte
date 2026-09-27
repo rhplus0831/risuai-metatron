@@ -1,19 +1,11 @@
 <script lang="ts">
-    import {
-        XIcon,
-        StarIcon,
-        ClockIcon,
-        UserIcon,
-        ListIcon,
-        SaveIcon,
-        TrashIcon,
-    } from "@lucide/svelte";
+    import { XIcon, StarIcon, ClockIcon, UserIcon, ListIcon, SaveIcon, TrashIcon } from "@lucide/svelte";
     import { DBState } from "src/ts/stores.svelte";
     import { loadoutModalStore } from "src/ts/stores.svelte";
     import { applyLoadout, saveCurrentLoadout, type Loadout } from "src/ts/loadout";
     import { getCurrentCharacter } from "src/ts/storage/database.svelte";
 
-    type LoadoutApplyOption = 'modules' | 'globalVariables' | 'preset' | 'persona';
+    type LoadoutApplyOption = "modules" | "globalVariables" | "preset" | "persona";
 
     let loadOptions: Record<LoadoutApplyOption, boolean> = $state({
         modules: true,
@@ -23,13 +15,13 @@
     });
 
     const loadOptionLabels: Record<LoadoutApplyOption, string> = {
-        modules: 'Modules',
-        globalVariables: 'Global Variables',
-        preset: 'Preset',
-        persona: 'Persona',
+        modules: "Modules",
+        globalVariables: "Global Variables",
+        preset: "Preset",
+        persona: "Persona",
     };
 
-    let saveName = $state('');
+    let saveName = $state("");
 
     function close() {
         loadoutModalStore.open = false;
@@ -38,9 +30,7 @@
     const RECENT_LIMIT = 3;
 
     function getSortedLoadouts(): Loadout[] {
-        return [...(DBState.db.loadouts ?? [])].sort(
-            (a, b) => b.lastUsed - a.lastUsed,
-        );
+        return [...(DBState.db.loadouts ?? [])].sort((a, b) => b.lastUsed - a.lastUsed);
     }
 
     function getRecentLoadouts(): Loadout[] {
@@ -64,7 +54,7 @@
     }
 
     function onSelect(loadout: Loadout) {
-        const apply = (Object.keys(loadOptions) as LoadoutApplyOption[]).filter(k => loadOptions[k]);
+        const apply = (Object.keys(loadOptions) as LoadoutApplyOption[]).filter((k) => loadOptions[k]);
         applyLoadout(loadout, apply);
         close();
     }
@@ -85,7 +75,7 @@
     }
 
     function removeLoadout(loadout: Loadout) {
-        const index = DBState.db.loadouts.findIndex(l => l.id === loadout.id);
+        const index = DBState.db.loadouts.findIndex((l) => l.id === loadout.id);
         if (index !== -1) {
             DBState.db.loadouts.splice(index, 1);
         }
@@ -93,25 +83,12 @@
 </script>
 
 {#snippet loadoutCard(loadout: Loadout)}
-    <div
-        class="flex items-center gap-1 rounded-md bg-textcolor/5 hover:bg-textcolor/10 transition-colors"
-    >
-        <button
-            class="flex-1 min-w-0 text-left flex flex-col px-3 py-2.5"
-            onclick={() => onSelect(loadout)}
-        >
-            <span class="text-sm font-medium text-textcolor/90 truncate"
-                >{loadout.name}</span
-            >
-            <span
-                class="flex items-center gap-2 mt-0.5 text-xs text-textcolor/40 flex-wrap"
-            >
+    <div class="flex items-center gap-1 rounded-md bg-textcolor/5 hover:bg-textcolor/10 transition-colors">
+        <button class="flex-1 min-w-0 text-left flex flex-col px-3 py-2.5" onclick={() => onSelect(loadout)}>
+            <span class="text-sm font-medium text-textcolor/90 truncate">{loadout.name}</span>
+            <span class="flex items-center gap-2 mt-0.5 text-xs text-textcolor/40 flex-wrap">
                 {#if loadout.presetName}
-                    <span
-                        >Preset: <span class="text-textcolor/60"
-                            >{loadout.presetName}</span 
-                        ></span
-                    >
+                    <span>Preset: <span class="text-textcolor/60">{loadout.presetName}</span></span>
                 {/if}
                 <span>{formatDate(loadout.lastUsed)}</span>
             </span>
@@ -124,10 +101,7 @@
             aria-label={loadout.favorite ? "Unfavorite" : "Favorite"}
             title={loadout.favorite ? "Unfavorite" : "Favorite"}
         >
-            <StarIcon
-                size={15}
-                fill={loadout.favorite ? "currentColor" : "none"}
-            />
+            <StarIcon size={15} fill={loadout.favorite ? "currentColor" : "none"} />
         </button>
         <button
             class="shrink-0 pr-3 py-2.5 transition-colors hover:text-red-400/50 text-textcolor/20"
@@ -135,9 +109,7 @@
             aria-label={"Remove"}
             title={"Remove"}
         >
-            <TrashIcon
-                size={15}
-            />
+            <TrashIcon size={15} />
         </button>
     </div>
 {/snippet}
@@ -149,15 +121,9 @@
         if (e.target === e.currentTarget) close();
     }}
 >
-    <div
-        class="bg-darkbg rounded-lg flex flex-col w-full max-w-2xl max-h-[90vh] overflow-hidden shadow-xl"
-    >
-        <div
-            class="flex items-center justify-between px-5 py-3 border-b border-textcolor/10 shrink-0"
-        >
-            <span class="text-base font-semibold text-textcolor/90"
-                >Select Loadout</span
-            >
+    <div class="bg-darkbg rounded-lg flex flex-col w-full max-w-2xl max-h-[90vh] overflow-hidden shadow-xl">
+        <div class="flex items-center justify-between px-5 py-3 border-b border-textcolor/10 shrink-0">
+            <span class="text-base font-semibold text-textcolor/90">Select Loadout</span>
             <button
                 class="text-textcolor/50 hover:text-textcolor/90 transition-colors"
                 onclick={close}
@@ -175,16 +141,14 @@
                     class="px-2.5 py-1 rounded text-xs font-medium transition-colors {loadOptions[k]
                         ? 'bg-textcolor/15 text-textcolor/90'
                         : 'bg-textcolor/5 text-textcolor/30 hover:bg-textcolor/10 hover:text-textcolor/50'}"
-                    onclick={() => loadOptions[k] = !loadOptions[k]}
+                    onclick={() => (loadOptions[k] = !loadOptions[k])}
                 >
                     {loadOptionLabels[k]}
                 </button>
             {/each}
         </div>
 
-        <div
-            class="overflow-y-auto flex-1 px-4 py-3 flex flex-col gap-5 break-any"
-        >
+        <div class="overflow-y-auto flex-1 px-4 py-3 flex flex-col gap-5 break-any">
             {#if getRecentLoadouts().length > 0}
                 <section>
                     <div
@@ -241,9 +205,7 @@
                     <span>All Loadouts</span>
                 </div>
                 {#if getAllLoadouts().length === 0}
-                    <p class="text-textcolor/30 text-sm px-1">
-                        No loadouts saved yet.
-                    </p>
+                    <p class="text-textcolor/30 text-sm px-1">No loadouts saved yet.</p>
                 {:else}
                     <div class="flex flex-col gap-1">
                         {#each getAllLoadouts() as loadout (loadout.id)}

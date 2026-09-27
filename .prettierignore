@@ -1,0 +1,14 @@
+# Tracked static/vendor payloads (mirrors .ignore)
+public/
+src/etc/docs/
+src/etc/o200k_base.json
+src/ts/rpack/
+
+# Lockfiles and generated output
+pnpm-lock.yaml
+server/hono/pnpm-lock.yaml
+**/__snapshots__/
+dist/
+
+# Doc comment contains a literal "*/" that closes the comment early; Prettier cannot parse it
+src/ts/plugins/apiV3/risuai.d.ts

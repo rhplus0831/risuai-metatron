@@ -1,14 +1,14 @@
-import { MCPClientLike } from '../internalmcp'
-import type { MCPTool, MCPToolHandler, RPCToolCallContent } from '../mcplib'
-import { CharacterHandler } from './characters'
-import { ChatHandler } from './chats'
-import { ModuleHandler } from './modules'
+import { MCPClientLike } from "../internalmcp";
+import type { MCPTool, MCPToolHandler, RPCToolCallContent } from "../mcplib";
+import { CharacterHandler } from "./characters";
+import { ChatHandler } from "./chats";
+import { ModuleHandler } from "./modules";
 
 export class RisuAccessClient extends MCPClientLike {
-  private handlers: MCPToolHandler[]
+    private handlers: MCPToolHandler[];
 
-  constructor() {
-    const additionalServerInfo = `
+    constructor() {
+        const additionalServerInfo = `
 <About Risuai Features>
 Characters are the AI personas that Risuai users chat with. Fields:
 - 'name': The name of the character.
@@ -62,47 +62,47 @@ Lorebooks are texts containing various information about the character with cond
 - 'name': The name of the lorebook. Used for identifying the entry in the list.
 
 backgroundEmbedding is an HTML string mainly for custom styling. It can, and mostly include <style> tags with CSS. Note that all selectors will be prefixed with '.chattext ' so they cannot escape the chat boundary - No html, body, :root access.
-`
-    super('internal:risuai')
-    this.serverInfo.serverInfo.name = 'Risuai Access MCP'
-    this.serverInfo.serverInfo.version = '1.0.0'
-    this.serverInfo.instructions =
-      "Risuai Access MCP provides access to Risuai's features and tools, which is the software currently running on. Use the available tools to interact with Risuai's functionalities." +
-      additionalServerInfo
+`;
+        super("internal:risuai");
+        this.serverInfo.serverInfo.name = "Risuai Access MCP";
+        this.serverInfo.serverInfo.version = "1.0.0";
+        this.serverInfo.instructions =
+            "Risuai Access MCP provides access to Risuai's features and tools, which is the software currently running on. Use the available tools to interact with Risuai's functionalities." +
+            additionalServerInfo;
 
-    this.handlers = [new CharacterHandler(), new ChatHandler(), new ModuleHandler()]
-  }
-
-  async getToolList(): Promise<MCPTool[]> {
-    let tools: MCPTool[] = []
-    for (const handler of this.handlers) {
-      tools = tools.concat(handler.getTools())
+        this.handlers = [new CharacterHandler(), new ChatHandler(), new ModuleHandler()];
     }
-    return tools
-  }
 
-  async callTool(toolName: string, args: any): Promise<RPCToolCallContent[]> {
-    try {
-      for (const handler of this.handlers) {
-        const result = await handler.handle(toolName, args)
-        if (result) {
-          return result
+    async getToolList(): Promise<MCPTool[]> {
+        let tools: MCPTool[] = [];
+        for (const handler of this.handlers) {
+            tools = tools.concat(handler.getTools());
         }
-      }
-    } catch (error) {
-      return [
-        {
-          type: 'text',
-          text: `Error: ${error.message}`,
-        },
-      ]
+        return tools;
     }
 
-    return [
-      {
-        type: 'text',
-        text: `Tool ${toolName} not found.`,
-      },
-    ]
-  }
+    async callTool(toolName: string, args: any): Promise<RPCToolCallContent[]> {
+        try {
+            for (const handler of this.handlers) {
+                const result = await handler.handle(toolName, args);
+                if (result) {
+                    return result;
+                }
+            }
+        } catch (error) {
+            return [
+                {
+                    type: "text",
+                    text: `Error: ${error.message}`,
+                },
+            ];
+        }
+
+        return [
+            {
+                type: "text",
+                text: `Tool ${toolName} not found.`,
+            },
+        ];
+    }
 }

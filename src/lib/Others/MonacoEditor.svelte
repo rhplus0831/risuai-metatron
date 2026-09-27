@@ -1,40 +1,39 @@
 <script lang="ts">
-    import { onMount, onDestroy } from 'svelte';
-    import * as monaco from 'monaco-editor';
-    import { registerCBSMonaco } from 'src/ts/gui/codearea/cbsMonaco';
-    import jsonWorkerUrl from 'monaco-editor/esm/vs/language/json/json.worker?url';
-    import cssWorkerUrl from 'monaco-editor/esm/vs/language/css/css.worker?url';
-    import htmlWorkerUrl from 'monaco-editor/esm/vs/language/html/html.worker?url';
-    import tsWorkerUrl from 'monaco-editor/esm/vs/language/typescript/ts.worker?url';
-    import editorWorkerUrl from 'monaco-editor/esm/vs/editor/editor.worker?url';
+    import { onMount, onDestroy } from "svelte";
+    import * as monaco from "monaco-editor";
+    import { registerCBSMonaco } from "src/ts/gui/codearea/cbsMonaco";
+    import jsonWorkerUrl from "monaco-editor/esm/vs/language/json/json.worker?url";
+    import cssWorkerUrl from "monaco-editor/esm/vs/language/css/css.worker?url";
+    import htmlWorkerUrl from "monaco-editor/esm/vs/language/html/html.worker?url";
+    import tsWorkerUrl from "monaco-editor/esm/vs/language/typescript/ts.worker?url";
+    import editorWorkerUrl from "monaco-editor/esm/vs/editor/editor.worker?url";
 
     // Set up workers once globally
-    if (!('MonacoEnvironment' in self)) {
+    if (!("MonacoEnvironment" in self)) {
         (self as any).MonacoEnvironment = {
             getWorker(_: string, label: string) {
                 switch (label) {
-                    case 'json':
-                        return new Worker(jsonWorkerUrl, { type: 'module' });
-                    case 'css':
-                    case 'scss':
-                    case 'less':
-                        return new Worker(cssWorkerUrl, { type: 'module' });
-                    case 'html':
-                    case 'handlebars':
-                    case 'razor':
-                        return new Worker(htmlWorkerUrl, { type: 'module' });
-                    case 'typescript':
-                    case 'javascript':
-                        return new Worker(tsWorkerUrl, { type: 'module' });
+                    case "json":
+                        return new Worker(jsonWorkerUrl, { type: "module" });
+                    case "css":
+                    case "scss":
+                    case "less":
+                        return new Worker(cssWorkerUrl, { type: "module" });
+                    case "html":
+                    case "handlebars":
+                    case "razor":
+                        return new Worker(htmlWorkerUrl, { type: "module" });
+                    case "typescript":
+                    case "javascript":
+                        return new Worker(tsWorkerUrl, { type: "module" });
                     default:
-                        return new Worker(editorWorkerUrl, { type: 'module' });
+                        return new Worker(editorWorkerUrl, { type: "module" });
                 }
-            }
+            },
         };
     }
 
-
-    registerCBSMonaco()
+    registerCBSMonaco();
 
     interface Props {
         value: string;
@@ -45,9 +44,9 @@
     }
 
     let {
-        value = $bindable(''),
-        language = 'markdown',
-        theme = 'vs-dark',
+        value = $bindable(""),
+        language = "markdown",
+        theme = "vs-dark",
         readonly = false,
         onchange,
     }: Props = $props();
@@ -63,13 +62,13 @@
             readOnly: readonly,
             automaticLayout: true,
             minimap: { enabled: false },
-            wordWrap: 'on',
-            lineNumbers: 'on',
+            wordWrap: "on",
+            lineNumbers: "on",
             scrollBeyondLastLine: false,
             fontSize: 14,
             fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
             padding: { top: 8, bottom: 8 },
-            renderLineHighlight: 'gutter',
+            renderLineHighlight: "gutter",
             overviewRulerBorder: false,
             scrollbar: {
                 verticalScrollbarSize: 6,
@@ -97,11 +96,7 @@
         if (editor && editor.getValue() !== value) {
             const model = editor.getModel();
             if (model) {
-                model.pushEditOperations(
-                    [],
-                    [{ range: model.getFullModelRange(), text: value }],
-                    () => null
-                );
+                model.pushEditOperations([], [{ range: model.getFullModelRange(), text: value }], () => null);
             }
         }
     });

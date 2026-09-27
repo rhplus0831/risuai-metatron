@@ -10,10 +10,10 @@ export class Mutex {
      * this queue remembers the order of operations.
      */
     private _queue: {
-        resolve: (release: ReleaseFunction) => void
-    }[] = []
+        resolve: (release: ReleaseFunction) => void;
+    }[] = [];
 
-    private _isLocked = false
+    private _isLocked = false;
 
     /**
      * Wait until the lock is acquired.
@@ -21,25 +21,25 @@ export class Mutex {
      */
     acquire() {
         return new Promise<ReleaseFunction>((resolve) => {
-            this._queue.push({resolve})
-            this._dispatch()
+            this._queue.push({ resolve });
+            this._dispatch();
         });
     }
 
     /**
      * Enqueue a function to be run serially.
-     * 
+     *
      * This ensures no other functions will start running
      * until `callback` finishes running.
      * @param callback Function to be run exclusively.
      * @returns The return value of `callback`.
      */
     async runExclusive<T>(callback: () => Promise<T>) {
-        const release = await this.acquire()
+        const release = await this.acquire();
         try {
-            return await callback()
+            return await callback();
         } finally {
-            release()
+            release();
         }
     }
 
@@ -54,19 +54,19 @@ export class Mutex {
         if (this._isLocked) {
             // The resource is still locked.
             // Wait until next time.
-            return
+            return;
         }
-        const nextEntry = this._queue.shift()
+        const nextEntry = this._queue.shift();
         if (!nextEntry) {
             // There is nothing in the queue.
             // Do nothing until next dispatch.
-            return
+            return;
         }
         // The resource is available.
-        this._isLocked = true
+        this._isLocked = true;
         // and give access to the next operation
         // in the queue.
-        nextEntry.resolve(this._buildRelease())
+        nextEntry.resolve(this._buildRelease());
     }
 
     /**
@@ -78,11 +78,11 @@ export class Mutex {
         return () => {
             // Each release function make
             // the resource available again
-            this._isLocked = false
+            this._isLocked = false;
             // and call dispatch.
-            this._dispatch()
-        }
+            this._dispatch();
+        };
     }
 }
 
-type ReleaseFunction = () => void
+type ReleaseFunction = () => void;

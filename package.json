@@ -17,7 +17,9 @@
     "runserver": "node server/node/server.cjs",
     "sync": "node electron/sync",
     "electron": "node electron/dist/electron",
-    "hono:build": "vite build --sourcemap && node server/hono/src/utils/postbuild.js"
+    "hono:build": "vite build --sourcemap && node server/hono/src/utils/postbuild.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@adobe/css-tools": "4.4.4",
@@ -101,6 +103,8 @@
     "happy-dom": "^20.1.0",
     "internal-ip": "^7.0.0",
     "postcss": "^8.5.6",
+    "prettier": "^3.9.9",
+    "prettier-plugin-svelte": "^4.1.1",
     "source-map": "^0.7.6",
     "svelte": "^5.56.8",
     "svelte-check": "^4.3.5",

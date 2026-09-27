@@ -1,29 +1,37 @@
 <script lang="ts">
-    import isEqual from "lodash/isEqual"
-    import { DBState } from 'src/ts/stores.svelte'
-    import { sleep } from "src/ts/util"
-    import { alertError } from "../../ts/alert"
-    import { addMetadataToElement, getDistance, ParseMarkdown, postTranslationParse, trimMarkdown, type CbsConditions, type simpleCharacterArgument } from "../../ts/parser/parser.svelte"
-    import { getLLMCache, translateHTML } from "../../ts/translator/translator"
+    import isEqual from "lodash/isEqual";
+    import { DBState } from "src/ts/stores.svelte";
+    import { sleep } from "src/ts/util";
+    import { alertError } from "../../ts/alert";
+    import {
+        addMetadataToElement,
+        getDistance,
+        ParseMarkdown,
+        postTranslationParse,
+        trimMarkdown,
+        type CbsConditions,
+        type simpleCharacterArgument,
+    } from "../../ts/parser/parser.svelte";
+    import { getLLMCache, translateHTML } from "../../ts/translator/translator";
     import { getModuleAssets } from "src/ts/process/modules";
     import { getCurrentCharacter } from "src/ts/storage/database.svelte";
     import { getFileSrc } from "src/ts/globalApi.svelte";
 
     interface Props {
-        character?: simpleCharacterArgument|string|null
-        firstMessage?: boolean
-        idx?: number
-        msgDisplay?: string
-        name?: string
-        role: string|null
-        translated: boolean
-        translating: boolean
-        retranslate: boolean
-        renderRevision?: number
-        bodyRoot?: HTMLElement|null
-        modelShortName: string
-        renderRawStreaming?: boolean
-        rawStreamingText?: string
+        character?: simpleCharacterArgument | string | null;
+        firstMessage?: boolean;
+        idx?: number;
+        msgDisplay?: string;
+        name?: string;
+        role: string | null;
+        translated: boolean;
+        translating: boolean;
+        retranslate: boolean;
+        renderRevision?: number;
+        bodyRoot?: HTMLElement | null;
+        modelShortName: string;
+        renderRawStreaming?: boolean;
+        rawStreamingText?: string;
     }
 
     let {
@@ -37,69 +45,77 @@
         retranslate = $bindable(false),
         renderRevision = 0,
         bodyRoot,
-        modelShortName = '',
+        modelShortName = "",
         renderRawStreaming = false,
-        rawStreamingText = '',
-    }: Props =  $props()
+        rawStreamingText = "",
+    }: Props = $props();
 
     // svelte-ignore non_reactive_update
-    let lastParsed = ''
-    let lastCharArg:string|simpleCharacterArgument = null
-    let lastChatId = -10
-    let lastRenderedRevision: number | null = null
+    let lastParsed = "";
+    let lastCharArg: string | simpleCharacterArgument = null;
+    let lastChatId = -10;
+    let lastRenderedRevision: number | null = null;
 
-    function getCbsCondition(){
-        try{
-            const cbsConditions:CbsConditions = {
+    function getCbsCondition() {
+        try {
+            const cbsConditions: CbsConditions = {
                 firstmsg: firstMessage ?? false,
                 chatRole: role,
-            }
-            return cbsConditions
-        }
-        catch(e){
+            };
+            return cbsConditions;
+        } catch (e) {
             return {
                 firstmsg: firstMessage ?? false,
                 chatRole: null,
-            }
+            };
         }
     }
 
-    let shouldRenderRawStreaming = $derived(renderRawStreaming && !translated && !retranslate)
+    let shouldRenderRawStreaming = $derived(renderRawStreaming && !translated && !retranslate);
 
-    const markParsing = async (data: string, charArg: string | simpleCharacterArgument, chatID: number, requestedRevision: number, tries?:number) => {
+    const markParsing = async (
+        data: string,
+        charArg: string | simpleCharacterArgument,
+        chatID: number,
+        requestedRevision: number,
+        tries?: number,
+    ) => {
         // track 'translated' and 'retranslate' state
         translated;
         retranslate;
-        const preservePendingContent = lastRenderedRevision !== null && requestedRevision !== lastRenderedRevision
-        let lastParsedQueue = ''
-        let mode = 'notrim' as const
+        const preservePendingContent = lastRenderedRevision !== null && requestedRevision !== lastRenderedRevision;
+        let lastParsedQueue = "";
+        let mode = "notrim" as const;
         try {
-            if((!isEqual(lastCharArg, charArg)) || (chatID !== lastChatId)){
-                lastParsedQueue = ''
-                lastCharArg = charArg
-                lastChatId = chatID
-                let translateText = false
+            if (!isEqual(lastCharArg, charArg) || chatID !== lastChatId) {
+                lastParsedQueue = "";
+                lastCharArg = charArg;
+                lastChatId = chatID;
+                let translateText = false;
                 try {
-                    if(DBState.db.autoTranslate){
-                        if(DBState.db.autoTranslateCachedOnly && DBState.db.translatorType === 'llm'){
+                    if (DBState.db.autoTranslate) {
+                        if (DBState.db.autoTranslateCachedOnly && DBState.db.translatorType === "llm") {
                             const cache = DBState.db.translateBeforeHTMLFormatting
-                            ? await getLLMCache(data)
-                            : !DBState.db.legacyTranslation
-                            ? await getLLMCache(await ParseMarkdown(data, charArg, 'pretranslate', chatID, getCbsCondition()))
-                            : await getLLMCache(await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition()))
-                  
-                            translateText = cache !== null
-                        }
-                        else{
-                            translateText = true
+                                ? await getLLMCache(data)
+                                : !DBState.db.legacyTranslation
+                                  ? await getLLMCache(
+                                        await ParseMarkdown(data, charArg, "pretranslate", chatID, getCbsCondition()),
+                                    )
+                                  : await getLLMCache(
+                                        await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition()),
+                                    );
+
+                            translateText = cache !== null;
+                        } else {
+                            translateText = true;
                         }
                     }
 
-                    const lastTranslated = translated
+                    const lastTranslated = translated;
 
                     setTimeout(() => {
-                            translated = translateText
-                    }, 10)
+                        translated = translateText;
+                    }, 10);
 
                     // State change of `translated` triggers markParsing again,
                     // causing redundant translation attempts
@@ -107,164 +123,159 @@
                         return;
                     }
                 } catch (error) {
-                    console.error(error)
+                    console.error(error);
                 }
             }
-            if(retranslate || translated){
+            if (retranslate || translated) {
                 if (DBState.db.showTranslationLoading && !preservePendingContent) {
-                    lastParsed = `<div style="display:flex;justify-content:center;align-items:center;height:48px;"><div style="animation: spin 1s linear infinite; border-radius: 50%; height: 32px; width: 32px; border: 2px solid #3b82f6; border-top: 2px solid transparent;"></div></div><style>@keyframes spin { to { transform: rotate(360deg); } }</style>`
+                    lastParsed = `<div style="display:flex;justify-content:center;align-items:center;height:48px;"><div style="animation: spin 1s linear infinite; border-radius: 50%; height: 32px; width: 32px; border: 2px solid #3b82f6; border-top: 2px solid transparent;"></div></div><style>@keyframes spin { to { transform: rotate(360deg); } }</style>`;
                 }
 
-                let transResult
-                
-                if(DBState.db.translatorType === 'llm' && DBState.db.translateBeforeHTMLFormatting){
-                    await sleep(100)
-                    translating = true
-                    data = await translateHTML(data, false, charArg, chatID, retranslate)
-                    translating = false
-                    const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition())
-                    lastParsedQueue = marked
-                    lastCharArg = charArg
-                    transResult = marked
-                }
-                else if(!DBState.db.legacyTranslation){
-                    const marked = await ParseMarkdown(data, charArg, 'pretranslate', chatID, getCbsCondition())
-                    translating = true
-                    const translated = await postTranslationParse(await translateHTML(marked, false, charArg, chatID, retranslate))
-                    translating = false
-                    lastParsedQueue = translated
-                    lastCharArg = charArg
-                    transResult = translated
-                }
-                else{
-                    const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition())
-                    translating = true
-                    const translated = await translateHTML(marked, false, charArg, chatID, retranslate)
-                    translating = false
-                    lastParsedQueue = translated
-                    lastCharArg = charArg
-                    transResult = translated
+                let transResult;
+
+                if (DBState.db.translatorType === "llm" && DBState.db.translateBeforeHTMLFormatting) {
+                    await sleep(100);
+                    translating = true;
+                    data = await translateHTML(data, false, charArg, chatID, retranslate);
+                    translating = false;
+                    const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition());
+                    lastParsedQueue = marked;
+                    lastCharArg = charArg;
+                    transResult = marked;
+                } else if (!DBState.db.legacyTranslation) {
+                    const marked = await ParseMarkdown(data, charArg, "pretranslate", chatID, getCbsCondition());
+                    translating = true;
+                    const translated = await postTranslationParse(
+                        await translateHTML(marked, false, charArg, chatID, retranslate),
+                    );
+                    translating = false;
+                    lastParsedQueue = translated;
+                    lastCharArg = charArg;
+                    transResult = translated;
+                } else {
+                    const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition());
+                    translating = true;
+                    const translated = await translateHTML(marked, false, charArg, chatID, retranslate);
+                    translating = false;
+                    lastParsedQueue = translated;
+                    lastCharArg = charArg;
+                    transResult = translated;
                 }
 
                 setTimeout(() => {
-                    retranslate = false
+                    retranslate = false;
                 }, 10);
 
-                return transResult
+                return transResult;
+            } else {
+                const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition());
+                lastParsedQueue = marked;
+                lastCharArg = charArg;
+                return marked;
             }
-            else{
-                const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition())
-                lastParsedQueue = marked
-                lastCharArg = charArg
-                return marked
-            }   
         } catch (error) {
             //retry
-            if(tries > 2){
-
-                alertError(`Error while parsing chat message: ${translated}, ${error.message}, ${error.stack}`)
-                return data
+            if (tries > 2) {
+                alertError(`Error while parsing chat message: ${translated}, ${error.message}, ${error.stack}`);
+                return data;
             }
-            const retried = await markParsing(data, charArg, chatID, requestedRevision, (tries ?? 0) + 1)
+            const retried = await markParsing(data, charArg, chatID, requestedRevision, (tries ?? 0) + 1);
             if (retried !== undefined) {
-                lastParsedQueue = retried
+                lastParsedQueue = retried;
             }
-            return retried
-        }
-        finally{
+            return retried;
+        } finally {
             //since trimMarkdown is fast, we don't need to cache it
-            lastParsed = lastParsedQueue
-            lastRenderedRevision = requestedRevision
+            lastParsed = lastParsedQueue;
+            lastRenderedRevision = requestedRevision;
         }
-    }
+    };
 
     const checkImg = () => {
-        if(!DBState.db.newImageHandlingBeta || !bodyRoot){
-            return
+        if (!DBState.db.newImageHandlingBeta || !bodyRoot) {
+            return;
         }
-        const imgs = bodyRoot.querySelectorAll('img:not([src^="data:"]):not([src^="http:"]):not([src^="https:"]):not([src^="blob:"]):not([src^="file:"]):not([noimage])') as NodeListOf<HTMLImageElement>
-        
+        const imgs = bodyRoot.querySelectorAll(
+            'img:not([src^="data:"]):not([src^="http:"]):not([src^="https:"]):not([src^="blob:"]):not([src^="file:"]):not([noimage])',
+        ) as NodeListOf<HTMLImageElement>;
+
         if (imgs.length > 0) {
-            const currentCharacter = getCurrentCharacter()
-            const styl = currentCharacter.prebuiltAssetStyle
-            const assets = getModuleAssets().concat(currentCharacter.additionalAssets ?? [])
+            const currentCharacter = getCurrentCharacter();
+            const styl = currentCharacter.prebuiltAssetStyle;
+            const assets = getModuleAssets().concat(currentCharacter.additionalAssets ?? []);
             const normalizedAssets = assets.map((asset) => {
                 return {
                     name: asset[0].toLocaleLowerCase(),
-                    path: asset[1]
-                }
-            })
-            const exactAssets = new Map(normalizedAssets.map((asset) => [asset.name, asset.path]))
+                    path: asset[1],
+                };
+            });
+            const exactAssets = new Map(normalizedAssets.map((asset) => [asset.name, asset.path]));
 
             imgs.forEach(async (img) => {
-                const name = img.getAttribute('src')?.toLocaleLowerCase() || ''
-                console.log(name)
+                const name = img.getAttribute("src")?.toLocaleLowerCase() || "";
+                console.log(name);
 
-                if(
-                    name.length > 200 ||
-                    name.includes(':')
-                ){
-                    img.setAttribute('noimage', 'true')
-                    return
-                }
-                
-                const foundAsset = exactAssets.get(name)
-                console.log('Checking image:', name, 'Assets:', assets)
-                if(foundAsset){
-                    img.classList.add('root-loaded-image')
-                    img.classList.add('root-loaded-image-' + styl)
-                    img.src = await getFileSrc(foundAsset)
-                    return
+                if (name.length > 200 || name.includes(":")) {
+                    img.setAttribute("noimage", "true");
+                    return;
                 }
 
-                if(name.length < 3){
-                    img.setAttribute('noimage', 'true')
-                    return
+                const foundAsset = exactAssets.get(name);
+                console.log("Checking image:", name, "Assets:", assets);
+                if (foundAsset) {
+                    img.classList.add("root-loaded-image");
+                    img.classList.add("root-loaded-image-" + styl);
+                    img.src = await getFileSrc(foundAsset);
+                    return;
                 }
-                const prefixLoc = name.lastIndexOf('.')
-                const prefix = prefixLoc > 0 ? name.substring(0, prefixLoc) : ''
-                let currentDistance = 1000
-                let currentFound = ''
-                for(const asset of normalizedAssets){
-                    if(!asset.name.startsWith(prefix)){
-                        continue
+
+                if (name.length < 3) {
+                    img.setAttribute("noimage", "true");
+                    return;
+                }
+                const prefixLoc = name.lastIndexOf(".");
+                const prefix = prefixLoc > 0 ? name.substring(0, prefixLoc) : "";
+                let currentDistance = 1000;
+                let currentFound = "";
+                for (const asset of normalizedAssets) {
+                    if (!asset.name.startsWith(prefix)) {
+                        continue;
                     }
-                    const distance = getDistance(name, asset.name)
-                    if(distance < currentDistance){
-                        currentDistance = distance
-                        currentFound = asset.path
+                    const distance = getDistance(name, asset.name);
+                    if (distance < currentDistance) {
+                        currentDistance = distance;
+                        currentFound = asset.path;
                     }
                 }
-                if(currentFound){
-                    const got = await getFileSrc(currentFound)
-                    const name2 = img.getAttribute('src')?.toLocaleLowerCase() || ''
-                    if(name === name2){
-                        img.setAttribute('src', got)
+                if (currentFound) {
+                    const got = await getFileSrc(currentFound);
+                    const name2 = img.getAttribute("src")?.toLocaleLowerCase() || "";
+                    if (name === name2) {
+                        img.setAttribute("src", got);
                     }
 
-                    if(img.classList.length === 0){
-                        img.classList.add('root-loaded-image')
-                        img.classList.add('root-loaded-image-' + styl)
+                    if (img.classList.length === 0) {
+                        img.classList.add("root-loaded-image");
+                        img.classList.add("root-loaded-image-" + styl);
                     }
-                    img.removeAttribute('noimage')
+                    img.removeAttribute("noimage");
+                } else {
+                    img.setAttribute("noimage", "true");
                 }
-                else{
-                    img.setAttribute('noimage', 'true')
-                }
-            })
+            });
         }
-    }
+    };
 
-    let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx, renderRevision))
+    let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx, renderRevision));
 
     $effect(() => {
-        if(shouldRenderRawStreaming){
-            return
+        if (shouldRenderRawStreaming) {
+            return;
         }
-        markParsingResult
-        checkImg()
-        markParsingResult.then(checkImg)
-    })
+        markParsingResult;
+        checkImg();
+        markParsingResult.then(checkImg);
+    });
 </script>
 
 {#if shouldRenderRawStreaming}

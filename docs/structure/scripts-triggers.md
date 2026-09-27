@@ -1,6 +1,7 @@
 # Regex Scripts, Triggers, Lua/Python Scripting
 
 ## Scope
+
 - Owns:
   - regex find/replace scripts,
   - triggers v1 and v2 (the data model, the runtime, and the editors),
@@ -18,6 +19,7 @@
   - Module-provided scripts are collected by `process/modules.ts` → `characters-modules.md`.
 
 ## Files
+
 - `scripts.ts`: regex script execution.
   - `ScriptMode` = `editinput|editoutput|editprocess|editdisplay`.
   - `processScriptFull(char, data, mode, chatID, cbsConditions)` returns `{data, emoChanged}`. `processScript` returns only `.data`.
@@ -43,18 +45,20 @@
 - `GlobalRegex.svelte`: edits `db.globalscript`, which the runtime never reads.
 
 ## Flows
+
 Where each hook runs:
 
-| Hook | Caller |
-|---|---|
-| `runTrigger('input')` then `processScript('editinput')` | `DefaultChatScreen.sendMain` |
-| `runTrigger('start')`, `processScriptFull('editprocess')`, `processScriptFull('editoutput')`, `runTrigger('output')` | `sendChat` |
-| `processScriptFull('editdisplay')`, which runs `runTrigger('display')` first | `ParseMarkdown` |
-| `runTrigger('request', {displayMode})` | `requestChatData` |
-| `runTrigger('manual')` | `command.ts` |
-| `runLuaButtonTrigger` | `Chat.svelte` |
+| Hook                                                                                                                 | Caller                       |
+| -------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `runTrigger('input')` then `processScript('editinput')`                                                              | `DefaultChatScreen.sendMain` |
+| `runTrigger('start')`, `processScriptFull('editprocess')`, `processScriptFull('editoutput')`, `runTrigger('output')` | `sendChat`                   |
+| `processScriptFull('editdisplay')`, which runs `runTrigger('display')` first                                         | `ParseMarkdown`              |
+| `runTrigger('request', {displayMode})`                                                                               | `requestChatData`            |
+| `runTrigger('manual')`                                                                                               | `command.ts`                 |
+| `runLuaButtonTrigger`                                                                                                | `Chat.svelte`                |
 
 `processScriptFull` steps:
+
 1. `runLuaEditTrigger`.
 2. Display trigger, only for `editdisplay`.
 3. Plugin `edit*` replacers.
@@ -66,6 +70,7 @@ Where each hook runs:
 9. Cache write.
 
 `runTrigger` steps:
+
 1. Clone the character and chat. Display mode is the exception and mutates in place.
 2. Copy the character's `lowLevelAccess` onto its triggers.
 3. Append `getModuleTriggers()`.
@@ -75,14 +80,17 @@ Where each hook runs:
 7. Run the effects in order.
 
 v2 layout:
+
 - A flat effect array. Index 0 of the trigger list is the `v2Header` sentinel.
 - Blocks are expressed with `indent`, `v2Else`, and generated `v2EndIndent` entries. Loops jump using `endOfLoop`.
 
 Lua:
+
 - The wasmoon factory loads lazily and mounts `/lua/json.lua` (up to 3 retries).
 - Each call gets a UUID access key registered in `ScriptingSafeIds`, `ScriptingEditDisplayIds`, and `ScriptingLowLevelIds` as appropriate. It is removed afterwards.
 
 ## State
+
 - `customscript` = `{comment, in, out, type, flag?, ableFlag?}` (in `database.svelte.ts`). `type` is a free string. The UI also offers `edittrans` and `disabled`.
 - Sources:
   - DB: `presetRegex` (active) and `globalscript` (unused).
@@ -92,6 +100,7 @@ Lua:
 - `processScriptCache` holds at most 1000 entries and is reset by `resetScriptCache` (called on the `ReloadGUIPointer` bump). `bestMatchCache` has no cap.
 
 ## Coupling
+
 - `scripts.ts` depends on the parser, modules, plugins, `HypaProcesser` (dynamic assets), Lua, triggers, and `CharEmotion`.
 - `triggers.ts` depends on the parser, modules, `ReloadChatPointer`/`ReloadGUIPointer`, `CurrentTriggerIdStore`, commands, the tokenizer, `requestChatData`, `stableDiff`, inlays, and Lua.
 - UI owners:
@@ -100,6 +109,7 @@ Lua:
   - Module regex and triggers: `ModuleMenu.svelte`.
 
 ## Invariants
+
 - Never rename the serialized discriminators: `customscript.type`, `triggerscript.type`, effect `type`, v2 `indent`, the header at index 0.
 - Regex order matters. `<order n>` applies only when `ableFlag` is true. Native flags are sanitized to `dgimsuvy`, deduplicated, and default to `u`.
 - The cache stores final output, not compiled `RegExp` objects. An empty-string result is falsy and therefore never cache-hits.
@@ -110,6 +120,7 @@ Lua:
 - Lua `request` restrictions: HTTPS only, URL at most 120 characters, 5 requests per minute, some Risu endpoints blocked, and it requires low-level access. There is no CPU or memory limit.
 
 ## Recipes
+
 - Add a regex mode: extend `ScriptMode`, wire its caller, add the UI option in `RegexData.svelte`, and update `translator.ts:applyEdittransRegex` if the mode is translation-only.
 - Add a regex flag: add it to the UI in `RegexData.svelte`, parse the `<...>` metadata in `processScriptFull`, implement it in `executeScript`, and add the translator equivalent if needed.
 - Add a v1 effect: add the interface and union member in `triggers.ts`, update `TriggerV1Data.svelte`, and add a `runTrigger` case.
@@ -124,11 +135,13 @@ Lua:
 - Add a Lua API: `declareAPI` in `scriptings.ts`, plus a `luaCodeWrapper` wrapper if it is async or JSON-based, plus the correct Safe/EditDisplay/LowLevel guard. Add a test in `scriptings.test.ts`.
 
 ## Tests
+
 - `src/ts/process/scriptings.test.ts`: Lua stop-signal semantics.
 - `src/ts/translator/edittransRegex.test.ts`: the `edittrans` path only.
 - Not tested: `processScriptFull` ordering and cache, `runTrigger`, v2 editing, Lua permissions, Pyodide.
 
 ## Known Hazards
+
 - Pyodide is likely broken:
   - `pyworker.ts` posts `type:'pythonResult'`, but `scriptings.ts` waits for `type:'python'`.
   - The init and python handlers replace `worker.onmessage`, which drops the JS-callback handler.

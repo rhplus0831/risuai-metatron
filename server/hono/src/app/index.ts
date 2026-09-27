@@ -1,12 +1,12 @@
-import { Hono } from 'hono'
-import { csrf } from 'hono/csrf'
+import { Hono } from "hono";
+import { csrf } from "hono/csrf";
 
-const app = new Hono()
+const app = new Hono();
 
-app.use('*', csrf())
+app.use("*", csrf());
 
-app.get('/', (c) => {
-  return c.text('Hello Hono!')
-})
+app.get("/", (c) => {
+    return c.text("Hello Hono!");
+});
 
-export default app
+export default app;

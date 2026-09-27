@@ -1,6 +1,6 @@
-import { vi } from 'vitest'
+import { vi } from "vitest";
 
 // Suppress warning
-vi.mock(import('katex'), () => ({}))
+vi.mock(import("katex"), () => ({}));
 
-vi.stubGlobal('safeStructuredClone', (v: unknown) => JSON.parse(JSON.stringify(v)))
+vi.stubGlobal("safeStructuredClone", (v: unknown) => JSON.parse(JSON.stringify(v)));

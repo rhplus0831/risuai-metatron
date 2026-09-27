@@ -7,19 +7,19 @@
     let prompt = $state("");
     let negPrompt = $state("");
     let img = $state("");
-    let generating = $state(false)
+    let generating = $state(false);
     const run = async () => {
-        console.log('running')
-        if(generating){
-            return
+        console.log("running");
+        if (generating) {
+            return;
         }
-        generating = true
-        const gen = await generateAIImage(prompt, createBlankChar(), negPrompt, 'inlay')
-        generating = false
-        if(gen){
-            img = gen
+        generating = true;
+        const gen = await generateAIImage(prompt, createBlankChar(), negPrompt, "inlay");
+        generating = false;
+        if (gen) {
+            img = gen;
         }
-    }
+    };
 </script>
 
 <h2 class="text-4xl text-textcolor my-6 font-black relative">{language.imageGeneration}</h2>
@@ -32,7 +32,7 @@
 
 {#if img}
     <span class="text-textcolor text-lg">Generated</span>
-    <img src={img} class="max-w-full mt-4" alt="Generated"/>
+    <img src={img} class="max-w-full mt-4" alt="Generated" />
 {/if}
 
 <Button className="mt-6" onclick={run}>

@@ -59,10 +59,9 @@ Every plugin starts with metadata comments and a main script:
 // Your plugin code here
 (async () => {
   try {
-    console.log('Plugin initialized');
+    console.log("Plugin initialized");
 
     // Your initialization code
-
   } catch (error) {
     console.log(`Error: ${error.message}`);
   }
@@ -77,6 +76,7 @@ It must be placed at the very top of your plugin script.
 #### Required Metadata
 
 - **`//@name`** - Internal plugin name (must be unique)
+
   ```javascript
   //@name my_plugin
   ```
@@ -91,6 +91,7 @@ It must be placed at the very top of your plugin script.
 #### Optional Metadata
 
 - **`//@display-name`** - User-friendly display name
+
   ```javascript
   //@display-name My Awesome Plugin
   ```
@@ -98,14 +99,17 @@ It must be placed at the very top of your plugin script.
   Unlike `//@name`, this can be changed freely without breaking installations.
 
 - **`//@arg`** - Define plugin arguments
+
   ```javascript
   //@arg setting_name string Description of the setting
   //@arg max_items int Maximum number of items
   ```
+
   Supported types: `string`, `int`
   Syntax: `//@arg <name> <type> <description and optional metadata>`
 
 - **`//@link`** - Add custom links
+
   ```javascript
   //@link https://example.com/docs Documentation
   //@link https://example.com/support Get Support
@@ -114,6 +118,7 @@ It must be placed at the very top of your plugin script.
   The links will appear in the plugin settings UI.
 
 - **`//@update-url`** - URL to check for updates
+
   ```javascript
   //@update-url https://raw.githubusercontent.com/username/repo/branch/plugin.js
   ```
@@ -121,6 +126,7 @@ It must be placed at the very top of your plugin script.
   Put your plugin's latest raw js file URL here for automatic update checks. the server must support CORS and Range requests. We recommend hosting on GitHub repo and referencing the raw file URL. (e.g. `https://raw.githubusercontent.com/username/repo/branch/plugin.js`).
 
 - **`//@version`** - Version of your plugin
+
   ```javascript
   //@version 1.0.0
   ```
@@ -167,12 +173,13 @@ const character = Risuai.getCharacter();
 const character = await Risuai.getCharacter();
 
 //  ALSO CORRECT - Using .then()
-Risuai.getCharacter().then(character => {
+Risuai.getCharacter().then((character) => {
   // Work with character
 });
 ```
 
 This applies to ALL `Risuai` API methods, including:
+
 - Data access (`getCharacter`, `getDatabase`, etc.)
 - DOM operations via `getRootDocument()`
 - Storage operations
@@ -202,10 +209,10 @@ console.log(Risuai.apiVersion); // "3.0"
 console.log(Risuai.apiVersionCompatibleWith); // ["3.0"]
 
 // Logging
-console.log('This appears as: [Risuai Plugin: PluginName] This...');
+console.log("This appears as: [Risuai Plugin: PluginName] This...");
 
 // Container management
-await Risuai.showContainer('fullscreen'); // Show your iframe UI
+await Risuai.showContainer("fullscreen"); // Show your iframe UI
 await Risuai.hideContainer(); // Hide your iframe UI
 
 // DOM access
@@ -237,13 +244,12 @@ We recommend using your iframe's DOM for custom UI whenever possible, and only a
 Your plugin's iframe has full access to the standard DOM API:
 
 ```javascript
-
 // Create elements
-const container = document.createElement('div');
-const button = document.createElement('button');
+const container = document.createElement("div");
+const button = document.createElement("button");
 
 // Set content
-button.textContent = 'Click Me!';
+button.textContent = "Click Me!";
 container.appendChild(button);
 
 // Add to iframe body
@@ -259,15 +265,15 @@ document.body.appendChild(container);
 const rootDoc = await Risuai.getRootDocument();
 
 // Create elements
-const container = await rootDoc.createElement('div');
-const button = await rootDoc.createElement('button');
+const container = await rootDoc.createElement("div");
+const button = await rootDoc.createElement("button");
 
 // Set content
-await button.setTextContent('Click Me!');
+await button.setTextContent("Click Me!");
 await container.appendChild(button);
 
 // Query existing elements
-const chatArea = await rootDoc.querySelector('.chat-container');
+const chatArea = await rootDoc.querySelector(".chat-container");
 if (chatArea) {
   await chatArea.appendChild(container);
 }
@@ -302,8 +308,8 @@ const text = await element.innerText();
 const content = await element.textContent();
 
 // Setting text
-await element.setTextContent('Hello World');
-await element.setInnerText('Hello World');
+await element.setTextContent("Hello World");
+await element.setInnerText("Hello World");
 ```
 
 #### HTML Content (Auto-Sanitized)
@@ -331,59 +337,59 @@ For security reasons, only `x-` prefixed custom attributes can be directly acces
 
 ```javascript
 //  Allowed - custom attributes
-await element.setAttribute('x-plugin-id', 'my-id');
-const id = await element.getAttribute('x-plugin-id');
+await element.setAttribute("x-plugin-id", "my-id");
+const id = await element.getAttribute("x-plugin-id");
 
 // L Not allowed - will throw error
-await element.setAttribute('onclick', 'alert()'); // Error!
-await element.setAttribute('href', 'javascript:...'); // Error!
+await element.setAttribute("onclick", "alert()"); // Error!
+await element.setAttribute("href", "javascript:..."); // Error!
 ```
 
 Use dedicated methods for standard attributes:
 
 ```javascript
 // For links, use createAnchorElement
-const link = rootDoc.createAnchorElement('https://example.com');
+const link = rootDoc.createAnchorElement("https://example.com");
 
 // For styles, use style methods
-await element.setStyle('color', 'red');
+await element.setStyle("color", "red");
 ```
 
 #### Styling
 
 ```javascript
 // Individual style properties
-await element.setStyle('color', 'blue');
-await element.setStyle('fontSize', '16px');
-const color = await element.getStyle('color');
+await element.setStyle("color", "blue");
+await element.setStyle("fontSize", "16px");
+const color = await element.getStyle("color");
 
 // Style attribute as string
-await element.setStyleAttribute('color: red; font-size: 14px;');
+await element.setStyleAttribute("color: red; font-size: 14px;");
 const styleStr = await element.getStyleAttribute();
 
 // CSS classes
-await element.addClass('active');
-await element.removeClass('inactive');
-await element.setClassName('container active');
+await element.addClass("active");
+await element.removeClass("inactive");
+await element.setClassName("container active");
 const className = await element.getClassName();
-const isActive = await element.hasClass('active');
+const isActive = await element.hasClass("active");
 ```
 
 #### Querying and Traversal
 
 ```javascript
 // Query descendants
-const buttons = await element.querySelectorAll('.button');
-const firstButton = await element.querySelector('.button');
-const byId = await element.getElementById('submit-btn');
-const byClass = await element.getElementsByClassName('message');
+const buttons = await element.querySelectorAll(".button");
+const firstButton = await element.querySelector(".button");
+const byId = await element.getElementById("submit-btn");
+const byClass = await element.getElementsByClassName("message");
 
 // Navigation
 const children = await element.getChildren();
 const parent = await element.getParent();
 
 // Matching
-const matches = await element.matches('.selected');
+const matches = await element.matches(".selected");
 ```
 
 #### Dimensions and Position
@@ -404,23 +410,29 @@ Event listeners have security restrictions and return unique IDs:
 
 ```javascript
 // Add event listener - returns ID for later removal
-const listenerId = await element.addEventListener('click', async (event) => {
-  console.log('Element clicked!');
+const listenerId = await element.addEventListener(
+  "click",
+  async (event) => {
+    console.log("Element clicked!");
 
-  // Do something with the event
-  const target = event.target;
-}, { capture: false });
+    // Do something with the event
+    const target = event.target;
+  },
+  { capture: false },
+);
 
 // Remove event listener using the ID
-await element.removeEventListener('click', listenerId);
+await element.removeEventListener("click", listenerId);
 ```
 
 **Allowed Events (Unlimited):**
+
 - Mouse: `click`, `dblclick`, `contextmenu`, `mousedown`, `mouseup`, `mousemove`, `mouseover`, `mouseleave`
 - Pointer: `pointercancel`, `pointerdown`, `pointerenter`, `pointerleave`, `pointermove`, `pointerout`, `pointerover`, `pointerup`
 - Scroll: `scroll`, `scrollend`
 
 **Allowed Events (Random Delay for Anti-Fingerprinting):**
+
 - Keyboard: `keydown`, `keyup`, `keypress` (delayed randomly to prevent timing attacks)
 
 **Blocked Events:**
@@ -449,7 +461,7 @@ const type = await element.nodeType();
 await element.scrollIntoView();
 
 // With options
-await element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+await element.scrollIntoView({ behavior: "smooth", block: "center" });
 ```
 
 #### Element Creation
@@ -458,18 +470,18 @@ await element.scrollIntoView({ behavior: 'smooth', block: 'center' });
 const doc = await Risuai.getRootDocument();
 
 // Create regular elements (limited to whitelist)
-const div = await doc.createElement('div');
-const span = await doc.createElement('span');
-const button = await doc.createElement('button');
+const div = await doc.createElement("div");
+const span = await doc.createElement("span");
+const button = await doc.createElement("button");
 
 // Non-whitelisted tags become <div>
-const unknown = await doc.createElement('custom-element'); // Creates <div>
+const unknown = await doc.createElement("custom-element"); // Creates <div>
 
 // Create validated anchor links
-const link = await doc.createAnchorElement('https://example.com');
+const link = await doc.createAnchorElement("https://example.com");
 
 // Only http/https allowed
-const badLink = await doc.createAnchorElement('javascript:alert()'); // href becomes '#'
+const badLink = await doc.createAnchorElement("javascript:alert()"); // href becomes '#'
 ```
 
 ### Monitoring DOM Changes
@@ -498,11 +510,11 @@ const observer = await Risuai.createMutationObserver(async (mutations) => {
 
 // Start observing
 const rootDoc = await Risuai.getRootDocument();
-const body = await rootDoc.querySelector('body');
+const body = await rootDoc.querySelector("body");
 await observer.observe(body, {
   childList: true,
   subtree: true,
-  attributes: true
+  attributes: true,
 });
 ```
 
@@ -550,20 +562,21 @@ async function showPluginUI() {
   `;
 
   // Add event listeners (standard DOM)
-  myDoc.getElementById('save-btn').addEventListener('click', async () => {
+  myDoc.getElementById("save-btn").addEventListener("click", async () => {
     await saveSettings();
   });
 
-  myDoc.getElementById('close-btn').addEventListener('click', async () => {
+  myDoc.getElementById("close-btn").addEventListener("click", async () => {
     await Risuai.hideContainer();
   });
 
   // Show the iframe in fullscreen
-  await Risuai.showContainer('fullscreen');
+  await Risuai.showContainer("fullscreen");
 }
 ```
 
 When shown in fullscreen mode, your iframe:
+
 - Is moved to `document.body`
 - Positioned fixed at (0, 0)
 - Sized to 100% width and height
@@ -578,32 +591,36 @@ Add buttons and menu items to Risuai's interface:
 
 ```javascript
 Risuai.registerSetting(
-  'My Plugin Settings',
+  "My Plugin Settings",
   async () => {
     // Called when user clicks the menu item
-    await Risuai.showContainer('fullscreen');
+    await Risuai.showContainer("fullscreen");
   },
   '<svg width="24" height="24">...</svg>', // Optional icon
-  'html' // Icon type: 'html', 'img', or 'none'
+  "html", // Icon type: 'html', 'img', or 'none'
 );
 ```
 
 #### Floating Action Button
 
 ```javascript
-Risuai.registerButton({
-    name: 'Quick Action',
-    icon: 'https://example.com/icon.png', // Optional icon URL
-    iconType: 'img', // Icon type: 'html', 'img', or 'none'
-    location: 'action' //you can also use 'chat' or 'hamburger' for chat or hamburger menu
-}, async () => {
-  // Called when user clicks the button
-  const char = await Risuai.getCharacter();
-  await console.log(`Current character: ${char.name}`);
-});
+Risuai.registerButton(
+  {
+    name: "Quick Action",
+    icon: "https://example.com/icon.png", // Optional icon URL
+    iconType: "img", // Icon type: 'html', 'img', or 'none'
+    location: "action", //you can also use 'chat' or 'hamburger' for chat or hamburger menu
+  },
+  async () => {
+    // Called when user clicks the button
+    const char = await Risuai.getCharacter();
+    await console.log(`Current character: ${char.name}`);
+  },
+);
 ```
 
 **Icon Types:**
+
 - `'html'` - Raw HTML (SVG, emoji, etc.)
 - `'img'` - Image URL
 - `'none'` - No icon (text only)
@@ -613,12 +630,17 @@ Risuai.registerButton({
 Both `registerSetting` and `registerButton` return a `UIPartResponse` with an `id`. Use `unregisterUIPart` to remove a registered element:
 
 ```javascript
-const btn = await Risuai.registerButton({
-  name: 'My Button',
-  icon: '🔥',
-  iconType: 'html',
-  location: 'action'
-}, async () => { /* ... */ });
+const btn = await Risuai.registerButton(
+  {
+    name: "My Button",
+    icon: "🔥",
+    iconType: "html",
+    location: "action",
+  },
+  async () => {
+    /* ... */
+  },
+);
 
 // Later, remove it
 await Risuai.unregisterUIPart(btn.id);
@@ -636,11 +658,11 @@ Use arguments for user-configurable settings:
 //@arg max_retries int Maximum retry attempts
 
 // Access in code (remember: async!)
-const apiKey = await Risuai.getArgument('api_key');
-const maxRetries = await Risuai.getArgument('max_retries');
+const apiKey = await Risuai.getArgument("api_key");
+const maxRetries = await Risuai.getArgument("max_retries");
 
 // Update values
-await Risuai.setArgument('max_retries', 5);
+await Risuai.setArgument("max_retries", 5);
 ```
 
 ### Plugin Storage (Recommended)
@@ -649,18 +671,19 @@ await Risuai.setArgument('max_retries', 5);
 
 ```javascript
 // All operations are synchronous (wrapper around sync storage)
-await Risuai.pluginStorage.setItem('user_preference', 'dark_mode');
-await Risuai.pluginStorage.setItem('last_sync', Date.now().toString());
+await Risuai.pluginStorage.setItem("user_preference", "dark_mode");
+await Risuai.pluginStorage.setItem("last_sync", Date.now().toString());
 
-const preference = await  Risuai.pluginStorage.getItem('user_preference');
+const preference = await Risuai.pluginStorage.getItem("user_preference");
 const allKeys = await Risuai.pluginStorage.keys();
 const count = await Risuai.pluginStorage.length();
 
-await Risuai.pluginStorage.removeItem('last_sync');
+await Risuai.pluginStorage.removeItem("last_sync");
 await Risuai.pluginStorage.clear(); // Remove all items
 ```
 
 **Use `pluginStorage` when:**
+
 - You want data to sync across devices
 - Data is specific to a save file
 - Storing user preferences or plugin state
@@ -671,11 +694,12 @@ await Risuai.pluginStorage.clear(); // Remove all items
 
 ```javascript
 // Same API as pluginStorage
-await Risuai.safeLocalStorage.setItem('device_id', 'unique-id');
-const deviceId = await Risuai.safeLocalStorage.getItem('device_id');
+await Risuai.safeLocalStorage.setItem("device_id", "unique-id");
+const deviceId = await Risuai.safeLocalStorage.getItem("device_id");
 ```
 
 **Use `safeLocalStorage` when:**
+
 - Data should stay on one device
 - Storing device-specific settings
 - Sharing data between plugins
@@ -688,20 +712,21 @@ const deviceId = await Risuai.safeLocalStorage.getItem('device_id');
 const storage = await Risuai.getLocalPluginStorage();
 
 // Store any JSON-serializable value
-await storage.setItem('config', { theme: 'dark', fontSize: 14 });
+await storage.setItem("config", { theme: "dark", fontSize: 14 });
 
 // Retrieve with type inference
-const config = await storage.getItem('config');
+const config = await storage.getItem("config");
 
 // List all keys
 const keys = await storage.keys();
 
 // Remove an item or clear all
-await storage.removeItem('config');
+await storage.removeItem("config");
 await storage.clear();
 ```
 
 **Use `getLocalPluginStorage()` when:**
+
 - You need to store structured objects (not just strings)
 - Data should stay on one device
 
@@ -714,7 +739,7 @@ Access Risuai's database for characters, personas, and more:
 const db = await Risuai.getDatabase();
 
 // Request only specific keys for better performance
-const db = await Risuai.getDatabase(['characters', 'personas']);
+const db = await Risuai.getDatabase(["characters", "personas"]);
 
 // Access allowed properties
 console.log(db.characters);
@@ -732,6 +757,7 @@ await Risuai.setDatabaseLite(db);
 `getDatabase()` returns `null` if the user has not granted database access consent.
 
 **Allowed database keys:**
+
 - `characters`
 - `modules`
 - `enabledModules`
@@ -769,13 +795,14 @@ console.log(character.name);
 console.log(character.description);
 
 // Modify character
-character.customField = 'new value';
+character.customField = "new value";
 
 // Save changes
 await Risuai.setCharacter(character);
 ```
 
 **Legacy names** (still work, but prefer new names):
+
 - `Risuai.getChar()` : Use `Risuai.getCharacter()`
 - `Risuai.setChar()` : Use `Risuai.setCharacter()`
 
@@ -795,7 +822,7 @@ if (character) {
 }
 
 // Save a modified character back by index
-character.description = 'Updated description';
+character.description = "Updated description";
 await Risuai.setCharacterToIndex(0, character);
 
 // Read a specific chat for a character
@@ -814,13 +841,13 @@ await Risuai.setChatToIndex(charIndex, chatIndex, chat);
 Uses Risuai's fetch with CORS handling and proxy support:
 
 ```javascript
-const response = await Risuai.nativeFetch('https://api.example.com/data', {
-  method: 'POST',
+const response = await Risuai.nativeFetch("https://api.example.com/data", {
+  method: "POST",
   headers: {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${await Risuai.getArgument('api_key')}`
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${await Risuai.getArgument("api_key")}`,
   },
-  body: JSON.stringify({ query: 'hello' })
+  body: JSON.stringify({ query: "hello" }),
 });
 
 const data = await response.json();
@@ -832,7 +859,7 @@ console.log(`Received: ${JSON.stringify(data)}`);
 Direct browser fetch (may have CORS issues):
 
 ```javascript
-const response = await Risuai.nativeFetch('https://api.example.com/data');
+const response = await Risuai.nativeFetch("https://api.example.com/data");
 const data = await response.json();
 ```
 
@@ -842,22 +869,23 @@ Modify content at different processing stages:
 
 ```javascript
 // Add handler for display output
-Risuai.addRisuScriptHandler('display', async (content) => {
+Risuai.addRisuScriptHandler("display", async (content) => {
   // Modify content before display
-  return content.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  return content.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 });
 
 // Add handler for user input
-Risuai.addRisuScriptHandler('input', async (content) => {
+Risuai.addRisuScriptHandler("input", async (content) => {
   // Process user input before sending
   return content.trim();
 });
 
 // Remove handler
-Risuai.removeRisuScriptHandler('display', handlerFunction);
+Risuai.removeRisuScriptHandler("display", handlerFunction);
 ```
 
 **Available modes:**
+
 - `'display'` - Modify content before showing to user
 - `'output'` - Modify AI output
 - `'process'` - Modify content during processing
@@ -869,29 +897,26 @@ Replace or modify message arrays:
 
 ```javascript
 // Add replacer before sending to AI
-Risuai.addRisuReplacer('beforeRequest', async (messages, type) => {
+Risuai.addRisuReplacer("beforeRequest", async (messages, type) => {
   // Add system message
-  return [
-    { role: 'system', content: 'You are a helpful assistant.' },
-    ...messages
-  ];
+  return [{ role: "system", content: "You are a helpful assistant." }, ...messages];
 });
 
 // Add replacer after receiving from AI
-Risuai.addRisuReplacer('afterRequest', async (content, type) => {
+Risuai.addRisuReplacer("afterRequest", async (content, type) => {
   // Modify response text
   return content.toUpperCase();
 });
 
 // Remove replacer
-Risuai.removeRisuReplacer('beforeRequest', replacerFunction);
+Risuai.removeRisuReplacer("beforeRequest", replacerFunction);
 ```
 
 ### Asset Management
 
 ```javascript
 // Read image assets
-const imageData = await Risuai.readImage('asset-id');
+const imageData = await Risuai.readImage("asset-id");
 
 // Save assets
 const savedPath = await Risuai.saveAsset(assetData);
@@ -930,7 +955,7 @@ Change the application color scheme at runtime:
 // Switch to a preset color scheme
 // Available presets: 'default', 'dark', 'light', 'cherry', 'galaxy',
 //                   'nature', 'realblack', 'monokai-light', 'monokai-black'
-await Risuai.changeColorScheme('dark');
+await Risuai.changeColorScheme("dark");
 
 // Get the current scheme name and values
 const { name, scheme } = await Risuai.getColorScheme();
@@ -939,16 +964,16 @@ console.log(scheme.bgcolor);
 
 // Apply a fully custom color scheme
 await Risuai.setColorScheme({
-  bgcolor: '#1a1a2e',
-  darkbg: '#16213e',
-  borderc: '#0f3460',
-  selected: '#e94560',
-  draculared: '#e94560',
-  textcolor: '#ffffff',
-  textcolor2: '#a8a8b3',
-  darkBorderc: '#0a2040',
-  darkbutton: '#0f3460',
-  type: 'dark'
+  bgcolor: "#1a1a2e",
+  darkbg: "#16213e",
+  borderc: "#0f3460",
+  selected: "#e94560",
+  draculared: "#e94560",
+  textcolor: "#ffffff",
+  textcolor2: "#a8a8b3",
+  darkBorderc: "#0a2040",
+  darkbutton: "#0f3460",
+  type: "dark",
 });
 ```
 
@@ -958,19 +983,19 @@ Control chat text colors:
 
 ```javascript
 // Switch to a preset text theme: 'standard' | 'highcontrast'
-await Risuai.changeTextTheme('highcontrast');
+await Risuai.changeTextTheme("highcontrast");
 
 // Get current theme
 const { name, customTheme } = await Risuai.getTextTheme();
 
 // Apply a custom text theme
 await Risuai.setCustomTextTheme({
-  FontColorStandard: '#ffffff',
-  FontColorBold: '#ffdd57',
-  FontColorItalic: '#aabbff',
-  FontColorItalicBold: '#ffaaff',
-  FontColorQuote1: '#88ffaa',
-  FontColorQuote2: '#ffaa88'
+  FontColorStandard: "#ffffff",
+  FontColorBold: "#ffdd57",
+  FontColorItalic: "#aabbff",
+  FontColorItalicBold: "#ffaaff",
+  FontColorQuote1: "#88ffaa",
+  FontColorQuote2: "#ffaa88",
 });
 ```
 
@@ -988,7 +1013,7 @@ Runs before TTS synthesis for every message, across every provider (including `w
 
 (async () => {
   await Risuai.addTTSPreprocessor(async (ctx) => {
-    return { text: '[narrator] ' + ctx.text };
+    return { text: "[narrator] " + ctx.text };
   });
 })();
 ```
@@ -1010,7 +1035,7 @@ Does **not** run for the `webspeech` provider (the browser synthesizes and plays
     const decoded = await audioCtx.decodeAudioData(ctx.audio);
     // ... analyse peak amplitude, produce a normalised Float32Array,
     //     re-encode to wav bytes as `newBytes` ...
-    return { audio: newBytes, mimeType: 'audio/wav' };
+    return { audio: newBytes, mimeType: "audio/wav" };
   });
 })();
 ```
@@ -1030,37 +1055,38 @@ Register a plugin as a custom AI provider that Risuai can use for generation:
 
 ```javascript
 await Risuai.addProvider(
-  'MyProvider',
+  "MyProvider",
   async (args, abortSignal) => {
-    const response = await Risuai.nativeFetch('https://api.example.com/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const response = await Risuai.nativeFetch("https://api.example.com/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         messages: args.prompt_chat,
         temperature: args.temperature / 100,
-        max_tokens: args.max_tokens
+        max_tokens: args.max_tokens,
       }),
-      signal: abortSignal
+      signal: abortSignal,
     });
 
     if (!response.ok) {
-      return { success: false, content: 'Request failed' };
+      return { success: false, content: "Request failed" };
     }
 
     const data = await response.json();
     return {
       success: true,
-      content: data.choices[0].message.content
+      content: data.choices[0].message.content,
       // content can also be a ReadableStream<string> for streaming
     };
   },
   {
-    tokenizer: 'gpt-4' // optional: tokenizer to use for context counting
-  }
+    tokenizer: "gpt-4", // optional: tokenizer to use for context counting
+  },
 );
 ```
 
 **`ProviderArguments` fields:**
+
 - `prompt_chat` — OpenAI-format message array
 - `temperature`, `max_tokens`, `frequency_penalty`, `presence_penalty`
 - `min_p`, `repetition_penalty`, `top_k`, `top_p`
@@ -1073,40 +1099,41 @@ Register a custom [Model Context Protocol](https://modelcontextprotocol.io/) mod
 ```javascript
 await Risuai.registerMCP(
   {
-    identifier: 'plugin:my-tools', // must start with 'plugin:'
-    name: 'My Tools',
-    version: '1.0.0',
-    description: 'Custom tools provided by my plugin'
+    identifier: "plugin:my-tools", // must start with 'plugin:'
+    name: "My Tools",
+    version: "1.0.0",
+    description: "Custom tools provided by my plugin",
   },
   // getToolList — return available tools
   async () => [
     {
-      name: 'get_weather',
-      description: 'Gets current weather for a city',
+      name: "get_weather",
+      description: "Gets current weather for a city",
       inputSchema: {
-        type: 'object',
+        type: "object",
         properties: {
-          city: { type: 'string', description: 'City name' }
+          city: { type: "string", description: "City name" },
         },
-        required: ['city']
-      }
-    }
+        required: ["city"],
+      },
+    },
   ],
   // callTool — handle tool invocations
   async (toolName, content) => {
-    if (toolName === 'get_weather') {
+    if (toolName === "get_weather") {
       const weather = await fetchWeather(content.city);
-      return [{ type: 'text', text: weather }];
+      return [{ type: "text", text: weather }];
     }
-    return [{ type: 'text', text: 'Unknown tool' }];
-  }
+    return [{ type: "text", text: "Unknown tool" }];
+  },
 );
 
 // Later, unregister the MCP module
-await Risuai.unregisterMCP('plugin:my-tools');
+await Risuai.unregisterMCP("plugin:my-tools");
 ```
 
 **Tool call content types** (`MCPToolCallContent`):
+
 - `{ type: 'text', text: string }` — plain text result
 - `{ type: 'image' | 'audio', data: string, mimeType: string }` — base64 media
 - `{ type: 'resource', resource: { uri, mimeType, text } }` — resource reference
@@ -1125,7 +1152,7 @@ const interceptor = await Risuai.registerBodyIntercepter(async (body, type) => {
 
 // Returns null if user denies permission
 if (interceptor) {
-  console.log('Interceptor registered:', interceptor.id);
+  console.log("Interceptor registered:", interceptor.id);
 
   // Later, unregister
   await Risuai.unregisterBodyIntercepter(interceptor.id);
@@ -1141,7 +1168,7 @@ Register a function to run when the plugin is unloaded (e.g., when the user disa
 ```javascript
 await Risuai.onUnload(async () => {
   // Clean up resources, remove event listeners, etc.
-  console.log('Plugin unloading...');
+  console.log("Plugin unloading...");
 });
 ```
 
@@ -1159,7 +1186,7 @@ Some APIs require explicit user consent. Use `requestPluginPermission` to prompt
 
 ```javascript
 // Request a specific permission
-const granted = await Risuai.requestPluginPermission('fetchLogs');
+const granted = await Risuai.requestPluginPermission("fetchLogs");
 if (granted) {
   const logs = await Risuai.getFetchLogs();
 }
@@ -1172,9 +1199,9 @@ if (granted) {
 Access a log of recent LLM HTTP requests (requires `'fetchLogs'` permission):
 
 ```javascript
-const granted = await Risuai.requestPluginPermission('fetchLogs');
+const granted = await Risuai.requestPluginPermission("fetchLogs");
 if (!granted) {
-  console.log('Permission denied');
+  console.log("Permission denied");
   return;
 }
 
@@ -1194,9 +1221,9 @@ if (logs) {
 
 ```javascript
 const info = await Risuai.getRuntimeInfo();
-console.log(info.apiVersion);  // e.g., '3.0'
-console.log(info.platform);    // 'web' or 'node'
-console.log(info.saveMethod);  // always 'local' ('account' was returned before Risu Account sync was removed)
+console.log(info.apiVersion); // e.g., '3.0'
+console.log(info.platform); // 'web' or 'node'
+console.log(info.saveMethod); // always 'local' ('account' was returned before Risu Account sync was removed)
 ```
 
 #### Unwrap SafeClassArray
@@ -1213,15 +1240,15 @@ Search or retrieve entries from the LLM translation cache:
 
 ```javascript
 // Search by partial key
-const results = await Risuai.searchTranslationCache('hello');
+const results = await Risuai.searchTranslationCache("hello");
 for (const { key, value } of results) {
   console.log(`${key} => ${value}`);
 }
 
 // Exact key lookup
-const translation = await Risuai.getTranslationCache('hello world');
+const translation = await Risuai.getTranslationCache("hello world");
 if (translation) {
-  console.log('Cached:', translation);
+  console.log("Cached:", translation);
 }
 ```
 
@@ -1262,10 +1289,10 @@ Prefer `pluginStorage` over `safeLocalStorage` for syncable data:
 
 ```javascript
 //  Good - syncs across devices
-Risuai.pluginStorage.setItem('settings', JSON.stringify(settings));
+Risuai.pluginStorage.setItem("settings", JSON.stringify(settings));
 
 // Device-specific only
-Risuai.safeLocalStorage.setItem('device_id', id);
+Risuai.safeLocalStorage.setItem("device_id", id);
 ```
 
 ### 4. Clean Up Resources
@@ -1276,11 +1303,11 @@ Remove event listeners when done:
 const listeners = [];
 
 // Store listener IDs
-listeners.push(await element.addEventListener('click', handler));
+listeners.push(await element.addEventListener("click", handler));
 
 // Clean up
 for (const id of listeners) {
-  await element.removeEventListener('click', id);
+  await element.removeEventListener("click", id);
 }
 ```
 
@@ -1290,14 +1317,14 @@ Prefer new API names over deprecated ones:
 
 ```javascript
 //  Modern
-await Risuai.getCharacter()
-await Risuai.setCharacter(char)
-await Risuai.getArgument(key)
+await Risuai.getCharacter();
+await Risuai.setCharacter(char);
+await Risuai.getArgument(key);
 
 // L Deprecated (still work but avoid)
-await Risuai.getChar()
-await Risuai.setChar(char)
-await Risuai.getArg(key)
+await Risuai.getChar();
+await Risuai.setChar(char);
+await Risuai.getArg(key);
 ```
 
 ### 6. Respect the Sandbox
@@ -1331,9 +1358,9 @@ Add clear comments and metadata:
   try {
     // Register settings button
     Risuai.registerSetting(
-      'Theme Settings',
+      "Theme Settings",
       async () => {
-        const theme = await Risuai.getArgument('theme');
+        const theme = await Risuai.getArgument("theme");
 
         document.body.innerHTML = `
           <div style="padding: 20px; background: #2d2d2d; color: white; font-family: sans-serif;">
@@ -1345,27 +1372,27 @@ Add clear comments and metadata:
           </div>
         `;
 
-        document.getElementById('light-btn').addEventListener('click', async () => {
-          await Risuai.setArgument('theme', 'light');
-          console.log('Theme set to light');
+        document.getElementById("light-btn").addEventListener("click", async () => {
+          await Risuai.setArgument("theme", "light");
+          console.log("Theme set to light");
         });
 
-        document.getElementById('dark-btn').addEventListener('click', async () => {
-          await Risuai.setArgument('theme', 'dark');
-          console.log('Theme set to dark');
+        document.getElementById("dark-btn").addEventListener("click", async () => {
+          await Risuai.setArgument("theme", "dark");
+          console.log("Theme set to dark");
         });
 
-        document.getElementById('close-btn').addEventListener('click', () => {
+        document.getElementById("close-btn").addEventListener("click", () => {
           Risuai.hideContainer();
         });
 
-        Risuai.showContainer('fullscreen');
+        Risuai.showContainer("fullscreen");
       },
-      'https://example.com/icon_src_here.png',
-      'img'
+      "https://example.com/icon_src_here.png",
+      "img",
     );
 
-    console.log('Settings panel registered');
+    console.log("Settings panel registered");
   } catch (error) {
     console.log(`Error: ${error.message}`);
   }
@@ -1381,44 +1408,46 @@ Add clear comments and metadata:
 
 (async () => {
   try {
-    Risuai.registerButton({
-      name: 'Show Character Info',
-      icon: '🛈',
-      iconType: 'html',
-      location: 'action',
-    }, async () => {
+    Risuai.registerButton(
+      {
+        name: "Show Character Info",
+        icon: "🛈",
+        iconType: "html",
+        location: "action",
+      },
+      async () => {
         const char = await Risuai.getCharacter();
 
         const rootDoc = Risuai.getRootDocument();
-        const body = rootDoc.querySelector('body');
+        const body = rootDoc.querySelector("body");
 
-        const infoBox = rootDoc.createElement('div');
-        await infoBox.setStyle('position', 'fixed');
-        await infoBox.setStyle('top', '50%');
-        await infoBox.setStyle('left', '50%');
-        await infoBox.setStyle('transform', 'translate(-50%, -50%)');
-        await infoBox.setStyle('background', 'white');
-        await infoBox.setStyle('padding', '20px');
-        await infoBox.setStyle('border', '2px solid black');
-        await infoBox.setStyle('zIndex', '9999');
+        const infoBox = rootDoc.createElement("div");
+        await infoBox.setStyle("position", "fixed");
+        await infoBox.setStyle("top", "50%");
+        await infoBox.setStyle("left", "50%");
+        await infoBox.setStyle("transform", "translate(-50%, -50%)");
+        await infoBox.setStyle("background", "white");
+        await infoBox.setStyle("padding", "20px");
+        await infoBox.setStyle("border", "2px solid black");
+        await infoBox.setStyle("zIndex", "9999");
 
         await infoBox.setInnerHTML(`
           <h2>${char.name}</h2>
-          <p><strong>Description:</strong> ${char.description || 'No description'}</p>
+          <p><strong>Description:</strong> ${char.description || "No description"}</p>
           <button id="close-info">Close</button>
         `);
 
         await body.appendChild(infoBox);
 
-        const closeBtn = await infoBox.querySelector('#close-info');
+        const closeBtn = await infoBox.querySelector("#close-info");
         if (closeBtn) {
-          await closeBtn.addEventListener('click', async () => {
+          await closeBtn.addEventListener("click", async () => {
             await infoBox.remove();
           });
         }
-      }
+      },
     );
-    console.log('Character info button registered');
+    console.log("Character info button registered");
   } catch (error) {
     console.log(`Error: ${error.message}`);
   }
@@ -1437,17 +1466,17 @@ Add clear comments and metadata:
     const rootDoc = Risuai.getRootDocument();
 
     // Add a status indicator
-    const indicator = rootDoc.createElement('div');
-    await indicator.setStyle('position', 'fixed');
-    await indicator.setStyle('bottom', '10px');
-    await indicator.setStyle('right', '10px');
-    await indicator.setStyle('padding', '10px');
-    await indicator.setStyle('background', '#4CAF50');
-    await indicator.setStyle('color', 'white');
-    await indicator.setStyle('borderRadius', '5px');
-    await indicator.setTextContent('Plugin Active');
+    const indicator = rootDoc.createElement("div");
+    await indicator.setStyle("position", "fixed");
+    await indicator.setStyle("bottom", "10px");
+    await indicator.setStyle("right", "10px");
+    await indicator.setStyle("padding", "10px");
+    await indicator.setStyle("background", "#4CAF50");
+    await indicator.setStyle("color", "white");
+    await indicator.setStyle("borderRadius", "5px");
+    await indicator.setTextContent("Plugin Active");
 
-    const body = rootDoc.querySelector('body');
+    const body = rootDoc.querySelector("body");
     if (body) {
       await body.appendChild(indicator);
     }
@@ -1463,11 +1492,11 @@ Add clear comments and metadata:
       observer.observe(body, {
         childList: true,
         subtree: true,
-        attributes: false
+        attributes: false,
       });
     }
 
-    console.log('DOM monitoring started');
+    console.log("DOM monitoring started");
   } catch (error) {
     console.log(`Error: ${error.message}`);
   }
@@ -1484,25 +1513,25 @@ Add clear comments and metadata:
 (async () => {
   try {
     // Process AI output to convert markdown-style bold
-    Risuai.addRisuScriptHandler('output', async (content) => {
+    Risuai.addRisuScriptHandler("output", async (content) => {
       // **bold** <strong>bold</strong>
-      content = content.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      content = content.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 
       // *italic* <em>italic</em>
-      content = content.replace(/\*(.+?)\*/g, '<em>$1</em>');
+      content = content.replace(/\*(.+?)\*/g, "<em>$1</em>");
 
       return content;
     });
 
     // Process user input to add timestamps
-    Risuai.addRisuScriptHandler('input', async (content) => {
+    Risuai.addRisuScriptHandler("input", async (content) => {
       const timestamp = new Date().toLocaleTimeString();
-      Risuai.pluginStorage.setItem('last_input_time', timestamp);
+      Risuai.pluginStorage.setItem("last_input_time", timestamp);
 
       return content;
     });
 
-    console.log('Markdown processor registered');
+    console.log("Markdown processor registered");
   } catch (error) {
     console.log(`Error: ${error.message}`);
   }
@@ -1531,14 +1560,14 @@ console.log(char); // Actual character object
 
 ```javascript
 // L Wrong - throws error
-await element.setAttribute('onclick', 'alert()');
+await element.setAttribute("onclick", "alert()");
 
 //  Correct - use x- prefix for custom attributes
-await element.setAttribute('x-custom-id', 'my-id');
+await element.setAttribute("x-custom-id", "my-id");
 
 //  Or use dedicated methods
-await element.setStyle('color', 'red');
-await element.setInnerHTML('<div>Safe content</div>');
+await element.setStyle("color", "red");
+await element.setInnerHTML("<div>Safe content</div>");
 ```
 
 ### Event listeners not working
@@ -1547,15 +1576,15 @@ await element.setInnerHTML('<div>Safe content</div>');
 
 ```javascript
 // L Wrong - need await and ID storage
-element.addEventListener('click', handler);
+element.addEventListener("click", handler);
 
 //  Correct
-const listenerId = await element.addEventListener('click', async (e) => {
+const listenerId = await element.addEventListener("click", async (e) => {
   // Handle event
 });
 
 // Later, remove with ID
-await element.removeEventListener('click', listenerId);
+await element.removeEventListener("click", listenerId);
 ```
 
 ### Plugin storage not persisting
@@ -1567,10 +1596,10 @@ await element.removeEventListener('click', listenerId);
 
 ```javascript
 // For user preferences (syncs)
-Risuai.pluginStorage.setItem('preference', 'value');
+Risuai.pluginStorage.setItem("preference", "value");
 
 // For device-specific data
-Risuai.safeLocalStorage.setItem('device_id', 'uuid');
+Risuai.safeLocalStorage.setItem("device_id", "uuid");
 ```
 
 ### Script tags being removed from HTML
@@ -1583,10 +1612,10 @@ await element.setInnerHTML('<script>alert("XSS")</script>');
 // Result: empty element (script removed)
 
 // Use event listeners instead
-const button = rootDoc.createElement('button');
-await button.setTextContent('Click Me');
-await button.addEventListener('click', async () => {
-  console.log('Button clicked!');
+const button = rootDoc.createElement("button");
+await button.setTextContent("Click Me");
+await button.addEventListener("click", async () => {
+  console.log("Button clicked!");
 });
 ```
 
@@ -1597,15 +1626,15 @@ await button.addEventListener('click', async () => {
 ```javascript
 // L Wrong - these are separate contexts
 const rootDoc = Risuai.getRootDocument();
-rootDoc.querySelector('#my-iframe-element'); // Won't find it
+rootDoc.querySelector("#my-iframe-element"); // Won't find it
 
 //  Correct - access each separately
 // Your iframe's DOM:
-document.getElementById('my-iframe-element');
+document.getElementById("my-iframe-element");
 
 // Risuai's main DOM:
 const rootDoc = Risuai.getRootDocument();
-await rootDoc.querySelector('.Risuai-element');
+await rootDoc.querySelector(".Risuai-element");
 ```
 
 ### Changes not saving to database
@@ -1630,6 +1659,7 @@ await Risuai.setDatabase(db); // Or setDatabaseLite(db)
 If you're updating an older plugin, see the [Migration Guide](./migrationGuide.md) for detailed migration instructions from API v2.1 to v3.0.
 
 **Key differences:**
+
 - All APIs are now async (use `await`)
 - Access through `Risuai` object instead of global functions
 - Use `getRootDocument()` instead of `document`

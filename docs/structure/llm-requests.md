@@ -1,6 +1,7 @@
 # LLM Requests, Model Catalogue, Tokenizers
 
 ## Scope
+
 - Owns:
   - the model catalogue and model-ID resolution,
   - request dispatch by wire format,
@@ -25,6 +26,7 @@
   - Prompt assembly → `chat-pipeline.md`.
 
 ## Files
+
 - `model/types.ts`: the catalogue enums and types.
   - Numeric enums `LLMFlags`, `LLMProvider`, `LLMFormat`, `LLMTokenizer`.
   - `LLMModel`: `id`, `name`, `internalID`, `provider`, `format`, `flags[]`, `parameters`, `tokenizer`, `endpoint`, `keyIdentifier`.
@@ -68,6 +70,7 @@
 - `CustomModelsSettings.svelte`: edits `db.customModels` entries `{id:'xcustom:::uuid', internalId, url, format, tokenizer, key, name, params, flags}`.
 
 ## Flows
+
 1. Callers invoke `requestChatData`. They include `sendChat`, the translator (`'translate'`), memory (`'memory'`), emotion, triggers and Lua (`runLLM`), `Suggestion.svelte`, MCP `aiaccess`, `IrisModal` (`'otherAx'`), and the playground. Plugin v3 `runLLMModel` calls `requestChatDataMain` directly.
 2. `requestChatDataMain` resolves the model:
    1. `staticModel`.
@@ -85,6 +88,7 @@
 5. Streams yield cumulative `StreamResponseChunk` snapshots (key `'0'`, plus metadata such as `__tool_calls`). Tool calls go through `mcp.ts:callTool`, the results are appended, and the request recurses.
 
 ## State
+
 - `db` fields:
   - Model choice: `aiModel`, `subModel`, `seperateModels`, `seperateModelsForAxModels`, `doNotChangeSeperateModels`, `fallbackModels`.
   - Custom models and parameters: `customModels`, `customFlags`, `additionalParams`, `seperateParameters`.
@@ -94,10 +98,12 @@
 - `requestDataResponse` is `{type: 'success'|'fail'|'streaming'|'multiline', result, ...}`.
 
 ## Coupling
+
 - Depends on `database.svelte.ts`, `globalApi.svelte.ts` (`globalFetch`/`fetchNative`), `stringlize.ts`, `templates/chatTemplate.ts`, `tokenizer.ts`, `mcp.ts`, plugin stores (`customProviderStore`, `customV3ProviderMetaStore`), inlays, and `platform.ts`.
 - UI model pickers mutate `DBState.db` directly.
 
 ## Invariants
+
 - Only append to the numeric enums (`LLMFlags`, `LLMProvider`, `LLMFormat`, `LLMTokenizer`). Saved custom models store these numbers.
 - A model's `format`, `flags`, `parameters`, `internalID`, endpoint, and tokenizer must agree. Wrong flags silently change the prompt shape.
 - Streaming consumers expect cumulative text, not deltas. Tool metadata must survive to the final chunk.
@@ -113,6 +119,7 @@
 - `requestChatDataMain` mutates its argument object. Do not reuse it after the call.
 
 ## Recipes
+
 - Add a model to a static provider: add an `LLMModel` in `model/providers/<p>.ts` with a stable `id`, the wire-level `internalID`, and accurate flags, parameters, and tokenizer. Verify with `getModelInfo(id)`, `getModelList`, and a request preview.
 - Add a custom endpoint without code: use `CustomModelsSettings` to create an `xcustom:::` model.
 - Add a provider that reuses an existing wire format: add a provider name, the model records, and the endpoint/key selection, then route through the existing handler.
@@ -126,11 +133,13 @@
   7. Add tests next to `requests.responses.test.ts`.
 
 ## Tests
+
 - `request/openAI/requests.responses.test.ts`: Responses API bodies, reasoning, tools, continuation sanitizing, and SSE parsing.
 - `request/tests/additionalParams.test.ts`.
 - Not tested: OpenAI Chat SSE and tools, Anthropic, Gemini, the legacy handlers, `getModelInfo`, tokenizer selection, and proxy routing.
 
 ## Known Hazards
+
 - `getModelList` pushes plugin models into `LLMModels`, so repeated calls can duplicate them.
 - In the `encode` custom-tokenizer path, `llama3` calls the `llama` tokenizer. `encodeWithTokenizer` does not do this.
 - `CustomModelsSettings` does not expose every format or tokenizer value (Plugin, Ollama, Horde, Echo, NanoGPT variants, and `Local` are missing).

@@ -1,24 +1,30 @@
-import type { SettingItem, SettingContext } from './types';
-import { DBState } from '../stores.svelte';
-import { language } from 'src/lang';
-import { accessibilitySettingsItems } from './accessibilitySettingsData';
-import { advancedSettingsItems } from './advancedSettingsData';
-import { basicParameterItems, modelSpecificParameterItems, penaltyParameterItems, samplingParameterItems, seedSetting } from './botSettingsParamsData';
-import { chatFormatSettingsItems } from './chatFormatSettingsData';
-import { displaySettingsItems } from './displaySettingsData.svelte';
+import type { SettingItem, SettingContext } from "./types";
+import { DBState } from "../stores.svelte";
+import { language } from "src/lang";
+import { accessibilitySettingsItems } from "./accessibilitySettingsData";
+import { advancedSettingsItems } from "./advancedSettingsData";
+import {
+    basicParameterItems,
+    modelSpecificParameterItems,
+    penaltyParameterItems,
+    samplingParameterItems,
+    seedSetting,
+} from "./botSettingsParamsData";
+import { chatFormatSettingsItems } from "./chatFormatSettingsData";
+import { displaySettingsItems } from "./displaySettingsData.svelte";
 
 /**
  * Sentinel value representing an uninitialized local state in wrapper components.
  * Used instead of `undefined` so that a legitimate `undefined` DB value
  * can still be written back without being silently ignored.
  */
-export const UNINITIALIZED = Symbol('uninitialized');
+export const UNINITIALIZED = Symbol("uninitialized");
 
 export function getLabel(item: SettingItem): string {
     if (item.labelKey && (language as any)[item.labelKey]) {
         return (language as any)[item.labelKey];
     }
-    return item.fallbackLabel ?? '';
+    return item.fallbackLabel ?? "";
 }
 
 export function getSettingValue(item: SettingItem, ctx: SettingContext): any {
@@ -26,7 +32,7 @@ export function getSettingValue(item: SettingItem, ctx: SettingContext): any {
         return item.getValue(DBState.db, ctx);
     }
     if (item.bindPath) {
-        const parts = item.bindPath.split('.');
+        const parts = item.bindPath.split(".");
         let value: any = DBState.db;
         for (const part of parts) {
             value = value?.[part];
@@ -43,7 +49,7 @@ export function setSettingValue(item: SettingItem, newValue: any, ctx: SettingCo
     if (item.setValue) {
         item.setValue(DBState.db, newValue, ctx);
     } else if (item.bindPath) {
-        const parts = item.bindPath.split('.');
+        const parts = item.bindPath.split(".");
         let obj: any = DBState.db;
         for (let i = 0; i < parts.length - 1; i++) {
             obj = obj[parts[i]] ??= {};
@@ -52,7 +58,7 @@ export function setSettingValue(item: SettingItem, newValue: any, ctx: SettingCo
     } else if (item.bindKey) {
         (DBState.db as any)[item.bindKey] = newValue;
     }
-    
+
     if (item.onChange) {
         item.onChange(newValue, ctx);
     }
@@ -66,8 +72,8 @@ export function checkCondition(item: SettingItem, ctx: SettingContext): boolean 
     return item.condition(ctx);
 }
 
-export function getFullSettingsData(searchTerm = '') {
-    const full =  accessibilitySettingsItems.concat(
+export function getFullSettingsData(searchTerm = "") {
+    const full = accessibilitySettingsItems.concat(
         advancedSettingsItems,
         basicParameterItems,
         seedSetting,
@@ -78,14 +84,12 @@ export function getFullSettingsData(searchTerm = '') {
         displaySettingsItems,
     );
 
-    if(!searchTerm) return full;
+    if (!searchTerm) return full;
 
     const lowerSearch = searchTerm.toLowerCase();
-    return full.filter(item => {
+    return full.filter((item) => {
         const label = getLabel(item).toLowerCase();
-        const keywords = item.keywords?.map(k => k.toLowerCase()) || [];
-        return label.includes(lowerSearch) || keywords.some(k => k.includes(lowerSearch));
+        const keywords = item.keywords?.map((k) => k.toLowerCase()) || [];
+        return label.includes(lowerSearch) || keywords.some((k) => k.includes(lowerSearch));
     });
-
-
 }

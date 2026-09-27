@@ -1,6 +1,7 @@
 # Long-Term Memory and Embeddings
 
 ## Scope
+
 - Owns: the summarization and retrieval memory algorithms (SupaMemory, HypaMemory V2, HypaMemory V3, Hanurai), the embedding processors, the rate limiter, local Transformers.js models, the HypaV3 editor modal, the progress overlay, and the embedding playground.
 - Paths: `src/ts/process/memory/*`, `src/ts/process/transformers.ts`, `src/lib/Others/HypaV3Modal.svelte`, `src/lib/Others/HypaV3Modal/*`, `src/lib/Others/HypaV3Progress.svelte`, `src/lib/Playground/PlaygroundEmbedding.svelte`.
 - Not here:
@@ -8,7 +9,9 @@
   - Settings UI placement → `settings-i18n.md` (`OtherBotSettings.svelte`).
 
 ## Files
+
 Algorithms:
+
 - `memory/supaMemory.ts` `supaMemory`: the older summarizer and the fallback branch. It persists `Chat.supaMemoryData` in one of two formats:
   - `lastId + '\n' + text`, or
   - `hypa:\n` followed by JSON `HypaData[]`, used when `arg.asHyper` is set.
@@ -27,6 +30,7 @@ Algorithms:
   - Private: the processor subclass `HypaProcesserEx`.
 
 Embedding processors:
+
 - `memory/hypamemory.ts`: the shared V1 embedding engine, used well beyond memory.
   - `HypaProcesser` has `addText`, `similaritySearchScored`, and `getEmbeds`.
   - Also exports the `HypaModel` union, the `localModels` registry, and `similarity`/`cosineSimilarity`/`contextHash`.
@@ -38,34 +42,41 @@ Embedding processors:
   - `runSummarizer`, `runImageEmbedding` (captioning), `runVITS`, `runTransformers`.
 
 UI:
+
 - `HypaV3Modal.svelte` and its children in `HypaV3Modal/` edit the current chat's `hypaV3Data` in place: search, filters, categories, tags, bulk edit, resummarize, reset, and V2→V3 conversion.
 - `HypaV3Modal/utils.ts` `processRegexScript`: routes messages through `risuChatParser` and `processScriptFull(..., 'editprocess')`.
 - `HypaV3Progress.svelte` renders `hypaV3ProgressStore`.
 
 ## Flows
+
 Selection, in `sendChat`:
+
 - Memory runs only when `nowChatroom.supaMemory` is set on the character or group.
 - The priority order is `db.hanuraiEnable` → `db.hypav2` → `db.hypaV3` → otherwise `supaMemory` (as selected by `supaModelType`).
 - The result is written back to the current chat: `hypaV2Data`, `hypaV3Data`, or `supaMemoryData`.
 - `memoryAlgorithmType` is written by the UI and never read.
 
 V3 standard flow:
+
 1. Summarize the oldest eligible chats into `Summary {text, chatMemos:Set<string>, isImportant, categoryId?, tags?}`.
 2. Select summaries within the memory token budget, in the order important → recent → similar (embeddings) → random.
 3. Record the selection in `metrics`.
 4. Prepend a `<Past Events Summary>` card with `memo:'supaMemory'`.
 
 V3 `summarize`:
+
 1. Replaces inlay tokens with `[Image]`.
 2. Expands `{{slot}}` and runs `parseChatML`.
 3. Calls `requestChatData(..., 'memory')` for the submodel, or WebLLM `chatCompletion` for local models.
 4. Strips thought blocks from the result.
 
 Embedding routing:
+
 - `HypaProcesser.getEmbeds` tries, in order: contextual Voyage, then `localModels` (Transformers.js), then custom or OpenAI APIs through `globalFetch`.
 - Vector records are cached in LocalForage `hypaVector`.
 
 ## State
+
 - DB settings:
   - Algorithm flags: `hypaMemory`, `hypav2`, `hypaV3`, `hanuraiEnable`, `hanuraiSplit`, `hanuraiTokens`, `memoryAlgorithmType` (unused).
   - Models and keys: `hypaModel`, `supaModelType`, `supaMemoryKey`, `voyageApiKey`.
@@ -75,6 +86,7 @@ Embedding routing:
 - Stores: `hypaV3ModalOpen`, `hypaV3ProgressStore`.
 
 ## Coupling
+
 - Memory depends on `requestChatData`, `webllm`, `ChatTokenizer`, `parseChatML`, `processScriptFull`, `risuChatParser`, `inlayTokenRegex`, localforage, and Transformers.js.
 - Users of `HypaProcesser`:
   - `scripts.ts`: dynamic assets.
@@ -83,6 +95,7 @@ Embedding routing:
   - `files/multisend.ts`, `embedding/addinfo.ts`, `mcp/graphmem.ts`, the main pipeline, and the playground.
 
 ## Invariants
+
 - Never persist a runtime `Set`. Use the `toSerializable*` and `to*Data` converters in both directions.
 - `chatMemos` reference `Message.chatId` values. Rewriting chat IDs orphans summaries, which get cleaned unless `preserveOrphanedMemory` is set.
 - The memory card `memo` values `supaMemory` and `hypaMemory` are special-cased later in prompt assembly. Do not rename them.
@@ -92,6 +105,7 @@ Embedding routing:
 - `TaskRateLimiter` rejects `maxConcurrentTasks > tasksPerMinute`.
 
 ## Recipes
+
 - Add or change a top-level algorithm: the selector in `OtherBotSettings.svelte`, the DB fields and defaults in `setDatabase`, and the branch plus persistence in `sendChat`. Verify the `supaMemory` gate and the priority order.
 - Add an embedding model: `hypamemory.ts` (`HypaModel`, `localModels`, `getEmbeds`), `hypamemoryv2.ts:getAPIEmbeds`, `transformers.ts` `EmbeddingModel`, and the UI options.
 - Add a contextual provider: `contextualEmbedding.ts`, the grouped paths in `HypaProcessorV2`, and `HypaProcesserEx.addSummaryChunksContextual`.
@@ -99,9 +113,11 @@ Embedding routing:
 - Add summary metadata: the serializable types, `HypaV3Modal/types.ts`, the modal, and its child components. Keep the modal's `$derived`/`$effect.pre` patterns.
 
 ## Tests
+
 - None cover the algorithms, processors, rate limiter, or modal.
 - `scriptings.test.ts` only mocks `HypaProcesser`.
 
 ## Known Hazards
+
 - `memoryAlgorithmType` can disagree with the actual boolean flags on old saves.
 - The Transformers `EmbeddingModel` union names only MiniLM and nomic, while `localModels` lists more models.

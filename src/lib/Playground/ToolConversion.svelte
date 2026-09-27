@@ -4,25 +4,24 @@
     import { selectMultipleFile } from "src/ts/util";
     import { detectPromptJSONType, promptConvertion } from "src/ts/process/prompt";
 
-    let files: { name: string, content: string, type:string }[] = $state([])
+    let files: { name: string; content: string; type: string }[] = $state([]);
 
     const addFile = async () => {
-        const selFiles = await selectMultipleFile(['json'])
+        const selFiles = await selectMultipleFile(["json"]);
 
-        for(let i = 0; i < selFiles.length; i++) {
-            const file = selFiles[i]
-            const text = new TextDecoder().decode(file.data)
+        for (let i = 0; i < selFiles.length; i++) {
+            const file = selFiles[i];
+            const text = new TextDecoder().decode(file.data);
             files.push({
                 name: file.name,
                 content: text,
                 type: detectPromptJSONType(text),
-            })
+            });
         }
 
-        console.log(files)
-        files = files
-
-    }
+        console.log(files);
+        files = files;
+    };
 </script>
 
 <h2 class="text-4xl text-textcolor my-6 font-black relative">{language.promptConvertion}</h2>
@@ -32,7 +31,7 @@
     {#each files as file, i}
         <div class="flex justify-between items-center">
             <div class="flex items-center justify-start">
-                {#if file.type !== 'NOTSUPPORTED'}
+                {#if file.type !== "NOTSUPPORTED"}
                     <span class="bg-blue-500 rounded-md text-white mr-2 font-bold px-2 py-1">{file.type}</span>
                 {:else}
                     <span class="bg-red-500 rounded-md text-white mr-2 font-bold px-2 py-1">NOTSUPPORTED</span>
@@ -44,6 +43,9 @@
     {/each}
     <Button onclick={addFile}>Add</Button>
 </div>
-<Button className="mt-6" onclick={() => {
-    promptConvertion(files)
-}}>Run</Button>
+<Button
+    className="mt-6"
+    onclick={() => {
+        promptConvertion(files);
+    }}>Run</Button
+>

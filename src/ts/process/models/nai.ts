@@ -1,72 +1,67 @@
-import { getDatabase } from "src/ts/storage/database.svelte"
-import { getUserName } from "src/ts/util"
-import type { OpenAIChat } from "../index.svelte"
+import { getDatabase } from "src/ts/storage/database.svelte";
+import { getUserName } from "src/ts/util";
+import type { OpenAIChat } from "../index.svelte";
 
-export function stringlizeNAIChat(formated:OpenAIChat[], char:string, continued: boolean){
-    const db = getDatabase()
-    let seperator = db.NAIsettings.seperator.replaceAll("\\n","\n") || '\n'
-    let starter = db.NAIsettings.starter.replaceAll("\\n","\n") || '⁂'
-    let resultString:string[] = []
+export function stringlizeNAIChat(formated: OpenAIChat[], char: string, continued: boolean) {
+    const db = getDatabase();
+    let seperator = db.NAIsettings.seperator.replaceAll("\\n", "\n") || "\n";
+    let starter = db.NAIsettings.starter.replaceAll("\\n", "\n") || "⁂";
+    let resultString: string[] = [];
 
-    for(const form of formated){
-        if(form.role === 'system'){
-            if(form.memo === 'NewChatExample' || form.memo === 'NewChat' || form.content === "[Start a new chat]"){
-                resultString.push(starter)
+    for (const form of formated) {
+        if (form.role === "system") {
+            if (form.memo === "NewChatExample" || form.memo === "NewChat" || form.content === "[Start a new chat]") {
+                resultString.push(starter);
+            } else {
+                resultString.push(form.content);
             }
-            else{
-                resultString.push(form.content)
+        } else if (form.name || form.role === "assistant") {
+            if (!db.NAIappendName) {
+                resultString.push(form.content);
+            } else {
+                resultString.push((form.name ?? char) + ": " + form.content);
             }
-        }
-        else if(form.name || form.role === 'assistant'){
-            if(!db.NAIappendName){
-                resultString.push(form.content)
+        } else if (form.role === "user") {
+            let res = "";
+            if (db.NAIadventure) {
+                res += "> ";
             }
-            else{
-                resultString.push((form.name ?? char) + ": " + form.content)
+            if (db.NAIappendName) {
+                res += getUserName() + ": ";
             }
-        }
-        else if(form.role === 'user'){
-            let res = ''
-            if(db.NAIadventure){
-                res += '> '
-            }
-            if(db.NAIappendName){
-                res += getUserName() + ": "
-            }
-            res += form.content
-            resultString.push(res)
-        }
-        else{
-            resultString.push(form.content)
+            res += form.content;
+            resultString.push(res);
+        } else {
+            resultString.push(form.content);
         }
     }
 
-    let res = resultString.join(seperator)
+    let res = resultString.join(seperator);
 
-    if(!continued){
-        res += `${seperator}${char}:`
+    if (!continued) {
+        res += `${seperator}${char}:`;
     }
-    console.log(res)
-    return res
+    console.log(res);
+    return res;
 }
 
-export interface NAISettings{
-    topK: number
-    topP: number
-    topA: number
-    tailFreeSampling: number
-    repetitionPenalty: number
-    repetitionPenaltyRange: number
-    repetitionPenaltySlope: number
-    repostitionPenaltyPresence: number
-    seperator: string
-    frequencyPenalty: number
-    presencePenalty: number
-    typicalp:number
-    starter:string
-    mirostat_lr?:number
-    mirostat_tau?:number
-    cfg_scale?:number
+export interface NAISettings {
+    topK: number;
+    topP: number;
+    topA: number;
+    tailFreeSampling: number;
+    repetitionPenalty: number;
+    repetitionPenaltyRange: number;
+    repetitionPenaltySlope: number;
+    repostitionPenaltyPresence: number;
+    seperator: string;
+    frequencyPenalty: number;
+    presencePenalty: number;
+    typicalp: number;
+    starter: string;
+    mirostat_lr?: number;
+    mirostat_tau?: number;
+    cfg_scale?: number;
 }
 
 export const NovelAIBadWordIds = [
@@ -387,4 +382,4 @@ export const NovelAIBadWordIds = [
     [41471],
     [2936],
     [23],
-]
+];

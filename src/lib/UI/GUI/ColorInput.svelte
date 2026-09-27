@@ -1,6 +1,6 @@
 <script lang="ts">
-    import ColorPicker from 'svelte-awesome-color-picker';
-    import { onMount, tick } from 'svelte';
+    import ColorPicker from "svelte-awesome-color-picker";
+    import { onMount, tick } from "svelte";
 
     interface Props {
         value?: string | null;
@@ -8,7 +8,7 @@
         oninput?: () => void;
     }
 
-    let { value = $bindable('#000000'), nullable = false, oninput }: Props = $props();
+    let { value = $bindable("#000000"), nullable = false, oninput }: Props = $props();
     let acceptsInput = false;
 
     onMount(() => {
@@ -24,16 +24,11 @@
 </script>
 
 <div class="cl rounded-full bg-white">
-    <ColorPicker
-        label=""
-        bind:hex={value}
-        nullable={nullable}
-        onInput={handleInput}
-    />
+    <ColorPicker label="" bind:hex={value} {nullable} onInput={handleInput} />
 </div>
 
 <style>
-    .cl{
+    .cl {
         --cp-bg-color: var(--risu-theme-bgcolor);
         --cp-border-color: var(--risu-theme-darkborderc);
         --cp-text-color: var(--risu-theme-textcolor);

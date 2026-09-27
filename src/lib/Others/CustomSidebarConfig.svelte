@@ -5,7 +5,6 @@
     import { getFullSettingsData } from "src/ts/setting/utils";
     import TextInput from "../UI/GUI/TextInput.svelte";
 
-
     let configPage: "list" | "add" | "addSettingsSubmenu" = $state("list");
     let search = $state("");
 </script>
@@ -21,28 +20,21 @@
         onclick={(e) => e.stopPropagation()}
     >
         {#if configPage === "list"}
-            <div
-                class="m-4 border-darkborderc p-2 border rounded-sm flex flex-col w-xl max-w-full"
-            >
+            <div class="m-4 border-darkborderc p-2 border rounded-sm flex flex-col w-xl max-w-full">
                 {#if DBState.db.customSidebarItems.length === 0}
-                    <div class="text-textcolor2">
-                        No custom sidebar items configured
-                    </div>
+                    <div class="text-textcolor2">No custom sidebar items configured</div>
                 {/if}
 
                 {#each DBState.db.customSidebarItems as item}
-                    <div
-                        class="border-darkborderc p-2 border rounded-sm flex items-start"
-                    >
+                    <div class="border-darkborderc p-2 border rounded-sm flex items-start">
                         <div class="flex-1">{item.label}</div>
 
                         <button
                             class="ml-2"
                             onclick={() => {
-                                DBState.db.customSidebarItems =
-                                    DBState.db.customSidebarItems.filter(
-                                        (i) => i.id !== item.id,
-                                    );
+                                DBState.db.customSidebarItems = DBState.db.customSidebarItems.filter(
+                                    (i) => i.id !== item.id,
+                                );
                             }}
                         >
                             Delete

@@ -1,6 +1,7 @@
 # Characters, Cards, Modules, Personas, Loadouts
 
 ## Scope
+
 - Owns:
   - character and group CRUD,
   - character card import and export (PNG, JSON, CharX, V2/V3, off-spec Tavern),
@@ -27,6 +28,7 @@
   - The Realm hub → `backup-sync-hub.md`.
 
 ## Files
+
 - `characterCards.ts`: card import, export, and hub helpers.
   - Import: `importCharacter` (file picker), `importCharacterProcess` (dispatch by extension), private `importCharacterCardSpec` (V2/V3), `convertOffSpecCards`, `convertCharbook`.
   - Export: `exportChar` (dialog), `exportCharacterCard` (writer), `createBaseV2`/`createBaseV3`.
@@ -63,7 +65,9 @@
   - `AssetInput.svelte`: chat stickers from `additionalAssets`.
 
 ## Flows
+
 Import (`importCharacterProcess`):
+
 - `.json`: `importCharacterCardSpec`, falling back to `convertOffSpecCards`.
 - `.png`/`.jpg`:
   1. `PngChunk.readGenerator` reads the `chara` (V2) and `ccv3` (V3) keys. `ccv3` wins when both exist.
@@ -76,17 +80,20 @@ Import (`importCharacterProcess`):
 - The result is a new `character` with a fresh `chaId`, pushed to `DBState.db.characters`.
 
 Export (`exportChar`, groups are not exportable):
+
 - V3 PNG: `ccv3` plus `chara-ext-asset_*` chunks.
 - V3 JSON: assets as data URIs.
 - CharX: `card.json`, `module.risum`, `assets/...`, `x_meta/...`.
 - V2 PNG: `chara`. This is the default in `exportCharacterCard` for compatibility.
 
 Drops and deep links (`App.svelte`, `characterURLImport`):
+
 - `.risup`/`.risupreset` → `importPreset`.
 - `.risum` → `readModule`.
 - Anything else → `importCharacterProcess`.
 
 Module activation (`getModules`): the union of:
+
 1. `db.enabledModules` (global),
 2. `chat.modules`,
 3. `character.modules`,
@@ -96,6 +103,7 @@ Module activation (`getModules`): the union of:
 The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `ChatBody`.
 
 ## State
+
 - `character`: identity and content fields plus `emotionImages`, `additionalAssets` (`[name, path, ext][]`), `ccAssets`, `customscript`, `triggerscript`, `globalLore`, `loreSettings`, `modules`, `lowLevelAccess`, the TTS fields, and `trashTime`.
 - `groupChat`: `type:'group'`, `characters: string[]`, `characterTalks`, `characterActive`, `autoMode`, `useCharacterLore`.
 - `loreBook`: `key`/`secondkey` (comma-separated), `content`, `insertorder`, `alwaysActive`, `selective`, `mode` (`normal|folder|child|...`), `useRegex`, `id`, `folder`, `bookVersion`.
@@ -103,10 +111,12 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - `RisuPersona`: `name`, `icon`, `personaPrompt`, `note`, `id`, `largePortrait`, `embeddedModule`. The active persona is mirrored into the legacy DB fields `username`, `userIcon`, `personaPrompt`, `userNote`.
 
 ## Coupling
+
 - Depends on `database.svelte.ts`, `stores.svelte.ts` (`selectedCharID`, `ReloadGUIPointer`, `moduleBackgroundEmbedding`), `globalApi` assets and writers, `alert.ts`, `util.ts`, `media/`, the lorebook codecs, scripts, triggers.
 - `@risuai/ccardlib` is imported for types only. There is no runtime validation.
 
 ## Invariants
+
 - Keep both the V2 `chara` and V3 `ccv3` readers, and the off-spec Tavern heuristics, `convertCharbook` migrations, and V2 `character_version` handling.
 - CharX: always await `CharXImporter.done()`. Never drop `module.risum`.
 - Asset references in cards and modules are storage IDs or protocol URIs, never local filesystem paths.
@@ -120,6 +130,7 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - `chaId` and chat IDs must be unique. `bootstrap.ts:assignIds` repairs duplicates.
 
 ## Recipes
+
 - Add a card field: `createBaseV2`/`createBaseV3`, `importCharacterCardSpec`, and the `character` type plus its `setDatabase` default. Verify PNG, JSON, and CharX round trips and old Tavern input.
 - Add an asset kind: the tuple creation in `CharConfig.svelte`/`AssetInput.svelte`, the asset typing in `createBaseV3`, the embedding in `exportCharacterCard`, and the resolution in `importCharacterCardSpec`.
 - Add a module capability: `RisuModule`, `ModuleMenu.svelte`, `exportModuleLegacy`/`readModule`, a `getModule*` getter, and the consuming code path. Call `refreshModules`.
@@ -127,10 +138,12 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - Change character CRUD: `characters.ts`, `GridCatalog.svelte`, `CharConfig.svelte`. Verify trash restore and groups.
 
 ## Tests
+
 - None cover cards, PNG, CharX, `.risum`, personas, loadouts, or the editors.
 - Adjacent: `mcp/risuaccess/tests/modules.test.ts`.
 
 ## Known Hazards
+
 - `applyLoadout` appends the current character ID on every apply, so repeated applies create duplicates.
 - Loadout export and import are unimplemented.
 - There is no dedicated "duplicate character" API. Copies come from module→character conversion or re-import.

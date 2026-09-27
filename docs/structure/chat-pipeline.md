@@ -1,6 +1,7 @@
 # Chat Pipeline: Send → Prompt → Request → Reply
 
 ## Scope
+
 - Owns:
   - the send path from the input box to the stored reply,
   - prompt assembly (the prompt template, legacy formatting order, lorebook placement, example messages, author note, persona),
@@ -29,6 +30,7 @@
   - TTS and image generation → `media-aux.md`.
 
 ## Files
+
 - `index.svelte.ts`: the core pipeline.
   - Exports `sendChat(chatProcessIndex, {signal, continue, preview, ...})`, `OpenAIChat`, `MultiModal`, `doingChat`, `chatProcessStage`, `abortChat`, `requestTokenPart`.
   - Internal: `runCurrentChatFunction`, `positionParser`, `resolvePosition`, `systemizeChat`, `runChatOutputListeners`.
@@ -65,7 +67,9 @@
 - `dynamicutils/pdf.ts`: `convertPdfToImages`, `extractPdfText`. Not used by `sendChat`.
 
 ## Flows
+
 Send, in `DefaultChatScreen.svelte`:
+
 1. `send`/`sendContinue` → `sendMain`:
    1. Reject if `$doingChat`.
    2. `processMultiCommand`.
@@ -78,6 +82,7 @@ Send, in `DefaultChatScreen.svelte`:
 3. `reroll`/`unReroll` use `Prereroll`/`PreUnreroll`. If those have nothing, they remove the last reply and call `sendChatMain` again.
 
 `sendChat` in `index.svelte.ts`:
+
 1. Setup:
    1. Stages and abort.
    2. Optional random preset from `presetChain`.
@@ -118,11 +123,13 @@ Send, in `DefaultChatScreen.svelte`:
     - Emotion/IGP or image generation (`viewScreen === 'imggen'` → `stableDiff`), notifications.
 
 Not in `sendChat`:
+
 - Input auto-translation happens in `DefaultChatScreen.updateInputTransateMessage`.
 - Display translation happens in `ChatBody.svelte`.
 - Suggestions come from `Suggestion.svelte`, which calls `requestChatData` directly.
 
 ## State
+
 - `OpenAIChat` has `role`, `content`, `memo`, `removable`, `attr`, `multimodals`, `thoughts`, and `cachePoint`.
   - `memo` values `supaMemory`/`hypaMemory` mark memory cards.
 - `PromptItem` types: `plain|jailbreak|cot`, `chatML`, typed `persona|description|lorebook|postEverything|memory`, `authornote`, `chat` (with a range), and `cache`.
@@ -130,21 +137,24 @@ Not in `sendChat`:
 - The pipeline mutates `DBState.db.characters[i].chats[j]` in place and relies on autosave.
 
 ## Coupling
+
 - Imports: tokenizer, parser (`risuChatParser`), `lorebook`, `scripts`, `triggers`, memory, `request`, `tts`, `stableDiff`, inlays, modules, plugins, model info.
 - Callers: `DefaultChatScreen.svelte`, `command.ts` (`/send`, `/multisend`), `DevTool.svelte` (preview), `plugins/apiV3` (`sendChat` permission).
 
 ## Invariants
+
 - `chatId` is the identity used to relocate a reply after triggers and inlays run. Never replace message arrays without preserving `chatId`.
 - Script modes are distinct:
 
-  | Mode | Stage |
-  |---|---|
-  | `editinput` | user input |
+  | Mode          | Stage                       |
+  | ------------- | --------------------------- |
+  | `editinput`   | user input                  |
   | `editprocess` | prompt history and greeting |
-  | `editoutput` | model output |
-  | `editdisplay` | render |
+  | `editoutput`  | model output                |
+  | `editdisplay` | render                      |
 
   Lua edit triggers skip `editprocess`. Request triggers run inside `requestChatData`.
+
 - A new `PromptItem` type needs handling in both template switches in `sendChat`, plus `tokenizePreset`, `templateCheck`, import conversion, `PromptDataItem.svelte`, and `normalizePromptTemplate`.
 - `formatingOrder` is the legacy fallback. `postEverything` is auto-appended when missing.
 - Trimming happens in layers: the lore token budget, then memory or oldest-first dropping, then a final `removable`-only blanking. Custom Lua `editRequest` edits happen before the final recount.
@@ -159,6 +169,7 @@ Not in `sendChat`:
 - Built-in Jinja templates enforce role rules: Gemma has no system role, and Mistral requires alternating roles.
 
 ## Recipes
+
 - Add a prompt card type: `prompt.ts` (`PromptItem`), both `sendChat` switches, `tokenizePreset`, `templateCheck`, `PromptDataItem.svelte`, `normalizePromptTemplate`. Verify the prompt preview (DevTool), token counts, and a preset reload.
 - Change input processing: `DefaultChatScreen.sendMain`, plus `scripts.ts` or `triggers.ts` input handling. Verify character and group chats and slash-command fallthrough.
 - Add a response command or inlay: `inlayScreen.ts:runInlayScreen`, both the streaming and non-streaming branches in `sendChat`, and `files/inlays.ts` or the parser.
@@ -167,10 +178,12 @@ Not in `sendChat`:
 - Change backend prompt serialization: `templates/chatTemplate.ts` or `stringlize.ts`, plus the matching `request.ts` branch.
 
 ## Tests
+
 - `src/ts/process/files/tests/inlays.test.ts`.
 - Adjacent: `scriptings.test.ts`, `request/openAI/requests.responses.test.ts`, `ttsHooks.test.ts`.
 - Not tested: `sendChat` assembly and trimming, lore activation, group order, commands, multisend, `runInlayScreen`, Jinja rendering, reroll.
 
 ## Known Hazards
+
 - `disable_ui_prompt` lore decorators are collected into `disabledUIPrompts`, but that array is never consumed.
 - `prereroll.ts` history is in memory only, and `DefaultChatScreen` keeps a second reroll array of its own.

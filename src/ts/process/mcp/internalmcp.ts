@@ -24,12 +24,12 @@ export class MCPClientLike {
         this.serverInfo = {
             protocolVersion: "2025-03-26",
             capabilities: {
-                tools: {}
+                tools: {},
             },
             serverInfo: {
                 name: "Internal Tool",
-                version: "1.0.0"
-            }
+                version: "1.0.0",
+            },
         };
     }
 
@@ -42,10 +42,12 @@ export class MCPClientLike {
     }
 
     async callTool(toolName: string, args: any): Promise<RPCToolCallContent[]> {
-        return [{
-            type: 'text',
-            text: `Tool ${toolName} not implemented`
-        }];
+        return [
+            {
+                type: "text",
+                text: `Tool ${toolName} not implemented`,
+            },
+        ];
     }
 
     destroy() {

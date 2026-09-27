@@ -1,35 +1,35 @@
 <script lang="ts">
-    import { DBState } from 'src/ts/stores.svelte';
+    import { DBState } from "src/ts/stores.svelte";
     import {
         changeColorSchemeType,
         exportColorScheme,
         importColorScheme,
         updateCustomColorScheme,
-    } from 'src/ts/gui/colorscheme';
-    import SelectInput from 'src/lib/UI/GUI/SelectInput.svelte';
-    import OptionInput from 'src/lib/UI/GUI/OptionInput.svelte';
-    import { DownloadIcon, HardDriveUploadIcon } from '@lucide/svelte';
+    } from "src/ts/gui/colorscheme";
+    import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
+    import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
+    import { DownloadIcon, HardDriveUploadIcon } from "@lucide/svelte";
 
     const colors = [
-        ['bgcolor', 'Background'],
-        ['darkbg', 'Dark Background'],
-        ['borderc', 'Color 1'],
-        ['selected', 'Color 2'],
-        ['draculared', 'Color 3'],
-        ['darkBorderc', 'Color 4'],
-        ['darkbutton', 'Color 5'],
-        ['textcolor', 'Text Color'],
-        ['textcolor2', 'Text Color 2'],
+        ["bgcolor", "Background"],
+        ["darkbg", "Dark Background"],
+        ["borderc", "Color 1"],
+        ["selected", "Color 2"],
+        ["draculared", "Color 3"],
+        ["darkBorderc", "Color 4"],
+        ["darkbutton", "Color 5"],
+        ["textcolor", "Text Color"],
+        ["textcolor2", "Text Color 2"],
     ] as const;
 </script>
 
-{#if DBState.db.colorSchemeName === 'custom'}
+{#if DBState.db.colorSchemeName === "custom"}
     <div class="border border-darkborderc p-2 m-2 rounded-md">
         <SelectInput
             className="mt-2"
             value={DBState.db.customColorScheme.type}
             onchange={(e) => {
-                changeColorSchemeType((e.target as HTMLInputElement).value as 'light' | 'dark');
+                changeColorSchemeType((e.target as HTMLInputElement).value as "light" | "dark");
             }}
         >
             <OptionInput value="light">Light</OptionInput>
@@ -56,10 +56,7 @@
             >
                 <DownloadIcon size={18} />
             </button>
-            <button
-                class="text-textcolor2 hover:text-green-500 cursor-pointer"
-                onclick={() => importColorScheme()}
-            >
+            <button class="text-textcolor2 hover:text-green-500 cursor-pointer" onclick={() => importColorScheme()}>
                 <HardDriveUploadIcon size={18} />
             </button>
         </div>

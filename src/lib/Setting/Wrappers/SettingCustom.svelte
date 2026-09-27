@@ -1,6 +1,6 @@
 <script lang="ts">
-    import type { SettingItem, SettingContext } from 'src/ts/setting/types';
-    import { customComponents } from 'src/ts/setting/customComponents';
+    import type { SettingItem, SettingContext } from "src/ts/setting/types";
+    import { customComponents } from "src/ts/setting/customComponents";
 
     interface Props {
         item: SettingItem;

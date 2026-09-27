@@ -1,10 +1,5 @@
 import { parseChatML } from "src/ts/parser/chatML";
-import {
-    getDatabase,
-    type Chat,
-    type character,
-    type groupChat,
-} from "src/ts/storage/database.svelte";
+import { getDatabase, type Chat, type character, type groupChat } from "src/ts/storage/database.svelte";
 import type { OpenAIChat } from "../index.svelte";
 import type { ChatTokenizer } from "src/ts/tokenizer";
 import { requestChatData } from "../request/request";
@@ -14,20 +9,22 @@ import { runSummarizer } from "../transformers";
 
 export interface HypaV2Data {
     lastMainChunkID: number; // can be removed, but exists to more readability of the code.
-    mainChunks: { // summary itself
+    mainChunks: {
+        // summary itself
         id: number;
         text: string;
         chatMemos: Set<string>; // UUIDs of summarized chats
         lastChatMemo: string;
     }[];
-    chunks: { // split mainChunks for retrieval or something. Although quite uncomfortable logic, so maybe I will delete it soon.
+    chunks: {
+        // split mainChunks for retrieval or something. Although quite uncomfortable logic, so maybe I will delete it soon.
         mainChunkID: number;
-        text:string;
+        text: string;
     }[];
 }
 
 // Reuse HypaV2Data and override only chatMemos in mainChunks
-export interface SerializableHypaV2Data extends Omit<HypaV2Data, 'mainChunks'> {
+export interface SerializableHypaV2Data extends Omit<HypaV2Data, "mainChunks"> {
     mainChunks: {
         id: number;
         text: string;
@@ -36,9 +33,7 @@ export interface SerializableHypaV2Data extends Omit<HypaV2Data, 'mainChunks'> {
     }[];
 }
 
-async function summary(
-    stringlizedChat: string
-): Promise<{ success: boolean; data: string }> {
+async function summary(stringlizedChat: string): Promise<{ success: boolean; data: string }> {
     const db = getDatabase();
     console.log("Summarizing");
 
@@ -74,8 +69,8 @@ async function summary(
                     db.supaModelType === "curie"
                         ? "text-curie-001"
                         : db.supaModelType === "instruct35"
-                            ? "gpt-3.5-turbo-instruct"
-                            : "text-davinci-003",
+                          ? "gpt-3.5-turbo-instruct"
+                          : "text-davinci-003",
                 prompt: promptbody,
                 max_tokens: 600,
                 temperature: 0,
@@ -108,31 +103,34 @@ async function summary(
             };
         }
     } else {
-        let parsedPrompt = parseChatML(
-            supaPrompt.replaceAll("{{slot}}", stringlizedChat)
-        );
+        let parsedPrompt = parseChatML(supaPrompt.replaceAll("{{slot}}", stringlizedChat));
 
-        const promptbody: OpenAIChat[] = (parsedPrompt ?? [
-            {
-                role: "user",
-                content: stringlizedChat,
-            },
-            {
-                role: "system",
-                content: supaPrompt
-            }
-        ]).map(message => ({
+        const promptbody: OpenAIChat[] = (
+            parsedPrompt ?? [
+                {
+                    role: "user",
+                    content: stringlizedChat,
+                },
+                {
+                    role: "system",
+                    content: supaPrompt,
+                },
+            ]
+        ).map((message) => ({
             ...message,
-            memo: "supaPrompt"
+            memo: "supaPrompt",
         }));
         console.log("Using submodel: ", db.subModel, "for supaMemory model");
-        const da = await requestChatData({
-            formated: promptbody,
-            bias: {},
-            useStreaming: false,
-            noMultiGen: true
-        }, 'memory');
-        if (da.type === 'fail' || da.type === 'streaming' || da.type === 'multiline') {
+        const da = await requestChatData(
+            {
+                formated: promptbody,
+                bias: {},
+                useStreaming: false,
+                noMultiGen: true,
+            },
+            "memory",
+        );
+        if (da.type === "fail" || da.type === "streaming" || da.type === "multiline") {
             return {
                 success: false,
                 data: "SupaMemory: HTTP: " + da.result,
@@ -163,23 +161,25 @@ function isSubset<T>(subset: Set<T>, superset: Set<T>): boolean {
     }
     return true;
 }
-function isOldHypaV2Data(obj:any): obj is OldHypaV2Data {
+function isOldHypaV2Data(obj: any): obj is OldHypaV2Data {
     return (
-        typeof obj === 'object' &&
+        typeof obj === "object" &&
         obj !== null &&
         Array.isArray(obj.chunks) &&
         Array.isArray(obj.mainChunks) &&
-        obj.chunks.every(chunk =>
-            typeof chunk === 'object' &&
-            chunk !== null &&
-            typeof chunk.text === 'string' &&
-            typeof chunk.targetId === 'string'
+        obj.chunks.every(
+            (chunk) =>
+                typeof chunk === "object" &&
+                chunk !== null &&
+                typeof chunk.text === "string" &&
+                typeof chunk.targetId === "string",
         ) &&
-        obj.mainChunks.every(mainChunk =>
-            typeof mainChunk === 'object' &&
-            mainChunk !== null &&
-            typeof mainChunk.text === 'string' &&
-            typeof mainChunk.targetId === 'string'
+        obj.mainChunks.every(
+            (mainChunk) =>
+                typeof mainChunk === "object" &&
+                mainChunk !== null &&
+                typeof mainChunk.text === "string" &&
+                typeof mainChunk.targetId === "string",
         )
     );
 }
@@ -204,7 +204,7 @@ function convertOldToNewHypaV2Data(oldData: OldHypaV2Data, chats: OpenAIChat[]):
     // map chat memo to index, efficiency issues
     const chatMemoToIndex = new Map<string, number>();
     for (const tid of mainChunkTargetIds) {
-        const idx = chats.findIndex(c => c.memo === tid);
+        const idx = chats.findIndex((c) => c.memo === tid);
         if (idx !== -1) {
             chatMemoToIndex.set(tid, idx);
         } else {
@@ -256,7 +256,7 @@ function convertOldToNewHypaV2Data(oldData: OldHypaV2Data, chats: OpenAIChat[]):
             text: mainChunkText,
             chatMemos: chatMemos,
             lastChatMemo: targetId,
-        }
+        };
         newData.mainChunks.push(newMainChunk);
         newData.lastMainChunkID++;
         // Adding chunks accordingly, matching MainChunkID by leveraging same targetId
@@ -272,10 +272,7 @@ function convertOldToNewHypaV2Data(oldData: OldHypaV2Data, chats: OpenAIChat[]):
     return newData; // updated HypaV2Data
 }
 
-function cleanInvalidChunks(
-    chats: OpenAIChat[],
-    data: HypaV2Data,
-): void {
+function cleanInvalidChunks(chats: OpenAIChat[], data: HypaV2Data): void {
     const currentChatMemos = new Set(chats.map((chat) => chat.memo));
 
     // mainChunks filtering
@@ -285,9 +282,7 @@ function cleanInvalidChunks(
 
     // chunk filtering based on mainChunk's id
     const validMainChunkIds = new Set(data.mainChunks.map((mainChunk) => mainChunk.id));
-    data.chunks = data.chunks.filter((chunk) =>
-        validMainChunkIds.has(chunk.mainChunkID)
-    );
+    data.chunks = data.chunks.filter((chunk) => validMainChunkIds.has(chunk.mainChunkID));
     // Update lastMainChunkID
     if (data.mainChunks.length > 0) {
         data.lastMainChunkID = data.mainChunks[data.mainChunks.length - 1].id;
@@ -296,25 +291,20 @@ function cleanInvalidChunks(
     }
 }
 
-export function regenerateSummary(
-    chats: OpenAIChat[],
-    data: HypaV2Data,
-    mainChunkIndex: number
-) : void {
+export function regenerateSummary(chats: OpenAIChat[], data: HypaV2Data, mainChunkIndex: number): void {
     const targetMainChunk = data.mainChunks[mainChunkIndex];
-
 }
 
 function toSerializableHypaV2Data(data: HypaV2Data): SerializableHypaV2Data {
     return {
         ...data,
-        mainChunks: data.mainChunks.map(mainChunk => ({
+        mainChunks: data.mainChunks.map((mainChunk) => ({
             ...mainChunk,
             chatMemos: Array.from(mainChunk.chatMemos),
         })),
     };
 }
-    
+
 function toHypaV2Data(data: SerializableHypaV2Data): HypaV2Data {
     // Handle corrupted data due to invalid json serialization
     data.mainChunks.forEach((mainChunk) => {
@@ -325,7 +315,7 @@ function toHypaV2Data(data: SerializableHypaV2Data): HypaV2Data {
 
     return {
         ...data,
-        mainChunks: data.mainChunks.map(mainChunk => ({
+        mainChunks: data.mainChunks.map((mainChunk) => ({
             ...mainChunk,
             chatMemos: new Set(mainChunk.chatMemos),
         })),
@@ -338,7 +328,7 @@ export async function hypaMemoryV2(
     maxContextTokens: number,
     room: Chat,
     char: character | groupChat,
-    tokenizer: ChatTokenizer
+    tokenizer: ChatTokenizer,
 ): Promise<{
     currentTokens: number;
     chats: OpenAIChat[];
@@ -359,8 +349,8 @@ export async function hypaMemoryV2(
 
     if (room.hypaV2Data) {
         if (isOldHypaV2Data(room.hypaV2Data)) {
-        console.log("Old HypaV2 data detected. Converting to new format...");
-        data = convertOldToNewHypaV2Data(room.hypaV2Data, chats);
+            console.log("Old HypaV2 data detected. Converting to new format...");
+            data = convertOldToNewHypaV2Data(room.hypaV2Data, chats);
         } else {
             data = toHypaV2Data(room.hypaV2Data);
         }
@@ -383,7 +373,7 @@ export async function hypaMemoryV2(
     if (data.mainChunks.length > 0) {
         const lastMainChunk = data.mainChunks[data.mainChunks.length - 1];
         const lastChatMemo = lastMainChunk.lastChatMemo;
-        const lastChatIndex = chats.findIndex(chat => chat.memo === lastChatMemo);
+        const lastChatIndex = chats.findIndex((chat) => chat.memo === lastChatMemo);
         if (lastChatIndex !== -1) {
             idx = lastChatIndex + 1;
 
@@ -396,7 +386,7 @@ export async function hypaMemoryV2(
     }
     // Starting chat index of new mainChunk to be generated
 
-// Token management loop (If current token usage exceeds allowed amount)
+    // Token management loop (If current token usage exceeds allowed amount)
     while (currentTokens > maxContextTokens) {
         const halfData: OpenAIChat[] = [];
         let halfDataTokens = 0;
@@ -405,28 +395,38 @@ export async function hypaMemoryV2(
 
         console.log(
             "[HypaV2] Starting summarization iteration:",
-            "\nCurrent Tokens (before):", currentTokens,
-            "\nMax Context Tokens:", maxContextTokens,
-            "\nStartIdx:", startIdx,
-            "\nchunkSize:", chunkSize
+            "\nCurrent Tokens (before):",
+            currentTokens,
+            "\nMax Context Tokens:",
+            maxContextTokens,
+            "\nStartIdx:",
+            startIdx,
+            "\nchunkSize:",
+            chunkSize,
         );
 
         // Accumulate chats to summarize
         while (
             halfDataTokens < chunkSize &&
-            (idx < chats.length - 4) // keep the last two chats from summarizing(else, the roles will be fucked up)
-            ) {
+            idx < chats.length - 4 // keep the last two chats from summarizing(else, the roles will be fucked up)
+        ) {
             const chat = chats[idx];
             const chatTokens = await tokenizer.tokenizeChat(chat);
 
             console.log(
                 "[HypaV2] Evaluating chat for summarization:",
-                "\nIndex:", idx,
-                "\nRole:", chat.role,
-                "\nContent:", chat.content,
-                "\nchatTokens:", chatTokens,
-                "\nhalfDataTokens so far:", halfDataTokens,
-                "\nWould adding this exceed chunkSize?", (halfDataTokens + chatTokens > chunkSize)
+                "\nIndex:",
+                idx,
+                "\nRole:",
+                chat.role,
+                "\nContent:",
+                chat.content,
+                "\nchatTokens:",
+                chatTokens,
+                "\nhalfDataTokens so far:",
+                halfDataTokens,
+                "\nWould adding this exceed chunkSize?",
+                halfDataTokens + chatTokens > chunkSize,
             );
 
             // Skip index 0 ([Start a new chat])
@@ -459,11 +459,16 @@ export async function hypaMemoryV2(
         const endIdx = idx - 1;
         console.log(
             "[HypaV2] Summarization batch chosen with this:",
-            "\nStartIdx:", startIdx,
-            "\nEndIdx:", endIdx,
-            "\nNumber of chats in halfData:", halfData.length,
-            "\nTotal tokens in halfData:", halfDataTokens,
-            "\nChats selected:", halfData.map(h => ({role: h.role, content: h.content}))
+            "\nStartIdx:",
+            startIdx,
+            "\nEndIdx:",
+            endIdx,
+            "\nNumber of chats in halfData:",
+            halfData.length,
+            "\nTotal tokens in halfData:",
+            halfDataTokens,
+            "\nChats selected:",
+            halfData.map((h) => ({ role: h.role, content: h.content })),
         );
 
         // If no chats were added, break to avoid infinite loop
@@ -473,7 +478,7 @@ export async function hypaMemoryV2(
                 return {
                     currentTokens: currentTokens,
                     chats: chats,
-                    error: `[HypaV2] Input tokens (${currentTokens}) exceeds max context size (${maxContextTokens}), but can't summarize last 4 messages. Please increase max context size to at least ${currentTokens}.`
+                    error: `[HypaV2] Input tokens (${currentTokens}) exceeds max context size (${maxContextTokens}), but can't summarize last 4 messages. Please increase max context size to at least ${currentTokens}.`,
                 };
             }
 
@@ -482,13 +487,11 @@ export async function hypaMemoryV2(
             return {
                 currentTokens: currentTokens,
                 chats: chats,
-                error: `[HypaV2] Message tokens (${chatTokens}) exceeds chunk size (${chunkSize}). Please increase chunk size to at least ${chatTokens}.`
+                error: `[HypaV2] Message tokens (${chatTokens}) exceeds chunk size (${chunkSize}). Please increase chunk size to at least ${chatTokens}.`,
             };
         }
 
-        const stringlizedChat = halfData
-            .map((e) => `${e.role}: ${e.content}`)
-            .join("\n");
+        const stringlizedChat = halfData.map((e) => `${e.role}: ${e.content}`).join("\n");
 
         // Summarize the accumulated chunk
         const summaryData = await summary(stringlizedChat);
@@ -517,8 +520,10 @@ export async function hypaMemoryV2(
 
         console.log(
             "[HypaV2] Summarization success:",
-            "\nSummary Data:", summaryData.data,
-            "\nSummary Token Count:", summaryDataToken
+            "\nSummary Data:",
+            summaryData.data,
+            "\nSummary Token Count:",
+            summaryDataToken,
         );
 
         // Update lastMainChunkID and create a new mainChunk
@@ -545,14 +550,16 @@ export async function hypaMemoryV2(
             ...splitted.map((e) => ({
                 mainChunkID: newMainChunkId,
                 text: e,
-            }))
+            })),
         );
 
         console.log(
             "[HypaV2] Chunks added:",
             splitted,
-            "\nUpdated mainChunks count:", data.mainChunks.length,
-            "\nUpdated chunks count:", data.chunks.length
+            "\nUpdated mainChunks count:",
+            data.mainChunks.length,
+            "\nUpdated chunks count:",
+            data.chunks.length,
         );
 
         currentTokens -= halfDataTokens;
@@ -581,44 +588,32 @@ export async function hypaMemoryV2(
 
     // Add chunks to processor for similarity search
     await processor.addText(
-        data.chunks
-            .filter((v) => v.text.trim().length > 0)
-            .map((v) => searchDocumentPrefix + v.text.trim()) // sometimes this should not be used at all. Risuai does not support embedding model that this is meaningful, isn't it?
+        data.chunks.filter((v) => v.text.trim().length > 0).map((v) => searchDocumentPrefix + v.text.trim()), // sometimes this should not be used at all. Risuai does not support embedding model that this is meaningful, isn't it?
     );
 
     let scoredResults: { [key: string]: number } = {};
-    for (let i = 0; i < 3; i++) { // Should parameterize this, fixed length 3 is a magic number without explanation
+    for (let i = 0; i < 3; i++) {
+        // Should parameterize this, fixed length 3 is a magic number without explanation
         const pop = chats[chats.length - i - 1];
         if (!pop) break;
-        const searched = await processor.similaritySearchScored(
-            `search_query: ${pop.content}`
-        );
+        const searched = await processor.similaritySearchScored(`search_query: ${pop.content}`);
         for (const result of searched) {
             const score = result[1] / (i + 1);
             scoredResults[result[0]] = (scoredResults[result[0]] || 0) + score;
         }
     }
 
-    const scoredArray = Object.entries(scoredResults).sort(
-        (a, b) => b[1] - a[1]
-    );
+    const scoredArray = Object.entries(scoredResults).sort((a, b) => b[1] - a[1]);
     let chunkResultPrompts = "";
     let chunkResultTokens = 0;
-    while (
-        allocatedTokens - mainPromptTokens - chunkResultTokens > 0 &&
-        scoredArray.length > 0
-        ) {
+    while (allocatedTokens - mainPromptTokens - chunkResultTokens > 0 && scoredArray.length > 0) {
         const [text] = scoredArray.shift();
         const content = text.substring(prefixLength);
         const tokenized = await tokenizer.tokenizeChat({
             role: "system",
             content: content,
         });
-        if (
-            tokenized >
-            allocatedTokens - mainPromptTokens - chunkResultTokens
-        )
-            break;
+        if (tokenized > allocatedTokens - mainPromptTokens - chunkResultTokens) break;
         chunkResultPrompts += content + "\n\n";
         chunkResultTokens += tokenized;
     }
@@ -637,7 +632,7 @@ export async function hypaMemoryV2(
             content: fullResult,
             memo: "supaMemory",
         },
-        ...chats.slice(idx) // Use the idx to slice out the summarized chats
+        ...chats.slice(idx), // Use the idx to slice out the summarized chats
     ];
 
     // Remove this later, as this is already done by the index
@@ -658,7 +653,7 @@ export async function hypaMemoryV2(
         "\nAll chats, including memory system prompt: ",
         unsummarizedChats,
         "\nMemory data, with all the chunks: ",
-        data
+        data,
     );
 
     return {

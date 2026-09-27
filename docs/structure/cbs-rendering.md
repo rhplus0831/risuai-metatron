@@ -1,6 +1,7 @@
 # CBS Template Language and Message Rendering
 
 ## Scope
+
 - Owns:
   - CBS (`{{fn::arg}}`, `{{#if}}`/`{{#when}}`/`{{#each}}`/`{{#func}}` blocks): the function registry and the evaluator,
   - chat, global, and temp variables,
@@ -24,6 +25,7 @@
   - Translation of rendered HTML → `media-aux.md`.
 
 ## Files
+
 - `cbs.ts`: the CBS function catalogue.
   - `registerCBS(arg: CBSRegisterArg)` enumerates every built-in function (name, callback, aliases, description, `internalOnly`/`doc_only`) into a callback supplied by the consumer.
   - Types: `CBSRegisterArg` (injected runtime helpers), `matcherArg` (per-call context), `RegisterCallback`.
@@ -49,7 +51,9 @@
 - `PartialEditController.svelte`: hover and drag-select editing of rendered messages. Dispatches `save`, which `Chat.svelte:handlePartialEditSave` handles.
 
 ## Flows
+
 Evaluation:
+
 1. Callers pass the text to `risuChatParser`. Callers include `Chat.svelte`, `processScriptFull`, `sendChat`/`runCurrentChatFunction`, `tokenizeAccurate`, `command.ts`, triggers, the lorebook, and the playground.
 2. `<user>`, `<char>`, and `<bot>` are normalized to CBS.
 3. The scanner handles nested `{{...}}`, blocks, comments, `#each`, and `#func`/`call`.
@@ -61,6 +65,7 @@ Evaluation:
 5. A callback may return `{text, var}`. `return` sets `__force_return__`.
 
 Display:
+
 1. `Chat.svelte:displaya` evaluates the message with `risuChatParser(..., {rmVar:true, visualize:true})`.
 2. `ChatBody.svelte:markParsing` calls `ParseMarkdown`, which runs in order:
    1. `parseAdditionalAssets`.
@@ -73,23 +78,26 @@ Display:
 3. The template renders `{@html addMetadataToElement(trimMarkdown(md))}`.
 
 ## State
+
 - Variable storage:
 
-  | Kind | Storage | Persisted |
-  |---|---|---|
-  | Chat vars | `Chat.scriptstate['$'+name]`, falling back to character `defaultVariables`, then `db.templateDefaultVariables`, then `'null'` | yes |
-  | Globals | `db.globalChatVariables`; toggles use `toggle_<name>` | yes |
-  | Temp vars | per `risuChatParser` call | no |
-  | `#func` definitions | per call | no |
+  | Kind                | Storage                                                                                                                       | Persisted |
+  | ------------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------- |
+  | Chat vars           | `Chat.scriptstate['$'+name]`, falling back to character `defaultVariables`, then `db.templateDefaultVariables`, then `'null'` | yes       |
+  | Globals             | `db.globalChatVariables`; toggles use `toggle_<name>`                                                                         | yes       |
+  | Temp vars           | per `risuChatParser` call                                                                                                     | no        |
+  | `#func` definitions | per call                                                                                                                      | no        |
 
 - Caches: `matcherMap`, the asset caches (reset by `resetAssetsCache` and by an `$effect.root` on character/module changes), and global `CSS.highlights`.
 
 ## Coupling
+
 - `parser.svelte.ts` imports `processScriptFull` from `process/scripts.ts`, and `scripts.ts` imports `risuChatParser`. This is a deliberate import cycle, so keep the imports lazy-safe.
 - `chatVar.svelte.ts` is used by scripts, triggers, the lorebook, `infunctions.ts`, `mcp/graphmem.ts`, and `Toggles.svelte`.
 - `cbs.ts` consumers: `parser.svelte.ts`, `PlaygroundDocs.svelte` (live docs from `description`), and `cbsMonaco.ts`.
 
 ## Invariants
+
 - `ParseMarkdown` output must go through `trimMarkdown` before `{@html}`. `mode:'notrim'` is an intermediate result, not a final one.
 - Keep the DOMPurify hooks intact: class prefixing, the href policy, the YouTube iframe allowlist, and blob `src` retention.
 - CSS must stay scoped:
@@ -101,6 +109,7 @@ Display:
 - `partialEdit` offsets refer to the original markdown, not the rendered HTML. It special-cases `{{ruby::...}}`.
 
 ## Recipes
+
 - Add a CBS function:
   1. Add an entry in `cbs.ts:registerCBS`: name, callback, aliases, precise `description`. Use only injected helpers.
   2. Add it to the matching list in `gui/highlight.ts` (`normalCBS`, `normalCBSwithParams`, `displayRelatedCBS`, or `nestedCBS`).
@@ -110,6 +119,7 @@ Display:
 - Change variable semantics: `chatVar.svelte.ts` plus the `getvar`/`setvar`/`tempvar`/`getglobalvar` callbacks. Check the loadout shapes too.
 
 ## Tests
+
 - `src/ts/parser/tests/cbs/{conditionals,escapes,loop,strings}.test.ts`.
 - `chatVar.svelte.test.ts`.
 - `chatML.test.ts`: has skipped and FIXME cases.
@@ -117,6 +127,7 @@ Display:
 - Not tested: most of `cbs.ts`, asset/inlay rendering, `partialEdit`, `highlight.ts`.
 
 ## Known Hazards
+
 - `escapes.test.ts` documents a known broken `cbr` repetition case.
 - `removeHighlight` deletes the stored ID but leaves the global `CSS.highlights` ranges in place.
 - `chatML.ts` references `OpenAIChat` without importing it and relies on an ambient declaration.

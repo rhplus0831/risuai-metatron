@@ -1,23 +1,23 @@
 <script lang="ts">
-	import { getAllContexts, mount, unmount } from "svelte";
-	import PortalConsumer from "./PortalConsumer.svelte";
+    import { getAllContexts, mount, unmount } from "svelte";
+    import PortalConsumer from "./PortalConsumer.svelte";
 
     interface Props {
         target?: HTMLElement;
         children: any;
     }
 
-	const { target: target = document.body, children }:Props = $props();
-	
-	const context = getAllContexts();
+    const { target: target = document.body, children }: Props = $props();
 
-	let instance;
+    const context = getAllContexts();
 
-	$effect(() => {
-		instance = mount(PortalConsumer, { target, props: { children }, context })
+    let instance;
 
-		return () =>  {
-			unmount(instance);
-		}
-	});
+    $effect(() => {
+        instance = mount(PortalConsumer, { target, props: { children }, context });
+
+        return () => {
+            unmount(instance);
+        };
+    });
 </script>

@@ -34,7 +34,8 @@ export const languageEnglish = {
     showHelp: "Show Help",
     help: {
         model: "Model option is a main model used in chat.",
-        submodel: "Auxiliary Model is a model that used in analyzing emotion images and auto suggestions and etc. gpt3.5 is recommended.",
+        submodel:
+            "Auxiliary Model is a model that used in analyzing emotion images and auto suggestions and etc. gpt3.5 is recommended.",
         oaiapikey: "API key for OpenAI. you can get it in https://platform.openai.com/account/api-keys",
         mainprompt: "The main prompt option sets the default model behavior.",
         jailbreak: "The jailbreak prompt option activates when jailbreak toggle is on in character.",
@@ -44,18 +45,23 @@ export const languageEnglish = {
         forceUrl: "If it is not blank, the request will go to the url that you had inputed.",
         tempature:
             "Lower values make character follow prompts closely, but it will more likely to response like a machine.\nHigher values will result in creative behavior, but the character's response can break down more easily.",
-        frequencyPenalty: "Higher values prevent the use of duplicate words in response, but character's response can break down more easily.",
-        presensePenalty: "Higher values prevent the use of duplicate words in all context, but character's response can break down more easily.",
+        frequencyPenalty:
+            "Higher values prevent the use of duplicate words in response, but character's response can break down more easily.",
+        presensePenalty:
+            "Higher values prevent the use of duplicate words in all context, but character's response can break down more easily.",
         sdProvider: "Provider for image generation.",
         msgSound: "Plays *ding* sound when character responses",
         charDesc: "Brief description of the character. This affects characters response.",
         charFirstMessage: "First message of the character. This highly affects characters response.",
         charNote: "A note that strongly affects model behavior. Embbedded to current character, also known as UJB.",
         toggleNsfw: "Toggles jailbreak prompt on and off.",
-        lorebook: "Lorebook is a user-made dictionary for AI. AI only sees it when where is an activation keys in the context.",
+        lorebook:
+            "Lorebook is a user-made dictionary for AI. AI only sees it when where is an activation keys in the context.",
         loreName: "Name of the lore. It doesn't affect the Ai.",
-        loreActivationKey: "If one of the activation key exists in context, the lore will be activated and prompt will go in. Separated by commas.",
-        loreorder: "If insert Order is higher, it will effect the model more, and it is less likely to be cut when many lores are activated.",
+        loreActivationKey:
+            "If one of the activation key exists in context, the lore will be activated and prompt will go in. Separated by commas.",
+        loreorder:
+            "If insert Order is higher, it will effect the model more, and it is less likely to be cut when many lores are activated.",
         bias: "Bias is a key-value data which modifies the likelihood of string appearing.\nIt can be -100 to 100, higher values will be more likely to appear, and lower values will be more unlikely to appear. \nAdditionaly, if its set to -101, it would work as 'strong ban word' for some models. \nWarning: if the tokenizer is wrong, it not work properly.",
         emotion:
             "Emotion Images option shows image depending at character's emotion which is analyzed by character's response. You must input emotion name as words *(like joy, happy, fear and etc.)*. The emotion named **neutral** will be the default emotion if it exists. There must be more than 3 images to work properly.",
@@ -89,13 +95,19 @@ export const languageEnglish = {
             "\n\nExample format of conversations:" +
             "\n\n```\n<START>\n{{user}}: hi\n{{char}}: hello\n<START>\n{{user}}: hi\nHaruhi: hello\n```" +
             "\n\n```<START>``` Marks the beginning of a new conversation.",
-        creatorQuotes: "Note that appearances on top of first message. Used to inform users about this character. It doesn't go into prompt.",
+        creatorQuotes:
+            "Note that appearances on top of first message. Used to inform users about this character. It doesn't go into prompt.",
         systemPrompt: "A prompt that replaces main prompt in settings if its not blank.",
-        chatNote: "A note that strongly affects model behavior. Embbedded to current chat, also known as memory or UJB.",
-        personality: "A brief description about character's personality. \n\n**It is not recommended to use this option. Describe it in character description instead.**",
-        scenario: "A brief description about character's scenario. \n\n**It is not recommended to use this option. Describe it in character description instead.**",
-        utilityBot: "When activated, it ignores main prompt, jailbreak and other prompts. Used for bot made for utility, not for roleplay.",
-        loreSelective: "If Selective mode is toggled, both Activation Key and Secondary key should have a match to activate the lore.",
+        chatNote:
+            "A note that strongly affects model behavior. Embbedded to current chat, also known as memory or UJB.",
+        personality:
+            "A brief description about character's personality. \n\n**It is not recommended to use this option. Describe it in character description instead.**",
+        scenario:
+            "A brief description about character's scenario. \n\n**It is not recommended to use this option. Describe it in character description instead.**",
+        utilityBot:
+            "When activated, it ignores main prompt, jailbreak and other prompts. Used for bot made for utility, not for roleplay.",
+        loreSelective:
+            "If Selective mode is toggled, both Activation Key and Secondary key should have a match to activate the lore.",
         loreRandomActivation:
             "If Use Probability Condition is enabled, if the lore's other conditions are all met, the lore will be activated with a set probability which is set by 'Probability' each time a chat is sent.",
         additionalAssets:
@@ -110,28 +122,33 @@ export const languageEnglish = {
             "A Markdown/HTML Data that would be injected to the background of chat screen.\n\n You can also use additional assets. for example, you can use `{{audio::<asset name}}` for background music." +
             "\n\n Additionaly, you can use these with additional assets:" +
             "\n - `{{bg::<asset name>}}`: inject the background as asset",
-        additionalText: "The text that would be added to Character Description only when AI thinks it's needed, so you can put long texts here. Separate with double newlines.",
+        additionalText:
+            "The text that would be added to Character Description only when AI thinks it's needed, so you can put long texts here. Separate with double newlines.",
         charjs: "A javascript code that would run with character. for example, you can check `https://github.com/kwaroran/Risuai/blob/main/src/etc/example-char.js` CURRENTLY NOT RECOMMENDED FOR USE DUE TO SECURITY REASONS. EXPORTING WOULD NOT INCLUDE THIS.",
         romanizer:
             "Romanizer is a plugin that converts non-roman characters to roman characters to reduce tokens when using non-roman characters while requesting data. This can result different output from the original model. It is not recommended to use this plugin when using roman characters on chat.",
         inlayImages: "If enabled, images could be inlayed to the chat and AIs can see it if they support it.",
         metrica:
             "Metric Systemizer is a plugin that converts metrics to imperial units when request, and vice versa on output to show user metric system while using imperial for performace. It is not recommended to use this plugin when using imperial units on chat.",
-        lorePlus: "LoreBook+ is a experimental feature that uses vectordb instead of just string matching for better bot making experience and better matching performace.",
+        lorePlus:
+            "LoreBook+ is a experimental feature that uses vectordb instead of just string matching for better bot making experience and better matching performace.",
         topP: "Top P is a probability threshold for nucleus sampling. Model considers the results of the tokens with top_p probability mass.",
         openAIFixer: "OpenAI Fixer is a plugin that fixes some of the problems of OpenAI.",
         sayNothing: "If enabled, it will input 'say nothing' when no string inputed.",
-        showUnrecommended: "If enabled, it will show unrecommended, deprecated settings. It is NOT RECOMMENDED to use these settings.",
+        showUnrecommended:
+            "If enabled, it will show unrecommended, deprecated settings. It is NOT RECOMMENDED to use these settings.",
         streamingDisplayOptimizationMode:
             "Reduces display lag when long responses are streamed with heavy post-processing, such as regex-based scripts. This can help on mobile or low-end devices.\n\n" +
             "Off keeps the normal behavior, but post-processing runs on every token and can add significant overhead.\n\n" +
             "Balanced lowers the load by trying post-processing only at short intervals, about every 0.125 seconds.\n\n" +
             "Strong is similar to Balanced, but skips post-processing while streaming and runs it only once after the stream finishes.\n\n" +
             "This is an experimental feature, and some features may behave unexpectedly because of it.",
-        imageCompression: "If enabled, it will compress images when exporting character. if animated images doesn't works, try disabling this option.",
+        imageCompression:
+            "If enabled, it will compress images when exporting character. if animated images doesn't works, try disabling this option.",
         useExperimental: "If enabled, it will show some experimental features.",
         forceProxyAsOpenAI: "If enabled, it will force to use OpenAI format when using reverse proxy.",
-        forcePlainFetch: "If enabled, it will use browser fetch api instead of native http request. this can cause CORS errors.",
+        forcePlainFetch:
+            "If enabled, it will use browser fetch api instead of native http request. this can cause CORS errors.",
         autoFillRequestURL: "If enabled, it will autofill request url to match the current model.",
         localNetworkModeDesc:
             "Routes private/LAN model URLs through the local runtime path instead of browser direct fetch.\n\n" +
@@ -147,13 +164,17 @@ export const languageEnglish = {
             "- This does not bypass Cloudflare origin limits between two public domains.\n" +
             "- Use your self-host URL (where `globalThis.__NODE__ === true`) for this feature to take effect.",
         chainOfThought: "If enabled, it will add chain of thought prompt to the prompt.",
-        gptVisionQuality: "This option is used to set the quality of the image detection model. The higher the quality, the more accurate the detection, but more tokens are used.",
+        gptVisionQuality:
+            "This option is used to set the quality of the image detection model. The higher the quality, the more accurate the detection, but more tokens are used.",
         genTimes:
             "This option is used to set the number of responses to generate on support models. Other then first response will be act as cached reroll. This can reduce the cost of the model, but it can also increase the cost if you use it without reroll.",
         requestretrys: "This option is used to set the number of request retries when request fails.",
-        chatLoadInitialPages: "Number of recent chat messages to render when a chat screen opens. Higher values show more history immediately but can make long chats heavier to open.",
-        chatLoadAdditionalPages: "Number of older chat messages to render each time you scroll to the top. Higher values reduce repeated loading but can make each load heavier.",
-        emotionPrompt: "This option is used to set the prompt that is used to detect emotion. If it is blank, it will use the default prompt.",
+        chatLoadInitialPages:
+            "Number of recent chat messages to render when a chat screen opens. Higher values show more history immediately but can make long chats heavier to open.",
+        chatLoadAdditionalPages:
+            "Number of older chat messages to render each time you scroll to the top. Higher values reduce repeated loading but can make each load heavier.",
+        emotionPrompt:
+            "This option is used to set the prompt that is used to detect emotion. If it is blank, it will use the default prompt.",
         removePunctuationHypa: "If enabled, it will remove punctuation before executing HypaMemory.",
         additionalParams:
             'Additional parameters that would be added to the request body. If you want to exclude some parameters, you can put `{{none}}` to the value. If you want to add a header instead of body, you can put `header::` in front of the key like `header::Authorization`. If you want value as json, you can put `json::` in front of the value like `json::{"key":"value"}`. otherwise, type of the value would be determined automatically.',
@@ -161,15 +182,19 @@ export const languageEnglish = {
             "If Claude overload happens, Risuai would try to prevent it by continuing with same prompt, making it less likely to happen. Works only for streamed responses. This could not work for non-official api endpoints.",
         triggerScript:
             'Trigger Script is a custom script that runs when a condition is met. It can be used to modify the chat data, run a command, change variable, and etc. the type depends when it is triggered. It can also be run by buttons, which can be used with {{button::Display::TriggerName}}, or HTML buttons with `risu-trigger="<TriggerName>"` attribute.',
-        autoContinueChat: "If enabled, it will try to continue the chat if it doesn't ends with a punctuation. DONT USE THIS WITH LANGUAGES THAT DOESN'T USE PUNCTUATION.",
+        autoContinueChat:
+            "If enabled, it will try to continue the chat if it doesn't ends with a punctuation. DONT USE THIS WITH LANGUAGES THAT DOESN'T USE PUNCTUATION.",
         combineTranslation:
             "If enabled, text that is one sentence but separated by HTML tags will be combined together and translated, then Modify Display script will be reapplied to the translated output.\nThis helps the translator to make the correct translation.\nIf the UI becomes weird when you enable this option, please turn off the option and report it.",
         dynamicAssets:
             "If enabled, if the asset name is not found when processing data, it will try to find the closest asset name by using vector search and replace it with the closest asset name.",
-        dynamicAssetsEditDisplay: "If enabled, the dynamic assets will be applied to the Modify Display stage too. However, this can cause performance issues.",
+        dynamicAssetsEditDisplay:
+            "If enabled, the dynamic assets will be applied to the Modify Display stage too. However, this can cause performance issues.",
         nickname: "Nickname would used be in {{char}} or <char> in chat instead of character's name if it is set.",
-        useRegexLorebook: "If enabled, it will use regex for lorebook search, instead of string matching. It uses /regex/flags format.",
-        customChainOfThought: "Warning: chain of thought toggle is no longer recommended to use. Put chain of thought prompt in other prompt entries instead.",
+        useRegexLorebook:
+            "If enabled, it will use regex for lorebook search, instead of string matching. It uses /regex/flags format.",
+        customChainOfThought:
+            "Warning: chain of thought toggle is no longer recommended to use. Put chain of thought prompt in other prompt entries instead.",
         customPromptTemplateToggle:
             "Here you can define your own prompt toggles. Use `<toggle variable>=<toggle name>` format, seperated by newline. for example, `cot=Toggle COT`. You can use these toggles in prompt by using `{{getglobalvar::toggle_<toggle variable>}}`. like `{{getglobalvar::toggle_cot}}`.",
         defaultVariables:
@@ -196,9 +221,11 @@ export const languageEnglish = {
             "Namespace is a unique identifier for the module. It is used to prevent conflicts between modules, and for interaction of presets, other modules and etc. If you are not sure what to put, leave it blank.",
         moduleIntergration:
             "You can enable modules by putting the module namespace in the module intergartion sections. if you want to enable multiple modules, you can seperate them by comma. for example, `module1,module2,module3`. This is for advanced users, who wants to vary the use of modules by presets.",
-        customCSS: "Custom CSS for styling. you can also disable/enable it by pressing (Ctrl + .) if something goes wrong.",
+        customCSS:
+            "Custom CSS for styling. you can also disable/enable it by pressing (Ctrl + .) if something goes wrong.",
         betaMobileGUI: "If enabled, it will use beta mobile GUI on small (less than 800px) screens. Requires refresh.",
-        enableScrollToActiveChar: "If enabled, pressing the hotkey or holding Ctrl while dragging a character will scroll to the currently active character. Folders will be opened automatically if closed.",
+        enableScrollToActiveChar:
+            "If enabled, pressing the hotkey or holding Ctrl while dragging a character will scroll to the currently active character. Folders will be opened automatically if closed.",
         unrecommended: "This is a unrecommended setting. It is not recommended to use this setting.",
         jsonSchema:
             "This is a JSON Schema that will be sent to the AI model if AI model supports JSON Schema.\n\nHowever, since JSON Schema is hard to learn, In Risuai, you can use subset of TypeScript interface instead of JSON Schema. Risuai will convert it in runtime." +
@@ -213,7 +240,8 @@ export const languageEnglish = {
         Properties must be one in a line. if there is multiple properties in a line, it will throw an error. Properties and name of the interface must be only in latin characters, in ASCII range. Name of the properties must not be surrounded by quotes or double quotes. Nesting inside the interface is not supported. It is not allowed to put \`{\` or \`}\` in the line that properties are defined. If you want to use more advanced types, use JSON Schema instead.
         ` +
             "</details>",
-        strictJsonSchema: "If enabled, it will strictly follow the Provided Schema for JSON on some models. If it is disabled, it may ignore the JSON Schema.",
+        strictJsonSchema:
+            "If enabled, it will strictly follow the Provided Schema for JSON on some models. If it is disabled, it may ignore the JSON Schema.",
         extractJson:
             'If it is not blank, it will extract specific JSON data from the response. For example, if you want to extract `response.text[0]` in response `{"response": {"text": ["hello"]}}`, you can put `response.text.0`.',
         translatorNote:
@@ -223,7 +251,8 @@ export const languageEnglish = {
         groupOtherBotRole: "This defines a role that is used in group chat for characters that isn't speaker.",
         chatHTML:
             "A HTML that would be inserted as each chat.\n\nYou can use CBS and special tags.\n- `<risutextbox>`: a textbox that would be used to render text\n- `<risuicon>`: an icon for user or assistant\n- `<risubuttons>`: icon buttons for chat edit, translations and etc.\n- `<risugeninfo>`: generation information button.",
-        systemContentReplacement: "The prompt format that replaces system prompt if the model doesn't support system prompt.",
+        systemContentReplacement:
+            "The prompt format that replaces system prompt if the model doesn't support system prompt.",
         systemRoleReplacement: "The role that replaces system role if the model doesn't support system role.",
         summarizationPrompt:
             "The prompt that is used for summarization. If it is blank, it will use the default prompt. You can also use ChatML formating with {{slot}} for the chat data.",
@@ -231,26 +260,33 @@ export const languageEnglish = {
             "The prompt that is used for translation. If it is blank, it will use the default prompt. You can also use ChatML formating with {{slot}} for the dest language, {{slot::content}} for the content, and {{slot::tnote}} for the translator note.",
         translateBeforeHTMLFormatting:
             "If enabled, it will translate the text before Regex scripts and HTML formatting. This could make the token lesser but could break the formatting.",
-        autoTranslateCachedOnly: "If enabled with Auto Translation option on, it will automatically translate only the messages that the user has translated previously.",
+        autoTranslateCachedOnly:
+            "If enabled with Auto Translation option on, it will automatically translate only the messages that the user has translated previously.",
         presetChain:
             "If it is not blank, the preset will be changed and applied randomly every time when user sends a message in the preset list in this input. Preset list should be seperated by comma, for example, `preset1,preset2`.",
-        legacyMediaFindings: "If enabled, it will use the old method to find media assets, without using the additional search algorithm.",
+        legacyMediaFindings:
+            "If enabled, it will use the old method to find media assets, without using the additional search algorithm.",
         comfyWorkflow:
             "Put the API workflow of comfy UI. you can get your API workflow in comfy UI by pressing the 'Workflow > Export (API)' button. you must also put {{risu_prompt}} in you workflow text. The {{risu_prompt}} will be replaced with the prompt provided by the Risu.",
-        automaticCachePoint: "Automatically creates cache point after the chat ends, if the caching point doesn't exist.",
+        automaticCachePoint:
+            "Automatically creates cache point after the chat ends, if the caching point doesn't exist.",
         experimentalChatCompressionDesc:
             "Compresses the unused chat data and saves in seperate file. This greatly reduces the size of the chat data, and greatly improves the performance, however its experimental and can be unstable, causing issues in backup feature and more.",
         promptInfoInsideChatDesc:
             "When enabled, this stores prompt preset information in the chat metadata. The stored data includes the preset name, active toggles, and the prompt text. This may slightly increase processing time and storage usage.",
         autoAdjustSchema: "When enabled, it will automatically adjust the JSON schema for Dynamic Output.",
-        dynamicMessages: "When enabled, it will allow the assistant to send multiple messages in a row, instead of one at a time.",
-        dynamicMemory: "When enabled, assistant will make memory notes on response time. Additional prompting is required to utilize this feature.",
+        dynamicMessages:
+            "When enabled, it will allow the assistant to send multiple messages in a row, instead of one at a time.",
+        dynamicMemory:
+            "When enabled, assistant will make memory notes on response time. Additional prompting is required to utilize this feature.",
         dynamicResponseTiming: "When enabled, it will adjust the response timing dynamically.",
         dynamicRequest: "When enabled, it will request to model at random timing without waiting for user input.",
-        settingsCloseButtonSize: "Adjusts the size of the close (X) button in the top right corner of the settings window. Default is 24.",
+        settingsCloseButtonSize:
+            "Adjusts the size of the close (X) button in the top right corner of the settings window. Default is 24.",
         showTypingEffect: "When enabled, it will show a typing indicator while the assistant is generating a response.",
         dynamicOutputPrompt: "When enabled, the schema information will be included in the request.",
-        realmDirectOpen: "If enabled, clicking a character in RisuRealm preview will directly open the character description.",
+        realmDirectOpen:
+            "If enabled, clicking a character in RisuRealm preview will directly open the character description.",
         openRouterProviderOrder:
             "The order of providers to use, the first provider will be used first, if the provider is not available, it will use the next provider. See datail on https://openrouter.ai/docs/guides/routing/provider-selection#ordering-specific-providers",
         openRouterProviderOnly:
@@ -277,14 +313,12 @@ export const languageEnglish = {
             "The fraction of the max context size allocated to the long-term memory block {{slot}} in the prompt.",
         hypaV3ExtraSummarizationRatio:
             "Lowers the threshold at which summarization stops. At 0, summarization stops as soon as tokens fall below the max context. Higher values cause more summarization before stopping.",
-        hypaV3MaxChatsPerSummary:
-            "Maximum number of chat messages to include when creating a single summary.",
+        hypaV3MaxChatsPerSummary: "Maximum number of chat messages to include when creating a single summary.",
         hypaV3RecentMemoryRatio:
             "The fraction of memory tokens allocated to recent memory. Automatically filled with the most recently created summaries until the allocated tokens are full.",
         hypaV3SimilarMemoryRatio:
             "The fraction of memory tokens allocated to similar memory. Automatically filled with summaries that have the highest similarity scores to recent chats until the allocated tokens are full.",
-        hypaV3RandomMemoryRatio:
-            "Randomly filled from summaries not already selected by other categories.",
+        hypaV3RandomMemoryRatio: "Randomly filled from summaries not already selected by other categories.",
         hypaV3PreserveOrphanedMemory:
             "If enabled, summaries that reference deleted chat messages will be preserved. If disabled, summaries whose source messages no longer exist are automatically removed.",
         hypaV3ProcessRegexScript:
@@ -301,15 +335,12 @@ export const languageEnglish = {
             "Maximum SuperMemory model requests per minute for summarization. Only applies when the SuperMemory model is set to Auxiliary Model.",
         hypaV3SummarizationMaxConcurrent:
             "Maximum concurrent SuperMemory model requests for summarization. Only applies when the SuperMemory model is set to Auxiliary Model.",
-        hypaV3EmbeddingRequestsPerMinute:
-            "Maximum embedding model requests per minute for similarity search.",
-        hypaV3EmbeddingMaxConcurrent:
-            "Maximum concurrent embedding model requests for similarity search.",
+        hypaV3EmbeddingRequestsPerMinute: "Maximum embedding model requests per minute for similarity search.",
+        hypaV3EmbeddingMaxConcurrent: "Maximum concurrent embedding model requests for similarity search.",
         hypaV3QueryChatCount:
             "The number of recent chat messages used as the query for similarity search. " +
             "Higher values use more chat context to determine similarity.",
-        hypaV3SummaryChunkSeparator:
-            "Separator used to split summaries into chunks for similarity search.",
+        hypaV3SummaryChunkSeparator: "Separator used to split summaries into chunks for similarity search.",
     },
     setup: {
         chooseProvider: "Choose AI Provider",
@@ -325,11 +356,15 @@ export const languageEnglish = {
         themeDescClassic: "Suitable for All devices",
         texttheme: "Select your text color",
         inputName: "Lastly, input your Nickname.",
-        welcome: "Welcome to Risuai! I am Airisu, I am here to guide you through the Risuai setup. First, what may I call you?",
-        welcome2: "Hello {username}! Before we start, I will ask you some questions. You can change these settings later in settings.\n\nFirst select the AI provider.",
-        openRouterProvider: "OpenRouter has a lot of models, some of them unfiltered and some of them free, but it is not as good as OpenAI.",
+        welcome:
+            "Welcome to Risuai! I am Airisu, I am here to guide you through the Risuai setup. First, what may I call you?",
+        welcome2:
+            "Hello {username}! Before we start, I will ask you some questions. You can change these settings later in settings.\n\nFirst select the AI provider.",
+        openRouterProvider:
+            "OpenRouter has a lot of models, some of them unfiltered and some of them free, but it is not as good as OpenAI.",
         hordeProvider: "Horde is a free provider, but the response time is long and the quality is low.",
-        setProviderLater: "There are other providers, but you can set it later in settings. Select this if you want to set it later.",
+        setProviderLater:
+            "There are other providers, but you can set it later in settings. Select this if you want to set it later.",
         setupOpenAI:
             "To use OpenAI, you need to get an API key. \n1. Go to https://beta.openai.com/ \n2. Login with your account \n3. Go to https://beta.openai.com/account/api-keys \n4. Click 'Create New API Key' and name your key whatever you want. \n5. Copy the key in the website.\n6. Go back to Risuai\n7. Paste it, and click send button.",
         setupClaude: "To use Claude, you need to get an API key.",
@@ -354,15 +389,20 @@ export const languageEnglish = {
         setupMessageOption1: "Guide me to setup",
         setupMessageOption1Desc: "Recommended for new users",
         setupMessageOption2: "I will setup myself",
-        claudeDesc: "Claude is a AI model made by Antropic, competitor to OpenAI. It's better than GPT if you want to use it in other languages than English.",
-        openAIDesc: "OpenAI GPT is a high quality AI model, but it is paid and filtered, and weak in other than English.",
+        claudeDesc:
+            "Claude is a AI model made by Antropic, competitor to OpenAI. It's better than GPT if you want to use it in other languages than English.",
+        openAIDesc:
+            "OpenAI GPT is a high quality AI model, but it is paid and filtered, and weak in other than English.",
         chooseChatType: "Great! Now select the chat language.",
         chooseChatTypeOption1: "Full English",
-        chooseChatTypeOption1Desc: "This will make AI to use English and input/output in English. Recommended for English speakers.",
+        chooseChatTypeOption1Desc:
+            "This will make AI to use English and input/output in English. Recommended for English speakers.",
         chooseChatTypeOption2: "English Processing",
-        chooseChatTypeOption2Desc: "This will make AI to use English internaly, but input/output will be in your language. Recommended for non-English speakers.",
+        chooseChatTypeOption2Desc:
+            "This will make AI to use English internaly, but input/output will be in your language. Recommended for non-English speakers.",
         chooseChatTypeOption3: "No Language Focused",
-        chooseChatTypeOption3Desc: "This will make AI to use your language internaly, but this could make quality lower.",
+        chooseChatTypeOption3Desc:
+            "This will make AI to use your language internaly, but this could make quality lower.",
         chooseCheapOrMemory: "By the way, do you prefer memory or cheapness?",
         chooseCheapOrMemoryOption1: "Memory",
         chooseCheapOrMemoryOption1Desc: "This will make AI to remember more, but it will quite expensive.",
@@ -371,10 +411,12 @@ export const languageEnglish = {
         chooseCheapOrMemoryOption3: "Balanced",
         chooseCheapOrMemoryOption3Desc: "This will make AI to remember more than cheap, but less than memory.",
         chooseCheapOrMemoryOption4: "Unlimited",
-        chooseCheapOrMemoryOption4Desc: "This will make AI to remember almost everything, but it will be very expensive.",
+        chooseCheapOrMemoryOption4Desc:
+            "This will make AI to remember almost everything, but it will be very expensive.",
         finally: "Finally, do you want to enable advanced tools?",
         finallyOption1: "Yes",
-        finallyOption1Desc: "This will enable advanced tools, but it will make the UI more complex. Recommended for advanced users.",
+        finallyOption1Desc:
+            "This will enable advanced tools, but it will make the UI more complex. Recommended for advanced users.",
         finallyOption2: "No",
         finallyOption2Desc: "This will disable advanced tools, and make the UI more simple. Recommended for new users.",
         igpPrompt:
@@ -574,7 +616,8 @@ export const languageEnglish = {
         v2IfAdvanced: "If",
         v2IfAdvancedDesc: "If {{source}} {{condition}} {{target}}",
         v2QuickSearchChat: "Quick Search Chat",
-        v2QuickSearchChatDesc: "Quick search {{value}} in chat with {{condition}} condition in {{depth}} depth => {{outputVar}}",
+        v2QuickSearchChatDesc:
+            "Quick search {{value}} in chat with {{condition}} condition in {{depth}} depth => {{outputVar}}",
         v2StopPromptSending: "Stop Prompt Sending",
         v2StopPromptSendingDesc: "Stop Prompt Sending",
         v2Tokenize: "Tokenize",
@@ -588,7 +631,8 @@ export const languageEnglish = {
         v2CreateLorebook: "Create Lorebook",
         v2CreateLorebookDesc: "Create lorebook with name {{name}}, key {{key}}, content {{content}}",
         v2ModifyLorebookByIndex: "Modify Lorebook",
-        v2ModifyLorebookByIndexDesc: "Modify lorebook at index {{index}} with name {{name}}, key {{key}}, content {{content}}",
+        v2ModifyLorebookByIndexDesc:
+            "Modify lorebook at index {{index}} with name {{name}}, key {{key}}, content {{content}}",
         v2DeleteLorebookByIndex: "Delete Lorebook",
         v2DeleteLorebookByIndexDesc: "Delete lorebook at index {{index}}",
         v2GetLorebookCountNew: "Get Lorebook Count",
@@ -821,7 +865,8 @@ export const languageEnglish = {
     promptPreprocess: "Use Prompt Preprocess",
     SwipeRegenerate: "Use Swipe for Regeneration",
     instantRemove: "Remove subsequent when message remove",
-    instantRemoveConfirm: "Do you want to remove just one message? If you select No, then the message after it will also be remove.",
+    instantRemoveConfirm:
+        "Do you want to remove just one message? If you select No, then the message after it will also be remove.",
     textColor: "Text Color",
     classicRisu: "Classic Risu",
     highcontrast: "High-Contrast",
@@ -886,12 +931,14 @@ export const languageEnglish = {
     globalRegexScript: "Global Regex",
     accessibility: "Accessibility",
     sendWithEnter: "Send with Enter Key",
-    fixedChatTextarea: "Fixed at the bottom of the chat window(When unchecked, Shift + Enter changes to send a message.)",
+    fixedChatTextarea:
+        "Fixed at the bottom of the chat window(When unchecked, Shift + Enter changes to send a message.)",
     clickToEdit: "Click Text to Edit",
     enableBlockPartialEdit: "Enable Block Partial Edit (Hover to edit individual blocks)",
     enableDragPartialEdit: "Enable Drag Partial Edit (Select text to edit)",
     setNodePassword: "Set your password to security",
-    inputNodePassword: "Input your password. if you can't remember, remove save/__password.txt in your server files and restart the server.",
+    inputNodePassword:
+        "Input your password. if you can't remember, remove save/__password.txt in your server files and restart the server.",
     simple: "Simple",
     advanced: "Advanced",
     askReRollAutoSuggestions: "Re-Roll Auto Suggestions",
@@ -1015,7 +1062,8 @@ export const languageEnglish = {
     import: "Import",
     supporterThanks: "Supporter Thanks",
     supporterThanksDesc: "Thank you for your support!",
-    donatorPatreonDesc: "For default, it will not be shown in the list for privacy. If you want to show your nickname, go to Risuai's patreon page and press the link button.",
+    donatorPatreonDesc:
+        "For default, it will not be shown in the list for privacy. If you want to show your nickname, go to Risuai's patreon page and press the link button.",
     useNamePrefix: "Use Name Prefix",
     textAdventureNAI: "Run as Text Adventure",
     appendNameNAI: "Append Name on NAI",
@@ -1096,13 +1144,15 @@ export const languageEnglish = {
     download: "Download",
     edit: "Edit",
     enableGlobal: "Enable Globally",
-    chatModulesInfo: "You can enable or disable modules for this chat. You can also enable for this character by right clicking or long pressing the enable button.",
+    chatModulesInfo:
+        "You can enable or disable modules for this chat. You can also enable for this character by right clicking or long pressing the enable button.",
     sideMenuRerollButton: "Side Menu Reroll Button",
     persistentStorage: "Persistent Storage",
     persistentStorageSuccess: "Storage is successfully persisted",
     persistentStorageFail: "Storage is not persisted. Did you deny the request?, or is the browser not supported?",
     persistentStorageRecommended: "Persistent Storage Recommended",
-    persistentStorageDesc: "Your browser supports persistent storage. This is recommended for better performance and user experience.",
+    persistentStorageDesc:
+        "Your browser supports persistent storage. This is recommended for better performance and user experience.",
     enable: "Enable",
     postFile: "Post File",
     requestInfoInsideChat: "Show Request Info Inside Chat",
@@ -1144,7 +1194,8 @@ export const languageEnglish = {
     grid: "Grid",
     list: "List",
     trash: "Trash",
-    trashDesc: "Deleted characters are moved to trash. You can restore or delete them permanently. Deleted characters are automatically purged after 3 days.",
+    trashDesc:
+        "Deleted characters are moved to trash. You can restore or delete them permanently. Deleted characters are automatically purged after 3 days.",
     shareExport: "Share/Export",
     nickname: "Nickname",
     useRegexLorebook: "Use Regex",
@@ -1169,7 +1220,8 @@ export const languageEnglish = {
     alertContent: "Alert Content",
     lowLevelAccessConfirm:
         "This content uses Low Level Access. which means this content can access the AI model and your storage directly. Do you really want to import this content?",
-    triggerLowLevelOnly: "This trigger only works with Low Level Access. To enable this trigger, enable Low Level Access in advanced settings in the character or module.",
+    triggerLowLevelOnly:
+        "This trigger only works with Low Level Access. To enable this trigger, enable Low Level Access in advanced settings in the character or module.",
     truthy: "Truthy",
     extractRegex: "Extract Text with Regex",
     runImgGen: "Run Image Generation",
@@ -1190,7 +1242,8 @@ export const languageEnglish = {
     successApplyModule: "Module is successfully applied",
     font: "Font",
     lineHeight: "Line Height",
-    notCharxWarn: "This character uses multiple assets. It is recommended to export this character as a CharX format for better compatibility.",
+    notCharxWarn:
+        "This character uses multiple assets. It is recommended to export this character as a CharX format for better compatibility.",
     noPlugins: "No Plugins Installed",
     legacyTranslation: "Legacy Translation",
     clipboardSuccess: "Copied to Clipboard",
@@ -1266,7 +1319,8 @@ export const languageEnglish = {
     exportTranslationCache: "Export Translation Cache",
     exportTranslationCacheSuccess: "Translation cache exported successfully.",
     importTranslationCache: "Import Translation Cache",
-    importTranslationCacheConfirm: "This will merge entries into your translation cache. Existing keys will be overwritten. Continue?",
+    importTranslationCacheConfirm:
+        "This will merge entries into your translation cache. Existing keys will be overwritten. Continue?",
     importTranslationCacheSuccess: "Imported {0} translation cache entries.",
     importTranslationCacheFailed: "Imported {0} entries, but {1} entries failed to save. Storage may be full.",
     exportTranslationCacheEmpty: "Translation cache is empty.",
@@ -1366,7 +1420,8 @@ export const languageEnglish = {
         nextSummarizationLabel: "HypaV3 will summarize [{0}]",
         nextSummarizationNoMessagesFoundLabel: "WARN: No messages found",
         nextSummarizationLoadingError: "Error loading next summarization target: {0}",
-        summarizationConditionLabel: "Tip: HypaV3 begins summarization when input tokens exceed the maximum context size.",
+        summarizationConditionLabel:
+            "Tip: HypaV3 begins summarization when input tokens exceed the maximum context size.",
         emptySelectedFirstMessageLabel: "WARN: Selected first message is empty",
         unclassified: "Unclassified",
         reSummarize: "Re-summarize",
@@ -1396,7 +1451,8 @@ export const languageEnglish = {
     depth: "Depth",
     returnCSSError: "Return CSS Error",
     alwaysActiveInChat: "Always Active (Current Chat)",
-    childLoreDesc: "This is a copy of Character lore that remains 'Always Active' until removed or manually deactivated in the original.",
+    childLoreDesc:
+        "This is a copy of Character lore that remains 'Always Active' until removed or manually deactivated in the original.",
     thinkingTokens: "Thinking Tokens",
     thinkingType: "Thinking Mode",
     adaptiveThinkingEffort: "Adaptive Thinking Effort",
@@ -1506,10 +1562,12 @@ export const languageEnglish = {
     add: "Add",
     nightlyWarning:
         "## Nightly Builds\n\nYou are connecting to a nightly build of the software. This version is meant for testing and most likely contains bugs. **In this version, even if you encounter issues, we do not support resolving them directly.**",
-    pluginRiskDetectedAlert: "Risuai detected code that may be harmful which can STOLE YOUR API KEY OR PERSONAL DATA. We recommend you to NOT INSTALL THIS PLUGIN.",
+    pluginRiskDetectedAlert:
+        "Risuai detected code that may be harmful which can STOLE YOUR API KEY OR PERSONAL DATA. We recommend you to NOT INSTALL THIS PLUGIN.",
     doNotInstall: "Do Not Install",
     continueAnyway: "Continue Anyway",
-    pluginNoRiskButAlert: "Risuai did not detect harmful code, but please be aware that installing plugins from untrusted sources can pose security risks.",
+    pluginNoRiskButAlert:
+        "Risuai did not detect harmful code, but please be aware that installing plugins from untrusted sources can pose security risks.",
 
     pluginRisksInuserFriendly: {
         eval: "Evaluating Code from Strings",
@@ -1520,10 +1578,14 @@ export const languageEnglish = {
     },
     pluginRisksInuserFriendlyDesc: {
         eval: "The plugin attempts to execute code from strings, strings can be obsucated to hide malicious code.",
-        globalAccess: "The plugin tries to access global variables, which can lead to unintended side effects or security vulnerabilities.",
-        thisOutsideClass: "The plugin uses 'this' keyword outside of class context, which can lead to unintended behavior or security issues.",
-        errorInVerification: "There are errors during the verification process of the plugin, indicating potential issues with its functionality.",
-        storageAccess: "The plugin attempts to access storage, which could lead to data leaks or unauthorized data manipulation.",
+        globalAccess:
+            "The plugin tries to access global variables, which can lead to unintended side effects or security vulnerabilities.",
+        thisOutsideClass:
+            "The plugin uses 'this' keyword outside of class context, which can lead to unintended behavior or security issues.",
+        errorInVerification:
+            "There are errors during the verification process of the plugin, indicating potential issues with its functionality.",
+        storageAccess:
+            "The plugin attempts to access storage, which could lead to data leaks or unauthorized data manipulation.",
     },
     generatedByAIDisclaimer: "This content was generated by AI and may contain inaccuracies or biases.",
     aiGenerationWarning: "Contents will be AI generated and may contain inaccuracies or biases.",
@@ -1549,25 +1611,39 @@ export const languageEnglish = {
     newMessageButtonTopBar: "Top Bar",
     trimStartNewChat: "Trim 'Start New Chat' Messages",
     pluginDevelopMode: "Plugin Develop Mode",
-    fetchLogConsent: "Plugin {} is requesting to fetch logs, which may expose sensitive information. Do you want to allow this?", 
-    getFullDatabaseConsent: "Plugin {} is requesting to access the full database, which may expose sensitive information. Do you want to allow this?",
-    mainDomAccessConsent: "Plugin {} is requesting to access the main Document, which may expose sensitive information. Do you want to allow this?",
-    replacerPermissionConsent: "Plugin {} is requesting permission to replace content in the chat, which may be used to manipulate the conversation. Do you want to allow this?",
-    providerPermissionConsent: "Plugin {} is requesting permission to access the provider, which may allow it to make unauthorized API calls. Do you want to allow this?",
-    inlayPermissionConsent: "Plugin {} is requesting permission to access the inlay, which may allow it to read, write or edit the inlay content. Do you want to allow this?",
-    sendChatConsent: "Plugin {} is requesting permission to send chat messages on your behalf, which will trigger AI responses. Do you want to allow this?",
-    pluginV2Warning: "Plugin V2 and V2.1 is considered unsafe and will stop working in future versions. **Please do not use these versions of plugins.**. If you are the developer of this plugin, please update to V3 as soon as possible.",
+    fetchLogConsent:
+        "Plugin {} is requesting to fetch logs, which may expose sensitive information. Do you want to allow this?",
+    getFullDatabaseConsent:
+        "Plugin {} is requesting to access the full database, which may expose sensitive information. Do you want to allow this?",
+    mainDomAccessConsent:
+        "Plugin {} is requesting to access the main Document, which may expose sensitive information. Do you want to allow this?",
+    replacerPermissionConsent:
+        "Plugin {} is requesting permission to replace content in the chat, which may be used to manipulate the conversation. Do you want to allow this?",
+    providerPermissionConsent:
+        "Plugin {} is requesting permission to access the provider, which may allow it to make unauthorized API calls. Do you want to allow this?",
+    inlayPermissionConsent:
+        "Plugin {} is requesting permission to access the inlay, which may allow it to read, write or edit the inlay content. Do you want to allow this?",
+    sendChatConsent:
+        "Plugin {} is requesting permission to send chat messages on your behalf, which will trigger AI responses. Do you want to allow this?",
+    pluginV2Warning:
+        "Plugin V2 and V2.1 is considered unsafe and will stop working in future versions. **Please do not use these versions of plugins.**. If you are the developer of this plugin, please update to V3 as soon as possible.",
     createFolderOnBranch: "Create Folder on Branch",
     hamburgerButtonBottom: "Move Menu Button to Bottom of Sidebar",
-    partialBackupFirstConfirm: "⚠️ WARNING: Partial Local Backup ⚠️\n\nThis backup quickly saves only essential information.\n\nIncluded:\n- Database (chat history, characters, modules, plugins, prompts, settings, etc.)\n- Character profile icons (main images)\n- User icons and custom backgrounds\n- Persona icons\n- Folder images\n- Bot preset images\n\n⚠️ NOT Included:\n- Emotion images\n- Additional character assets\n- VITS voice files\n- All other additional media files\n\nThis backup file does NOT include all character assets!\nIf you need a complete backup, use the regular local backup.\n\nDo you want to continue?",
-    partialBackupSecondConfirm: "⚠️⚠️ FINAL WARNING ⚠️⚠️\n\nThis backup saves only character profile images and does NOT save most other assets!\n\nWhat will be saved:\n- Database (chat history, characters, modules, plugins, prompts, settings, etc.)\n- Character profile icons (main images)\n- User icons and custom backgrounds\n- Persona icons\n- Folder images\n- Bot preset images\n\nWhat will NOT be saved:\n- Emotion images\n- Additional character assets\n- VITS voice files\n- All other media files\n\n⚠️ Proceed ONLY if you don't need character assets in your backup file! ⚠️\n\nAre you really sure you want to proceed with partial backup?",
+    partialBackupFirstConfirm:
+        "⚠️ WARNING: Partial Local Backup ⚠️\n\nThis backup quickly saves only essential information.\n\nIncluded:\n- Database (chat history, characters, modules, plugins, prompts, settings, etc.)\n- Character profile icons (main images)\n- User icons and custom backgrounds\n- Persona icons\n- Folder images\n- Bot preset images\n\n⚠️ NOT Included:\n- Emotion images\n- Additional character assets\n- VITS voice files\n- All other additional media files\n\nThis backup file does NOT include all character assets!\nIf you need a complete backup, use the regular local backup.\n\nDo you want to continue?",
+    partialBackupSecondConfirm:
+        "⚠️⚠️ FINAL WARNING ⚠️⚠️\n\nThis backup saves only character profile images and does NOT save most other assets!\n\nWhat will be saved:\n- Database (chat history, characters, modules, plugins, prompts, settings, etc.)\n- Character profile icons (main images)\n- User icons and custom backgrounds\n- Persona icons\n- Folder images\n- Bot preset images\n\nWhat will NOT be saved:\n- Emotion images\n- Additional character assets\n- VITS voice files\n- All other media files\n\n⚠️ Proceed ONLY if you don't need character assets in your backup file! ⚠️\n\nAre you really sure you want to proceed with partial backup?",
     savePartialLocalBackup: "Save Partial Backup Locally (Excluding Character Assets)",
     pluginProviderNotFound: "Unknown Plugin detected. Please change the model or enable the corresponding plugin.",
     bootstrap: {
-        dataCorruptionDetected: (name: string, type: string) => `Data Corruption Detected\n\nModule "${name}" has corrupted lorebook format.\n\nCorrupted data type: ${type}`,
-        reportErrorQuestion: "Would you like to report this error to the developer?\nThis helps prevent the same error from happening again.\n(Only includes Corrupted module info, no personal data)",
-        diagnosticInformation: (reportData: string) => `# Diagnostic Information\n\nPlease copy the information below and report it to the developer via GitHub Issues, Discord, or community.\nDouble-check for any sensitive information before reporting.\n\n\`\`\`json\n${reportData}\n\`\`\``,
-        resetLorebookQuestion: "Do you want to reset ONLY the lorebook data in this specific corrupted module?\n(Other modules and character data will NOT be affected)\n\nChoosing \"No\" will keep the data but errors may continue.",
+        dataCorruptionDetected: (name: string, type: string) =>
+            `Data Corruption Detected\n\nModule "${name}" has corrupted lorebook format.\n\nCorrupted data type: ${type}`,
+        reportErrorQuestion:
+            "Would you like to report this error to the developer?\nThis helps prevent the same error from happening again.\n(Only includes Corrupted module info, no personal data)",
+        diagnosticInformation: (reportData: string) =>
+            `# Diagnostic Information\n\nPlease copy the information below and report it to the developer via GitHub Issues, Discord, or community.\nDouble-check for any sensitive information before reporting.\n\n\`\`\`json\n${reportData}\n\`\`\``,
+        resetLorebookQuestion:
+            'Do you want to reset ONLY the lorebook data in this specific corrupted module?\n(Other modules and character data will NOT be affected)\n\nChoosing "No" will keep the data but errors may continue.',
     },
     partialEdit: {
         editButtonTooltip: "Edit",
@@ -1579,7 +1655,8 @@ export const languageEnglish = {
         editModalTitle: "Partial Edit",
         matchFound: (method: string) => `Match: ${method}`,
         matchFailedTitle: "Cannot Partial Edit",
-        matchFailedMessage: "Unable to locate precisely in the original message. This may happen with very long sentences or duplicate content. Please use the full message edit feature instead.",
+        matchFailedMessage:
+            "Unable to locate precisely in the original message. This may happen with very long sentences or duplicate content. Please use the full message edit feature instead.",
         selectMatch: "Select which block to edit",
         selectDeleteMatch: "Select which block to delete",
         matchesFound: "matches found",
@@ -1592,13 +1669,15 @@ export const languageEnglish = {
     enableRemoteSaving: "Enable Remote Saving",
     blockquoteStyling: "Blockquote Styling",
     dynamicModelRegistry: "Dynamic Model Registry",
-    confirmInstallPluginViaPlugin: "You are trying to install a plugin via another plugin. This can be dangerous if the source plugin is not trustworthy. Do you want to continue?",
+    confirmInstallPluginViaPlugin:
+        "You are trying to install a plugin via another plugin. This can be dangerous if the source plugin is not trustworthy. Do you want to continue?",
     risuaiProTools: "Risuai Pro Tools",
     enableRisuaiProTools: "Enable Risuai Pro Tools",
     easyPanel: "Easy Panel",
     mainModel: "Main Model",
     epEnabled: "Easy Panel Override",
-    epRequirementsNotMet: "Easy Panel requirements not met. Click the button below to automatically adjust your settings for optimal Easy Panel settings.",
+    epRequirementsNotMet:
+        "Easy Panel requirements not met. Click the button below to automatically adjust your settings for optimal Easy Panel settings.",
     seperateParametersByModel: "Separate Parameters by Model",
     disableSeperateParameterChangeOnPresetChange: "Disable Separate Parameter Change on Preset Change",
     keepSessionAlive: "Keep Session Alive",
@@ -1662,5 +1741,5 @@ export const languageEnglish = {
 type I18nTranslationFunction = (...args: any[]) => string;
 
 type I18nTranslation = {
-    [key: string]: string | I18nTranslation | string[] | I18nTranslationFunction
-}
+    [key: string]: string | I18nTranslation | string[] | I18nTranslationFunction;
+};

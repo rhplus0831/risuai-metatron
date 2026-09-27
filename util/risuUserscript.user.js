@@ -15,4 +15,4 @@
 // @updateURL https://github.com/kwaroran/Risuai/raw/refs/heads/main/util/risuUserscript.user.js
 // ==/UserScript==
 
-unsafeWindow.userScriptFetch = GM_fetch
+unsafeWindow.userScriptFetch = GM_fetch;

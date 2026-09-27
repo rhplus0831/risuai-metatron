@@ -1,8 +1,8 @@
 <script lang="ts">
-    import type { SettingItem, SettingContext } from 'src/ts/setting/types';
-    import { getLabel } from 'src/ts/setting/utils';
-    import Accordion from 'src/lib/UI/Accordion.svelte';
-    import SettingRenderer from '../SettingRenderer.svelte'; // Recursive import
+    import type { SettingItem, SettingContext } from "src/ts/setting/types";
+    import { getLabel } from "src/ts/setting/utils";
+    import Accordion from "src/lib/UI/Accordion.svelte";
+    import SettingRenderer from "../SettingRenderer.svelte"; // Recursive import
 
     interface Props {
         item: SettingItem;

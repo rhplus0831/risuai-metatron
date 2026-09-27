@@ -1,81 +1,79 @@
-import localforage from "localforage"
-import { isNodeServer } from "src/ts/platform"
-import { NodeStorage } from "./nodeStorage"
-import { OpfsStorage } from "./opfsStorage"
-import { alertStore } from "../alert"
+import localforage from "localforage";
+import { isNodeServer } from "src/ts/platform";
+import { NodeStorage } from "./nodeStorage";
+import { OpfsStorage } from "./opfsStorage";
+import { alertStore } from "../alert";
 
-export class AutoStorage{
-    realStorage:LocalForage|NodeStorage|OpfsStorage
+export class AutoStorage {
+    realStorage: LocalForage | NodeStorage | OpfsStorage;
 
-    async setItem(key:string, value:Uint8Array):Promise<void> {
-        await this.Init()
-        await this.realStorage.setItem(key, value)
+    async setItem(key: string, value: Uint8Array): Promise<void> {
+        await this.Init();
+        await this.realStorage.setItem(key, value);
     }
-    async getItem(key:string):Promise<Buffer> {
-        await this.Init()
-        return await this.realStorage.getItem(key)
-
+    async getItem(key: string): Promise<Buffer> {
+        await this.Init();
+        return await this.realStorage.getItem(key);
     }
-    async keys():Promise<string[]>{
-        await this.Init()
-        return await this.realStorage.keys()
-
+    async keys(): Promise<string[]> {
+        await this.Init();
+        return await this.realStorage.keys();
     }
-    async removeItem(key:string){
-        await this.Init()
-        return await this.realStorage.removeItem(key)
+    async removeItem(key: string) {
+        await this.Init();
+        return await this.realStorage.removeItem(key);
     }
 
-    async Init(){
-        if(!this.realStorage){
-            if(isNodeServer){
-                console.log("using node storage")
-                this.realStorage = new NodeStorage()
-                return
-            }
-            else if(window.navigator?.storage?.getDirectory &&
-                    FileSystemFileHandle?.prototype?.createWritable &&
-                    localStorage.getItem('opfs_flag!') === "able"){
-                console.log("using opfs storage")
+    async Init() {
+        if (!this.realStorage) {
+            if (isNodeServer) {
+                console.log("using node storage");
+                this.realStorage = new NodeStorage();
+                return;
+            } else if (
+                window.navigator?.storage?.getDirectory &&
+                FileSystemFileHandle?.prototype?.createWritable &&
+                localStorage.getItem("opfs_flag!") === "able"
+            ) {
+                console.log("using opfs storage");
 
                 const forage = localforage.createInstance({
-                    name: "risuai"
-                })
+                    name: "risuai",
+                });
 
-                const i = await forage.getItem("database/database.bin")
+                const i = await forage.getItem("database/database.bin");
 
-                if((!i) || (await forage.getItem("migrated"))){
-                    this.realStorage = new OpfsStorage()
-                    return
-                }
-                else if(!(await forage.getItem("denied_opfs"))){
-                    console.log("migrating")
-                    const keys = await forage.keys()
+                if (!i || (await forage.getItem("migrated"))) {
+                    this.realStorage = new OpfsStorage();
+                    return;
+                } else if (!(await forage.getItem("denied_opfs"))) {
+                    console.log("migrating");
+                    const keys = await forage.keys();
                     let i = 0;
-                    const opfs = new OpfsStorage()
-                    for(const key of keys){
+                    const opfs = new OpfsStorage();
+                    for (const key of keys) {
                         alertStore.set({
                             type: "wait",
-                            msg: `Migrating your data...(${i}/${keys.length})`
-                        })
-                        await opfs.setItem(key,await forage.getItem(key))
-                        i += 1
+                            msg: `Migrating your data...(${i}/${keys.length})`,
+                        });
+                        await opfs.setItem(key, await forage.getItem(key));
+                        i += 1;
                     }
-                    this.realStorage = opfs
+                    this.realStorage = opfs;
                     alertStore.set({
                         type: "none",
-                        msg: ""
-                    })
-                    await forage.setItem("migrated", true)
-                    return
+                        msg: "",
+                    });
+                    await forage.setItem("migrated", true);
+                    return;
                 }
             }
-            console.log("using forage storage")
+            console.log("using forage storage");
             this.realStorage = localforage.createInstance({
-                name: "risuai"
-            })
+                name: "risuai",
+            });
         }
     }
 
-    listItem = this.keys
+    listItem = this.keys;
 }

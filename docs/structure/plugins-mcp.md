@@ -1,6 +1,7 @@
 # Plugins (Legacy v2.1 and v3 Sandbox) and MCP Tools
 
 ## Scope
+
 - Owns:
   - plugin install, metadata parsing, and persistence,
   - legacy v2/v2.1 main-document execution,
@@ -20,7 +21,9 @@
   - TTS hook internals → `media-aux.md`.
 
 ## Files
+
 Plugins:
+
 - `plugins/plugins.svelte.ts`: plugin install, loading, and the legacy API.
   - `RisuPlugin` (the persisted shape).
   - `importPlugin`: parses the `//@name`, `//@api`, `//@display-name`, `//@arg`/`//@risu-arg`, `//@link`, `//@update-url`, `//@version`, `//@allowed-ipc` headers, then transpiles TypeScript.
@@ -42,6 +45,7 @@ Plugins:
 - `plugins/apiV3/transpiler.ts` `pluginCodeTranspiler`: Sucrase.
 
 MCP:
+
 - `mcp/mcp.ts`: the client registry and tool dispatch.
   - `initializeMCPs`: sets up internal, `plugin:`, and remote clients. A `stdio:` entry with `url` is treated as remote; one with `command`/`args` is rejected (`stdio MCPs are not supported`).
   - `MCPs`, `callOnlyMCPs`.
@@ -60,7 +64,9 @@ MCP:
 - `mcp/risuaccess/`: `RisuAccessClient` with `CharacterHandler`, `ChatHandler`, and `ModuleHandler`. Tools that read and write characters, lore, regex, Lua, and modules. Writes go through a `promptAccess` confirmation.
 
 ## Flows
+
 Plugins:
+
 1. `bootstrap.ts:loadData` → `loadPlugins`:
    - Saved `2`/`'2.1'` → `loadV2Plugin`.
    - `'3.0'` → `loadV3Plugins`.
@@ -74,12 +80,14 @@ Plugins:
 4. UI extensions push into the rune arrays in `stores.svelte.ts` (`additionalSettingsMenu`, `additionalChatMenu`, `chatPanelStore`, ...) and must register cleanup with `addPluginUnloadCallback`.
 
 MCP:
+
 1. `getTools` collects the schemas.
 2. Provider adapters (OpenAI Chat/Responses, Google, Anthropic) run model tool calls.
 3. `callTool` dispatches by tool name, first match wins, and the result is appended.
 4. The adapter recurses.
 
 ## State
+
 - `db.plugins: RisuPlugin[]`: name, script, version, arguments, `realArg`, `enabled`, `allowedIPC`, update URL. Saved in the `plugins` save block.
 - Plugin storage:
   - `pluginStorage` is save-file data in `db.pluginCustomStorage` (the `pluginStorage` save block). v2.1 uses its top level, shared with v2.1 `getDatabase` custom properties. v3 uses the reserved `_pluginStorage` sub-object, and `setItem` JSON-normalizes values (throws on BigInt).
@@ -87,11 +95,13 @@ MCP:
 - v3 permissions are persisted in LocalForage, keyed by script hash plus permission. The permission names are `fetchLogs`, `db`, `mainDom`, `replacer`, `provider`, `sendChat`, `inlay`.
 
 ## Coupling
+
 - Plugins depend on `database.svelte.ts`, `globalFetch`/`fetchNative`, assets, `scripts.ts`, model types, `ttsHooks`, theme functions, UI stores, alerts, `pluginmcp`.
 - Plugin consumers: `bootstrap.ts`, `PluginSettings.svelte`, `BotSettings.svelte` (custom providers), `request.ts`, `scripts.ts`, `index.svelte.ts`, `tokenizer.ts`, `modellist.ts`, `globalApi.svelte.ts`.
 - MCP consumers: `request.ts` and the provider adapters, `PlaygroundMCP.svelte`, `IrisModal.svelte`/`iris.ts`.
 
 ## Invariants
+
 - The plugin's internal `name` is its identity. Updates must not change it, because permission hashes, IPC allowlists, storage, and arguments are keyed by it.
 - New installs of API 2.0 and 2.1 are rejected. Saved v2.1 plugins still execute. v3 runs only inside the iframe.
 - v3 calls are async RPC. Nested classes and callbacks inside values are unsupported. Streams need MessagePort credit/cancel, and `terminate` must close them.
@@ -100,6 +110,7 @@ MCP:
 - Tool names are resolved globally, first match wins. Adapters usually keep only text content.
 
 ## Recipes
+
 - Add a v3 API function:
   1. Implement it in `v3.svelte.ts:makeRisuaiAPIV3`. Nested objects need flat host functions plus `_getAliases`. Constants go in `_getPropertiesForInitialization`.
   2. Declare it in `risuai.d.ts:RisuaiPluginAPI`.
@@ -110,12 +121,14 @@ MCP:
 - Change the tool loop: `mcp.ts` `getTools`/`callTool` plus every adapter (`openAI/requests.ts`, `openAI/responses.ts`, `google.ts`, `anthropic.ts`). Update `requests.responses.test.ts`.
 
 ## Tests
+
 - `src/ts/process/mcp/risuaccess/tests/modules.test.ts`: property-based and snapshot tests.
 - `requests.responses.test.ts`: the tool loop, with `callTool` mocked.
 - `src/ts/plugins/apiV3/pluginStorage.test.ts`: v3 `pluginStorage` isolation under `pluginCustomStorage._pluginStorage`, JSON normalization, and the BigInt rejection. It captures the API object by mocking `SandboxHost`.
 - Not tested: the sandbox RPC, permissions, v2 safety, hot reload, provider cleanup, remote MCP, filesystem tools.
 
 ## Known Hazards
+
 - `migrationGuide.md` claims defaults such as "missing `@api` means 2.1". The code defaults to 2.0 and picks the first recognized version token. Trust the code.
 - The declarations and runtime disagree:
   - `risuFetch` and `setChatPanel` are implemented but not declared.

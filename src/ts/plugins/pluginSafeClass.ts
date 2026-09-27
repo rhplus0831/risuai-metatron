@@ -2,9 +2,9 @@ import localforage from "localforage";
 import { toGetter } from "../globalApi.svelte";
 
 const pluginStorage = localforage.createInstance({
-    name: 'plugin',
-    storeName: 'plugin'
-})
+    name: "plugin",
+    storeName: "plugin",
+});
 
 export class SafeLocalStorage {
     getItem(key: string): string | null {
@@ -21,8 +21,8 @@ export class SafeLocalStorage {
         const keys: string[] = [];
         for (let i = 0; i < localStorage.length; i++) {
             const key = localStorage.key(i);
-            if (key && key.startsWith('safe_plugin_')) {
-                keys.push(key.substring('safe_plugin_'.length));
+            if (key && key.startsWith("safe_plugin_")) {
+                keys.push(key.substring("safe_plugin_".length));
             }
         }
         return keys;
@@ -43,13 +43,10 @@ export class SafeLocalStorage {
     get length(): number {
         return this.keys().length;
     }
-
-
 }
 
-
 export class SafeLocalPluginStorage {
-    __classType = 'REMOTE_REQUIRED' as const;
+    __classType = "REMOTE_REQUIRED" as const;
     async getItem<T>(key: string): Promise<T | null> {
         return await pluginStorage.getItem<T>(`safe_plugin_${key}`);
     }
@@ -62,8 +59,8 @@ export class SafeLocalPluginStorage {
     async keys(): Promise<string[]> {
         const keys: string[] = [];
         await pluginStorage.iterate((value, key) => {
-            if (key.startsWith('safe_plugin_')) {
-                keys.push(key.substring('safe_plugin_'.length));
+            if (key.startsWith("safe_plugin_")) {
+                keys.push(key.substring("safe_plugin_".length));
             }
         });
         return keys;
@@ -78,12 +75,14 @@ export class SafeLocalPluginStorage {
 
 export const SafeIdbFactory = {
     databases: async (): Promise<{ name: string; version: number }[]> => {
-        if ('databases' in indexedDB) {
+        if ("databases" in indexedDB) {
             const r = await indexedDB.databases();
-            return r.filter(db => db.name && db.name.startsWith('safe_plugin_')).map(db => ({
-                name: db.name!.substring('safe_plugin_'.length),
-                version: db.version
-            }));
+            return r
+                .filter((db) => db.name && db.name.startsWith("safe_plugin_"))
+                .map((db) => ({
+                    name: db.name!.substring("safe_plugin_".length),
+                    version: db.version,
+                }));
         } else {
             return [];
         }
@@ -97,186 +96,186 @@ export const SafeIdbFactory = {
     cmp: (first: string, second: string): number => {
         //well, we don't need to prefix here, as the comparison is the same
         return indexedDB.cmp(first, second);
-    }
-}
+    },
+};
 
 export const tagWhitelist = [
-    'a',
-    'abbr',
-    'acronym',
-    'address',
-    'area',
-    'article',
-    'aside',
-    'audio',
-    'b',
-    'bdi',
-    'bdo',
-    'big',
-    'blink',
-    'blockquote',
-    'body',
-    'br',
-    'button',
-    'canvas',
-    'caption',
-    'center',
-    'cite',
-    'code',
-    'col',
-    'colgroup',
-    'content',
-    'data',
-    'datalist',
-    'dd',
-    'decorator',
-    'del',
-    'details',
-    'dfn',
-    'dialog',
-    'dir',
-    'div',
-    'dl',
-    'dt',
-    'element',
-    'em',
-    'fieldset',
-    'figcaption',
-    'figure',
-    'font',
-    'footer',
-    'form',
-    'h1',
-    'h2',
-    'h3',
-    'h4',
-    'h5',
-    'h6',
-    'head',
-    'header',
-    'hgroup',
-    'hr',
-    'html',
-    'i',
-    'img',
-    'input',
-    'ins',
-    'kbd',
-    'label',
-    'legend',
-    'li',
-    'main',
-    'map',
-    'mark',
-    'marquee',
-    'menu',
-    'menuitem',
-    'meter',
-    'nav',
-    'nobr',
-    'ol',
-    'optgroup',
-    'option',
-    'output',
-    'p',
-    'picture',
-    'pre',
-    'progress',
-    'q',
-    'rp',
-    'rt',
-    'ruby',
-    's',
-    'samp',
-    'search',
-    'section',
-    'select',
-    'shadow',
-    'slot',
-    'small',
-    'source',
-    'spacer',
-    'span',
-    'strike',
-    'strong',
-    'style',
-    'sub',
-    'summary',
-    'sup',
-    'table',
-    'tbody',
-    'td',
-    'template',
-    'textarea',
-    'tfoot',
-    'th',
-    'thead',
-    'time',
-    'tr',
-    'track',
-    'tt',
-    'u',
-    'ul',
-    'var',
-    'video',
-    'wbr',
-    'svg',
-    'a',
-    'altglyph',
-    'altglyphdef',
-    'altglyphitem',
-    'animatecolor',
-    'animatemotion',
-    'animatetransform',
-    'circle',
-    'clippath',
-    'defs',
-    'desc',
-    'ellipse',
-    'enterkeyhint',
-    'exportparts',
-    'filter',
-    'font',
-    'g',
-    'glyph',
-    'glyphref',
-    'hkern',
-    'image',
-    'inputmode',
-    'line',
-    'lineargradient',
-    'marker',
-    'mask',
-    'metadata',
-    'mpath',
-    'part',
-    'path',
-    'pattern',
-    'polygon',
-    'polyline',
-    'radialgradient',
-    'rect',
-    'stop',
-    'style',
-    'switch',
-    'symbol',
-    'text',
-    'textpath',
-    'title',
-    'tref',
-    'tspan',
-    'view',
-    'vkern',
+    "a",
+    "abbr",
+    "acronym",
+    "address",
+    "area",
+    "article",
+    "aside",
+    "audio",
+    "b",
+    "bdi",
+    "bdo",
+    "big",
+    "blink",
+    "blockquote",
+    "body",
+    "br",
+    "button",
+    "canvas",
+    "caption",
+    "center",
+    "cite",
+    "code",
+    "col",
+    "colgroup",
+    "content",
+    "data",
+    "datalist",
+    "dd",
+    "decorator",
+    "del",
+    "details",
+    "dfn",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "element",
+    "em",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "font",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hgroup",
+    "hr",
+    "html",
+    "i",
+    "img",
+    "input",
+    "ins",
+    "kbd",
+    "label",
+    "legend",
+    "li",
+    "main",
+    "map",
+    "mark",
+    "marquee",
+    "menu",
+    "menuitem",
+    "meter",
+    "nav",
+    "nobr",
+    "ol",
+    "optgroup",
+    "option",
+    "output",
+    "p",
+    "picture",
+    "pre",
+    "progress",
+    "q",
+    "rp",
+    "rt",
+    "ruby",
+    "s",
+    "samp",
+    "search",
+    "section",
+    "select",
+    "shadow",
+    "slot",
+    "small",
+    "source",
+    "spacer",
+    "span",
+    "strike",
+    "strong",
+    "style",
+    "sub",
+    "summary",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "template",
+    "textarea",
+    "tfoot",
+    "th",
+    "thead",
+    "time",
+    "tr",
+    "track",
+    "tt",
+    "u",
+    "ul",
+    "var",
+    "video",
+    "wbr",
+    "svg",
+    "a",
+    "altglyph",
+    "altglyphdef",
+    "altglyphitem",
+    "animatecolor",
+    "animatemotion",
+    "animatetransform",
+    "circle",
+    "clippath",
+    "defs",
+    "desc",
+    "ellipse",
+    "enterkeyhint",
+    "exportparts",
+    "filter",
+    "font",
+    "g",
+    "glyph",
+    "glyphref",
+    "hkern",
+    "image",
+    "inputmode",
+    "line",
+    "lineargradient",
+    "marker",
+    "mask",
+    "metadata",
+    "mpath",
+    "part",
+    "path",
+    "pattern",
+    "polygon",
+    "polyline",
+    "radialgradient",
+    "rect",
+    "stop",
+    "style",
+    "switch",
+    "symbol",
+    "text",
+    "textpath",
+    "title",
+    "tref",
+    "tspan",
+    "view",
+    "vkern",
 ];
 
 const restrictElement = <T extends Node>(element: T): T => {
     //since we already trimed out, just return the element
     return element;
-}
+};
 
-const restrictNodeList = <T extends Element, Q extends NodeListOf<T>|HTMLCollectionOf<T> >(nodeList: Q): Q => {
+const restrictNodeList = <T extends Element, Q extends NodeListOf<T> | HTMLCollectionOf<T>>(nodeList: Q): Q => {
     return nodeList;
-}
+};
 
 export const SafeDocument = {
     body: document.body,
@@ -289,17 +288,17 @@ export const SafeDocument = {
     title: document.title,
     head: document.head,
     createElement: (tagName: string): HTMLElement => {
-        console.log('Creating element:', tagName);
+        console.log("Creating element:", tagName);
         tagName = tagName.toLowerCase().trim();
         if (!tagWhitelist.includes(tagName.toLowerCase())) {
             throw new Error(`Creation of <${tagName}> elements is not allowed in plugin context.`);
         }
-        if(tagName.toLowerCase() === 'a'){
+        if (tagName.toLowerCase() === "a") {
             console.error(`
                 Creation of <a> elements is restricted. due to potential security risks. Creating a <div> instead.
                 Use document.createAnchorElement(href: string) from the plugin API to create safe anchor elements.
             `);
-            return restrictElement(document.createElement('div')) as HTMLElement;
+            return restrictElement(document.createElement("div")) as HTMLElement;
         }
         return restrictElement(document.createElement(tagName));
     },
@@ -307,26 +306,26 @@ export const SafeDocument = {
         return restrictElement(document.createTextNode(data));
     },
     createElementNS: (namespaceURI: string, qualifiedName: string): Element => {
-        console.log('Creating namespaced element:', qualifiedName);
+        console.log("Creating namespaced element:", qualifiedName);
         qualifiedName = qualifiedName.toLowerCase().trim();
         if (!tagWhitelist.includes(qualifiedName.toLowerCase())) {
             throw new Error(`Creation of <${qualifiedName}> elements is not allowed in plugin context.`);
         }
-        if(qualifiedName.toLowerCase() === 'a'){
+        if (qualifiedName.toLowerCase() === "a") {
             console.error(`
                 Creation of <a> elements is restricted. due to potential security risks. Creating a <div> instead.
                 Use document.createAnchorElement(href: string) from the plugin API to create safe anchor elements.
             `);
-            return restrictElement(document.createElementNS(namespaceURI, 'div'));
+            return restrictElement(document.createElementNS(namespaceURI, "div"));
         }
         return restrictElement(document.createElementNS(namespaceURI, qualifiedName));
     },
     createAnchorElement: (href: string): HTMLAnchorElement => {
-        const anchor = document.createElement('a');
+        const anchor = document.createElement("a");
 
         try {
             const hrefURL = new URL(href, document.baseURI);
-            if(hrefURL.protocol !== 'http:' && hrefURL.protocol !== 'https:'){
+            if (hrefURL.protocol !== "http:" && hrefURL.protocol !== "https:") {
                 throw new Error(`Only http and https links are allowed for anchor elements in plugin context.`);
             }
             new URL(href);
@@ -337,34 +336,34 @@ export const SafeDocument = {
         anchor.href = href;
         return toGetter(() => anchor, {
             restrictChildren: [
-                'ownerDocument',
-                'href',
-                'download',
-                'hash',
-                'host',
-                'hostname',
-                'hreflang',
-                'origin',
-                'password',
-                'pathname',
-                'ping',
-                'port',
-                'protocol',
-                'referrerPolicy',
-                'rel',
-                'relList',
-                'search',
-                'target',
-                'text',
-                'type',
-                'username'
-            ]
+                "ownerDocument",
+                "href",
+                "download",
+                "hash",
+                "host",
+                "hostname",
+                "hreflang",
+                "origin",
+                "password",
+                "pathname",
+                "ping",
+                "port",
+                "protocol",
+                "referrerPolicy",
+                "rel",
+                "relList",
+                "search",
+                "target",
+                "text",
+                "type",
+                "username",
+            ],
         }) as HTMLAnchorElement;
     },
 
     //add safe methods as needed
     createRange: (): Range => {
-        return (document.createRange());
+        return document.createRange();
     },
     createDocumentFragment: (): DocumentFragment => {
         return restrictElement(document.createDocumentFragment());
@@ -379,7 +378,7 @@ export const SafeDocument = {
         return restrictElement(document.getElementById(elementId));
     },
     getElementsByClassName: (classNames: string): HTMLCollectionOf<Element> => {
-        return restrictNodeList(document.getElementsByClassName(classNames))
+        return restrictNodeList(document.getElementsByClassName(classNames));
     },
     getElementsByTagName: (qualifiedName: string): HTMLCollectionOf<Element> => {
         return restrictNodeList(document.getElementsByTagName(qualifiedName));
@@ -394,25 +393,61 @@ export const SafeDocument = {
         return restrictElement(document.elementFromPoint(x, y));
     },
     elementsFromPoint: (x: number, y: number): Element[] => {
-        return document.elementsFromPoint(x, y).map(el => restrictElement(el));
+        return document.elementsFromPoint(x, y).map((el) => restrictElement(el));
     },
     hasFocus: (): boolean => {
         return document.hasFocus();
     },
-    addEventListener: (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void => {
-        const allowedEvents = ['click', 'keydown', 'keyup', 'input', 'change', 'submit', 'focus', 'blur', 'mouseover', 'mouseout', 'mousemove', 'mousedown', 'mouseup'];
-        if(!allowedEvents.includes(type)) {
+    addEventListener: (
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: boolean | AddEventListenerOptions,
+    ): void => {
+        const allowedEvents = [
+            "click",
+            "keydown",
+            "keyup",
+            "input",
+            "change",
+            "submit",
+            "focus",
+            "blur",
+            "mouseover",
+            "mouseout",
+            "mousemove",
+            "mousedown",
+            "mouseup",
+        ];
+        if (!allowedEvents.includes(type)) {
             console.warn(`Event type '${type}' is not allowed in plugin context.`);
             return;
         }
         document.addEventListener(type, listener, options);
     },
-    removeEventListener: (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions): void => {
-        const allowedEvents = ['click', 'keydown', 'keyup', 'input', 'change', 'submit', 'focus', 'blur', 'mouseover', 'mouseout', 'mousemove', 'mousedown', 'mouseup'];
-        if(!allowedEvents.includes(type)) {
+    removeEventListener: (
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: boolean | EventListenerOptions,
+    ): void => {
+        const allowedEvents = [
+            "click",
+            "keydown",
+            "keyup",
+            "input",
+            "change",
+            "submit",
+            "focus",
+            "blur",
+            "mouseover",
+            "mouseout",
+            "mousemove",
+            "mousedown",
+            "mouseup",
+        ];
+        if (!allowedEvents.includes(type)) {
             console.warn(`Event type '${type}' is not allowed in plugin context.`);
             return;
         }
         document.removeEventListener(type, listener, options);
-    }
-}
+    },
+};

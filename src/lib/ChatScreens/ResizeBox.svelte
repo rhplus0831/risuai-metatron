@@ -1,10 +1,10 @@
 <script>
-    import { CharEmotion, ViewBoxsize } from '../../ts/stores.svelte';
-    import { onMount } from 'svelte';
-    import TransitionImage from './TransitionImage.svelte';
-    import { getEmotion } from '../../ts/util';
-    
-    import { DBState } from 'src/ts/stores.svelte';
+    import { CharEmotion, ViewBoxsize } from "../../ts/stores.svelte";
+    import { onMount } from "svelte";
+    import TransitionImage from "./TransitionImage.svelte";
+    import { getEmotion } from "../../ts/util";
+
+    import { DBState } from "src/ts/stores.svelte";
 
     let box = $state();
     let isResizing = false;
@@ -39,24 +39,38 @@
 
         ViewBoxsize.set({
             width: newWidth,
-            height: newHeight
-        })
+            height: newHeight,
+        });
     }
 
     onMount(() => {
-        window.addEventListener('mousemove', handleMove);
-        window.addEventListener('mouseup', handleEnd);
-        window.addEventListener('touchmove', handleMove, { passive: false });
-        window.addEventListener('touchend', handleEnd);
+        window.addEventListener("mousemove", handleMove);
+        window.addEventListener("mouseup", handleEnd);
+        window.addEventListener("touchmove", handleMove, { passive: false });
+        window.addEventListener("touchend", handleEnd);
 
         return () => {
-        window.removeEventListener('mousemove', handleMove);
-        window.removeEventListener('mouseup', handleEnd);
-        window.removeEventListener('touchmove', handleMove);
-        window.removeEventListener('touchend', handleEnd);
+            window.removeEventListener("mousemove", handleMove);
+            window.removeEventListener("mouseup", handleEnd);
+            window.removeEventListener("touchmove", handleMove);
+            window.removeEventListener("touchend", handleEnd);
         };
     });
 </script>
+
+<div class="box bg-darkbg/70" bind:this={box} style="width: {$ViewBoxsize.width}px; height: {$ViewBoxsize.height}px;">
+    <!-- Your content here -->
+    <TransitionImage classType="risu" src={getEmotion(DBState.db, $CharEmotion, "plain")} />
+    <div
+        role="button"
+        tabindex="0"
+        class="resize-handle"
+        onmousedown={handleStart}
+        onmouseup={handleEnd}
+        ontouchstart={handleStart}
+        ontouchend={handleEnd}
+    ></div>
+</div>
 
 <style>
     .box {
@@ -82,15 +96,3 @@
         z-index: 10;
     }
 </style>
-
-<div class="box bg-darkbg/70" bind:this="{box}" style="width: {$ViewBoxsize.width}px; height: {$ViewBoxsize.height}px;">
-    <!-- Your content here -->
-    <TransitionImage classType='risu' src={getEmotion(DBState.db, $CharEmotion, 'plain')}/>
-    <div role="button" tabindex="0"
-      class="resize-handle"
-      onmousedown={handleStart}
-      onmouseup={handleEnd}
-      ontouchstart={handleStart}
-      ontouchend={handleEnd}
-    ></div>
-</div>

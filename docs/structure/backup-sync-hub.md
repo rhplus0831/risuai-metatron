@@ -1,6 +1,7 @@
 # Backups, Realm Hub
 
 ## Scope
+
 - Owns:
   - local `.bin` backup export and import (full and partial),
   - Realm hub browse and download (upload, report, and remove were removed),
@@ -16,6 +17,7 @@
   - `localNetwork.ts`/`proxyJobWs.ts` → `global-api.md`.
 
 ## Files
+
 - `drive/backuplocal.ts`:
   - `SaveLocalBackup`: all `.png` assets and `database.risudat` (legacy compressed DB).
   - `SavePartialLocalBackup`: profile, persona, background, folder, and preset images only, plus the DB.
@@ -27,34 +29,41 @@
 - `SettingsExportButtons.svelte`: a redacted settings report (strips characters and keys), request logs, and statistics.
 
 ## Flows
+
 - Entry points:
   - `UserSettings.svelte`: local backup buttons, internal backup restore, dataset export.
 - PeerJS multiuser chat (rooms, peer sync, and the `peerjs` dependency) was removed.
 - Realm: `MainMenu`/`MobileBody` → `RealmMain` → `getRisuHub(search, page, nsfw, sort)` → `RealmPopUp` → `downloadRisuHub`. There is no upload path.
 
 ## State
+
 - DB: `localNetworkMode`, `localNetworkTimeoutSec`. `setDatabase` deletes the legacy `account` token; old saves may still carry an unused character `realmId`.
 - Stores: `OpenRealmStore`, `RealmInitialOpenChar`.
 
 ## Coupling
+
 - Depends on `database.svelte.ts`, `globalApi.svelte.ts` (writers, `forageStorage`, fetch), `risuSave.ts` (`encodeRisuSaveLegacy`, `decodeRisuSave`), `characterCards.ts` (`hubURL` and hub APIs), `alert.ts`, `platform.ts`.
 
 ## Invariants
+
 - The local backup format has no header. `LocalWriter.writeBackup` and `LoadLocalBackup` must change together, and old archives should still load.
 - Backups no longer carry cold-storage records. `LoadLocalBackup` skips legacy `coldstorage_<uuid>.json` records from older archives and writes every other non-database record to `assets/`.
 - Unencrypted local archives must keep loading. Risu Account-encrypted archives (`encryption.risudat`) are rejected, not decrypted.
 - `getLocalNetworkRequestOptions` must stay paired with `isLocalNetworkUrl`. Browsers reject the local route.
 
 ## Recipes
+
 - Add a backup asset category: the asset map or scan in `SaveLocalBackup`/`SavePartialLocalBackup`, and `LoadLocalBackup` if record naming changes. Verify web and Node `forageStorage` restores.
 - Change the archive format: `LocalWriter.writeBackup` and `LoadLocalBackup` together. Add a round-trip test.
 - Change Realm: `characterCards.ts` hub functions and the matching `Realm*` component together. Check `hubURL` on Node (`/hub-proxy`).
 
 ## Tests
+
 - `src/ts/drive/backuplocal.test.ts`: `LoadLocalBackup` record parsing, rejection of account-encrypted archives, and the skip of legacy `coldstorage_<uuid>.json` records.
 - Adjacent: `src/ts/network/localNetwork.test.ts`, `src/ts/network/proxyJobWs.test.ts`.
 - Not tested: the backup writers, Realm, settings redaction.
 
 ## Known Hazards
+
 - `LoadLocalBackup` writes `assets/` plus the record name, which is untrusted. The writer strips names to their basename, but the importer does not sanitize path separators.
 - `MainMenu` and `RealmMain` render `hubAdditionalHTML` via `{@html}`.

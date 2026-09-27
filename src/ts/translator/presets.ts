@@ -89,7 +89,7 @@ function sanitizeFileNamePart(value: string): string {
 
 export function createTranslatorPreset(
     name = "New Preset",
-    existing: Partial<TranslatorPreset> = {}
+    existing: Partial<TranslatorPreset> = {},
 ): TranslatorPreset {
     return {
         name,
@@ -112,7 +112,7 @@ export function normalizeTranslatorPresetState<T extends TranslatorPresetStateLi
         const normalizedPreset = isRecord(preset) ? preset : {};
         return createTranslatorPreset(
             getNormalizedTranslatorPresetName(normalizedPreset.name, index),
-            normalizedPreset
+            normalizedPreset,
         );
     });
 
@@ -121,17 +121,12 @@ export function normalizeTranslatorPresetState<T extends TranslatorPresetStateLi
             ? state.translatorPresetId
             : 0;
 
-    state.translatorPresetId = Math.min(
-        Math.max(requestedId, 0),
-        Math.max(state.translatorPresets.length - 1, 0)
-    );
+    state.translatorPresetId = Math.min(Math.max(requestedId, 0), Math.max(state.translatorPresets.length - 1, 0));
 
     return syncCurrentTranslatorPresetToLegacyFields(state);
 }
 
-export function syncCurrentTranslatorPresetToLegacyFields<T extends TranslatorPresetStateLike>(
-    state: T
-): T {
+export function syncCurrentTranslatorPresetToLegacyFields<T extends TranslatorPresetStateLike>(state: T): T {
     const preset = state.translatorPresets?.[state.translatorPresetId ?? 0];
 
     if (!isTranslatorPresetValue(preset)) {
@@ -144,9 +139,7 @@ export function syncCurrentTranslatorPresetToLegacyFields<T extends TranslatorPr
     return state;
 }
 
-export function getCurrentTranslatorPresetFromState<T extends TranslatorPresetStateLike>(
-    state: T
-): TranslatorPreset {
+export function getCurrentTranslatorPresetFromState<T extends TranslatorPresetStateLike>(state: T): TranslatorPreset {
     const presetId =
         typeof state.translatorPresetId === "number" && Number.isInteger(state.translatorPresetId)
             ? state.translatorPresetId
@@ -155,8 +148,7 @@ export function getCurrentTranslatorPresetFromState<T extends TranslatorPresetSt
 
     if (!isTranslatorPresetValue(preset)) {
         const normalizedState = normalizeTranslatorPresetState(state);
-        const normalizedPreset =
-            normalizedState.translatorPresets?.[normalizedState.translatorPresetId ?? 0];
+        const normalizedPreset = normalizedState.translatorPresets?.[normalizedState.translatorPresetId ?? 0];
         return isTranslatorPresetValue(normalizedPreset)
             ? normalizedPreset
             : getDefaultTranslatorPreset(normalizedState);
@@ -210,17 +202,14 @@ async function decodeEncryptedTranslatorPresetFile(data: Uint8Array): Promise<Tr
 
     return createTranslatorPreset(
         parsedPreset.name.trim().length > 0 ? parsedPreset.name : "Imported Preset",
-        parsedPreset
+        parsedPreset,
     );
 }
 
 export async function encodeTranslatorPresetFile(preset: TranslatorPreset): Promise<Uint8Array> {
-    const normalizedPreset = createTranslatorPreset(
-        preset.name.trim().length > 0 ? preset.name : "Preset",
-        preset
-    );
+    const normalizedPreset = createTranslatorPreset(preset.name.trim().length > 0 ? preset.name : "Preset", preset);
     const encryptedPreset = new Uint8Array(
-        await encryptBuffer(encodeMsgpack(normalizedPreset), translatorPresetEncryptionKey)
+        await encryptBuffer(encodeMsgpack(normalizedPreset), translatorPresetEncryptionKey),
     );
     const payload: EncryptedTranslatorPresetFile = {
         translatorPresetVersion: 1,

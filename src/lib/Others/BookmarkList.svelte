@@ -4,11 +4,17 @@
     import Chat from "../ChatScreens/Chat.svelte";
     import { getCharImage } from "src/ts/characters";
     import { findCharacterbyId, getUserName, getUserIcon } from "src/ts/util";
-    import { createSimpleCharacter, bookmarkListOpen, DBState, selectedCharID, ScrollToMessageStore } from "src/ts/stores.svelte";
+    import {
+        createSimpleCharacter,
+        bookmarkListOpen,
+        DBState,
+        selectedCharID,
+        ScrollToMessageStore,
+    } from "src/ts/stores.svelte";
     import { language } from "src/lang";
     import { alertInput } from "src/ts/alert";
 
-    const close = () => $bookmarkListOpen = false;
+    const close = () => ($bookmarkListOpen = false);
     let chara = $derived(DBState.db.characters[$selectedCharID]);
     const simpleChar = $derived(createSimpleCharacter(chara));
 
@@ -18,9 +24,9 @@
         const chat = chara.chats[chara.chatPage];
         const allMessages = chat.message;
         const map = new Map();
-        
+
         allMessages.forEach((m, index) => {
-            map.set(m.chatId, { ...m, originalIndex: index, saying: m.saying ?? '' });
+            map.set(m.chatId, { ...m, originalIndex: index, saying: m.saying ?? "" });
         });
 
         return map;
@@ -31,18 +37,18 @@
 
         const chat = chara.chats[chara.chatPage];
         const bookmarkIds = chat.bookmarks ?? [];
-        const map = messageMap; 
+        const map = messageMap;
 
         const messages = bookmarkIds
-            .map(id => {
-                const message = map.get(id); 
+            .map((id) => {
+                const message = map.get(id);
                 if (!message) return null;
 
                 let speaker = null;
-                if (chara.type === 'group' && message.saying) {
+                if (chara.type === "group" && message.saying) {
                     speaker = findCharacterbyId(message.saying);
                 }
-                
+
                 return { ...message, speaker };
             })
             .filter(Boolean);
@@ -55,20 +61,20 @@
 
     onMount(() => {
         const handleKeydown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') {
+            if (event.key === "Escape") {
                 close();
             }
         };
-        window.addEventListener('keydown', handleKeydown);
+        window.addEventListener("keydown", handleKeydown);
         return () => {
-            window.removeEventListener('keydown', handleKeydown);
+            window.removeEventListener("keydown", handleKeydown);
         };
     });
 
     function toggleExpand(chatId: string) {
         if (expandAll) {
             expandAll = false;
-            const allIds = bookmarkedMessages.map(m => m.chatId);
+            const allIds = bookmarkedMessages.map((m) => m.chatId);
             const newSet = new Set(allIds);
             newSet.delete(chatId);
             expandedBookmarks = newSet;
@@ -92,8 +98,8 @@
 
     async function editName(chatId: string) {
         const chat = chara.chats[chara.chatPage];
-        const newName = await alertInput(language.bookmarkAskNameOrCancel, [], chat.bookmarkNames?.[chatId] || '');
-        if (newName && newName.trim() !== '') {
+        const newName = await alertInput(language.bookmarkAskNameOrCancel, [], chat.bookmarkNames?.[chatId] || "");
+        if (newName && newName.trim() !== "") {
             chat.bookmarkNames[chatId] = newName;
         }
     }
@@ -122,7 +128,7 @@
         }
     }}
     onkeydown={(event) => {
-        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
             close();
         }
     }}
@@ -131,8 +137,8 @@
         <div class="flex items-center text-textcolor mb-4">
             <h2 class="text-xl font-bold">{language.bookmarks}</h2>
             <div class="ml-auto flex items-center gap-2">
-                <button 
-                    class="text-textcolor2 hover:text-green-500" 
+                <button
+                    class="text-textcolor2 hover:text-green-500"
                     onclick={toggleExpandAll}
                     title={expandAll ? language.collapseAll : language.expandAll}
                 >
@@ -140,36 +146,58 @@
                         <BookLockIcon size={20} />
                     {:else}
                         <BookOpenCheckIcon size={20} />
-                    {/if}   
+                    {/if}
                 </button>
                 <button class="text-textcolor2 hover:text-green-500" onclick={close}>
-                    <XIcon size={24}/>
+                    <XIcon size={24} />
                 </button>
             </div>
         </div>
-        
+
         {#if bookmarkedMessages.length === 0}
             <p class="text-textcolor2">{language.noBookmarks}</p>
         {:else}
             <div class="flex flex-col gap-2">
                 {#each bookmarkedMessages as msg (msg.chatId)}
                     <div class="border border-darkborderc rounded-lg">
-                        <div 
+                        <div
                             class="flex items-center p-3 cursor-pointer hover:bg-selected transition-colors"
                             onclick={() => toggleExpand(msg.chatId)}
-                            onkeydown={(e) => e.key === 'Enter' && toggleExpand(msg.chatId)}
+                            onkeydown={(e) => e.key === "Enter" && toggleExpand(msg.chatId)}
                             role="button"
                             tabindex="0"
                         >
-                            <span class="grow text-left truncate">{chara.chats[chara.chatPage].bookmarkNames?.[msg.chatId] || msg.data.substring(0, 30) + '...'}</span>
+                            <span class="grow text-left truncate"
+                                >{chara.chats[chara.chatPage].bookmarkNames?.[msg.chatId] ||
+                                    msg.data.substring(0, 30) + "..."}</span
+                            >
                             <div class="shrink-0 flex items-center gap-2 ml-2">
-                                <button class="text-textcolor2 hover:text-blue-500" title={language.goToChat} onclick={(e) => { e.stopPropagation(); goToChat(msg.originalIndex); }}>
+                                <button
+                                    class="text-textcolor2 hover:text-blue-500"
+                                    title={language.goToChat}
+                                    onclick={(e) => {
+                                        e.stopPropagation();
+                                        goToChat(msg.originalIndex);
+                                    }}
+                                >
                                     <ArrowRightIcon size={20} />
                                 </button>
-                                <button class="text-textcolor2 hover:text-green-500" onclick={(e) => { e.stopPropagation(); editName(msg.chatId); }}>
+                                <button
+                                    class="text-textcolor2 hover:text-green-500"
+                                    onclick={(e) => {
+                                        e.stopPropagation();
+                                        editName(msg.chatId);
+                                    }}
+                                >
                                     <PencilIcon size={16} />
                                 </button>
-                                <button class="text-textcolor2 hover:text-red-500" onclick={(e) => { e.stopPropagation(); removeBookmark(msg.chatId); }}>
+                                <button
+                                    class="text-textcolor2 hover:text-red-500"
+                                    onclick={(e) => {
+                                        e.stopPropagation();
+                                        removeBookmark(msg.chatId);
+                                    }}
+                                >
                                     <TrashIcon size={16} />
                                 </button>
                             </div>
@@ -177,12 +205,12 @@
 
                         {#if expandAll || expandedBookmarks.has(msg.chatId)}
                             <div class="p-1 border-t border-darkborderc">
-                                {#if chara.type === 'group'}
+                                {#if chara.type === "group"}
                                     <Chat
                                         idx={msg.originalIndex}
                                         message={msg.data}
                                         name={msg.speaker?.name}
-                                        img={getCharImage(msg.speaker?.image, 'css')}
+                                        img={getCharImage(msg.speaker?.image, "css")}
                                         role={msg.role}
                                         messageGenerationInfo={msg.generationInfo}
                                         rerollIcon={false}
@@ -194,8 +222,10 @@
                                     <Chat
                                         idx={msg.originalIndex}
                                         message={msg.data}
-                                        name={msg.role === 'user' ? getUserName() : chara.name}
-                                        img={msg.role === 'user' ? getCharImage(getUserIcon(), 'css') : getCharImage(chara.image, 'css')}
+                                        name={msg.role === "user" ? getUserName() : chara.name}
+                                        img={msg.role === "user"
+                                            ? getCharImage(getUserIcon(), "css")
+                                            : getCharImage(chara.image, "css")}
                                         role={msg.role}
                                         messageGenerationInfo={msg.generationInfo}
                                         rerollIcon={false}

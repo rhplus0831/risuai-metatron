@@ -1,13 +1,13 @@
 <script lang="ts">
-  interface Props {
-    isActive: boolean;
-  }
+    interface Props {
+        isActive: boolean;
+    }
 
-  let { isActive }: Props = $props();
+    let { isActive }: Props = $props();
 </script>
 
 <div
-  class="
+    class="
       group-hover:bg-white
       absolute
       left-[-4px]

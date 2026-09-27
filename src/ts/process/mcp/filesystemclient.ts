@@ -21,8 +21,10 @@ export class FileSystemClient extends MCPClientLike {
     }
 
     private async initializeDirectory(): Promise<void> {
-        if (!('showDirectoryPicker' in window)) {
-            throw new Error("File System Access API is not supported in this browser. Please use a compatible browser like Chrome or Edge.");
+        if (!("showDirectoryPicker" in window)) {
+            throw new Error(
+                "File System Access API is not supported in this browser. Please use a compatible browser like Chrome or Edge.",
+            );
         }
 
         try {
@@ -46,11 +48,11 @@ export class FileSystemClient extends MCPClientLike {
                     properties: {
                         path: {
                             type: "string",
-                            description: "Path to the file relative to selected directory"
-                        }
+                            description: "Path to the file relative to selected directory",
+                        },
                     },
-                    required: ["path"]
-                }
+                    required: ["path"],
+                },
             },
             {
                 name: "fs_write_file",
@@ -60,15 +62,15 @@ export class FileSystemClient extends MCPClientLike {
                     properties: {
                         path: {
                             type: "string",
-                            description: "Path to the file relative to selected directory"
+                            description: "Path to the file relative to selected directory",
                         },
                         content: {
                             type: "string",
-                            description: "Content to write to the file"
-                        }
+                            description: "Content to write to the file",
+                        },
                     },
-                    required: ["path", "content"]
-                }
+                    required: ["path", "content"],
+                },
             },
             {
                 name: "fs_list_directory",
@@ -78,11 +80,11 @@ export class FileSystemClient extends MCPClientLike {
                     properties: {
                         path: {
                             type: "string",
-                            description: "Path to the directory relative to selected directory (empty for root)"
-                        }
+                            description: "Path to the directory relative to selected directory (empty for root)",
+                        },
                     },
-                    required: []
-                }
+                    required: [],
+                },
             },
             {
                 name: "fs_create_directory",
@@ -92,11 +94,11 @@ export class FileSystemClient extends MCPClientLike {
                     properties: {
                         path: {
                             type: "string",
-                            description: "Path to the directory to create relative to selected directory"
-                        }
+                            description: "Path to the directory to create relative to selected directory",
+                        },
                     },
-                    required: ["path"]
-                }
+                    required: ["path"],
+                },
             },
             {
                 name: "fs_delete_file",
@@ -106,11 +108,11 @@ export class FileSystemClient extends MCPClientLike {
                     properties: {
                         path: {
                             type: "string",
-                            description: "Path to the file to delete relative to selected directory"
-                        }
+                            description: "Path to the file to delete relative to selected directory",
+                        },
                     },
-                    required: ["path"]
-                }
+                    required: ["path"],
+                },
             },
             {
                 name: "fs_search_files",
@@ -120,27 +122,27 @@ export class FileSystemClient extends MCPClientLike {
                     properties: {
                         pattern: {
                             type: "string",
-                            description: "Search pattern (supports glob patterns like *.js, test*)"
+                            description: "Search pattern (supports glob patterns like *.js, test*)",
                         },
                         content: {
                             type: "string",
-                            description: "Search for files containing this text"
+                            description: "Search for files containing this text",
                         },
                         path: {
                             type: "string",
-                            description: "Directory to search in (default: root)"
+                            description: "Directory to search in (default: root)",
                         },
                         maxDepth: {
                             type: "number",
-                            description: "Maximum depth to search (default: 10)"
+                            description: "Maximum depth to search (default: 10)",
                         },
                         caseSensitive: {
                             type: "boolean",
-                            description: "Case sensitive search (default: false)"
-                        }
+                            description: "Case sensitive search (default: false)",
+                        },
                     },
-                    required: []
-                }
+                    required: [],
+                },
             },
             {
                 name: "fs_copy_file",
@@ -150,15 +152,15 @@ export class FileSystemClient extends MCPClientLike {
                     properties: {
                         source: {
                             type: "string",
-                            description: "Source file path"
+                            description: "Source file path",
                         },
                         destination: {
                             type: "string",
-                            description: "Destination file path"
-                        }
+                            description: "Destination file path",
+                        },
                     },
-                    required: ["source", "destination"]
-                }
+                    required: ["source", "destination"],
+                },
             },
             {
                 name: "fs_move_file",
@@ -168,15 +170,15 @@ export class FileSystemClient extends MCPClientLike {
                     properties: {
                         source: {
                             type: "string",
-                            description: "Source file path"
+                            description: "Source file path",
                         },
                         destination: {
                             type: "string",
-                            description: "Destination file path"
-                        }
+                            description: "Destination file path",
+                        },
                     },
-                    required: ["source", "destination"]
-                }
+                    required: ["source", "destination"],
+                },
             },
             {
                 name: "fs_get_file_info",
@@ -186,11 +188,11 @@ export class FileSystemClient extends MCPClientLike {
                     properties: {
                         path: {
                             type: "string",
-                            description: "Path to the file"
-                        }
+                            description: "Path to the file",
+                        },
                     },
-                    required: ["path"]
-                }
+                    required: ["path"],
+                },
             },
             {
                 name: "fs_watch_directory",
@@ -200,11 +202,11 @@ export class FileSystemClient extends MCPClientLike {
                     properties: {
                         path: {
                             type: "string",
-                            description: "Directory to watch (default: root)"
-                        }
+                            description: "Directory to watch (default: root)",
+                        },
                     },
-                    required: []
-                }
+                    required: [],
+                },
             },
             {
                 name: "fs_find_duplicates",
@@ -214,15 +216,15 @@ export class FileSystemClient extends MCPClientLike {
                     properties: {
                         path: {
                             type: "string",
-                            description: "Directory to search in (default: root)"
+                            description: "Directory to search in (default: root)",
                         },
                         byContent: {
                             type: "boolean",
-                            description: "Compare by content hash (default: false, compares by name)"
-                        }
+                            description: "Compare by content hash (default: false, compares by name)",
+                        },
                     },
-                    required: []
-                }
+                    required: [],
+                },
             },
             {
                 name: "fs_tree_view",
@@ -232,20 +234,20 @@ export class FileSystemClient extends MCPClientLike {
                     properties: {
                         path: {
                             type: "string",
-                            description: "Root path for tree view (default: root)"
+                            description: "Root path for tree view (default: root)",
                         },
                         maxDepth: {
                             type: "number",
-                            description: "Maximum depth to display (default: 5)"
+                            description: "Maximum depth to display (default: 5)",
                         },
                         showHidden: {
                             type: "boolean",
-                            description: "Show hidden files (default: false)"
-                        }
+                            description: "Show hidden files (default: false)",
+                        },
                     },
-                    required: []
-                }
-            }
+                    required: [],
+                },
+            },
         ];
     }
 
@@ -275,43 +277,51 @@ export class FileSystemClient extends MCPClientLike {
                 case "fs_tree_view":
                     return await this.getTreeView(args.path || "", args.maxDepth || 5, args.showHidden || false);
                 default:
-                    return [{
-                        type: 'text',
-                        text: `Unknown tool: ${toolName}`
-                    }];
+                    return [
+                        {
+                            type: "text",
+                            text: `Unknown tool: ${toolName}`,
+                        },
+                    ];
             }
         } catch (error) {
-            return [{
-                type: 'text',
-                text: `Error: ${error.message}`
-            }];
+            return [
+                {
+                    type: "text",
+                    text: `Error: ${error.message}`,
+                },
+            ];
         }
     }
 
     private async readFile(path: string): Promise<RPCToolCallContent[]> {
         if (!this.directoryHandle) {
-            return [{
-                type: 'text',
-                text: 'No directory available. Directory selection may have been cancelled or failed.'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "No directory available. Directory selection may have been cancelled or failed.",
+                },
+            ];
         }
 
         const fileHandle = await this.getFileHandle(path);
         const file = await fileHandle.getFile();
-        
+
         // Check file size
         if (file.size === 0) {
-            return [{
-                type: 'text',
-                text: 'File is empty'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "File is empty",
+                },
+            ];
         }
 
         // Automatic limits based on file type
         const maxTextLimit = 100000; // 100KB for text/code files
         const maxImageLimit = 5 * 1024 * 1024; // 5MB for images
 
-        if(file.name.endsWith('.pdf')) {
+        if (file.name.endsWith(".pdf")) {
             return await this.readFileAsPDF(file, maxTextLimit);
         }
 
@@ -319,35 +329,39 @@ export class FileSystemClient extends MCPClientLike {
         const encoding = this.detectFileEncoding(file);
 
         try {
-            if (encoding === 'base64') {
+            if (encoding === "base64") {
                 return await this.readFileAsBase64(file, 0, maxImageLimit);
             } else {
                 return await this.readFileAsText(file, 0, maxTextLimit);
             }
         } catch (error) {
-            return [{
-                type: 'text',
-                text: `Error reading file: ${error.message}. Only text/code files and images are supported.`
-            }];
+            return [
+                {
+                    type: "text",
+                    text: `Error reading file: ${error.message}. Only text/code files and images are supported.`,
+                },
+            ];
         }
     }
 
     private async readFileAsPDF(file: File, limit: number): Promise<RPCToolCallContent[]> {
-        const {convertPdfToImages} = await import ('src/ts/process/dynamicutils/pdf.js');
+        const { convertPdfToImages } = await import("src/ts/process/dynamicutils/pdf.js");
         const pdfBuffer = await file.arrayBuffer();
-        const images = await convertPdfToImages(pdfBuffer, { scale: 1.5, format: 'jpeg', quality: 0.8 });
+        const images = await convertPdfToImages(pdfBuffer, { scale: 1.5, format: "jpeg", quality: 0.8 });
         if (images.length === 0) {
-            return [{
-                type: 'text',
-                text: 'No images extracted from PDF'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "No images extracted from PDF",
+                },
+            ];
         }
         const result: RPCToolCallContent[] = [];
         for (const image of images) {
             result.push({
-                type: 'image',
+                type: "image",
                 data: image,
-                mimeType: 'image/jpeg'
+                mimeType: "image/jpeg",
             });
         }
         return result;
@@ -356,24 +370,26 @@ export class FileSystemClient extends MCPClientLike {
     private detectFileEncoding(file: File): string {
         const mimeType = file.type.toLowerCase();
         const fileName = file.name.toLowerCase();
-        
+
         // Image types we support
-        const imageTypes = ['image/'];
-        const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico'];
+        const imageTypes = ["image/"];
+        const imageExtensions = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".ico"];
 
         // Check if it's an image
-        if (imageTypes.some(type => mimeType.startsWith(type)) || 
-            imageExtensions.some(ext => fileName.endsWith(ext))) {
-            return 'base64';
+        if (
+            imageTypes.some((type) => mimeType.startsWith(type)) ||
+            imageExtensions.some((ext) => fileName.endsWith(ext))
+        ) {
+            return "base64";
         }
 
         // Everything else is treated as text (includes code files like .js, .json, .html, .css, .md, etc.)
-        return 'text';
+        return "text";
     }
 
     private async readFileAsText(file: File, offset: number, limit: number): Promise<RPCToolCallContent[]> {
         let content: string;
-        
+
         if (offset === 0 && file.size <= limit) {
             // Read entire file
             content = await file.text();
@@ -385,28 +401,30 @@ export class FileSystemClient extends MCPClientLike {
         }
 
         // Check if content was truncated
-        const wasTruncated = (offset + content.length) < file.size;
+        const wasTruncated = offset + content.length < file.size;
         const info: string[] = [];
-        
+
         if (offset > 0) {
             info.push(`Reading from byte ${offset}`);
         }
-        
+
         if (wasTruncated) {
             info.push(`Content truncated (showing ${content.length} of ${file.size - offset} remaining bytes)`);
         }
 
-        const result = info.length > 0 ? `${info.join(', ')}\n\n${content}` : content;
+        const result = info.length > 0 ? `${info.join(", ")}\n\n${content}` : content;
 
-        return [{
-            type: 'text',
-            text: result
-        }];
+        return [
+            {
+                type: "text",
+                text: result,
+            },
+        ];
     }
 
     private async readFileAsBase64(file: File, offset: number, limit: number): Promise<RPCToolCallContent[]> {
         let arrayBuffer: ArrayBuffer;
-        
+
         if (offset === 0 && file.size <= limit) {
             // Read entire file
             arrayBuffer = await file.arrayBuffer();
@@ -420,37 +438,36 @@ export class FileSystemClient extends MCPClientLike {
         // Convert to base64
         const uint8Array = new Uint8Array(arrayBuffer);
         const base64 = btoa(String.fromCharCode(...uint8Array));
-        
+
         // Check if content was truncated
-        const wasTruncated = (offset + arrayBuffer.byteLength) < file.size;
-        const info: string[] = [
-            `File type: ${file.type || 'unknown'}`,
-            `Size: ${this.formatBytes(file.size)}`
-        ];
-        
+        const wasTruncated = offset + arrayBuffer.byteLength < file.size;
+        const info: string[] = [`File type: ${file.type || "unknown"}`, `Size: ${this.formatBytes(file.size)}`];
+
         if (offset > 0) {
             info.push(`Reading from byte ${offset}`);
         }
-        
+
         if (wasTruncated) {
             info.push(`Content truncated (showing ${arrayBuffer.byteLength} of ${file.size - offset} remaining bytes)`);
         }
 
         return [
             {
-                type: 'image',
+                type: "image",
                 data: base64,
-                mimeType: file.type || 'application/octet-stream'
-            }
+                mimeType: file.type || "application/octet-stream",
+            },
         ];
     }
 
     private async writeFile(path: string, content: string): Promise<RPCToolCallContent[]> {
         if (!this.directoryHandle) {
-            return [{
-                type: 'text',
-                text: 'No directory selected. Use fs_select_directory first.'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "No directory selected. Use fs_select_directory first.",
+                },
+            ];
         }
 
         const fileHandle = await this.getFileHandle(path, true);
@@ -458,61 +475,73 @@ export class FileSystemClient extends MCPClientLike {
         await writable.write(content);
         await writable.close();
 
-        return [{
-            type: 'text',
-            text: `Successfully wrote ${content.length} characters to ${path}`
-        }];
+        return [
+            {
+                type: "text",
+                text: `Successfully wrote ${content.length} characters to ${path}`,
+            },
+        ];
     }
 
     private async listDirectory(path: string): Promise<RPCToolCallContent[]> {
         if (!this.directoryHandle) {
-            return [{
-                type: 'text',
-                text: 'No directory selected. Use fs_select_directory first.'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "No directory selected. Use fs_select_directory first.",
+                },
+            ];
         }
 
         const dirHandle = path ? await this.getDirectoryHandle(path) : this.directoryHandle;
         const entries: string[] = [];
 
         for await (const [name, handle] of dirHandle.entries()) {
-            const type = handle.kind === 'directory' ? '[DIR]' : '[FILE]';
+            const type = handle.kind === "directory" ? "[DIR]" : "[FILE]";
             entries.push(`${type} ${name}`);
         }
 
-        return [{
-            type: 'text',
-            text: entries.length > 0 ? entries.join('\n') : 'Directory is empty'
-        }];
+        return [
+            {
+                type: "text",
+                text: entries.length > 0 ? entries.join("\n") : "Directory is empty",
+            },
+        ];
     }
 
     private async createDirectory(path: string): Promise<RPCToolCallContent[]> {
         if (!this.directoryHandle) {
-            return [{
-                type: 'text',
-                text: 'No directory selected. Use fs_select_directory first.'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "No directory selected. Use fs_select_directory first.",
+                },
+            ];
         }
 
         await this.getDirectoryHandle(path, true);
 
-        return [{
-            type: 'text',
-            text: `Successfully created directory: ${path}`
-        }];
+        return [
+            {
+                type: "text",
+                text: `Successfully created directory: ${path}`,
+            },
+        ];
     }
 
     private async deleteFile(path: string): Promise<RPCToolCallContent[]> {
         if (!this.directoryHandle) {
-            return [{
-                type: 'text',
-                text: 'No directory selected. Use fs_select_directory first.'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "No directory selected. Use fs_select_directory first.",
+                },
+            ];
         }
 
-        const pathParts = path.split('/').filter(part => part.length > 0);
+        const pathParts = path.split("/").filter((part) => part.length > 0);
         const fileName = pathParts.pop()!;
-        
+
         let currentDir = this.directoryHandle;
         for (const part of pathParts) {
             currentDir = await currentDir.getDirectoryHandle(part);
@@ -520,16 +549,18 @@ export class FileSystemClient extends MCPClientLike {
 
         await currentDir.removeEntry(fileName);
 
-        return [{
-            type: 'text',
-            text: `Successfully deleted: ${path}`
-        }];
+        return [
+            {
+                type: "text",
+                text: `Successfully deleted: ${path}`,
+            },
+        ];
     }
 
     private async getFileHandle(path: string, create = false): Promise<FileSystemFileHandle> {
-        const pathParts = path.split('/').filter(part => part.length > 0);
+        const pathParts = path.split("/").filter((part) => part.length > 0);
         const fileName = pathParts.pop()!;
-        
+
         let currentDir = this.directoryHandle!;
         for (const part of pathParts) {
             currentDir = await currentDir.getDirectoryHandle(part, { create });
@@ -539,8 +570,8 @@ export class FileSystemClient extends MCPClientLike {
     }
 
     private async getDirectoryHandle(path: string, create = false): Promise<FileSystemDirectoryHandle> {
-        const pathParts = path.split('/').filter(part => part.length > 0);
-        
+        const pathParts = path.split("/").filter((part) => part.length > 0);
+
         let currentDir = this.directoryHandle!;
         for (const part of pathParts) {
             currentDir = await currentDir.getDirectoryHandle(part, { create });
@@ -557,10 +588,12 @@ export class FileSystemClient extends MCPClientLike {
         caseSensitive?: boolean;
     }): Promise<RPCToolCallContent[]> {
         if (!this.directoryHandle) {
-            return [{
-                type: 'text',
-                text: 'No directory available. Directory selection may have been cancelled or failed.'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "No directory available. Directory selection may have been cancelled or failed.",
+                },
+            ];
         }
 
         const searchPath = args.path || "";
@@ -569,15 +602,16 @@ export class FileSystemClient extends MCPClientLike {
         const results: string[] = [];
 
         const searchDir = searchPath ? await this.getDirectoryHandle(searchPath) : this.directoryHandle;
-        
+
         await this.searchInDirectory(searchDir, args.pattern, args.content, "", maxDepth, caseSensitive, results);
 
-        return [{
-            type: 'text',
-            text: results.length > 0 ? 
-                `Found ${results.length} matches:\n${results.join('\n')}` : 
-                'No matches found'
-        }];
+        return [
+            {
+                type: "text",
+                text:
+                    results.length > 0 ? `Found ${results.length} matches:\n${results.join("\n")}` : "No matches found",
+            },
+        ];
     }
 
     private async searchInDirectory(
@@ -587,14 +621,14 @@ export class FileSystemClient extends MCPClientLike {
         currentPath: string = "",
         maxDepth: number = 10,
         caseSensitive: boolean = false,
-        results: string[] = []
+        results: string[] = [],
     ): Promise<void> {
         if (maxDepth <= 0) return;
 
         for await (const [name, handle] of dirHandle.entries()) {
             const fullPath = currentPath ? `${currentPath}/${name}` : name;
-            
-            if (handle.kind === 'file') {
+
+            if (handle.kind === "file") {
                 let matches = false;
 
                 // Pattern matching
@@ -619,7 +653,7 @@ export class FileSystemClient extends MCPClientLike {
                 if (matches || (!pattern && !content)) {
                     results.push(fullPath);
                 }
-            } else if (handle.kind === 'directory') {
+            } else if (handle.kind === "directory") {
                 await this.searchInDirectory(handle, pattern, content, fullPath, maxDepth - 1, caseSensitive, results);
             }
         }
@@ -627,20 +661,22 @@ export class FileSystemClient extends MCPClientLike {
 
     private globToRegex(pattern: string, caseSensitive: boolean): RegExp {
         const escaped = pattern
-            .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-            .replace(/\*/g, '.*')
-            .replace(/\?/g, '.');
-        
-        const flags = caseSensitive ? '' : 'i';
+            .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+            .replace(/\*/g, ".*")
+            .replace(/\?/g, ".");
+
+        const flags = caseSensitive ? "" : "i";
         return new RegExp(`^${escaped}$`, flags);
     }
 
     private async copyFile(source: string, destination: string): Promise<RPCToolCallContent[]> {
         if (!this.directoryHandle) {
-            return [{
-                type: 'text',
-                text: 'No directory available. Directory selection may have been cancelled or failed.'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "No directory available. Directory selection may have been cancelled or failed.",
+                },
+            ];
         }
 
         const sourceHandle = await this.getFileHandle(source);
@@ -652,119 +688,131 @@ export class FileSystemClient extends MCPClientLike {
         await writable.write(content);
         await writable.close();
 
-        return [{
-            type: 'text',
-            text: `Successfully copied ${source} to ${destination}`
-        }];
+        return [
+            {
+                type: "text",
+                text: `Successfully copied ${source} to ${destination}`,
+            },
+        ];
     }
 
     private async moveFile(source: string, destination: string): Promise<RPCToolCallContent[]> {
         if (!this.directoryHandle) {
-            return [{
-                type: 'text',
-                text: 'No directory available. Directory selection may have been cancelled or failed.'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "No directory available. Directory selection may have been cancelled or failed.",
+                },
+            ];
         }
 
         // Copy the file first
         await this.copyFile(source, destination);
-        
+
         // Then delete the source
         await this.deleteFile(source);
 
-        return [{
-            type: 'text',
-            text: `Successfully moved ${source} to ${destination}`
-        }];
+        return [
+            {
+                type: "text",
+                text: `Successfully moved ${source} to ${destination}`,
+            },
+        ];
     }
 
     private async getFileInfo(path: string): Promise<RPCToolCallContent[]> {
         if (!this.directoryHandle) {
-            return [{
-                type: 'text',
-                text: 'No directory available. Directory selection may have been cancelled or failed.'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "No directory available. Directory selection may have been cancelled or failed.",
+                },
+            ];
         }
 
         try {
             const fileHandle = await this.getFileHandle(path);
             const file = await fileHandle.getFile();
-            
+
             const info = [
                 `File: ${path}`,
                 `Name: ${file.name}`,
                 `Size: ${this.formatBytes(file.size)}`,
-                `Type: ${file.type || 'Unknown'}`,
-                `Last Modified: ${new Date(file.lastModified).toLocaleString()}`
+                `Type: ${file.type || "Unknown"}`,
+                `Last Modified: ${new Date(file.lastModified).toLocaleString()}`,
             ];
 
-            return [{
-                type: 'text',
-                text: info.join('\n')
-            }];
+            return [
+                {
+                    type: "text",
+                    text: info.join("\n"),
+                },
+            ];
         } catch (error) {
             // Try as directory
             try {
                 const dirHandle = await this.getDirectoryHandle(path);
                 let fileCount = 0;
                 let dirCount = 0;
-                
+
                 for await (const [name, handle] of dirHandle.entries()) {
-                    if (handle.kind === 'file') fileCount++;
+                    if (handle.kind === "file") fileCount++;
                     else dirCount++;
                 }
 
-                const info = [
-                    `Directory: ${path}`,
-                    `Files: ${fileCount}`,
-                    `Subdirectories: ${dirCount}`
-                ];
+                const info = [`Directory: ${path}`, `Files: ${fileCount}`, `Subdirectories: ${dirCount}`];
 
-                return [{
-                    type: 'text',
-                    text: info.join('\n')
-                }];
+                return [
+                    {
+                        type: "text",
+                        text: info.join("\n"),
+                    },
+                ];
             } catch (dirError) {
-                return [{
-                    type: 'text',
-                    text: `Path not found: ${path}`
-                }];
+                return [
+                    {
+                        type: "text",
+                        text: `Path not found: ${path}`,
+                    },
+                ];
             }
         }
     }
 
     private formatBytes(bytes: number): string {
-        if (bytes === 0) return '0 Bytes';
+        if (bytes === 0) return "0 Bytes";
         const k = 1024;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const sizes = ["Bytes", "KB", "MB", "GB"];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
     }
 
     private async findDuplicates(path: string, byContent: boolean): Promise<RPCToolCallContent[]> {
         if (!this.directoryHandle) {
-            return [{
-                type: 'text',
-                text: 'No directory available. Directory selection may have been cancelled or failed.'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "No directory available. Directory selection may have been cancelled or failed.",
+                },
+            ];
         }
 
         const searchDir = path ? await this.getDirectoryHandle(path) : this.directoryHandle;
         const files: { path: string; name: string; content?: string; hash?: string }[] = [];
-        
+
         await this.collectFiles(searchDir, "", files);
 
         if (byContent) {
             // Group by content hash
             const hashMap = new Map<string, string[]>();
-            
+
             for (const file of files) {
                 try {
                     const fileHandle = await this.getFileHandle(file.path);
                     const fileObj = await fileHandle.getFile();
                     const arrayBuffer = await fileObj.arrayBuffer();
                     const hash = await this.generateHash(arrayBuffer);
-                    
+
                     if (!hashMap.has(hash)) {
                         hashMap.set(hash, []);
                     }
@@ -778,19 +826,21 @@ export class FileSystemClient extends MCPClientLike {
             for (const [hash, paths] of hashMap) {
                 if (paths.length > 1) {
                     duplicates.push(`Duplicate content (${paths.length} files):`);
-                    paths.forEach(p => duplicates.push(`  ${p}`));
-                    duplicates.push('');
+                    paths.forEach((p) => duplicates.push(`  ${p}`));
+                    duplicates.push("");
                 }
             }
 
-            return [{
-                type: 'text',
-                text: duplicates.length > 0 ? duplicates.join('\n') : 'No duplicate files found by content'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: duplicates.length > 0 ? duplicates.join("\n") : "No duplicate files found by content",
+                },
+            ];
         } else {
             // Group by name
             const nameMap = new Map<string, string[]>();
-            
+
             for (const file of files) {
                 if (!nameMap.has(file.name)) {
                     nameMap.set(file.name, []);
@@ -802,57 +852,63 @@ export class FileSystemClient extends MCPClientLike {
             for (const [name, paths] of nameMap) {
                 if (paths.length > 1) {
                     duplicates.push(`Duplicate name "${name}" (${paths.length} files):`);
-                    paths.forEach(p => duplicates.push(`  ${p}`));
-                    duplicates.push('');
+                    paths.forEach((p) => duplicates.push(`  ${p}`));
+                    duplicates.push("");
                 }
             }
 
-            return [{
-                type: 'text',
-                text: duplicates.length > 0 ? duplicates.join('\n') : 'No duplicate files found by name'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: duplicates.length > 0 ? duplicates.join("\n") : "No duplicate files found by name",
+                },
+            ];
         }
     }
 
     private async collectFiles(
-        dirHandle: FileSystemDirectoryHandle, 
-        currentPath: string, 
-        files: { path: string; name: string }[]
+        dirHandle: FileSystemDirectoryHandle,
+        currentPath: string,
+        files: { path: string; name: string }[],
     ): Promise<void> {
         for await (const [name, handle] of dirHandle.entries()) {
             const fullPath = currentPath ? `${currentPath}/${name}` : name;
-            
-            if (handle.kind === 'file') {
+
+            if (handle.kind === "file") {
                 files.push({ path: fullPath, name });
-            } else if (handle.kind === 'directory') {
+            } else if (handle.kind === "directory") {
                 await this.collectFiles(handle, fullPath, files);
             }
         }
     }
 
     private async generateHash(buffer: ArrayBuffer): Promise<string> {
-        const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+        const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
         const hashArray = Array.from(new Uint8Array(hashBuffer));
-        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
     }
 
     private async getTreeView(path: string, maxDepth: number, showHidden: boolean): Promise<RPCToolCallContent[]> {
         if (!this.directoryHandle) {
-            return [{
-                type: 'text',
-                text: 'No directory available. Directory selection may have been cancelled or failed.'
-            }];
+            return [
+                {
+                    type: "text",
+                    text: "No directory available. Directory selection may have been cancelled or failed.",
+                },
+            ];
         }
 
         const searchDir = path ? await this.getDirectoryHandle(path) : this.directoryHandle;
         const tree: string[] = [];
-        
+
         await this.buildTree(searchDir, "", maxDepth, showHidden, tree);
 
-        return [{
-            type: 'text',
-            text: tree.length > 0 ? tree.join('\n') : 'Empty directory'
-        }];
+        return [
+            {
+                type: "text",
+                text: tree.length > 0 ? tree.join("\n") : "Empty directory",
+            },
+        ];
     }
 
     private async buildTree(
@@ -860,7 +916,7 @@ export class FileSystemClient extends MCPClientLike {
         prefix: string,
         maxDepth: number,
         showHidden: boolean,
-        tree: string[]
+        tree: string[],
     ): Promise<void> {
         if (maxDepth <= 0) return;
 
@@ -870,12 +926,12 @@ export class FileSystemClient extends MCPClientLike {
         }
 
         // Filter hidden files if needed
-        const filteredEntries = showHidden ? entries : entries.filter(([name]) => !name.startsWith('.'));
-        
+        const filteredEntries = showHidden ? entries : entries.filter(([name]) => !name.startsWith("."));
+
         // Sort: directories first, then files
         filteredEntries.sort(([nameA, handleA], [nameB, handleB]) => {
             if (handleA.kind !== handleB.kind) {
-                return handleA.kind === 'directory' ? -1 : 1;
+                return handleA.kind === "directory" ? -1 : 1;
             }
             return nameA.localeCompare(nameB);
         });
@@ -883,13 +939,13 @@ export class FileSystemClient extends MCPClientLike {
         for (let i = 0; i < filteredEntries.length; i++) {
             const [name, handle] = filteredEntries[i];
             const isLast = i === filteredEntries.length - 1;
-            const connector = isLast ? '└── ' : '├── ';
-            const icon = handle.kind === 'directory' ? '📁 ' : '📄 ';
-            
+            const connector = isLast ? "└── " : "├── ";
+            const icon = handle.kind === "directory" ? "📁 " : "📄 ";
+
             tree.push(`${prefix}${connector}${icon}${name}`);
-            
-            if (handle.kind === 'directory') {
-                const newPrefix = prefix + (isLast ? '    ' : '│   ');
+
+            if (handle.kind === "directory") {
+                const newPrefix = prefix + (isLast ? "    " : "│   ");
                 await this.buildTree(handle as FileSystemDirectoryHandle, newPrefix, maxDepth - 1, showHidden, tree);
             }
         }

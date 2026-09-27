@@ -1,51 +1,50 @@
 <script lang="ts">
-    import DOMPurify from 'dompurify';
+    import DOMPurify from "dompurify";
 
     let {
         ico,
-        className
+        className,
     }: {
         ico: {
-            iconType:'html'|'img'|'none',
-            icon:string
-        },
-        className?:string
-    } = $props()
+            iconType: "html" | "img" | "none";
+            icon: string;
+        };
+        className?: string;
+    } = $props();
 
-    
-    const iconPurify = (icon:string) => {
-        
+    const iconPurify = (icon: string) => {
         return DOMPurify.sanitize(icon, {
-            FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed'],
-            FORBID_ATTR: ['onerror', 'onclick', 'onload', 'onmouseover', 'style', 'class']
+            FORBID_TAGS: ["script", "style", "iframe", "object", "embed"],
+            FORBID_ATTR: ["onerror", "onclick", "onload", "onmouseover", "style", "class"],
         });
-    }
+    };
 
-    const isSafeSchema = (url:string) => {
+    const isSafeSchema = (url: string) => {
         try {
             const parsedUrl = new URL(url);
-            const allowedProtocols = ['http:', 'https:', 'data:', 'blob:'];
+            const allowedProtocols = ["http:", "https:", "data:", "blob:"];
             if (allowedProtocols.includes(parsedUrl.protocol)) {
                 return url;
             } else {
                 console.warn(`Blocked URL with unsafe protocol: ${parsedUrl.protocol}`);
-                return '';
+                return "";
             }
         } catch (e) {
             console.warn(`Invalid URL: ${url}`);
-            return '';
+            return "";
         }
-    }
-
+    };
 </script>
 
-<div class={{
-    "w-5 h-5": !className,
-    [className]: className,
-}}>
-    {#if ico.iconType === 'html'}
+<div
+    class={{
+        "w-5 h-5": !className,
+        [className]: className,
+    }}
+>
+    {#if ico.iconType === "html"}
         {@html iconPurify(ico.icon)}
-    {:else if ico.iconType === 'img'}
+    {:else if ico.iconType === "img"}
         <img src={isSafeSchema(ico.icon)} alt="icon" />
     {/if}
 </div>

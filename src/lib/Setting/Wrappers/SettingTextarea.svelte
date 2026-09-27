@@ -1,9 +1,9 @@
 <script lang="ts">
-    import type { SettingItem, SettingContext } from 'src/ts/setting/types';
-    import { UNINITIALIZED, getLabel, getSettingValue, setSettingValue } from 'src/ts/setting/utils';
-    import { untrack } from 'svelte';
-    import TextAreaInput from 'src/lib/UI/GUI/TextAreaInput.svelte';
-    import Help from 'src/lib/Others/Help.svelte';
+    import type { SettingItem, SettingContext } from "src/ts/setting/types";
+    import { UNINITIALIZED, getLabel, getSettingValue, setSettingValue } from "src/ts/setting/utils";
+    import { untrack } from "svelte";
+    import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
+    import Help from "src/lib/Others/Help.svelte";
 
     interface Props {
         item: SettingItem;
@@ -33,9 +33,6 @@
 
 <span class="text-textcolor {item.classes ?? ''}">
     {getLabel(item)}
-    {#if item.helpKey}<Help key={item.helpKey as any}/>{/if}
+    {#if item.helpKey}<Help key={item.helpKey as any} />{/if}
 </span>
-<TextAreaInput
-    bind:value={localValue}
-    placeholder={item.options?.placeholder}
-/>
+<TextAreaInput bind:value={localValue} placeholder={item.options?.placeholder} />

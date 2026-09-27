@@ -1,16 +1,16 @@
 <script lang="ts">
-    import { CheckIcon, XIcon } from '@lucide/svelte';
-    import { createEventDispatcher, onDestroy } from 'svelte';
-    import { DBState } from 'src/ts/stores.svelte';
-    import { language } from 'src/lang';
-    import { 
+    import { CheckIcon, XIcon } from "@lucide/svelte";
+    import { createEventDispatcher, onDestroy } from "svelte";
+    import { DBState } from "src/ts/stores.svelte";
+    import { language } from "src/lang";
+    import {
         findAllOriginalRangesFromHtml,
         findAllOriginalRangesFromText,
         replaceRange,
         EDITABLE_BLOCK_SELECTORS,
         type RangeResult,
-        type RangeResultWithContext
-    } from 'src/ts/parser/partialEdit';
+        type RangeResultWithContext,
+    } from "src/ts/parser/partialEdit";
 
     interface Props {
         messageData: string;
@@ -23,7 +23,7 @@
     }
 
     let {
-        messageData = $bindable(''),
+        messageData = $bindable(""),
         chatIndex,
         bodyRoot,
         blockEditEnabled = false,
@@ -33,21 +33,21 @@
     }: Props = $props();
 
     const dispatch = createEventDispatcher<{
-        save: { newData: string; target: 'original' | 'translation'; translationKey?: string };
+        save: { newData: string; target: "original" | "translation"; translationKey?: string };
     }>();
 
     // Min drag selection length
     const MIN_DRAG_SELECTION_LENGTH = 5;
 
     let isEditing = $state(false);
-    let editText = $state('');
+    let editText = $state("");
     let textareaRef: HTMLTextAreaElement | null = $state(null);
 
     let isConfirmingDelete = $state(false);
 
     // Unified matching state: tracks both edit and delete operations
-    type MatchingMode = 'edit' | 'delete' | null;
-    type PartialEditTarget = 'original' | 'translation';
+    type MatchingMode = "edit" | "delete" | null;
+    type PartialEditTarget = "original" | "translation";
     type MatchingState = {
         mode: MatchingMode;
         targetElement: HTMLElement | null;
@@ -63,10 +63,10 @@
         return {
             mode: null,
             targetElement: null,
-            originalHTML: '',
+            originalHTML: "",
             foundMatches: [],
             selectedRange: null,
-            sourceType: 'original',
+            sourceType: "original",
             sourceData: messageData,
             translationKey: null,
         };
@@ -82,7 +82,7 @@
 
     let showMatchFailedModal = $state(false);
 
-    const SELECTOR = EDITABLE_BLOCK_SELECTORS.join(', ');
+    const SELECTOR = EDITABLE_BLOCK_SELECTORS.join(", ");
 
     // Block edit state
     let blockButtonWrapper: HTMLDivElement | null = null;
@@ -90,7 +90,7 @@
 
     // Drag edit state
     let dragButtonWrapper: HTMLDivElement | null = null;
-    let currentDragSelectedText: string = '';
+    let currentDragSelectedText: string = "";
 
     let isInViewport = $state(false);
     let isBlockActive = $derived(blockEditEnabled && isInViewport);
@@ -99,7 +99,7 @@
     // Check if element has text content (excluding buttons)
     function hasTextContent(el: HTMLElement): boolean {
         const clone = el.cloneNode(true) as HTMLElement;
-        clone.querySelectorAll('button').forEach(btn => btn.remove());
+        clone.querySelectorAll("button").forEach((btn) => btn.remove());
         return !!clone.textContent?.trim();
     }
 
@@ -110,7 +110,7 @@
         onDelete: () => void,
         onMouseLeave?: (e: MouseEvent) => void,
     ): HTMLDivElement {
-        const wrapper = document.createElement('div');
+        const wrapper = document.createElement("div");
         wrapper.className = className;
         wrapper.innerHTML = `
             <button type="button" class="partial-edit-btn partial-edit-btn-edit">
@@ -130,24 +130,24 @@
             </button>
         `;
 
-        const editBtn = wrapper.querySelector('.partial-edit-btn-edit')!;
-        editBtn.setAttribute('title', language.partialEdit.editButtonTooltip);
-        editBtn.addEventListener('click', (e) => {
+        const editBtn = wrapper.querySelector(".partial-edit-btn-edit")!;
+        editBtn.setAttribute("title", language.partialEdit.editButtonTooltip);
+        editBtn.addEventListener("click", (e) => {
             e.stopPropagation();
             e.preventDefault();
             onEdit();
         });
 
-        const deleteBtn = wrapper.querySelector('.partial-edit-btn-delete')!;
-        deleteBtn.setAttribute('title', language.partialEdit.deleteButtonTooltip);
-        deleteBtn.addEventListener('click', (e) => {
+        const deleteBtn = wrapper.querySelector(".partial-edit-btn-delete")!;
+        deleteBtn.setAttribute("title", language.partialEdit.deleteButtonTooltip);
+        deleteBtn.addEventListener("click", (e) => {
             e.stopPropagation();
             e.preventDefault();
             onDelete();
         });
 
         if (onMouseLeave) {
-            wrapper.addEventListener('mouseleave', onMouseLeave);
+            wrapper.addEventListener("mouseleave", onMouseLeave);
         }
 
         return wrapper;
@@ -155,13 +155,13 @@
 
     // Show/hide block edit button
     function showBlockButton(block: HTMLElement) {
-        if (currentHoveredBlock === block && blockButtonWrapper?.style.display === 'block') return;
+        if (currentHoveredBlock === block && blockButtonWrapper?.style.display === "block") return;
 
         currentHoveredBlock = block;
 
         if (!blockButtonWrapper) {
             blockButtonWrapper = createButton(
-                'partial-edit-btn-wrapper',
+                "partial-edit-btn-wrapper",
                 startBlockEdit,
                 startBlockDelete,
                 (e: MouseEvent) => {
@@ -178,17 +178,17 @@
         // Place button at top-left of block
         const rect = block.getBoundingClientRect();
         const buttonHeight = 32;
-        blockButtonWrapper.style.position = 'fixed';
+        blockButtonWrapper.style.position = "fixed";
         blockButtonWrapper.style.top = `${rect.top - buttonHeight - 4}px`;
         blockButtonWrapper.style.left = `${rect.left}px`;
-        blockButtonWrapper.style.display = 'flex';
-        blockButtonWrapper.style.gap = '4px';
-        blockButtonWrapper.style.zIndex = '1000';
+        blockButtonWrapper.style.display = "flex";
+        blockButtonWrapper.style.gap = "4px";
+        blockButtonWrapper.style.zIndex = "1000";
     }
 
     function hideBlockButton() {
         if (blockButtonWrapper) {
-            blockButtonWrapper.style.display = 'none';
+            blockButtonWrapper.style.display = "none";
         }
         currentHoveredBlock = null;
     }
@@ -197,7 +197,7 @@
     function showDragButton(rect: DOMRect) {
         if (!dragButtonWrapper) {
             dragButtonWrapper = createButton(
-                'partial-edit-btn-wrapper partial-edit-drag-btn-wrapper',
+                "partial-edit-btn-wrapper partial-edit-drag-btn-wrapper",
                 startDragEdit,
                 startDragDelete,
             );
@@ -208,19 +208,19 @@
         const buttonTotalWidth = 72;
         const centerX = (rect.left + rect.right) / 2;
 
-        dragButtonWrapper.style.position = 'fixed';
+        dragButtonWrapper.style.position = "fixed";
         dragButtonWrapper.style.top = `${rect.bottom + 4}px`;
         dragButtonWrapper.style.left = `${centerX - buttonTotalWidth / 2}px`;
-        dragButtonWrapper.style.display = 'flex';
-        dragButtonWrapper.style.gap = '4px';
-        dragButtonWrapper.style.zIndex = '1000';
+        dragButtonWrapper.style.display = "flex";
+        dragButtonWrapper.style.gap = "4px";
+        dragButtonWrapper.style.zIndex = "1000";
     }
 
     function hideDragButton() {
         if (dragButtonWrapper) {
-            dragButtonWrapper.style.display = 'none';
+            dragButtonWrapper.style.display = "none";
         }
-        currentDragSelectedText = '';
+        currentDragSelectedText = "";
     }
 
     async function getTranslationContextIfNeeded() {
@@ -234,21 +234,22 @@
     async function findAndProcessMatches(
         mode: MatchingMode,
         elementOrText: HTMLElement | string,
-        proceedCallback: (match: RangeResultWithContext) => void
+        proceedCallback: (match: RangeResultWithContext) => void,
     ) {
         if (!elementOrText || !messageData) return;
 
         const requestId = ++matchingRequestId;
 
         // Set matching options based on mode
-        const options = mode === 'edit' 
-            ? { extendToEOL: false, snapStartToPrevEOL: false }
-            : { extendToEOL: true, snapStartToPrevEOL: true };
+        const options =
+            mode === "edit"
+                ? { extendToEOL: false, snapStartToPrevEOL: false }
+                : { extendToEOL: true, snapStartToPrevEOL: true };
 
         const translationContext = await getTranslationContextIfNeeded();
         if (requestId !== matchingRequestId) return;
 
-        const sourceType: PartialEditTarget = translationContext ? 'translation' : 'original';
+        const sourceType: PartialEditTarget = translationContext ? "translation" : "original";
         const sourceData = translationContext?.data ?? messageData;
         const nextState = createMatchingState();
         nextState.sourceType = sourceType;
@@ -256,7 +257,7 @@
         nextState.translationKey = translationContext?.key ?? null;
 
         // Determine if matching from HTML element or text
-        if (typeof elementOrText === 'string') {
+        if (typeof elementOrText === "string") {
             nextState.foundMatches = findAllOriginalRangesFromText(sourceData, elementOrText, options);
         } else {
             nextState.targetElement = elementOrText;
@@ -272,7 +273,7 @@
         }
 
         // Filter high-confidence matches
-        const highConfidenceMatches = nextState.foundMatches.filter(m => m.confidence >= 0.95);
+        const highConfidenceMatches = nextState.foundMatches.filter((m) => m.confidence >= 0.95);
 
         if (highConfidenceMatches.length === 1) {
             proceedCallback(highConfidenceMatches[0]);
@@ -289,23 +290,23 @@
     // Start block edit/delete
     function startBlockEdit() {
         if (!currentHoveredBlock) return;
-        findAndProcessMatches('edit', currentHoveredBlock, proceedWithEdit);
+        findAndProcessMatches("edit", currentHoveredBlock, proceedWithEdit);
     }
 
     function startBlockDelete() {
         if (!currentHoveredBlock) return;
-        findAndProcessMatches('delete', currentHoveredBlock, proceedWithDelete);
+        findAndProcessMatches("delete", currentHoveredBlock, proceedWithDelete);
     }
 
     // Start drag edit/delete
     function startDragEdit() {
         if (!currentDragSelectedText) return;
-        findAndProcessMatches('edit', currentDragSelectedText, proceedWithEdit);
+        findAndProcessMatches("edit", currentDragSelectedText, proceedWithEdit);
     }
 
     function startDragDelete() {
         if (!currentDragSelectedText) return;
-        findAndProcessMatches('delete', currentDragSelectedText, proceedWithDelete);
+        findAndProcessMatches("delete", currentDragSelectedText, proceedWithDelete);
     }
 
     // Proceed with edit/delete after match found
@@ -321,9 +322,11 @@
                 textareaRef.focus();
                 adjustHeight();
                 setTimeout(() => {
-                    const buttonsEl = textareaRef.closest('.partial-edit-modal')?.querySelector('.partial-edit-buttons');
+                    const buttonsEl = textareaRef
+                        .closest(".partial-edit-modal")
+                        ?.querySelector(".partial-edit-buttons");
                     if (buttonsEl) {
-                        (buttonsEl as HTMLElement).scrollIntoView({ behavior: 'instant', block: 'nearest' });
+                        (buttonsEl as HTMLElement).scrollIntoView({ behavior: "instant", block: "nearest" });
                     }
                 }, 200);
             }
@@ -335,16 +338,16 @@
         const match = matchingState.foundMatches[index];
         if (!match) return;
 
-        if (matchingState.mode === 'edit') {
+        if (matchingState.mode === "edit") {
             proceedWithEdit(match);
-        } else if (matchingState.mode === 'delete') {
+        } else if (matchingState.mode === "delete") {
             proceedWithDelete(match);
         }
     }
 
     // Cancel match selection (restore HTML if in edit mode)
     function cancelMatchSelection() {
-        if (matchingState.mode === 'edit' && matchingState.targetElement && matchingState.originalHTML) {
+        if (matchingState.mode === "edit" && matchingState.targetElement && matchingState.originalHTML) {
             matchingState.targetElement.innerHTML = matchingState.originalHTML;
         }
 
@@ -356,7 +359,7 @@
         if (!matchingState.selectedRange) return;
 
         const newData = replaceRange(matchingState.sourceData, matchingState.selectedRange, editText);
-        dispatch('save', {
+        dispatch("save", {
             newData,
             target: matchingState.sourceType,
             translationKey: matchingState.translationKey ?? undefined,
@@ -376,7 +379,7 @@
     // Close edit mode
     function closeEdit() {
         isEditing = false;
-        editText = '';
+        editText = "";
         resetMatchingState();
     }
 
@@ -391,10 +394,10 @@
     function handleConfirmDelete() {
         if (!matchingState.selectedRange) return;
 
-        let newData = replaceRange(matchingState.sourceData, matchingState.selectedRange, '');
-        newData = newData.replace(/\n{3,}/g, '\n\n').trim();
+        let newData = replaceRange(matchingState.sourceData, matchingState.selectedRange, "");
+        newData = newData.replace(/\n{3,}/g, "\n\n").trim();
 
-        dispatch('save', {
+        dispatch("save", {
             newData,
             target: matchingState.sourceType,
             translationKey: matchingState.translationKey ?? undefined,
@@ -414,9 +417,9 @@
     }
 
     function handleKeydown(e: KeyboardEvent) {
-        if (e.key === 'Escape') {
+        if (e.key === "Escape") {
             handleCancel();
-        } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
             handleSave();
         }
     }
@@ -424,17 +427,16 @@
     // Auto-adjust textarea height
     function adjustHeight() {
         if (textareaRef) {
-            textareaRef.style.height = 'auto';
-            textareaRef.style.height = Math.max(60, textareaRef.scrollHeight) + 'px';
+            textareaRef.style.height = "auto";
+            textareaRef.style.height = Math.max(60, textareaRef.scrollHeight) + "px";
         }
     }
 
     // Check if mouse is over block button
     function isMouseOnBlockButton(mouseX: number, mouseY: number): boolean {
-        if (!blockButtonWrapper || blockButtonWrapper.style.display === 'none') return false;
+        if (!blockButtonWrapper || blockButtonWrapper.style.display === "none") return false;
         const rect = blockButtonWrapper.getBoundingClientRect();
-        return mouseX >= rect.left && mouseX <= rect.right &&
-               mouseY >= rect.top && mouseY <= rect.bottom;
+        return mouseX >= rect.left && mouseX <= rect.right && mouseY >= rect.top && mouseY <= rect.bottom;
     }
 
     // Check if mouse is in extended button zone above block
@@ -443,9 +445,8 @@
         const buttonHeight = 32;
         const gap = 4;
         const extendedTop = rect.top - buttonHeight - gap - 8;
-        
-        return mouseX >= rect.left && mouseX <= rect.right &&
-               mouseY >= extendedTop && mouseY < rect.top;
+
+        return mouseX >= rect.left && mouseX <= rect.right && mouseY >= extendedTop && mouseY < rect.top;
     }
 
     // Viewport detection (enable block/drag edit when in view)
@@ -462,8 +463,8 @@
             },
             {
                 threshold: [0, 0.1, 0.5, 1.0],
-                rootMargin: '300px',
-            }
+                rootMargin: "300px",
+            },
         );
 
         observer.observe(bodyRoot);
@@ -484,20 +485,20 @@
 
         const handleMove = (e: MouseEvent) => {
             if (isEditing) return;
-            
+
             const sel = window.getSelection();
             if (sel && !sel.isCollapsed) {
                 hideBlockButton();
                 return;
             }
-            
+
             lastMouseX = e.clientX;
             lastMouseY = e.clientY;
 
             if (rafId !== null) return;
             rafId = requestAnimationFrame(() => {
                 rafId = null;
-                
+
                 if (isMouseOnBlockButton(lastMouseX, lastMouseY)) {
                     return;
                 }
@@ -524,13 +525,13 @@
         // mouseleave handler
         const handleLeave = (e: MouseEvent) => {
             if (isEditing) return;
-            
+
             const relatedTarget = e.relatedTarget as HTMLElement | null;
-            
+
             if (relatedTarget && blockButtonWrapper?.contains(relatedTarget)) {
                 return;
             }
-            
+
             hideBlockButton();
         };
 
@@ -540,14 +541,14 @@
         };
 
         // Listen at document level to include button area
-        document.addEventListener('mousemove', handleMove);
-        bodyRoot.addEventListener('mouseleave', handleLeave);
-        document.addEventListener('scroll', handleScroll, true);
+        document.addEventListener("mousemove", handleMove);
+        bodyRoot.addEventListener("mouseleave", handleLeave);
+        document.addEventListener("scroll", handleScroll, true);
 
         return () => {
-            document.removeEventListener('mousemove', handleMove);
-            bodyRoot.removeEventListener('mouseleave', handleLeave);
-            document.removeEventListener('scroll', handleScroll, true);
+            document.removeEventListener("mousemove", handleMove);
+            bodyRoot.removeEventListener("mouseleave", handleLeave);
+            document.removeEventListener("scroll", handleScroll, true);
             if (rafId !== null) {
                 cancelAnimationFrame(rafId);
             }
@@ -575,9 +576,8 @@
                 // Check if selection is within bodyRoot
                 const range = sel.getRangeAt(0);
                 const ancestor = range.commonAncestorContainer;
-                const ancestorEl = ancestor.nodeType === Node.ELEMENT_NODE
-                    ? ancestor as HTMLElement
-                    : ancestor.parentElement;
+                const ancestorEl =
+                    ancestor.nodeType === Node.ELEMENT_NODE ? (ancestor as HTMLElement) : ancestor.parentElement;
 
                 if (!ancestorEl || !bodyRoot.contains(ancestorEl)) {
                     hideDragButton();
@@ -615,14 +615,14 @@
             hideDragButton();
         };
 
-        document.addEventListener('selectionchange', handleSelectionChange);
-        document.addEventListener('scroll', handleDragScroll, true);
-        document.addEventListener('mousedown', handleMouseDown);
+        document.addEventListener("selectionchange", handleSelectionChange);
+        document.addEventListener("scroll", handleDragScroll, true);
+        document.addEventListener("mousedown", handleMouseDown);
 
         return () => {
-            document.removeEventListener('selectionchange', handleSelectionChange);
-            document.removeEventListener('scroll', handleDragScroll, true);
-            document.removeEventListener('mousedown', handleMouseDown);
+            document.removeEventListener("selectionchange", handleSelectionChange);
+            document.removeEventListener("scroll", handleDragScroll, true);
+            document.removeEventListener("mousedown", handleMouseDown);
             if (debounceTimer) clearTimeout(debounceTimer);
         };
     });
@@ -644,7 +644,12 @@
 {#snippet MatchSelectionModal(mode: MatchingMode, matches: RangeResultWithContext[], title: string)}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="partial-edit-overlay" onclick={(e) => { if (e.target === e.currentTarget) cancelMatchSelection(); }}>
+    <div
+        class="partial-edit-overlay"
+        onclick={(e) => {
+            if (e.target === e.currentTarget) cancelMatchSelection();
+        }}
+    >
         <div class="partial-match-selection-modal">
             <div class="match-selection-header">
                 <span class="match-selection-title">{title}</span>
@@ -657,7 +662,12 @@
                     <div class="match-item" onclick={() => selectMatchAtIndex(i)}>
                         <div class="match-meta">
                             <span class="match-line">{language.partialEdit.lineNumber(match.lineNumber)}</span>
-                            <span class="match-confidence" class:high-confidence={match.confidence >= 0.95} class:medium-confidence={match.confidence >= 0.7 && match.confidence < 0.95} class:low-confidence={match.confidence < 0.7}>
+                            <span
+                                class="match-confidence"
+                                class:high-confidence={match.confidence >= 0.95}
+                                class:medium-confidence={match.confidence >= 0.7 && match.confidence < 0.95}
+                                class:low-confidence={match.confidence < 0.7}
+                            >
                                 {(match.confidence * 100).toFixed(0)}%
                             </span>
                             <span class="match-method">{match.method}</span>
@@ -666,7 +676,11 @@
                             <div class="match-context-before">{match.contextBefore}</div>
                         {/if}
                         <div class="match-text">
-                            {matchingState.sourceData.slice(match.start, match.end).slice(0, 150)}{matchingState.sourceData.slice(match.start, match.end).length > 150 ? '...' : ''}
+                            {matchingState.sourceData
+                                .slice(match.start, match.end)
+                                .slice(0, 150)}{matchingState.sourceData.slice(match.start, match.end).length > 150
+                                ? "..."
+                                : ""}
                         </div>
                         {#if match.contextAfter}
                             <div class="match-context-after">{match.contextAfter}</div>
@@ -675,11 +689,7 @@
                 {/each}
             </div>
             <div class="partial-edit-buttons">
-                <button
-                    type="button"
-                    class="partial-edit-cancel-btn"
-                    onclick={cancelMatchSelection}
-                >
+                <button type="button" class="partial-edit-cancel-btn" onclick={cancelMatchSelection}>
                     <XIcon size={14} />
                     <span>{language.cancel}</span>
                 </button>
@@ -692,18 +702,19 @@
 {#if showMatchFailedModal}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="partial-edit-overlay" onclick={(e) => { if (e.target === e.currentTarget) showMatchFailedModal = false; }}>
+    <div
+        class="partial-edit-overlay"
+        onclick={(e) => {
+            if (e.target === e.currentTarget) showMatchFailedModal = false;
+        }}
+    >
         <div class="partial-match-failed-modal">
             <div class="partial-match-failed-header">
                 <span class="partial-match-failed-title">{language.partialEdit.matchFailedTitle}</span>
             </div>
             <p class="partial-match-failed-message">{language.partialEdit.matchFailedMessage}</p>
             <div class="partial-edit-buttons">
-                <button
-                    type="button"
-                    class="partial-edit-save-btn"
-                    onclick={() => showMatchFailedModal = false}
-                >
+                <button type="button" class="partial-edit-save-btn" onclick={() => (showMatchFailedModal = false)}>
                     <CheckIcon size={14} />
                     <span>{language.confirm}</span>
                 </button>
@@ -716,7 +727,12 @@
 {#if isConfirmingDelete}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="partial-edit-overlay" onclick={(e) => { if (e.target === e.currentTarget) handleCancelDelete(); }}>
+    <div
+        class="partial-edit-overlay"
+        onclick={(e) => {
+            if (e.target === e.currentTarget) handleCancelDelete();
+        }}
+    >
         <div class="partial-delete-modal">
             <div class="partial-delete-header">
                 <span class="partial-delete-title">{language.partialEdit.deleteModalTitle}</span>
@@ -724,29 +740,32 @@
                     <span class="partial-match-hint">
                         {language.partialEdit.matchFound(matchingState.selectedRange.method)}
                     </span>
-                    <span class="partial-match-confidence" class:low-confidence={matchingState.selectedRange.confidence < 0.7}>
+                    <span
+                        class="partial-match-confidence"
+                        class:low-confidence={matchingState.selectedRange.confidence < 0.7}
+                    >
                         {(matchingState.selectedRange.confidence * 100).toFixed(0)}%
                     </span>
                 </div>
             </div>
             <p class="partial-delete-message">{language.partialEdit.deleteConfirmMessage}</p>
             <div class="partial-delete-preview">
-                {matchingState.selectedRange ? matchingState.sourceData.slice(matchingState.selectedRange.start, matchingState.selectedRange.end).slice(0, 200) : ''}{matchingState.selectedRange && matchingState.sourceData.slice(matchingState.selectedRange.start, matchingState.selectedRange.end).length > 200 ? '...' : ''}
+                {matchingState.selectedRange
+                    ? matchingState.sourceData
+                          .slice(matchingState.selectedRange.start, matchingState.selectedRange.end)
+                          .slice(0, 200)
+                    : ""}{matchingState.selectedRange &&
+                matchingState.sourceData.slice(matchingState.selectedRange.start, matchingState.selectedRange.end)
+                    .length > 200
+                    ? "..."
+                    : ""}
             </div>
             <div class="partial-edit-buttons">
-                <button
-                    type="button"
-                    class="partial-delete-confirm-btn"
-                    onclick={handleConfirmDelete}
-                >
+                <button type="button" class="partial-delete-confirm-btn" onclick={handleConfirmDelete}>
                     <CheckIcon size={14} />
                     <span>{language.partialEdit.deleteYes}</span>
                 </button>
-                <button
-                    type="button"
-                    class="partial-edit-cancel-btn"
-                    onclick={handleCancelDelete}
-                >
+                <button type="button" class="partial-edit-cancel-btn" onclick={handleCancelDelete}>
                     <XIcon size={14} />
                     <span>{language.partialEdit.deleteNo}</span>
                 </button>
@@ -756,17 +775,22 @@
 {/if}
 
 <!-- Match selection modal (shared for edit/delete) -->
-{#if matchingState.mode === 'edit'}
-    {@render MatchSelectionModal('edit', matchingState.foundMatches, language.partialEdit.selectMatch)}
-{:else if matchingState.mode === 'delete'}
-    {@render MatchSelectionModal('delete', matchingState.foundMatches, language.partialEdit.selectDeleteMatch)}
+{#if matchingState.mode === "edit"}
+    {@render MatchSelectionModal("edit", matchingState.foundMatches, language.partialEdit.selectMatch)}
+{:else if matchingState.mode === "delete"}
+    {@render MatchSelectionModal("delete", matchingState.foundMatches, language.partialEdit.selectDeleteMatch)}
 {/if}
 
 <!-- Edit modal (shown only during edit) -->
 {#if isEditing}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="partial-edit-overlay" onclick={(e) => { if (e.target === e.currentTarget) handleCancel(); }}>
+    <div
+        class="partial-edit-overlay"
+        onclick={(e) => {
+            if (e.target === e.currentTarget) handleCancel();
+        }}
+    >
         <div class="partial-edit-modal">
             <div class="partial-edit-header">
                 <span class="partial-edit-title">{language.partialEdit.editModalTitle}</span>
@@ -774,7 +798,10 @@
                     <span class="partial-match-hint">
                         {language.partialEdit.matchFound(matchingState.selectedRange.method)}
                     </span>
-                    <span class="partial-match-confidence" class:low-confidence={matchingState.selectedRange.confidence < 0.7}>
+                    <span
+                        class="partial-match-confidence"
+                        class:low-confidence={matchingState.selectedRange.confidence < 0.7}
+                    >
                         {(matchingState.selectedRange.confidence * 100).toFixed(0)}%
                     </span>
                 </div>
@@ -786,14 +813,13 @@
                 onkeydown={handleKeydown}
                 oninput={adjustHeight}
                 style:font-size="{0.875 * (DBState.db.zoomsize / 100)}rem"
-                style:line-height="{(DBState.db.lineHeight ?? 1.25) * (DBState.db.zoomsize / 100)}rem"
-            ></textarea>
+                style:line-height="{(DBState.db.lineHeight ?? 1.25) * (DBState.db.zoomsize / 100)}rem"></textarea>
             <div class="partial-edit-buttons">
                 <button
                     type="button"
                     class="partial-edit-save-btn"
                     onclick={handleSave}
-                    title="{language.partialEdit.saveShortcut}"
+                    title={language.partialEdit.saveShortcut}
                 >
                     <CheckIcon size={14} />
                     <span>{language.partialEdit.save}</span>
@@ -802,7 +828,7 @@
                     type="button"
                     class="partial-edit-cancel-btn"
                     onclick={handleCancel}
-                    title="{language.partialEdit.cancelShortcut}"
+                    title={language.partialEdit.cancelShortcut}
                 >
                     <XIcon size={14} />
                     <span>{language.partialEdit.cancel}</span>

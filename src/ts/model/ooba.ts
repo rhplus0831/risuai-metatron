@@ -1,15 +1,15 @@
 export interface OobaChatCompletionRequestParams {
-    mode: 'instruct'|'chat'|'chat-instruct'
-    turn_template?: string
-    name1_instruct?: string
-    name2_instruct?: string
-    context_instruct?: string
-    system_message?: string
-    name1?: string
-    name2?: string
-    context?: string
-    greeting?: string
-    chat_instruct_command?: string
+    mode: "instruct" | "chat" | "chat-instruct";
+    turn_template?: string;
+    name1_instruct?: string;
+    name2_instruct?: string;
+    context_instruct?: string;
+    system_message?: string;
+    name1?: string;
+    name2?: string;
+    context?: string;
+    greeting?: string;
+    chat_instruct_command?: string;
     preset?: string; // The '?' denotes that the property is optional
     tokenizer?: string;
     min_p?: number;
@@ -29,20 +29,19 @@ export interface OobaChatCompletionRequestParams {
     mirostat_eta?: number;
     temperature_last?: boolean;
     do_sample?: boolean;
-    seed?: number; 
+    seed?: number;
     encoder_repetition_penalty?: number;
     no_repeat_ngram_size?: number;
     min_length?: number;
     num_beams?: number;
     length_penalty?: number;
-    early_stopping?: boolean; 
-    truncation_length?: number; 
-    max_tokens_second?: number; 
+    early_stopping?: boolean;
+    truncation_length?: number;
+    max_tokens_second?: number;
     custom_token_bans?: string;
-    auto_max_new_tokens?: boolean; 
-    ban_eos_token?: boolean; 
-    add_bos_token?: boolean; 
+    auto_max_new_tokens?: boolean;
+    ban_eos_token?: boolean;
+    add_bos_token?: boolean;
     skip_special_tokens?: boolean;
     grammar_string?: string;
-    
 }

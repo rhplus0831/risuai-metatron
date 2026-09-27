@@ -1,47 +1,47 @@
 import { writable } from "svelte/store";
 import { getDatabase } from "../storage/database.svelte";
 
-export let textAreaSize = writable(0)
-export let sideBarSize = writable(0)
-export let textAreaTextSize = writable(0)
+export let textAreaSize = writable(0);
+export let sideBarSize = writable(0);
+export let textAreaTextSize = writable(0);
 
-export function updateGuisize(){
-    let db = getDatabase()
-    const root = document.querySelector(':root') as HTMLElement;
-    if(!root){
-        return
+export function updateGuisize() {
+    let db = getDatabase();
+    const root = document.querySelector(":root") as HTMLElement;
+    if (!root) {
+        return;
     }
-    textAreaSize.set(db.textAreaSize)
-    sideBarSize.set(db.sideBarSize)
-    textAreaTextSize.set(db.textAreaTextSize)
-    root.style.setProperty('--sidebar-size', (24 + (4 * db.sideBarSize)) + 'rem')
+    textAreaSize.set(db.textAreaSize);
+    sideBarSize.set(db.sideBarSize);
+    textAreaTextSize.set(db.textAreaTextSize);
+    root.style.setProperty("--sidebar-size", 24 + 4 * db.sideBarSize + "rem");
 }
 
-export function guiSizeText(num:number){
-    switch(num){
+export function guiSizeText(num: number) {
+    switch (num) {
         case 0:
-            return 'Default'
+            return "Default";
         case 1:
-            return 'Big'
+            return "Big";
         case 2:
-            return 'Bigger'
+            return "Bigger";
         case 3:
-            return 'Huge'
+            return "Huge";
         case 4:
-            return 'Huger'
+            return "Huger";
         case 5:
-            return 'Hugest'
+            return "Hugest";
         case -1:
-            return 'Small'
+            return "Small";
         case -2:
-            return 'Smaller'
+            return "Smaller";
         case -3:
-            return 'Tiny'
+            return "Tiny";
         case -4:
-            return 'Tinier'
+            return "Tinier";
         case -5:
-            return 'Tiniest'
+            return "Tiniest";
         default:
-            return 'Default'
+            return "Default";
     }
 }

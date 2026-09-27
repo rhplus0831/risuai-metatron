@@ -1,8 +1,8 @@
-let rerolls:{[key:string]:string[]} = {};
-let rerollIndex:{[key:string]:number} = {};
+let rerolls: { [key: string]: string[] } = {};
+let rerollIndex: { [key: string]: number } = {};
 
-export function Prereroll(genId:string){
-    if(rerolls[genId]){
+export function Prereroll(genId: string) {
+    if (rerolls[genId]) {
         let index = rerollIndex[genId];
         index += 1;
         rerollIndex[genId] = index;
@@ -10,12 +10,12 @@ export function Prereroll(genId:string){
     }
     return null;
 }
-export function PreUnreroll(genId:string){
-    if(rerolls[genId]){
+export function PreUnreroll(genId: string) {
+    if (rerolls[genId]) {
         let index = rerollIndex[genId];
         index -= 1;
-        if(index < 0){
-            return null
+        if (index < 0) {
+            return null;
         }
         rerollIndex[genId] = index;
         return rerolls[genId][index] ?? null;
@@ -23,7 +23,7 @@ export function PreUnreroll(genId:string){
     return null;
 }
 
-export function addRerolls(genId:string, values:string[]){
+export function addRerolls(genId: string, values: string[]) {
     rerolls[genId] = values;
     rerollIndex[genId] = 0;
 }

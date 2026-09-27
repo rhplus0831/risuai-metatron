@@ -1,11 +1,11 @@
 <script lang="ts">
-    import type { SettingItem, SettingContext } from 'src/ts/setting/types';
-    import { UNINITIALIZED, getLabel, getSettingValue, setSettingValue } from 'src/ts/setting/utils';
-    import { untrack } from 'svelte';
-    import SelectInput from 'src/lib/UI/GUI/SelectInput.svelte';
-    import OptionInput from 'src/lib/UI/GUI/OptionInput.svelte';
-    import Help from 'src/lib/Others/Help.svelte';
-    import { language } from 'src/lang';
+    import type { SettingItem, SettingContext } from "src/ts/setting/types";
+    import { UNINITIALIZED, getLabel, getSettingValue, setSettingValue } from "src/ts/setting/utils";
+    import { untrack } from "svelte";
+    import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
+    import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
+    import Help from "src/lib/Others/Help.svelte";
+    import { language } from "src/lang";
 
     interface Props {
         item: SettingItem;
@@ -33,12 +33,18 @@
     });
 
     // Process options to support labelKey translation and conditional rendering
-    let processedOptions = $derived((item.options?.selectOptions ?? []).filter(opt => !opt.condition || opt.condition(ctx)));
+    let processedOptions = $derived(
+        (item.options?.selectOptions ?? []).filter((opt) => !opt.condition || opt.condition(ctx)),
+    );
 
     // Reset value if current selection becomes hidden
     $effect(() => {
         const currentValue = untrack(() => localValue);
-        if (processedOptions.length > 0 && currentValue !== undefined && !processedOptions.some(o => o.value === currentValue)) {
+        if (
+            processedOptions.length > 0 &&
+            currentValue !== undefined &&
+            !processedOptions.some((o) => o.value === currentValue)
+        ) {
             localValue = processedOptions[processedOptions.length - 1].value;
         }
     });
@@ -46,7 +52,7 @@
 
 <span class="text-textcolor {item.classes ?? 'mt-4'}">
     {getLabel(item)}
-    {#if item.helpKey}<Help key={item.helpKey as any}/>{/if}
+    {#if item.helpKey}<Help key={item.helpKey as any} />{/if}
 </span>
 <SelectInput bind:value={localValue}>
     {#each processedOptions as opt}

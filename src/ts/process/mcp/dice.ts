@@ -9,35 +9,39 @@ export class DiceClient extends MCPClientLike {
         this.serverInfo.instructions = "A tool to roll dice in various formats. like '2d6+3' or 'd20'.";
     }
     async getToolList() {
-        return [{
-            name: 'rollDice',
-            description: 'Roll dice based on the given notation.',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    notation: {
-                        type: 'string',
-                        description: 'The dice notation to roll, e.g., "2d6+3".'
-                    }
+        return [
+            {
+                name: "rollDice",
+                description: "Roll dice based on the given notation.",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        notation: {
+                            type: "string",
+                            description: 'The dice notation to roll, e.g., "2d6+3".',
+                        },
+                    },
+                    required: ["notation"],
                 },
-                required: ['notation']
-            }
-        }];
+            },
+        ];
     }
     async callTool(toolName: string, args: any): Promise<RPCToolCallContent[]> {
-        if (toolName === 'rollDice') {
+        if (toolName === "rollDice") {
             const notation: string = args.notation;
             const result = rollDice(notation);
-            return [{
-                type: 'text',
-                text: `Rolled ${notation}: ${result.total} (Details: ${result.details})`
-            }]
+            return [
+                {
+                    type: "text",
+                    text: `Rolled ${notation}: ${result.total} (Details: ${result.details})`,
+                },
+            ];
         }
         throw new Error(`Unknown tool: ${toolName}`);
     }
 }
 
-function rollDice(notation: string): { total: number, details: string } {
+function rollDice(notation: string): { total: number; details: string } {
     const dicePattern = /(\d*)d(\d+)([+-]\d+)?/g;
     let match;
     let total = 0;
@@ -55,7 +59,9 @@ function rollDice(notation: string): { total: number, details: string } {
         }
         rollTotal += modifier;
         total += rollTotal;
-        details.push(`${count}d${sides}${modifier ? match[3] : ''}: [${rolls.join(', ')}]${modifier ? ` ${match[3]}` : ''} = ${rollTotal}`);
+        details.push(
+            `${count}d${sides}${modifier ? match[3] : ""}: [${rolls.join(", ")}]${modifier ? ` ${match[3]}` : ""} = ${rollTotal}`,
+        );
     }
-    return { total, details: details.join('; ') };
+    return { total, details: details.join("; ") };
 }

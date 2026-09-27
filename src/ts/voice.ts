@@ -1,16 +1,13 @@
-
-class voiceDetector{
-
+class voiceDetector {
     private userMedia: MediaStream;
     private audioContext: AudioContext;
     private analyser: AnalyserNode;
     private mediaRecorder: MediaRecorder;
     private intervalID: number;
     private audioChunks: {
-        data:Blob,
-        time: number
+        data: Blob;
+        time: number;
     }[];
-
 
     async init() {
         this.userMedia = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -23,10 +20,10 @@ class voiceDetector{
         this.mediaRecorder.ondataavailable = (event) => {
             this.audioChunks.push({
                 data: event.data,
-                time: Date.now()
+                time: Date.now(),
             });
         };
-        this.mediaRecorder.start();        
+        this.mediaRecorder.start();
         //analyze the audio volume every 100ms
         let start = Date.now();
         this.analyser.fftSize = 2048;
@@ -39,7 +36,5 @@ class voiceDetector{
                 clearInterval(this.intervalID);
             }
         }, 100) as any as number;
-
     }
-
 }

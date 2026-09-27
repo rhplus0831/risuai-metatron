@@ -8,8 +8,8 @@
     import Accordion from "../UI/Accordion.svelte";
     import { getCharToken, getChatToken } from "src/ts/tokenizer";
     import { tokenizePreset } from "src/ts/process/prompt";
-    
-    import { DBState } from 'src/ts/stores.svelte';
+
+    import { DBState } from "src/ts/stores.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import { HardDriveUploadIcon, PlusIcon, TrashIcon } from "@lucide/svelte";
     import { selectSingleFile } from "src/ts/util";
@@ -17,108 +17,122 @@
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import { applyChatTemplate, chatTemplates } from "src/ts/process/templates/chatTemplate";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
-  import { loadLoreBookV3Prompt } from "src/ts/process/lorebook.svelte";
-  import { getModules } from "src/ts/process/modules";
+    import { loadLoreBookV3Prompt } from "src/ts/process/lorebook.svelte";
+    import { getModules } from "src/ts/process/modules";
 
-    let previewMode = $state('chat')
-    let previewJoin = $state('yes')
-    let instructType = $state('chatml')
-    let instructCustom = $state('')
+    let previewMode = $state("chat");
+    let previewJoin = $state("yes");
+    let instructType = $state("chatml");
+    let instructCustom = $state("");
 
     const preview = async () => {
-        if($doingChat){
-            return false
+        if ($doingChat) {
+            return false;
         }
-        alertWait("Loading...")
+        alertWait("Loading...");
         await sendChat(-1, {
-            preview: previewJoin !== 'prompt',
-            previewPrompt: previewJoin === 'prompt'
-        })
+            preview: previewJoin !== "prompt",
+            previewPrompt: previewJoin === "prompt",
+        });
 
-        let md = ''
+        let md = "";
         const styledRole = {
-            "function": "📐 Function",
-            "user": "😐 User",
-            "system": "⚙️ System",
-            "assistant": "✨ Assistant",
+            function: "📐 Function",
+            user: "😐 User",
+            system: "⚙️ System",
+            assistant: "✨ Assistant",
+        };
+
+        if (previewJoin === "prompt") {
+            md += "### Prompt\n";
+            md +=
+                "```json\n" +
+                JSON.stringify(JSON.parse(previewBody), null, 2).replaceAll("```", "\\`\\`\\`") +
+                "\n```\n";
+            $doingChat = false;
+            alertMd(md);
+            return;
         }
 
-        if(previewJoin === 'prompt'){
-            md += '### Prompt\n'
-            md += '```json\n' + JSON.stringify(JSON.parse(previewBody), null, 2).replaceAll('```', '\\`\\`\\`') + '\n```\n'
-            $doingChat = false
-            alertMd(md)
-            return
-        }
+        let formated = safeStructuredClone(previewFormated);
 
-        let formated = safeStructuredClone(previewFormated)
+        if (previewJoin === "yes") {
+            let newFormated = [];
+            let latestRole = "";
 
-        if(previewJoin === 'yes'){
-            let newFormated = []
-            let latestRole = ''
-
-            for(let i=0;i<formated.length;i++){
-                if(formated[i].role === latestRole){
-                    newFormated[newFormated.length - 1].content += '\n' + formated[i].content
-                }else{
-                    newFormated.push(formated[i])
-                    latestRole = formated[i].role
+            for (let i = 0; i < formated.length; i++) {
+                if (formated[i].role === latestRole) {
+                    newFormated[newFormated.length - 1].content += "\n" + formated[i].content;
+                } else {
+                    newFormated.push(formated[i]);
+                    latestRole = formated[i].role;
                 }
             }
 
-            formated = newFormated
+            formated = newFormated;
         }
 
-        if(previewMode === 'instruct'){
+        if (previewMode === "instruct") {
             const instructed = applyChatTemplate(formated, {
                 type: instructType,
-                custom: instructCustom
-            })
+                custom: instructCustom,
+            });
 
-            md += '### Instruction\n'
-            md += '```\n' + instructed.replaceAll('```', '\\`\\`\\`') + '\n```\n'
-            $doingChat = false
-            alertMd(md)
-            return
+            md += "### Instruction\n";
+            md += "```\n" + instructed.replaceAll("```", "\\`\\`\\`") + "\n```\n";
+            $doingChat = false;
+            alertMd(md);
+            return;
         }
 
-        for(let i=0;i<formated.length;i++){
-            
-            md += '### ' + (styledRole[formated[i].role] ?? '🤔 Unknown role') + '\n'
-            const modals = formated[i].multimodals
+        for (let i = 0; i < formated.length; i++) {
+            md += "### " + (styledRole[formated[i].role] ?? "🤔 Unknown role") + "\n";
+            const modals = formated[i].multimodals;
 
-            if(modals && modals.length > 0){
-                md += `> ${modals.length} non-text content(s) included\n` 
+            if (modals && modals.length > 0) {
+                md += `> ${modals.length} non-text content(s) included\n`;
             }
 
-            if(formated[i].thoughts && formated[i].thoughts.length > 0){
-                md += `> ${formated[i].thoughts.length} thought(s) included\n`
+            if (formated[i].thoughts && formated[i].thoughts.length > 0) {
+                md += `> ${formated[i].thoughts.length} thought(s) included\n`;
             }
 
-            if(formated[i].cachePoint){
-                md += `> Cache point\n`
+            if (formated[i].cachePoint) {
+                md += `> Cache point\n`;
             }
 
-            md += '```\n' + formated[i].content.replaceAll('```', '\\`\\`\\`') + '\n```\n'
+            md += "```\n" + formated[i].content.replaceAll("```", "\\`\\`\\`") + "\n```\n";
         }
-        $doingChat = false
-        alertMd(md)
-    }
-    
-    let autopilot = $state([])
+        $doingChat = false;
+        alertMd(md);
+    };
+
+    let autopilot = $state([]);
 </script>
 
 <Accordion styled name={"Variables"}>
     <div class="rounded-md border border-darkborderc grid grid-cols-2 gap-2 p-2">
-        {#if DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate &&  Object.keys(DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate).length > 0}
+        {#if DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate && Object.keys(DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate).length > 0}
             {#each Object.keys(DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate) as key}
                 <span>{key}</span>
                 {#if typeof DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate[key] === "object"}
                     <div class="p-2 text-center">Object</div>
                 {:else if typeof DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate[key] === "string"}
-                    <TextInput bind:value={DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate[key] as string} />
+                    <TextInput
+                        bind:value={
+                            DBState.db.characters[$selectedCharID].chats[
+                                DBState.db.characters[$selectedCharID].chatPage
+                            ].scriptstate[key] as string
+                        }
+                    />
                 {:else if typeof DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate[key] === "number"}
-                    <NumberInput bind:value={DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate[key] as number} />
+                    <NumberInput
+                        bind:value={
+                            DBState.db.characters[$selectedCharID].chats[
+                                DBState.db.characters[$selectedCharID].chatPage
+                            ].scriptstate[key] as number
+                        }
+                    />
                 {/if}
             {/each}
         {:else}
@@ -167,77 +181,83 @@
         {/each}
     </div>
     <div class="flex justify-end">
-        <button class="text-textcolor2 hover:text-textcolor" onclick={() => {
-            autopilot.pop()
-            autopilot = autopilot
-        }}>
+        <button
+            class="text-textcolor2 hover:text-textcolor"
+            onclick={() => {
+                autopilot.pop();
+                autopilot = autopilot;
+            }}
+        >
             <TrashIcon />
         </button>
 
-        <button class="text-textcolor2 hover:text-textcolor" onclick={() => {
-            autopilot.push('')
-            autopilot = autopilot
-        }}>
+        <button
+            class="text-textcolor2 hover:text-textcolor"
+            onclick={() => {
+                autopilot.push("");
+                autopilot = autopilot;
+            }}
+        >
             <PlusIcon />
         </button>
 
-        <button class="text-textcolor2 hover:text-textcolor" onclick={async () => {
-            const selected = await selectSingleFile([
-                'txt', 'csv', 'json'
-            ])
-            if(!selected){
-                return
-            }
-            const file = new TextDecoder().decode(selected.data)
-            if(selected.name.endsWith('.json')){
-                const parsed = JSON.parse(file)
-                if(Array.isArray(parsed)){
-                    autopilot = parsed
+        <button
+            class="text-textcolor2 hover:text-textcolor"
+            onclick={async () => {
+                const selected = await selectSingleFile(["txt", "csv", "json"]);
+                if (!selected) {
+                    return;
                 }
-            }
-            if(selected.name.endsWith('.csv')){
-                autopilot = file.split('\n').map(x => {
-                    return x.replace(/\r/g, '')
-                        .replace(/\\n/g, '\n')
-                        .replace(/\\t/g, '\t')
-                        .replace(/\\r/g, '\r')
-                })
-            }
-            if(selected.name.endsWith('.txt')){
-                autopilot = file.split('\n')
-            }
-        }}>
+                const file = new TextDecoder().decode(selected.data);
+                if (selected.name.endsWith(".json")) {
+                    const parsed = JSON.parse(file);
+                    if (Array.isArray(parsed)) {
+                        autopilot = parsed;
+                    }
+                }
+                if (selected.name.endsWith(".csv")) {
+                    autopilot = file.split("\n").map((x) => {
+                        return x.replace(/\r/g, "").replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\r/g, "\r");
+                    });
+                }
+                if (selected.name.endsWith(".txt")) {
+                    autopilot = file.split("\n");
+                }
+            }}
+        >
             <HardDriveUploadIcon />
         </button>
     </div>
-    <Button className="mt-2" onclick={async () => {
-        if($doingChat){
-            return
-        }
-        for(let i=0;i<autopilot.length;i++){
-            const db = (DBState.db)
-            let currentChar = db.characters[$selectedCharID]
-            let currentChat = currentChar.chats[currentChar.chatPage]
-            currentChat.message.push({
-                role: 'user',
-                data: autopilot[i]
-            })
-            currentChar.chats[currentChar.chatPage] = currentChat
-            db.characters[$selectedCharID] = currentChar
-            if($doingChat){
-                return
+    <Button
+        className="mt-2"
+        onclick={async () => {
+            if ($doingChat) {
+                return;
             }
-            currentChar.chats[currentChar.chatPage] = currentChat
-            db.characters[$selectedCharID] = currentChar
-            doingChat.set(false)
-            await sendChat(i);
-            currentChar = db.characters[$selectedCharID]
-            currentChat = currentChar.chats[currentChar.chatPage]
-        }
-        doingChat.set(false)
-    }}>Run</Button>
+            for (let i = 0; i < autopilot.length; i++) {
+                const db = DBState.db;
+                let currentChar = db.characters[$selectedCharID];
+                let currentChat = currentChar.chats[currentChar.chatPage];
+                currentChat.message.push({
+                    role: "user",
+                    data: autopilot[i],
+                });
+                currentChar.chats[currentChar.chatPage] = currentChat;
+                db.characters[$selectedCharID] = currentChar;
+                if ($doingChat) {
+                    return;
+                }
+                currentChar.chats[currentChar.chatPage] = currentChat;
+                db.characters[$selectedCharID] = currentChar;
+                doingChat.set(false);
+                await sendChat(i);
+                currentChar = db.characters[$selectedCharID];
+                currentChat = currentChar.chats[currentChar.chatPage];
+            }
+            doingChat.set(false);
+        }}>Run</Button
+    >
 </Accordion>
-
 
 <Accordion styled name={"Preview Prompt"}>
     <span>Type</span>
@@ -245,7 +265,7 @@
         <OptionInput value="chat">Chat</OptionInput>
         <OptionInput value="instruct">Instruct</OptionInput>
     </SelectInput>
-    {#if previewMode === 'instruct'}
+    {#if previewMode === "instruct"}
         <span>Instruction Type</span>
         <SelectInput bind:value={instructType}>
             {#each Object.keys(chatTemplates) as template}
@@ -253,7 +273,7 @@
             {/each}
             <OptionInput value="jinja">Custom Jinja</OptionInput>
         </SelectInput>
-        {#if instructType === 'jinja'}
+        {#if instructType === "jinja"}
             <span>Custom Jinja</span>
             <TextAreaInput bind:value={instructCustom} />
         {/if}
@@ -264,22 +284,34 @@
         <OptionInput value="no">Without Join</OptionInput>
         <OptionInput value="prompt">As Request</OptionInput>
     </SelectInput>
-    <Button className="mt-2" onclick={() => {preview()}}>Run</Button>
+    <Button
+        className="mt-2"
+        onclick={() => {
+            preview();
+        }}>Run</Button
+    >
 </Accordion>
 
 <Accordion styled name={"Preview Lorebook"}>
-    <Button className="mt-2" onclick={async () => {
-        const lorebookResult = await loadLoreBookV3Prompt()
-        const html = `
-        ${lorebookResult.actives.map((v) => {
-            return `## ${v.source}\n\n\`\`\`\n${v.prompt}\n\`\`\`\n`
-        }).join('\n')}
-        `.trim()
-        alertMd(html)
-    }}>Test Lore</Button>
-    <Button className="mt-2" onclick={async () => {
-        const lorebookResult = await loadLoreBookV3Prompt()
-        const html = `
+    <Button
+        className="mt-2"
+        onclick={async () => {
+            const lorebookResult = await loadLoreBookV3Prompt();
+            const html = `
+        ${lorebookResult.actives
+            .map((v) => {
+                return `## ${v.source}\n\n\`\`\`\n${v.prompt}\n\`\`\`\n`;
+            })
+            .join("\n")}
+        `.trim();
+            alertMd(html);
+        }}>Test Lore</Button
+    >
+    <Button
+        className="mt-2"
+        onclick={async () => {
+            const lorebookResult = await loadLoreBookV3Prompt();
+            const html = `
         <table>
             <thead>
                 <tr>
@@ -288,29 +320,40 @@
                 </tr>
             </thead>
             <tbody>
-                ${lorebookResult.matchLog.map((v) => {
-                    return `<tr>
+                ${lorebookResult.matchLog
+                    .map((v) => {
+                        return `<tr>
                         <td><pre>${v.activated.trim()}</pre></td>
                         <td><pre>${v.source.trim()}</pre></td>
-                    </tr>`
-                }).join('\n')}
+                    </tr>`;
+                    })
+                    .join("\n")}
             </tbody>
         </table>
-        `.trim()
-        alertMd(html)
-    }}>Match Sources</Button>
+        `.trim();
+            alertMd(html);
+        }}>Match Sources</Button
+    >
 </Accordion>
 
-<Button className="mt-2" onclick={() => {
-    const modules = getModules()
-    const html = `
-    ${modules.map((v) => {
-        return `## ${v.name}\n\n\`\`\`\n${v.description}\n\`\`\`\n`
-    }).join('\n')}
-    `.trim()
-    alertMd(html)
-}}>Preview Module</Button>
+<Button
+    className="mt-2"
+    onclick={() => {
+        const modules = getModules();
+        const html = `
+    ${modules
+        .map((v) => {
+            return `## ${v.name}\n\n\`\`\`\n${v.description}\n\`\`\`\n`;
+        })
+        .join("\n")}
+    `.trim();
+        alertMd(html);
+    }}>Preview Module</Button
+>
 
-<Button className="mt-2" onclick={() => {
-    alertMd(getRequestLog())
-}}>Request Log</Button>
+<Button
+    className="mt-2"
+    onclick={() => {
+        alertMd(getRequestLog());
+    }}>Request Log</Button
+>

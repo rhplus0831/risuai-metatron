@@ -1,4 +1,4 @@
-import type { LLMParameter } from '../process/request/shared'
+import type { LLMParameter } from "../process/request/shared";
 
 export const LLMFlags = {
     hasImageInput: 0,
@@ -27,7 +27,7 @@ export const LLMFlags = {
     claudeXHighEffort: 23,
     deepSeekThinkingToggle: 24,
     noStructuredOutput: 25,
-    geminiThinkingNoMinimal: 26
+    geminiThinkingNoMinimal: 26,
 } as const;
 export type LLMFlags = (typeof LLMFlags)[keyof typeof LLMFlags];
 
@@ -48,7 +48,7 @@ export const LLMProvider = {
     DeepInfra: 13,
     Echo: 14,
     NanoGPT: 15,
-    Ollama: 16
+    Ollama: 16,
 } as const;
 export type LLMProvider = (typeof LLMProvider)[keyof typeof LLMProvider];
 
@@ -76,7 +76,7 @@ export const LLMFormat = {
     NanoGPT: 20,
     NanoGPTResponses: 21,
     NanoGPTMessages: 22,
-    NanoGPTLegacy: 23
+    NanoGPTLegacy: 23,
 } as const;
 export type LLMFormat = (typeof LLMFormat)[keyof typeof LLMFormat];
 
@@ -97,50 +97,61 @@ export const LLMTokenizer = {
     DeepSeek: 13,
     DeepSeekV4: 14,
     GLM4: 15,
-    GLM5: 16
+    GLM5: 16,
 } as const;
 export type LLMTokenizer = (typeof LLMTokenizer)[keyof typeof LLMTokenizer];
 
-export interface LLMModel{
-    id: string
-    name: string
-    shortName?: string
-    fullName?: string
-    internalID?: string
-    provider: LLMProvider
-    flags: LLMFlags[]
-    format: LLMFormat
-    parameters: LLMParameter[],
-    tokenizer: LLMTokenizer
-    recommended?: boolean
-    keyIdentifier?: string
-    endpoint?: string
+export interface LLMModel {
+    id: string;
+    name: string;
+    shortName?: string;
+    fullName?: string;
+    internalID?: string;
+    provider: LLMProvider;
+    flags: LLMFlags[];
+    format: LLMFormat;
+    parameters: LLMParameter[];
+    tokenizer: LLMTokenizer;
+    recommended?: boolean;
+    keyIdentifier?: string;
+    endpoint?: string;
 }
 
 export const ProviderNames = new Map<LLMProvider, string>([
-    [LLMProvider.OpenAI, 'OpenAI'],
-    [LLMProvider.Anthropic, 'Anthropic'],
-    [LLMProvider.GoogleCloud, 'Google Cloud'],
-    [LLMProvider.VertexAI, 'Vertex AI'],
-    [LLMProvider.AsIs, 'As Is'],
-    [LLMProvider.Mistral, 'MistralAI'],
-    [LLMProvider.NovelList, 'NovelList'],
-    [LLMProvider.Cohere, 'Cohere'],
-    [LLMProvider.NovelAI, 'NovelAI'],
-    [LLMProvider.WebLLM, 'WebLLM'],
-    [LLMProvider.Horde, 'Horde'],
-    [LLMProvider.AWS, 'AWS'],
-    [LLMProvider.DeepSeek, 'DeepSeek'],
-    [LLMProvider.DeepInfra, 'DeepInfra'],
-    [LLMProvider.Echo, 'For Developer'],
-    [LLMProvider.NanoGPT, 'NanoGPT'],
-    [LLMProvider.Ollama, 'Ollama']
-])
+    [LLMProvider.OpenAI, "OpenAI"],
+    [LLMProvider.Anthropic, "Anthropic"],
+    [LLMProvider.GoogleCloud, "Google Cloud"],
+    [LLMProvider.VertexAI, "Vertex AI"],
+    [LLMProvider.AsIs, "As Is"],
+    [LLMProvider.Mistral, "MistralAI"],
+    [LLMProvider.NovelList, "NovelList"],
+    [LLMProvider.Cohere, "Cohere"],
+    [LLMProvider.NovelAI, "NovelAI"],
+    [LLMProvider.WebLLM, "WebLLM"],
+    [LLMProvider.Horde, "Horde"],
+    [LLMProvider.AWS, "AWS"],
+    [LLMProvider.DeepSeek, "DeepSeek"],
+    [LLMProvider.DeepInfra, "DeepInfra"],
+    [LLMProvider.Echo, "For Developer"],
+    [LLMProvider.NanoGPT, "NanoGPT"],
+    [LLMProvider.Ollama, "Ollama"],
+]);
 
-export const OpenAIParameters:LLMParameter[] = ['temperature', 'top_p', 'frequency_penalty', 'presence_penalty']
-const GPT5BaseParameters:LLMParameter[] = ['temperature', 'top_p', 'frequency_penalty', 'presence_penalty', 'reasoning_effort', 'verbosity']
-export const GPT5Parameters:LLMParameter[] = [...GPT5BaseParameters]
-export const GPT5NoneParameters:LLMParameter[] = [...GPT5BaseParameters, 'reasoning_effort_none']
-export const GPT5XHighParameters:LLMParameter[] = [...GPT5NoneParameters, 'reasoning_effort_xhigh']
-export const GPT5ProParameters:LLMParameter[] = [...GPT5BaseParameters, 'reasoning_effort_min_medium', 'reasoning_effort_xhigh']
-export const ClaudeParameters:LLMParameter[] = ['temperature', 'top_k', 'top_p']
+export const OpenAIParameters: LLMParameter[] = ["temperature", "top_p", "frequency_penalty", "presence_penalty"];
+const GPT5BaseParameters: LLMParameter[] = [
+    "temperature",
+    "top_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "reasoning_effort",
+    "verbosity",
+];
+export const GPT5Parameters: LLMParameter[] = [...GPT5BaseParameters];
+export const GPT5NoneParameters: LLMParameter[] = [...GPT5BaseParameters, "reasoning_effort_none"];
+export const GPT5XHighParameters: LLMParameter[] = [...GPT5NoneParameters, "reasoning_effort_xhigh"];
+export const GPT5ProParameters: LLMParameter[] = [
+    ...GPT5BaseParameters,
+    "reasoning_effort_min_medium",
+    "reasoning_effort_xhigh",
+];
+export const ClaudeParameters: LLMParameter[] = ["temperature", "top_k", "top_p"];

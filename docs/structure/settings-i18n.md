@@ -1,6 +1,7 @@
 # Settings UI, Bot Presets, Prompt Template Editor, i18n
 
 ## Scope
+
 - Owns:
   - the declarative settings registry and its wrappers,
   - settings navigation and pages,
@@ -21,7 +22,9 @@
   - Translator presets → `media-aux.md`.
 
 ## Files
+
 Declarative settings (`src/ts/setting/`):
+
 - `types.ts`:
   - `SettingItem`: `id`, `type`, `bindKey` | `bindPath` (dotted) | `getValue`/`setValue`, `condition(ctx)`, `onChange`, `options`, `labelKey`/`fallbackLabel`, `componentId`/`componentProps`.
   - `SettingContext`: `{db, modelInfo, subModelInfo}`.
@@ -39,32 +42,36 @@ Declarative settings (`src/ts/setting/`):
   - `languageSettingsData.svelte.ts` (`langState`, `languageSettingsItems`)
 
 Components (`src/lib/Setting/`):
+
 - `SettingRenderer.svelte`: derives the context, filters by `checkCondition`, and renders `settingRegistry[item.type]` keyed by `item.id`.
 - `Wrappers/Setting*.svelte`: local state synced with the DB through guarded effects (`UNINITIALIZED` plus `untrack`).
 - `Settings.svelte`: navigation. `SettingsMenuIndex` selects the page.
 
 Pages, by kind:
 
-| Kind | Pages |
-|---|---|
-| Declarative | `AccessibilitySettings`, `AdvancedSettings`, `ChatFormatSettings`, `LanguageSettings` |
-| Hybrid | `DisplaySettings`; `BotSettings` (model, prompt, and other tabs handwritten; the parameters tab renders `allBasicParameterItems`) |
+| Kind        | Pages                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Declarative | `AccessibilitySettings`, `AdvancedSettings`, `ChatFormatSettings`, `LanguageSettings`                                                                                                                                                                                                                                                                                                |
+| Hybrid      | `DisplaySettings`; `BotSettings` (model, prompt, and other tabs handwritten; the parameters tab renders `allBasicParameterItems`)                                                                                                                                                                                                                                                    |
 | Handwritten | `OtherBotSettings` (image generation, TTS, memory/Hypa, backends), `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `SeparateParametersSection`, `ClaudeThinkingSeparateParams`, `HotkeySettings`, `UserSettings`, `CustomGUISettingMenu`, `ThanksPage`, `Communities`, `GlobalLoreBookSettings`, `Display/*`, `Language/TranslatorPresetSettings`, `Model/AuxModelSelectors` |
 
 - `botpreset.svelte`: preset list, select (`changeToPreset`), reorder, copy, import (`importPreset`), export (`downloadPreset`), and diff (`PromptDiffModal`).
 - `lorepreset.svelte`: global lore-book list.
 
 Prompt and parameter editors:
+
 - `UI/PromptDataItem.svelte`: edits one `PromptItem`.
 - `Others/PromptDiffModal.svelte`: diffs the prompt templates of saved presets. Preferences are stored in `db.promptDiffPrefs`.
 - `Others/AllSeperateParameters.svelte`: separate-parameter editor.
 
 Languages (`src/lang/`):
+
 - `index.ts`: `language` (a mutable export) and `changeLanguage(code)`, which merges the locale over a clone of English.
 - `en.ts` `languageEnglish`: the source of truth and the type.
 - `de`, `es`, `ko`, `vi`, `cn`, `zh-Hant`: `DeepPartial` overrides.
 
 ## Flows
+
 - `setDatabase` → `changeLanguage(db.language)`.
 - `Settings.svelte` → page → `SettingRenderer` → wrapper → `setSettingValue` → `DBState.db` → autosave.
 - Preset switch: `changeToPreset(i)` → `saveCurrentPreset` (unless disabled) → set `botPresetsId` → `setPreset`. Also triggered from `hotkey.ts`, `loadout.ts`, and `presetChain` in `sendChat`.
@@ -75,16 +82,19 @@ Languages (`src/lang/`):
   4. Set `langState.changed`, which shows a restart warning.
 
 ## State
+
 - `DBState.db` holds every setting.
 - `botPreset` captures model/provider, prompts, `promptTemplate`, `promptSettings`, sampling parameters, templates, separate models and parameters (unless `doNotChangeSeperateModels`), tools, and fallbacks.
 - `language` is replaced on switch, so components that read it at module initialization keep stale strings.
 - UI stores: `settingsOpen`, `SettingsMenuIndex`, `QuickSettings`, `CustomGUISettingMenuStore`, `easyPanelStore`.
 
 ## Coupling
+
 - Depends on `database.svelte.ts` (types, presets), `getModelInfo`/`LLMFlags`, platform flags, GUI helpers, the translator, and prompt tokenization.
 - `CustomSidebar.svelte` renders arbitrary `SettingItem`s via `getFullSettingsData`, so item `id`s and conditions are part of user data.
 
 ## Invariants
+
 - A new setting needs: a `Database` field, a `setDatabase` default, a `SettingItem` in the right data array (or handwritten UI), and an `en.ts` key.
 - Keep `item.id` values unique and stable. User custom sidebars reference them.
 - Value precedence: `getValue`, then `bindPath`, then `bindKey`. `setSettingValue` creates missing path objects.
@@ -95,6 +105,7 @@ Languages (`src/lang/`):
 - `select` option `labelKey` has no fallback label. Missing locale keys fall back to English only because `changeLanguage` merges.
 
 ## Recipes
+
 - Add a declarative setting:
   1. `Database` + `setDatabase`.
   2. A `SettingItem` in `*SettingsData.ts`.
@@ -109,9 +120,11 @@ Languages (`src/lang/`):
   3. Add the option in `languageSettingsData.svelte.ts` and in the welcome-screen language choices.
 
 ## Tests
+
 - `src/ts/translator/presets.test.ts` (adjacent), `src/lib/UI/GUI/guiRendering.test.ts` (primitives).
 - Not tested: the registry, wrappers, presets, prompt editing, `changeLanguage`.
 
 ## Known Hazards
+
 - `changeLanguage` supports `es`, but the language selector does not offer it.
 - Some accessibility labels are computed from `language` at module load and do not update after a language switch.

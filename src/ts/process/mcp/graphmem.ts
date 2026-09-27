@@ -18,52 +18,55 @@ export class GraphMemClient extends MCPClientLike {
     }
 
     async getToolList(): Promise<MCPTool[]> {
-        return [{
-            name: 'writeMemory',
-            description: 'Write a memory entry to the graph database.',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    name: {
-                        type: 'string',
-                        description: 'The name of the memory entry.'
-                    },
-                    summary: {
-                        type: 'string',
-                        description: 'A brief summary of the memory entry.'
-                    },
-                    connections: {
-                        type: 'array',
-                        items: {
-                            type: 'string',
-                            description: 'Names of related memory entries.'
+        return [
+            {
+                name: "writeMemory",
+                description: "Write a memory entry to the graph database.",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        name: {
+                            type: "string",
+                            description: "The name of the memory entry.",
                         },
-                        description: 'Connections to other memory entries.'
-                    }
-                },
-                required: ['name', 'summary']
-            }
-        }, {
-            name: 'readMemory',
-            description: 'Read a memory entry from the graph database.',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    query: {
-                        type: 'array',
-                        items: {
-                            type: 'string'
+                        summary: {
+                            type: "string",
+                            description: "A brief summary of the memory entry.",
                         },
-                        description: 'The query terms to search for memory entries.'
+                        connections: {
+                            type: "array",
+                            items: {
+                                type: "string",
+                                description: "Names of related memory entries.",
+                            },
+                            description: "Connections to other memory entries.",
+                        },
                     },
-                    search_depth: {
-                        type: 'number',
-                        description: 'The depth of connections to explore in the graph. default is 2.',
-                    }
+                    required: ["name", "summary"],
                 },
-                required: ['query']
-            }
-        }];
+            },
+            {
+                name: "readMemory",
+                description: "Read a memory entry from the graph database.",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        query: {
+                            type: "array",
+                            items: {
+                                type: "string",
+                            },
+                            description: "The query terms to search for memory entries.",
+                        },
+                        search_depth: {
+                            type: "number",
+                            description: "The depth of connections to explore in the graph. default is 2.",
+                        },
+                    },
+                    required: ["query"],
+                },
+            },
+        ];
     }
 
     async callTool(toolName: string, args: any): Promise<RPCToolCallContent[]> {
@@ -76,27 +79,26 @@ export class GraphMemClient extends MCPClientLike {
                     return await this.handleReadMemory(args);
                 }
                 default:
-                    return [{ type: 'text', text: `Unknown tool: ${toolName}` }];
+                    return [{ type: "text", text: `Unknown tool: ${toolName}` }];
             }
         } catch (error: unknown) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-            return [{ type: 'text', text: `Error: ${errorMessage}` }];
+            const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+            return [{ type: "text", text: `Error: ${errorMessage}` }];
         }
     }
 
     private async handleWriteMemory(args: any): Promise<RPCToolCallContent[]> {
-        
         const {
             name,
             summary,
-            connections = []
+            connections = [],
         }: {
             name: string;
             summary: string;
             connections: string[];
         } = args;
-        
-        let graph: GraphIndex[] = []
+
+        let graph: GraphIndex[] = [];
 
         try {
             graph = JSON.parse(getChatVar("graphmem_graph")) as GraphIndex[];
@@ -105,7 +107,7 @@ export class GraphMemClient extends MCPClientLike {
         graph.push({ name, summary, connections });
 
         setChatVar("graphmem_graph", JSON.stringify(graph));
-        return [{ type: 'text', text: `Memory entry "${name}" written successfully.` }];
+        return [{ type: "text", text: `Memory entry "${name}" written successfully.` }];
     }
 
     private async handleReadMemory(args: any): Promise<RPCToolCallContent[]> {
@@ -118,49 +120,48 @@ export class GraphMemClient extends MCPClientLike {
             threshold?: number;
         } = args;
 
-        let graph: GraphIndex[] = []
+        let graph: GraphIndex[] = [];
 
         try {
             graph = JSON.parse(getChatVar("graphmem_graph")) as GraphIndex[];
         } catch (error) {}
 
-        if(!Array.isArray(query) || query.length === 0){
-            return [{ type: 'text', text: `Query must be a non-empty array of strings.` }];
+        if (!Array.isArray(query) || query.length === 0) {
+            return [{ type: "text", text: `Query must be a non-empty array of strings.` }];
         }
 
-        if(!Array.isArray(graph) || graph.length === 0){
-            return [{ type: 'text', text: `No memory entries found in the graph database.` }];
+        if (!Array.isArray(graph) || graph.length === 0) {
+            return [{ type: "text", text: `No memory entries found in the graph database.` }];
         }
 
         const processer = new HypaProcesser();
-        await processer.embedDocuments(graph.map(g => g.name));
+        await processer.embedDocuments(graph.map((g) => g.name));
 
         let results: {
             queryTerm: string;
             entries: GraphIndex[];
         }[] = [];
-        for(let i=0;i<query.length;i++){
-            
+        for (let i = 0; i < query.length; i++) {
             let currentEntries: GraphIndex[] = [];
             let toSearch: string[] = [query[i]];
-            for(let depth = 0; depth < search_depth; depth++){
+            for (let depth = 0; depth < search_depth; depth++) {
                 const newEntries: GraphIndex[] = [];
-                for(const searchTerm of toSearch){
+                for (const searchTerm of toSearch) {
                     const searched = await processer.similaritySearch(searchTerm);
-                    for(const entry of searched){
-                        const found = graph.find(g => g.name === entry);
-                        if(found && !currentEntries.includes(found)){
+                    for (const entry of searched) {
+                        const found = graph.find((g) => g.name === entry);
+                        if (found && !currentEntries.includes(found)) {
                             newEntries.push(found);
                         }
                     }
                 }
                 currentEntries = currentEntries.concat(newEntries);
-                toSearch = newEntries.flatMap(e => e.connections);
+                toSearch = newEntries.flatMap((e) => e.connections);
             }
 
             results.push({ queryTerm: query[i], entries: currentEntries });
         }
 
-        return [{ type: 'text', text: JSON.stringify(results, null, 2) }];
+        return [{ type: "text", text: JSON.stringify(results, null, 2) }];
     }
 }

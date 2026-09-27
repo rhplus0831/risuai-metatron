@@ -28,7 +28,7 @@ Risuai, or Risu for short, is a cross platform AI chatting software / web applic
 - **Plugins**: Add your features and providers, and simply share.
 - **Regex Script**: Modify model's output by regex, to make a custom GUI and others
 - **Powerful Translators**: Automatically translate the input/output, so you can roleplay without knowing model's language.
-- **Lorebook**: Also known as world infos or memory book, which can make character memorize more. 
+- **Lorebook**: Also known as world infos or memory book, which can make character memorize more.
 - **Themes**: Choose it from 3 themes, Classic, WaifuLike, WaifuCut.
 - **Powerful Prompting**: Change the prompting order easily, Impersonate inside prompts, Use conditions, variables... and more!
 - **Customizable, Friendly UI**: Great Accessibility and mobile friendly
@@ -58,6 +58,7 @@ You can get detailed information on https://github.com/kwaroran/Risuai/wiki (Wor
 You can also run Risuai using Docker. This method is particularly useful for web hosting.
 
 1. Run the Docker container:
+
    ```
    curl -L https://raw.githubusercontent.com/kwaroran/Risuai/refs/heads/main/docker-compose.yml | docker compose -f - up -d
    ```

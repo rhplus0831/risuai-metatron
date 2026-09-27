@@ -1,10 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("src/ts/util", () => ({
-    encryptBuffer: async (data: Uint8Array) =>
-        data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
-    decryptBuffer: async (data: Uint8Array) =>
-        data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+    encryptBuffer: async (data: Uint8Array) => data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+    decryptBuffer: async (data: Uint8Array) => data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
 }));
 
 vi.mock("src/ts/rpack/rpack_js.js", () => ({
@@ -110,7 +108,7 @@ describe("translator preset file codec", () => {
         expect(decoded).toEqual(preset);
         expect(() => JSON.parse(new TextDecoder().decode(encoded))).toThrow();
         expect(getTranslatorPresetDownloadName("My/Translator:Preset")).toBe(
-            "translator_preset_My_Translator_Preset.risutl"
+            "translator_preset_My_Translator_Preset.risutl",
         );
     });
 
@@ -124,12 +122,10 @@ describe("translator preset file codec", () => {
                     prompt: "Plain JSON prompt",
                     maxResponse: 111,
                 },
-            })
+            }),
         );
 
-        await expect(decodeTranslatorPresetFile(plainJsonPayload)).rejects.toThrow(
-            "Invalid translator preset file."
-        );
+        await expect(decodeTranslatorPresetFile(plainJsonPayload)).rejects.toThrow("Invalid translator preset file.");
     });
 
     it("rejects non-translator preset payloads", async () => {
@@ -143,11 +139,9 @@ describe("translator preset file codec", () => {
                         summarizationPrompt: "not a translator preset",
                     },
                 },
-            })
+            }),
         );
 
-        await expect(decodeTranslatorPresetFile(hypaLikePayload)).rejects.toThrow(
-            "Invalid translator preset file."
-        );
+        await expect(decodeTranslatorPresetFile(hypaLikePayload)).rejects.toThrow("Invalid translator preset file.");
     });
 });

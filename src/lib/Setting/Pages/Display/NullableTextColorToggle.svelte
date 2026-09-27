@@ -1,11 +1,11 @@
 <script lang="ts">
-    import { language } from 'src/lang';
-    import { DBState } from 'src/ts/stores.svelte';
-    import Check from 'src/lib/UI/GUI/CheckInput.svelte';
+    import { language } from "src/lang";
+    import { DBState } from "src/ts/stores.svelte";
+    import Check from "src/lib/UI/GUI/CheckInput.svelte";
 
     interface Props {
-        field: 'textScreenColor' | 'textScreenBorder';
-        labelKey: 'textBackgrounds' | 'textScreenBorder';
+        field: "textScreenColor" | "textScreenBorder";
+        labelKey: "textBackgrounds" | "textScreenBorder";
         defaultColor: string;
     }
 

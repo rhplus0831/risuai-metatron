@@ -1,11 +1,13 @@
 # App Shell
 
 ## Scope
+
 - Owns: boot sequence, top-level screen selection, global stores, platform flags, hotkeys, DOM observers, `Mutex`.
 - Paths: `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/ts/{bootstrap,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
 - Not here: DB shape and migrations → `persistence.md`. The save loop and `globalFetch` → `global-api.md`. Chat UI below `ChatScreen` → `ui-theming.md`.
 
 ## Files
+
 - `src/main.ts`: entry. Imports `./ts/polyfill` and the database side effects, then `preLoadCheck()`, `mount(App)`, `loadData()` (not awaited), `initHotkey()`, and removes `#preloading`.
 - `src/preload.ts` `preLoadCheck`: pre-mount step that sets `localStorage.mainpage`. On `isWeb` it registers `beforeunload`.
 - `src/App.svelte`: the "router" (ordered `{#if}` chain), plus drag/drop import, overlays (alerts, popups, modals), and keep-alive audio.
@@ -29,7 +31,9 @@
 - `src/lib/UI/Title.svelte`: seasonal logo and mini-game. Only used by MainMenu.
 
 ## Flows
+
 Boot:
+
 1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`.
 2. `main.ts` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
 3. `bootstrap.ts:loadData` loads the database: `forageStorage.Init()` (`AutoStorage`), local load with backup fallback, `registerSw`, then `characterURLImport`.
@@ -42,6 +46,7 @@ Boot:
    6. Observers, ID assignment, `registerModelDynamic`, `saveDb()` (exactly once), `moduleUpdate`, `cleanLegacyAccountData`. There is no boot-time asset cleanup: orphaned `assets/*` and `remotes/*` files are never purged automatically.
 
 Screen selection. `App.svelte` checks these in order:
+
 1. Legal/config and April Fools branches.
 2. Loading.
 3. `CustomGUISettingMenuStore`.
@@ -51,12 +56,15 @@ Screen selection. `App.svelte` checks these in order:
 7. Otherwise `Sidebar` + `ChatScreen`.
 
 Inside `DefaultChatScreen.svelte`:
+
 - `$selectedCharID < 0 && $PlaygroundStore === 0` → `MainMenu`.
 - `$PlaygroundStore > 0` → lazy `PlaygroundMenu`.
 - Otherwise the chat.
 
 ## State
+
 All of these live in `src/ts/stores.svelte.ts`.
+
 - DB: `DBState` = `$state({db})`, initially an empty cast. `LoadingStatusState`.
 - Navigation:
   - `selectedCharID`: `-1` means home.
@@ -74,11 +82,13 @@ All of these live in `src/ts/stores.svelte.ts`.
 - Root `$effect`: mirrors `selectedCharID` into `selIdState` and reruns `moduleUpdate` when module, chat, or background dependencies change.
 
 ## Coupling
+
 - `stores.svelte.ts` is imported almost everywhere, with the highest fan-out in the repo. Changing a store's semantics affects the UI, process, plugins, and sync code.
 - `bootstrap.ts` depends on storage, `globalApi.svelte.ts`, plugins, model registry, modules, and observers.
 - Platform flags are consumed by storage, network, drive, cards, parser, translator, and settings.
 
 ## Invariants
+
 - Do not flip `loadedStore` to true before `setDatabase`, `checkNewFormat`, and theme setup finish. `App` assumes `DBState.db` is normalized after that point. When `loadData` fails it only calls `alertError`, and the loading screen stays up.
 - `selectedCharID === -1` is the home sentinel. Components index `DBState.db.characters[$selectedCharID]` whenever it is nonnegative.
 - Call `saveDb()` only once, from `loadData`. It installs effects and runs an infinite loop.
@@ -91,6 +101,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 - `safeStructuredClone` is a global installed by `polyfill.ts`, which must stay the first import in `main.ts`.
 
 ## Recipes
+
 - Add a top-level screen or modal:
   1. Add a store in `stores.svelte.ts`.
   2. Add its branch or overlay in `App.svelte`, respecting the branch order.
@@ -108,10 +119,12 @@ All of these live in `src/ts/stores.svelte.ts`.
 - Add a hotkey: `defaulthotkeys.ts`, `hotkey.ts:initHotkey`, `database.svelte.ts:setDatabase` (merge behavior).
 
 ## Tests
+
 - None cover boot, screen precedence, platform detection, hotkeys, observers, or `Mutex`.
 - Some tests mock `stores.svelte` and `platform` (parser tests, `scriptings.test.ts`, `requests.responses.test.ts`). They exercise consumers, not these modules.
 
 ## Known Hazards
+
 - `startObserveDom` creates a `MutationObserver` it never uses, and it polls forever with no cleanup.
 - `isInStandaloneMode` has no consumers. `bootstrap.ts` recomputes standalone mode locally before calling `navigator.storage.persist`.
 - `src/types.d.ts` and `src/vite-env.d.ts` both declare `Buffer`, `safeStructuredClone`, and `userScriptFetch`.
