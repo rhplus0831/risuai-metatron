@@ -897,7 +897,6 @@ async function importCharacterCardSpec<T extends boolean = false>(
         triggerscript: data?.extensions?.risuai?.triggerscript ?? [],
         private: data?.extensions?.risuai?.private ?? false,
         additionalText: data?.extensions?.risuai?.additionalText ?? "",
-        virtualscript: "", //removed dude to security issue
         extentions: ext ?? {},
         largePortrait: data?.extensions?.risuai?.largePortrait ?? !data?.extensions?.risuai,
         lorePlus: data?.extensions?.risuai?.lorePlus ?? false,
@@ -1119,7 +1118,6 @@ function createBaseV2(char: character) {
                     license: char.license,
                     triggerscript: char.triggerscript,
                     additionalText: char.additionalText,
-                    virtualscript: "", //removed dude to security issue
                     largePortrait: char.largePortrait,
                     lorePlus: char.lorePlus,
                     inlayViewScreen: char.inlayViewScreen,
@@ -1562,7 +1560,6 @@ export function createBaseV3(char: character) {
                     license: char.license,
                     triggerscript: char.triggerscript,
                     additionalText: char.additionalText,
-                    virtualscript: "", //removed dude to security issue
                     largePortrait: char.largePortrait,
                     lorePlus: char.lorePlus,
                     inlayViewScreen: char.inlayViewScreen,
@@ -1787,7 +1784,6 @@ type CharacterCardV2Risu = {
                 triggerscript?: triggerscript[];
                 private?: boolean;
                 additionalText?: string;
-                virtualscript?: string;
                 largePortrait?: boolean;
                 lorePlus?: boolean;
                 inlayViewScreen?: boolean;

@@ -114,7 +114,6 @@ export const languageChineseTraditional = {
             "\n - `{{bg::<asset name>}}`：將指定資源顯示為背景圖片",
         additionalText:
             "系統會將內容依兩個換行分段，並根據目前對話進行相似度搜尋，選出最多 3 個最相關的段落加入角色描述。可在此放置較長內容",
-        charjs: "會隨角色一起執行的 JavaScript 程式碼。可參考 `https://github.com/kwaroran/Risuai/blob/main/src/etc/example-char.js`。基於安全性，目前不建議使用；匯出時也不會包含此內容",
         romanizer:
             "Romanizer 會在送出資料時，將非拉丁文字轉寫為拉丁字母，以減少 Token 使用量。這可能使模型輸出與原始文字不同。若對話本身使用拉丁字元，不建議啟用",
         inlayImages: "啟用後，可將圖片內嵌至對話；若 AI 支援圖片輸入，也能讀取這些圖片",
@@ -1020,7 +1019,6 @@ export const languageChineseTraditional = {
     defaultPrompt: "預設提示詞",
     additionalText: "額外描述",
     seed: "Seed",
-    charjs: "CharacterJS",
     depthPrompt: "深度插入提示詞",
     largePortrait: "直式大圖",
     lorePlus: "Lorebook+",

@@ -107,7 +107,6 @@ export const languageGerman = {
             "Ein Markdown/HTML-Datenblock, der im Backend der Chat-Ausgabe hinzugefügt wird.\n\n Sie können auch zusätzliche Assets verwenden. Zum Beispiel können Sie `{{audio::<Asset-Name}}` für Hintergrundmusik verwenden.\n\n Zusätzlich können Sie dies mit weiteren Assets verwenden:\n - `{{bg::<Asset-Name>}}`: Das Hintergrundbild als Asset einfügen",
         additionalText:
             "Der Text, der nur dann zur Charakterbeschreibung hinzugefügt wird, wenn die KI dies für erforderlich hält. Sie können hier lange Texte einfügen. Trennen Sie diese durch doppelte Zeilenumbrüche.",
-        charjs: "Ein Javascript-Code, der mit dem Charakter ausgeführt wird. Sie können zum Beispiel `https://github.com/kwaroran/Risuai/blob/main/src/etc/example-char.js` überprüfen. ZURZEIT AUS SICHERHEITSGRÜNDEN NICHT EMPFOHLEN. BEIM EXPORTIEREN WIRD DIES NICHT ENTHALTEN SEIN.",
         romanizer:
             "Romanizer ist ein Plugin, das nicht-lateinische Zeichen in lateinische Zeichen umwandelt, um Tokens zu sparen, wenn Daten angefordert werden, die nicht-lateinische Zeichen enthalten. Dies kann zu einer anderen Ausgabe als beim ursprünglichen Modell führen. Es wird nicht empfohlen, dieses Plugin zu verwenden, wenn Sie im Chat lateinische Zeichen verwenden.",
         inlayImages:
@@ -994,7 +993,6 @@ export const languageGerman = {
     defaultPrompt: "Standardanweisung",
     additionalText: "Zusätzliche Beschreibung",
     seed: "Seed",
-    charjs: "CharacterJS",
     depthPrompt: "Tiefenanweisung",
     largePortrait: "Porträt",
     lorePlus: "LoreBook+",

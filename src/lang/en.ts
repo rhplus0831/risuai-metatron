@@ -124,7 +124,6 @@ export const languageEnglish = {
             "\n - `{{bg::<asset name>}}`: inject the background as asset",
         additionalText:
             "The text that would be added to Character Description only when AI thinks it's needed, so you can put long texts here. Separate with double newlines.",
-        charjs: "A javascript code that would run with character. for example, you can check `https://github.com/kwaroran/Risuai/blob/main/src/etc/example-char.js` CURRENTLY NOT RECOMMENDED FOR USE DUE TO SECURITY REASONS. EXPORTING WOULD NOT INCLUDE THIS.",
         romanizer:
             "Romanizer is a plugin that converts non-roman characters to roman characters to reduce tokens when using non-roman characters while requesting data. This can result different output from the original model. It is not recommended to use this plugin when using roman characters on chat.",
         inlayImages: "If enabled, images could be inlayed to the chat and AIs can see it if they support it.",
@@ -1070,7 +1069,6 @@ export const languageEnglish = {
     defaultPrompt: "Default Prompt",
     additionalText: "Additional Description",
     seed: "Seed",
-    charjs: "CharacterJS",
     depthPrompt: "Depth Prompt",
     largePortrait: "Portrait",
     lorePlus: "LoreBook+",

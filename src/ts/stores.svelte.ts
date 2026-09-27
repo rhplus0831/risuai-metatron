@@ -84,7 +84,6 @@ export function createSimpleCharacter(char: character | groupChat) {
         customscript: char.customscript,
         chaId: char.chaId,
         additionalAssets: char.additionalAssets,
-        virtualscript: char.virtualscript,
         emotionImages: char.emotionImages,
         triggerscript: char.triggerscript,
     };

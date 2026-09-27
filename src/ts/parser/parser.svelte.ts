@@ -736,7 +736,6 @@ export interface simpleCharacterArgument {
     additionalAssets?: [string, string, string][];
     customscript: customscript[];
     chaId: string;
-    virtualscript?: string;
     emotionImages?: [string, string][];
     triggerscript?: triggerscript[];
 }

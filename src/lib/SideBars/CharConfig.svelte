@@ -1004,15 +1004,6 @@
             bind:value={(DBState.db.characters[$selectedCharID] as character).triggerscript}
             lowLevelAble={DBState.db.characters[$selectedCharID].lowLevelAccess}
         />
-
-        {#if DBState.db.characters[$selectedCharID].virtualscript || DBState.db.showUnrecommended}
-            <span class="text-textcolor mt-4">{language.charjs} <Help key="charjs" unrecommended /></span>
-            <TextAreaInput
-                margin="both"
-                autocomplete="off"
-                bind:value={DBState.db.characters[$selectedCharID].virtualscript}
-            ></TextAreaInput>
-        {/if}
     {/if}
 {:else if $CharConfigSubMenu === 6}
     {#if DBState.db.characters[$selectedCharID].license !== "CC BY-NC-SA 4.0" && DBState.db.characters[$selectedCharID].license !== "CC BY-SA 4.0" && DBState.db.characters[$selectedCharID].license !== "CC BY-ND 4.0" && DBState.db.characters[$selectedCharID].license !== "CC BY-NC-ND 4.0"}

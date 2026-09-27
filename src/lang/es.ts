@@ -101,7 +101,6 @@ export const languageSpanish = {
             "Datos de Markdown/HTML que se inyectarán en el fondo de la pantalla de chat.\n\n También puedes usar activos adicionales. por ejemplo, puedes usar `{{audio::<nombre del activo}}` para música de fondo.\n\n Además, puedes usar estos con activos adicionales:\n - `{{bg::<nombre del activo>}}`: inyecta el fondo como activo",
         additionalText:
             "El texto que se agregará a la Descripción del Personaje solo cuando la IA crea que es necesario, por lo que puedes poner textos largos aquí. Sepáralo con doble salto de línea.",
-        charjs: "Un código JavaScript que se ejecutará con el personaje. Por ejemplo, puedes consultar `https://github.com/kwaroran/Risuai/blob/main/src/etc/example-char.js` ACTUALMENTE NO SE RECOMIENDA USAR DEBIDO A PROBLEMAS DE SEGURIDAD. EXPORTAR NO INCLUIRÁ ESTO.",
         romanizer:
             "Romanizador es un complemento que convierte caracteres no romanos a caracteres romanos para reducir tokens al usar caracteres no romanos al solicitar datos. Esto puede resultar en una respuesta diferente del modelo original. No se recomienda usar este complemento al usar caracteres romanos en el chat.",
         inlayImages:
@@ -981,7 +980,6 @@ export const languageSpanish = {
     defaultPrompt: "Prompt Predeterminado",
     additionalText: "Descripción Adicional",
     seed: "Semilla",
-    charjs: "CharacterJS",
     depthPrompt: "Prompt de Profundidad",
     largePortrait: "Retrato",
     lorePlus: "LoreBook+",

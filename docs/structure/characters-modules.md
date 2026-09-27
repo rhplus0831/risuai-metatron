@@ -122,7 +122,7 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - Asset references in cards and modules are storage IDs or protocol URIs, never local filesystem paths.
 - PNG text size is capped at 5 MiB. CRC is checked only in non-stream reads.
 - `createBaseV2` intentionally omits emotions and additional assets. V3 is the full-fidelity path.
-- The exported `virtualscript` is intentionally blank (security). Cards and modules with low-level access require confirmation on import.
+- Cards and modules with low-level access require confirmation on import.
 - The `getModules` cache is keyed by joined IDs. After editing module contents in place, call `refreshModules` or `moduleUpdate`.
 - `getModuleTriggers` mutates the triggers' `lowLevelAccess`. Aggregate order follows the DB module order.
 - Keep `character.modules`, `chat.modules`, `enabledModules`, and `moduleIntergration` (which matches namespaces) distinct.

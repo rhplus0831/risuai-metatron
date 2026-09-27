@@ -276,7 +276,6 @@ export async function translateHTML(
         alwaysExistChar = {
             type: "simple",
             customscript: [],
-            virtualscript: null,
             emotionImages: [],
             chaId: "simple",
         };

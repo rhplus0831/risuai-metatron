@@ -92,7 +92,6 @@ export const languageKorean = {
         backgroundHTML:
             "채팅 화면의 배경에 삽입 될 마크다운/HTML 데이터입니다.\n\n추가 에셋을 사용할 수도 있습니다. 예를 들어, 배경 음악에 `{{audio::<에셋 이름>}}`을 사용할 수 있습니다.\n\n또한 다음과 같은 추가 에셋을 사용할 수 있습니다:\n - `{{bg::<에셋 이름>}}`: 에셋으로 배경을 삽입합니다.",
         additionalText: "AI가 필요한 경우에만 캐릭터 설명에 추가 될 텍스트입니다. 두 개의 새 줄로 구분합니다.",
-        charjs: "캐릭터와 함께 실행될 자바스크립트 코드입니다. 예를 들어, `https://github.com/kwaroran/Risuai/blob/main/src/etc/example-char.js`를 확인할 수 있습니다. 현재 보안 문제로 인해 사용을 권장하지 않습니다. 엑스포트에는 포함되지 않습니다.",
         romanizer:
             "로마자 변환기는 비로마자 문자를 로마자 문자로 변환하여 데이터 요청 시 비로마자 문자를 사용할 때 토큰을 줄이는 데 사용되는 플러그인입니다. 이로 인해 원래 모델과 다른 출력이 나올 수 있습니다. 채팅에서 로마자 문자를 사용할 때 이 플러그인을 사용하는 것은 권장되지 않습니다.",
         inlayImages: "활성화하면 이미지를 채팅에 삽입할 수 있으며, 지원하는 경우 AI가 볼 수 있습니다.",
@@ -979,7 +978,6 @@ export const languageKorean = {
     defaultPrompt: "기본 프롬프트",
     additionalText: "추가 디스크립션",
     seed: "시드",
-    charjs: "캐릭터JS",
     depthPrompt: "깊이 프롬프트",
     largePortrait: "세로 이미지",
     lorePlus: "로어북+",

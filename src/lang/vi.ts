@@ -99,7 +99,6 @@ export const languageVietnamese = {
             "Dữ liệu Markdown/HTML sẽ được đưa vào nền màn hình trò chuyện.\n\n bạn cũng có thể sử dụng tài sản bổ sung. ví dụ: bạn có thể sử dụng `{{audio::<asset name}}` cho nhạc nền.\n\n Ngoài ra, bạn có thể sử dụng những thứ này với các nội dung bổ sung:\n - `{{bg::<asset name>}}`: thêm nền làm nội dung",
         additionalText:
             "Văn bản sẽ được thêm vào Mô tả nhân vật chỉ khi AI cho rằng cần thiết, vì vậy bạn có thể đặt văn bản dài ở đây. Phân tách bằng hai dòng mới.",
-        charjs: "Mã javascript sẽ chạy cùng với nhân vật. Ví dụ, bạn có thể kiểm tra `https://github.com/kwaroran/Risuai/blob/main/src/etc/example-char.js`. HIỆN TẠI KHÔNG ĐƯỢC KHUYẾN NGHỊ SỬ DỤNG VÌ LÝ DO BẢO MẬT. VIỆC XUẤT SẼ KHÔNG BAO GỒM MÃ NÀY.",
         romanizer:
             "Romanizer là một plugin chuyển đổi các ký tự không phải la tinh sang ký tự la tinh để giảm token khi sử dụng các ký tự không phải la tinh trong khi yêu cầu dữ liệu. Điều này có thể dẫn đến kết quả khác với mô hình gốc. Không nên sử dụng plugin này khi sử dụng các ký tự la tinh trong cuộc trò chuyện.",
         inlayImages:
@@ -975,7 +974,6 @@ export const languageVietnamese = {
     defaultPrompt: "Lời nhắc mặc định",
     additionalText: "Mô tả bổ sung",
     seed: "Hạt giống (Seed)",
-    charjs: "CharacterJS",
     depthPrompt: "Lời nhắc độ sâu",
     largePortrait: "Chân dung",
     lorePlus: "Sách truyền thuyết+",

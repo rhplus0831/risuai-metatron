@@ -85,7 +85,6 @@ export const languageChinese = {
             "将 Markdown/HTML 注入到聊天画面的背景中。\n\n你也可以使用额外资源。例如，你可以使用 {{audio::<资源名称}} 作为背景音乐。\n\n此外，你还可以与额外资源搭配使用以下格式：\n - {{bg::<资源名称>}}：将资源设为背景。",
         additionalText:
             "只有当 AI 认为有必要时，才会将该段文本添加到角色描述中。你可以在此处放置较长的文本。使用双换行进内联容分隔。",
-        charjs: "这是一段会与角色一同运行的 JavaScript。详情请查看：https://github.com/kwaroran/RisuAI/blob/main/src/etc/example-char.js\n**出于安全原因，目前不建议使用。这些代码不会被包含在导出中。**",
         romanizer:
             "Romanizer 是一个将非罗马字母转换为罗马字母的插件，用于减少请求数据时的 Token。这可能会导致输出结果与原始模型不同。如果已在聊天中使用罗马字母，不建议激活。",
         inlayImages: "激活后，图片可嵌入聊天中，并且支持此功能的 AI 将能够看到它们。",
@@ -922,7 +921,6 @@ export const languageChinese = {
     defaultPrompt: "默认提示词",
     additionalText: "额外提示",
     seed: "Seed",
-    charjs: "角色 JavaScript",
     depthPrompt: "提示词深度",
     largePortrait: "肖像",
     lorePlus: "Lorebook+",

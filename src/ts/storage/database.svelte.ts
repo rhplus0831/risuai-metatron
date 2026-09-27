@@ -1461,7 +1461,6 @@ export interface character {
         /** Response format. Falls back to 'mp3'. */
         format?: "mp3" | "opus" | "aac" | "flac" | "wav" | "pcm";
     };
-    virtualscript?: string;
     scriptstate?: { [key: string]: string | number | boolean };
     depth_prompt?: { depth: number; prompt: string };
     extentions?: { [key: string]: any };
@@ -1539,7 +1538,6 @@ export interface groupChat {
     reloadKeys?: number;
     backgroundCSS?: string;
     oneAtTime?: boolean;
-    virtualscript?: string;
     lorePlus?: boolean;
     trashTime?: number;
     nickname?: string;
