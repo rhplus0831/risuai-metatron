@@ -40,7 +40,7 @@ Boot:
    4. `MobileGUI` when `betaMobileGUI && innerWidth <= 800`.
    5. `await makeColdData`.
    6. `loadedStore.set(true)` and `selectedCharID.set(-1)`.
-   7. Observers, ID assignment, `registerModelDynamic`, `saveDb()` (exactly once), `moduleUpdate`, storage cleanup, TOS.
+   7. Observers, ID assignment, `registerModelDynamic`, `saveDb()` (exactly once), `moduleUpdate`, storage cleanup (`cleanChunks`, `cleanLegacyAccountData`).
 
 Screen selection. `App.svelte` checks these in order:
 1. Legal/config and April Fools branches.
@@ -63,7 +63,7 @@ All of these live in `src/ts/stores.svelte.ts`.
   - `selectedCharID`: `-1` means home.
   - `settingsOpen`, `SettingsMenuIndex`.
   - `MobileGUI`, `MobileGUIStack`, `MobileSideBar`, `sideBarStore`, `DynamicGUI`.
-  - `PlaygroundStore`, `OpenRealmStore`, `RealmInitialOpenChar`, `ShowRealmFrameStore`.
+  - `PlaygroundStore`, `OpenRealmStore`, `RealmInitialOpenChar`.
   - `CharConfigSubMenu`, `botMakerMode`.
 - Reload signals:
   - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetScriptCache`.

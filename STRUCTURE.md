@@ -134,7 +134,7 @@ The first matching row wins. Scan from the top.
 | `src/ts/process/tts*.ts`, `src/ts/process/stableDiff.ts`, `src/ts/translator/`, `src/ts/media/`, `src/ts/voice.ts`, `src/ts/3d/`, `src/lib/Playground/` (the remaining tools), `src/lib/UI/{3DLoader,Googli}.svelte`, `src/lib/Setting/Pages/Language/TranslatorPresetSettings.svelte`, `src/lib/Setting/Pages/Model/AuxModelSelectors.svelte` | media-aux |
 | `src/ts/process/` (everything else: `index.svelte.ts`, `prompt.ts`, `lorebook.svelte.ts`, `templates/`, `files/`, `command.ts`, ...) | chat-pipeline |
 | `src/ts/cbs.ts`, `src/ts/parser/`, `src/ts/gui/highlight.ts`, `src/ts/gui/codearea/`, `src/lib/ChatScreens/PartialEditController.svelte`, `src/lib/Others/MonacoEditor.svelte` | cbs-rendering |
-| `src/ts/drive/`, `src/ts/sync/`, `src/ts/realm.ts`, `src/lib/UI/Realm/`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte` | backup-sync-hub |
+| `src/ts/drive/`, `src/ts/sync/`, `src/lib/UI/Realm/`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte` | backup-sync-hub |
 | `src/ts/globalApi.svelte.ts`, `src/ts/util.ts`, `src/ts/util/`, `src/ts/alert.ts`, `src/ts/network/`, `src/ts/dragTypes.ts`, `src/ts/sourcemap.ts`, `src/ts/iris.ts`, `src/ts/licenses.ts`, `src/lib/Others/AlertComp.svelte`, `src/lib/Others/IrisModal.svelte` | global-api |
 | `src/ts/setting/`, `src/lib/Setting/` (the rest), `src/lang/`, `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/{PromptDiffModal,AllSeperateParameters,QuickSettingsGUI}.svelte`, `src/lib/Others/ProTools/` | settings-i18n |
 | `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/ts/bootstrap.ts`, `src/ts/stores.svelte.ts`, `src/ts/platform.ts`, `src/ts/polyfill.ts`, `src/ts/hotkey.ts`, `src/ts/defaulthotkeys.ts`, `src/ts/observer.svelte.ts`, `src/ts/mutex.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte` | app-shell |
@@ -171,7 +171,7 @@ targeted path to read them.
 | Cold storage | Old chats/characters/plugin storage offloaded out of the DB and restored on open | persistence |
 | SupaMemory / HypaV2 / HypaV3 / Hanurai | Long-term memory and summarization algorithms | memory |
 | Aux model / submodel | Secondary model for memory/emotion/translate/`otherAx`, selected via `seperateModels` | llm-requests |
-| Realm / Hub | Card sharing service (`hubURL`, `realm.risuai.net`); Node proxies it via `/hub-proxy` | backup-sync-hub |
+| Realm / Hub | Card browse and download service (`hubURL`, `realm.risuai.net`); Node proxies it via `/hub-proxy` (GET only) | backup-sync-hub |
 | Iris | Built-in assistant modal using the RisuAccess MCP tools | global-api |
 | Playground | Tool screens selected by `PlaygroundStore` (tokenizer, Jinja, subtitles, ...) | media-aux |
 
@@ -183,7 +183,7 @@ Do not extend these without first confirming intent.
 - `src/lib/UI/GUI/SyntaxHighlightedTextarea.svelte` and `src/lib/Playground/PlaygroundRegex.svelte`:
   0-byte files.
 - `src/lib/UI/3DLoader.svelte`, `src/ts/3d/threeload.ts`, `src/ts/voice.ts`,
-  `src/lib/UI/Googli.svelte`, `src/lib/UI/Realm/RealmUpload.svelte`, `src/etc/patchNote.ts`: no
+  `src/lib/UI/Googli.svelte`, `src/etc/patchNote.ts`: no
   importers.
 - `src/ts/gui/codearea/cbsMonaco.ts`: `registerCBSMonaco` is empty. CBS highlighting is
   `src/ts/gui/highlight.ts`.

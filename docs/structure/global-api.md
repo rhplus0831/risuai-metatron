@@ -81,8 +81,7 @@ Other files:
 - `src/ts/alert.ts`:
   - `alertData` (discriminated `type`).
   - `alertNormal`, `alertError`, `alertConfirm`, `alertSelect`, `alertInput`.
-  - `alertCardExport`.
-  - `alertTOS`: localStorage key `tos4`.
+  - `alertCardExport`: character export only (V3 or V2).
   - `alertRequestData`, `alertRequestLogs`, `alertGenerationInfoStore`.
   - The real store is `stores.svelte.ts:alertStore`.
 - `src/lib/Others/AlertComp.svelte`: renders every alert type and resolves each by writing `type: 'none'` back. Translates stack traces with `sourcemap.ts:translateStackTrace`.
@@ -152,5 +151,4 @@ Alerts:
 
 ## Known Hazards
 - `addFetchLog` always returns 0, and streamed log piping assumes the newest entry is at index 0. Concurrent streams can attach response text to the wrong log.
-- `alertTOS` Accept/Reject buttons render only when `VITE_RISU_LEGAL_CONFIGURED` is set. Otherwise the awaiting call never resolves.
 - The client `isLocalNetworkHost` accepts bare single-label hosts, but the server's version does not. A Node proxy job can be rejected, and the request then falls back to unrestricted `/proxy2`.

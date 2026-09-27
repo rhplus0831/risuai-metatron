@@ -1,7 +1,7 @@
 <script lang="ts">
-    import { BookIcon, FlagIcon, ImageIcon, PaperclipIcon, SmileIcon, TrashIcon } from "@lucide/svelte";
+    import { BookIcon, ImageIcon, PaperclipIcon, SmileIcon } from "@lucide/svelte";
     import { language } from "src/lang";
-    import { alertConfirm, alertInput, alertNormal } from "src/ts/alert";
+    import { alertNormal } from "src/ts/alert";
     import { hubURL, type hubType, downloadRisuHub, getRealmInfo } from "src/ts/characterCards";
     
     import { DBState } from 'src/ts/stores.svelte';
@@ -78,41 +78,6 @@
         </div>
 
         <div class="flex flex-row-reverse gap-2">
-            <button class="text-textcolor2 hover:text-red-500" onclick={(async (e) => {
-                e.stopPropagation()
-                const conf = await alertConfirm('Report this character?')
-                if(conf){
-                    const report = await alertInput('Write a report text that would be sent to the admin (for copywrite issues, use email)')
-                    const da = await fetch(hubURL + '/hub/report', {
-                        method: "POST",
-                        body: JSON.stringify({
-                            id: openedData.id,
-                            report: report
-                        })
-                    })
-                    alertNormal(await da.text())
-                }
-            })}>
-                <FlagIcon />
-            </button>
-            {#if (DBState.db.account?.token?.split('-') ?? [])[1] === openedData.creator}
-                <button class="text-textcolor2 hover:text-red-500" onclick={(async (e) => {
-                    e.stopPropagation()
-                    const conf = await alertConfirm('Do you want to remove this character from Realm?')
-                    if(conf){
-                        const da = await fetch(hubURL + '/hub/remove', {
-                            method: "POST",
-                            body: JSON.stringify({
-                                id: openedData.id,
-                                token: DBState.db.account?.token
-                            })
-                        })
-                        alertNormal(await da.text())
-                    }
-                })}>
-                    <TrashIcon />
-                </button>
-            {/if}
             <button class="text-textcolor2 hover:text-green-500" onclick={(async (e) => {
                 e.stopPropagation()
                 await navigator.clipboard.writeText(`https://realm.risuai.net/character/${openedData.id}`)

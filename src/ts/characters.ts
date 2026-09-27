@@ -45,7 +45,6 @@ export function createNewGroup(){
         firstMsgIndex: -1,
         characterTalks: [],
         characterActive: [],
-        realmId: ''
     })
     checkCharOrder()
     return DBState.db.characters.length - 1

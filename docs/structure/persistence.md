@@ -40,7 +40,7 @@
   - `migratePluginStorageToColdStorage`.
 - `src/ts/process/coldstorageData.ts`: pure helpers.
   - `coldStorageHeader`: the pointer prefix.
-  - `listColdDataKeysFromDb`, `isColdStorageBackupData`, `replaceColdStoragePayloadResources`.
+  - `listColdDataKeysFromDb`, `isColdStorageBackupData`.
 - `src/ts/chatLoadPages.ts`: `normalizeChatLoadPages` (defaults: 30 initial pages, 15 additional).
 
 ## Flows
@@ -87,7 +87,7 @@ Cold storage:
   - characters, prompts and templates,
   - provider keys and URLs, model/memory/translator/image/TTS settings,
   - `botPresets` + `botPresetsId`, `modules` + `enabledModules`, `personas` + `selectedPersona`, `plugins` + `pluginCustomStorage`, `loadouts`,
-  - `account` (legacy, kept in the type because old saves carry it), `coldstorage`, `enableRemoteSaving`, `characterOrder`, `globalChatVariables`, `hotkeys`.
+  - `coldstorage`, `enableRemoteSaving`, `characterOrder`, `globalChatVariables`, `hotkeys`.
 - `character | groupChat`: groups have `type:'group'` and member `characters: string[]`. Both own `chats`, `chatPage`, `chaId`, and optional `coldstorage`.
 - `Chat`:
   - `message`, `note`, `localLore`, `scriptstate` (keys prefixed with `$`), `modules`, `bindedPersona`, `fmIndex`, `id`,
@@ -111,7 +111,7 @@ Cold storage:
   - `DefaultChatScreen.svelte`: `preLoadChat`.
 
 ## Invariants
-- Every decoded or imported DB must pass through `setDatabase`. Initialize nested parents before assigning children (`??=`).
+- Every decoded or imported DB must pass through `setDatabase`. It also deletes the legacy Risu Account `account` token. Initialize nested parents before assigning children (`??=`).
 - `RisuSaveEncoder` serializes root fields by exclusion. If you add a new excluded collection, you must also add its encoder block, a `RisuSaveDecoder` case, a `toSaveType` field, and `saveDb` watchers. Otherwise the collection silently disappears.
 - There is no chat-granular block. A chat change rewrites its whole character block.
 - Only the selected character is tracked. When mutating other characters, set `requiresFullEncoderReload.state = true`. Imports, cold eviction, and sync all do this or reselect.

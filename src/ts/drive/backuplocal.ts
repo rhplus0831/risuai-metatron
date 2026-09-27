@@ -2,8 +2,7 @@ import { alertError, alertNormal, alertStore, alertWait, alertMd, alertConfirm }
 import { LocalWriter, forageStorage, requiresFullEncoderReload } from "../globalApi.svelte";
 import { decodeRisuSave, encodeRisuSaveLegacy } from "../storage/risuSave";
 import { getDatabase, setDatabaseLite } from "../storage/database.svelte";
-import { decryptBuffer, sleep } from "../util";
-import { hubURL } from "../characterCards";
+import { sleep } from "../util";
 import { language } from "src/lang";
 import { collectColdStorageBackupPayloads, confirmIncompleteColdStorageOperation, getColdStorageBackupKey, getColdStorageItem, isColdStorageBackupData, listColdDataKeys, setColdStorageItem } from "../process/coldstorage.svelte";
 
@@ -105,8 +104,7 @@ export async function SaveLocalBackup(){
         await writer.writeBackup(payload.backupName, payload.encoded)
     }
 
-    const dbWithoutAccount = { ...db, account: undefined }
-    const dbData = encodeRisuSaveLegacy(dbWithoutAccount, 'compression')
+    const dbData = encodeRisuSaveLegacy(db, 'compression')
 
     alertWait(`Saving local Backup... (Saving database)`) 
 
@@ -262,8 +260,7 @@ export async function SavePartialLocalBackup(){
         await writer.writeBackup(payload.backupName, payload.encoded)
     }
 
-    const dbWithoutAccount = { ...db, account: undefined }
-    const dbData = encodeRisuSaveLegacy(dbWithoutAccount, 'compression')
+    const dbData = encodeRisuSaveLegacy(db, 'compression')
 
     alertWait(`Saving partial local backup... (Saving database)`) 
 
@@ -286,15 +283,31 @@ export async function SavePartialLocalBackup(){
     }
 }
 
+/**
+ * Scans only the record headers of a local backup for `encryption.risudat`, which Risu Account
+ * backups wrote before their encrypted database. Uses random-access slices, so no record data is read.
+ */
+async function isAccountEncryptedBackup(file: File): Promise<boolean> {
+    const readU32 = async (at: number) => new DataView(await file.slice(at, at + 4).arrayBuffer()).getUint32(0, true);
+    let offset = 0;
+    while (offset + 4 <= file.size) {
+        const nameLength = await readU32(offset);
+        if (offset + 4 + nameLength + 4 > file.size) {
+            return false;
+        }
+        const name = new TextDecoder().decode(await file.slice(offset + 4, offset + 4 + nameLength).arrayBuffer());
+        if (name === 'encryption.risudat') {
+            return true;
+        }
+        const dataLength = await readU32(offset + 4 + nameLength);
+        offset += 4 + nameLength + 4 + dataLength;
+    }
+    return false;
+}
+
 export function LoadLocalBackup(){
     try {
         const input = document.createElement('input');
-        const encryptionMeta:{
-            type: 'none' | 'account';
-            time?: number;
-        } = {
-            type: 'none'
-        }
         input.type = 'file';
         input.accept = '.bin';
         input.onchange = async () => {
@@ -304,6 +317,12 @@ export function LoadLocalBackup(){
             }
             const file = input.files[0];
             input.remove();
+
+            alertWait('Checking local Backup...');
+            if (await isAccountEncryptedBackup(file)) {
+                alertError('This backup was encrypted with a Risu Account and can no longer be restored.');
+                return;
+            }
 
             const reader = file.stream().getReader();
             const CHUNK_SIZE = 1024 * 1024; // 1MB chunk size
@@ -347,22 +366,7 @@ export function LoadLocalBackup(){
                     }
                     const data = remainingBuffer.slice(offset + 4 + nameLength + 4, offset + 4 + nameLength + 4 + dataLength);
 
-                    if( name === 'encryption.risudat') {
-                        try {
-                            const meta = JSON.parse(new TextDecoder().decode(data)) as typeof encryptionMeta
-                            if (meta.type === 'account' && meta.time) {
-                                encryptionMeta.type = 'account'
-                                encryptionMeta.time = meta.time
-                            } else {
-                                alertError('Invalid encryption metadata, will attempt to load database backup without decryption.')
-                            }
-                        } catch (e) {
-                            console.error('Failed to parse encryption metadata:', e)
-                            alertError('Failed to parse encryption metadata, will attempt to load database backup without decryption.')
-                        }
-                    }
-
-                    else if (name === 'database.risudat') {
+                    if (name === 'database.risudat') {
                         pendingDatabase = new Uint8Array(data);
                     }
                     
@@ -406,18 +410,7 @@ export function LoadLocalBackup(){
                 return
             }
 
-            let db = pendingDatabase;
-            if(encryptionMeta.type === 'account' && encryptionMeta.time){
-                try {
-                    const key = (await (await fetch(`https://sv.risuai.xyz/cryptokey?key=${encryptionMeta.time}`)).json()).key
-                    const decrypted = await decryptBuffer(db, key)
-                    db = new Uint8Array(decrypted)
-                }
-                catch (e) {
-                    console.error('Failed to decrypt database backup:', e)
-                    alertError('Failed to decrypt database backup, will attempt to load it without decryption.')
-                }
-            }
+            const db = pendingDatabase;
             const dbData = await decodeRisuSave(db);
             const missingColdStorageKeys:string[] = []
             for(const key of await listColdDataKeys(dbData)){

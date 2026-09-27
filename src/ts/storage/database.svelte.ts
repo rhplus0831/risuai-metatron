@@ -28,6 +28,8 @@ export let appSubVer = ''
 export type StreamingDisplayOptimizationMode = 'off'|'balanced'|'strong'
 
 export function setDatabase(data:Database){
+    // Risu Account was removed; drop the login token older saves still carry.
+    delete (data as Database & { account?: unknown }).account
     if(checkNullish(data.characters)){
         data.characters = []
     }
@@ -917,15 +919,6 @@ export interface Database{
     novellistAPI:string,
     useAutoTranslateInput:boolean
     imageCompression:boolean
-    account?:{
-        token:string
-        id:string,
-        data: {
-            refresh_token?:string,
-            access_token?:string
-            expires_in?: number
-        }
-    },
     classicMaxWidth: boolean,
     useChatSticker:boolean,
     useAdditionalAssetsPreview:boolean,
@@ -1460,7 +1453,6 @@ export interface character{
         language: string
     },
     vits?: OnnxModelFiles
-    realmId?:string
     imported?:boolean
     trashTime?:number
     nickname?:string
@@ -1563,7 +1555,6 @@ export interface groupChat{
     additionalAssets?:[string, string, string][]
     utilityBot?:boolean
     license?:string
-    realmId:string
     prebuiltAssetCommand?:boolean
     prebuiltAssetStyle?:string
     prebuiltAssetExclude?:string[]

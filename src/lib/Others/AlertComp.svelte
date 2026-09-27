@@ -8,7 +8,7 @@
     import { ChevronRightIcon, User } from '@lucide/svelte';
     import { isCharacterHasAssets } from 'src/ts/characterCards';
     import TextInput from '../UI/GUI/TextInput.svelte';
-    import { aiLawApplies, openURL, getFetchLogs } from 'src/ts/globalApi.svelte';
+    import { aiLawApplies, getFetchLogs } from 'src/ts/globalApi.svelte';
     import Button from '../UI/GUI/Button.svelte';
     import { XIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, CheckIcon } from "@lucide/svelte";
     import hljs from 'highlight.js/lib/core';
@@ -61,8 +61,8 @@
 
     let btn
     let input = $state('')
-    let cardExportType = $state('realm')
-    let cardExportType2 = $state('')
+    let cardExportType = $state('')
+    let cardExportType2 = $state('charxJpeg')
     let cardLicense = $state('')
     let generationInfoMenuIndex = $state(0)
     let branchHover:null|{
@@ -132,8 +132,8 @@
             branchHover = null
         }
         if($alertStore.type !== 'cardexport'){
-            cardExportType = 'realm'
-            cardExportType2 = ''
+            cardExportType = ''
+            cardExportType2 = 'charxJpeg'
             cardLicense = ''
         }
         if($alertStore.type !== 'requestlogs'){
@@ -197,30 +197,6 @@
                         {/await}
                     </span>
                 </div>
-            {:else if $alertStore.type === 'tos'}
-                <!-- svelte-ignore a11y_missing_attribute -->
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-
-                <div class="text-textcolor">
-                    You should accept
-                    <a role="button" tabindex="0" class="text-green-600 hover:text-green-500 transition-colors duration-200 cursor-pointer" onclick={() => {
-                        openURL('https://account.sionyw.com/terms')
-                    }}>Terms of Service</a>
-
-                    and
-
-                    <a role="button" tabindex="0" class="text-green-600 hover:text-green-500 transition-colors duration-200 cursor-pointer" onclick={() => {
-                        openURL('https://account.sionyw.com/privacy')
-                    }}>Privacy Policy</a>
-
-                    to continue
-                </div>
-
-                {#if localStorage.getItem('tos2') && Date.now() - new Date('2026-05-15').getTime() < 0}
-                    <div class="text-gray-500 mt-4 text-sm">
-                        You can still continue using Risuai using original terms until {new Date('2026-05-15').toLocaleDateString()}.
-                    </div>
-                {/if}
             {:else if $alertStore.type === 'pluginconfirm'}
                 {@const parts = $alertStore.msg.split('\n\n')}
                 {@const mainPart = parts[0]}
@@ -298,21 +274,6 @@
                             msg: 'no'
                         })
                     }}>NO</Button>
-                </div>
-            {:else if $alertStore.type === 'tos' && import.meta.env.VITE_RISU_LEGAL_CONFIGURED}
-                <div class="flex gap-2 w-full">
-                    <Button className="mt-4 grow" onclick={() => {
-                        alertStore.set({
-                            type: 'none',
-                            msg: 'yes'
-                        })
-                    }}>Accept</Button>
-                    <Button styled={'outlined'} className="mt-4 grow" onclick={() => {
-                        alertStore.set({
-                            type: 'none',
-                            msg: 'no'
-                        })
-                    }}>Do not Accept</Button>
                 </div>
             {:else if $alertStore.type === 'select'}
                 {@const hasDisplay = $alertStore.msg.startsWith('__DISPLAY__')}
@@ -729,44 +690,22 @@
             </h1>
             <span class="text-textcolor mt-4">{language.type}</span>
             {#if cardExportType === ''}
-                {#if $alertStore.submsg === 'module'}
-                    <span class="text-textcolor2 text-sm">{language.risuMDesc}</span>
-                {:else if $alertStore.submsg === 'preset'}
-                    <span class="text-textcolor2 text-sm">{language.risupresetDesc}</span>
-                    {#if cardExportType2 === 'preset' && (DBState.db.botPresets[DBState.db.botPresetsId].image || DBState.db.botPresets[DBState.db.botPresetsId].regex?.length > 0)}
-                        <span class="text-red-500 text-sm">Use RisuRealm to share the preset. Preset with image or regexes cannot be exported for now.</span>
-                    {/if}
-                {:else}
-                    <span class="text-textcolor2 text-sm">{language.ccv3Desc}</span>
-                    {#if cardExportType2 !== 'charx' && cardExportType2 !== 'charxJpeg' && isCharacterHasAssets(DBState.db.characters[$selectedCharID])}
-                        <span class="text-red-500 text-sm">{language.notCharxWarn}</span>
-                    {/if}
+                <span class="text-textcolor2 text-sm">{language.ccv3Desc}</span>
+                {#if cardExportType2 !== 'charx' && cardExportType2 !== 'charxJpeg' && isCharacterHasAssets(DBState.db.characters[$selectedCharID])}
+                    <span class="text-red-500 text-sm">{language.notCharxWarn}</span>
                 {/if}
-            {:else if cardExportType === 'json'}
-                <span class="text-textcolor2 text-sm">{language.jsonDesc}</span>
             {:else if cardExportType === 'ccv2'}
                 <span class="text-textcolor2 text-sm">{language.ccv2Desc}</span>
                 <span class="text-red-500 text-sm">{language.v2Warning}</span>
-            {:else}
-                <span class="text-textcolor2 text-sm">{language.realmDesc}</span>
             {/if}
             <div class="flex items-center flex-wrap mt-2">
-                {#if $alertStore.submsg === 'preset'}
-                    <button class="bg-bgcolor px-2 py-4 rounded-lg flex-1" class:ring-1={cardExportType === 'realm'} onclick={() => {cardExportType = 'realm'}}>RisuRealm</button>
-                    <button class="bg-bgcolor px-2 py-4 rounded-lg ml-2 flex-1" class:ring-1={cardExportType === ''} onclick={() => {cardExportType = ''}}>Risupreset</button>
-                {:else if $alertStore.submsg === 'module'}
-                    <button class="bg-bgcolor px-2 py-4 rounded-lg ml-2 flex-1" class:ring-1={cardExportType === 'realm'} onclick={() => {cardExportType = 'realm'}}>RisuRealm</button>
-                    <button class="bg-bgcolor px-2 py-4 rounded-lg flex-1" class:ring-1={cardExportType === ''} onclick={() => {cardExportType = ''}}>RisuM</button>
-                {:else}
-                    <button class="bg-bgcolor px-2 py-4 rounded-lg flex-1" class:ring-1={cardExportType === 'realm'} onclick={() => {cardExportType = 'realm'}}>RisuRealm</button>
-                    <button class="bg-bgcolor px-2 py-4 rounded-lg ml-2 flex-1" class:ring-1={cardExportType === ''} onclick={() => {
-                        cardExportType = ''
-                        cardExportType2 = 'charxJpeg'
-                    }}>Character Card V3</button>
-                    <button class="bg-bgcolor px-2 py-4 rounded-lg ml-2 flex-1" class:ring-1={cardExportType === 'ccv2'} onclick={() => {cardExportType = 'ccv2'}}>Character Card V2</button>
-                {/if}
+                <button class="bg-bgcolor px-2 py-4 rounded-lg flex-1" class:ring-1={cardExportType === ''} onclick={() => {
+                    cardExportType = ''
+                    cardExportType2 = 'charxJpeg'
+                }}>Character Card V3</button>
+                <button class="bg-bgcolor px-2 py-4 rounded-lg ml-2 flex-1" class:ring-1={cardExportType === 'ccv2'} onclick={() => {cardExportType = 'ccv2'}}>Character Card V2</button>
             </div>
-            {#if $alertStore.submsg === '' && cardExportType === ''}
+            {#if cardExportType === ''}
                 <span class="text-textcolor mt-4">{language.format}</span>
                 <SelectInput bind:value={cardExportType2} className="mt-2">
                     <OptionInput value="charx">CHARX</OptionInput>
@@ -783,7 +722,7 @@
                         type2: cardExportType2
                     })
                 })
-            }}>{cardExportType === 'realm' ? language.shareCloud : language.export}</Button>
+            }}>{language.export}</Button>
         </div>
     </div>
 

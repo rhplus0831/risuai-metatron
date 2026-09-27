@@ -13,7 +13,6 @@ export {
     getColdStorageBackupKey,
     getColdStorageBackupName,
     isColdStorageBackupData,
-    replaceColdStoragePayloadResources,
     listColdDataKeysFromDb
 } from "./coldstorageData"
 

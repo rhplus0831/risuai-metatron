@@ -8,7 +8,7 @@ import { alertStore as alertStoreImported } from "./stores.svelte"
 export interface alertData{
     type: 'error'|'normal'|'none'|'ask'|'wait'|'selectChar'
             |'input'|'toast'|'wait2'|'markdown'|'select'
-            |'tos'|'cardexport'|'requestdata'|'addchar'|'hypaV2'|'selectModule'
+            |'cardexport'|'requestdata'|'addchar'|'hypaV2'|'selectModule'
             |'chatOptions'|'pukmakkurit'|'branches'|'progress'|'pluginconfirm'|'requestlogs',
     msg: string,
     submsg?: string
@@ -206,12 +206,11 @@ export async function alertPluginConfirm(msg:string){
     return get(alertStoreImported).msg === 'yes'
 }
 
-export async function alertCardExport(type:string = ''){
+export async function alertCardExport(){
 
     alertStoreImported.set({
         'type': 'cardexport',
-        'msg': '',
-        'submsg': type
+        'msg': ''
     })
 
     await waitAlert()
@@ -220,32 +219,6 @@ export async function alertCardExport(type:string = ''){
         type: string,
         type2: string,
     }
-}
-
-export async function alertTOS(){
-
-    if(localStorage.getItem('tos4') === 'true'){
-        return true
-    }
-
-    alertStoreImported.set({
-        'type': 'tos',
-        'msg': 'tos'
-    })
-
-    await waitAlert()
-
-    if(get(alertStoreImported).msg === 'yes'){
-        localStorage.setItem('tos4', 'true')
-        return true
-    }
-
-    if(localStorage.getItem('tos2') && Date.now() - new Date('2026-05-15').getTime() < 0){
-        //apply grace period until 2026-05-15 for users who accepted tos2
-        return true
-    }
-
-    return false
 }
 
 export async function alertInput(msg:string, datalist?:[string, string][], defaultValue?:string) {

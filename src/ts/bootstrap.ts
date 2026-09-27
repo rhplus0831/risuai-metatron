@@ -4,7 +4,7 @@ import { get } from "svelte/store";
 import { setDatabase, defaultSdDataFunc, getDatabase } from "./storage/database.svelte";
 import { MobileGUI, botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
-import { alertError, alertMd, alertTOS, waitAlert, alertConfirm, alertInput } from "./alert";
+import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./alert";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
 import { decodeRisuSave, encodeRisuSaveLegacy } from "./storage/risuSave";
@@ -123,11 +123,7 @@ export async function loadData() {
             saveDb()
             moduleUpdate()
             cleanChunks()
-            alertTOS().then((a) => {
-                if (a === false) {
-                    location.reload()
-                }
-            })
+            cleanLegacyAccountData()
             
         } catch (error) {
             alertError(error)
@@ -371,6 +367,18 @@ async function checkNewFormat(): Promise<void> {
     }
     setDatabase(db);
     checkCharOrder();
+}
+
+/**
+ * Removes localStorage flags left behind by the removed Risu Account sync, ToS popup and nightly hub switch.
+ * The `risuaiAccountCached` IndexedDB is kept on purpose: it may hold a former sync user's latest database copy.
+ */
+function cleanLegacyAccountData() {
+    for (const key of ['accountst', 'dosync', 'fallbackRisuToken', 'tos2', 'tos4', 'hub']) {
+        try {
+            localStorage.removeItem(key)
+        } catch (error) { }
+    }
 }
 
 /**

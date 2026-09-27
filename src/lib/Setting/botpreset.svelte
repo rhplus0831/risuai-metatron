@@ -1,12 +1,11 @@
 <script lang="ts">
-    import { alertCardExport, alertConfirm, alertError } from "../../ts/alert";
+    import { alertConfirm, alertError } from "../../ts/alert";
     import { language } from "../../lang";
     import { changeToPreset, copyPreset, downloadPreset, importPreset } from "../../ts/storage/database.svelte";
     import { DBState } from 'src/ts/stores.svelte';
     import { CopyIcon, Share2Icon, PencilIcon, HardDriveUploadIcon, PlusIcon, TrashIcon, XIcon, GitCompare } from "@lucide/svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import { prebuiltPresets } from "src/ts/process/templates/templates";
-    import { ShowRealmFrameStore } from "src/ts/stores.svelte";
     import PromptDiffModal from "../Others/PromptDiffModal.svelte";
     import { RISU_PRESET_DRAG_TYPE } from "src/ts/dragTypes";
 
@@ -225,14 +224,7 @@
                     </div>
                     <div class="text-textcolor2 hover:text-green-500 cursor-pointer mr-2" role="button" tabindex="0" onclick={async (e) => {
                         e.stopPropagation()
-                        const data = await alertCardExport('preset')
-                        console.log(data.type)
-                        if(data.type === ''){
-                            downloadPreset(i, 'risupreset')
-                        }
-                        if(data.type === 'realm'){
-                            $ShowRealmFrameStore = `preset:${i}`
-                        }
+                        downloadPreset(i, 'risupreset')
                     }} onkeydown={(e) => {
                         if(e.key === 'Enter' && e.currentTarget instanceof HTMLElement){
                             e.currentTarget.click()

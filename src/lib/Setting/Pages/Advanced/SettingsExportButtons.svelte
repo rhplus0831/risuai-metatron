@@ -41,7 +41,7 @@ Show Statistics
         }))
 
         const keyToRemove = [
-            'characters', 'loreBook', 'plugins', 'account', 'personas', 'username', 'userIcon', 'userNote',
+            'characters', 'loreBook', 'plugins', 'personas', 'username', 'userIcon', 'userNote',
             'modules', 'enabledModules', 'botPresets', 'characterOrder', 'webUiUrl', 'characterOrder',
             'hordeConfig', 'novelai', 'koboldURL', 'ooba', 'ainconfig', 'personaPrompt', 'promptTemplate',
             'deeplOptions', 'google', 'customPromptTemplateToggle', 'globalChatVariables', 'comfyConfig',

@@ -37,7 +37,7 @@
 | static | `dist/*` | none | none | built frontend (`express.static`, `index:false`) |
 | GET | `/` | none | none | serves `dist/index.html` with `globalThis.__NODE__ = true` injected |
 | GET/POST | `/proxy`, `/proxy2` | `checkProxyAuth` (stored password in `risu-auth`, or a registered ES256 JWT) | 2000/min | arbitrary reverse proxy (`risu-url`, `risu-header`) |
-| GET/POST | `/hub-proxy/*` | none | 2000/min | proxies to `x-risu-node-path` or `https://sv.risuai.xyz` |
+| GET | `/hub-proxy/*` | none | 2000/min | proxies to `x-risu-node-path` or `https://sv.risuai.xyz` |
 | POST | `/proxy-stream-jobs` | `checkProxyAuth` | 2000/min | creates a local-network streaming job. `sanitizeTargetUrl` allows local/private targets only. Body ≤ 8 MiB base64, ≤ 64 active jobs. |
 | DELETE | `/proxy-stream-jobs/:jobId` | yes | 2000/min | aborts a job |
 | WS upgrade | `/proxy-stream-jobs/:jobId/ws` | `risu-auth` query or header | none | event stream (`ProxyJobWsEvent`) |
