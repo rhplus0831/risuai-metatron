@@ -91,7 +91,7 @@ Cold storage (removed):
   - `bootstrap.ts`: load and migrate.
   - `globalApi.saveDb`: save.
   - `drive/*` and `backuplocal.ts`: backups.
-  - `characterCards.ts` and `sync/multiuser.ts`: snapshots.
+  - `characterCards.ts`: snapshots.
   - `plugins.svelte.ts`: DB API.
 
 ## Invariants

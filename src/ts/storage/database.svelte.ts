@@ -1839,7 +1839,6 @@ export interface Message{
     generationInfo?: MessageGenerationInfo
     promptInfo?: MessagePresetInfo
     name?:string
-    otherUser?:boolean
     disabled?:false|true|'allBefore'
     isComment?:boolean
 }

@@ -783,7 +783,7 @@ export function checkCharOrder() {
             charIdSet.add(charId)
         }
         if (!ordered.has(charId)) {
-            if (charId !== '§temp' && charId !== '§playground' && !char.trashTime) {
+            if (charId !== '§playground' && !char.trashTime) {
                 DBState.db.characterOrder.push(charId)
             }
         }

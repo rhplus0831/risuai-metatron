@@ -15,7 +15,6 @@
     import { exportChat, importChat, exportAllChats } from "src/ts/characters";
     import { alertChatOptions, alertConfirm, alertError, alertNormal, alertSelect, alertStore } from "src/ts/alert";
     import { findCharacterbyId, sleep, sortableOptions } from "src/ts/util";
-    import { createMultiuserRoom } from "src/ts/sync/multiuser";
     import { bookmarkListOpen } from "src/ts/stores.svelte";
     import { language } from "src/lang";
     import Toggles from "./Toggles.svelte";
@@ -293,10 +292,6 @@
                                         }
                                         break
                                     }
-                                    case 2:{
-                                        changeChatTo(chara.chats.indexOf(chat))
-                                        createMultiuserRoom()
-                                    }
                                 }
                             }}>
                                 <MenuIcon size={18}/>
@@ -404,10 +399,6 @@
                                     }
                                 }
                                 break
-                            }
-                            case 2:{
-                                changeChatTo(i)
-                                createMultiuserRoom()
                             }
                         }
                     }}>

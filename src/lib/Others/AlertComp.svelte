@@ -22,7 +22,6 @@
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import ModuleChatMenu from "../Setting/Pages/Module/ModuleChatMenu.svelte";
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
-    import Help from "./Help.svelte";
     import { getChatBranches } from "src/ts/gui/branches";
     import { getCurrentCharacter } from "src/ts/storage/database.svelte";
     import { translateStackTrace } from "../../ts/sourcemap";
@@ -636,21 +635,6 @@
                             <ChevronRightIcon />
                         </div>
                     </button>
-                    {#if DBState.db.useExperimental}
-                        <button class="border-darkborderc border py-2 px-8 flex rounded-md hover:ring-2 items-center mt-2" onclick={() => {
-                            alertStore.set({
-                                type: 'none',
-                                msg: '2'
-                            })
-                        }}>
-                            <div class="flex flex-col justify-start items-start">
-                                <span>{language.createMultiuserRoom} <Help key="experimental"/></span>
-                            </div>
-                            <div class="ml-9 float-right flex-1 flex justify-end">
-                                <ChevronRightIcon />
-                            </div>
-                        </button>
-                    {/if}
                     <button class="border-darkborderc border py-2 px-8 flex rounded-md hover:ring-2 items-center mt-2" onclick={() => {
                         alertStore.set({
                             type: 'none',

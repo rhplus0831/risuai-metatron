@@ -6,7 +6,7 @@ There is no desktop (Tauri) or mobile (Capacitor) build. Anchors are `path` + id
 they drift. Grep the identifier instead.
 
 Last full audited: 2026-09-27.
-Last scoped updated: wait for first writing
+Last scoped updated: 2026-09-27.
 
 ## Agent Read Protocol
 
@@ -114,7 +114,7 @@ Release
 | Chat screen components, sidebar, mobile shell, GUI primitives, popups/portals, theme/colors | `docs/structure/ui-theming.md` |
 | Settings pages, declarative settings registry, bot presets, prompt template editor, i18n | `docs/structure/settings-i18n.md` |
 | TTS, image generation, translation, media compression, playground tools | `docs/structure/media-aux.md` |
-| Local backups, PeerJS multiuser, Realm hub browse/upload | `docs/structure/backup-sync-hub.md` |
+| Local backups, Realm hub browse, settings report export | `docs/structure/backup-sync-hub.md` |
 | Node self-host server routes/auth/storage, Hono skeleton, Docker, server migration (e.g. Fastify) | `docs/structure/self-host-server.md` |
 | Scripts, Vite/Vitest config, test inventory, service worker, version bump | `docs/structure/build-test-platforms.md` |
 
@@ -134,7 +134,7 @@ The first matching row wins. Scan from the top.
 | `src/ts/process/tts*.ts`, `src/ts/process/stableDiff.ts`, `src/ts/translator/`, `src/ts/media/`, `src/ts/voice.ts`, `src/ts/3d/`, `src/lib/Playground/` (the remaining tools), `src/lib/UI/{3DLoader,Googli}.svelte`, `src/lib/Setting/Pages/Language/TranslatorPresetSettings.svelte`, `src/lib/Setting/Pages/Model/AuxModelSelectors.svelte` | media-aux |
 | `src/ts/process/` (everything else: `index.svelte.ts`, `prompt.ts`, `lorebook.svelte.ts`, `templates/`, `files/`, `command.ts`, ...) | chat-pipeline |
 | `src/ts/cbs.ts`, `src/ts/parser/`, `src/ts/gui/highlight.ts`, `src/ts/gui/codearea/`, `src/lib/ChatScreens/PartialEditController.svelte`, `src/lib/Others/MonacoEditor.svelte` | cbs-rendering |
-| `src/ts/drive/`, `src/ts/sync/`, `src/lib/UI/Realm/`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte` | backup-sync-hub |
+| `src/ts/drive/`, `src/lib/UI/Realm/`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte` | backup-sync-hub |
 | `src/ts/globalApi.svelte.ts`, `src/ts/util.ts`, `src/ts/util/`, `src/ts/alert.ts`, `src/ts/network/`, `src/ts/dragTypes.ts`, `src/ts/sourcemap.ts`, `src/ts/iris.ts`, `src/ts/licenses.ts`, `src/lib/Others/AlertComp.svelte`, `src/lib/Others/IrisModal.svelte` | global-api |
 | `src/ts/setting/`, `src/lib/Setting/` (the rest), `src/lang/`, `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/{PromptDiffModal,AllSeperateParameters,QuickSettingsGUI}.svelte`, `src/lib/Others/ProTools/` | settings-i18n |
 | `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/ts/bootstrap.ts`, `src/ts/stores.svelte.ts`, `src/ts/platform.ts`, `src/ts/polyfill.ts`, `src/ts/hotkey.ts`, `src/ts/defaulthotkeys.ts`, `src/ts/observer.svelte.ts`, `src/ts/mutex.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte` | app-shell |

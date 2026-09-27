@@ -81,9 +81,8 @@ Send, in `DefaultChatScreen.svelte`:
 1. Setup:
    1. Stages and abort.
    2. Optional random preset from `presetChain`.
-   3. `peerSafeCheck` and `peerSync` (multiuser).
-   4. Resolve `selectedCharID` and `chatPage`.
-   5. Assign missing `chatId`s.
+   3. Resolve `selectedCharID` and `chatPage`.
+   4. Assign missing `chatId`s.
 2. Groups: `sendChat(-1)` computes `groupOrder`, then recursively calls `sendChat(index)` once per selected speaker.
 3. `runCurrentChatFunction` runs CBS with `runVar: true` over the history. The prompt buckets are `main`, `jailbreak`, `chats`, `lorebook`, `globalNote`, `authorNote`, `lastChat`, `description`, `postEverything`, and `personaPrompt`.
 4. Lore: `loadLoreBookV3Prompt` returns the active entries, placed by position:
@@ -116,7 +115,7 @@ Send, in `DefaultChatScreen.svelte`:
    4. Non-streaming replies take the same path. Extra `multiline` outputs become reroll alternatives.
 10. Tail:
     - Trigger `sendAIprompt` can recurse into a resend. Short or incomplete replies can auto-continue.
-    - Emotion/IGP or image generation (`viewScreen === 'imggen'` → `stableDiff`), notifications, `peerSync`.
+    - Emotion/IGP or image generation (`viewScreen === 'imggen'` → `stableDiff`), notifications.
 
 Not in `sendChat`:
 - Input auto-translation happens in `DefaultChatScreen.updateInputTransateMessage`.
@@ -131,7 +130,7 @@ Not in `sendChat`:
 - The pipeline mutates `DBState.db.characters[i].chats[j]` in place and relies on autosave.
 
 ## Coupling
-- Imports: tokenizer, parser (`risuChatParser`), `lorebook`, `scripts`, `triggers`, memory, `request`, `tts`, `stableDiff`, inlays, modules, plugins, `sync/multiuser`, model info.
+- Imports: tokenizer, parser (`risuChatParser`), `lorebook`, `scripts`, `triggers`, memory, `request`, `tts`, `stableDiff`, inlays, modules, plugins, model info.
 - Callers: `DefaultChatScreen.svelte`, `command.ts` (`/send`, `/multisend`), `DevTool.svelte` (preview), `plugins/apiV3` (`sendChat` permission).
 
 ## Invariants
