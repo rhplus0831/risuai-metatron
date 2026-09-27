@@ -12,10 +12,6 @@ REM Builds without this flag show a legal warning screen and should not use Risu
 REM services that require the original legal notices.
 REM if not defined VITE_RISU_LEGAL_CONFIGURED set "VITE_RISU_LEGAL_CONFIGURED=TRUE"
 
-REM Lite mode:
-REM Enables the experimental lightweight/mobile-oriented UI mode at build time.
-REM if not defined VITE_RISU_LITE set "VITE_RISU_LITE=TRUE"
-
 REM Advertisement configuration:
 REM Optional Google AdSense client and slot IDs for desktop and mobile ad units.
 REM if not defined VITE_AD_CLIENT set "VITE_AD_CLIENT="

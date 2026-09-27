@@ -14,7 +14,7 @@
   - `src/lib/Others/*`, except the files owned by other guides
   - `src/lib/UI/*`, except `Realm/`, the model pickers, `PromptDataItem.svelte`, `MainMenu.svelte`, `Title.svelte`
   - `src/lib/UI/GUI/*`, `src/lib/UI/NewGUI/*`
-  - `src/lib/Mobile/*`, `src/lib/LiteUI/*`
+  - `src/lib/Mobile/*`
   - `src/lib/Playground/PlaygroundMenu.svelte`
   - `src/styles.css`
   - `src/ts/gui/*`, except `highlight.ts` and `codearea/`
@@ -60,9 +60,8 @@ Other UI:
 - `UI/PopupButton.svelte` writes `popupStore`. `UI/PopupList.svelte` is the fixed-position host mounted by `App`.
 - `UI/Accordion.svelte`, `UI/BaseRoundedButton.svelte`, `UI/NewGUI/Button.svelte` (no secondary variant).
 
-Mobile and Lite:
+Mobile:
 - `Mobile/MobileHeader.svelte`, `MobileBody.svelte`, `MobileFooter.svelte`, `MobileCharacters.svelte`: driven by `MobileGUIStack` and `MobileSideBar`.
-- `LiteUI/LiteCardIcon.svelte`.
 
 Theme and GUI helpers:
 - `src/styles.css`:
@@ -74,7 +73,7 @@ Theme and GUI helpers:
 - `src/ts/gui/colorscheme.ts`:
   - `ColorScheme` has nine colors plus `type`.
   - `colorShemes` presets: default, dark, light, cherry, galaxy, nature, ocean, aurora, twilight, realblack, Monokai, lite, ...
-  - `changeColorScheme`, `updateColorScheme` (forces `lite` under `isLite`), `updateTextThemeAndCSS` (text theme, fonts, custom CSS unless `SafeModeStore`), and import/export.
+  - `changeColorScheme`, `updateColorScheme`, `updateTextThemeAndCSS` (text theme, fonts, custom CSS unless `SafeModeStore`), and import/export.
 - `src/ts/gui/guisize.ts`: `updateGuisize`. `--sidebar-size = 24 + 4*sideBarSize` rem.
 - `src/ts/gui/animation.ts` `updateAnimationSpeed`.
 - `src/ts/gui/tooltip.ts`: `tooltip`, `tooltipRight` (Tippy).
@@ -111,7 +110,7 @@ Theme and GUI helpers:
   - Custom CSS is injected via `CustomCSSStore` and must stay disabled in `SafeModeStore`.
 - Runes and legacy stores are mixed: `$state`/`$derived`/`$props`/`$bindable`/snippets alongside `writable` stores, `.subscribe`, `createEventDispatcher`, and `on:save`. Match the local component.
 - Primitive prop convention: an `interface Props`, destructured with `$props()`, `$bindable()` for mutable values, callback props (`onclick`, `onchange`), and `children: Snippet`.
-- Platform branches to keep: `Suggestion` avoids `AbortController` on Tauri, `updateColorScheme` has a Lite override, and the mobile shell is separate.
+- Platform branches to keep: `Suggestion` avoids `AbortController` on Tauri, and the mobile shell is separate.
 
 ## Recipes
 - Change message rendering: `DefaultChatScreen` props → `Chats.updateChatBody` (hash and props) → `Chat`/`ChatBody`. Verify streaming, reroll, the first greeting, and custom HTML manually.

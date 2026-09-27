@@ -27,7 +27,7 @@
   - It does not implement any Node route.
 - `Dockerfile`: Node 24, pnpm 10.34.1, multi-stage build of `dist`, copies `server/` + `dist/`, `EXPOSE 6001`, `CMD pnpm runserver`.
 - `docker-compose.yml`: GHCR image, `6001:6001`, volume `risuai-save:/app/save`.
-- `server.sh`/`server.bat`: install, build, run. The env exports (`VITE_RISU_LITE`, legal, ads) are commented out.
+- `server.sh`/`server.bat`: install, build, run. The env exports (legal, ads) are commented out.
 - `public/functions/proxy.js`, `proxy2.js`: edge `onRequest` open proxies with no auth or allowlist. `proxy2` prefers the `risu-url` header.
 
 ## Routes (`server.cjs`)

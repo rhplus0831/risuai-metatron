@@ -3,7 +3,6 @@ import { getDatabase, setDatabase } from "../storage/database.svelte";
 import { downloadFile } from "../globalApi.svelte";
 import { BufferToText, selectSingleFile } from "../util";
 import { alertError } from "../alert";
-import { isLite } from "../lite";
 import { CustomCSSStore, DBState, SafeModeStore } from "../stores.svelte";
 
 export interface ColorScheme{
@@ -267,10 +266,6 @@ export function updateColorScheme(){
             colorScheme = safeStructuredClone(defaultColorScheme)
         }
 
-        if(get(isLite)){
-            colorScheme = safeStructuredClone(colorShemes.lite)
-        }
-
         //set css variables
         document.documentElement.style.setProperty("--risu-theme-bgcolor", colorScheme.bgcolor);
         document.documentElement.style.setProperty("--risu-theme-darkbg", colorScheme.darkbg);
@@ -338,8 +333,8 @@ export function updateTextThemeAndCSS(){
     if(!root){
         return
     }
-    let textTheme = get(isLite) ? 'standard' : db.textTheme
-    let colorScheme = get(isLite) ? 'dark' : db.colorScheme.type
+    let textTheme = db.textTheme
+    let colorScheme = db.colorScheme.type
     switch(textTheme){
         case "standard":{
             if(colorScheme === 'dark'){

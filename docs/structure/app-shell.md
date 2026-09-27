@@ -1,8 +1,8 @@
 # App Shell
 
 ## Scope
-- Owns: boot sequence, top-level screen selection, global stores, platform flags, hotkeys, Lite flag, Tauri update prompt, DOM observers, `Mutex`.
-- Paths: `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/LiteMain.svelte` (dead), `src/ts/{bootstrap,stores.svelte,platform,polyfill,update,hotkey,defaulthotkeys,observer.svelte,mutex,lite}.ts`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
+- Owns: boot sequence, top-level screen selection, global stores, platform flags, hotkeys, Tauri update prompt, DOM observers, `Mutex`.
+- Paths: `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/ts/{bootstrap,stores.svelte,platform,polyfill,update,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
 - Not here: DB shape and migrations → `persistence.md`. The save loop and `globalFetch` → `global-api.md`. Chat UI below `ChatScreen` → `ui-theming.md`.
 
 ## Files
@@ -26,7 +26,6 @@
   - `registerClaudeObserver`: Claude cache keep-alive pings, called from `process/request/anthropic.ts`.
 - `src/ts/update.ts` `checkRisuUpdate`: Tauri updater prompt only.
 - `src/ts/mutex.ts` `Mutex`: FIFO lock used by the scripting engines. `runExclusive` must keep its `finally` release.
-- `src/ts/lite.ts` `isLite`: writable store, true only when `VITE_RISU_LITE === 'TRUE'`.
 - `src/lib/UI/MainMenu.svelte`: home screen. Switches to `RealmMain` via `OpenRealmStore`. Renders `hubAdditionalHTML` with `{@html}`.
 - `src/lib/UI/Title.svelte`: seasonal logo and mini-game. Only used by MainMenu.
 
@@ -41,7 +40,7 @@ Boot:
    1. `loadPlugins`.
    2. `checkNewFormat`, which ends in `setDatabase`.
    3. Theme functions: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`.
-   4. `MobileGUI` when `betaMobileGUI && innerWidth <= 800`, or Lite.
+   4. `MobileGUI` when `betaMobileGUI && innerWidth <= 800`.
    5. `await makeColdData`.
    6. `loadedStore.set(true)` and `selectedCharID.set(-1)`.
    7. Observers, ID assignment, `registerModelDynamic`, `saveDb()` (exactly once), `moduleUpdate`, storage cleanup, TOS.
@@ -89,7 +88,6 @@ All of these live in `src/ts/stores.svelte.ts`.
 - Call `saveDb()` only once, from `loadData`. It installs effects and runs an infinite loop.
 - `isWeb` means production `risuai.xyz` only. localhost and dev runs are not `isWeb`.
 - `isNodeServer` depends on `server/node/server.cjs` injecting `globalThis.__NODE__ = true` into `index.html`.
-- Lite: `isLite` forces `MobileGUI` and the lite palette and hides some settings. `LiteMain.svelte` is not imported, so do not edit it to change Lite behavior.
 - New hotkey actions need:
   - an entry in `defaultHotkeys`,
   - a branch in the `initHotkey` dispatch switch,
@@ -112,7 +110,6 @@ All of these live in `src/ts/stores.svelte.ts`.
   2. Update every consumer.
   3. Make sure Tauri filesystem code never runs in the browser or on Node.
 - Add a hotkey: `defaulthotkeys.ts`, `hotkey.ts:initHotkey`, `database.svelte.ts:setDatabase` (merge behavior).
-- Change Lite: `lite.ts`, `bootstrap.ts:loadData`, `Settings.svelte`, `MobileBody.svelte`, `gui/colorscheme.ts:updateColorScheme`. Build with and without `VITE_RISU_LITE=TRUE`.
 
 ## Tests
 - None cover boot, screen precedence, platform detection, hotkeys, observers, or `Mutex`.

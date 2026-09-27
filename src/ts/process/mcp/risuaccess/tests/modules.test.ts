@@ -10,7 +10,6 @@ import { ModuleHandler } from '../modules'
 
 // Suppress consoles
 vi.mock(import('katex'), () => ({}))
-vi.mock(import('src/ts/lite'), () => ({}))
 
 vi.mock(import('src/ts/alert'), () => ({
   alertConfirm: vi.fn(),

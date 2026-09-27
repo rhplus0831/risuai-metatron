@@ -20,7 +20,6 @@
     import PromptSettings from "./Pages/PromptSettings.svelte";
     import ThanksPage from "./Pages/ThanksPage.svelte";
     import ModuleSettings from "./Pages/Module/ModuleSettings.svelte";
-  import { isLite } from "src/ts/lite";
     import HotkeySettings from "./Pages/HotkeySettings.svelte";
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
 
@@ -38,45 +37,43 @@
                 class:bg-darkbg={!$MobileGUI} class:bg-bgcolor={$MobileGUI}
             >
                 
-                {#if !$isLite}
-                    <button class="flex gap-2 items-center hover:text-textcolor"
-                        class:text-textcolor={$SettingsMenuIndex === 1 || $SettingsMenuIndex === 13}
-                        class:text-textcolor2={$SettingsMenuIndex !== 1 && $SettingsMenuIndex !== 13}
-                        onclick={() => {
-                            $SettingsMenuIndex = 1
-                            
-                    }}>
-                        <BotIcon />
-                        <span>{language.chatBot}</span>
-                    </button>
-                    <button class="flex gap-2 items-center hover:text-textcolor"
-                        class:text-textcolor={$SettingsMenuIndex === 12}
-                        class:text-textcolor2={$SettingsMenuIndex !== 12}
-                        onclick={() => {
-                            $SettingsMenuIndex = 12
-                    }}>
-                        <ContactIcon />
-                        <span>{language.persona}</span>
-                    </button>
-                    <button class="flex gap-2 items-center hover:text-textcolor"
-                        class:text-textcolor={$SettingsMenuIndex === 2}
-                        class:text-textcolor2={$SettingsMenuIndex !== 2}
-                        onclick={() => {
-                            $SettingsMenuIndex = 2
-                    }}>
-                        <Sailboat />
-                        <span>{language.otherBots}</span>
-                    </button>
-                    <button class="flex gap-2 items-center hover:text-textcolor"
-                        class:text-textcolor={$SettingsMenuIndex === 3}
-                        class:text-textcolor2={$SettingsMenuIndex !== 3}
-                        onclick={() => {
-                            $SettingsMenuIndex = 3
-                    }}>
-                        <MonitorIcon />
-                        <span>{language.display}</span>
-                    </button>
-                {/if}
+                <button class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === 1 || $SettingsMenuIndex === 13}
+                    class:text-textcolor2={$SettingsMenuIndex !== 1 && $SettingsMenuIndex !== 13}
+                    onclick={() => {
+                        $SettingsMenuIndex = 1
+
+                }}>
+                    <BotIcon />
+                    <span>{language.chatBot}</span>
+                </button>
+                <button class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === 12}
+                    class:text-textcolor2={$SettingsMenuIndex !== 12}
+                    onclick={() => {
+                        $SettingsMenuIndex = 12
+                }}>
+                    <ContactIcon />
+                    <span>{language.persona}</span>
+                </button>
+                <button class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === 2}
+                    class:text-textcolor2={$SettingsMenuIndex !== 2}
+                    onclick={() => {
+                        $SettingsMenuIndex = 2
+                }}>
+                    <Sailboat />
+                    <span>{language.otherBots}</span>
+                </button>
+                <button class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === 3}
+                    class:text-textcolor2={$SettingsMenuIndex !== 3}
+                    onclick={() => {
+                        $SettingsMenuIndex = 3
+                }}>
+                    <MonitorIcon />
+                    <span>{language.display}</span>
+                </button>
                 <button class="flex gap-2 items-center hover:text-textcolor"
                     class:text-textcolor={$SettingsMenuIndex === 10}
                     class:text-textcolor2={$SettingsMenuIndex !== 10}
@@ -86,35 +83,33 @@
                     <LanguagesIcon />
                     <span>{language.language}</span>
                 </button>
-                {#if !$isLite}
-                    <button class="flex gap-2 items-center hover:text-textcolor"
-                        class:text-textcolor={$SettingsMenuIndex === 11}
-                        class:text-textcolor2={$SettingsMenuIndex !== 11}
-                        onclick={() => {
-                            $SettingsMenuIndex = 11
-                    }}>
-                        <AccessibilityIcon />
-                        <span>{language.accessibility}</span>
-                    </button>
-                    <button class="flex gap-2 items-center hover:text-textcolor"
-                        class:text-textcolor={$SettingsMenuIndex === 14}
-                        class:text-textcolor2={$SettingsMenuIndex !== 14}
-                        onclick={() => {
-                            $SettingsMenuIndex = 14
-                    }}>
-                        <PackageIcon />
-                        <span>{language.modules}</span>
-                    </button>
-                    <button class="flex gap-2 items-center hover:text-textcolor"
-                        class:text-textcolor={$SettingsMenuIndex === 4}
-                        class:text-textcolor2={$SettingsMenuIndex !== 4}
-                        onclick={() => {
-                        $SettingsMenuIndex = 4
-                    }}>
-                        <CodeIcon />
-                        <span>{language.plugin}</span>
-                    </button>
-                {/if}
+                <button class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === 11}
+                    class:text-textcolor2={$SettingsMenuIndex !== 11}
+                    onclick={() => {
+                        $SettingsMenuIndex = 11
+                }}>
+                    <AccessibilityIcon />
+                    <span>{language.accessibility}</span>
+                </button>
+                <button class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === 14}
+                    class:text-textcolor2={$SettingsMenuIndex !== 14}
+                    onclick={() => {
+                        $SettingsMenuIndex = 14
+                }}>
+                    <PackageIcon />
+                    <span>{language.modules}</span>
+                </button>
+                <button class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === 4}
+                    class:text-textcolor2={$SettingsMenuIndex !== 4}
+                    onclick={() => {
+                    $SettingsMenuIndex = 4
+                }}>
+                    <CodeIcon />
+                    <span>{language.plugin}</span>
+                </button>
                 <button class="flex gap-2 items-center hover:text-textcolor"
                     class:text-textcolor={$SettingsMenuIndex === 0}
                     class:text-textcolor2={$SettingsMenuIndex !== 0}
@@ -133,55 +128,53 @@
                         <KeyboardIcon />
                         <span>{language.hotkey}</span>
                     </button>
-                {#if !$isLite}
-                    <button class="flex gap-2 items-center hover:text-textcolor"
-                        class:text-textcolor={$SettingsMenuIndex === 6}
-                        class:text-textcolor2={$SettingsMenuIndex !== 6}
+                <button class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === 6}
+                    class:text-textcolor2={$SettingsMenuIndex !== 6}
+                    onclick={() => {
+                    $SettingsMenuIndex = 6
+                }}>
+                    <ActivityIcon />
+                    <span>{language.advancedSettings}</span>
+                </button>
+                <button class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === 77}
+                    class:text-textcolor2={$SettingsMenuIndex !== 77}
+                    onclick={() => {
+                    $SettingsMenuIndex = 77
+                }}>
+                    <BoxIcon />
+                    <span>{language.supporterThanks}</span>
+                </button>
+                {#each additionalSettingsMenu as menu}
+                    <button class="flex gap-2 items-center hover:text-textcolor text-textcolor2"
                         onclick={() => {
-                        $SettingsMenuIndex = 6
+                            menu.callback()
                     }}>
-                        <ActivityIcon />
-                        <span>{language.advancedSettings}</span>
+                        <PluginDefinedIcon ico={menu} />
+                        <span>{menu.name}</span>
                     </button>
-                    <button class="flex gap-2 items-center hover:text-textcolor"
-                        class:text-textcolor={$SettingsMenuIndex === 77}
-                        class:text-textcolor2={$SettingsMenuIndex !== 77}
-                        onclick={() => {
-                        $SettingsMenuIndex = 77
-                    }}>
-                        <BoxIcon />
-                        <span>{language.supporterThanks}</span>
-                    </button>
-                    {#each additionalSettingsMenu as menu}
-                        <button class="flex gap-2 items-center hover:text-textcolor text-textcolor2"
-                            onclick={() => {
-                                menu.callback()
-                        }}>
-                            <PluginDefinedIcon ico={menu} />
-                            <span>{menu.name}</span>
-                        </button>
-                    {/each}
+                {/each}
 
-                    {#if DBState.db.enableRisuaiProTools}
-                        <button class="flex gap-2 items-center hover:text-textcolor"
-                            class:text-textcolor={$SettingsMenuIndex === 16}
-                            class:text-textcolor2={$SettingsMenuIndex !== 16}
-                            onclick={() => {
-                            easyPanelStore.open = true
-                        }}>
-                            <!-- From Lucide Icons, licensed under MIT/ISC License, modified to fit the design. see license from bundled lucide icons. -->
-                            <svg width={24} height={24}>
-                                <defs>
-                                    <linearGradient id={`grad1`} x1='0' y1='0' x2='1' y2='0'>
-                                    <stop offset='0%' style="stop-color:#587bff"/>
-                                    <stop offset='100%' style="stop-color:#00a1ad"/>
-                                    </linearGradient>
-                                </defs>
-                                    <SparkleIcon color="url(#grad1)" />
-                            </svg>
-                            <span>{language.easyPanel}</span>
-                        </button>
-                    {/if}
+                {#if DBState.db.enableRisuaiProTools}
+                    <button class="flex gap-2 items-center hover:text-textcolor"
+                        class:text-textcolor={$SettingsMenuIndex === 16}
+                        class:text-textcolor2={$SettingsMenuIndex !== 16}
+                        onclick={() => {
+                        easyPanelStore.open = true
+                    }}>
+                        <!-- From Lucide Icons, licensed under MIT/ISC License, modified to fit the design. see license from bundled lucide icons. -->
+                        <svg width={24} height={24}>
+                            <defs>
+                                <linearGradient id={`grad1`} x1='0' y1='0' x2='1' y2='0'>
+                                <stop offset='0%' style="stop-color:#587bff"/>
+                                <stop offset='100%' style="stop-color:#00a1ad"/>
+                                </linearGradient>
+                            </defs>
+                                <SparkleIcon color="url(#grad1)" />
+                        </svg>
+                        <span>{language.easyPanel}</span>
+                    </button>
                 {/if}
                 {#if window.innerWidth < 700 && !$MobileGUI}
                     <button class="absolute top-2 right-2 hover:text-green-500 text-textcolor" onclick={() => {

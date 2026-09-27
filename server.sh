@@ -12,10 +12,6 @@ set -eu
 # services that require the original legal notices.
 # export VITE_RISU_LEGAL_CONFIGURED="${VITE_RISU_LEGAL_CONFIGURED:-TRUE}"
 
-# Lite mode:
-# Enables the experimental lightweight/mobile-oriented UI mode at build time.
-# export VITE_RISU_LITE="${VITE_RISU_LITE:-TRUE}"
-
 # Advertisement configuration:
 # Optional Google AdSense client and slot IDs for desktop and mobile ad units.
 # export VITE_AD_CLIENT="${VITE_AD_CLIENT:-}"

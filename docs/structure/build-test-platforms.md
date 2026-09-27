@@ -53,7 +53,6 @@ Config files:
 - `tsconfig.json`: includes `src/**/*` and `public/sw.js`.
 
 Environment variables:
-- `VITE_RISU_LITE`: `TRUE` enables Lite.
 - `VITE_RISU_NIGHTLY_BUILD`, `VITE_RISU_BUILD_TIME`.
 - `VITE_RISU_LEGAL_CONFIGURED`.
 - Ad variables.
@@ -107,7 +106,7 @@ Web and mobile:
 - The service worker paths (`/sw/img` with hex paths, `/sw/share/*`) are a contract with three consumers.
 
 ## Recipes
-- Change the build: `vite.config.ts`, plus the consumers of any env var (`lite.ts`, `bootstrap.ts`). Verify with `pnpm check`, `pnpm test`, `pnpm build`.
+- Change the build: `vite.config.ts`, plus the consumers of any env var (`bootstrap.ts`). Verify with `pnpm check`, `pnpm test`, `pnpm build`.
 - Add a Tauri command:
   1. Add the Rust function to `main.rs` and to `generate_handler!`.
   2. Add the frontend `invoke` caller.

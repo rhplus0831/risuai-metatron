@@ -101,7 +101,7 @@ Release
 
 | Task | Guide |
 |---|---|
-| Startup order, top-level screen selection, global stores, platform flags, hotkeys, Lite build | `docs/structure/app-shell.md` |
+| Startup order, top-level screen selection, global stores, platform flags, hotkeys | `docs/structure/app-shell.md` |
 | `globalFetch`/`fetchNative`, proxy routing, assets (`saveAsset`/`loadAsset`), alerts, `util.ts` helpers | `docs/structure/global-api.md` |
 | Add or migrate a DB field, save format, storage backends, cold storage, autosave | `docs/structure/persistence.md` |
 | Sending a message, prompt assembly, prompt template items, lorebook activation, slash commands, inlays, group chat, reroll | `docs/structure/chat-pipeline.md` |
@@ -137,7 +137,7 @@ The first matching row wins. Scan from the top.
 | `src/ts/drive/`, `src/ts/kei/`, `src/ts/sync/`, `src/ts/realm.ts`, `src/lib/UI/Realm/`, `src/lib/Setting/Pages/FilesSettings.svelte`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`, `public/functions/drive.js` | backup-sync-hub |
 | `src/ts/globalApi.svelte.ts`, `src/ts/util.ts`, `src/ts/util/`, `src/ts/alert.ts`, `src/ts/network/`, `src/ts/dragTypes.ts`, `src/ts/sourcemap.ts`, `src/ts/sionyw.ts`, `src/ts/iris.ts`, `src/ts/licenses.ts`, `src/lib/Others/AlertComp.svelte`, `src/lib/Others/IrisModal.svelte` | global-api |
 | `src/ts/setting/`, `src/lib/Setting/` (the rest), `src/lang/`, `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/{PromptDiffModal,AllSeperateParameters,QuickSettingsGUI}.svelte`, `src/lib/Others/ProTools/` | settings-i18n |
-| `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/LiteMain.svelte`, `src/ts/bootstrap.ts`, `src/ts/stores.svelte.ts`, `src/ts/platform.ts`, `src/ts/polyfill.ts`, `src/ts/hotkey.ts`, `src/ts/defaulthotkeys.ts`, `src/ts/observer.svelte.ts`, `src/ts/mutex.ts`, `src/ts/lite.ts`, `src/ts/update.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte` | app-shell |
+| `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/ts/bootstrap.ts`, `src/ts/stores.svelte.ts`, `src/ts/platform.ts`, `src/ts/polyfill.ts`, `src/ts/hotkey.ts`, `src/ts/defaulthotkeys.ts`, `src/ts/observer.svelte.ts`, `src/ts/mutex.ts`, `src/ts/update.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte` | app-shell |
 | `src/lib/` (everything else), `src/styles.css`, `src/ts/gui/` | ui-theming |
 | `server/`, `Dockerfile`, `docker-compose.yml`, `server.sh`, `server.bat`, `public/functions/proxy*.js` | self-host-server |
 | `package.json`, `vite.config.ts`, `vitest.*`, `tsconfig*.json`, `src-tauri/`, `capacitor.config.ts`, `public/sw.js`, `public/manifest.json`, `util/`, `version.json`, `t.py`, `resources/` | build-test-platforms |
@@ -175,14 +175,12 @@ targeted path to read them.
 | Kei | Optional auto-backup server (`keiServerURL`) | backup-sync-hub |
 | Sionyw | OAuth/DPoP account auth for protected hub resources (`src/ts/sionyw.ts`) | global-api |
 | Iris | Built-in assistant modal using the RisuAccess MCP tools | global-api |
-| Lite build | `VITE_RISU_LITE=TRUE`, which forces the mobile GUI and the lite palette | app-shell |
 | Playground | Tool screens selected by `PlaygroundStore` (tokenizer, Jinja, subtitles, ...) | media-aux |
 
 ## Dead, Placeholder, or Unwired Code
 
 Do not extend these without first confirming intent.
 
-- `src/LiteMain.svelte`: not imported anywhere. The Lite build uses the normal shell.
 - `src/lib/ChatScreens/Message.svelte`: unfinished rewrite (template is `TODO`), unused.
 - `src/lib/UI/GUI/SyntaxHighlightedTextarea.svelte` and `src/lib/Playground/PlaygroundRegex.svelte`:
   0-byte files.
