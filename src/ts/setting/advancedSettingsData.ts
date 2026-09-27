@@ -519,16 +519,6 @@ export const advancedSettingsItems: SettingItem[] = [
         helpUnrecommended: true,
         classes: "mt-4",
     },
-    {
-        id: "adv.depTrig",
-        type: "check",
-        labelKey: "showDeprecatedTriggerV1",
-        bindKey: "showDeprecatedTriggerV1",
-        condition: (ctx) => ctx.db.showUnrecommended,
-        helpKey: "unrecommended",
-        helpUnrecommended: true,
-        classes: "mt-4",
-    },
 
     // Custom Components
     { type: "custom", id: "adv.banChar", componentId: "BanCharacterSetSettings" },

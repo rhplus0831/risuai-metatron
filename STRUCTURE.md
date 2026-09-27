@@ -116,7 +116,7 @@ Release
 | Long-term memory (SupaMemory, HypaV2/V3, Hanurai), embeddings, HypaV3 modal                                                | `docs/structure/memory.md`               |
 | Add a model or provider, request/stream parsing, tool calls, parameters, tokenizers, aux-model routing                     | `docs/structure/llm-requests.md`         |
 | CBS `{{...}}` functions, message rendering/markdown/sanitization, chat variables, partial edit, editor highlighting        | `docs/structure/cbs-rendering.md`        |
-| Regex scripts, triggers v1/v2, Lua scripting                                                                               | `docs/structure/scripts-triggers.md`     |
+| Regex scripts, triggers v2, Lua scripting                                                                                  | `docs/structure/scripts-triggers.md`     |
 | Plugin API (v2.1 legacy, v3 iframe sandbox), plugin providers/hooks, MCP tools                                             | `docs/structure/plugins-mcp.md`          |
 | Character cards import/export, characters/groups CRUD, modules, personas, loadouts, lorebook editor UI                     | `docs/structure/characters-modules.md`   |
 | Chat screen components, sidebar, GUI primitives, popups/portals, theme/colors                                              | `docs/structure/ui-theming.md`           |
@@ -169,7 +169,7 @@ targeted path to read them.
 | Lorebook / loreBook                    | Keyword-activated context entries (global/character, chat-local, module), with `@@` decorators                    | chat-pipeline      |
 | Prompt template                        | `DBState.db.promptTemplate: PromptItem[]`, the ordered prompt cards                                               | chat-pipeline      |
 | Regex script (`customscript`)          | Find/replace rules run in `editinput`/`editoutput`/`editprocess`/`editdisplay` (plus `edittrans` for translation) | scripts-triggers   |
-| Trigger v1/v2 (`triggerscript`)        | Event-driven effect lists; v2 is a flat array with `indent` blocks and a header sentinel at index 0               | scripts-triggers   |
+| Trigger v2 (`triggerscript`)           | Event-driven effect lists; v2 is a flat array with `indent` blocks and a header sentinel at index 0               | scripts-triggers   |
 | Module (`RisuModule`, `.risum`)        | Bundle of lorebook/regex/trigger/assets/MCP, enabled globally, per chat, per character, or via a persona          | characters-modules |
 | Persona                                | User identity (name/icon/prompt), optionally with an embedded module                                              | characters-modules |
 | Loadout                                | Snapshot of character + modules + global variables + preset + persona                                             | characters-modules |

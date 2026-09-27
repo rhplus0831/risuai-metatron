@@ -1153,7 +1153,6 @@ export interface Database {
     reasoningEffort: number;
     bulkEnabling: boolean;
     showTranslationLoading: boolean;
-    showDeprecatedTriggerV1: boolean;
     showDeprecatedTriggerV2: boolean;
     returnCSSError: boolean;
     checkCorruption?: boolean;

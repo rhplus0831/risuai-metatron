@@ -134,19 +134,6 @@
             currentModule.regex = currentModule.regex;
         }
     }
-
-    function addTrigger() {
-        if (Array.isArray(currentModule.trigger)) {
-            currentModule.trigger.push({
-                conditions: [],
-                type: "start",
-                comment: "",
-                effect: [],
-            });
-
-            currentModule.trigger = currentModule.trigger;
-        }
-    }
 </script>
 
 <div class="flex w-full rounded-md border border-darkborderc mb-4 overflow-x-auto h-16 min-h-16 overflow-y-clip">

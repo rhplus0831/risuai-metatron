@@ -4,7 +4,7 @@
 
 - Owns:
   - regex find/replace scripts,
-  - triggers v1 and v2 (the data model, the runtime, and the editors),
+  - triggers v2 and Lua (the data model, the runtime, and the editors),
   - the Lua runtime (wasmoon) and the injected API.
 - Paths:
   - `src/ts/process/{scripts,triggers,scriptings}.ts`
@@ -25,7 +25,8 @@
   - `exportRegex`/`importRegex`, `resetScriptCache`.
   - Internal: `executeScript`, `processScriptCache`, `bestMatchCache`.
 - `triggers.ts`: the trigger model and runtime.
-  - Types: `triggerscript`, `triggerCondition`, `triggerEffect` = `triggerEffectV1 | triggerCode | triggerEffectV2`.
+  - Types: `triggerscript`, `triggerEffect` = `triggerCode | triggerEffectV2`.
+  - `triggerscript.conditions` is `unknown[]`, kept for shared-format compatibility with upstream readers. Newly created triggers write `[]`; imported arrays are preserved, and `runTrigger` skips triggers with non-empty conditions.
   - Allowlists: `displayAllowList`, `requestAllowList`.
   - `runTrigger(char, mode, {chat, displayData, manualName, ...})` returns `{additonalSysPrompt, chat, tokens, stopSending, sendAIprompt, displayData, tempVars}`.
 - `scriptings.ts`: Lua orchestration.
@@ -34,8 +35,7 @@
   - `runLuaButtonTrigger`: `onButtonClick`.
   - Internal: `declareAPI`, `luaCodeWrapper`, `ScriptingEngines`, and the permission ID sets.
 - `SideBars/Scripts/RegexData.svelte`, `RegexList.svelte`: the regex editor. Flags are native `g/i/m/u/s` plus `<move_top>`, `<move_bottom>`, `<repeat_back>`, `<cbs>`, `<no_end_nl>`, `<order n>`.
-- `SideBars/Scripts/TriggerList.svelte`: picks the editor mode (v1, Lua, or v2).
-- `TriggerV1List.svelte`, `TriggerV1Data.svelte`: v1 editor.
+- `SideBars/Scripts/TriggerList.svelte`: picks the editor mode (v2 or Lua). Any other non-empty list (legacy v1 data, `triggercode`) shows `triggerLegacyUnsupported` and is replaced when switching mode.
 - `TriggerV2List.svelte`: the v2 editor, about 4100 lines.
   - `effectCategories`, `checkSupported`, `makeDefaultEditType`.
   - Block edit helpers: `deleteEffect`, `copyEffect`, `getInsertIndent`, `getBlockRange`.
@@ -74,8 +74,8 @@ Where each hook runs:
 3. Append `getModuleTriggers()`.
 4. Resolve variables.
 5. Filter by event type (`start|manual|output|input|display|request`).
-6. Evaluate the conditions (`var`/`value`, `exists` with strict/loose/regex, `chatindex`).
-7. Run the effects in order.
+6. Skip any trigger with non-empty legacy `conditions` (trigger v1 was removed; these are not evaluated).
+7. Run the effects in order. Legacy v1 effect types have no case and are ignored.
 
 v2 layout:
 
@@ -121,7 +121,6 @@ Lua:
 
 - Add a regex mode: extend `ScriptMode`, wire its caller, add the UI option in `RegexData.svelte`, and update `translator.ts:applyEdittransRegex` if the mode is translation-only.
 - Add a regex flag: add it to the UI in `RegexData.svelte`, parse the `<...>` metadata in `processScriptFull`, implement it in `executeScript`, and add the translator equivalent if needed.
-- Add a v1 effect: add the interface and union member in `triggers.ts`, update `TriggerV1Data.svelte`, and add a `runTrigger` case.
 - Add a v2 effect:
   1. Add the type and union member in `triggers.ts`.
   2. Update `effectCategories`, `checkSupported`, and `makeDefaultEditType` in `TriggerV2List.svelte`.

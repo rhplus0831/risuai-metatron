@@ -7,7 +7,6 @@
     import { openURL } from "src/ts/globalApi.svelte";
     import { hubURL } from "src/ts/characterCards";
     import TriggerV2List from "./TriggerV2List.svelte";
-    import { DBState } from "src/ts/stores.svelte";
 
     interface Props {
         value?: triggerscript[];
@@ -15,33 +14,9 @@
     }
 
     let { value = $bindable([]), lowLevelAble = false }: Props = $props();
-    let v1Enabled = $derived(
-        value?.[0]?.effect?.[0]?.type !== "triggercode" &&
-            value?.[0]?.effect?.[0]?.type !== "triggerlua" &&
-            value?.[0]?.effect?.[0]?.type !== "v2Header",
-    );
-
-    const loadTriggerV1List = () => import("./TriggerV1List.svelte").then((m) => m.default);
 </script>
 
 <div class="flex items-start mt-2 gap-2">
-    {#if v1Enabled || DBState.db.showDeprecatedTriggerV1}
-        <button
-            class="bg-bgcolor py-1 rounded-md text-sm px-2"
-            class:ring-1={v1Enabled}
-            onclick={async (e) => {
-                e.stopPropagation();
-                const codeType = value?.[0]?.effect?.[0]?.type;
-                if (codeType === "triggercode" || codeType === "triggerlua" || codeType === "v2Header") {
-                    const t = await alertConfirm(language.triggerSwitchWarn);
-                    if (!t) {
-                        return;
-                    }
-                    value = [];
-                }
-            }}>V1</button
-        >
-    {/if}
     <button
         class="bg-bgcolor py-1 rounded-md text-sm px-2"
         class:ring-1={value?.[0]?.effect?.[0]?.type === "v2Header"}
@@ -49,9 +24,11 @@
             e.stopPropagation();
             const codeType = value?.[0]?.effect?.[0]?.type;
             if (codeType !== "v2Header") {
-                const t = await alertConfirm(language.triggerSwitchWarn);
-                if (!t) {
-                    return;
+                if (value && value.length > 0) {
+                    const t = await alertConfirm(language.triggerSwitchWarn);
+                    if (!t) {
+                        return;
+                    }
                 }
                 value = [
                     {
@@ -105,9 +82,6 @@
         }}>Lua</button
     >
 </div>
-{#if v1Enabled}
-    <span class="text-draculared">{language.triggerV1Warning}</span>
-{/if}
 {#if value?.[0]?.effect?.[0]?.type === "triggerlua"}
     <TextAreaInput margin="both" autocomplete="off" bind:value={value[0].effect[0].code} popupLanguage="lua"
     ></TextAreaInput>
@@ -118,8 +92,6 @@
     >
 {:else if value?.[0]?.effect?.[0]?.type === "v2Header"}
     <TriggerV2List bind:value {lowLevelAble} />
-{:else}
-    {#await loadTriggerV1List() then TriggerV1List}
-        <TriggerV1List bind:value {lowLevelAble} />
-    {/await}
+{:else if value && value.length > 0}
+    <span class="text-draculared">{language.triggerLegacyUnsupported}</span>
 {/if}
