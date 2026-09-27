@@ -25,7 +25,9 @@
   - `hotkeyMatches`.
 - `src/ts/defaulthotkeys.ts`: the `Hotkey` type and `defaultHotkeys`.
 - `src/ts/observer.svelte.ts`:
-  - `startObserveDom`: an infinite 100 ms polling loop.
+  - `startObserveDom`: idempotent. Adds one `document` `contextmenu` delegate (Copy/Download menu for `x-hl-lang` code blocks) and a `MutationObserver` on `document.body` that syncs BGM from `risu-ctrl="bgm___<volume|auto>___<src>"` markers.
+  - BGM: one track at a time. When nothing is playing, it starts the first marker in document order (the newest message, since the chat body is column-reversed). A playing track keeps playing while its marker stays in the DOM, even if a newer marker appears, and replays on `ended`. It stops `BGM_STOP_GRACE_MS` (1 s) after its marker is gone.
+  - BGM failures: an autoplay block (`NotAllowedError`) pauses all BGM until the next activating `pointerup`/`keydown` (touch grants activation only on release). A source or media error skips only that marker, so another marker can still play; it is not retried on gestures, only after the marker has been missing from the DOM for more than 1 s and appears again.
   - `registerClaudeObserver`: Claude cache keep-alive pings, called from `process/request/anthropic.ts`.
 - `src/ts/mutex.ts` `Mutex`: FIFO lock used by the scripting engines. `runExclusive` must keep its `finally` release.
 - `src/lib/UI/MainMenu.svelte`: home screen. Switches to `RealmMain` via `OpenRealmStore`. Renders `hubAdditionalHTML` with `{@html}`.
@@ -119,10 +121,11 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 ## Tests
 
-- None cover boot, screen precedence, platform detection, hotkeys, observers, or `Mutex`.
+- None cover boot, screen precedence, platform detection, hotkeys, `registerClaudeObserver`, or `Mutex`.
+- `src/ts/observer.test.ts` covers `startObserveDom` under happy-dom with an `Audio` stub and fake timers: BGM marker parsing, selection, grace stop, failure and autoplay retry policy, and the delegated code-block menu. Mutation records are delivered with `takeRecords()` because happy-dom's own timer is not faked.
 - Some tests mock `stores.svelte` and `platform` (parser tests, `scriptings.test.ts`, `requests.responses.test.ts`). They exercise consumers, not these modules.
 
 ## Known Hazards
 
-- `startObserveDom` creates a `MutationObserver` it never uses, and it polls forever with no cleanup.
+- BGM stop detection is marker-based. If a message re-render keeps its BGM marker out of the DOM for more than 1 s (for example a slow re-parse), the track stops and restarts from the beginning.
 - `isInStandaloneMode` has no consumers. `bootstrap.ts` recomputes standalone mode locally before calling `navigator.storage.persist`.
