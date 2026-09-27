@@ -23,16 +23,15 @@
 
 `package.json` scripts:
 
-| Script             | Command                                   | Use               |
-| ------------------ | ----------------------------------------- | ----------------- |
-| `dev`              | `vite`                                    | dev server        |
-| `build`            | `vite build --sourcemap`                  | web build         |
-| `buildsite`        | `vite build --outDir dist`                | site build        |
-| `preview`          | `vite preview`                            | preview the build |
-| `check`            | `svelte-check --tsconfig ./tsconfig.json` | type check        |
-| `test`             | `vitest run`                              | tests             |
-| `runserver`        | `node server/node/server.cjs`             | self-host server  |
-| `hono:build`       | build + Hono postbuild                    | Hono skeleton     |
+| Script      | Command                                                                  | Use                          |
+| ----------- | ------------------------------------------------------------------------ | ---------------------------- |
+| `dev`       | `vite`                                                                   | dev server                   |
+| `build`     | `vite build --sourcemap`                                                 | web build                    |
+| `buildsite` | `vite build --outDir dist`                                               | site build                   |
+| `preview`   | `vite preview`                                                           | preview the build            |
+| `check`     | `svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json` | type check (client + server) |
+| `test`      | `vitest run`                                                             | tests                        |
+| `runserver` | `node server/src/main.ts`                                                | self-host server             |
 
 - Prettier config lives in `.prettierrc.json` (4-space indent, double quotes, semicolons, width 120, 2-space for JSON/YAML/Markdown, `prettier-plugin-svelte`). `.prettierignore` mirrors `.ignore` plus lockfiles, snapshots, `dist/`, and `src/ts/plugins/apiV3/risuai.d.ts` (a doc comment there contains a literal `*/`, so Prettier cannot parse it).
 
@@ -63,7 +62,7 @@ Web:
 
 ## Flows
 
-- Web: `pnpm dev` or `pnpm build` produces `dist/`, which is served statically, by `server.cjs`, or by Docker.
+- Web: `pnpm dev` or `pnpm build` produces `dist/`, which is served statically, by the Hono self-host server (`server/src/`), or by Docker.
 - There is no desktop build. The Tauri shell (`src-tauri/`), its `@tauri-apps/*` packages, the updater, and the Python llama.cpp sidecar were removed.
 
 ## State

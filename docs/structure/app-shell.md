@@ -94,7 +94,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 - `selectedCharID === -1` is the home sentinel. Components index `DBState.db.characters[$selectedCharID]` whenever it is nonnegative.
 - Call `saveDb()` only once, from `loadData`. It installs effects and runs an infinite loop.
 - `isWeb` means production `risuai.xyz` only. localhost and dev runs are not `isWeb`.
-- `isNodeServer` depends on `server/node/server.cjs` injecting `globalThis.__NODE__ = true` into `index.html`.
+- `isNodeServer` depends on `server/src/app.ts` (`GET /`) injecting `globalThis.__NODE__ = true` into `index.html`.
 - New hotkey actions need:
   - an entry in `defaultHotkeys`,
   - a branch in the `initHotkey` dispatch switch,

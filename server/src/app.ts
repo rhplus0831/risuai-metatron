@@ -1,0 +1,105 @@
+import { mkdirSync } from "node:fs";
+import fs from "node:fs/promises";
+import type http from "node:http";
+import path from "node:path";
+import { serveStatic } from "@hono/node-server/serve-static";
+import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
+import { HTTPException } from "hono/http-exception";
+import { createAuthStore } from "./auth.ts";
+import { compileTrust, getClientIp, parseTrustProxyEnv } from "./clientIp.ts";
+import { registerProxyRoutes } from "./proxy.ts";
+import { createProxyStreamJobs } from "./proxyStreamJobs.ts";
+import { createRateLimiter } from "./rateLimit.ts";
+import { registerStorageRoutes } from "./storage.ts";
+import type { AppEnv } from "./types.ts";
+
+const MAX_BODY_BYTES = 100 * 1024 * 1024;
+const headOpenTag = /<head(\s[^>]*)?>/i;
+
+export type ServerContext = ReturnType<typeof createServerContext>;
+
+/**
+ * Builds the self-host server: `rootDir/dist` is the built client, `rootDir/save` the storage.
+ * All state (password, known keys, stream jobs, rate-limit counters) lives in the returned
+ * context.
+ */
+export function createServerContext(options: { rootDir: string; trustProxy?: string }) {
+    const savePath = path.join(options.rootDir, "save");
+    const distPath = path.join(options.rootDir, "dist");
+    mkdirSync(savePath, { recursive: true });
+
+    const trust = compileTrust(parseTrustProxyEnv(options.trustProxy));
+    const clientIp = (c: Parameters<typeof getClientIp>[0]) => getClientIp(c, trust);
+
+    const auth = createAuthStore(savePath);
+    const proxyStreamJobs = createProxyStreamJobs({ auth });
+
+    const authenticatedRouteLimiter = createRateLimiter({
+        windowMs: 60 * 1000,
+        limit: 2000,
+        message: "Too many requests. Please retry shortly.",
+        keyOf: clientIp,
+    });
+    const authRouteLimiter = createRateLimiter({
+        windowMs: 60 * 1000,
+        limit: 2000,
+        message: "Too many requests. Please retry shortly.",
+        keyOf: clientIp,
+    });
+    const loginRouteLimiter = createRateLimiter({
+        windowMs: 30 * 1000,
+        limit: 10,
+        message: "Too many attempts. Please wait and try again later.",
+        keyOf: clientIp,
+    });
+
+    const app = new Hono<AppEnv>({ strict: false });
+
+    app.onError((error, c) => {
+        if (error instanceof HTTPException) {
+            return error.getResponse();
+        }
+        console.error(error);
+        return c.text("Internal Server Error", 500);
+    });
+
+    app.use(
+        bodyLimit({
+            maxSize: MAX_BODY_BYTES,
+            onError: (c) => c.json({ error: "Request body too large" }, 413),
+        }),
+    );
+
+    // Serves the client with the flag that makes `isNodeServer` true.
+    app.get("/", async (c) => {
+        const clientIP =
+            c.req.header("x-forwarded-for") || clientIp(c) || c.env?.incoming?.socket?.remoteAddress || "Unknown IP";
+        console.log(`[Server] ${new Date().toISOString()} | Connection from: ${clientIP}`);
+
+        const mainIndex = await fs.readFile(path.join(distPath, "index.html"), "utf-8");
+        if (!headOpenTag.test(mainIndex)) {
+            throw new Error("dist/index.html has no <head>");
+        }
+        return c.html(mainIndex.replace(headOpenTag, (tag) => `${tag}<script>globalThis.__NODE__ = true</script>`));
+    });
+
+    app.get("*", serveStatic({ root: distPath }));
+
+    registerProxyRoutes(app, { auth, limiter: authenticatedRouteLimiter.middleware, clientIp });
+    proxyStreamJobs.registerRoutes(app, { limiter: authenticatedRouteLimiter.middleware, clientIp });
+    auth.registerRoutes(app, { auth: authRouteLimiter.middleware, login: loginRouteLimiter.middleware });
+    registerStorageRoutes(app, { savePath, auth, limiter: authenticatedRouteLimiter.middleware });
+
+    return {
+        app,
+        attachWebSocket: (server: http.Server) => proxyStreamJobs.attachWebSocket(server),
+        startBackgroundTasks: () => proxyStreamJobs.startGc(),
+        dispose: () => {
+            proxyStreamJobs.dispose();
+            authenticatedRouteLimiter.dispose();
+            authRouteLimiter.dispose();
+            loginRouteLimiter.dispose();
+        },
+    };
+}

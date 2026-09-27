@@ -148,7 +148,7 @@ Alerts:
 
 - Change network routing:
   1. Edit `globalFetch`, `fetchNative`, `getProxy2Url`, and `fetchViaProxyJobWs`.
-  2. Update `server/node/server.cjs` and `public/functions/proxy2.js` if the contract changes.
+  2. Update `server/src/proxy.ts` and `public/functions/proxy2.js` if the contract changes.
   3. Verify web, Node, local-network, abort, and timeout behavior.
 - Add an asset kind: `saveAsset`, `loadAsset`, `readImage`, `getFileSrc`, plus migrations. Verify web storage, Node storage, and the service worker.
 - Add an alert:

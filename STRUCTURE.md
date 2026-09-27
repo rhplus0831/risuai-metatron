@@ -1,12 +1,12 @@
 # STRUCTURE
 
 Agent-oriented map of this repository (RisuAI fork "metatron"): a Svelte 5 + TypeScript AI
-roleplay chat client shipped as a web app (installable PWA) and a Node self-hosted server.
+roleplay chat client shipped as a web app (installable PWA) and a Hono (Node) self-hosted server.
 There is no desktop (Tauri) or mobile (Capacitor) build. Anchors are `path` + identifier. Line numbers are deliberately omitted because
 they drift. Grep the identifier instead.
 
 Last full audited: 2026-09-27.
-Last scoped updated: 2026-09-27.
+Last scoped updated: 2026-09-28.
 
 ## Agent Read Protocol
 
@@ -27,7 +27,8 @@ Last scoped updated: 2026-09-27.
 
 Tooling
 
-- T1. Use `pnpm` (`packageManager: pnpm@10.34.1`, Node `^20.19.0 || >=22.12.0`).
+- T1. Use `pnpm` (`packageManager: pnpm@10.34.1`, Node `>=24.0.0`; the self-host server runs its
+  TypeScript directly through Node type stripping).
 - T2. Import alias `src/...` resolves to `/src` in both Vite and Vitest (`vite.config.ts` and
   `vitest.config.ts` `resolve.alias`). Both alias imports and relative imports are used; match the
   surrounding file.
@@ -68,7 +69,7 @@ Data and persistence (details: `docs/structure/persistence.md`)
 Platform and network (details: `docs/structure/global-api.md`)
 
 - P1. Platform flags live in `src/ts/platform.ts`: `isNodeServer` (`globalThis.__NODE__`,
-  injected by `server/node/server.cjs`), `isMobile` (user-agent based), and `isWeb`, which is true
+  injected by the Hono self-host server, `server/src/app.ts`), `isMobile` (user-agent based), and `isWeb`, which is true
   only when the host is exactly `risuai.xyz`. Every storage or network change must keep the Node
   and plain-browser branches working.
 - P2. Outbound HTTP goes through `globalFetch` (buffered) or `fetchNative` (streaming/bytes) in
@@ -123,7 +124,7 @@ Release
 | Settings pages, declarative settings registry, bot presets, prompt template editor, i18n                                   | `docs/structure/settings-i18n.md`        |
 | TTS, image generation, translation, media compression, playground tools                                                    | `docs/structure/media-aux.md`            |
 | Local backups, Realm hub browse, settings report export                                                                    | `docs/structure/backup-sync-hub.md`      |
-| Node self-host server routes/auth/storage, Hono skeleton, Docker, server migration (e.g. Fastify)                          | `docs/structure/self-host-server.md`     |
+| Self-host server (Hono on Node) routes/auth/storage/proxies, Docker                                                        | `docs/structure/self-host-server.md`     |
 | Scripts, Vite/Vitest config, test inventory, service worker, version bump                                                  | `docs/structure/build-test-platforms.md` |
 
 ## Path Ownership
@@ -197,7 +198,6 @@ Do not extend these without first confirming intent.
   runtime never applies. The runtime uses `presetRegex`.
 - `memoryAlgorithmType`: written by the settings UI, never read. The memory branch is chosen by
   boolean flags.
-- `server/hono/`: Hello-world skeleton with none of the Node server's routes.
 - `t.py`: legacy, no readers.
 
 ## Doc Maintenance

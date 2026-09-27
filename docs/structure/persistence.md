@@ -137,5 +137,5 @@ Cold storage (removed):
 
 ## Known Hazards
 
-- `NodeStorage.removeItem(string[])` hex-encodes the `$$`-joined keys, and the server then splits the hex string on `$$`. Batch removal therefore targets one nonexistent combined filename. Fix the client and server together.
+- `NodeStorage.removeItem(string[])` hex-encodes each key separately and joins them with `$$`; the server validates every segment before deleting. A filesystem error mid-batch (e.g. a missing file) returns 500 and keeps earlier deletions.
 - `getCurrentChat` has no snapshot option, unlike `getDatabase` and `getCurrentCharacter`.

@@ -6,7 +6,6 @@ src/ts/rpack/
 
 # Lockfiles and generated output
 pnpm-lock.yaml
-server/hono/pnpm-lock.yaml
 **/__snapshots__/
 dist/
 

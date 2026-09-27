@@ -121,11 +121,16 @@ export class NodeStorage {
         return data.content;
     }
     async removeItem(key: string | string[]) {
+        const keys = Array.isArray(key) ? key : [key];
+        if (keys.length === 0) {
+            return;
+        }
         await this.checkAuth();
         const da = await fetch("/api/remove", {
             method: "GET",
             headers: {
-                "file-path": Buffer.from(Array.isArray(key) ? key.join("$$") : key, "utf-8").toString("hex"),
+                // Each key is hex-encoded on its own; `$$` separates them because it is not hex.
+                "file-path": keys.map((k) => Buffer.from(k, "utf-8").toString("hex")).join("$$"),
                 "risu-auth": await this.createAuth(),
             },
         });
