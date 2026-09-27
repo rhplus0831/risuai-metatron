@@ -16,13 +16,10 @@ import { updateGuisize } from "./gui/guisize";
 import { updateLorebooks } from "./characters";
 import { initMobileGesture } from "./hotkey";
 import { moduleUpdate } from "./process/modules";
-import { makeColdData } from "./process/coldstorage.svelte";
 import {
     forageStorage,
     saveDb,
     getDbBackups,
-    getUncleanables,
-    getBasename,
     setUsingSw,
     checkCharOrder
 } from "./globalApi.svelte";
@@ -114,7 +111,6 @@ export async function loadData() {
                 initMobileGesture()
                 MobileGUI.set(true)
             }
-            await makeColdData()
             loadedStore.set(true)
             selectedCharID.set(-1)
             startObserveDom()
@@ -122,7 +118,6 @@ export async function loadData() {
             registerModelDynamic()
             saveDb()
             moduleUpdate()
-            cleanChunks()
             cleanLegacyAccountData()
             
         } catch (error) {
@@ -380,66 +375,6 @@ function cleanLegacyAccountData() {
         } catch (error) { }
     }
 }
-
-/**
- * Purges chunks of data that are not needed.
- */
-async function cleanChunks(options:{
-    cleanColdStorage?: boolean
-} = {}) {
-    const cleanColdStorage = options.cleanColdStorage ?? false
-    const db = getDatabase()
-    if(db.coldstorage && !cleanColdStorage){
-        return
-    }
-
-    const uncleanable = new Set(await getUncleanables(db))
-    const indexes = await forageStorage.keys()
-    const characterIds = new Set<string>(
-        db.characters.map((v) => v.chaId)
-    )
-    for (const asset of indexes) {
-        if (asset.startsWith('assets/')) {
-            const n = getBasename(asset)
-            if(!uncleanable.has(n)) {
-                await forageStorage.removeItem(asset)
-            }
-        }
-        else if (asset.endsWith('.meta')){
-            continue
-        }
-        else if (asset.startsWith('remotes/')) {
-            const name = getBasename(asset).slice(0, -10) //remove .local.bin
-            const exists = characterIds.has(name)
-            if(!exists){
-                let okayToDelete = false
-                try {
-                    const metaPath = asset + '.meta'
-                    const metaExists = (await forageStorage.keys()).includes(metaPath)
-                    if (metaExists) {
-                        const metaData: Uint8Array = await forageStorage.getItem(metaPath) as unknown as Uint8Array
-                        const metaJson = JSON.parse(new TextDecoder().decode(metaData))
-                        const lastUsed = metaJson.lastUsed as number
-                        if(Date.now() - lastUsed > 1000 * 60 * 60 * 24 * 7) { //not used for 7 days
-                            okayToDelete = true
-                        }
-                    }
-                    else{
-                        //write meta for next time
-                        const metaJson = {
-                            lastUsed: Date.now()
-                        }
-                        await forageStorage.setItem(metaPath, new TextEncoder().encode(JSON.stringify(metaJson)))
-                    }
-                } catch (error) {}
-                if (okayToDelete) {
-                    await forageStorage.removeItem(asset)
-                }
-            }
-        }
-    }
-}
-
 
 /**
  * Assigns unique IDs to characters and chats.

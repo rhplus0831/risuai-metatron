@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Risu Account sync was removed, and with it the ability to decrypt account-encrypted
-// local backups. These tests pin the replacement behavior of `LoadLocalBackup`:
-// an archive carrying `encryption.risudat` is rejected before any asset, cold-storage,
-// or database write happens, and ordinary archives still restore in full.
+// Risu Account sync and cold storage were both removed. These tests pin the
+// replacement behavior of `LoadLocalBackup`: an archive carrying `encryption.risudat`
+// is rejected before any asset or database write happens, ordinary archives still
+// restore in full, and legacy `coldstorage_<uuid>.json` records from older archives
+// are skipped instead of being written into `assets/`.
 
 const {
     alertError,
@@ -11,7 +12,6 @@ const {
     alertWait,
     alertStoreSet,
     forageSetItem,
-    setColdStorageItem,
     setDatabaseLite,
     decodeRisuSave,
     requiresFullEncoderReload,
@@ -21,7 +21,6 @@ const {
     alertWait: vi.fn(),
     alertStoreSet: vi.fn(),
     forageSetItem: vi.fn(async (_key: string, _value: unknown) => undefined),
-    setColdStorageItem: vi.fn(async (_key: string, _value: unknown) => true),
     setDatabaseLite: vi.fn(),
     decodeRisuSave: vi.fn(async (_data: Uint8Array) => ({ characters: [] })),
     requiresFullEncoderReload: { state: false },
@@ -62,19 +61,6 @@ vi.mock('../util', () => ({
 vi.mock('src/lang', () => ({
     language: {},
 }))
-
-vi.mock('../process/coldstorage.svelte', async () => {
-    const data = await vi.importActual<typeof import('../process/coldstorageData')>('../process/coldstorageData')
-    return {
-        getColdStorageBackupKey: data.getColdStorageBackupKey,
-        isColdStorageBackupData: data.isColdStorageBackupData,
-        collectColdStorageBackupPayloads: vi.fn(async () => []),
-        confirmIncompleteColdStorageOperation: vi.fn(async () => true),
-        getColdStorageItem: vi.fn(async () => null),
-        listColdDataKeys: vi.fn(async () => []),
-        setColdStorageItem,
-    }
-})
 
 import { LoadLocalBackup } from './backuplocal'
 
@@ -127,7 +113,7 @@ const coldKey = '11111111-1111-1111-1111-111111111111'
 const coldRecordName = `coldstorage_${coldKey}.json`
 const dbBytes = new Uint8Array([9, 8, 7, 6])
 
-describe('LoadLocalBackup after Risu Account removal', () => {
+describe('LoadLocalBackup after Risu Account and cold storage removal', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         requiresFullEncoderReload.state = false
@@ -156,7 +142,6 @@ describe('LoadLocalBackup after Risu Account removal', () => {
         expect(alertError).toHaveBeenCalledTimes(1)
         expect(alertError.mock.calls[0][0]).toMatch(/Risu Account/)
         expect(forageSetItem).not.toHaveBeenCalled()
-        expect(setColdStorageItem).not.toHaveBeenCalled()
         expect(setDatabaseLite).not.toHaveBeenCalled()
         expect(decodeRisuSave).not.toHaveBeenCalled()
         expect(fetch).not.toHaveBeenCalled()
@@ -166,10 +151,8 @@ describe('LoadLocalBackup after Risu Account removal', () => {
     it('restores a plain archive and only scans record headers for the marker', async () => {
         // The marker string inside record *data* must not trigger the rejection.
         const assetData = encoder.encode('not a header: encryption.risudat')
-        const coldPayload = { message: [{ data: 'hello' }] }
         const file = archive([
             record('a1b2c3d4.png', assetData),
-            record(coldRecordName, encoder.encode(JSON.stringify(coldPayload))),
             record('database.risudat', dbBytes),
         ])
 
@@ -182,13 +165,44 @@ describe('LoadLocalBackup after Risu Account removal', () => {
         const assetCall = forageSetItem.mock.calls.find((c) => c[0] === 'assets/a1b2c3d4.png')!
         expect(Array.from(assetCall[1] as Uint8Array)).toEqual(Array.from(assetData))
 
-        expect(setColdStorageItem).toHaveBeenCalledWith(coldKey, coldPayload)
-
         expect(decodeRisuSave).toHaveBeenCalledTimes(1)
         expect(Array.from(decodeRisuSave.mock.calls[0][0] as Uint8Array)).toEqual(Array.from(dbBytes))
         expect(setDatabaseLite).toHaveBeenCalledWith({ characters: [] })
         expect(forageSetItem).toHaveBeenCalledWith('database/database.bin', expect.any(Uint8Array))
         expect(requiresFullEncoderReload.state).toBe(true)
+        expect(alertNormal).toHaveBeenCalledWith('Success')
+    })
+
+    it('skips legacy cold storage records and still writes every other record to assets/', async () => {
+        // Older archives carry `coldstorage_<uuid>.json` payloads. Nothing reads them
+        // anymore, so they must not be restored as assets. The skip is by name only:
+        // any other `.json` record is an ordinary asset and is written as before.
+        const assetData = encoder.encode('png bytes')
+        const otherJson = encoder.encode('{"not":"cold"}')
+        const file = archive([
+            record(coldRecordName, encoder.encode(JSON.stringify({ message: [{ data: 'hello' }] }))),
+            record('a1b2c3d4.png', assetData),
+            record('notes.json', otherJson),
+            record(`coldstorage_${coldKey.replace(/1/g, '2')}.json`, encoder.encode(JSON.stringify({ character: {} }))),
+            record('database.risudat', dbBytes),
+        ])
+
+        await loadBackup(file)
+
+        expect(alertError).not.toHaveBeenCalled()
+
+        const writtenKeys = forageSetItem.mock.calls.map((c) => c[0] as string)
+        expect(writtenKeys.filter((k) => k.startsWith('assets/')).sort()).toEqual([
+            'assets/a1b2c3d4.png',
+            'assets/notes.json',
+        ])
+        expect(writtenKeys.some((k) => k.includes('coldstorage_'))).toBe(false)
+        const notesCall = forageSetItem.mock.calls.find((c) => c[0] === 'assets/notes.json')!
+        expect(Array.from(notesCall[1] as Uint8Array)).toEqual(Array.from(otherJson))
+
+        expect(decodeRisuSave).toHaveBeenCalledTimes(1)
+        expect(setDatabaseLite).toHaveBeenCalledWith({ characters: [] })
+        expect(forageSetItem).toHaveBeenCalledWith('database/database.bin', expect.any(Uint8Array))
         expect(alertNormal).toHaveBeenCalledWith('Success')
     })
 

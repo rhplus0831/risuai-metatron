@@ -81,7 +81,6 @@ Embedding routing:
   - `scriptings.ts`: the Lua similarity API.
   - `triggers.ts`: similarity effects.
   - `files/multisend.ts`, `embedding/addinfo.ts`, `mcp/graphmem.ts`, the main pipeline, and the playground.
-- `coldstorage.svelte.ts` saves and restores `hypaV2Data`/`hypaV3Data`.
 
 ## Invariants
 - Never persist a runtime `Set`. Use the `toSerializable*` and `to*Data` converters in both directions.

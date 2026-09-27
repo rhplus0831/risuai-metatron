@@ -30,13 +30,6 @@ export const languageChineseTraditional = {
         "networkFetchPlain": "這可能是一般 Fetch 錯誤。請嘗試在設定中停用「強制一般 Fetch」",
         "requestLogRemoved": "此請求記錄已被移除",
         "requestLogRemovedDesc": "重新整理或重新載入用戶端後，請求記錄會被移除",
-        "coldStorageWriteFailed": "冷儲存寫入失敗。您的對話資料已被保留",
-        "coldStorageVerifyFailed": "冷儲存驗證失敗。您的對話資料已被保留",
-        "coldStorageRestoreFailed": "無法載入冷儲存資料。受影響角色的資料可能已永久遺失",
-        "coldStorageIncompleteBackupConfirm": (characterNames: string, unavailableCount: number, unresolvedCount: number) =>
-            `${characterNames || "未知角色"} 的冷儲存資料遺失或無效。${unresolvedCount > 0 ? `有 ${unresolvedCount} 個項目無法連結到角色。` : ""}\n\n若繼續，此備份將缺少 ${unavailableCount} 個冷儲存項目，受影響的角色或對話資料可能無法從此備份復原。\n\n仍要建立不完整的備份嗎？`,
-        "coldStorageIncompleteRestoreConfirm": (characterNames: string, unavailableCount: number, unresolvedCount: number) =>
-            `無法復原 ${characterNames || "未知角色"} 的冷儲存資料。${unresolvedCount > 0 ? `有 ${unresolvedCount} 個項目無法連結到角色。` : ""}\n\n若繼續，${unavailableCount} 個冷儲存項目將無法使用，受影響的角色或對話資料可能永久遺失。\n\n仍要繼續不完整的復原嗎？`,
     },
     "showHelp": "顯示說明",
     "help": {
@@ -316,7 +309,6 @@ export const languageChineseTraditional = {
             "用於相似度搜尋的近期對話訊息數量。數值越高，搜尋查詢就會涵蓋更多對話內容",
         "hypaV3SummaryChunkSeparator":
             "用來將摘要切成多個區塊、供相似度搜尋使用的 Regex",
-        "coldstorage": "Cold Storage 會自動將舊對話與角色資料移至獨立儲存空間，以減少主要儲存空間大小並改善效能。這可降低資料傳輸時間與流量，並加快載入對話",
     },
     "setup": {
         "chooseProvider": "選擇 AI 供應商",
@@ -1424,7 +1416,6 @@ export const languageChineseTraditional = {
         "每 4 分鐘送出一次請求，以延長 Claude 快取的有效時間。這可降低快取未命中率，但若使用不當，也可能增加成本",
     "automaticCachePoint": "自動快取點",
     "experimentalChatCompression": "實驗性對話資料處理",
-    "loadingChatData": "正在載入對話資料",
     "outputImageModal": "輸出圖片視窗",
     "playMessageOnTranslateEnd": "翻譯完成後播放音訊",
     "auxModelUnderModelSettings": "在模型設定中，顯示各輔助功能的使用模型",
@@ -1666,10 +1657,7 @@ export const languageChineseTraditional = {
     "nanoGPTSelectFromList": "從清單中選擇",
     "nanoGPTManualInput": "手動輸入",
     "nanoGPTManualModelSelect": "手動選擇模型",
-    "coldStorage": "冷儲存",
-    "cleanColdStorage": "清理未使用的冷儲存資料",
     "customSidebarConfig": "自訂側邊欄設定",
-    "cleanColdStorageConfirm": "這會永久刪除所有未使用的冷儲存資料。其中可能包含目前未使用、但未來仍有用的資料。確定要繼續嗎？",
     "moveInsteadOfCopyOnCMPConvert": "CMP 轉換時以移動取代複製",
     "successfullyConverted": "轉換成功",
     "convertToModule": "轉換為模組",

@@ -85,8 +85,10 @@ Test inventory:
 |---|---|
 | GUI | `src/lib/UI/GUI/guiRendering.test.ts` |
 | Parser | `src/ts/parser/tests/cbs/{conditionals,escapes,loop,strings}.test.ts`, `chatML.test.ts`, `chatVar.svelte.test.ts`, `trimMarkdownStyle.test.ts` |
-| Process | `coldstorageData.test.ts`, `files/tests/inlays.test.ts`, `mcp/risuaccess/tests/modules.test.ts` (with `__snapshots__`), `request/tests/additionalParams.test.ts`, `request/openAI/requests.responses.test.ts`, `scriptings.test.ts`, `ttsHooks.test.ts` |
-| Storage and core | `src/ts/chatLoadPages.test.ts`, `src/ts/sourcemap.test.ts`, `src/ts/tokenizer.test.ts` |
+| Process | `files/tests/inlays.test.ts`, `mcp/risuaccess/tests/modules.test.ts` (with `__snapshots__`), `request/tests/additionalParams.test.ts`, `request/openAI/requests.responses.test.ts`, `scriptings.test.ts`, `ttsHooks.test.ts` |
+| Storage and core | `src/ts/chatLoadPages.test.ts`, `src/ts/sourcemap.test.ts`, `src/ts/tokenizer.test.ts`, `src/ts/storage/{autoStorage,database.setDatabase}.test.ts` |
+| Plugins | `src/ts/plugins/apiV3/pluginStorage.test.ts` |
+| Backup | `src/ts/drive/backuplocal.test.ts` |
 | Network | `src/ts/network/{localNetwork,proxyJobWs}.test.ts` |
 | Media | `src/ts/media/tests/imageType.test.ts`, `src/ts/media/compressImage/tests/compressImage.test.ts` |
 | Translator | `src/ts/translator/{edittransRegex,presets}.test.ts` |

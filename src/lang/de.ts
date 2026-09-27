@@ -29,13 +29,6 @@ export const languageGerman = {
         "requestLogRemoved": "Dieses Anfrage-Protokoll wurde entfernt.",
         "requestLogRemovedDesc": "Dieses Anfrage-Protokoll wird entfernt, wenn der Client aktualisiert oder neu geladen wird.",
         "vertexAuthError": "Vertex AI-Authentifizierungsdetails fehlen.",
-        "coldStorageWriteFailed": "Kaltlager-Schreibvorgang fehlgeschlagen. Ihre Chat-Daten wurden beibehalten.",
-        "coldStorageVerifyFailed": "Kaltlager-Überprüfung fehlgeschlagen. Ihre Chat-Daten wurden beibehalten.",
-        "coldStorageRestoreFailed": "Kaltlagerdaten konnten nicht geladen werden. Die Daten des betroffenen Charakters können dauerhaft verloren sein.",
-        "coldStorageIncompleteBackupConfirm": (characterNames: string, unavailableCount: number, unresolvedCount: number) =>
-            `Kaltlagerdaten für ${characterNames || "unbekannte Charaktere"} fehlen oder sind ungültig.${unresolvedCount > 0 ? ` ${unresolvedCount} Element(e) konnten keinem Charakter zugeordnet werden.` : ""}\n\nWenn Sie fortfahren, fehlen in dieser Sicherung ${unavailableCount} Kaltlagerelement(e). Die betroffenen Charakter- oder Chatdaten können daraus möglicherweise nicht wiederhergestellt werden.\n\nTrotzdem eine unvollständige Sicherung erstellen?`,
-        "coldStorageIncompleteRestoreConfirm": (characterNames: string, unavailableCount: number, unresolvedCount: number) =>
-            `Kaltlagerdaten für ${characterNames || "unbekannte Charaktere"} konnten nicht wiederhergestellt werden.${unresolvedCount > 0 ? ` ${unresolvedCount} Element(e) konnten keinem Charakter zugeordnet werden.` : ""}\n\nWenn Sie fortfahren, bleiben ${unavailableCount} Kaltlagerelement(e) nicht verfügbar. Die betroffenen Charakter- oder Chatdaten können dauerhaft verloren gehen.\n\nTrotzdem mit der unvollständigen Wiederherstellung fortfahren?`
     },
     "showHelp": "Hilfe anzeigen",
     "help": {
@@ -1259,7 +1252,6 @@ export const languageGerman = {
     "claudeCachingRetrivalDesc": "Verlängert die Cache-Zeit für Claude-Caching, indem alle 4 Minuten angefordert wird. Dies kann die Cache-Miss-Rate verringern, aber die Kosten erhöhen, wenn es nicht richtig verwendet wird.",
     "automaticCachePoint": "Automatischer Cache-Punkt",
     "experimentalChatCompression": "Experimentelle Chat-Datenverarbeitung",
-    "loadingChatData": "Lade Chat-Daten",
     "outputImageModal": "Ausgabebild-Modal",
     "playMessageOnTranslateEnd": "Audio bei Übersetzungsabschluss abspielen",
     "auxModelUnderModelSettings": "Separate Hilfsmodelle in Modelleinstellungen anzeigen",

@@ -107,7 +107,7 @@ Display:
   3. Add a test under `src/ts/parser/tests/cbs/` using the `cbs` helper from `lib.ts`.
   4. Confirm it appears in Playground → CBS docs.
 - Change message display: `Chat.svelte:displaya` or `ChatBody.svelte:markParsing` for call order, and `ParseMarkdown`, `parseAdditionalAssets`, `renderMarkdown`, or `trimMarkdown` for rendering and security. Run `trimMarkdownStyle.test.ts`.
-- Change variable semantics: `chatVar.svelte.ts` plus the `getvar`/`setvar`/`tempvar`/`getglobalvar` callbacks. Check the cold-storage and loadout shapes too.
+- Change variable semantics: `chatVar.svelte.ts` plus the `getvar`/`setvar`/`tempvar`/`getglobalvar` callbacks. Check the loadout shapes too.
 
 ## Tests
 - `src/ts/parser/tests/cbs/{conditionals,escapes,loop,strings}.test.ts`.

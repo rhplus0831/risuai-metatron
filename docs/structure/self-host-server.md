@@ -71,13 +71,13 @@ Proxying:
 Disk, under `save/`:
 - `__password`: the client-side SHA-256 digest via `/api/crypto`.
 - `__known_public_key_hashes.json`.
-- User files, named by their hex-encoded logical key: `database/database.bin`, `database/dbbackup-*.bin`, `assets/*`, `remotes/*`, `coldstorage/*`.
+- User files, named by their hex-encoded logical key: `database/database.bin`, `database/dbbackup-*.bin`, `assets/*`, `remotes/*`. Legacy `coldstorage/*` files from removed cold storage may remain but are no longer read.
 
 Process memory: `password`, `knownPublicKeysHashes`, `proxyStreamJobs` (a Map).
 
 ## Coupling
 - Server dependencies: Express, `express-rate-limit`, `ws`, `node-html-parser`, Node `crypto`/`fs`/`http`/`https`.
-- Client dependencies that use this server: `NodeStorage`, `AutoStorage`, `globalApi` proxy code, `characterCards.hubURL` (`/hub-proxy`), `coldstorage.svelte.ts`, `util.ts` DPoP storage.
+- Client dependencies that use this server: `NodeStorage`, `AutoStorage`, `globalApi` proxy code, `characterCards.hubURL` (`/hub-proxy`), `util.ts` DPoP storage.
 
 ## Invariants
 - Hex file names are the path-traversal guard. `isHex` only lets through hex strings plus `__password`. Never accept raw paths.

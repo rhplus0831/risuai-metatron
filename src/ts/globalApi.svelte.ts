@@ -2,7 +2,7 @@ import { checkNullish, sleep } from "./util"
 import { v4 as uuidv4, v4 } from 'uuid';
 import { get } from "svelte/store";
 import streamSaver from 'streamsaver';
-import { setDatabase, type Database, defaultSdDataFunc, getDatabase, appVer, getCurrentCharacter, type character, type groupChat, appSubVer } from "./storage/database.svelte";
+import { setDatabase, defaultSdDataFunc, getDatabase, appVer, getCurrentCharacter, appSubVer } from "./storage/database.svelte";
 import { MobileGUI, botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState, selIdState, ReloadGUIPointer, bodyIntercepterStore } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertConfirm, alertError, alertMd, alertNormal, alertNormalWait, alertSelect, waitAlert } from "./alert";
@@ -19,7 +19,6 @@ import { updateGuisize } from "./gui/guisize";
 import { updateLorebooks } from "./characters";
 import { initMobileGesture } from "./hotkey";
 import { moduleUpdate } from "./process/modules";
-import { getColdStorageItem, makeColdData } from "./process/coldstorage.svelte";
 import { isNodeServer } from "./platform";
 import { isLocalNetworkUrl } from "./network/localNetwork";
 import { decodeProxyJobWsChunk, formatProxyStreamErrorMessage, parseProxyJobWsEvent } from "./network/proxyJobWs";
@@ -755,128 +754,6 @@ export function getBasename(data: string) {
     const lasts = splited[splited.length - 1];
     return lasts;
 }
-
-export async function getUncleanables(db: Database, uptype: 'basename' | 'pure' = 'basename') {
-    let chars: (character|groupChat)[] = []
-    if (db.characters) {
-        for(let cha of db.characters){
-            if(cha?.coldstorage){
-                const coldData = await getColdStorageItem(cha.coldstorage!)
-                if(coldData?.character && coldData.character.chaId === cha.chaId){
-                    cha = coldData.character
-                }
-            }
-            chars.push(cha)
-        }
-    }
-
-    return getUncleanablesSync(db, uptype, { chars });
-}
-
-/**
- * Retrieves uncleanable resources from the database.
- * 
- * @param {Database} db - The database to retrieve uncleanable resources from.
- * @param {'basename'|'pure'} [uptype='basename'] - The type of uncleanable resources to retrieve.
- * @returns {Promise<string[]>} - An array of uncleanable resources.
- */
-export function getUncleanablesSync(db: Database, uptype: 'basename' | 'pure' = 'basename', options?:{
-    chars: (character|groupChat)[],
-}) {
-    const uncleanable = new Set<string>();
-
-    /**
-     * Adds a resource to the uncleanable list if it is not already included.
-     * 
-     * @param {string} data - The resource to add.
-     */
-    function addUncleanable(data: string) {
-        if (!data) {
-            return;
-        }
-        if (data === '') {
-            return;
-        }
-        const bn = uptype === 'basename' ? getBasename(data) : data;
-        uncleanable.add(bn);
-    }
-
-    addUncleanable(db.customBackground);
-    addUncleanable(db.userIcon);
-    const chars = options?.chars ?? db.characters
-
-    for (let cha of chars) {
-        if (cha.image) {
-            addUncleanable(cha.image);
-        }
-        if (cha.emotionImages) {
-            for (const em of cha.emotionImages) {
-                addUncleanable(em[1]);
-            }
-        }
-        if (cha.type !== 'group') {
-            if (cha.additionalAssets) {
-                for (const em of cha.additionalAssets) {
-                    addUncleanable(em[1]);
-                }
-            }
-            if (cha.vits) {
-                const keys = Object.keys(cha.vits.files);
-                for (const key of keys) {
-                    const vit = cha.vits.files[key];
-                    addUncleanable(vit);
-                }
-            }
-            if (cha.ccAssets) {
-                for (const asset of cha.ccAssets) {
-                    addUncleanable(asset.uri);
-                }
-            }
-        }
-    }
-
-    if (db.modules) {
-        for (const module of db.modules) {
-            const assets = module.assets
-            if (assets) {
-                for (const asset of assets) {
-                    addUncleanable(asset[1])
-                }
-            }
-            if(module.icon){
-                addUncleanable(module.icon)
-            }
-        }
-    }
-
-    if (db.personas) {
-        db.personas.map((v) => {
-            addUncleanable(v.icon);
-
-            if(v.embeddedModule){
-                const assets = v.embeddedModule.assets
-                if (assets) {
-                    for (const asset of assets) {
-                        addUncleanable(asset[1])
-                    }
-                }
-                if(v.embeddedModule.icon){
-                    addUncleanable(v.embeddedModule.icon)
-                }
-            }
-        });
-    }
-
-    if (db.characterOrder) {
-        db.characterOrder.forEach((item) => {
-            if (typeof item === 'object' && 'imgFile' in item) {
-                addUncleanable(item.imgFile);
-            }
-        })
-    }
-    return Array.from(uncleanable);
-}
-
 
 /**
  * Checks and updates the character order in the database.

@@ -29,13 +29,6 @@ export const languageVietnamese = {
         "requestLogRemoved": "This request log is removed.",
         "requestLogRemovedDesc": "This request log removes when client is refreshed or reloaded.",
         "vertexAuthError": "Thiếu thông tin xác thực Vertex AI.",
-        "coldStorageWriteFailed": "Ghi vào bộ nhớ lạnh thất bại. Dữ liệu trò chuyện của bạn đã được bảo toàn.",
-        "coldStorageVerifyFailed": "Xác minh bộ nhớ lạnh thất bại. Dữ liệu trò chuyện của bạn đã được bảo toàn.",
-        "coldStorageRestoreFailed": "Không thể tải dữ liệu bộ nhớ lạnh. Dữ liệu của nhân vật bị ảnh hưởng có thể đã bị mất vĩnh viễn.",
-        "coldStorageIncompleteBackupConfirm": (characterNames: string, unavailableCount: number, unresolvedCount: number) =>
-            `Dữ liệu bộ nhớ lạnh của ${characterNames || "nhân vật không xác định"} bị thiếu hoặc không hợp lệ.${unresolvedCount > 0 ? ` Có ${unresolvedCount} mục không thể liên kết với nhân vật.` : ""}\n\nNếu tiếp tục, bản sao lưu này sẽ thiếu ${unavailableCount} mục bộ nhớ lạnh và dữ liệu nhân vật hoặc cuộc trò chuyện bị ảnh hưởng có thể không thể khôi phục từ bản sao lưu.\n\nVẫn tạo bản sao lưu không đầy đủ?`,
-        "coldStorageIncompleteRestoreConfirm": (characterNames: string, unavailableCount: number, unresolvedCount: number) =>
-            `Không thể khôi phục dữ liệu bộ nhớ lạnh của ${characterNames || "nhân vật không xác định"}.${unresolvedCount > 0 ? ` Có ${unresolvedCount} mục không thể liên kết với nhân vật.` : ""}\n\nNếu tiếp tục, ${unavailableCount} mục bộ nhớ lạnh sẽ vẫn không khả dụng và dữ liệu nhân vật hoặc cuộc trò chuyện bị ảnh hưởng có thể bị mất vĩnh viễn.\n\nVẫn tiếp tục khôi phục không đầy đủ?`
     },
     "showHelp": "Hiển thị trợ giúp",
     "help": {
@@ -1259,7 +1252,6 @@ export const languageVietnamese = {
     "claudeCachingRetrivalDesc": "Kéo dài thời gian lưu trữ bộ nhớ đệm Claude bằng cách yêu cầu mỗi 4 phút. Điều này có thể giảm tỷ lệ bỏ lỡ bộ nhớ đệm, nhưng có thể tăng chi phí nếu không sử dụng đúng cách.",
     "automaticCachePoint": "Điểm lưu trữ tự động",
     "experimentalChatCompression": "Xử lý dữ liệu trò chuyện thử nghiệm",
-    "loadingChatData": "Đang tải dữ liệu trò chuyện",
     "outputImageModal": "Modal hình ảnh đầu ra",
     "playMessageOnTranslateEnd": "Phát âm thanh khi hoàn thành dịch",
     "auxModelUnderModelSettings": "Hiển thị tách biệt mô hình phụ trong cài đặt mô hình",

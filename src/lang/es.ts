@@ -29,13 +29,6 @@ export const languageSpanish = {
         "requestLogRemoved": "Este registro de solicitud ha sido eliminado.",
         "requestLogRemovedDesc": "Este registro de solicitud se elimina cuando el cliente se actualiza o recarga.",
         "vertexAuthError": "Faltan los detalles de autenticación de Vertex AI.",
-        "coldStorageWriteFailed": "Error al escribir en almacenamiento frío. Sus datos de chat se han conservado.",
-        "coldStorageVerifyFailed": "Error en la verificación del almacenamiento frío. Sus datos de chat se han conservado.",
-        "coldStorageRestoreFailed": "No se pudieron cargar los datos del almacenamiento frío. Los datos del personaje afectado pueden haberse perdido permanentemente.",
-        "coldStorageIncompleteBackupConfirm": (characterNames: string, unavailableCount: number, unresolvedCount: number) =>
-            `Faltan datos del almacenamiento frío de ${characterNames || "personajes desconocidos"} o no son válidos.${unresolvedCount > 0 ? ` No se pudieron asociar ${unresolvedCount} elemento(s) con un personaje.` : ""}\n\nSi continúa, a esta copia de seguridad le faltarán ${unavailableCount} elemento(s) del almacenamiento frío y puede que no sea posible recuperar los datos de los personajes o chats afectados.\n\n¿Crear de todos modos la copia de seguridad incompleta?`,
-        "coldStorageIncompleteRestoreConfirm": (characterNames: string, unavailableCount: number, unresolvedCount: number) =>
-            `No se pudieron restaurar los datos del almacenamiento frío de ${characterNames || "personajes desconocidos"}.${unresolvedCount > 0 ? ` No se pudieron asociar ${unresolvedCount} elemento(s) con un personaje.` : ""}\n\nSi continúa, ${unavailableCount} elemento(s) del almacenamiento frío seguirán sin estar disponibles y los datos de los personajes o chats afectados podrían perderse permanentemente.\n\n¿Continuar de todos modos con la restauración incompleta?`
     },
     "showHelp": "Mostrar Ayuda",
     "help": {
@@ -1259,7 +1252,6 @@ export const languageSpanish = {
     "claudeCachingRetrivalDesc": "Extiende el tiempo de caché para Claude Caching, solicitando cada 4 minutos. esto puede reducir la tasa de fallos de caché, pero puede aumentar el costo si no se usa correctamente.",
     "automaticCachePoint": "Punto de Caché Automático",
     "experimentalChatCompression": "Manejo Experimental de Datos de Chat",
-    "loadingChatData": "Cargando Datos de Chat",
     "outputImageModal": "Modal de Imagen de Salida",
     "playMessageOnTranslateEnd": "Reproducir Audio al Completar Traducción",
     "auxModelUnderModelSettings": "Mostrar Modelos Auxiliares Separados en Configuración de Modelo",

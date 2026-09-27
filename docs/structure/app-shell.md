@@ -10,7 +10,7 @@
 - `src/preload.ts` `preLoadCheck`: pre-mount step that sets `localStorage.mainpage`. On `isWeb` it registers `beforeunload`.
 - `src/App.svelte`: the "router" (ordered `{#if}` chain), plus drag/drop import, overlays (alerts, popups, modals), and keep-alive audio.
 - `src/ts/bootstrap.ts`:
-  - `loadData`: `forageStorage` DB load, then migrations, plugins, theme, `makeColdData`, `loadedStore = true`, then services such as `saveDb`.
+  - `loadData`: `forageStorage` DB load, then migrations, plugins, theme, `loadedStore = true`, then services such as `saveDb`.
   - `checkNewFormat`: legacy data repair.
   - `registerSw`: service worker.
 - `src/ts/stores.svelte.ts`: all global UI stores plus the `DBState` rune (see State).
@@ -38,9 +38,8 @@ Boot:
    2. `checkNewFormat`, which ends in `setDatabase`.
    3. Theme functions: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`.
    4. `MobileGUI` when `betaMobileGUI && innerWidth <= 800`.
-   5. `await makeColdData`.
-   6. `loadedStore.set(true)` and `selectedCharID.set(-1)`.
-   7. Observers, ID assignment, `registerModelDynamic`, `saveDb()` (exactly once), `moduleUpdate`, storage cleanup (`cleanChunks`, `cleanLegacyAccountData`).
+   5. `loadedStore.set(true)` and `selectedCharID.set(-1)`.
+   6. Observers, ID assignment, `registerModelDynamic`, `saveDb()` (exactly once), `moduleUpdate`, `cleanLegacyAccountData`. There is no boot-time asset cleanup: orphaned `assets/*` and `remotes/*` files are never purged automatically.
 
 Screen selection. `App.svelte` checks these in order:
 1. Legal/config and April Fools branches.
@@ -76,11 +75,11 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 ## Coupling
 - `stores.svelte.ts` is imported almost everywhere, with the highest fan-out in the repo. Changing a store's semantics affects the UI, process, plugins, and sync code.
-- `bootstrap.ts` depends on storage, `globalApi.svelte.ts`, plugins, cold storage, model registry, modules, and observers.
+- `bootstrap.ts` depends on storage, `globalApi.svelte.ts`, plugins, model registry, modules, and observers.
 - Platform flags are consumed by storage, network, drive, cards, parser, translator, and settings.
 
 ## Invariants
-- Do not flip `loadedStore` to true before `setDatabase`, `checkNewFormat`, theme setup, and `makeColdData` finish. `App` assumes `DBState.db` is normalized after that point. When `loadData` fails it only calls `alertError`, and the loading screen stays up.
+- Do not flip `loadedStore` to true before `setDatabase`, `checkNewFormat`, and theme setup finish. `App` assumes `DBState.db` is normalized after that point. When `loadData` fails it only calls `alertError`, and the loading screen stays up.
 - `selectedCharID === -1` is the home sentinel. Components index `DBState.db.characters[$selectedCharID]` whenever it is nonnegative.
 - Call `saveDb()` only once, from `loadData`. It installs effects and runs an infinite loop.
 - `isWeb` means production `risuai.xyz` only. localhost and dev runs are not `isWeb`.

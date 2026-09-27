@@ -82,12 +82,12 @@ MCP:
 ## State
 - `db.plugins: RisuPlugin[]`: name, script, version, arguments, `realArg`, `enabled`, `allowedIPC`, update URL. Saved in the `plugins` save block.
 - Plugin storage:
-  - `pluginStorage` is save-file data. It lives in cold storage, mapped by `db.pluginCustomStorage._coldplugin`.
+  - `pluginStorage` is save-file data in `db.pluginCustomStorage` (the `pluginStorage` save block). v2.1 uses its top level, shared with v2.1 `getDatabase` custom properties. v3 uses the reserved `_pluginStorage` sub-object, and `setItem` JSON-normalizes values (throws on BigInt).
   - `safeLocalStorage` and `getLocalPluginStorage` are device-local.
 - v3 permissions are persisted in LocalForage, keyed by script hash plus permission. The permission names are `fetchLogs`, `db`, `mainDom`, `replacer`, `provider`, `sendChat`, `inlay`.
 
 ## Coupling
-- Plugins depend on `database.svelte.ts`, cold storage, `globalFetch`/`fetchNative`, assets, `scripts.ts`, model types, `ttsHooks`, theme functions, UI stores, alerts, `pluginmcp`.
+- Plugins depend on `database.svelte.ts`, `globalFetch`/`fetchNative`, assets, `scripts.ts`, model types, `ttsHooks`, theme functions, UI stores, alerts, `pluginmcp`.
 - Plugin consumers: `bootstrap.ts`, `PluginSettings.svelte`, `BotSettings.svelte` (custom providers), `request.ts`, `scripts.ts`, `index.svelte.ts`, `tokenizer.ts`, `modellist.ts`, `globalApi.svelte.ts`.
 - MCP consumers: `request.ts` and the provider adapters, `PlaygroundMCP.svelte`, `IrisModal.svelte`/`iris.ts`.
 
@@ -112,6 +112,7 @@ MCP:
 ## Tests
 - `src/ts/process/mcp/risuaccess/tests/modules.test.ts`: property-based and snapshot tests.
 - `requests.responses.test.ts`: the tool loop, with `callTool` mocked.
+- `src/ts/plugins/apiV3/pluginStorage.test.ts`: v3 `pluginStorage` isolation under `pluginCustomStorage._pluginStorage`, JSON normalization, and the BigInt rejection. It captures the API object by mocking `SandboxHost`.
 - Not tested: the sandbox RPC, permissions, v2 safety, hot reload, provider cleanup, remote MCP, filesystem tools.
 
 ## Known Hazards

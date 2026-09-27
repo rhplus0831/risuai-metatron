@@ -32,7 +32,7 @@
   - Export: `exportChar` (dialog), `exportCharacterCard` (writer), `createBaseV2`/`createBaseV3`.
   - Hub and links: `characterURLImport` (deep links and shares), `hubURL`, `getRisuHub`/`downloadRisuHub`/`getRealmInfo`. `hubURL` is `/hub-proxy` on Node, otherwise `https://sv.risuai.xyz`.
 - `characters.ts`: character lifecycle.
-  - Create and select: `addCharacter`, `createNewCharacter`, `createBlankChar`, `createNewGroup`, `changeChar` (restores cold data, runs `characterFormatUpdate`).
+  - Create and select: `addCharacter`, `createNewCharacter`, `createBlankChar`, `createNewGroup`, `changeChar` (runs `characterFormatUpdate`).
   - Delete: `removeChar` (soft delete via `trashTime`, or permanent).
   - `updateLorebooks`, plus image, emotion, and chat import/export helpers.
 - `pngChunk.ts` `PngChunk`: `read`, `readGenerator` (streaming), `trim`, `write`, `streamWriter`. Other chunks are preserved.
@@ -128,7 +128,7 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 
 ## Tests
 - None cover cards, PNG, CharX, `.risum`, personas, loadouts, or the editors.
-- Adjacent: `mcp/risuaccess/tests/modules.test.ts`, `coldstorageData.test.ts` (asset rewrites).
+- Adjacent: `mcp/risuaccess/tests/modules.test.ts`.
 
 ## Known Hazards
 - `applyLoadout` appends the current character ID on every apply, so repeated applies create duplicates.

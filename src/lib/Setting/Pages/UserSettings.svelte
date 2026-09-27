@@ -5,7 +5,6 @@
     import { LoadLocalBackup, SaveLocalBackup, SavePartialLocalBackup } from "src/ts/drive/backuplocal";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import { exportAsDataset } from "src/ts/storage/exportAsDataset";
-    import { cleanColdStorage } from "src/ts/process/coldstorage.svelte";
 </script>
 
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.files}</h2>
@@ -44,15 +43,6 @@
         }
     }} className="mt-2">
     {language.loadInternalBackup}
-</Button>
-
-<Button
-    onclick={async () => {
-        if(await alertConfirm(language.cleanColdStorageConfirm)){
-            cleanColdStorage()
-        }
-    }} className="mt-2">
-    {language.cleanColdStorage}
 </Button>
 
 <Button onclick={exportAsDataset} className="mt-2">

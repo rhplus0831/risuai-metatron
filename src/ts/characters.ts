@@ -13,7 +13,6 @@ import { translateHTML } from "./translator/translator";
 import { doingChat } from "./process/index.svelte";
 import { importCharacter } from "./characterCards";
 import { PngChunk } from "./pngChunk";
-import { getColdStorageItem } from "./process/coldstorage.svelte";
 
 export function createNewCharacter() {
     DBState.db.characters.push(createBlankChar())
@@ -880,16 +879,6 @@ export async function changeChar(index: number, arg:{
       return
     }
     reseter();
-    if(DBState.db.characters?.[index]?.coldstorage){
-        const coldData = await getColdStorageItem(DBState.db.characters[index].coldstorage!)
-        if(coldData?.character && coldData.character.chaId === DBState.db.characters[index].chaId){
-            DBState.db.characters[index] = coldData.character
-        }
-        else{
-            alertError(language.errors.coldStorageRestoreFailed)
-            return
-        }
-    }
     characterFormatUpdate(index, {
       updateInteraction: true,
     });

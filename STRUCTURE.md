@@ -103,7 +103,7 @@ Release
 |---|---|
 | Startup order, top-level screen selection, global stores, platform flags, hotkeys | `docs/structure/app-shell.md` |
 | `globalFetch`/`fetchNative`, proxy routing, assets (`saveAsset`/`loadAsset`), alerts, `util.ts` helpers | `docs/structure/global-api.md` |
-| Add or migrate a DB field, save format, storage backends, cold storage, autosave | `docs/structure/persistence.md` |
+| Add or migrate a DB field, save format, storage backends, autosave | `docs/structure/persistence.md` |
 | Sending a message, prompt assembly, prompt template items, lorebook activation, slash commands, inlays, group chat, reroll | `docs/structure/chat-pipeline.md` |
 | Long-term memory (SupaMemory, HypaV2/V3, Hanurai), embeddings, HypaV3 modal | `docs/structure/memory.md` |
 | Add a model or provider, request/stream parsing, tool calls, parameters, tokenizers, aux-model routing | `docs/structure/llm-requests.md` |
@@ -128,7 +128,7 @@ The first matching row wins. Scan from the top.
 | `src/ts/process/request/`, `src/ts/process/models/`, `src/ts/process/webllm.ts`, `src/ts/model/`, `src/ts/horde/`, `src/ts/tokenizer.ts`, `src/lib/UI/Model*.svelte`, `src/lib/UI/NanoGPT*`, `src/lib/UI/OpenrouterProviderList.svelte`, `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte` | llm-requests |
 | `src/ts/process/mcp/`, `src/ts/plugins/`, `plugins.md`, `src/lib/Setting/Pages/PluginSettings.svelte`, `src/lib/Others/Plugin*.svelte`, `src/lib/Playground/PlaygroundMCP.svelte` | plugins-mcp |
 | `src/ts/process/scripts.ts`, `src/ts/process/triggers.ts`, `src/ts/process/scriptings.ts`, `src/ts/process/pyworker.ts`, `src/lib/SideBars/Scripts/`, `src/lib/Setting/Pages/GlobalRegex.svelte`, `src/lib/Playground/Playground{Regex,Syntax,Parser}.svelte`, `public/lua/` | scripts-triggers |
-| `src/ts/process/coldstorage*.ts`, `src/ts/storage/`, `src/ts/chatLoadPages.ts` | persistence |
+| `src/ts/storage/`, `src/ts/chatLoadPages.ts` | persistence |
 | `src/ts/process/processzip.ts`, `src/ts/process/modules.ts`, `src/ts/characterCards.ts`, `src/ts/characters.ts`, `src/ts/persona.ts`, `src/ts/loadout.ts`, `src/ts/pngChunk.ts`, `src/ts/interchangeability.ts`, `src/lib/SideBars/CharConfig.svelte`, `src/lib/SideBars/LoreBook/`, `src/lib/Setting/Pages/Module/`, `src/lib/Setting/Pages/PersonaSettings.svelte`, `src/lib/Setting/listedPersona.svelte`, `src/lib/Others/LoadoutModal.svelte`, `src/lib/Others/GridCatalog.svelte`, `src/lib/ChatScreens/AssetInput.svelte` | characters-modules |
 | `src/lib/Playground/PlaygroundMenu.svelte` | ui-theming |
 | `src/ts/process/tts*.ts`, `src/ts/process/stableDiff.ts`, `src/ts/translator/`, `src/ts/media/`, `src/ts/voice.ts`, `src/ts/3d/`, `src/lib/Playground/` (the remaining tools), `src/lib/UI/{3DLoader,Googli}.svelte`, `src/lib/Setting/Pages/Language/TranslatorPresetSettings.svelte`, `src/lib/Setting/Pages/Model/AuxModelSelectors.svelte` | media-aux |
@@ -168,7 +168,6 @@ targeted path to read them.
 | Bot preset (`.risup`) | Serializable subset of model/prompt settings (`botPreset`) | settings-i18n |
 | Inlay | Image/media stored in LocalForage `inlay` and referenced in chat text as `{{inlay::id}}` | chat-pipeline |
 | Asset | Card media stored as `assets/<hash>.<ext>` through `saveAsset`, referenced by path | global-api |
-| Cold storage | Old chats/characters/plugin storage offloaded out of the DB and restored on open | persistence |
 | SupaMemory / HypaV2 / HypaV3 / Hanurai | Long-term memory and summarization algorithms | memory |
 | Aux model / submodel | Secondary model for memory/emotion/translate/`otherAx`, selected via `seperateModels` | llm-requests |
 | Realm / Hub | Card browse and download service (`hubURL`, `realm.risuai.net`); Node proxies it via `/hub-proxy` (GET only) | backup-sync-hub |

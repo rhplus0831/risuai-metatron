@@ -27,7 +27,6 @@
     import { postChatFile } from 'src/ts/process/files/multisend';
     import { getInlayAsset } from 'src/ts/process/files/inlays';
     import { ConnectionOpenStore } from 'src/ts/sync/multiuser';
-    import { coldStorageHeader, preLoadChat } from 'src/ts/process/coldstorage.svelte';
     import Chats from './Chats.svelte';
     import Button from '../UI/GUI/Button.svelte';
     import PluginDefinedIcon from '../Others/PluginDefinedIcon.svelte';
@@ -795,16 +794,6 @@
                 </div>
             {/if}
 
-            {#if DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message?.[0]?.data?.startsWith(coldStorageHeader)  }
-                {#await preLoadChat($selectedCharID, DBState.db.characters[$selectedCharID].chatPage)}
-                    <div class="w-full flex justify-center text-textcolor2 italic mb-12">
-                        {language.loadingChatData}
-                    </div>
-                {:then a}
-                    <div></div>
-                {/await}
-            {:else}
-
             {#if chatFoldedStateMessageIndex.index !== -1}
                 <button class="w-full flex justify-center max-w-full p-4">
                     <Button className="max-w-xl w-full" onclick={() => {
@@ -888,8 +877,6 @@
                         }} />
                     {/if}
                 {/if}
-            {/if}
-
             {/if}
 
             {#if openMenu}

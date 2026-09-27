@@ -22,7 +22,6 @@
   - `loadAsset`, `readImage`.
   - `getFileSrc`: returns a displayable URL: `/sw/img/<hex>` when a service worker is present, or a data URL.
   - `downloadFile`, `getBasename`.
-  - `getUncleanables`/`getUncleanablesSync`: asset refs that must survive cleanup.
 - Save:
   - `saveDb`: the autosave loop.
   - `saving`: indicator state.
@@ -116,18 +115,18 @@ Alerts:
 4. The helper's poll loop resolves.
 
 ## State
-- `forageStorage` logical keys: `database/database.bin`, `database/dbbackup-*.bin`, `assets/*`, `remotes/*`, `coldstorage/*`.
+- `forageStorage` logical keys: `database/database.bin`, `database/dbbackup-*.bin`, `assets/*`, `remotes/*`.
 - `fetchLog[]` is private. `getFetchLogs` exposes the live array.
 - `chatFoldedState.data` is `{charId, chatId, messageId}`.
 
 ## Coupling
-- `globalApi.svelte.ts` imports `database.svelte.ts`, `risuSave.ts`, `stores.svelte.ts`, alerts, `characterCards.ts` (`hubURL`), cold storage, and the network helpers.
+- `globalApi.svelte.ts` imports `database.svelte.ts`, `risuSave.ts`, `stores.svelte.ts`, alerts, `characterCards.ts` (`hubURL`), and the network helpers.
 - Its importers: nearly every process, storage, UI, and plugin module.
 
 ## Invariants
 - Use `globalFetch`/`fetchNative` for every remote call so that proxy, Node routing, and logs apply.
 - Do not bypass the local-network block on web or the proxy auth headers. On Node, the server's `sanitizeTargetUrl` is a second SSRF boundary for proxy jobs only.
-- Asset references are logical `assets/...` paths, never URLs or OS paths. When you add an asset-bearing field, update `getUncleanablesSync` (keeps it from being cleaned).
+- Asset references are logical `assets/...` paths, never URLs or OS paths.
 - Each alert close path must write `type: 'none'`, or the awaiting caller hangs forever.
   - `alertSelect` encodes options joined with `||`.
   - `alertConfirm` returns true only for the exact `'yes'`.
@@ -138,7 +137,7 @@ Alerts:
   1. Edit `globalFetch`, `fetchNative`, `getProxy2Url`, and `fetchViaProxyJobWs`.
   2. Update `server/node/server.cjs` and `public/functions/proxy2.js` if the contract changes.
   3. Verify web, Node, local-network, abort, and timeout behavior.
-- Add an asset kind: `saveAsset`, `loadAsset`, `readImage`, `getFileSrc`, `getUncleanablesSync`, plus migrations. Verify web storage, Node storage, and the service worker.
+- Add an asset kind: `saveAsset`, `loadAsset`, `readImage`, `getFileSrc`, plus migrations. Verify web storage, Node storage, and the service worker.
 - Add an alert:
   1. Extend `alertData`.
   2. Add a helper in `alert.ts`.

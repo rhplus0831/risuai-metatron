@@ -4,7 +4,6 @@ import { decodeRisuSave, encodeRisuSaveLegacy } from "../storage/risuSave";
 import { getDatabase, setDatabaseLite } from "../storage/database.svelte";
 import { sleep } from "../util";
 import { language } from "src/lang";
-import { collectColdStorageBackupPayloads, confirmIncompleteColdStorageOperation, getColdStorageBackupKey, getColdStorageItem, isColdStorageBackupData, listColdDataKeys, setColdStorageItem } from "../process/coldstorage.svelte";
 
 function getBasename(data:string){
     const baseNameRegex = /\\/g
@@ -16,11 +15,6 @@ function getBasename(data:string){
 export async function SaveLocalBackup(){
     alertWait("Saving local backup...")
     const db = getDatabase()
-    const coldStoragePayloads = await collectColdStorageBackupPayloads(db)
-    const unavailableColdStorageKeys = [...coldStoragePayloads.missingKeys, ...coldStoragePayloads.invalidKeys]
-    if(!await confirmIncompleteColdStorageOperation(db, unavailableColdStorageKeys, 'backup')){
-        return
-    }
 
     const writer = new LocalWriter()
     const r = await writer.init()
@@ -97,13 +91,6 @@ export async function SaveLocalBackup(){
         }
     }
 
-    for(let i=0;i<coldStoragePayloads.payloads.length;i++){
-        const payload = coldStoragePayloads.payloads[i]
-        let message = `Saving local Backup Cold data... (${i + 1} / ${coldStoragePayloads.payloads.length})`
-        alertWait(message)
-        await writer.writeBackup(payload.backupName, payload.encoded)
-    }
-
     const dbData = encodeRisuSaveLegacy(db, 'compression')
 
     alertWait(`Saving local Backup... (Saving database)`) 
@@ -154,11 +141,6 @@ export async function SavePartialLocalBackup(){
     
     alertWait("Saving partial local backup...")
     const db = getDatabase()
-    const coldStoragePayloads = await collectColdStorageBackupPayloads(db)
-    const unavailableColdStorageKeys = [...coldStoragePayloads.missingKeys, ...coldStoragePayloads.invalidKeys]
-    if(!await confirmIncompleteColdStorageOperation(db, unavailableColdStorageKeys, 'backup')){
-        return
-    }
 
     const writer = new LocalWriter()
     const r = await writer.init()
@@ -253,13 +235,6 @@ export async function SavePartialLocalBackup(){
         }
     }
 
-    for(let i=0;i<coldStoragePayloads.payloads.length;i++){
-        const payload = coldStoragePayloads.payloads[i]
-        let message = `Saving partial local Backup Cold data... (${i + 1} / ${coldStoragePayloads.payloads.length})`
-        alertWait(message)
-        await writer.writeBackup(payload.backupName, payload.encoded)
-    }
-
     const dbData = encodeRisuSaveLegacy(db, 'compression')
 
     alertWait(`Saving partial local backup... (Saving database)`) 
@@ -329,7 +304,6 @@ export function LoadLocalBackup(){
             let bytesRead = 0;
             let remainingBuffer = new Uint8Array();
             let pendingDatabase: Uint8Array | null = null;
-            const restoredColdStorageKeys = new Set<string>();
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -369,34 +343,11 @@ export function LoadLocalBackup(){
                     if (name === 'database.risudat') {
                         pendingDatabase = new Uint8Array(data);
                     }
-                    
+                    else if (name.startsWith('coldstorage_') && name.endsWith('.json')) {
+                        // Record from removed cold storage in an older backup; nothing reads it anymore.
+                    }
                     else {
-                        const coldStorageKey = getColdStorageBackupKey(name)
-                        let handledAsColdStorage = false
-
-                        if (coldStorageKey) {
-                            handledAsColdStorage = true
-                            try {
-                                const text = new TextDecoder().decode(data)
-                                const jsonData = JSON.parse(text)
-
-                                if (isColdStorageBackupData(jsonData)) {
-                                    if(await setColdStorageItem(coldStorageKey, jsonData)){
-                                        restoredColdStorageKeys.add(coldStorageKey)
-                                    } else {
-                                        console.error(`Failed to restore cold storage item ${coldStorageKey}`)
-                                    }
-                                } else {
-                                    console.warn(`Skipping invalid cold storage backup item ${name}`)
-                                }
-                            } catch (e) {
-                                console.error(`Failed to parse cold storage item ${coldStorageKey}:`, e)
-                            }
-                        }
-
-                        if (!handledAsColdStorage) {
-                            await forageStorage.setItem('assets/' + name, data);
-                        }
+                        await forageStorage.setItem('assets/' + name, data);
                     }
                     await sleep(10);
 
@@ -412,19 +363,6 @@ export function LoadLocalBackup(){
 
             const db = pendingDatabase;
             const dbData = await decodeRisuSave(db);
-            const missingColdStorageKeys:string[] = []
-            for(const key of await listColdDataKeys(dbData)){
-                if(restoredColdStorageKeys.has(key)){
-                    continue
-                }
-                const existingColdStorage = await getColdStorageItem(key)
-                if(!isColdStorageBackupData(existingColdStorage)){
-                    missingColdStorageKeys.push(key)
-                }
-            }
-            if(!await confirmIncompleteColdStorageOperation(dbData, missingColdStorageKeys, 'restore')){
-                return
-            }
 
             setDatabaseLite(dbData);
             requiresFullEncoderReload.state = true;

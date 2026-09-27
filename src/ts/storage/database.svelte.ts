@@ -30,6 +30,11 @@ export type StreamingDisplayOptimizationMode = 'off'|'balanced'|'strong'
 export function setDatabase(data:Database){
     // Risu Account was removed; drop the login token older saves still carry.
     delete (data as Database & { account?: unknown }).account
+    // Cold storage was removed; drop its flag and the orphaned plugin-storage pointer map.
+    delete (data as Database & { coldstorage?: unknown }).coldstorage
+    if(data.pluginCustomStorage){
+        delete data.pluginCustomStorage._coldplugin
+    }
     if(checkNullish(data.characters)){
         data.characters = []
     }
@@ -710,7 +715,6 @@ export function setDatabase(data:Database){
     data.longPressToPopupEditor ??= false
     data.customSidebarItems ??= []
     data.moveInsteadOfCopyOnCMPConvert ??= false
-    data.coldstorage ??= data?.plugins?.length === 0
     for(const char of data.characters){
         for(const chat of char.chats ?? []){
             chat.isStreaming = false
@@ -1152,7 +1156,6 @@ export interface Database{
     localActivationInGlobalLorebook: boolean
     showFolderName: boolean
     automaticCachePoint: boolean
-    coldstorage: boolean
     claudeRetrivalCaching: boolean
     outputImageModal: boolean
     playMessageOnTranslateEnd:boolean
@@ -1478,8 +1481,6 @@ export interface character{
     prebuiltAssetExclude?:string[]
     modules?:string[]
     moduleNamespace?:string
-    coldstorage?:string
-    coldStoragedChats?:string[]
     customModuleToggle?:string
 }
 
@@ -1559,8 +1560,6 @@ export interface groupChat{
     prebuiltAssetStyle?:string
     prebuiltAssetExclude?:string[]
     modules?:string[]
-    coldstorage?:string
-    coldStoragedChats?:string[]
 }
 
 export interface botPreset{

@@ -13,7 +13,6 @@ import { changeColorScheme, updateColorScheme, updateTextThemeAndCSS, type Color
 import { isNodeServer } from "src/ts/platform";
 import { get } from "svelte/store";
 import { registerMCPModule, unregisterMCPModule } from "src/ts/process/mcp/pluginmcp";
-import { getColdStorageItem, setColdStorageItem } from "src/ts/process/coldstorage.svelte";
 import { getInlayAsset } from "src/ts/process/files/inlays";
 import { getLLMCache, searchLLMCache } from "src/ts/translator/translator";
 import { hasher, risuChatParser, type CbsConditions } from "src/ts/parser/parser.svelte";
@@ -1263,51 +1262,43 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
             
             return v;
         },
-        //pluginStorage is coldstorage-backed for v3: values live in cold storage,
-        //db.pluginCustomStorage._coldplugin only keeps the key -> coldstorage id map
+        //v3 pluginStorage lives under its own key in db.pluginCustomStorage,
+        //apart from the v2.1 getDatabase/setDatabase custom properties stored there
         _getPluginStorage: async (key: string) => {
             const db = getDatabase()
-            const coldId = db.pluginCustomStorage?._coldplugin?.[key]
-            if(!coldId){
-                return null
-            }
-            const value = await getColdStorageItem(coldId)
-            return value ?? null
+            return $state.snapshot(db.pluginCustomStorage?._pluginStorage?.[key]) ?? null
         },
         _setPluginStorage: async (key: string, value: any) => {
+            //JSON round trip rejects values the save file cannot hold, e.g. BigInt
+            const json = JSON.stringify(value)
             const db = getDatabase()
             db.pluginCustomStorage ??= {}
-            db.pluginCustomStorage._coldplugin ??= {}
-            let coldId: string = db.pluginCustomStorage._coldplugin[key]
-            if(!coldId){
-                coldId = v4()
-                db.pluginCustomStorage._coldplugin[key] = coldId
-            }
-            await setColdStorageItem(coldId, value)
+            db.pluginCustomStorage._pluginStorage ??= {}
+            db.pluginCustomStorage._pluginStorage[key] = json === undefined ? null : JSON.parse(json)
         },
         _removePluginStorage: async (key: string) => {
             const db = getDatabase()
-            if(db.pluginCustomStorage?._coldplugin){
-                delete db.pluginCustomStorage._coldplugin[key]
+            if(db.pluginCustomStorage?._pluginStorage){
+                delete db.pluginCustomStorage._pluginStorage[key]
             }
         },
         _clearPluginStorage: async () => {
             const db = getDatabase()
             db.pluginCustomStorage ??= {}
-            db.pluginCustomStorage._coldplugin = {}
+            db.pluginCustomStorage._pluginStorage = {}
         },
         _keyPluginStorage: async (index: number) => {
             const db = getDatabase()
-            const keys = Object.keys(db.pluginCustomStorage?._coldplugin ?? {})
+            const keys = Object.keys(db.pluginCustomStorage?._pluginStorage ?? {})
             return keys[index] ?? null
         },
         _keysPluginStorage: async () => {
             const db = getDatabase()
-            return Object.keys(db.pluginCustomStorage?._coldplugin ?? {})
+            return Object.keys(db.pluginCustomStorage?._pluginStorage ?? {})
         },
         _lengthPluginStorage: async () => {
             const db = getDatabase()
-            return Object.keys(db.pluginCustomStorage?._coldplugin ?? {}).length
+            return Object.keys(db.pluginCustomStorage?._pluginStorage ?? {}).length
         },
         _getSafeLocalStorage: oldApis.safeLocalStorage.getItem,
         _setSafeLocalStorage: oldApis.safeLocalStorage.setItem,
