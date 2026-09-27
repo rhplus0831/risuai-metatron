@@ -1,21 +1,19 @@
-# Build, Test Harness, Mobile (Capacitor), Service Worker, Release
+# Build, Test Harness, Service Worker, Release
 
 ## Scope
 - Owns:
   - package scripts,
   - Vite, Vitest, and TypeScript config,
   - the test inventory,
-  - the Capacitor config,
   - the PWA service worker and manifest,
   - the userscript bridge,
   - version bumping,
   - repo dotfiles.
 - Paths:
-  - Root config: `package.json`, `vite.config.ts`, `vitest.config.ts`, `vitest.setup.ts`, `tsconfig.json`, `tsconfig.node.json`, `capacitor.config.ts`, `version.json`, `t.py`
+  - Root config: `package.json`, `vite.config.ts`, `vitest.config.ts`, `vitest.setup.ts`, `tsconfig.json`, `tsconfig.node.json`, `version.json`, `t.py`
   - Dotfiles: `.gitignore`, `.ignore`, `.gitattributes`, `.npmrc`, `.vscode/`
   - `public/sw.js`, `public/manifest.json`
   - `util/risuUserscript.user.js`
-  - `resources/` (app icons and splash images)
 - Not here:
   - `globalApi.svelte.ts` `fetchNative` → `global-api.md`.
   - The self-host server → `self-host-server.md`.
@@ -53,8 +51,8 @@ Environment variables:
 - `VITE_RISU_LEGAL_CONFIGURED`.
 - Ad variables.
 
-Web and mobile:
-- `capacitor.config.ts`: `co.aiclient.risu`, `webDir: dist`, Android HTTPS scheme. The repo has no Capacitor dependencies or scripts.
+Web:
+- There is no mobile (Capacitor) build. Installation is only through the PWA manifest.
 - `public/sw.js`: Cache Storage `risuCache`. Routes `/sw/check`, `/sw/img/<hex>`, `/sw/register`, `/sw/init`, `/sw/share/{character,preset,module}`. Registered by `bootstrap.ts:registerSw`, read by `globalApi.getFileSrc` and `characterCards.characterURLImport`.
 - `public/manifest.json`: PWA manifest. `file_handlers` for `.charx`, `.risup`, `.risum` go through `launchQueue` to `characterURLImport`. `share_target` posts to `/receive-files/`, which has no in-repo handler.
 - `util/risuUserscript.user.js`: exposes `GM_fetch` as `unsafeWindow.userScriptFetch`, which `globalFetch` uses when present.
@@ -93,7 +91,7 @@ Test inventory:
 | Media | `src/ts/media/tests/imageType.test.ts`, `src/ts/media/compressImage/tests/compressImage.test.ts` |
 | Translator | `src/ts/translator/{edittransRegex,presets}.test.ts` |
 
-- No automated tests for Capacitor, the service worker, the manifest, or the userscript. Verify those manually.
+- No automated tests for the service worker, the manifest, or the userscript. Verify those manually.
 
 ## Known Hazards
 - The service-worker share branch calls `registerCache` with a relative URL, and `new URL(urlr)` has no base (unverified).

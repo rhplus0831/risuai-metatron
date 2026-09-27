@@ -1,8 +1,8 @@
 # STRUCTURE
 
 Agent-oriented map of this repository (RisuAI fork "metatron"): a Svelte 5 + TypeScript AI
-roleplay chat client shipped as a web app, a Capacitor wrapper, and a Node self-hosted server.
-There is no desktop (Tauri) build. Anchors are `path` + identifier. Line numbers are deliberately omitted because
+roleplay chat client shipped as a web app (installable PWA) and a Node self-hosted server.
+There is no desktop (Tauri) or mobile (Capacitor) build. Anchors are `path` + identifier. Line numbers are deliberately omitted because
 they drift. Grep the identifier instead.
 
 Snapshot: verified against commit `1494fb83` (2026-09-27). At that commit `pnpm check` reports 0
@@ -38,8 +38,8 @@ Tooling
 
 Verification
 - V1. `pnpm check` (svelte-check, about 20 s) and `pnpm test` (`vitest run`, happy-dom, about 5 s)
-  are the standard gates. `pnpm build` bundles. Capacitor, service-worker, and server paths
-  have no automated tests and need manual verification.
+  are the standard gates. `pnpm build` bundles. Service-worker and server paths have no
+  automated tests and need manual verification.
 - V2. Tests are `*.test.ts`, colocated next to the code or in a sibling `tests/` folder.
   `vitest.setup.ts` mocks KaTeX and replaces `safeStructuredClone` with a JSON clone.
 
@@ -140,7 +140,7 @@ The first matching row wins. Scan from the top.
 | `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/ts/bootstrap.ts`, `src/ts/stores.svelte.ts`, `src/ts/platform.ts`, `src/ts/polyfill.ts`, `src/ts/hotkey.ts`, `src/ts/defaulthotkeys.ts`, `src/ts/observer.svelte.ts`, `src/ts/mutex.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte` | app-shell |
 | `src/lib/` (everything else), `src/styles.css`, `src/ts/gui/` | ui-theming |
 | `server/`, `Dockerfile`, `docker-compose.yml`, `server.sh`, `server.bat`, `public/functions/proxy*.js` | self-host-server |
-| `package.json`, `vite.config.ts`, `vitest.*`, `tsconfig*.json`, `capacitor.config.ts`, `public/sw.js`, `public/manifest.json`, `util/`, `version.json`, `t.py`, `resources/` | build-test-platforms |
+| `package.json`, `vite.config.ts`, `vitest.*`, `tsconfig*.json`, `public/sw.js`, `public/manifest.json`, `util/`, `version.json`, `t.py` | build-test-platforms |
 | `src/types.d.ts`, `src/vite-env.d.ts`, `src/etc/patchNote.ts` | app-shell |
 | `src/etc/airisu.cbs`, `src/etc/docs/` | cbs-rendering |
 | `public/token/`, `src/etc/o200k_base.json` (tokenizer data) | llm-requests |
