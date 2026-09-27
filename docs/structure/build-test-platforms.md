@@ -33,7 +33,6 @@
 | `test`             | `vitest run`                              | tests             |
 | `runserver`        | `node server/node/server.cjs`             | self-host server  |
 | `hono:build`       | build + Hono postbuild                    | Hono skeleton     |
-| `sync`, `electron` | reference a missing `electron/` directory | dead              |
 
 - Prettier config lives in `.prettierrc.json` (4-space indent, double quotes, semicolons, width 120, 2-space for JSON/YAML/Markdown, `prettier-plugin-svelte`). `.prettierignore` mirrors `.ignore` plus lockfiles, snapshots, `dist/`, and `src/ts/plugins/apiV3/risuai.d.ts` (a doc comment there contains a literal `*/`, so Prettier cannot parse it).
 
