@@ -93,20 +93,6 @@
                 onclick={() => {
                     DBState.db.customSidebarItems.push({
                         id: crypto.randomUUID(),
-                        type: "loadout",
-                        subType: "none",
-                        label: language.loadouts,
-                    });
-                    configPage = "list";
-                }}
-            >
-                {language.loadouts}
-            </Button>
-
-            <Button
-                onclick={() => {
-                    DBState.db.customSidebarItems.push({
-                        id: crypto.randomUUID(),
                         type: "persona",
                         subType: "none",
                         label: language.persona,

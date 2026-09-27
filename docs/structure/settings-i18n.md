@@ -74,7 +74,7 @@ Languages (`src/lang/`):
 
 - `setDatabase` → `changeLanguage(db.language)`.
 - `Settings.svelte` → page → `SettingRenderer` → wrapper → `setSettingValue` → `DBState.db` → autosave.
-- Preset switch: `changeToPreset(i)` → `saveCurrentPreset` (unless disabled) → set `botPresetsId` → `setPreset`. Also triggered from `hotkey.ts`, `loadout.ts`, and `presetChain` in `sendChat`.
+- Preset switch: `changeToPreset(i)` → `saveCurrentPreset` (unless disabled) → set `botPresetsId` → `setPreset`. Also triggered from `hotkey.ts` and `presetChain` in `sendChat`.
 - Language change (`languageSettingsData` `onChange`):
   1. Optionally download a translation.
   2. `changeLanguage`.
@@ -112,7 +112,7 @@ Languages (`src/lang/`):
   3. The English key in `src/lang/en.ts`, plus optional locale keys.
   4. Verify `pnpm check`, loading an old DB, language switching, and settings search.
 - Add a custom-UI setting: register an ID in `customComponents.ts`, then use `type:'custom'`, `componentId`, and `componentProps`.
-- Add a preset field: see Invariants. Verify switching, hotkeys, loadouts, and export/import.
+- Add a preset field: see Invariants. Verify switching, hotkeys, and export/import.
 - Add a string: add it to `en.ts`, use it as `language.<path>`, and optionally add partial locale entries.
 - Expose a new language:
   1. Add the locale file.

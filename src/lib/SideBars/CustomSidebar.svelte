@@ -1,6 +1,6 @@
 <script lang="ts">
     import { Cog, PinIcon } from "@lucide/svelte";
-    import { DBState, loadoutModalStore, openPersonaList, openPresetList, selectedCharID } from "src/ts/stores.svelte";
+    import { DBState, openPersonaList, openPresetList, selectedCharID } from "src/ts/stores.svelte";
     import Button from "../UI/GUI/Button.svelte";
     import type { CustomSideBarItem } from "src/ts/storage/database.svelte";
     import { language } from "src/lang";
@@ -36,12 +36,6 @@
                 onclick={() => {
                     openPresetList.set(!get(openPresetList));
                 }}>{DBState.db.botPresets?.[DBState.db.botPresetsId]?.name || language.presets}</Button
-            >
-        {:else if item.type === "loadout"}
-            <Button
-                onclick={() => {
-                    loadoutModalStore.open = !loadoutModalStore.open;
-                }}>{DBState.db.lastLoadedLoadoutName || language.loadouts}</Button
             >
         {:else if item.type === "persona"}
             <Button

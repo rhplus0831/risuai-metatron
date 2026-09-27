@@ -13,7 +13,6 @@
         popupStore,
         easyPanelStore,
         popUpEditorStore,
-        loadoutModalStore,
         irisStore,
         customSideBarConfigDialogStore,
     } from "./ts/stores.svelte";
@@ -44,7 +43,6 @@
     import EasyPanel from "./lib/Others/ProTools/EasyPanel.svelte";
     import sendSound from "./etc/send.mp3";
     import PopupEditor from "./lib/Others/PopupEditor.svelte";
-    import LoadoutModal from "./lib/Others/LoadoutModal.svelte";
     import IrisModal from "./lib/Others/IrisModal.svelte";
     import Legal from "./lib/Others/Legal.svelte";
     import CustomSidebarConfig from "./lib/Others/CustomSidebarConfig.svelte";
@@ -307,9 +305,6 @@
     {/if}
     {#if popUpEditorStore.open}
         <PopupEditor />
-    {/if}
-    {#if loadoutModalStore.open}
-        <LoadoutModal />
     {/if}
     {#if irisStore.open}
         <IrisModal />

@@ -1387,7 +1387,6 @@ export const languageChineseTraditional = {
         focusInput: "聚焦輸入框",
         scrollToActiveChar: "捲動至目前角色",
         popupEditor: "彈出式編輯器",
-        loadout: "設定組合",
     },
     screenTooSmall: "螢幕太小，無法顯示此介面",
     advancedModelSettings: "進階模型設定",
@@ -1574,8 +1573,6 @@ export const languageChineseTraditional = {
     modelGridCouldNotLoad: "無法載入模型清單。請檢查您的 API 金鑰",
     modelGridNoModelsMatch: (q: string) => `找不到符合「${q}」的模型`,
     modelGridContext: (n: string) => `上下文：${n}`,
-    loadouts: "設定組合",
-    loadout: "設定組合",
 
     nanoGPTSelectFromList: "從清單中選擇",
     nanoGPTManualInput: "手動輸入",

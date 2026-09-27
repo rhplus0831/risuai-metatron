@@ -1447,7 +1447,6 @@ export const languageEnglish = {
         focusInput: "Focus Input",
         scrollToActiveChar: "Scroll to Active Character",
         popupEditor: "Popup Editor",
-        loadout: "Loadout",
     },
     screenTooSmall: "Screen is too small to show the interface.",
     advancedModelSettings: "Advanced Model Settings",
@@ -1644,8 +1643,6 @@ export const languageEnglish = {
     modelGridCouldNotLoad: "Could not load model list. Check your API key.",
     modelGridNoModelsMatch: (q: string) => `No models match "${q}"`,
     modelGridContext: (n: string) => `Context: ${n}`,
-    loadouts: "Loadouts",
-    loadout: "Loadout",
 
     nanoGPTSelectFromList: "Select from List",
     nanoGPTManualInput: "Manual Input",

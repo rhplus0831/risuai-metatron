@@ -149,10 +149,6 @@ export const popUpEditorStore = $state({
     language: "markdown" as string,
 });
 
-export const loadoutModalStore = $state({
-    open: false,
-});
-
 export const irisStore = $state({
     open: false,
 });

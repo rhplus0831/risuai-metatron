@@ -4,7 +4,6 @@ import { changeToPreset as changeToPreset2, getDatabase } from "./storage/databa
 import {
     alertStore,
     DBState,
-    loadoutModalStore,
     openPersonaList,
     openPresetList,
     OpenRealmStore,
@@ -176,10 +175,6 @@ export function initHotkey() {
                     }
                     break;
                 }
-                case "loadout": {
-                    loadoutModalStore.open = !loadoutModalStore.open;
-                    break;
-                }
                 default: {
                     hotKeyRanThisTime = false;
                 }
@@ -325,21 +320,13 @@ export function initHotkey() {
 }
 
 async function quickMenu() {
-    const selStr = await alertSelect([
-        language.presets,
-        language.persona,
-        language.hotkeyDesc.loadout,
-        language.cancel,
-    ]);
+    const selStr = await alertSelect([language.presets, language.persona, language.cancel]);
     const sel = parseInt(selStr);
     if (sel === 0) {
         openPresetList.set(!get(openPresetList));
     }
     if (sel === 1) {
         openPersonaList.set(!get(openPersonaList));
-    }
-    if (sel === 2) {
-        loadoutModalStore.open = !loadoutModalStore.open;
     }
 }
 

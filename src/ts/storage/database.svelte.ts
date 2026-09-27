@@ -729,7 +729,6 @@ export function setDatabase(data: Database) {
     // Because its likely they are power users who would benefit from the features
     data.enableRisuaiProTools ??= data.plugins.length > 0;
     data.keepSessionAlive ??= "off";
-    data.loadouts ??= [];
     data.longPressToPopupEditor ??= false;
     data.customSidebarItems ??= [];
     data.moveInsteadOfCopyOnCMPConvert ??= false;
@@ -1274,16 +1273,14 @@ export interface Database {
     saveSignatures?: boolean;
     keepSessionAlive: "off" | "pip" | "sound";
     longPressToPopupEditor?: boolean;
-    loadouts: Loadout[];
     disableAprilFools?: boolean;
     customSidebarItems: CustomSideBarItem[];
-    lastLoadedLoadoutName: string;
     moveInsteadOfCopyOnCMPConvert?: boolean;
 }
 
 export interface CustomSideBarItem {
     id: string;
-    type: "model" | "databaseKey" | "loadout" | "persona" | "preset" | "setting";
+    type: "model" | "databaseKey" | "persona" | "preset" | "setting";
     subType: string;
     label: string;
 }
@@ -2296,7 +2293,6 @@ import type { HypaModel } from "../process/memory/hypamemory";
 import type { SerializableHypaV3Data } from "../process/memory/hypav3";
 import { defaultHotkeys, type Hotkey } from "../defaulthotkeys";
 import type { OpenAIChat } from "../process/index.svelte";
-import type { Loadout } from "../loadout";
 
 export async function downloadPreset(id: number, type: "json" | "risupreset" | "return" = "json") {
     saveCurrentPreset();

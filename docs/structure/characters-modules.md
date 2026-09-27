@@ -1,4 +1,4 @@
-# Characters, Cards, Modules, Personas, Loadouts
+# Characters, Cards, Modules, Personas
 
 ## Scope
 
@@ -9,17 +9,17 @@
   - CharX zip read and write,
   - modules (the `.risum` codec, activation, the effective-set getters),
   - module/character/persona conversion,
-  - personas, loadouts,
+  - personas,
   - the character editor and lorebook editor UI.
 - Paths:
-  - `src/ts/{characterCards,characters,persona,loadout,pngChunk,interchangeability}.ts`
+  - `src/ts/{characterCards,characters,persona,pngChunk,interchangeability}.ts`
   - `src/ts/process/{processzip,modules}.ts`
   - `src/lib/SideBars/CharConfig.svelte`
   - `src/lib/SideBars/LoreBook/*`
   - `src/lib/Setting/Pages/Module/*`
   - `src/lib/Setting/Pages/PersonaSettings.svelte`
   - `src/lib/Setting/listedPersona.svelte`
-  - `src/lib/Others/{LoadoutModal,GridCatalog}.svelte`
+  - `src/lib/Others/GridCatalog.svelte`
   - `src/lib/ChatScreens/AssetInput.svelte`
 - Not here:
   - Lore activation at prompt time → `chat-pipeline.md`.
@@ -49,7 +49,6 @@
   - `applyModule`, `moduleUpdate`, `refreshModules`.
 - `interchangeability.ts`: `convertModuleToCharacter`, `convertCharacterToModule`, persona↔character, persona↔module (an embedded module ID is normalized to `$embedded`).
 - `persona.ts`: `saveUserPersona`, `changeUserPersona`, `selectUserImg`. `exportUserPersona`/`importUserPersona` use a PNG `persona` tEXt chunk.
-- `loadout.ts`: `Loadout`, `makeLoadout`, `applyLoadout`, `saveCurrentLoadout`. `exportLoadout`/`importLoadout` are TODO stubs.
 - UI:
   - `CharConfig.svelte`: the main editor, binding `DBState.db.characters[$selectedCharID]`. Tabs cover identity, greetings, images, emotions, assets, lore, regex, triggers, TTS, export, and delete.
   - Lorebook:
@@ -61,7 +60,6 @@
     - `ModuleMenu.svelte`: the editor.
     - `ModuleChatMenu.svelte`: per-chat and per-character toggles.
   - `GridCatalog.svelte`: the catalog plus trash.
-  - `LoadoutModal.svelte`.
   - `AssetInput.svelte`: chat stickers from `additionalAssets`.
 
 ## Flows
@@ -139,11 +137,9 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 
 ## Tests
 
-- None cover cards, PNG, CharX, `.risum`, personas, loadouts, or the editors.
+- None cover cards, PNG, CharX, `.risum`, personas, or the editors.
 - Adjacent: `mcp/risuaccess/tests/modules.test.ts`.
 
 ## Known Hazards
 
-- `applyLoadout` appends the current character ID on every apply, so repeated applies create duplicates.
-- Loadout export and import are unimplemented.
 - There is no dedicated "duplicate character" API. Copies come from module→character conversion or re-import.

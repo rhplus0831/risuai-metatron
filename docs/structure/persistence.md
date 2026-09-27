@@ -51,7 +51,7 @@ Access:
 Save (`globalApi.svelte.ts:saveDb`):
 
 1. `$effect` watchers snapshot:
-   - every root key except `characters`, `botPresets`, `modules`, `loadouts`, `plugins`, `pluginCustomStorage`,
+   - every root key except `characters`, `botPresets`, `modules`, `plugins`, `pluginCustomStorage`,
    - each of those dedicated collections separately,
    - only the selected character (`selIdState`) and its current chat.
 2. Changes are debounced 500 ms and polled.
@@ -64,7 +64,7 @@ Block format:
 - Each block is: type, compression flag, name length, name, payload length, payload.
 - Blocks:
   - `root`: plain keys plus a `__directory`.
-  - `preset`, `modules`, `loadouts`, `plugins`, `pluginStorage`, `config`.
+  - `preset`, `modules`, `plugins`, `pluginStorage`, `config`.
   - One block per character.
 - Remote characters are stored as `REMOTE` descriptor blocks. Their payload lives at `remotes/<chaId>.local.bin`.
 
@@ -86,7 +86,7 @@ Cold storage (removed):
 - `Database` covers:
   - characters, prompts and templates,
   - provider keys and URLs, model/memory/translator/image/TTS settings,
-  - `botPresets` + `botPresetsId`, `modules` + `enabledModules`, `personas` + `selectedPersona`, `plugins` + `pluginCustomStorage`, `loadouts`,
+  - `botPresets` + `botPresetsId`, `modules` + `enabledModules`, `personas` + `selectedPersona`, `plugins` + `pluginCustomStorage`,
   - `enableRemoteSaving`, `characterOrder`, `globalChatVariables`, `hotkeys`.
 - `character | groupChat`: groups have `type:'group'` and member `characters: string[]`. Both own `chats`, `chatPage`, and `chaId`.
 - `Chat`:

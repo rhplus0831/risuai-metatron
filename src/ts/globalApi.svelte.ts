@@ -241,7 +241,6 @@ export async function saveDb() {
         chat: [],
         botPreset: false,
         modules: false,
-        loadouts: false,
         plugins: false,
         pluginCustomStorage: false,
     };
@@ -280,11 +279,6 @@ export async function saveDb() {
             saveTimeoutExecute();
         });
         $effect(() => {
-            $state.snapshot(DBState.db.loadouts);
-            changeTracker.loadouts = true;
-            saveTimeoutExecute();
-        });
-        $effect(() => {
             $state.snapshot(DBState.db.plugins);
             changeTracker.plugins = true;
             saveTimeoutExecute();
@@ -300,7 +294,6 @@ export async function saveDb() {
                     key !== "characters" &&
                     key !== "botPresets" &&
                     key !== "modules" &&
-                    key !== "loadouts" &&
                     key !== "plugins" &&
                     key !== "pluginCustomStorage"
                 ) {
