@@ -18,6 +18,8 @@
 - `src/ts/stores.svelte.ts`: all global UI stores plus the `DBState` rune (see State).
 - `src/ts/platform.ts`: `isNodeServer`, `isWeb`, `isMobile`, `isFirefox`, `isIOS()`, `getRisuEnvironmentLabel`, `getDetailedOSLabel`, `isInStandaloneMode` (unused).
 - `src/ts/polyfill.ts`: `safeStructuredClone` (native `structuredClone`, then an `rfdc` fallback), plus `Buffer` and stream polyfills and the mobile drag/drop polyfill.
+- `src/vite-env.d.ts`: ambient declarations for the globals `Buffer`, `safeStructuredClone`, and `userScriptFetch`.
+- `src/types.d.ts`: the `DeepPartial<T>` utility type only.
 - `src/ts/hotkey.ts`:
   - `initHotkey`: keydown dispatch switch.
   - `hotkeyMatches`.
@@ -124,4 +126,3 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 - `startObserveDom` creates a `MutationObserver` it never uses, and it polls forever with no cleanup.
 - `isInStandaloneMode` has no consumers. `bootstrap.ts` recomputes standalone mode locally before calling `navigator.storage.persist`.
-- `src/types.d.ts` and `src/vite-env.d.ts` both declare `Buffer`, `safeStructuredClone`, and `userScriptFetch`.
