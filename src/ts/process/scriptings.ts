@@ -42,17 +42,9 @@ interface BasicScriptingEngineState {
     getVar?: (key: string) => string;
 }
 
-interface LuaScriptingEngineState extends BasicScriptingEngineState {
+interface ScriptingEngineState extends BasicScriptingEngineState {
     engine?: LuaEngine;
-    type: "lua";
 }
-
-interface PythonScriptingEngineState extends BasicScriptingEngineState {
-    pyodide?: PyodideContext;
-    type: "py";
-}
-
-type ScriptingEngineState = LuaScriptingEngineState | PythonScriptingEngineState;
 
 let ScriptingEngines = new Map<string, ScriptingEngineState>();
 let luaFactoryPromise: Promise<void> | null = null;
@@ -69,10 +61,8 @@ export async function runScripted(
         lowLevelAccess?: boolean;
         meta?: object;
         mode?: string;
-        type?: "lua" | "py";
     },
 ) {
-    const type: "lua" | "py" = arg.type ?? "lua";
     const char = arg.char ?? getCurrentCharacter();
     const data = arg.data ?? "";
     const setVar = arg.setVar ?? setChatVar;
@@ -84,36 +74,22 @@ export async function runScripted(
     let stopSending = false;
     let lowLevelAccess = arg.lowLevelAccess ?? false;
 
-    if (type === "lua") {
-        await ensureLuaFactory();
-    }
-    let ScriptingEngineState = await getOrCreateEngineState(mode, type);
+    await ensureLuaFactory();
+    let ScriptingEngineState = await getOrCreateEngineState(mode);
 
     return await ScriptingEngineState.mutex.runExclusive(async () => {
         ScriptingEngineState.chat = chat;
         ScriptingEngineState.setVar = setVar;
         ScriptingEngineState.getVar = getVar;
         if (code !== ScriptingEngineState.code) {
-            let declareAPI: (name: string, func: Function) => void;
-
-            if (ScriptingEngineState.type === "lua") {
-                console.log("Creating new Lua engine for mode:", mode);
-                ScriptingEngineState.engine?.global.close();
-                ScriptingEngineState.code = code;
-                ScriptingEngineState.engine = await luaFactory.createEngine({ injectObjects: true });
-                const luaEngine = ScriptingEngineState.engine;
-                declareAPI = (name: string, func: Function) => {
-                    luaEngine.global.set(name, func);
-                };
-            }
-            if (ScriptingEngineState.type === "py") {
-                console.log("Creating new Pyodide context for mode:", mode);
-                ScriptingEngineState.pyodide?.close();
-                ScriptingEngineState.pyodide = new PyodideContext();
-                declareAPI = (name: string, func: Function) => {
-                    ScriptingEngineState.pyodide?.declareAPI(name, func as any);
-                };
-            }
+            console.log("Creating new Lua engine for mode:", mode);
+            ScriptingEngineState.engine?.global.close();
+            ScriptingEngineState.code = code;
+            ScriptingEngineState.engine = await luaFactory.createEngine({ injectObjects: true });
+            const luaEngine = ScriptingEngineState.engine;
+            const declareAPI = (name: string, func: Function) => {
+                luaEngine.global.set(name, func);
+            };
             declareAPI("getChatVar", (id: string, key: string) => {
                 return ScriptingEngineState.getVar(key);
             });
@@ -1084,12 +1060,7 @@ export async function runScripted(
             });
 
             console.log("Running Lua code:", code);
-            if (ScriptingEngineState.type === "lua") {
-                await ScriptingEngineState.engine?.doString(luaCodeWrapper(code));
-            }
-            if (ScriptingEngineState.type === "py") {
-                await ScriptingEngineState.pyodide?.init(code);
-            }
+            await ScriptingEngineState.engine?.doString(luaCodeWrapper(code));
             ScriptingEngineState.code = code;
         }
         let accessKey = v4();
@@ -1102,99 +1073,61 @@ export async function runScripted(
             }
         }
         let res: any;
-        if (ScriptingEngineState.type === "lua") {
-            const luaEngine = ScriptingEngineState.engine;
-            try {
-                switch (mode) {
-                    case "input": {
-                        const func = luaEngine.global.get("onInput");
-                        if (func) {
-                            res = await func(accessKey);
-                        }
-                        break;
-                    }
-                    case "output": {
-                        const func = luaEngine.global.get("onOutput");
-                        if (func) {
-                            res = await func(accessKey);
-                        }
-                        break;
-                    }
-                    case "start": {
-                        const func = luaEngine.global.get("onStart");
-                        if (func) {
-                            res = await func(accessKey);
-                        }
-                        break;
-                    }
-                    case "onButtonClick": {
-                        const func = luaEngine.global.get("onButtonClick");
-                        if (func) {
-                            res = await func(accessKey, data);
-                        }
-                        break;
-                    }
-                    case "editRequest":
-                    case "editDisplay":
-                    case "editInput":
-                    case "editOutput": {
-                        const func = luaEngine.global.get("callListenMain");
-                        if (func) {
-                            res = await func(mode, accessKey, JSON.stringify(data), JSON.stringify(meta));
-                            res = JSON.parse(res);
-                        }
-                        break;
-                    }
-                    default: {
-                        const func = luaEngine.global.get(mode);
-                        if (func) {
-                            res = await func(accessKey);
-                        }
-                        break;
-                    }
-                }
-                if (res === false) {
-                    stopSending = true;
-                }
-            } catch (error) {
-                console.error(error);
-            }
-        }
-        if (ScriptingEngineState.type === "py") {
+        const luaEngine = ScriptingEngineState.engine;
+        try {
             switch (mode) {
                 case "input": {
-                    res = await ScriptingEngineState.pyodide?.python(`onInput('${accessKey}')`);
+                    const func = luaEngine.global.get("onInput");
+                    if (func) {
+                        res = await func(accessKey);
+                    }
                     break;
                 }
                 case "output": {
-                    res = await ScriptingEngineState.pyodide?.python(`onOutput('${accessKey}')`);
+                    const func = luaEngine.global.get("onOutput");
+                    if (func) {
+                        res = await func(accessKey);
+                    }
                     break;
                 }
                 case "start": {
-                    res = await ScriptingEngineState.pyodide?.python(`onStart('${accessKey}')`);
+                    const func = luaEngine.global.get("onStart");
+                    if (func) {
+                        res = await func(accessKey);
+                    }
                     break;
                 }
                 case "onButtonClick": {
-                    res = await ScriptingEngineState.pyodide?.python(
-                        `onButtonClick('${accessKey}', '${data as string}')`,
-                    );
+                    const func = luaEngine.global.get("onButtonClick");
+                    if (func) {
+                        res = await func(accessKey, data);
+                    }
                     break;
                 }
                 case "editRequest":
                 case "editDisplay":
                 case "editInput":
                 case "editOutput": {
-                    res = await ScriptingEngineState.pyodide?.python(
-                        `callListenMain('${mode}', '${accessKey}', '${JSON.stringify(data)}', '${JSON.stringify(meta)}')`,
-                    );
-                    res = JSON.parse(res);
+                    const func = luaEngine.global.get("callListenMain");
+                    if (func) {
+                        res = await func(mode, accessKey, JSON.stringify(data), JSON.stringify(meta));
+                        res = JSON.parse(res);
+                    }
                     break;
                 }
                 default: {
-                    res = await ScriptingEngineState.pyodide?.python(`${mode}('${accessKey}')`);
+                    const func = luaEngine.global.get(mode);
+                    if (func) {
+                        res = await func(accessKey);
+                    }
                     break;
                 }
             }
+            if (res === false) {
+                stopSending = true;
+            }
+        } catch (error) {
+            console.error(error);
         }
         ScriptingSafeIds.delete(accessKey);
         ScriptingLowLevelIds.delete(accessKey);
@@ -1248,7 +1181,7 @@ async function ensureLuaFactory() {
     }
 }
 
-async function getOrCreateEngineState(mode: string, type: "lua" | "py"): Promise<ScriptingEngineState> {
+async function getOrCreateEngineState(mode: string): Promise<ScriptingEngineState> {
     let engineState = ScriptingEngines.get(mode);
     if (engineState) {
         return engineState;
@@ -1262,7 +1195,6 @@ async function getOrCreateEngineState(mode: string, type: "lua" | "py"): Promise
     const creationPromise = (() => {
         const engineState: ScriptingEngineState = {
             mutex: new Mutex(),
-            type: type,
         };
         ScriptingEngines.set(mode, engineState);
 
@@ -1520,96 +1452,4 @@ export async function runLuaButtonTrigger(
         throw error;
     }
     return runResult;
-}
-
-class PyodideContext {
-    worker: Worker;
-    apis: Record<string, (...args: any[]) => any> = {};
-    inited: boolean = false;
-    constructor() {
-        this.worker = new Worker(new URL("./pyworker.ts", import.meta.url), {
-            type: "module",
-        });
-        this.worker.onmessage = (event: MessageEvent) => {
-            if (event.data.type === "call") {
-                const { function: func, args, callId } = event.data;
-                if (this.apis[func]) {
-                    this.apis[func](...args)
-                        .then((result) => {
-                            this.worker.postMessage({
-                                type: "functionResult",
-                                callId: callId,
-                                result: result,
-                            });
-                        })
-                        .catch((error) => {
-                            this.worker.postMessage({
-                                type: "error",
-                                error: error.message,
-                                id: callId,
-                            });
-                        });
-                } else {
-                    this.worker.postMessage({
-                        type: "error",
-                        error: `Function ${func} not found`,
-                        id: callId,
-                    });
-                }
-            }
-        };
-    }
-    declareAPI(name: string, func: (...args: any[]) => any) {
-        this.apis[name] = func;
-    }
-    async init(code: string) {
-        if (this.inited) {
-            return;
-        }
-        const id = crypto.randomUUID();
-        return new Promise<void>((resolve, reject) => {
-            this.worker.onmessage = (event: MessageEvent) => {
-                if (event.data.id !== id) {
-                    return;
-                }
-
-                if (event.data.type === "init") {
-                    this.inited = true;
-                    resolve();
-                } else if (event.data.type === "error") {
-                    reject(new Error(event.data.error));
-                }
-            };
-            this.worker.postMessage({
-                type: "init",
-                code: code,
-                id: id,
-                moduleFunctions: Object.keys(this.apis),
-            });
-        });
-    }
-    async python(call: string) {
-        const id = crypto.randomUUID();
-        return new Promise<any>((resolve, reject) => {
-            this.worker.onmessage = (event: MessageEvent) => {
-                if (event.data.id !== id) {
-                    return;
-                }
-
-                if (event.data.type === "python") {
-                    resolve(event.data.call);
-                } else if (event.data.type === "error") {
-                    reject(new Error(event.data.error));
-                }
-            };
-            this.worker.postMessage({
-                type: "python",
-                call: call,
-                id: id,
-            });
-        });
-    }
-    close() {
-        this.worker.terminate();
-    }
 }

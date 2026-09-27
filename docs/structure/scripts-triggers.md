@@ -1,14 +1,13 @@
-# Regex Scripts, Triggers, Lua/Python Scripting
+# Regex Scripts, Triggers, Lua Scripting
 
 ## Scope
 
 - Owns:
   - regex find/replace scripts,
   - triggers v1 and v2 (the data model, the runtime, and the editors),
-  - the Lua runtime (wasmoon) and the injected API,
-  - the Pyodide worker.
+  - the Lua runtime (wasmoon) and the injected API.
 - Paths:
-  - `src/ts/process/{scripts,triggers,scriptings,pyworker}.ts`
+  - `src/ts/process/{scripts,triggers,scriptings}.ts`
   - `src/ts/process/scriptings.test.ts`
   - `public/lua/json.lua`
   - `src/lib/SideBars/Scripts/*`
@@ -29,12 +28,11 @@
   - Types: `triggerscript`, `triggerCondition`, `triggerEffect` = `triggerEffectV1 | triggerCode | triggerEffectV2`.
   - Allowlists: `displayAllowList`, `requestAllowList`.
   - `runTrigger(char, mode, {chat, displayData, manualName, ...})` returns `{additonalSysPrompt, chat, tokens, stopSending, sendAIprompt, displayData, tempVars}`.
-- `scriptings.ts`: Lua and Pyodide orchestration.
+- `scriptings.ts`: Lua orchestration.
   - `runScripted`: one engine per mode, serialized by `Mutex`.
   - `runLuaEditTrigger`: `editinput`/`editoutput`/`editdisplay`, plus `editRequest` from `sendChat`.
   - `runLuaButtonTrigger`: `onButtonClick`.
   - Internal: `declareAPI`, `luaCodeWrapper`, `ScriptingEngines`, and the permission ID sets.
-- `pyworker.ts`: the Pyodide Web Worker protocol.
 - `SideBars/Scripts/RegexData.svelte`, `RegexList.svelte`: the regex editor. Flags are native `g/i/m/u/s` plus `<move_top>`, `<move_bottom>`, `<repeat_back>`, `<cbs>`, `<no_end_nl>`, `<order n>`.
 - `SideBars/Scripts/TriggerList.svelte`: picks the editor mode (v1, Lua, or v2).
 - `TriggerV1List.svelte`, `TriggerV1Data.svelte`: v1 editor.
@@ -138,12 +136,9 @@ Lua:
 
 - `src/ts/process/scriptings.test.ts`: Lua stop-signal semantics.
 - `src/ts/translator/edittransRegex.test.ts`: the `edittrans` path only.
-- Not tested: `processScriptFull` ordering and cache, `runTrigger`, v2 editing, Lua permissions, Pyodide.
+- Not tested: `processScriptFull` ordering and cache, `runTrigger`, v2 editing, Lua permissions.
 
 ## Known Hazards
 
-- Pyodide is likely broken:
-  - `pyworker.ts` posts `type:'pythonResult'`, but `scriptings.ts` waits for `type:'python'`.
-  - The init and python handlers replace `worker.onmessage`, which drops the JS-callback handler.
 - `GlobalRegex.svelte` ignores the return value of `importRegex()`.
 - `triggercode` effects have no runtime case. Only `triggerlua` executes.
