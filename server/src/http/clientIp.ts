@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import proxyaddr from "proxy-addr";
-import type { AppEnv } from "./types.ts";
+import type { AppEnv } from "../types.ts";
 
 export type TrustFn = (addr: string, hop: number) => boolean;
 

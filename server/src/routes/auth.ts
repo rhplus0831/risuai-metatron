@@ -2,8 +2,8 @@ import { createHash, webcrypto } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import { readJsonBody } from "./body.ts";
-import type { AppEnv } from "./types.ts";
+import { readJsonBody } from "../http/body.ts";
+import type { AppEnv } from "../types.ts";
 
 type JwtFailure = "no_header" | "expired" | "unknown_key" | "unsupported_alg" | "invalid_signature" | "error";
 

@@ -44,7 +44,7 @@ Verification
 
 - V1. `pnpm check` (svelte-check, about 20 s) and `pnpm test` (`vitest run`, happy-dom, about 5 s)
   are the standard gates. `pnpm build` bundles. The service worker and the Vite dev proxy have no
-  automated tests and need manual verification; server routes are covered by `server/src/*.test.ts`.
+  automated tests and need manual verification; server routes are covered by `server/src/tests/*.test.ts`.
 - V2. Tests are `*.test.ts`, colocated next to the code or in a sibling `tests/` folder.
   `vitest.setup.ts` mocks KaTeX, replaces `safeStructuredClone` with a JSON clone, and patches
   happy-dom's `Node.prototype.nodeName` getter for DOMPurify (see `build-test-platforms.md`).

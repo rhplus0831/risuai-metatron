@@ -1,6 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
 import ipaddr from "ipaddr.js";
-import type { AppEnv } from "./types.ts";
+import type { AppEnv } from "../types.ts";
 
 type Hits = { count: number; resetAt: number };
 

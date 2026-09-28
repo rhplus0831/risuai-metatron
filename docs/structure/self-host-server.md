@@ -3,12 +3,12 @@
 ## Scope
 
 - Owns:
-  - `server/src/*`: the Hono self-host server on Node (`@hono/node-server`). Handles static `dist`, auth, disk storage, the reverse proxy, the hub proxy, and streaming proxy jobs over WebSocket.
+  - `server/src/**`: the Hono self-host server on Node (`@hono/node-server`). Handles static `dist`, auth, disk storage, the reverse proxy, the hub proxy, and streaming proxy jobs over WebSocket.
   - Local TLS certificates.
   - Docker packaging.
   - The launcher scripts.
   - The client/server contract, seen from the server side.
-- Paths: `server/{src/*,tsconfig.json,ssl/*}`, `Dockerfile`, `.dockerignore`, `server.sh`, `server.bat`.
+- Paths: `server/{src/**,tsconfig.json,ssl/*}`, `Dockerfile`, `.dockerignore`, `server.sh`, `server.bat`.
 - Client counterparts, owned by other guides:
   - `src/ts/storage/nodeStorage.ts` → `persistence.md`.
   - `globalApi.svelte.ts` `fetchNative`/`fetchViaProxyJobWs` → `global-api.md`.
@@ -16,17 +16,17 @@
 
 ## Files
 
-The server is TypeScript run directly by Node's type stripping (`pnpm runserver` = `node server/src/main.ts`, Node `>=24`). There is no build step. Relative imports use explicit `.ts` extensions, and only erasable syntax is allowed (`server/tsconfig.json` sets `erasableSyntaxOnly`; `pnpm check` runs `tsc -p server/tsconfig.json`).
+The server is TypeScript run directly by Node's type stripping (`pnpm runserver` = `node server/src/main.ts`, Node `>=24`). There is no build step. Layout: `main.ts`, `app.ts`, and `types.ts` (`AppEnv`) at the root; route modules in `routes/`; shared HTTP helpers in `http/`; tests and their support in `tests/`. Relative imports use explicit `.ts` extensions, and only erasable syntax is allowed (`server/tsconfig.json` sets `erasableSyntaxOnly`; `pnpm check` runs `tsc -p server/tsconfig.json`).
 
 - `server/src/main.ts`: entry. Reads `PORT` (default 6001) and `TRUST_PROXY`, loads the TLS certificate (`getHttpsOptions`), calls `serve()`, attaches the WebSocket upgrade handler, and starts job GC. `cwd` is the root: `cwd/dist`, `cwd/save`, `cwd/server/ssl/certificate`.
 - `server/src/app.ts` `createServerContext({ rootDir, trustProxy })`: builds the Hono app and owns all state. Returns `{ app, attachWebSocket, startBackgroundTasks, dispose }`. `app.request()` works for in-process checks, but it has no Node socket, so the client IP is undefined there.
-- `server/src/auth.ts` `createAuthStore`: `__password` plus known key hashes, `verifyJwt`, `checkAuth`, `checkProxyAuth`, `isAuthorizedProxyToken`, and the `/api/test_auth|login|crypto|set_password` routes.
-- `server/src/storage.ts`: `isHex` and `/api/read|write|list|remove`.
-- `server/src/proxy.ts`: `/proxy`, `/proxy2`, `/hub-proxy/*`. `ownBody` re-streams an upstream body and keeps the timeout alive until the body ends.
-- `server/src/proxyStreamJobs.ts` `createProxyStreamJobs`: the job map, `sanitizeTargetUrl`, `isLocalNetworkHost`, `requestLocalTargetStream` (Node `http`/`https`), the POST/DELETE routes, the `ws` upgrade handler, and GC.
-- `server/src/rateLimit.ts` `createRateLimiter`: an in-memory limiter that reproduces the former express-rate-limit v8 setup (see Invariants).
-- `server/src/clientIp.ts`: `parseTrustProxyEnv`, `compileTrust` (Express semantics), and `getClientIp` (`proxy-addr` over `c.env.incoming`).
-- `server/src/body.ts` `readJsonBody`: JSON body parsing with Express-like defaults.
+- `server/src/routes/auth.ts` `createAuthStore`: `__password` plus known key hashes, `verifyJwt`, `checkAuth`, `checkProxyAuth`, `isAuthorizedProxyToken`, and the `/api/test_auth|login|crypto|set_password` routes.
+- `server/src/routes/storage.ts`: `isHex` and `/api/read|write|list|remove`.
+- `server/src/routes/proxy.ts`: `/proxy`, `/proxy2`, `/hub-proxy/*`. `ownBody` re-streams an upstream body and keeps the timeout alive until the body ends.
+- `server/src/routes/proxyStreamJobs.ts` `createProxyStreamJobs`: the job map, `sanitizeTargetUrl`, `isLocalNetworkHost`, `requestLocalTargetStream` (Node `http`/`https`), the POST/DELETE routes, the `ws` upgrade handler, and GC.
+- `server/src/http/rateLimit.ts` `createRateLimiter`: an in-memory limiter that reproduces the former express-rate-limit v8 setup (see Invariants).
+- `server/src/http/clientIp.ts`: `parseTrustProxyEnv`, `compileTrust` (Express semantics), and `getClientIp` (`proxy-addr` over `c.env.incoming`).
+- `server/src/http/body.ts` `readJsonBody`: JSON body parsing with Express-like defaults.
 - `server/ssl/Generate Certificate.sh|.bat`, `ca.conf`, `server.conf`: generate a local CA and server certificate into `server/ssl/certificate/` (run from `server/ssl/`). `main.ts` uses HTTPS when `server.key`/`server.crt` exist there, relative to `cwd`.
 - `Dockerfile`: Node 24, pnpm 10.34.1, multi-stage build of `dist`. Copies `server/` + `dist/` + prod `node_modules`, `EXPOSE 6001`, `CMD pnpm runserver`.
 - `server.sh`/`server.bat`: install, build, run. The env exports (legal, ads) are commented out.
@@ -181,23 +181,23 @@ Process memory, inside the `createServerContext` closure:
 ## Recipes
 
 - Add a storage operation:
-  - Add a route in `storage.ts` with `auth.checkAuth`, the shared limiter, and hex validation.
+  - Add a route in `routes/storage.ts` with `auth.checkAuth`, the shared limiter, and hex validation.
   - Add the matching `NodeStorage` method.
 - Change auth:
   - Client: `NodeStorage.createAuth`/`checkAuth`/`digestPassword`.
-  - Server: `auth.ts` (`verifyJwt`, the `/api/login` route).
+  - Server: `routes/auth.ts` (`verifyJwt`, the `/api/login` route).
   - Verify first run, restart, token expiry, and unknown keys.
 - Change proxy policy: server `sanitizeTargetUrl`, client `localNetwork.ts` + `fetchNative`.
-- Change streaming: `proxyStreamJobs.ts` (`runJob`, `attachWebSocket`, `onConnection`), `ProxyJobWsEvent`, `fetchViaProxyJobWs`, and `proxyJobWs.test.ts`.
+- Change streaming: `routes/proxyStreamJobs.ts` (`runJob`, `attachWebSocket`, `onConnection`), `ProxyJobWsEvent`, `fetchViaProxyJobWs`, and `proxyJobWs.test.ts`.
 - Change packaging: `Dockerfile`, the README Docker steps, and `package.json` `runserver` together.
 
 ## Tests
 
 - Server (`// @vitest-environment node`, type-checked by `pnpm check` through `server/tsconfig.json`):
-  - `server/src/app.test.ts`: `__NODE__` injection (`/` and `/index.html`), auth flow and JWT failure bodies, JSON rules, login limiter, storage, hex guard, batch remove.
-  - `server/src/proxy.test.ts`: proxy auth, raw bodies, header filtering, SSE, timeout, HEAD, hub proxy.
-  - `server/src/proxyStreamJobs.test.ts`: target allowlist, job validation, a real `serve()` WebSocket lifecycle, DELETE and `dispose()` closing upstreams.
-  - `server/src/testSupport.ts`: temp-root context, ES256 signer, recording upstream.
+  - `server/src/tests/app.test.ts`: `__NODE__` injection (`/` and `/index.html`), auth flow and JWT failure bodies, JSON rules, login limiter, storage, hex guard, batch remove.
+  - `server/src/tests/proxy.test.ts`: proxy auth, raw bodies, header filtering, SSE, timeout, HEAD, hub proxy.
+  - `server/src/tests/proxyStreamJobs.test.ts`: target allowlist, job validation, a real `serve()` WebSocket lifecycle, DELETE and `dispose()` closing upstreams.
+  - `server/src/tests/testSupport.ts`: temp-root context, ES256 signer, recording upstream.
 - In-process tests use `createServerContext({ rootDir: <tmp> }).app.request()` (no socket, so the client IP is undefined). Socket-level behavior (client IP, aborts, TLS, WebSocket) needs a real listening server. Call `dispose()` afterwards.
 - Client helpers: `src/ts/network/proxyJobWs.test.ts`, `src/ts/network/localNetwork.test.ts`.
 - No Docker tests.

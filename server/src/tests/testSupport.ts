@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { createServerContext } from "./app.ts";
+import { createServerContext } from "../app.ts";
 
 export const TEST_INDEX_HTML = '<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body></body></html>';
 

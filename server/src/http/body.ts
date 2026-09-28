@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import type { AppEnv } from "./types.ts";
+import type { AppEnv } from "../types.ts";
 
 export type JsonBodyResult = { ok: true; body: Record<string, any> } | { ok: false; response: Response };
 

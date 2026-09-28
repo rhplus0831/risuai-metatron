@@ -2,7 +2,7 @@
 import type http from "node:http";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { isLocalNetworkHost, sanitizeTargetUrl } from "./proxyStreamJobs.ts";
+import { isLocalNetworkHost, sanitizeTargetUrl } from "../routes/proxyStreamJobs.ts";
 import { createTestServer, json, sleep, startUpstream, waitFor } from "./testSupport.ts";
 
 type WsEvent = {

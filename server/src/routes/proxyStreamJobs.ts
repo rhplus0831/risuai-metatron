@@ -6,9 +6,9 @@ import type { Duplex } from "node:stream";
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import ipaddr from "ipaddr.js";
 import { WebSocketServer, type WebSocket } from "ws";
+import { readJsonBody } from "../http/body.ts";
+import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
-import { readJsonBody } from "./body.ts";
-import type { AppEnv } from "./types.ts";
 
 // Contract shared with src/ts/network/proxyJobWs.ts and fetchViaProxyJobWs in
 // src/ts/globalApi.svelte.ts: event names, base64 chunks, WS auth, and these limits.

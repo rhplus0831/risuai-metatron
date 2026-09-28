@@ -3,8 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createStreamBody } from "@hono/node-server/utils/stream";
 import type { Hono, MiddlewareHandler } from "hono";
+import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
-import type { AppEnv } from "./types.ts";
 
 const hexRegex = /^[0-9a-fA-F]+$/;
 

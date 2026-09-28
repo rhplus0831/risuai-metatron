@@ -1,6 +1,6 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
+import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
-import type { AppEnv } from "./types.ts";
 
 const hubURL = "https://sv.risuai.xyz";
 

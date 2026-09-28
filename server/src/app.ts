@@ -6,12 +6,12 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
-import { createAuthStore } from "./auth.ts";
-import { compileTrust, getClientIp, parseTrustProxyEnv } from "./clientIp.ts";
-import { registerProxyRoutes } from "./proxy.ts";
-import { createProxyStreamJobs } from "./proxyStreamJobs.ts";
-import { createRateLimiter } from "./rateLimit.ts";
-import { registerStorageRoutes } from "./storage.ts";
+import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
+import { createRateLimiter } from "./http/rateLimit.ts";
+import { createAuthStore } from "./routes/auth.ts";
+import { registerProxyRoutes } from "./routes/proxy.ts";
+import { createProxyStreamJobs } from "./routes/proxyStreamJobs.ts";
+import { registerStorageRoutes } from "./routes/storage.ts";
 import type { AppEnv } from "./types.ts";
 
 const MAX_BODY_BYTES = 100 * 1024 * 1024;
