@@ -17,5 +17,5 @@
 
 # Collaboration Guideline
 
-- When writing commit titles, use conventional prefixes such as `feat(risu):`, `fix(ai):`, and `refactor(metatron):`.
+- When writing commit titles, use conventional prefixes such as `feat(llm):`, `fix(cbs):`, and `refactor(server):`.
 - Describe what you did in the commit message.
