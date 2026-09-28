@@ -20,6 +20,13 @@ archived.
 - **Accessors.** Remove the live variant of `getDatabase()`; keep snapshot and selector helpers.
   Remove `setDatabase`, `setDatabaseLite`, `setCurrentChat`, and `setCharacterByIndex` once no
   caller remains.
+- **Selection shims.** Remove the preset and persona forwarding layer from Phase 3 and the mirror's
+  derived `chatPage`, `botPresetsId`, and `selectedPersona`; readers use the selected-id projections.
+- **Lazy loading.** With projections in place, the client loads chat summaries per character and
+  the full message list only for the selected chat; the `chatLoadInitialPages` and
+  `chatLoadAdditionalPages` paging stays a UI concern. Every reader of a non-selected chat
+  (dataset export, chat export, plugin chat getters, MCP read tools) fetches it from the server
+  first, and a summary is never presented as a complete `Chat`.
 - **Save loop.** Delete `saveDb` and the remaining `$effect` watchers; every write is a mutation.
 - **Live updates.** Resource-change events with revisions over the WebSocket so two clients of the
   same server converge; the client applies events to its projections and refetches on a gap.

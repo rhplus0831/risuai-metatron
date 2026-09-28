@@ -29,9 +29,9 @@ the CBS host callbacks, and the backup, export, and import paths. The API shapes
 - **CBS** (`src/ts/cbs.ts`). Keep the injected host callbacks (`getDatabase`, chat variable
   accessors, module lorebooks, selected-character accessors) and feed them read models. No CBS
   function changes.
-- **Backup, export, import.** `src/ts/drive/backuplocal.ts` builds archives from server resources
-  through a server export route and restores by posting resources; `src/ts/storage/exportAsDataset.ts`
-  and `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte` read snapshots; card import in
+- **Export, import.** Local backup archives already moved to the server route in Phase 1.
+  `src/ts/storage/exportAsDataset.ts` and `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`
+  read snapshots of the eagerly loaded mirror (lazy loading waits for Phase 6); card import in
   `src/ts/characterCards.ts` and `importChat` in `src/ts/characters.ts` create records through
   mutations; `exportChar` stays snapshot-based.
 - **Docs.** `docs/structure/plugins-mcp.md`, `docs/structure/scripts-triggers.md`,
@@ -40,12 +40,13 @@ the CBS host callbacks, and the backup, export, and import paths. The API shapes
 ## Safety Contract
 
 No plugin-visible API changes shape or permission semantics. Every write that reached `DBState.db`
-from these contracts now reaches a resource; none is dropped. A backup produced before the phase
-still restores.
+from these contracts now reaches a resource; none is dropped. A backup archive produced since
+Phase 1 still restores.
 
 ## Exit Criteria
 
-- No code path outside the mutation modules assigns into `DBState.db`.
+- No code path outside the mutation modules and the settings write adapter (invariant 2) assigns
+  into `DBState.db`; settings bindings keep that adapter until Phase 6.
 - The plugin tests (`src/ts/plugins/**/*.test.ts`) and the MCP RisuAccess tests pass against the
   mutation API.
 - A backup round trip and a card import work against server resources.

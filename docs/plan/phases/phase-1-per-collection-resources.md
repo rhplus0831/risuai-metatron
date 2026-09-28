@@ -29,15 +29,24 @@ and mutates `DBState.db` exactly as before; only load and save change.
 - **Delete.** `src/ts/storage/risuSave.ts` (encoder, decoder, legacy codecs, and the `risuSaveCache`
   LocalForage instance), `getDbBackups` and the `dbbackup-*` writes in `globalApi.svelte.ts`,
   `enableRemoteSaving` and the `remotes/` handling, and the `BroadcastChannel("risu-db")` guard.
-- **Server backups.** A periodic snapshot of the resource folders under `save/backups/<timestamp>/`
-  with a retention count, plus a list route so the existing restore UI in
-  `src/lib/Setting/Pages/Advanced/` can offer server snapshots. If the UI work does not fit, keep
-  the route and defer the UI to Phase 4.
+- **Server backups.** A periodic `sqlite.backup()` snapshot of the resource database under
+  `save/backups/` with a retention count (assets are not part of it, as the `dbbackup-*` files never
+  held assets), plus a list route so the existing restore UI in
+  `src/lib/Setting/Pages/Advanced/` can offer server snapshots. Restore is a server operation that
+  drains mutations, imports atomically, and advances the database epoch (Decision 1).
+- **Local backup archives.** `src/ts/drive/backuplocal.ts` imports `encodeRisuSaveLegacy` and
+  `decodeRisuSave` from the codec this phase deletes, so its archive export and restore move to a
+  server export and import route (resources plus assets) in this phase. Archives made before this
+  phase are not restorable, which the no-migration rule allows; shared artifact formats are
+  unaffected.
 - **Browser-local user data.** Inlays (`src/ts/process/files/inlays.ts`, LocalForage `inlay`) become
   server resources under an `inlays` kind with the blob in the `assets` namespace and metadata in the
   resource. Plugin safe storage (`SafeLocalPluginStorage` in `src/ts/plugins/pluginSafeClass.ts`)
-  and the v3 permission grants (`plugin_permissions` in `src/ts/plugins/apiV3/v3.svelte.ts`) move
-  into the `pluginStorage` resource. The Iris dialogue (`src/lib/Others/IrisModal.svelte`) and the
+  moves into the `pluginStorage` resource. The v3 permission grants (`plugin_permissions` in
+  `src/ts/plugins/apiV3/v3.svelte.ts`) become a separate server-owned `pluginPermissions` resource
+  that no plugin snapshot or plugin write path (including `setPluginDatabase` and
+  `pluginCustomStorage` replacement) can read or write, so a plugin cannot grant itself a
+  permission. The Iris dialogue (`src/lib/Others/IrisModal.svelte`) and the
   Google search credentials (`src/ts/process/mcp/googlesearchclient.ts`) move into `root`.
   Rebuildable caches stay browser-local and are listed as such in `persistence.md`: `hypaVector`,
   `LLMTranslateCache`, `tfCache`, `firefox-translations-models`, `mcp-tool-calls`, and the
@@ -53,7 +62,10 @@ and mutates `DBState.db` exactly as before; only load and save change.
 ## Safety Contract
 
 The client's read and write surface is unchanged: every `DBState.db` reference, binding, and
-assignment keeps working. Card, preset, module, and translator-preset import and export are
+assignment keeps working, and the `saveDb` watchers act as the write adapter of invariant 2 for
+every collection in this phase. Until Phase 2 a character resource carries all of its chats under
+one revision, so two tabs editing different chats of one character conflict and one reloads; this
+is expected, not a defect. Card, preset, module, and translator-preset import and export are
 untouched. No LocalForage user data is deleted until its server copy is read back successfully.
 
 ## Exit Criteria
@@ -64,6 +76,8 @@ untouched. No LocalForage user data is deleted until its server copy is read bac
 - No `database.bin`, no client-side backup writes, no `remotes/` payloads, and no `BroadcastChannel`
   remain.
 - Inlays referenced by chat text render after clearing browser storage.
+- A local backup archive made in this phase restores through the server route.
+- A plugin cannot read or change permission grants through any v3 API.
 - The touched guides and invariants describe the new layout.
 
 ## Validation

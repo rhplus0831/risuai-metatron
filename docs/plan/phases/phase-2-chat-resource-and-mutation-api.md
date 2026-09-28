@@ -2,7 +2,7 @@
 
 Status: not started.
 
-Depends on: Phase 1. Confirm the streaming persistence Open Decision first.
+Depends on: Phase 1. Implements the Phase 2 parts of Decisions 3 and 4 in `PLAN.md`.
 
 ## Objective
 
@@ -12,16 +12,44 @@ and chats can be loaded lazily.
 
 ## Required Work
 
-- **Schema.** `character.chaId`, `Chat.id`, and `Message.chatId` become required; the id assignment
-  in `assignIds` (`src/ts/bootstrap.ts`) becomes part of the server normalizer. `character.chats`
-  becomes an ordered id list, and each chat is a `characters/<chaId>/chats/<chatId>` resource.
-  `chatPage` follows the selection-state Open Decision.
+- **Schema.** `character.chaId`, `Chat.id`, and `Message.chatId` become required. The character
+  and chat id assignment in `assignIds` (`src/ts/bootstrap.ts`) and the message-id assignment that
+  today happens in the send pipeline both move into the server normalizer, which also
+  de-duplicates message ids within a chat. `character.chats` becomes an ordered id list. Each
+  chat's metadata is a `characters/<chaId>/chats/<chatId>` resource with one revision, and its
+  messages are rows keyed by (chat id, message id) with an order key and data, in the same
+  database. `isStreaming` and `activeStreamingDisplayOptimizationMode` leave the persisted schema
+  (`setDatabase` already resets them on load), and a client-local streaming store replaces them for
+  `Chats.svelte`.
+- **Selected chat.** The selection becomes a per-client chat id instead of the persisted
+  `chatPage` index, so a reorder or deletion on another client cannot move it. Until Phase 6 the
+  mirror derives `chatPage` from that id, so its readers keep working.
 - **Client mutation module.** A new module beside `database.svelte.ts` exposing `createChat`,
   `deleteChat`, `reorderChats`, `appendMessage`, `replaceMessage`, `setMessageText` (streaming),
   `removeMessages`, `setChatMeta` (note, localLore, scriptstate, modules, bindedPersona, fmIndex,
   memory data, bookmarks, folder), and `replaceChat` for trigger and Lua results that return a whole
-  clone. Each call updates the `DBState.db` mirror and enqueues a resource write with the revision;
-  writes coalesce per chat; streamed text is persisted on completion plus checkpoints.
+  clone. Each call updates the `DBState.db` mirror and enqueues an operation with the revision;
+  writes coalesce per chat. Operations that address one unlocked message by `Message.chatId`
+  apply against a stale revision as long as the message exists, and `setChatMeta` is a per-field
+  merge that does the same; `replaceChat`, reordering, and bulk removal require the current
+  revision. Whole-chat results from triggers and Lua are diffed against the chat they started from
+  and applied as by-id operations, with `replaceChat` only for changes a diff cannot express. No
+  operation addresses a message by index. This phase switches chats to explicit mutations
+  (invariant 2).
+- **Generation lock.** The message being generated is locked against editing from the first chunk
+  until its last persistence step, including the asynchronous inlay. In this phase the lock is a
+  client rule: the edit, delete, and regenerate controls for that message are disabled. Checkpoints
+  carry the generation id.
+- **Streaming persistence.** The client still generates in this phase. `setMessageText` checkpoints
+  the whole text so far every three seconds, at stream end, and on abort, independent of the 125 ms
+  display flush; the durability promise is the last acknowledged checkpoint. On `pagehide` the
+  client tries a `fetch` `keepalive` flush, with the whole text only under the 64 KiB keepalive
+  budget and otherwise the suffix since the last acknowledged checkpoint; it is best effort.
+  Checkpoints hold what the mirror holds today: the `editoutput` result, or the pre-`editoutput`
+  text in the strong streaming display mode. The reply persists at stream end, after the output
+  trigger, and after inlays, keeping today's two orders (the streaming path runs the output trigger
+  before inlays, the non-streaming path runs inlays first). The streaming loop stops holding
+  `msgIndex` and addresses the reply by id. Abort and a crash keep the last committed text.
 - **Write sites to route.** From the write-path map: in `src/ts/process/index.svelte.ts`,
   `runCurrentChatFunction`, `throwError`, the message-id normalization, the response push and the
   streaming `message.data` writes, the `isStreaming` flags, the memory data persistence
@@ -44,8 +72,9 @@ and chats can be loaded lazily.
   relying on this for the UI files.
 - **Retire the chat watcher.** Remove the `changeTracker.chat` handling from `saveDb`; the character
   watcher stays for the character's own fields until Phase 6.
-- **Lazy loading.** The client loads chat summaries per character and the full message list for the
-  selected chat. The `chatLoadInitialPages` and `chatLoadAdditionalPages` paging stays a UI concern.
+- **Eager loading stays.** The client still loads every chat's messages. Lazy loading waits for
+  Phase 6, because dataset export, chat export, the plugin chat getters, and the MCP read tools walk
+  every chat through the mirror.
 - **Docs.** `docs/structure/chat-pipeline.md` `State` (the pipeline no longer mutates in place and
   relies on autosave), `docs/structure/persistence.md`, and the D4 invariant.
 
@@ -63,10 +92,15 @@ array) is fixed as part of routing `command.ts`, with a test.
 - A streaming send persists the final message; a reload after a send shows the reply; reroll,
   continue, and group sends work.
 - Deleting a chat, branching, and reordering survive a reload.
-- Chat load for a character with many chats fetches only summaries plus the selected chat.
+- Edits to other messages and to chat metadata during a streaming send do not conflict with the
+  checkpoints, the generating message cannot be edited, and deleting an earlier message during the
+  stream does not redirect the reply.
+- Killing the tab mid-stream leaves the reply text up to the last checkpoint, with no persisted
+  streaming flag.
 
 ## Validation
 
-Unit tests for the mutation module, server tests for the chat resource, a `command.ts` test for
+Unit tests for the mutation module, server tests for the chat resource and the message-operation
+revision rule, a `command.ts` test for
 `/cut` and `/del`, a manual send, reroll, and reload check recorded in the phase file, and
 `pnpm check`, `pnpm test`, `pnpm format:check`.

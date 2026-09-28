@@ -2,7 +2,7 @@
 
 Status: not started.
 
-Depends on: nothing. Confirm the storage-engine and shared-module Open Decisions first.
+Depends on: nothing. Implements Decisions 1 and 2 in `PLAN.md`.
 
 ## Objective
 
@@ -23,30 +23,37 @@ resource store with revisions and normalization hooks, without changing client b
   (`translator/presets.ts`), `RisuModule` (`process/modules.ts`), `OnnxModelFiles`
   (`process/transformers.ts`), `Hotkey` (`defaulthotkeys.ts`), `OpenAIChat`
   (`process/index.svelte.ts`), and `LLMFlags`, `LLMFormat`, `LLMTokenizer` (`model/types.ts`).
-  Move each declaration into a shared schema folder that both tsconfigs include, and re-export it
-  from its old location so no importer changes in this phase.
-- **Respect both compilers.** `server/tsconfig.json` sets `erasableSyntaxOnly`, `verbatimModuleSyntax`,
-  and `nodenext`, so shared modules may contain no `enum`, no namespaces, no parameter properties, no
-  runes, and only relative imports with `.ts` extensions. The LLM enums are already `as const`
+  Move each declaration into the root `shared/` folder that both tsconfigs include, and re-export
+  it from its old location so no importer changes in this phase.
+- **Respect both compilers.** `server/tsconfig.json` sets `strict`, `erasableSyntaxOnly`,
+  `verbatimModuleSyntax`, `nodenext`, and `lib: es2023` without DOM types, so shared modules may
+  contain no `enum`, no namespaces, no parameter properties, no runes, no DOM types, and only
+  relative imports with `.ts` extensions, and they must pass strict mode although the root project
+  does not use it. The LLM enums are already `as const`
   objects with union types, so they qualify. `database.svelte.ts` keeps `getDatabase()` and its one
   `$state.snapshot` call; only declarations move.
 - **Settle the import convention.** The root `tsconfig.json` uses `moduleResolution: bundler` with
-  `noEmit: false`, which rejects `.ts` extensions in import paths. The expected change is
-  `allowImportingTsExtensions` plus `noEmit: true` (Vite performs the build regardless). Prove it with
-  `pnpm check` and `pnpm build` before the schema moves.
-- **Add the server data layer.** A `server/src/data/` module with a `ResourceStore` that reads,
-  writes, lists, and removes typed resources as one JSON file each under `save/<kind>/<id>.json`,
-  reusing `encodeFileName` and the stage-and-rename write path from `server/src/routes/storage.ts`.
-  Each stored document carries `revision` and `schemaVersion`. A write takes the expected revision
-  and fails with a conflict when it differs. Each resource kind registers a pure `normalize`
-  function; for this phase the functions are identity.
+  `noEmit: false`, which rejects `.ts` extensions in import paths. Add `allowImportingTsExtensions`
+  and `noEmit: true` (nothing emits through `tsc`), and add `shared/**/*.ts` to its `include`; add the `shared` folder to the server `include` as well,
+  so shared modules are strict-checked even before the server imports them. Prove
+  it with `pnpm check` and `pnpm build` before the schema moves.
+- **Ship the folder.** The `runtime` stage of the `Dockerfile` copies only `server` and `dist`. Add
+  `shared`, and confirm the image starts.
+- **Add the server data layer.** A `server/src/data/` module with a `ResourceStore` over one
+  `node:sqlite` database under `save/`. Generic documents share one table (`kind`, `id`,
+  `revision`, `schemaVersion`, `data`). A write takes the expected revision and fails with a
+  conflict through `UPDATE ... WHERE revision = ?`; a unit of work spanning several resources runs
+  in one transaction. The interface leaves room for kinds with tables of their own (chat messages
+  in Phase 2). Each resource kind registers a pure `normalize` function; for this phase the
+  functions are identity. Open the connection with `journal_mode=WAL`, a `busy_timeout`, and
+  `foreign_keys=ON`. Revision tokens include a database epoch (Decision 1).
 - **Add the resource routes.** `server/src/routes/resources.ts`, registered in `createServerContext`
   behind `auth.checkAuth` and the shared limiter: get, put, list, and delete per kind, returning
   `{ revision, data }`, 409 on a stale revision, 400 on a body the normalizer rejects. No client
   caller yet.
 - **Tests.** `server/src/tests/resources.test.ts` using `createServerContext({ rootDir: tmp })` and
   the signer in `testSupport.ts`: round trip, stale revision rejected, malformed body rejected, list
-  order, delete.
+  order, delete, and a multi-resource transaction that rolls back as a whole.
 - **Docs.** Add the data layer and routes to `docs/structure/self-host-server.md` (`Files`, `Routes`,
   `Tests`) and the schema folder to `docs/structure/persistence.md` and the `STRUCTURE.md` path
   ownership table.
@@ -60,10 +67,10 @@ importer of `database.svelte.ts` keep working unchanged. The new routes are unus
 
 - `pnpm check` type-checks the shared schema through both the Svelte project and the server project.
 - The resource routes have passing tests, and `pnpm test` still runs the existing client suite.
-- The Open Decisions for storage engine and import convention are recorded as confirmed in
-  `PLAN.md`.
+- The runtime Docker image starts and serves the resource routes.
 - The touched guides list the new modules.
 
 ## Validation
 
-`pnpm check`, `pnpm test`, `pnpm build`, `pnpm format:check`, and `server/src/tests/resources.test.ts`.
+`pnpm check`, `pnpm test`, `pnpm build`, `pnpm format:check`, `server/src/tests/resources.test.ts`,
+and a Docker image build and start.

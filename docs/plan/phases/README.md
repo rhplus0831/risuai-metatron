@@ -9,8 +9,8 @@ criteria, and validation. Update the status line of a phase in the same change t
 Phase 0 makes the persisted types compile in both runtimes and gives the server a typed store.
 Phase 1 replaces the save blob with per-collection resources and moves browser-local user data to
 the server. Phases 2 and 3 split chats and settings out of their blocks and may run in parallel.
-Phase 4 re-points every external contract at the mutation API. Phase 5 moves generation, Lua, and
-data-only hooks to the server. Phase 6 thins the client and closes out.
+Phase 4 re-points every external contract at the mutation API. Phase 5 moves generation, all Lua,
+the triggers, and the display transform to the server. Phase 6 thins the client and closes out.
 
 ## Phase Index
 
@@ -32,7 +32,7 @@ results, residual risk, and its stopping condition. No slice exists yet.
 ## Common Entry Gate
 
 - The dependencies named in the phase file are complete.
-- The Open Decisions in `PLAN.md` that the phase needs are confirmed.
+- The Decisions in `PLAN.md` that the phase implements are still current.
 - The previous path (reader, writer, or client-side stage) is still in place as the rollback seam.
 
 ## Common Exit Gate
