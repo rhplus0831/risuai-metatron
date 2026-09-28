@@ -1,4 +1,4 @@
-# Self-Host Server (Hono on Node), Docker, Edge Proxies
+# Self-Host Server (Hono on Node), Docker
 
 ## Scope
 
@@ -7,9 +7,8 @@
   - Local TLS certificates.
   - Docker packaging.
   - The launcher scripts.
-  - The edge proxy functions.
   - The client/server contract, seen from the server side.
-- Paths: `server/{src/*,tsconfig.json,ssl/*}`, `Dockerfile`, `.dockerignore`, `server.sh`, `server.bat`, `public/functions/{proxy,proxy2}.js`.
+- Paths: `server/{src/*,tsconfig.json,ssl/*}`, `Dockerfile`, `.dockerignore`, `server.sh`, `server.bat`.
 - Client counterparts, owned by other guides:
   - `src/ts/storage/nodeStorage.ts` → `persistence.md`.
   - `globalApi.svelte.ts` `fetchNative`/`fetchViaProxyJobWs` → `global-api.md`.
@@ -31,7 +30,6 @@ The server is TypeScript run directly by Node's type stripping (`pnpm runserver`
 - `server/ssl/Generate Certificate.sh|.bat`, `ca.conf`, `server.conf`: generate a local CA and server certificate into `server/ssl/certificate/` (run from `server/ssl/`). `main.ts` uses HTTPS when `server.key`/`server.crt` exist there, relative to `cwd`.
 - `Dockerfile`: Node 24, pnpm 10.34.1, multi-stage build of `dist`. Copies `server/` + `dist/` + prod `node_modules`, `EXPOSE 6001`, `CMD pnpm runserver`.
 - `server.sh`/`server.bat`: install, build, run. The env exports (legal, ads) are commented out.
-- `public/functions/proxy.js`, `proxy2.js`: edge `onRequest` open proxies with no auth or allowlist. `proxy2` prefers the `risu-url` header.
 
 ## Routes
 
@@ -39,7 +37,7 @@ Registration order in `createServerContext`:
 
 1. `onError` (`HTTPException` responses pass through; anything else is a 500 `Internal Server Error`).
 2. `bodyLimit` (100 MiB, 413 `{error:"Request body too large"}`).
-3. `GET /`.
+3. `GET /` and `GET /index.html` (one shared handler).
 4. `serveStatic` for every other GET/HEAD.
 5. The routes below.
 
@@ -48,7 +46,7 @@ Routing is non-strict (a trailing slash matches).
 | Method     | Path                                    | Auth                                                                         | Rate limit     | Purpose                                                                                                                              |
 | ---------- | --------------------------------------- | ---------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | GET/HEAD   | `dist/*`                                | none                                                                         | none           | built frontend (`@hono/node-server` `serveStatic`: ranges, `Last-Modified`, no ETag)                                                 |
-| GET        | `/`                                     | none                                                                         | none           | serves `dist/index.html` with `globalThis.__NODE__ = true` injected after the `<head>` tag                                           |
+| GET        | `/`, `/index.html`                      | none                                                                         | none           | serves `dist/index.html` with `globalThis.__NODE__ = true` injected after the `<head>` tag                                           |
 | GET/POST   | `/proxy`, `/proxy2`                     | `checkProxyAuth` (stored password in `risu-auth`, or a registered ES256 JWT) | 2000/min       | arbitrary reverse proxy (`risu-url`, `risu-header`)                                                                                  |
 | GET        | `/hub-proxy/*`                          | none                                                                         | 2000/min       | proxies to `x-risu-node-path` or `https://sv.risuai.xyz`                                                                             |
 | POST       | `/proxy-stream-jobs`                    | `checkProxyAuth`                                                             | 2000/min       | creates a local-network streaming job. `sanitizeTargetUrl` allows local/private targets only. Body ≤ 8 MiB base64, ≤ 64 active jobs. |
@@ -73,8 +71,15 @@ Boot:
 
 Client detection:
 
-1. `GET /` injects `__NODE__`, which makes `isNodeServer` true in the client.
-2. `AutoStorage` then picks `NodeStorage`.
+1. `GET /` and `GET /index.html` inject `__NODE__`, which makes `isNodeServer` true in the client. Without it the client shows only the `NodeServerRequired` notice, so no route may serve `index.html` raw.
+2. `AutoStorage` always uses `NodeStorage`.
+
+Development (`pnpm dev`):
+
+1. Run `pnpm runserver` and `pnpm dev` side by side. The Vite dev server (port 5174) injects `__NODE__` into its own `index.html` (plugin `risu-node-flag`, serve only) and proxies `/api`, `/proxy`, `/proxy2`, `/hub-proxy`, and `/proxy-stream-jobs` (including the WS upgrade) to `RISU_DEV_SERVER` (default `http://localhost:6001`; set `https://...` when the server found a certificate).
+2. The dev origin keeps its own IndexedDB `DPoPDB` key pair, so it logs in separately from the server origin.
+3. The server sees every proxied request as coming from the Vite process, so all dev clients share one rate-limit bucket (including the 10-per-30 s login limiter). The dev proxy does not add `X-Forwarded-For`, so `TRUST_PROXY` alone does not separate them.
+4. `NodeStorage` needs `crypto.subtle`, so open the dev server via `localhost` (a plain-HTTP LAN address is not a secure context).
 
 Auth:
 
@@ -182,14 +187,14 @@ Process memory, inside the `createServerContext` closure:
   - Client: `NodeStorage.createAuth`/`checkAuth`/`digestPassword`.
   - Server: `auth.ts` (`verifyJwt`, the `/api/login` route).
   - Verify first run, restart, token expiry, and unknown keys.
-- Change proxy policy: server `sanitizeTargetUrl`, client `localNetwork.ts` + `fetchNative`, and the edge `proxy*.js`.
+- Change proxy policy: server `sanitizeTargetUrl`, client `localNetwork.ts` + `fetchNative`.
 - Change streaming: `proxyStreamJobs.ts` (`runJob`, `attachWebSocket`, `onConnection`), `ProxyJobWsEvent`, `fetchViaProxyJobWs`, and `proxyJobWs.test.ts`.
 - Change packaging: `Dockerfile`, the README Docker steps, and `package.json` `runserver` together.
 
 ## Tests
 
 - Server (`// @vitest-environment node`, type-checked by `pnpm check` through `server/tsconfig.json`):
-  - `server/src/app.test.ts`: `__NODE__` injection, auth flow and JWT failure bodies, JSON rules, login limiter, storage, hex guard, batch remove.
+  - `server/src/app.test.ts`: `__NODE__` injection (`/` and `/index.html`), auth flow and JWT failure bodies, JSON rules, login limiter, storage, hex guard, batch remove.
   - `server/src/proxy.test.ts`: proxy auth, raw bodies, header filtering, SSE, timeout, HEAD, hub proxy.
   - `server/src/proxyStreamJobs.test.ts`: target allowlist, job validation, a real `serve()` WebSocket lifecycle, DELETE and `dispose()` closing upstreams.
   - `server/src/testSupport.ts`: temp-root context, ES256 signer, recording upstream.
@@ -202,5 +207,5 @@ Process memory, inside the `createServerContext` closure:
 - Writes are not atomic: direct `writeFile`, no temp-file rename, no fsync.
 - A batch remove stops at the first filesystem error, such as a missing file. It returns 500, and files deleted before the error stay deleted.
 - `/api/set_password` and `/api/crypto` have no auth and no rate limit. The first caller can set the password, and an empty password leaves the server effectively unset.
-- `/proxy`, `/proxy2`, `/hub-proxy` (through `x-risu-node-path`, unauthenticated), and the edge proxies forward to arbitrary targets. Only proxy jobs are restricted to local targets.
+- `/proxy`, `/proxy2`, and `/hub-proxy` (through `x-risu-node-path`, unauthenticated) forward to arbitrary targets. Only proxy jobs are restricted to local targets.
 - JWT validation checks no issuer, audience, `typ`, or `iat`, and a token without `exp` never expires.

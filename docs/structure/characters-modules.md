@@ -32,7 +32,7 @@
 - `characterCards.ts`: card import, export, and hub helpers.
   - Import: `importCharacter` (file picker), `importCharacterProcess` (dispatch by extension), private `importCharacterCardSpec` (V2/V3), `convertOffSpecCards`, `convertCharbook`.
   - Export: `exportChar` (dialog), `exportCharacterCard` (writer), `createBaseV2`/`createBaseV3`.
-  - Hub and links: `characterURLImport` (deep links and shares), `hubURL`, `getRisuHub`/`downloadRisuHub`/`getRealmInfo`. `hubURL` is `/hub-proxy` on Node, otherwise `https://sv.risuai.xyz`.
+  - Hub and links: `characterURLImport` (deep links and shares), `hubURL`, `getRisuHub`/`downloadRisuHub`/`getRealmInfo`. `hubURL` is the self-host server's same-origin `/hub-proxy`.
 - `characters.ts`: character lifecycle.
   - Create and select: `addCharacter`, `createNewCharacter`, `createBlankChar`, `createNewGroup`, `changeChar` (runs `characterFormatUpdate`).
   - Delete: `removeChar` (soft delete via `trashTime`, or permanent).

@@ -23,7 +23,7 @@ import {
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertConfirm, alertError, alertMd, alertNormal, alertNormalWait, alertSelect, waitAlert } from "./alert";
 import { hasher } from "./parser/parser.svelte";
-import { characterURLImport, hubURL } from "./characterCards";
+import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
 import { decodeRisuSave, encodeRisuSaveLegacy, RisuSaveEncoder, type toSaveType } from "./storage/risuSave";
 import { AutoStorage } from "./storage/autoStorage";
@@ -33,7 +33,6 @@ import { language } from "src/lang";
 import { updateGuisize } from "./gui/guisize";
 import { updateLorebooks } from "./characters";
 import { moduleUpdate } from "./process/modules";
-import { isNodeServer } from "./platform";
 import { isLocalNetworkUrl } from "./network/localNetwork";
 import { decodeProxyJobWsChunk, formatProxyStreamErrorMessage, parseProxyJobWsEvent } from "./network/proxyJobWs";
 import { getNodeServerProxyAuth } from "./storage/nodeStorage";
@@ -431,16 +430,7 @@ export function getFetchData(id: string) {
 }
 
 const knownHostes = ["localhost", "127.0.0.1", "0.0.0.0"];
-const webLocalNetworkBlockedMessage = "웹에서는 사설망 직접 호출 불가. LAN Node self-host 사용";
 const defaultProxyJobHeartbeatSec = 15;
-
-function getProxy2Url() {
-    return !isNodeServer ? `${hubURL}/proxy2` : `/proxy2`;
-}
-
-function getProxyStreamJobBaseUrl() {
-    return isNodeServer ? "" : `${hubURL}`;
-}
 
 function buildTimeoutSignal(originalSignal?: AbortSignal, timeoutMs?: number) {
     if (!timeoutMs || timeoutMs <= 0) {
@@ -574,19 +564,6 @@ export async function globalFetch(url: string, arg: GlobalFetchArgs = {}): Promi
             !arg.plainFetchDeforce &&
             !useLocalNetworkRoute;
 
-        if (useLocalNetworkRoute && !isNodeServer) {
-            return { ok: false, headers: {}, status: 400, data: webLocalNetworkBlockedMessage };
-        }
-
-        if (knownHostes.includes(urlHost) && !isNodeServer) {
-            return {
-                ok: false,
-                headers: {},
-                status: 400,
-                data: "You are trying local request on web version. This is not allowed due to browser security policy. Use the self-hosted Node server instead, or use a tunneling service like ngrok and set the CORS to allow all.",
-            };
-        }
-
         if (arg.interceptor) {
             for (const interceptor of bodyIntercepterStore) {
                 try {
@@ -719,11 +696,10 @@ async function fetchWithUSFetch(url: string, arg: GlobalFetchArgs): Promise<Glob
  */
 async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<GlobalFetchResult> {
     try {
-        const furl = getProxy2Url();
         arg.headers ??= {};
         arg.headers["Content-Type"] ??=
             arg.body instanceof URLSearchParams ? "application/x-www-form-urlencoded" : "application/json";
-        const nodeProxyAuth = isNodeServer ? await getNodeServerProxyAuth() : null;
+        const nodeProxyAuth = await getNodeServerProxyAuth();
         const headers = {
             "risu-header": encodeURIComponent(JSON.stringify(arg.headers)),
             "risu-url": encodeURIComponent(url),
@@ -734,12 +710,16 @@ async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<Global
                 "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString(),
             }),
             ...(nodeProxyAuth && { "risu-auth": nodeProxyAuth }),
-            ...(DBState?.db?.requestLocation && { "risu-location": DBState.db.requestLocation }),
         };
 
         const body = arg.body instanceof URLSearchParams ? arg.body.toString() : JSON.stringify(arg.body);
 
-        const response = await fetch(furl, { body, headers, method: arg.method ?? "POST", signal: arg.abortSignal });
+        const response = await fetch("/proxy2", {
+            body,
+            headers,
+            method: arg.method ?? "POST",
+            signal: arg.abortSignal,
+        });
         const isSuccess = response.ok && response.status >= 200 && response.status < 300;
 
         if (arg.rawResponse) {
@@ -1089,10 +1069,8 @@ async function fetchViaProxyJobWs(
     const auth = await getNodeServerProxyAuth();
 
     const requestSignal = arg.signal;
-    const baseUrl = getProxyStreamJobBaseUrl();
-
     let jobId = "";
-    const createRes = await fetch(`${baseUrl}/proxy-stream-jobs`, {
+    const createRes = await fetch("/proxy-stream-jobs", {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -1236,7 +1214,7 @@ async function fetchViaProxyJobWs(
         if (streamController && !settled) {
             streamController.enqueue(encoder.encode("Aborted"));
         }
-        void fetch(`${baseUrl}/proxy-stream-jobs/${encodeURIComponent(jobId)}`, {
+        void fetch(`/proxy-stream-jobs/${encodeURIComponent(jobId)}`, {
             method: "DELETE",
             headers: {
                 "risu-auth": auth,
@@ -1322,15 +1300,8 @@ export async function fetchNative(
         throw new Error("Invalid body type");
     }
 
-    const db = getDatabase();
     const useLocalNetworkRoute = arg.networkRoute === "local_network" && isLocalNetworkUrl(url);
-    if (useLocalNetworkRoute && !isNodeServer) {
-        throw new Error(webLocalNetworkBlockedMessage);
-    }
-    let throughProxy = !isNodeServer && !db.usePlainFetch;
-    if (useLocalNetworkRoute && isNodeServer) {
-        throughProxy = true;
-    }
+    const throughProxy = useLocalNetworkRoute;
     const timeoutSignal = buildTimeoutSignal(arg.signal, arg.requestTimeoutMs);
     const requestSignal = timeoutSignal.signal;
     const shouldLogFetch = arg.logFetch ?? true;
@@ -1356,8 +1327,8 @@ export async function fetchNative(
             });
         } else if (throughProxy) {
             const useProxyJobWs =
-                isNodeServer && arg.interceptor === "openai_streaming" && arg.method === "POST" && useLocalNetworkRoute;
-            const nodeProxyAuth = isNodeServer ? await getNodeServerProxyAuth() : null;
+                arg.interceptor === "openai_streaming" && arg.method === "POST" && useLocalNetworkRoute;
+            const nodeProxyAuth = await getNodeServerProxyAuth();
 
             if (useProxyJobWs) {
                 try {
@@ -1375,7 +1346,7 @@ export async function fetchNative(
                 }
             }
 
-            const r = await fetch(getProxy2Url(), {
+            const r = await fetch("/proxy2", {
                 body: realBody as any,
                 headers: arg.useRisuTk
                     ? {
@@ -1387,7 +1358,6 @@ export async function fetchNative(
                               "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString(),
                           }),
                           ...(nodeProxyAuth ? { "risu-auth": nodeProxyAuth } : {}),
-                          ...(DBState?.db?.requestLocation && { "risu-location": DBState.db.requestLocation }),
                       }
                     : {
                           "risu-header": encodeURIComponent(JSON.stringify(headers)),
@@ -1397,7 +1367,6 @@ export async function fetchNative(
                               "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString(),
                           }),
                           ...(nodeProxyAuth ? { "risu-auth": nodeProxyAuth } : {}),
-                          ...(DBState?.db?.requestLocation && { "risu-location": DBState.db.requestLocation }),
                       },
                 method: arg.method,
                 signal: requestSignal,
@@ -1631,9 +1600,6 @@ export function getVersionString(): string {
     }
     if (import.meta.env.VITE_RISU_NIGHTLY_BUILD === "TRUE") {
         versionString = "Nightly Build " + import.meta.env.VITE_RISU_BUILD_TIME;
-    }
-    if (window.location.hostname === "stable.risuai.xyz") {
-        versionString += " (Stable)";
     }
     return versionString;
 }

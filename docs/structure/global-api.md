@@ -98,19 +98,17 @@ Other files:
 
 `globalFetch`:
 
-1. Applies `bodyIntercepterStore` interceptors, timeout, and local-network policy. Web builds reject local/private URLs.
-2. Picks a transport, in order: plain `fetch` (`plainFetchForce`/`usePlainFetch`), userscript `userScriptFetch`, or the proxy.
-3. Proxy target:
-   - Web (non-Node) → `${hubURL}/proxy2`.
-   - Node → same-origin `/proxy2`.
+1. Applies `bodyIntercepterStore` interceptors, timeout, and local-network policy.
+2. Picks a transport, in order: a qualifying local-network route → the proxy; otherwise plain `fetch` (localhost hosts, `plainFetchForce`/`usePlainFetch`), userscript `userScriptFetch`, or the proxy.
+3. Proxy target: same-origin `/proxy2` on the self-host server.
    - Headers: `risu-url`, `risu-header` (encoded JSON), optional `risu-auth` and `x-risu-tk`, timeout.
 
 `fetchNative`:
 
 1. The body must be a string, `Uint8Array`, or `ArrayBuffer`, and is required for POST/PUT.
-2. Userscript `userScriptFetch` when present and not proxied.
-3. Web → proxy unless `usePlainFetch` is set.
-4. Node + local-network OpenAI streaming → `fetchViaProxyJobWs`:
+2. A qualifying local-network route goes through the proxy: step 4 for OpenAI streaming, otherwise `/proxy2`.
+3. Otherwise userscript `userScriptFetch` when present, else a direct `fetch`.
+4. Local-network OpenAI streaming → `fetchViaProxyJobWs`:
    1. POST `/proxy-stream-jobs`.
    2. Open the WS `/proxy-stream-jobs/:id/ws`.
    3. DELETE on abort.
@@ -131,13 +129,13 @@ Alerts:
 
 ## Coupling
 
-- `globalApi.svelte.ts` imports `database.svelte.ts`, `risuSave.ts`, `stores.svelte.ts`, alerts, `characterCards.ts` (`hubURL`), and the network helpers.
+- `globalApi.svelte.ts` imports `database.svelte.ts`, `risuSave.ts`, `stores.svelte.ts`, alerts, `characterCards.ts` (`characterURLImport`), and the network helpers.
 - Its importers: nearly every process, storage, UI, and plugin module.
 
 ## Invariants
 
 - Use `globalFetch`/`fetchNative` for every remote call so that proxy, Node routing, and logs apply.
-- Do not bypass the local-network block on web or the proxy auth headers. On Node, the server's `sanitizeTargetUrl` is a second SSRF boundary for proxy jobs only.
+- Do not bypass the proxy auth headers. On Node, the server's `sanitizeTargetUrl` is a second SSRF boundary for proxy jobs only.
 - Asset references are logical `assets/...` paths, never URLs or OS paths.
 - Each alert close path must write `type: 'none'`, or the awaiting caller hangs forever.
   - `alertSelect` encodes options joined with `||`.
@@ -147,10 +145,10 @@ Alerts:
 ## Recipes
 
 - Change network routing:
-  1. Edit `globalFetch`, `fetchNative`, `getProxy2Url`, and `fetchViaProxyJobWs`.
-  2. Update `server/src/proxy.ts` and `public/functions/proxy2.js` if the contract changes.
-  3. Verify web, Node, local-network, abort, and timeout behavior.
-- Add an asset kind: `saveAsset`, `loadAsset`, `readImage`, `getFileSrc`, plus migrations. Verify web storage, Node storage, and the service worker.
+  1. Edit `globalFetch`, `fetchWithProxy`, `fetchNative`, and `fetchViaProxyJobWs`.
+  2. Update `server/src/proxy.ts` if the contract changes.
+  3. Verify direct, proxied, local-network, abort, and timeout behavior.
+- Add an asset kind: `saveAsset`, `loadAsset`, `readImage`, `getFileSrc`, plus migrations. Verify Node storage and the service worker.
 - Add an alert:
   1. Extend `alertData`.
   2. Add a helper in `alert.ts`.

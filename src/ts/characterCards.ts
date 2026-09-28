@@ -30,7 +30,6 @@ import {
     saveAsset,
     VirtualWriter,
 } from "./globalApi.svelte";
-import { isNodeServer } from "src/ts/platform";
 import { compressImage, getImageType } from "./media";
 import { DBState, SettingsMenuIndex, selectedCharID, settingsOpen } from "./stores.svelte";
 import { hasher } from "./parser/parser.svelte";
@@ -41,8 +40,7 @@ import type { OnnxModelFiles } from "./process/transformers";
 import { CharXImporter, CharXWriter } from "./process/processzip";
 import { exportModuleLegacy, readModule, type RisuModule } from "./process/modules";
 
-const EXTERNAL_HUB_URL = "https://sv.risuai.xyz";
-export const hubURL = isNodeServer ? "/hub-proxy" : EXTERNAL_HUB_URL;
+export const hubURL = "/hub-proxy";
 
 export async function importCharacter() {
     try {
@@ -1627,11 +1625,11 @@ export async function getRisuHub(arg: {
 }): Promise<hubType[]> {
     try {
         arg.search += " __shared";
-        const stringArg = `search==${arg.search}&&page==${arg.page}&&nsfw==${arg.nsfw}&&sort==${arg.sort}&&web==${!isNodeServer ? "web" : "other"}`;
+        const stringArg = `search==${arg.search}&&page==${arg.page}&&nsfw==${arg.nsfw}&&sort==${arg.sort}&&web==other`;
 
         const da = await fetch(hubURL + "/realm/" + encodeURIComponent(stringArg) + "?cache=30", {
             headers: {
-                "x-risuai-info": appVer + ";" + (isNodeServer ? "node" : "web"),
+                "x-risuai-info": appVer + ";node",
             },
         });
         if (da.status !== 200) {

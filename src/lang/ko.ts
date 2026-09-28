@@ -24,8 +24,6 @@ export const languageKorean = {
         emptyText: "텍스트가 비어있습니다.",
         wrongPassword: "비밀번호가 잘못되었습니다.",
         networkFetch: "네트워크가 불안정하거나 서버가 응답하지 않을 때 자주 발생합니다.",
-        networkFetchWeb:
-            "이것은 CORS 오류일 수 있습니다. 이는 브라우저의 제한으로 인해 웹 버전을 사용할 때만 발생합니다. 셀프 호스팅(Node) 버전의 Risuai를 사용해보세요.",
         networkFetchPlain: "이것은 요청 오류일 수 있습니다. 설정에서 직접 요청 보내기 옵션을 비활성화해 보세요.",
         requestLogRemoved: "요청 로그가 삭제되었습니다.",
         requestLogRemovedDesc: "요청 로그는 앱이 재시작되거나 새로고침되면 삭제됩니다.",
@@ -957,7 +955,6 @@ export const languageKorean = {
         "NovelAI 사용 시 CORS 오류가 발생할 수 있으므로, NovelAI를 사용할 때는 이 옵션을 비활성화해 주세요.",
     translationPrompt: "번역 프롬프트",
     translationResponseSize: "번역 응답 크기",
-    webdeeplwarn: "이 옵션은 웹에서는 제대로 작동하지 않을 수 있습니다.",
     saveBackupLocal: "로컬 백업 저장",
     loadBackupLocal: "로컬 백업 불러오기",
     topP: "Top P",
@@ -1387,7 +1384,6 @@ export const languageKorean = {
     dynamic: "동적",
     assetStyle: "에셋 스타일",
     insertAssetPrompt: "에셋 프롬프트 삽입",
-    requestLocation: "리퀘스트 위치",
     newImageHandlingBeta: "새로운 이미지 처리 (베타)",
     settingsExported: "버그 리포트용 설정이 내보내지고 클립보드에 복사되었습니다.",
     bookmarks: "북마크",
@@ -1414,6 +1410,9 @@ export const languageKorean = {
     add: "추가",
     nightlyWarning:
         "## 나이틀리 빌드\n\n나이틀리 빌드에 연결하려고 합니다. 이 버전은 테스트용이며 버그가 포함되어 있을 수 있습니다. **이 버전에서는 버그 등 문제가 발생하더라도 직접적으로 해결하는 것을 지원하지 않습니다.**",
+    nodeServerRequiredTitle: "Risuai 자체 호스팅 서버가 필요합니다",
+    nodeServerRequiredDesc:
+        "Risuai는 자체 호스팅 서버를 통해서만 실행됩니다.\n`pnpm runserver` 또는 Docker로 서버를 시작한 뒤, 서버의 루트 주소(예: http://localhost:6001/)로 접속하세요.",
     generatedByAIDisclaimer: "이 콘텐츠는 AI에 의해 생성되었으며 부정확하거나 편향된 정보가 포함될 수 있습니다.",
     aiGenerationWarning: "콘텐츠는 AI로 생성되며 부정확하거나 편향된 정보가 포함될 수 있습니다.",
     autoScrollToNewMessage: "새 메시지로 자동 스크롤",

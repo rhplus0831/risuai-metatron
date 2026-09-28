@@ -12,7 +12,6 @@ import {
 } from "../storage/database.svelte";
 import { DBState, selIdState } from "../stores.svelte";
 import { aiWatermarkingLawApplies, getFileSrc } from "../globalApi.svelte";
-import { isNodeServer } from "src/ts/platform";
 import { getChatVar, setChatVar, getGlobalChatVar } from "./chatVar.svelte";
 import { processScriptFull } from "../process/scripts";
 import { get } from "svelte/store";
@@ -1121,7 +1120,6 @@ function initMatcher() {
         callInternalFunction: function (args: string[]): string {
             return "";
         },
-        isNodeServer: isNodeServer,
         isMobile: false,
         appVer: appVer,
     });

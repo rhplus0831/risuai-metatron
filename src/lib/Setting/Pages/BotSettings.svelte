@@ -606,9 +606,6 @@
         <span class="text-textcolor mt-2">Stream {language.providerURL}</span>
         <TextInput marginBottom={true} bind:value={DBState.db.textgenWebUIStreamURL} placeholder="wss://..." />
         <span class="text-draculared text-xs mb-2"
-            >You are using web version. you must use ngrok or other tunnels to use your local webui.</span
-        >
-        <span class="text-draculared text-xs mb-2"
             >Warning: For Ooba version over 1.7, use "Ooba" as model, and use url like
             http://127.0.0.1:5000/v1/chat/completions</span
         >

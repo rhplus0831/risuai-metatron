@@ -10,15 +10,12 @@ type BrowserNavigator = Navigator & {
     standalone?: boolean;
 };
 
-export type RisuEnvironmentLabel = "node" | "web" | "web(dev)";
+export type RisuEnvironmentLabel = "node" | "node(dev)";
 
 const browserNavigator = navigator as BrowserNavigator;
 
 export const isNodeServer: boolean = !!(globalThis as typeof globalThis & { __NODE__?: boolean }).__NODE__;
-export const isWeb: boolean = !isNodeServer && location.hostname === "risuai.xyz";
 export const isMobile: boolean = /Android|iPhone|iPad|iPod|webOS/i.test(browserNavigator.userAgent);
-
-export const isFirefox: boolean = browserNavigator.userAgent.includes("Firefox");
 
 function normalizeOSVersion(version?: string | null): string | null {
     if (!version) {
@@ -112,14 +109,10 @@ async function getBrowserHighEntropyOSVersion(): Promise<string | null> {
 
 export function getRisuEnvironmentLabel(): RisuEnvironmentLabel {
     if (import.meta.env.DEV) {
-        return "web(dev)";
+        return "node(dev)";
     }
 
-    if (isNodeServer) {
-        return "node";
-    }
-
-    return "web";
+    return "node";
 }
 
 export function getFallbackOSLabel(): string {

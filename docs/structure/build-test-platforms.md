@@ -23,15 +23,13 @@
 
 `package.json` scripts:
 
-| Script      | Command                                                                  | Use                          |
-| ----------- | ------------------------------------------------------------------------ | ---------------------------- |
-| `dev`       | `vite`                                                                   | dev server                   |
-| `build`     | `vite build --sourcemap`                                                 | web build                    |
-| `buildsite` | `vite build --outDir dist`                                               | site build                   |
-| `preview`   | `vite preview`                                                           | preview the build            |
-| `check`     | `svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json` | type check (client + server) |
-| `test`      | `vitest run`                                                             | tests                        |
-| `runserver` | `node server/src/main.ts`                                                | self-host server             |
+| Script      | Command                                                                  | Use                                      |
+| ----------- | ------------------------------------------------------------------------ | ---------------------------------------- |
+| `dev`       | `vite`                                                                   | dev server (needs `runserver`)           |
+| `build`     | `vite build --sourcemap`                                                 | production build (served by `runserver`) |
+| `check`     | `svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json` | type check (client + server)             |
+| `test`      | `vitest run`                                                             | tests                                    |
+| `runserver` | `node server/src/main.ts`                                                | self-host server                         |
 
 - Prettier config lives in `.prettierrc.json` (4-space indent, double quotes, semicolons, width 120, 2-space for JSON/YAML/Markdown, `prettier-plugin-svelte`). `.prettierignore` mirrors `.ignore` plus lockfiles, snapshots, `dist/`, and `src/ts/plugins/apiV3/risuai.d.ts` (a doc comment there contains a literal `*/`, so Prettier cannot parse it).
 
@@ -39,7 +37,7 @@ Config files:
 
 - `vite.config.ts`:
   - Plugins: Svelte, Tailwind (`@tailwindcss/vite`), `vite-plugin-wasm`, conditional `@rollup/plugin-strip`.
-  - Dev server is fixed at port 5174 with `strictPort`, listening on `0.0.0.0`.
+  - Dev server is fixed at port 5174 with `strictPort`, listening on `0.0.0.0`. It injects `globalThis.__NODE__ = true` (plugin `risu-node-flag`, `apply: "serve"`, so `dist/index.html` never carries it) and proxies the server routes (`/api`, `/proxy`, `/proxy2`, `/hub-proxy`, `/proxy-stream-jobs`, with WS) to `RISU_DEV_SERVER` (default `http://localhost:6001`). See `self-host-server.md` for the dev caveats.
   - `envPrefix` is Vite's default (`VITE_`). `build.minify` is `oxc`.
   - Alias `src` → `/src`. Workers are built as `es`.
   - Neither `define` nor `manualChunks` is set.
@@ -67,12 +65,13 @@ Web:
 
 ## Flows
 
-- Web: `pnpm dev` or `pnpm build` produces `dist/`, which is served statically, by the Hono self-host server (`server/src/`), or by Docker.
+- Production: `pnpm build` produces `dist/`, which only the Hono self-host server (`pnpm runserver`, `server/src/`) or Docker serves. Served any other way (static hosting), the client shows the `NodeServerRequired` notice.
+- Development: `pnpm runserver` plus `pnpm dev`.
 - There is no desktop build. The Tauri shell (`src-tauri/`), its `@tauri-apps/*` packages, the updater, and the Python llama.cpp sidecar were removed.
 
 ## State
 
-- Version: `version.json` and `src/ts/storage/database.svelte.ts` `appVer` (marked `APP_VERSION_POINT`). `getVersionString` appends `appSubVer`, nightly, or `(Stable)`.
+- Version: `version.json` and `src/ts/storage/database.svelte.ts` `appVer` (marked `APP_VERSION_POINT`). `getVersionString` appends `appSubVer` or the nightly label.
 
 ## Coupling
 

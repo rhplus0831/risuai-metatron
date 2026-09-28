@@ -3,7 +3,6 @@ import * as fflate from "fflate";
 import { getDatabase, presetTemplate, type Database } from "./database.svelte";
 import localforage from "localforage";
 import { forageStorage } from "../globalApi.svelte";
-import { isNodeServer } from "src/ts/platform";
 
 const packr = new Packr({
     useRecords: false,
@@ -313,7 +312,7 @@ export class RisuSaveEncoder {
     }
 
     async encodeBlock(arg: EncodeBlockArg, option: EncodeBlockOption = { remote: "none" }) {
-        if (option.remote === "force" || (option.remote === "prefer" && isNodeServer && !disableRemoteSaving())) {
+        if (option.remote === "force" || (option.remote === "prefer" && !disableRemoteSaving())) {
             return await this.encodeRemoteBlock(arg);
         }
         return await this.encodeRawBlock(arg);

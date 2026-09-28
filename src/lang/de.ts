@@ -25,8 +25,6 @@ export const languageGerman = {
         emptyText: "Der Text ist leer.",
         wrongPassword: "Falsches Passwort",
         networkFetch: "Dies passiert, wenn das Netzwerk instabil ist oder der Server ausgefallen ist.",
-        networkFetchWeb:
-            "Dies kann ein CORS-Fehler sein. Dies geschieht nur bei Verwendung der Webversion aufgrund von Browserbeschränkungen. Versuchen Sie, die selbst gehostete Node-Version von Risuai zu verwenden.",
         networkFetchPlain:
             "Dies kann ein einfacher Abruffehler sein. Versuchen Sie, die Option 'Erzwinge einfachen Abruf' in den Einstellungen zu deaktivieren.",
         requestLogRemoved: "Dieses Anfrage-Protokoll wurde entfernt.",
@@ -972,8 +970,6 @@ export const languageGerman = {
         "Bitte deaktivieren Sie diese Option bei Verwendung von NovelAI, da dies bei Verwendung von NovelAI zu CORS-Fehlern führen kann.",
     translationPrompt: "Übersetzungsanweisung",
     translationResponseSize: "Übersetzungsantwortgröße",
-    webdeeplwarn:
-        "Diese Option wird nicht für die Verwendung mit der Webversion empfohlen, da sie CORS-Fehler verursachen kann.",
     saveBackupLocal: "Backup lokal speichern",
     loadBackupLocal: "Backup lokal laden",
     topP: "Top P",
@@ -1411,7 +1407,6 @@ export const languageGerman = {
     dynamic: "Dynamisch",
     assetStyle: "Asset-Stil",
     insertAssetPrompt: "Asset-Anweisung einfügen",
-    requestLocation: "Anfrageort",
     newImageHandlingBeta: "Neue Bildverarbeitung (Beta)",
     settingsExported: "Einstellungen für Fehlerbericht exportiert und in die Zwischenablage kopiert.",
     bookmarks: "Lesezeichen",

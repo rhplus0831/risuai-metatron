@@ -3,7 +3,6 @@ import { parseChatML } from "../parser/chatML";
 import { getDatabase, type character, type customscript, type groupChat } from "../storage/database.svelte";
 import { defaultTranslatorPrompt, getCurrentTranslatorPresetFromState, type TranslatorPreset } from "./presets";
 import { globalFetch } from "../globalApi.svelte";
-import { isNodeServer } from "src/ts/platform";
 import { alertError } from "../alert";
 import { requestChatData } from "../process/request/request";
 import { doingChat, type OpenAIChat } from "../process/index.svelte";
@@ -186,29 +185,25 @@ async function translateMain(text: string, arg: { from: string; to: string; host
         return bergamotTranslate(text, arg.from, arg.to, false);
     }
     if (db.useExperimentalGoogleTranslator) {
-        const hqAvailable = isNodeServer || userScriptFetch;
-
-        if (hqAvailable) {
-            try {
-                const ua = navigator.userAgent;
-                const d = await globalFetch(
-                    `https://translate.google.com/m?tl=${arg.to}&sl=${arg.from}&q=${encodeURIComponent(text)}`,
-                    {
-                        headers: {
-                            "User-Agent": ua,
-                            Accept: "*/*",
-                        },
-                        method: "GET",
+        try {
+            const ua = navigator.userAgent;
+            const d = await globalFetch(
+                `https://translate.google.com/m?tl=${arg.to}&sl=${arg.from}&q=${encodeURIComponent(text)}`,
+                {
+                    headers: {
+                        "User-Agent": ua,
+                        Accept: "*/*",
                     },
-                );
-                const parser = new DOMParser();
-                const dom = parser.parseFromString(d.data, "text/html");
-                const result = dom.querySelector(".result-container")?.textContent?.trim();
-                if (result) {
-                    return result;
-                }
-            } catch (error) {}
-        }
+                    method: "GET",
+                },
+            );
+            const parser = new DOMParser();
+            const dom = parser.parseFromString(d.data, "text/html");
+            const result = dom.querySelector(".result-container")?.textContent?.trim();
+            if (result) {
+                return result;
+            }
+        } catch (error) {}
     }
 
     const url =

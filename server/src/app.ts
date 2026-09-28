@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import type http from "node:http";
 import path from "node:path";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 import { createAuthStore } from "./auth.ts";
@@ -71,8 +71,9 @@ export function createServerContext(options: { rootDir: string; trustProxy?: str
         }),
     );
 
-    // Serves the client with the flag that makes `isNodeServer` true.
-    app.get("/", async (c) => {
+    // Serves the client with the flag that makes `isNodeServer` true. Without it the client shows only a
+    // "self-host server required" notice, so `/index.html` must not fall through to the raw static file.
+    const serveIndex = async (c: Context<AppEnv>) => {
         const clientIP =
             c.req.header("x-forwarded-for") || clientIp(c) || c.env?.incoming?.socket?.remoteAddress || "Unknown IP";
         console.log(`[Server] ${new Date().toISOString()} | Connection from: ${clientIP}`);
@@ -82,7 +83,9 @@ export function createServerContext(options: { rootDir: string; trustProxy?: str
             throw new Error("dist/index.html has no <head>");
         }
         return c.html(mainIndex.replace(headOpenTag, (tag) => `${tag}<script>globalThis.__NODE__ = true</script>`));
-    });
+    };
+    app.get("/", serveIndex);
+    app.get("/index.html", serveIndex);
 
     app.get("*", serveStatic({ root: distPath }));
 

@@ -13,7 +13,6 @@ import type { PromptItem, PromptSettings } from "../process/prompt";
 import type { OobaChatCompletionRequestParams } from "../model/ooba";
 import { type HypaV3Settings, type HypaV3Preset, createHypaV3Preset } from "../process/memory/hypav3";
 import { normalizeTranslatorPresetState, type TranslatorPreset } from "../translator/presets";
-import { isNodeServer } from "src/ts/platform";
 import { safeStructuredClone } from "../polyfill";
 import {
     DEFAULT_CHAT_LOAD_ADDITIONAL_PAGES,
@@ -717,10 +716,6 @@ export function setDatabase(data: Database) {
     delete (data as { largeChatPerformanceMode?: unknown }).largeChatPerformanceMode;
     data.echoMessage ??= "Echo Message";
     data.echoDelay ??= 0;
-    if (!isNodeServer) {
-        //this is intended to forcely reduce the size of the database in web
-        data.promptInfoInsideChat = false;
-    }
     data.createFolderOnBranch ??= true;
     data.hamburgerButtonBottom ??= false;
     data.dynamicModelRegistry ??= true;
@@ -1220,7 +1215,6 @@ export interface Database {
     claude1HourCaching: boolean;
     rememberToolUsage: boolean;
     simplifiedToolUse: boolean;
-    requestLocation: string;
     newImageHandlingBeta?: boolean;
     showFirstMessagePages: boolean;
     streamGeminiThoughts: boolean;

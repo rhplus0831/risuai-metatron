@@ -25,8 +25,6 @@ export const languageChineseTraditional = {
         wrongPassword: "密碼錯誤",
         vertexAuthError: "缺少 Vertex AI 驗證資訊",
         networkFetch: "通常是網路連線不穩定，或伺服器暫時無法使用所致",
-        networkFetchWeb:
-            "這可能是 CORS 錯誤。由於瀏覽器限制，此問題只會在網頁版發生。請嘗試使用自架（Node）版本的 Risuai",
         networkFetchPlain: "這可能是一般 Fetch 錯誤。請嘗試在設定中停用「強制一般 Fetch」",
         requestLogRemoved: "此請求記錄已被移除",
         requestLogRemovedDesc: "重新整理或重新載入用戶端後，請求記錄會被移除",
@@ -140,15 +138,13 @@ export const languageChineseTraditional = {
             "透過本機執行環境轉送私有網路／LAN 的模型 URL，而不是由瀏覽器直接 Fetch。\n\n" +
             "**用途**\n" +
             "- 避免瀏覽器對 `192.168.x.x`、`10.x.x.x`、`localhost`、`.local` 等本機位址的私有網路／CORS 限制。\n" +
-            "- 在 Node 自架模式中，降低本機推理首 Token 較慢時發生逾時的風險。\n\n" +
+            "- 降低本機推理首 Token 較慢時發生逾時的風險。\n\n" +
             "**運作方式**\n" +
             "- 只有在啟用本機網路模式，且目標 URL 被判定為本機／私有網路位址時才會套用。\n" +
-            "- Node 自架：串流會優先使用實驗性的 Job + WebSocket 中繼（失敗時改用 `/proxy2`）；非串流使用 `/proxy2`。\n" +
-            "- 公開網頁模式：基於設計，不允許直接存取本機／私有網路位址。\n\n" +
+            "- 串流會優先使用實驗性的 Job + WebSocket 中繼（失敗時改用 `/proxy2`）；非串流使用 `/proxy2`。\n\n" +
             "**限制**\n" +
             "- 僅適用於 OpenAI 相容的請求路徑。\n" +
-            "- 無法繞過兩個公開網域之間的 Cloudflare origin 限制。\n" +
-            "- 必須使用您自己的自架 URL（`globalThis.__NODE__ === true`）此功能才會生效",
+            "- 無法繞過兩個公開網域之間的 Cloudflare origin 限制。",
         chainOfThought: "啟用後會加入 Chain of Thought 提示詞",
         gptVisionQuality: "用於設定圖片辨識模型的品質。品質越高，辨識越準確，但也會使用更多 Token",
         genTimes:
@@ -997,7 +993,6 @@ export const languageChineseTraditional = {
     usePlainFetchWarn: "使用 NovelAI 時請停用此選項，否則可能因 NovelAI 產生 CORS 錯誤",
     translationPrompt: "翻譯提示詞",
     translationResponseSize: "翻譯回應長度",
-    webdeeplwarn: "不建議在網頁版使用此選項，可能造成 CORS 錯誤",
     saveBackupLocal: "在本機儲存備份",
     loadBackupLocal: "從本機載入備份",
     topP: "Top P",
@@ -1419,7 +1414,6 @@ export const languageChineseTraditional = {
     dynamic: "動態",
     assetStyle: "資源樣式",
     insertAssetPrompt: "插入資源提示詞",
-    requestLocation: "請求位置",
     newImageHandlingBeta: "新版圖片處理（Beta）",
     settingsExported: "Bug 回報用設定已匯出並複製至剪貼簿",
     bookmarks: "書籤",

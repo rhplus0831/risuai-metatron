@@ -27,10 +27,8 @@
   - Legacy: `encodeRisuSaveLegacy`, `encodeRisuSaveCompressionStream`.
   - `decodeRisuSave` detects every format.
   - `toSaveType`: the change-tracker shape.
-- `src/ts/storage/autoStorage.ts` `AutoStorage`: the backend selector, plus the one-time localforage-to-OPFS migration.
+- `src/ts/storage/autoStorage.ts` `AutoStorage`: lazy wrapper that always uses `NodeStorage`. The client never runs without the self-host server (see `app-shell.md`).
 - `src/ts/storage/nodeStorage.ts` `NodeStorage`: the Node server backend over `/api/read|write|list|remove`, with ES256 JWT auth. Also exports `getNodeServerProxyAuth` and `digestPassword`.
-- `src/ts/storage/opfsStorage.ts` `OpfsStorage`: OPFS backend with hex-encoded file names.
-- `src/ts/storage/persistant.ts`: persistent-storage request helpers. No callers.
 - `src/ts/storage/defaultPrompts.ts`: default main/jailbreak prompts.
 - `src/ts/storage/exportAsDataset.ts`: exports chats and lore as `dataset.json`, unredacted.
 - `src/ts/chatLoadPages.ts`: `normalizeChatLoadPages` (defaults: 30 initial pages, 15 additional).
@@ -68,17 +66,15 @@ Block format:
   - One block per character.
 - Remote characters are stored as `REMOTE` descriptor blocks. Their payload lives at `remotes/<chaId>.local.bin`.
 
-Backend selection (`AutoStorage.Init`):
+Backend (`AutoStorage.Init`):
 
-1. `NodeStorage`, when `isNodeServer`.
-2. OPFS, when supported and the `opfs_flag!` flag is set.
-3. Otherwise localforage `risuai` (IndexedDB).
-
-- Risu Account sync was removed. A leftover `localStorage.accountst === 'able'` flag is ignored, so such a browser falls through to local storage.
+- Always `NodeStorage`. The browser-only backends (localforage `risuai` in IndexedDB and OPFS) were removed without a migration; data a browser kept there is no longer read.
+- Risu Account sync was removed. A leftover `localStorage.accountst` flag is ignored.
+- Other browser-side stores are unaffected and still used on the server build: inlays (LocalForage `inlay`), the risuSave cache, translator and embedding caches, plugin and MCP storage, and the `DPoPDB` auth key.
 
 Cold storage (removed):
 
-- Cold storage was removed without a migration. Data it had offloaded (OPFS `coldstorage_<uuid>.json`, Node `coldstorage/<uuid>`) is no longer read, and those files are left on disk.
+- Cold storage was removed without a migration. Data it had offloaded (browser OPFS `coldstorage_<uuid>.json`, Node `coldstorage/<uuid>`) is no longer read, and those files are left on disk.
 - Old saves may still hold skeleton characters with a stale `coldstorage` field and chats whose only message is a `\uEF01COLDSTORAGE\uEF01<uuid>` pointer. They load as ordinary characters and chats.
 
 ## State
@@ -125,7 +121,7 @@ Cold storage (removed):
   3. If it is preset-owned, update the preset functions listed above.
   4. Verify by loading an old save: `getDatabase()` has the default after normalization.
 - Add a split save collection: `RisuSaveEncoder.init/set`, `RisuSaveDecoder.decode`, `toSaveType`, and the `saveDb` watchers. Verify an encode/decode round trip, an incremental update, and a backup restore.
-- Change backend selection: `AutoStorage.Init` and the backend class. Keep logical keys.
+- Change the backend: `AutoStorage.Init` and `NodeStorage`. Keep logical keys.
 - Change remote retention: `risuSave.ts` (`encodeRemoteBlock`, decoder). Nothing deletes orphaned `remotes/*.local.bin` payloads; the boot-time `cleanChunks` purge was removed together with cold storage.
 
 ## Tests

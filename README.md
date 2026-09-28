@@ -45,13 +45,33 @@ You can get detailed information on https://github.com/kwaroran/Risuai/wiki (Wor
 
 ## Installation
 
-- [Risuai Website](https://risuai.net) (Recommended)
-- [Github Releases](https://github.com/kwaroran/Risuai/releases)
+This fork runs only through its self-host server: the built client stores its data on the server and shows a notice when it is opened any other way (for example from static hosting).
 
-### Development prerequisites
+### Prerequisites
 
-- Node.js 20.19+ or 22.12+
-- pnpm
+- Node.js 24+
+- pnpm 10 (the version pinned in `package.json` `packageManager`)
+
+### Running from source
+
+```
+pnpm install
+pnpm build
+pnpm runserver
+```
+
+Then open `http://localhost:6001/`. The server listens on `PORT` (default 6001) and switches to HTTPS when `server/ssl/certificate/server.key` and `server.crt` exist.
+
+### Development
+
+Run the self-host server and the Vite dev server side by side:
+
+```
+pnpm runserver
+pnpm dev
+```
+
+Open `http://localhost:5174/`. The dev server injects the server flag and forwards `/api`, `/proxy`, `/proxy2`, `/hub-proxy`, and `/proxy-stream-jobs` to `http://localhost:6001`. Set `RISU_DEV_SERVER` (for example `RISU_DEV_SERVER=https://localhost:6001 pnpm dev`) when the server uses HTTPS or another port. The dev origin keeps its own login key, so you sign in once there as well.
 
 ### Docker Installation
 

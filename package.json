@@ -10,7 +10,6 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build --sourcemap",
-    "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json",
     "test": "vitest run",
     "runserver": "node server/src/main.ts",

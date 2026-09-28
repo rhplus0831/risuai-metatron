@@ -130,14 +130,6 @@ export const languageSettingsItems: SettingItem[] = [
 
     // Translator Specific Configurations
     {
-        id: "lang.deeplWebWarn",
-        type: "header",
-        labelKey: "webdeeplwarn",
-        options: { level: "warning" },
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "deepl",
-    },
-
-    {
         id: "lang.deeplKey",
         type: "text",
         labelKey: "deeplKey",

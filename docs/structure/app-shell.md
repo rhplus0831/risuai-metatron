@@ -3,20 +3,21 @@
 ## Scope
 
 - Owns: boot sequence, top-level screen selection, global stores, platform flags, hotkeys, DOM observers, `Mutex`.
-- Paths: `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/ts/{bootstrap,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
+- Paths: `index.html`, `src/main.ts`, `src/boot.ts`, `src/lib/Others/NodeServerRequired.svelte`, `src/App.svelte`, `src/ts/{bootstrap,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
 - Not here: DB shape and migrations → `persistence.md`. The save loop and `globalFetch` → `global-api.md`. Chat UI below `ChatScreen` → `ui-theming.md`.
 
 ## Files
 
-- `src/main.ts`: entry. Imports `./ts/polyfill` and the database side effects, then `preLoadCheck()`, `mount(App)`, `loadData()` (not awaited), `initHotkey()`, and removes `#preloading`.
-- `src/preload.ts` `preLoadCheck`: pre-mount step that sets `localStorage.mainpage`. On `isWeb` it registers `beforeunload`.
+- `src/main.ts`: entry. Imports `./ts/polyfill` and `core-js`, registers the `vite:preloadError` alert, then branches on `isNodeServer`: true → dynamic `import("./boot")` and `boot()`; false → mounts `NodeServerRequired` and removes `#preloading`. The app graph (App, bootstrap, stores, DB) is never imported without the server.
+- `src/boot.ts` `boot`: imports the database side effects, `mount(App)`, `loadData()` (not awaited), `initHotkey()`, and removes `#preloading`.
+- `src/lib/Others/NodeServerRequired.svelte`: the notice shown when the client is opened without the self-host server (static hosting, a bare `vite build` output). English only (`language.nodeServerRequiredTitle`/`Desc`), since `changeLanguage` runs only after the DB loads.
 - `src/App.svelte`: the "router" (ordered `{#if}` chain), plus drag/drop import, overlays (alerts, popups, modals), and keep-alive audio.
 - `src/ts/bootstrap.ts`:
   - `loadData`: `forageStorage` DB load, then migrations, plugins, theme, `loadedStore = true`, then services such as `saveDb`.
   - `checkNewFormat`: legacy data repair.
   - `registerSw`: service worker.
 - `src/ts/stores.svelte.ts`: all global UI stores plus the `DBState` rune (see State).
-- `src/ts/platform.ts`: `isNodeServer`, `isWeb`, `isMobile`, `isFirefox`, `isIOS()`, `getRisuEnvironmentLabel`, `getDetailedOSLabel`, `isInStandaloneMode` (unused).
+- `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `isMobile`, `isIOS()`, `getRisuEnvironmentLabel` (`node` or `node(dev)`), `getDetailedOSLabel`, `isInStandaloneMode` (unused).
 - `src/ts/polyfill.ts`: `safeStructuredClone` (native `structuredClone`, then an `rfdc` fallback), plus `Buffer` and stream polyfills and the mobile drag/drop polyfill.
 - `src/vite-env.d.ts`: ambient declarations for the globals `Buffer`, `safeStructuredClone`, and `userScriptFetch`.
 - `src/types.d.ts`: the `DeepPartial<T>` utility type only.
@@ -37,8 +38,8 @@
 
 Boot:
 
-1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`.
-2. `main.ts` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
+1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`, which stops at the notice unless `__NODE__` was injected, and otherwise loads `boot.ts`.
+2. `boot.ts:boot` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
 3. `bootstrap.ts:loadData` loads the database: `forageStorage.Init()` (`AutoStorage`), local load with backup fallback, `registerSw`, then `characterURLImport`.
 4. Common tail of `loadData`:
    1. `loadPlugins`.
@@ -86,20 +87,19 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 - `stores.svelte.ts` is imported almost everywhere, with the highest fan-out in the repo. Changing a store's semantics affects the UI, process, plugins, and sync code.
 - `bootstrap.ts` depends on storage, `globalApi.svelte.ts`, plugins, model registry, modules, and observers.
-- Platform flags are consumed by storage, network, drive, cards, parser, translator, and settings.
+- `isNodeServer` is consumed only by `main.ts`. `isMobile`/`isIOS` are consumed by UI code.
 
 ## Invariants
 
 - Do not flip `loadedStore` to true before `setDatabase`, `checkNewFormat`, and theme setup finish. `App` assumes `DBState.db` is normalized after that point. When `loadData` fails it only calls `alertError`, and the loading screen stays up.
 - `selectedCharID === -1` is the home sentinel. Components index `DBState.db.characters[$selectedCharID]` whenever it is nonnegative.
 - Call `saveDb()` only once, from `loadData`. It installs effects and runs an infinite loop.
-- `isWeb` means production `risuai.xyz` only. localhost and dev runs are not `isWeb`.
-- `isNodeServer` depends on `server/src/app.ts` (`GET /`) injecting `globalThis.__NODE__ = true` into `index.html`.
+- `isNodeServer` depends on `server/src/app.ts` (`GET /` and `/index.html`) or the Vite dev plugin `risu-node-flag` injecting `globalThis.__NODE__ = true` into `index.html`. Keep everything the app needs behind the dynamic `boot.ts` import so the notice path initializes nothing.
 - New hotkey actions need:
   - an entry in `defaultHotkeys`,
   - a branch in the `initHotkey` dispatch switch,
   - a check that `setDatabase` merges new default actions into saved hotkeys.
-- `safeStructuredClone` is a global installed by `polyfill.ts`, which must stay the first import in `main.ts`.
+- `safeStructuredClone` is a global installed by `polyfill.ts`, which must stay the first import in `main.ts` (before the `boot.ts` import).
 
 ## Recipes
 
@@ -109,14 +109,14 @@ All of these live in `src/ts/stores.svelte.ts`.
   3. Set the store from the caller.
   4. Verify with `pnpm check` and a fresh load.
 - Change startup:
-  - Ordering: `main.ts`.
-  - Pre-mount browser behavior: `preload.ts`.
+  - Server gate: `main.ts`.
+  - Ordering: `boot.ts`.
   - Data and platform sequencing: `bootstrap.ts:loadData`.
   - Keep the `loadedStore` transition intact.
 - Add a platform-specific behavior:
   1. Add or adjust the flag in `platform.ts`.
   2. Update every consumer.
-  3. Keep the Node and plain-browser branches working.
+  3. There is no browser-only runtime to keep working; do not reintroduce `isNodeServer` branches past `main.ts`.
 - Add a hotkey: `defaulthotkeys.ts`, `hotkey.ts:initHotkey`, `database.svelte.ts:setDatabase` (merge behavior).
 
 ## Tests

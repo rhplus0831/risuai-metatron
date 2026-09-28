@@ -1,8 +1,9 @@
 # STRUCTURE
 
 Agent-oriented map of this repository (RisuAI fork "metatron"): a Svelte 5 + TypeScript AI
-roleplay chat client shipped as a web app (installable PWA) and a Hono (Node) self-hosted server.
-There is no desktop (Tauri) or mobile (Capacitor) build. Anchors are `path` + identifier. Line numbers are deliberately omitted because
+roleplay chat client served only by its Hono (Node) self-host server, installable as a PWA. There is
+no standalone browser build (the client without the server shows only a notice), and no desktop
+(Tauri) or mobile (Capacitor) build. Anchors are `path` + identifier. Line numbers are deliberately omitted because
 they drift. Grep the identifier instead.
 
 Last full audited: 2026-09-27.
@@ -42,8 +43,8 @@ Tooling
 Verification
 
 - V1. `pnpm check` (svelte-check, about 20 s) and `pnpm test` (`vitest run`, happy-dom, about 5 s)
-  are the standard gates. `pnpm build` bundles. Service-worker and server paths have no
-  automated tests and need manual verification.
+  are the standard gates. `pnpm build` bundles. The service worker and the Vite dev proxy have no
+  automated tests and need manual verification; server routes are covered by `server/src/*.test.ts`.
 - V2. Tests are `*.test.ts`, colocated next to the code or in a sibling `tests/` folder.
   `vitest.setup.ts` mocks KaTeX, replaces `safeStructuredClone` with a JSON clone, and patches
   happy-dom's `Node.prototype.nodeName` getter for DOMPurify (see `build-test-platforms.md`).
@@ -69,12 +70,14 @@ Data and persistence (details: `docs/structure/persistence.md`)
 
 Platform and network (details: `docs/structure/global-api.md`)
 
-- P1. Platform flags live in `src/ts/platform.ts`: `isNodeServer` (`globalThis.__NODE__`,
-  injected by the Hono self-host server, `server/src/app.ts`), `isMobile` (user-agent based), and `isWeb`, which is true
-  only when the host is exactly `risuai.xyz`. Every storage or network change must keep the Node
-  and plain-browser branches working.
+- P1. The client runs only when served by the self-host server. `isNodeServer` in
+  `src/ts/platform.ts` reads `globalThis.__NODE__`, which `server/src/app.ts` (`/` and `/index.html`)
+  and the Vite dev server (`vite.config.ts` plugin `risu-node-flag`) inject. `src/main.ts` checks it
+  once: when false it mounts `NodeServerRequired.svelte` and never imports the app (`src/boot.ts`).
+  Do not add browser-only storage or network branches; everything past `main.ts` may assume the
+  server is present. `isMobile` is user-agent based.
 - P2. Outbound HTTP goes through `globalFetch` (buffered) or `fetchNative` (streaming/bytes) in
-  `src/ts/globalApi.svelte.ts`. They handle proxying (`/proxy2`), the userscript transport,
+  `src/ts/globalApi.svelte.ts`. They handle proxying (same-origin `/proxy2`), the userscript transport,
   local-network policy, and request logs. Do not call raw `fetch` for provider or remote calls.
 
 Security
@@ -147,9 +150,9 @@ The first matching row wins. Scan from the top.
 | `src/ts/drive/`, `src/lib/UI/Realm/`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`                                                                                                                                                                                                                                                                                                                                                                   | backup-sync-hub                         |
 | `src/ts/globalApi.svelte.ts`, `src/ts/util.ts`, `src/ts/util/`, `src/ts/alert.ts`, `src/ts/network/`, `src/ts/dragTypes.ts`, `src/ts/sourcemap.ts`, `src/ts/iris.ts`, `src/ts/licenses.ts`, `src/lib/Others/AlertComp.svelte`, `src/lib/Others/IrisModal.svelte`                                                                                                                                                                                                      | global-api                              |
 | `src/ts/setting/`, `src/lib/Setting/` (the rest), `src/lang/`, `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/{PromptDiffModal,AllSeperateParameters,QuickSettingsGUI}.svelte`, `src/lib/Others/ProTools/`                                                                                                                                                                                                                                                       | settings-i18n                           |
-| `index.html`, `src/main.ts`, `src/preload.ts`, `src/App.svelte`, `src/ts/bootstrap.ts`, `src/ts/stores.svelte.ts`, `src/ts/platform.ts`, `src/ts/polyfill.ts`, `src/ts/hotkey.ts`, `src/ts/defaulthotkeys.ts`, `src/ts/observer.svelte.ts`, `src/ts/mutex.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`                                                                                                                                                | app-shell                               |
+| `index.html`, `src/main.ts`, `src/boot.ts`, `src/lib/Others/NodeServerRequired.svelte`, `src/App.svelte`, `src/ts/bootstrap.ts`, `src/ts/stores.svelte.ts`, `src/ts/platform.ts`, `src/ts/polyfill.ts`, `src/ts/hotkey.ts`, `src/ts/defaulthotkeys.ts`, `src/ts/observer.svelte.ts`, `src/ts/mutex.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`                                                                                                       | app-shell                               |
 | `src/lib/` (everything else), `src/styles.css`, `src/ts/gui/`                                                                                                                                                                                                                                                                                                                                                                                                         | ui-theming                              |
-| `server/`, `Dockerfile`, `server.sh`, `server.bat`, `public/functions/proxy*.js`                                                                                                                                                                                                                                                                                                                                                                                      | self-host-server                        |
+| `server/`, `Dockerfile`, `server.sh`, `server.bat`                                                                                                                                                                                                                                                                                                                                                                                                                    | self-host-server                        |
 | `package.json`, `vite.config.ts`, `vitest.*`, `tsconfig*.json`, `public/sw.js`, `public/manifest.json`, `util/`, `version.json`, `t.py`                                                                                                                                                                                                                                                                                                                               | build-test-platforms                    |
 | `src/types.d.ts`, `src/vite-env.d.ts`, `src/etc/patchNote.ts`                                                                                                                                                                                                                                                                                                                                                                                                         | app-shell                               |
 | `src/etc/airisu.cbs`, `src/etc/docs/`                                                                                                                                                                                                                                                                                                                                                                                                                                 | cbs-rendering                           |

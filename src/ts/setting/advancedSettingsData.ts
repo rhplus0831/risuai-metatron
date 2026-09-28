@@ -1,5 +1,4 @@
 import type { SettingItem } from "./types";
-import { isNodeServer } from "../platform";
 
 export const advancedSettingsItems: SettingItem[] = [
     { type: "header", id: "adv.header", labelKey: "advancedSettings", options: { level: "h2" }, classes: "!mb-0" },
@@ -149,22 +148,6 @@ export const advancedSettingsItems: SettingItem[] = [
         bindKey: "chatLoadAdditionalPages",
         helpKey: "chatLoadAdditionalPages",
         options: { min: 1 },
-    },
-
-    // Request Location (Non-Node)
-    {
-        id: "adv.reqLoc",
-        type: "segmented",
-        labelKey: "requestLocation",
-        bindKey: "requestLocation",
-        condition: () => !isNodeServer,
-        options: {
-            segmentOptions: [
-                { value: "", label: "Default" },
-                { value: "eu", label: "EU (GDPR)" },
-                { value: "fedramp", label: "US (FedRAMP)" },
-            ],
-        },
     },
 
     // Toggles
@@ -368,7 +351,6 @@ export const advancedSettingsItems: SettingItem[] = [
         type: "check",
         labelKey: "promptInfoInsideChat",
         bindKey: "promptInfoInsideChat",
-        condition: () => isNodeServer,
         helpKey: "promptInfoInsideChatDesc",
         classes: "mt-4",
     },
@@ -377,7 +359,7 @@ export const advancedSettingsItems: SettingItem[] = [
         type: "check",
         labelKey: "promptTextInfoInsideChat",
         bindKey: "promptTextInfoInsideChat",
-        condition: (ctx) => isNodeServer && ctx.db.promptInfoInsideChat,
+        condition: (ctx) => ctx.db.promptInfoInsideChat,
         classes: "mt-4",
     },
     {

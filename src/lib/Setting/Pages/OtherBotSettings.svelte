@@ -293,9 +293,6 @@
                 >You must use WebUI without agpl license or use unmodified version with agpl license to observe the
                 contents of the agpl license.</span
             >
-            <span class="text-draculared text-xs mb-2"
-                >You are using web version. you must use ngrok or other tunnels to use your local webui.</span
-            >
             <span class="text-textcolor mt-2">WebUI {language.providerURL}</span>
             <TextInput size="sm" marginBottom placeholder="https://..." bind:value={DBState.db.webUiUrl} />
             <span class="text-textcolor">Steps</span>

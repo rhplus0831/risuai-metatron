@@ -46,7 +46,6 @@ export const defaultCBSRegisterArg: CBSRegisterArg = {
     callInternalFunction: (args: string[]) => {
         return "";
     },
-    isNodeServer: false,
     isMobile: false,
     appVer: "0.0.0",
     getModelInfo: () =>
@@ -128,7 +127,6 @@ export type CBSRegisterArg = {
     getSelectedCharID: () => number;
     getModelInfo: (model: string) => LLMModel;
     callInternalFunction: (args: string[]) => string;
-    isNodeServer: boolean;
     isMobile: boolean;
     appVer: string;
 };
@@ -153,7 +151,6 @@ export function registerCBS(arg: CBSRegisterArg) {
         getModuleLorebooks,
         pickHashRand,
         getSelectedCharID,
-        isNodeServer,
         isMobile,
         appVer,
         getModelInfo,
@@ -2059,7 +2056,7 @@ export function registerCBS(arg: CBSRegisterArg) {
                     return "0";
                 }
                 case "node": {
-                    return isNodeServer ? "1" : "0";
+                    return "1";
                 }
                 case "version": {
                     return appVer;
@@ -2107,7 +2104,7 @@ export function registerCBS(arg: CBSRegisterArg) {
                     return "🫖";
                 }
                 case "risutype": {
-                    return isNodeServer ? "node" : "web";
+                    return "node";
                 }
                 case "maxcontext": {
                     return db.maxContext.toString();

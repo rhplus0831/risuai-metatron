@@ -1,8 +1,8 @@
 // @vitest-environment node
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createSigner, createTestServer, hex, json } from "./testSupport.ts";
+import { createSigner, createTestServer, hex, json, TEST_INDEX_HTML } from "./testSupport.ts";
 
 let server: ReturnType<typeof createTestServer>;
 const servers: ReturnType<typeof createTestServer>[] = [];
@@ -25,18 +25,28 @@ function freshServer(options?: { password?: string }) {
     return server;
 }
 
-describe("GET /", () => {
-    it("injects the __NODE__ flag as the first child of <head> and leaves /index.html raw", async () => {
+describe("GET / and /index.html", () => {
+    // Without the flag the client shows only the "self-host server required" notice, so both
+    // entry URLs must inject it (with or without a query string, which deep links carry).
+    it("injects the __NODE__ flag as the first child of <head> on both entry URLs", async () => {
         const { app } = freshServer();
-        const res = await app.request("/");
-        expect(res.status).toBe(200);
-        expect(res.headers.get("content-type")).toMatch(/^text\/html/);
-        const html = await res.text();
-        expect(html).toContain('<head><script>globalThis.__NODE__ = true</script><meta charset="utf-8">');
+        for (const url of ["/", "/?x=1", "/index.html", "/index.html?share=abc"]) {
+            const res = await app.request(url);
+            expect(res.status, url).toBe(200);
+            expect(res.headers.get("content-type"), url).toMatch(/^text\/html/);
+            const html = await res.text();
+            expect(html, url).toContain('<head><script>globalThis.__NODE__ = true</script><meta charset="utf-8">');
+            expect(html.match(/__NODE__/g), url).toHaveLength(1);
+        }
+    });
 
-        const raw = await app.request("/index.html");
-        expect(raw.status).toBe(200);
-        expect(await raw.text()).not.toContain("__NODE__");
+    it("serves other static files raw and keeps 404 for missing paths and non-GET entry requests", async () => {
+        const { app, rootDir } = freshServer();
+        writeFileSync(path.join(rootDir, "dist", "other.html"), TEST_INDEX_HTML);
+
+        const other = await app.request("/other.html");
+        expect(other.status).toBe(200);
+        expect(await other.text()).not.toContain("__NODE__");
 
         expect((await app.request("/does-not-exist")).status).toBe(404);
         expect((await app.request("/index.html", { method: "POST" })).status).toBe(404);

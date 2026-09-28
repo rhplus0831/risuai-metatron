@@ -24,8 +24,6 @@ export const languageSpanish = {
         emptyText: "El texto está vacío.",
         wrongPassword: "Contraseña incorrecta",
         networkFetch: "Esto ocurre cuando la red es inestable o el servidor está caído.",
-        networkFetchWeb:
-            "Esto puede ser un error de CORS. Esto solo ocurre al usar la versión web debido a las limitaciones del navegador. Intenta usar la versión autoalojada (Node) de Risuai.",
         networkFetchPlain:
             "Esto puede ser un error de fetch simple. Intenta desactivar la opción de forzar fetch simple en la configuración.",
         requestLogRemoved: "Este registro de solicitud ha sido eliminado.",
@@ -959,7 +957,6 @@ export const languageSpanish = {
         "Desactiva esta opción cuando uses NovelAI, ya que puede causar errores de CORS al usar NovelAI.",
     translationPrompt: "Prompt de Traducción",
     translationResponseSize: "Tamaño de Respuesta de Traducción",
-    webdeeplwarn: "Esta opción no se recomienda para su uso con la versión web, ya que puede causar errores de CORS.",
     saveBackupLocal: "Guardar Respaldo Localmente",
     loadBackupLocal: "Cargar Respaldo Localmente",
     topP: "Top P",
@@ -1393,7 +1390,6 @@ export const languageSpanish = {
     dynamic: "Dinámico",
     assetStyle: "Estilo de Activo",
     insertAssetPrompt: "Insertar Prompt de Activo",
-    requestLocation: "Ubicación de Solicitud",
     newImageHandlingBeta: "Nuevo Manejo de Imágenes (Beta)",
     settingsExported: "Configuración para informe de errores exportada y copiada al portapapeles.",
     bookmarks: "Marcadores",
