@@ -53,7 +53,6 @@ Config files:
 Environment variables:
 
 - `VITE_RISU_NIGHTLY_BUILD`, `VITE_RISU_BUILD_TIME`.
-- `VITE_RISU_LEGAL_CONFIGURED`.
 - Ad variables.
 
 Web:

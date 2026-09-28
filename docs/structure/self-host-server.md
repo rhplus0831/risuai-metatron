@@ -29,7 +29,7 @@ The server is TypeScript run directly by Node's type stripping (`pnpm runserver`
 - `server/src/http/body.ts` `readJsonBody`: JSON body parsing with Express-like defaults.
 - `server/ssl/Generate Certificate.sh|.bat`, `ca.conf`, `server.conf`: generate a local CA and server certificate into `server/ssl/certificate/` (run from `server/ssl/`). `main.ts` uses HTTPS when `server.key`/`server.crt` exist there, relative to `cwd`.
 - `Dockerfile`: Node 24, pnpm 10.34.1, multi-stage build of `dist`. Copies `server/` + `dist/` + prod `node_modules`, `EXPOSE 6001`, `CMD pnpm runserver`.
-- `server.sh`/`server.bat`: install, build, run. The env exports (legal, ads) are commented out.
+- `server.sh`/`server.bat`: install, build, run. The env exports (ads, runtime) are commented out.
 
 ## Routes
 

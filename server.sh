@@ -4,14 +4,6 @@ set -eu
 # Optional build-time flags. Uncomment or pass them before running this script.
 # These values are baked into the frontend during `pnpm run build`.
 #
-# Legal configuration:
-# Set this to TRUE only for a personal private self-hosted instance, a development/testing
-# fork intended to contribute back upstream, or a fork whose Terms of Service,
-# Privacy Policy, and Risuai service usage alerts have been configured correctly.
-# Builds without this flag show a legal warning screen and should not use Risuai
-# services that require the original legal notices.
-# export VITE_RISU_LEGAL_CONFIGURED="${VITE_RISU_LEGAL_CONFIGURED:-TRUE}"
-
 # Advertisement configuration:
 # Optional Google AdSense client and slot IDs for desktop and mobile ad units.
 # export VITE_AD_CLIENT="${VITE_AD_CLIENT:-}"

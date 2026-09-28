@@ -44,7 +44,6 @@
     import sendSound from "./etc/send.mp3";
     import PopupEditor from "./lib/Others/PopupEditor.svelte";
     import IrisModal from "./lib/Others/IrisModal.svelte";
-    import Legal from "./lib/Others/Legal.svelte";
     import CustomSidebarConfig from "./lib/Others/CustomSidebarConfig.svelte";
     import { RISU_APP_INTERNAL_DRAG_TYPE, RISU_SIDEBAR_DRAG_TYPE } from "./ts/dragTypes";
 
@@ -133,9 +132,7 @@
         }
     }}
 >
-    {#if !import.meta.env.VITE_RISU_LEGAL_CONFIGURED}
-        <Legal />
-    {:else if aprilFools}
+    {#if aprilFools}
         <div class="bg-[#212121] w-full h-screen min-h-screen text-black flex relative">
             <div class="w-full max-w-3xl mx-auto py-8 px-4 flex justify-center items-center">
                 <!-- svelte-ignore a11y_no_static_element_interactions -->

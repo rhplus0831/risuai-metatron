@@ -50,7 +50,7 @@ Sidebar:
 
 Others:
 
-- `BookmarkList.svelte`, `ChatList.svelte`, `CustomSidebarConfig.svelte`, `GithubStars.svelte`, `Help.svelte`, `Legal.svelte`, `SavePopupIcon.svelte`.
+- `BookmarkList.svelte`, `ChatList.svelte`, `CustomSidebarConfig.svelte`, `GithubStars.svelte`, `Help.svelte`, `SavePopupIcon.svelte`.
 - `PopupEditor.svelte`: Monaco popup.
 - `WelcomeRisu.svelte`: first-run wizard.
 - `ProTools/EasyPanel.svelte`, `QuickSettingsGUI.svelte`, `AllSeperateParameters.svelte`: see `settings-i18n.md`.

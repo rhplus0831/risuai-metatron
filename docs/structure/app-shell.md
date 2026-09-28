@@ -50,7 +50,7 @@ Boot:
 
 Screen selection. `App.svelte` checks these in order:
 
-1. Legal/config and April Fools branches.
+1. April Fools branch.
 2. Loading.
 3. `CustomGUISettingMenuStore`.
 4. `!DBState.db.didFirstSetup` → `WelcomeRisu`.
