@@ -1,7 +1,11 @@
 // @vitest-environment node
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { createServerContext } from "../app.ts";
+import { decodeFileName, decodeKeyHeader, encodeFileName, resolveStorageKey } from "../routes/storage.ts";
 import { createSigner, createTestServer, hex, json, TEST_INDEX_HTML } from "./testSupport.ts";
 
 let server: ReturnType<typeof createTestServer>;
@@ -68,7 +72,7 @@ describe("auth routes", () => {
         expect(await (await app.request("/api/set_password", json({ password: digest }))).json()).toEqual({
             status: "success",
         });
-        expect(readFileSync(path.join(savePath, "__password"), "utf-8")).toBe(digest);
+        expect(readFileSync(path.join(savePath, "server", "password"), "utf-8")).toBe(digest);
         const again = await app.request("/api/set_password", json({ password: "other" }));
         expect(again.status).toBe(400);
         expect(await again.text()).toBe("already set");
@@ -85,9 +89,9 @@ describe("auth routes", () => {
 
         const ok = await app.request("/api/login", json({ password: digest, publicKey: signer.publicJwk }));
         expect(await ok.json()).toEqual({ status: "success" });
-        expect(JSON.parse(readFileSync(path.join(savePath, "__known_public_key_hashes.json"), "utf-8"))).toHaveLength(
-            1,
-        );
+        expect(
+            JSON.parse(readFileSync(path.join(savePath, "server", "known_public_key_hashes.json"), "utf-8")),
+        ).toHaveLength(1);
         const success = await app.request("/api/test_auth", { headers: { "risu-auth": await signer.jwt() } });
         expect(await success.json()).toEqual({ status: "success" });
     });
@@ -166,7 +170,118 @@ describe("auth routes", () => {
     });
 });
 
+describe("storage key codec", () => {
+    // One canonical file name per logical name: readable lowercase ASCII, everything else `%XX`,
+    // escaped trailing dot and Windows device stem, `~<hex>` fallback above 255 bytes.
+    const table: [string, string][] = [
+        ["database.bin", "database.bin"],
+        ["dbbackup-17905.bin", "dbbackup-17905.bin"],
+        ["x.png", "x.png"],
+        ["x.PNG", "x.%50%4E%47"],
+        ["a/b", "a%2Fb"],
+        ["a\\b", "a%5Cb"],
+        ["%2F", "%252%46"], // uppercase F is escaped like any other uppercase byte
+        ["my file", "my%20file"],
+        ["한글 이름.webp", "%ED%95%9C%EA%B8%80%20%EC%9D%B4%EB%A6%84.webp"],
+        ["\u0000", "%00"],
+        ["~lit", "%7Elit"],
+        ["end.", "end%2E"],
+        [".", "%2E"],
+        ["..", ".%2E"],
+        ["con.png", "%63on.png"],
+        ["CON.png", "%43%4F%4E.png"],
+        ["console.png", "console.png"],
+        ["nul", "%6Eul"],
+        ["com1.txt", "%63om1.txt"],
+        ["lpt9.local.bin", "%6Cpt9.local.bin"],
+        ["con.", "con%2E"],
+        ["a".repeat(255), "a".repeat(255)],
+    ];
+
+    it("encodes to the documented canonical file names and decodes them back", () => {
+        for (const [name, encoded] of table) {
+            expect(encodeFileName(name), JSON.stringify(name)).toBe(encoded);
+            expect(decodeFileName(encoded), encoded).toBe(name);
+        }
+    });
+
+    it("is injective even on a case-insensitive filesystem", () => {
+        const names = [...table.map(([name]) => name), "x.Png", "X.png", "Con.png", "a%2Fb", "%252F", "end%2E"];
+        const encoded = names.map((name) => encodeFileName(name));
+        expect(new Set(encoded).size).toBe(names.length);
+        expect(new Set(encoded.map((e) => e?.toLowerCase())).size).toBe(names.length);
+    });
+
+    it("falls back to ~<hex> when the readable form exceeds 255 bytes and rejects names that fit neither", () => {
+        const korean = "가".repeat(29) + ".png"; // 265 readable bytes, 183 as ~hex
+        const fallback = encodeFileName(korean);
+        expect(fallback).toBe("~" + Buffer.from(korean, "utf-8").toString("hex"));
+        expect(fallback?.length).toBeLessThanOrEqual(255);
+        expect(decodeFileName(fallback as string)).toBe(korean);
+
+        expect(encodeFileName("a".repeat(256))).toBeNull();
+        expect(encodeFileName("가".repeat(60))).toBeNull();
+        expect(encodeFileName("")).toBeNull();
+    });
+
+    it("rejects every file name that encodeFileName would not produce", () => {
+        const korean = "가".repeat(29) + ".png";
+        for (const fileName of [
+            "",
+            "A",
+            "x.PNG",
+            "con.png",
+            "end.",
+            "%61", // readable byte written as an escape
+            "%2e", // lowercase hex escape
+            "%2f",
+            "%",
+            "%zz",
+            "%C3%28", // invalid UTF-8
+            "~",
+            "~" + Buffer.from("a", "utf-8").toString("hex"), // fits the readable form
+            "~" + Buffer.from(korean, "utf-8").toString("hex").toUpperCase(),
+            "~zz",
+        ]) {
+            expect(decodeFileName(fileName), JSON.stringify(fileName)).toBeNull();
+        }
+    });
+
+    it("decodes the file-path header as hex UTF-8 only when it round-trips byte for byte", () => {
+        expect(decodeKeyHeader(hex("assets/한글.png"))).toBe("assets/한글.png");
+        expect(decodeKeyHeader(hex("assets/a.png").toUpperCase())).toBe("assets/a.png");
+        expect(decodeKeyHeader("efbfbd")).toBe("�"); // an explicit U+FFFD is valid UTF-8
+        for (const header of ["", "a", "abc", "zz", "../x", "__password", " 61", "61 ", "ff", "c0af", "eda080"]) {
+            expect(decodeKeyHeader(header), JSON.stringify(header)).toBeNull();
+        }
+    });
+
+    it("resolves only <namespace>/<name> keys to a file directly inside the namespace folder", () => {
+        const save = path.resolve("/tmp/save");
+        expect(resolveStorageKey(save, "database/database.bin")).toBe(path.join(save, "database", "database.bin"));
+        expect(resolveStorageKey(save, "assets/../server/password")).toBe(
+            path.join(save, "assets", "..%2Fserver%2Fpassword"),
+        );
+        expect(resolveStorageKey(save, "assets/x.a/b")).toBe(path.join(save, "assets", "x.a%2Fb"));
+        for (const key of [
+            "database.bin",
+            "/assets/x.png",
+            "assets/",
+            "server/password",
+            "server/known_public_key_hashes.json",
+            ".tmp/x",
+            "Assets/x.png",
+            "legacy/avatar.png",
+            "../assets/x.png",
+            "assets/" + "가".repeat(60),
+        ]) {
+            expect(resolveStorageKey(save, key), key).toBeNull();
+        }
+    });
+});
+
 describe("storage routes", () => {
+    type Server = Awaited<ReturnType<typeof authedServer>>;
     async function authedServer() {
         const s = freshServer({ password: "pw" });
         const signer = await createSigner();
@@ -174,114 +289,235 @@ describe("storage routes", () => {
         const headers = async (extra: Record<string, string> = {}) => ({ "risu-auth": await signer.jwt(), ...extra });
         return { ...s, signer, headers };
     }
+    /** `key` is a logical key unless `raw` is set, in which case it is sent as the header verbatim. */
+    const filePath = (key: string, raw?: boolean) => (raw ? key : hex(key));
+    const write = async (s: Server, key: string, body: string | Uint8Array, raw?: boolean) =>
+        s.app.request("/api/write", {
+            method: "POST",
+            headers: await s.headers({ "content-type": "application/octet-stream", "file-path": filePath(key, raw) }),
+            body,
+        });
+    const read = async (s: Server, key: string, raw?: boolean, method = "GET") =>
+        s.app.request("/api/read", { method, headers: await s.headers({ "file-path": filePath(key, raw) }) });
+    const remove = async (s: Server, header: string) =>
+        s.app.request("/api/remove", { headers: await s.headers({ "file-path": header }) });
+    const list = async (s: Server) =>
+        ((await (await s.app.request("/api/list", { headers: await s.headers() })).json()) as { content: string[] })
+            .content;
+    const invalidPath = async (res: Response, label: string) => {
+        expect(res.status, label).toBe(400);
+        expect(await res.json(), label).toEqual({ error: "Invaild Path" });
+    };
 
-    it("round-trips bytes by hex-encoded key, reads a missing key as an empty 200, and lists decoded keys", async () => {
+    it("stores each key at save/<namespace>/<encoded name>, reads it back by GET and HEAD, and lists the written keys", async () => {
         const s = await authedServer();
         const bytes = new Uint8Array([0, 1, 2, 255, 254, 10, 13]);
-        const write = await s.app.request("/api/write", {
-            method: "POST",
-            headers: await s.headers({
-                "content-type": "application/octet-stream",
-                "file-path": hex("database/database.bin"),
-            }),
-            body: bytes,
-        });
-        expect(await write.json()).toEqual({ success: true });
-        expect(existsSync(path.join(s.savePath, hex("database/database.bin")))).toBe(true);
+        expect(await (await write(s, "database/database.bin", bytes)).json()).toEqual({ success: true });
+        expect(new Uint8Array(readFileSync(path.join(s.savePath, "database", "database.bin")))).toEqual(bytes);
 
-        const read = await s.app.request("/api/read", {
-            headers: await s.headers({ "file-path": hex("database/database.bin") }),
-        });
-        expect(read.status).toBe(200);
-        expect(read.headers.get("content-type")).toBe("application/octet-stream");
-        expect(read.headers.get("content-length")).toBe("7");
-        expect(new Uint8Array(await read.arrayBuffer())).toEqual(bytes);
+        const get = await read(s, "database/database.bin");
+        expect(get.status).toBe(200);
+        expect(get.headers.get("content-type")).toBe("application/octet-stream");
+        expect(get.headers.get("content-length")).toBe("7");
+        expect(new Uint8Array(await get.arrayBuffer())).toEqual(bytes);
 
-        const head = await s.app.request("/api/read", {
-            method: "HEAD",
-            headers: await s.headers({ "file-path": hex("database/database.bin") }),
-        });
+        const head = await read(s, "database/database.bin", false, "HEAD");
         expect(head.status).toBe(200);
         expect(head.headers.get("content-length")).toBe("7");
         expect((await head.arrayBuffer()).byteLength).toBe(0);
 
-        const missing = await s.app.request("/api/read", { headers: await s.headers({ "file-path": hex("missing") }) });
+        // The uppercase spelling of the same hex addresses the same file.
+        const upper = await read(s, hex("database/database.bin").toUpperCase(), true);
+        expect(new Uint8Array(await upper.arrayBuffer())).toEqual(bytes);
+
+        const missing = await read(s, "assets/missing.png");
         expect(missing.status).toBe(200);
         expect((await missing.arrayBuffer()).byteLength).toBe(0);
 
         // Zero-length writes are valid (NodeStorage.setItem may send an empty Uint8Array).
-        const empty = await s.app.request("/api/write", {
-            method: "POST",
-            headers: await s.headers({ "content-type": "application/octet-stream", "file-path": hex("empty") }),
-            body: new Uint8Array(0),
-        });
-        expect(await empty.json()).toEqual({ success: true });
-        const readEmpty = await s.app.request("/api/read", { headers: await s.headers({ "file-path": hex("empty") }) });
+        expect(await (await write(s, "assets/empty", new Uint8Array(0))).json()).toEqual({ success: true });
+        const readEmpty = await read(s, "assets/empty");
         expect(readEmpty.headers.get("content-type")).toBe("application/octet-stream");
         expect((await readEmpty.arrayBuffer()).byteLength).toBe(0);
 
-        const list = (await (await s.app.request("/api/list", { headers: await s.headers() })).json()) as {
-            success: boolean;
-            content: string[];
-        };
-        expect(list.success).toBe(true);
-        expect(list.content).toEqual(expect.arrayContaining(["database/database.bin", "empty"]));
+        // Names that need escaping land under the canonical file name and read back unchanged.
+        const escaped: [string, string][] = [
+            ["assets/x.PNG", "assets/x.%50%4E%47"],
+            ["assets/x.png", "assets/x.png"],
+            ["assets/한글 이름.webp", "assets/%ED%95%9C%EA%B8%80%20%EC%9D%B4%EB%A6%84.webp"],
+            ["assets/x.a/b", "assets/x.a%2Fb"],
+            ["assets/con.png", "assets/%63on.png"],
+            ["assets/%2F", "assets/%252%46"],
+            ["assets/..", "assets/.%2E"],
+            ["remotes/cha-1.local.bin", "remotes/cha-1.local.bin"],
+            ["assets/" + "가".repeat(29) + ".png", "assets/~" + Buffer.from("가".repeat(29) + ".png").toString("hex")],
+        ];
+        for (const [key, relative] of escaped) {
+            expect(await (await write(s, key, `v:${key}`)).json(), key).toEqual({ success: true });
+            expect(readFileSync(path.join(s.savePath, relative), "utf-8"), key).toBe(`v:${key}`);
+            expect(await (await read(s, key)).text(), key).toBe(`v:${key}`);
+        }
+
+        const keys = ["database/database.bin", "assets/empty", ...escaped.map(([key]) => key)];
+        expect((await list(s)).sort()).toEqual([...keys].sort());
+        // Nothing lands flat in save/: only the server folder, the staging folder, and the namespaces.
+        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "assets", "database", "remotes", "server"]);
+        expect(readdirSync(path.join(s.savePath, ".tmp"))).toEqual([]);
     });
 
-    it("only accepts hex file names (plus __password) and requires the header", async () => {
+    it("reads well-formed keys with no storage location as missing without touching disk, and rejects writing or removing them", async () => {
         const s = await authedServer();
+        const unsupported = [
+            "missing",
+            "database.bin",
+            "server/password",
+            "server/known_public_key_hashes.json",
+            ".tmp/x",
+            "../server/password",
+            "legacy/avatar.png",
+            "Assets/x.png",
+            "assets/",
+            "assets/" + "가".repeat(60),
+        ];
+        const open = vi.spyOn(fsPromises, "open");
+        for (const key of unsupported) {
+            const res = await read(s, key);
+            expect(res.status, key).toBe(200);
+            expect(await res.text(), key).toBe("");
+        }
+        expect(open).not.toHaveBeenCalled();
+        open.mockRestore();
+
+        for (const key of unsupported) {
+            await invalidPath(await write(s, key, "pwn"), `write ${key}`);
+            await invalidPath(await remove(s, hex(key)), `remove ${key}`);
+        }
+        expect(readFileSync(path.join(s.savePath, "server", "password"), "utf-8")).toBe("pw");
+        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "server"]);
+        expect(readdirSync(path.join(s.savePath, "server")).sort()).toEqual([
+            "known_public_key_hashes.json",
+            "password",
+        ]);
+    });
+
+    it("rejects malformed file-path headers on every route and requires the header", async () => {
+        const s = await authedServer();
+        // (Leading and trailing whitespace never reaches the server: the Headers API trims header values.)
+        const malformed = ["../x", "__password", "abc", "zz", "61 62", "6173736574732fff", "6173736574732fc0af"];
+        for (const header of malformed) {
+            await invalidPath(await read(s, header, true), `read ${header}`);
+            await invalidPath(await remove(s, header), `remove ${header}`);
+            await invalidPath(await write(s, header, "x", true), `write ${header}`);
+        }
         for (const route of ["/api/read", "/api/remove"]) {
             const noHeader = await s.app.request(route, { headers: await s.headers() });
             expect(noHeader.status, route).toBe(400);
             expect(await noHeader.json(), route).toEqual({ error: "File path required" });
-            const traversal = await s.app.request(route, { headers: await s.headers({ "file-path": "../x" }) });
-            expect(traversal.status, route).toBe(400);
-            expect(await traversal.json(), route).toEqual({ error: "Invaild Path" });
         }
-        const write = await s.app.request("/api/write", {
-            method: "POST",
-            headers: await s.headers({ "content-type": "application/octet-stream", "file-path": "zz" }),
-            body: "x",
-        });
-        expect(write.status).toBe(400);
-        expect(await write.json()).toEqual({ error: "Invaild Path" });
-        expect(existsSync(path.join(s.savePath, "zz"))).toBe(false);
-
-        const password = await s.app.request("/api/read", { headers: await s.headers({ "file-path": "__password" }) });
-        expect(password.status).toBe(200);
-        expect(await password.text()).toBe("pw");
+        const noHeader = await s.app.request("/api/write", { method: "POST", headers: await s.headers(), body: "x" });
+        expect(noHeader.status).toBe(400);
+        expect(await noHeader.json()).toEqual({ error: "File path required" });
+        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "server"]);
     });
 
-    it("validates every $$-separated batch segment before deleting anything", async () => {
+    it("lists only canonical regular files and reads other entries as missing", async () => {
         const s = await authedServer();
-        for (const key of ["a", "b"]) {
-            await s.app.request("/api/write", {
-                method: "POST",
-                headers: await s.headers({ "content-type": "application/octet-stream", "file-path": hex(key) }),
-                body: key,
-            });
+        await write(s, "assets/real.png", "real");
+        const assets = path.join(s.savePath, "assets");
+        for (const name of ["Upper.png", "%78.png", "%2e", "~" + hex("short")]) {
+            writeFileSync(path.join(assets, name), "noncanonical");
         }
-        const bad = await s.app.request("/api/remove", {
-            headers: await s.headers({ "file-path": `${hex("a")}$$zz` }),
-        });
-        expect(bad.status).toBe(400);
-        expect(await bad.json()).toEqual({ error: "Invaild Path" });
-        const emptySegment = await s.app.request("/api/remove", {
-            headers: await s.headers({ "file-path": `${hex("a")}$$` }),
-        });
+        mkdirSync(path.join(assets, "sub"));
+        writeFileSync(path.join(assets, "sub", "inner.png"), "nested");
+        writeFileSync(path.join(s.savePath, "deadbeef"), "flat legacy file");
+        writeFileSync(path.join(s.savePath, "server", "extra"), "server-owned");
+        const posix = process.platform !== "win32";
+        if (posix) {
+            symlinkSync(path.join(s.savePath, "server", "password"), path.join(assets, "link.png"));
+            execFileSync("mkfifo", [path.join(assets, "fifo")]);
+        }
+
+        expect(await list(s)).toEqual(["assets/real.png"]);
+
+        const dir = await read(s, "assets/sub");
+        expect(dir.status).toBe(200);
+        expect(await dir.text()).toBe("");
+        if (posix) {
+            const link = await read(s, "assets/link.png");
+            expect(link.status).toBe(200);
+            expect(await link.text()).toBe("");
+            // A FIFO without a writer must not block the request.
+            const fifo = await read(s, "assets/fifo");
+            expect(fifo.status).toBe(200);
+            expect(await fifo.text()).toBe("");
+        }
+    });
+
+    it("validates every $$-separated batch segment before deleting, deduplicates by resolved file, and stops at a missing file", async () => {
+        const s = await authedServer();
+        for (const key of ["assets/a", "assets/b", "assets/c"]) {
+            await write(s, key, key);
+        }
+        const exists = (name: string) => existsSync(path.join(s.savePath, "assets", name));
+
+        await invalidPath(await remove(s, `${hex("assets/a")}$$zz`), "malformed segment");
+        await invalidPath(await remove(s, `${hex("assets/a")}$$${hex("server/password")}`), "unsupported segment");
+        const emptySegment = await remove(s, `${hex("assets/a")}$$`);
         expect(emptySegment.status).toBe(400);
         expect(await emptySegment.json()).toEqual({ error: "File path required" });
-        expect(existsSync(path.join(s.savePath, hex("a")))).toBe(true);
-        expect(existsSync(path.join(s.savePath, hex("b")))).toBe(true);
+        expect([exists("a"), exists("b"), exists("c")]).toEqual([true, true, true]);
+        expect(readFileSync(path.join(s.savePath, "server", "password"), "utf-8")).toBe("pw");
 
-        const ok = await s.app.request("/api/remove", {
-            headers: await s.headers({ "file-path": `${hex("a")}$$${hex("b")}$$${hex("a")}` }),
-        });
+        // Both hex spellings of `assets/a` resolve to one file, so the batch deletes it once.
+        const ok = await remove(s, `${hex("assets/a")}$$${hex("assets/a").toUpperCase()}$$${hex("assets/b")}`);
         expect(await ok.json()).toEqual({ success: true });
-        expect(existsSync(path.join(s.savePath, hex("a")))).toBe(false);
-        expect(existsSync(path.join(s.savePath, hex("b")))).toBe(false);
+        expect([exists("a"), exists("b"), exists("c")]).toEqual([false, false, true]);
 
-        const missing = await s.app.request("/api/remove", { headers: await s.headers({ "file-path": hex("a") }) });
-        expect(missing.status).toBe(500);
+        // A missing file is a 500; files deleted before it stay deleted.
+        const partial = await remove(s, `${hex("assets/c")}$$${hex("assets/a")}`);
+        expect(partial.status).toBe(500);
+        expect(exists("c")).toBe(false);
+        expect((await remove(s, hex("assets/a"))).status).toBe(500);
+    });
+
+    it("replaces a file atomically: an open reader keeps the old bytes and a failed rename keeps the old file", async () => {
+        const s = await authedServer();
+        await write(s, "assets/v.bin", "old");
+        const reader = await read(s, "assets/v.bin"); // handle opened, body not consumed yet
+        await write(s, "assets/v.bin", "new-longer");
+        expect(reader.headers.get("content-length")).toBe("3");
+        expect(await reader.text()).toBe("old");
+        expect(await (await read(s, "assets/v.bin")).text()).toBe("new-longer");
+
+        const rename = vi
+            .spyOn(fsPromises, "rename")
+            .mockRejectedValueOnce(Object.assign(new Error("EPERM: locked"), { code: "EPERM" }));
+        const failed = await write(s, "assets/v.bin", "lost");
+        expect(failed.status).toBe(500);
+        rename.mockRestore();
+        expect(readFileSync(path.join(s.savePath, "assets", "v.bin"), "utf-8")).toBe("new-longer");
+        expect(readdirSync(path.join(s.savePath, ".tmp"))).toEqual([]);
+    });
+
+    it("empties save/.tmp at startup and keeps the password, registered keys, and data across a restart", async () => {
+        const s = await authedServer();
+        await write(s, "database/database.bin", "db");
+        s.context.dispose();
+        writeFileSync(path.join(s.savePath, ".tmp", "stale.tmp"), "half-written");
+
+        const restarted = createServerContext({ rootDir: s.rootDir });
+        try {
+            expect(readdirSync(path.join(s.savePath, ".tmp"))).toEqual([]);
+            const auth = await restarted.app.request("/api/test_auth", {
+                headers: { "risu-auth": await s.signer.jwt() },
+            });
+            expect(await auth.json()).toEqual({ status: "success" });
+            const db = await restarted.app.request("/api/read", {
+                headers: { "risu-auth": await s.signer.jwt(), "file-path": hex("database/database.bin") },
+            });
+            expect(await db.text()).toBe("db");
+        } finally {
+            restarted.dispose();
+        }
     });
 });

@@ -16,7 +16,9 @@ export function createTestServer(options: { password?: string } = {}) {
     const savePath = path.join(rootDir, "save");
     mkdirSync(savePath);
     if (options.password !== undefined) {
-        writeFileSync(path.join(savePath, "__password"), options.password);
+        // The server's own files live under `save/server/`, outside the storage namespaces.
+        mkdirSync(path.join(savePath, "server"));
+        writeFileSync(path.join(savePath, "server", "password"), options.password);
     }
     const context = createServerContext({ rootDir });
     return {

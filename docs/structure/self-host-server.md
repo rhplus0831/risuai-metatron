@@ -20,8 +20,8 @@ The server is TypeScript run directly by Node's type stripping (`pnpm runserver`
 
 - `server/src/main.ts`: entry. Reads `PORT` (default 6001) and `TRUST_PROXY`, loads the TLS certificate (`getHttpsOptions`), calls `serve()`, attaches the WebSocket upgrade handler, and starts job GC. `cwd` is the root: `cwd/dist`, `cwd/save`, `cwd/server/ssl/certificate`.
 - `server/src/app.ts` `createServerContext({ rootDir, trustProxy })`: builds the Hono app and owns all state. Returns `{ app, attachWebSocket, startBackgroundTasks, dispose }`. `app.request()` works for in-process checks, but it has no Node socket, so the client IP is undefined there.
-- `server/src/routes/auth.ts` `createAuthStore`: `__password` plus known key hashes, `verifyJwt`, `checkAuth`, `checkProxyAuth`, `isAuthorizedProxyToken`, and the `/api/test_auth|login|crypto|set_password` routes.
-- `server/src/routes/storage.ts`: `isHex` and `/api/read|write|list|remove`.
+- `server/src/routes/auth.ts` `createAuthStore`: `save/server/password` plus `save/server/known_public_key_hashes.json`, `verifyJwt`, `checkAuth`, `checkProxyAuth`, `isAuthorizedProxyToken`, and the `/api/test_auth|login|crypto|set_password` routes.
+- `server/src/routes/storage.ts`: the key-to-file mapping (`STORAGE_NAMESPACES`, `decodeKeyHeader`, `encodeFileName`/`decodeFileName`, `resolveStorageKey`) and `/api/read|write|list|remove`. `registerStorageRoutes` empties `save/.tmp/` at startup.
 - `server/src/routes/proxy.ts`: `/proxy`, `/proxy2`, `/hub-proxy/*`. `ownBody` re-streams an upstream body and keeps the timeout alive until the body ends.
 - `server/src/routes/proxyStreamJobs.ts` `createProxyStreamJobs`: the job map, `sanitizeTargetUrl`, `isLocalNetworkHost`, `requestLocalTargetStream` (Node `http`/`https`), the POST/DELETE routes, the `ws` upgrade handler, and GC.
 - `server/src/http/rateLimit.ts` `createRateLimiter`: an in-memory limiter that reproduces the former express-rate-limit v8 setup (see Invariants).
@@ -56,7 +56,7 @@ Routing is non-strict (a trailing slash matches).
 | POST       | `/api/login`                            | password digest                                                              | 10 per 30 s    | registers a public-key hash                                                                                                          |
 | POST       | `/api/crypto`                           | **none**                                                                     | **none**       | SHA-256 of `body.data` (text/plain)                                                                                                  |
 | POST       | `/api/set_password`                     | **none**, only works while unset                                             | **none**       | first-run password setup                                                                                                             |
-| GET        | `/api/read`, `/api/remove`, `/api/list` | `checkAuth` (JWT)                                                            | 2000/min       | storage. The `file-path` header is hex; `remove` takes `$$`-joined hex keys.                                                         |
+| GET        | `/api/read`, `/api/remove`, `/api/list` | `checkAuth` (JWT)                                                            | 2000/min       | storage. The `file-path` header is the hex UTF-8 key; `remove` takes `$$`-joined hex keys.                                           |
 | POST       | `/api/write`                            | `checkAuth`                                                                  | 2000/min       | storage write, raw body bytes                                                                                                        |
 
 The three 2000/min rows marked "2000/min" share one limiter; `test_auth` has its own. Login has its own.
@@ -66,7 +66,7 @@ The three 2000/min rows marked "2000/min" share one limiter; `test_auth` has its
 Boot:
 
 1. `pnpm runserver` runs `node server/src/main.ts`.
-2. `createAuthStore` loads `save/__password` and `save/__known_public_key_hashes.json`. It creates `save/` if missing.
+2. `createServerContext` creates `save/` if missing. `createAuthStore` creates `save/server/` and loads `password` and `known_public_key_hashes.json` from it. `registerStorageRoutes` recreates `save/.tmp/` empty.
 3. `serve()` listens on HTTPS or HTTP. A listen error (e.g. `EADDRINUSE`) logs and exits 1.
 
 Client detection:
@@ -133,9 +133,13 @@ Proxying:
 
 Disk, under `save/`:
 
-- `__password`: the client-side SHA-256 digest via `/api/crypto`.
-- `__known_public_key_hashes.json`.
-- User files, named by their hex-encoded logical key: `database/database.bin`, `database/dbbackup-*.bin`, `assets/*`, `remotes/*`. Legacy `coldstorage/*` files from removed cold storage may remain but are no longer read.
+- `server/password`: the client-side SHA-256 digest via `/api/crypto`.
+- `server/known_public_key_hashes.json`. Deleting only `password` lets you set a new one but does not revoke registered clients; delete this file too for that.
+- `.tmp/`: staged writes, emptied at startup.
+- User files, one folder per namespace: a logical key `<namespace>/<name>` lives at `save/<namespace>/<encodeFileName(name)>`, e.g. `database/database.bin`, `database/dbbackup-*.bin`, `assets/<sha>.png`, `remotes/<chaId>.local.bin`.
+  - `encodeFileName` keeps `a-z 0-9 . _ -` readable and writes every other UTF-8 byte (uppercase letters, `/`, `%`, spaces, non-ASCII) as `%XX`. It also escapes a trailing dot and the first character of a Windows device name (`con.png` → `%63on.png`). A name whose readable form exceeds 255 bytes is stored as `~<lowercase hex>`; longer than that is rejected.
+  - Only one encoding per name is canonical, and canonical names never differ by case alone, so case-insensitive filesystems do not merge keys.
+  - The old flat layout (hex file names and `__password` directly in `save/`) is not read and was not migrated.
 
 Process memory, inside the `createServerContext` closure:
 
@@ -155,12 +159,14 @@ Process memory, inside the `createServerContext` closure:
 
 ## Invariants
 
-- Hex file names are the path-traversal guard. `isHex` only lets through hex strings plus `__password`. Never accept raw paths.
-- Keep the logical keys and the hex encoding. Existing `save/` directories must keep working.
+- Storage routes never use a raw path. `decodeKeyHeader` requires even-length hex and valid UTF-8 (verified by an exact byte round trip), then `resolveStorageKey` requires a namespace from `STORAGE_NAMESPACES` (`database`, `assets`, `remotes`) and encodes the whole rest of the key, `/` included, into one file name. Only these folders are reachable; `save/server/` and `save/.tmp/` are not.
+- Unsupported keys: malformed hex/UTF-8 is 400 `Invaild Path` on every route. A well-formed key with no storage location (other namespace, empty or too-long name) reads as missing (empty 200, no disk access), because the client reads whatever paths an old database stored; `write` and `remove` reject it with 400.
+- `/api/list` returns only regular files whose names are canonical `encodeFileName` output, so every listed key reads back the same file. Other entries (subfolders, symlinks, noncanonical file names) are ignored.
+- Keep the logical keys and the hex wire encoding; the client depends on both. The mapping to file names must stay reversible and injective.
 - Keep these unchanged:
   - the `__NODE__` injection;
   - the `risu-*` header names and `x-risu-node-path`;
-  - status codes and JSON error bodies, including the `Invaild Path` typo;
+  - status codes and JSON error bodies, including the `Invaild Path` typo (one deliberate change: a `/api/read` filesystem error other than a missing file, symlink, or non-regular file is now a 500 instead of an empty 200);
   - the 100 MiB body limit.
 - Rate limits must keep matching the former express-rate-limit v8 setup:
   - thresholds as in the Routes table;
@@ -181,8 +187,9 @@ Process memory, inside the `createServerContext` closure:
 ## Recipes
 
 - Add a storage operation:
-  - Add a route in `routes/storage.ts` with `auth.checkAuth`, the shared limiter, and hex validation.
+  - Add a route in `routes/storage.ts` with `auth.checkAuth`, the shared limiter, `decodeKeyHeader`, and `resolveStorageKey`.
   - Add the matching `NodeStorage` method.
+- Add a storage namespace: add it to `STORAGE_NAMESPACES`; the client key prefix is the folder name.
 - Change auth:
   - Client: `NodeStorage.createAuth`/`checkAuth`/`digestPassword`.
   - Server: `routes/auth.ts` (`verifyJwt`, the `/api/login` route).
@@ -194,7 +201,7 @@ Process memory, inside the `createServerContext` closure:
 ## Tests
 
 - Server (`// @vitest-environment node`, type-checked by `pnpm check` through `server/tsconfig.json`):
-  - `server/src/tests/app.test.ts`: `__NODE__` injection (`/` and `/index.html`), auth flow and JWT failure bodies, JSON rules, login limiter, storage, hex guard, batch remove.
+  - `server/src/tests/app.test.ts`: `__NODE__` injection (`/` and `/index.html`), auth flow and JWT failure bodies, JSON rules, login limiter, storage layout and key mapping, batch remove.
   - `server/src/tests/proxy.test.ts`: proxy auth, raw bodies, header filtering, SSE, timeout, HEAD, hub proxy.
   - `server/src/tests/proxyStreamJobs.test.ts`: target allowlist, job validation, a real `serve()` WebSocket lifecycle, DELETE and `dispose()` closing upstreams.
   - `server/src/tests/testSupport.ts`: temp-root context, ES256 signer, recording upstream.
@@ -204,7 +211,10 @@ Process memory, inside the `createServerContext` closure:
 
 ## Known Hazards
 
-- Writes are not atomic: direct `writeFile`, no temp-file rename, no fsync.
+- Storage writes stage into `save/.tmp/` and `rename` onto the target: atomic replacement, but no fsync, so no power-loss durability. `save/.tmp/` must be on the same filesystem as the namespace folders (one Docker volume at `/app/save`). One server process per `save/` is assumed: startup deletes `save/.tmp/`, and concurrent writes to one key are last-writer-wins. A failed rename (e.g. a Windows file locked by another process) returns 500 and keeps the old file; the server does not retry. The client does not retry either: `saveDb` clears `changed` before writing and does not restore it on failure, so the unsaved state is written only after the next change (pre-existing client behavior).
+- Auth files are still written directly with `writeFileSync` (not atomic).
+- `/api/read` opens with `O_NOFOLLOW | O_NONBLOCK` where the OS has them and takes size and bytes from one handle. Namespace folders themselves are trusted: a symlinked `save/assets` is followed. A hostile local process modifying `save/` is out of scope.
+- Local backups carry only `.png` assets by basename and restore them under `assets/`; asset names containing `/` do not survive a backup round trip (pre-existing, client side).
 - A batch remove stops at the first filesystem error, such as a missing file. It returns 500, and files deleted before the error stay deleted.
 - `/api/set_password` and `/api/crypto` have no auth and no rate limit. The first caller can set the password, and an empty password leaves the server effectively unset.
 - `/proxy`, `/proxy2`, and `/hub-proxy` (through `x-risu-node-path`, unauthenticated) forward to arbitrary targets. Only proxy jobs are restricted to local targets.

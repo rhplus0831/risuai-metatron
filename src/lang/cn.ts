@@ -780,7 +780,7 @@ export const languageChinese = {
     fixedChatTextarea: "固定聊天窗口底部",
     clickToEdit: "点击文字进行编辑",
     setNodePassword: "设置密码以提升安全性",
-    inputNodePassword: "输入密码。如果忘记密码，请删除服务器文档中的 save/__password.txt 并重启服务器。",
+    inputNodePassword: "输入密码。如果忘记密码，请删除服务器文档中的 save/server/password 并重启服务器。",
     simple: "基本",
     advanced: "高级",
     askReRollAutoSuggestions: "自动滚动建议",

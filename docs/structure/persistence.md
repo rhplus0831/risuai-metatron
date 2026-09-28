@@ -121,7 +121,7 @@ Cold storage (removed):
   3. If it is preset-owned, update the preset functions listed above.
   4. Verify by loading an old save: `getDatabase()` has the default after normalization.
 - Add a split save collection: `RisuSaveEncoder.init/set`, `RisuSaveDecoder.decode`, `toSaveType`, and the `saveDb` watchers. Verify an encode/decode round trip, an incremental update, and a backup restore.
-- Change the backend: `AutoStorage.Init` and `NodeStorage`. Keep logical keys.
+- Change the backend: `AutoStorage.Init` and `NodeStorage`. Keep logical keys. They are logical, not file paths: the server maps `<namespace>/<name>` to `save/<namespace>/<encoded name>` and only accepts the `database`, `assets`, and `remotes` namespaces (see `self-host-server.md`). A new key prefix needs a server namespace.
 - Change remote retention: `risuSave.ts` (`encodeRemoteBlock`, decoder). Nothing deletes orphaned `remotes/*.local.bin` payloads; the boot-time `cleanChunks` purge was removed together with cold storage.
 
 ## Tests

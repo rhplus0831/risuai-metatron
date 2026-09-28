@@ -1,5 +1,5 @@
 import { createHash, webcrypto } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import { readJsonBody } from "../http/body.ts";
@@ -23,12 +23,15 @@ export function hashJSON(json: unknown): string {
 export type AuthStore = ReturnType<typeof createAuthStore>;
 
 /**
- * Password (`save/__password`, the client-side SHA-256 digest) and registered ES256 public key
- * hashes (`save/__known_public_key_hashes.json`), plus JWT verification.
+ * Password (`save/server/password`, the client-side SHA-256 digest) and registered ES256 public key
+ * hashes (`save/server/known_public_key_hashes.json`), plus JWT verification. `save/server/` is not a
+ * storage namespace, so the `/api/*` storage routes cannot reach these files.
  */
 export function createAuthStore(savePath: string) {
-    const passwordPath = path.join(savePath, "__password");
-    const knownPublicKeysPath = path.join(savePath, "__known_public_key_hashes.json");
+    const serverDir = path.join(savePath, "server");
+    mkdirSync(serverDir, { recursive: true });
+    const passwordPath = path.join(serverDir, "password");
+    const knownPublicKeysPath = path.join(serverDir, "known_public_key_hashes.json");
 
     let password = existsSync(passwordPath) ? readFileSync(passwordPath, "utf-8") : "";
     const knownPublicKeysHashes: string[] = existsSync(knownPublicKeysPath)

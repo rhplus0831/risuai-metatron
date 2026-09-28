@@ -851,7 +851,7 @@ export const languageGerman = {
     clickToEdit: "Text zum Bearbeiten anklicken",
     setNodePassword: "Legen Sie Ihr Passwort für die Sicherheit fest",
     inputNodePassword:
-        "Geben Sie Ihr Passwort ein. Wenn Sie sich nicht erinnern können, entfernen Sie save/__password.txt in Ihren Serverdateien und starten Sie den Server neu",
+        "Geben Sie Ihr Passwort ein. Wenn Sie sich nicht erinnern können, entfernen Sie save/server/password in Ihren Serverdateien und starten Sie den Server neu",
     simple: "Einfach",
     advanced: "Erweitert",
     askReRollAutoSuggestions: "Neue Generierung für automatische Vorschläge",

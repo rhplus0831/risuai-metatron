@@ -832,7 +832,7 @@ export const languageVietnamese = {
     clickToEdit: "Bấm vào văn bản để chỉnh sửa",
     setNodePassword: "Đặt mật khẩu của bạn để bảo mật",
     inputNodePassword:
-        "Nhập mật khẩu của bạn. nếu bạn không nhớ, hãy xóa save/__password.txt trong tệp máy chủ của bạn và khởi động lại máy chủ.",
+        "Nhập mật khẩu của bạn. nếu bạn không nhớ, hãy xóa save/server/password trong tệp máy chủ của bạn và khởi động lại máy chủ.",
     simple: "Đơn giản",
     advanced: "Trình độ cao",
     askReRollAutoSuggestions: "Đề xuất tự động cuộn lại",

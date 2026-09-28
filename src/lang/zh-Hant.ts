@@ -875,7 +875,7 @@ export const languageChineseTraditional = {
     enableBlockPartialEdit: "啟用區塊局部編輯（滑鼠移至個別區塊即可編輯）",
     enableDragPartialEdit: "啟用拖曳局部編輯（選取文字即可編輯）",
     setNodePassword: "設定密碼以提升安全性",
-    inputNodePassword: "輸入您的密碼。若忘記密碼，請刪除伺服器檔案中的 save/__password.txt 後重新啟動伺服器",
+    inputNodePassword: "輸入您的密碼。若忘記密碼，請刪除伺服器檔案中的 save/server/password 後重新啟動伺服器",
     simple: "簡易",
     advanced: "進階",
     askReRollAutoSuggestions: "重新產生自動建議",
