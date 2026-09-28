@@ -1,0 +1,540 @@
+import { randomUUID } from "node:crypto";
+import { constants, type Dirent } from "node:fs";
+import fs, { type FileHandle } from "node:fs/promises";
+import path from "node:path";
+import type { Context, Hono, MiddlewareHandler } from "hono";
+import { type BackupArchiveManifest, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import {
+    ArchiveFormatError,
+    copyRecordToFile,
+    encodeRecordHeader,
+    indexArchive,
+    MAX_ARCHIVE_RECORD_BYTES,
+    MAX_ARCHIVE_RECORDS,
+    readRecord,
+} from "../data/archive.ts";
+import { ResourceEpochError, type ResourceStore, ResourceValidationError } from "../data/resourceStore.ts";
+import { MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
+import { readJsonBody } from "../http/body.ts";
+import type { AppEnv } from "../types.ts";
+import type { AuthStore } from "./auth.ts";
+import { decodeFileName, resolveStorageKey } from "./storage.ts";
+
+export const BACKUP_IMPORT_PATH = "/api/backups/import";
+/** Default cap on an uploaded archive; `RISU_MAX_IMPORT_BYTES` overrides it. */
+export const DEFAULT_MAX_IMPORT_BYTES = 16 * 1024 * 1024 * 1024;
+const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
+const MAX_PARTIAL_ASSETS = 100_000;
+const ASSET_PREFIX = "assets/";
+const readFlags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+
+/** A refused archive; the route answers 400 with the message. */
+class ArchiveRejectedError extends Error {}
+
+/**
+ * Server snapshots and local backup archives:
+ * - `GET /api/backups`: the retained snapshots, newest first.
+ * - `POST /api/backups/:id/restore`: replaces every resource with a snapshot (safety snapshot first,
+ *   mutations closed, new epoch).
+ * - `POST /api/backups/export` `{ partial?: string[] }`: streams an archive of a fresh snapshot and
+ *   the assets (every file of the `assets` namespace, or the listed keys).
+ * - `POST /api/backups/import`: an archive as the raw body, spooled to disk (exempt from the global
+ *   body limit, capped by `maxImportBytes`), validated completely, then its missing assets are added
+ *   (existing files are never overwritten) and the resources restored like a snapshot.
+ * Restore and import are mutations: they need the current epoch in `x-resource-epoch`.
+ */
+export function registerBackupRoutes(
+    app: Hono<AppEnv>,
+    arg: {
+        savePath: string;
+        store: ResourceStore;
+        snapshots: SnapshotManager;
+        auth: AuthStore;
+        limiter: MiddlewareHandler<AppEnv>;
+        maxImportBytes: number;
+    },
+) {
+    const { savePath, store, snapshots, auth, limiter, maxImportBytes } = arg;
+    const tmpPath = path.join(savePath, ".tmp");
+    const assetsPath = path.join(savePath, "assets");
+    let importing = false;
+
+    /** A unique staging folder under `save/.tmp`, which the storage routes empty at startup. */
+    async function makeStaging(prefix: string): Promise<string> {
+        const dir = path.join(tmpPath, `${prefix}-${randomUUID()}`);
+        await fs.mkdir(dir, { recursive: true });
+        return dir;
+    }
+
+    app.get("/api/backups", limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) {
+            return denied;
+        }
+        c.header("Cache-Control", "no-store");
+        return c.json({ items: snapshots.list() });
+    });
+
+    app.post("/api/backups/:id/restore", limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) {
+            return denied;
+        }
+        const expectedEpoch = c.req.header(RESOURCE_EPOCH_HEADER);
+        try {
+            store.assertEpoch(expectedEpoch);
+            const epoch = await snapshots.track(() =>
+                snapshots.withMaintenance(async ({ snapshot }) => {
+                    // Again once the lock is held: a restore queued behind another one is stale, and
+                    // nothing of it (safety snapshot, validation) should run.
+                    store.assertEpoch(expectedEpoch);
+                    const file = snapshots.resolve(c.req.param("id"));
+                    if (file === null) {
+                        return null;
+                    }
+                    const validated = store.readSnapshot(file);
+                    await snapshot();
+                    store.assertEpoch(expectedEpoch);
+                    return store.replaceAll(validated);
+                }),
+            );
+            if (epoch === null) {
+                return c.json({ error: "Snapshot not found" }, 404);
+            }
+            return c.json({ epoch });
+        } catch (error) {
+            return backupErrorResponse(c, error);
+        }
+    });
+
+    app.post("/api/backups/export", limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) {
+            return denied;
+        }
+        const parsed = await readJsonBody(c);
+        if (!parsed.ok) {
+            return parsed.response;
+        }
+        const partial = parsed.body.partial;
+        if (
+            partial !== undefined &&
+            (!Array.isArray(partial) ||
+                partial.length > MAX_PARTIAL_ASSETS ||
+                !partial.every(
+                    (key) =>
+                        typeof key === "string" &&
+                        key.startsWith(ASSET_PREFIX) &&
+                        resolveStorageKey(savePath, key) !== null,
+                ))
+        ) {
+            return c.json({ error: "partial must be a list of asset keys" }, 400);
+        }
+
+        // The export's lifetime (preparation and streaming) is tracked, so shutdown waits for it.
+        // Preparation always runs to its end (an abort meanwhile only asks it to stop early at its
+        // next step), and one finalizer removes the staging folder and releases the lifetime after
+        // it has settled: when it failed, when the client is gone, or when the stream ends, is
+        // cancelled, or is dropped before it started.
+        const signal = c.req.raw.signal;
+        let release!: () => void;
+        const lifetime = new Promise<void>((resolve) => (release = resolve));
+        let staging: string | null = null;
+        let databaseFile = "";
+        const assets: { key: string; file: string }[] = [];
+        const missing: string[] = [];
+        const prepare = async () => {
+            staging = await makeStaging("export");
+            if (signal.aborted) {
+                return;
+            }
+            databaseFile = path.join(staging, "resources.sqlite");
+            // Resources first, then assets: a blob is written before the metadata that names it, so
+            // every asset the snapshot references already exists when the assets are listed.
+            await snapshots.exclusive(() => store.backupTo(databaseFile));
+            if (signal.aborted) {
+                return;
+            }
+            if ((await fs.stat(databaseFile)).size > MAX_ARCHIVE_RECORD_BYTES) {
+                throw new ArchiveRejectedError("The resource database is too large for the archive format");
+            }
+            const keys = partial === undefined ? await listAssetKeys(assetsPath) : [...new Set(partial as string[])];
+            if (keys.length > MAX_ARCHIVE_RECORDS - 2) {
+                throw new ArchiveRejectedError("Too many assets for one archive");
+            }
+            for (const key of keys) {
+                const file = resolveStorageKey(savePath, key)!;
+                const stat = await fs.lstat(file).catch(() => null);
+                if (stat?.isFile() && stat.size <= MAX_ARCHIVE_RECORD_BYTES) {
+                    assets.push({ key, file });
+                } else {
+                    missing.push(key);
+                }
+            }
+        };
+        let prepared!: Promise<void>;
+        try {
+            // The tracked operation spans preparation and the finalizer.
+            snapshots.track(() => {
+                prepared = prepare();
+                return prepared.then(
+                    () => lifetime,
+                    () => lifetime,
+                );
+            });
+        } catch (error) {
+            return backupErrorResponse(c, error);
+        }
+        let finalized: Promise<void> | null = null;
+        const finalize = () =>
+            (finalized ??= (async () => {
+                await prepared.catch(() => {});
+                if (staging) {
+                    await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+                }
+                release();
+            })());
+
+        try {
+            await prepared;
+        } catch (error) {
+            await finalize();
+            if (error instanceof ArchiveRejectedError) {
+                return c.json({ error: error.message }, 413);
+            }
+            throw error;
+        }
+        if (signal.aborted) {
+            await finalize();
+            return c.json({ error: "Request aborted" }, 400);
+        }
+
+        const manifest: BackupArchiveManifest = {
+            version: 2,
+            createdAt: new Date().toISOString(),
+            partial: partial !== undefined,
+            assets: assets.map((asset) => asset.key),
+            missing,
+        };
+
+        let streamStarted = false;
+        async function* records(): AsyncGenerator<Uint8Array> {
+            streamStarted = true;
+            try {
+                const manifestBytes = Buffer.from(JSON.stringify(manifest), "utf-8");
+                yield encodeRecordHeader("manifest.json", manifestBytes.length);
+                yield manifestBytes;
+                yield* fileRecord("resources.sqlite", databaseFile);
+                for (const asset of assets) {
+                    yield* fileRecord(asset.key, asset.file);
+                }
+            } finally {
+                await finalize();
+            }
+        }
+        // A client that leaves before the adapter reads the stream would leave it unread: finish
+        // then. Once the generator runs, its own `finally` does.
+        signal.addEventListener(
+            "abort",
+            () => {
+                if (!streamStarted) {
+                    void finalize();
+                }
+            },
+            { once: true },
+        );
+
+        c.header("Content-Type", "application/octet-stream");
+        c.header("Cache-Control", "no-store");
+        return c.body(iteratorStream(records(), finalize), 200);
+    });
+
+    app.post(BACKUP_IMPORT_PATH, limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) {
+            return denied;
+        }
+        const expectedEpoch = c.req.header(RESOURCE_EPOCH_HEADER);
+        try {
+            store.assertEpoch(expectedEpoch);
+        } catch (error) {
+            return backupErrorResponse(c, error);
+        }
+        const declared = Number(c.req.header("content-length") ?? "0");
+        if (declared > maxImportBytes) {
+            return c.json({ error: "Archive too large" }, 413);
+        }
+        if (importing) {
+            return c.json({ error: "Another import is running" }, 409);
+        }
+        const body = c.req.raw.body;
+        if (!body) {
+            return c.json({ error: "Archive body required" }, 400);
+        }
+        importing = true;
+        try {
+            return await snapshots.track(() => runImport(c, body, expectedEpoch));
+        } catch (error) {
+            return backupErrorResponse(c, error);
+        } finally {
+            importing = false;
+        }
+    });
+
+    async function runImport(
+        c: Context<AppEnv>,
+        body: ReadableStream<Uint8Array>,
+        expectedEpoch: string | undefined,
+    ): Promise<Response> {
+        let staging: string | null = null;
+        let handle: FileHandle | null = null;
+        try {
+            staging = await makeStaging("import");
+            const archiveFile = path.join(staging, "archive.bin");
+            if (!(await spool(body, archiveFile, maxImportBytes))) {
+                return c.json({ error: "Archive too large" }, 413);
+            }
+            handle = await fs.open(archiveFile, "r");
+            const plan = await planImport(handle, savePath);
+            const databaseFile = path.join(staging, "resources.sqlite");
+            await copyRecordToFile(handle, plan.database, databaseFile);
+            const validated = store.readSnapshot(databaseFile);
+            const importHandle = handle;
+            const importStaging = staging;
+
+            const result = await snapshots.withMaintenance(async ({ snapshot }) => {
+                // Again once the lock is held, before the safety snapshot and any asset is written:
+                // an import queued behind a restore is stale (the final check beside `replaceAll`
+                // is the guarantee; this one avoids the side effects).
+                store.assertEpoch(expectedEpoch);
+                await snapshot();
+                await fs.mkdir(assetsPath, { recursive: true });
+                let written = 0;
+                let skipped = 0;
+                for (const [index, asset] of plan.assets.entries()) {
+                    const staged = path.join(importStaging, `asset-${index}`);
+                    if (await fs.lstat(asset.target).catch(() => null)) {
+                        skipped += 1;
+                        continue;
+                    }
+                    await copyRecordToFile(importHandle, asset.record, staged);
+                    try {
+                        // A hard link never replaces an existing file, unlike a rename.
+                        await fs.link(staged, asset.target);
+                        written += 1;
+                    } catch (error) {
+                        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+                            throw error;
+                        }
+                        skipped += 1;
+                    } finally {
+                        await fs.rm(staged, { force: true });
+                    }
+                }
+                store.assertEpoch(expectedEpoch);
+                const epoch = store.replaceAll(validated);
+                return { epoch, assetsWritten: written, assetsSkipped: skipped };
+            });
+            return c.json(result);
+        } finally {
+            await handle?.close().catch(() => {});
+            if (staging) {
+                await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+            }
+        }
+    }
+}
+
+/** Every logical key of the `assets` namespace, sorted. */
+async function listAssetKeys(assetsPath: string): Promise<string[]> {
+    let entries: Dirent[];
+    try {
+        entries = await fs.readdir(assetsPath, { withFileTypes: true });
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return [];
+        }
+        throw error;
+    }
+    const keys: string[] = [];
+    for (const entry of entries) {
+        const name = entry.isFile() ? decodeFileName(entry.name) : null;
+        if (name !== null) {
+            keys.push(ASSET_PREFIX + name);
+        }
+    }
+    return keys.sort();
+}
+
+/**
+ * One archive record streamed from a file. The size comes from the open handle, so an atomic replace
+ * of the file meanwhile cannot mix two versions. A file that cannot be read any more fails the
+ * stream (the manifest already lists it as included), so the download ends in an error instead of a
+ * silently incomplete archive.
+ */
+async function* fileRecord(name: string, file: string): AsyncGenerator<Uint8Array> {
+    const handle = await fs.open(file, readFlags);
+    try {
+        const { size } = await handle.stat();
+        yield encodeRecordHeader(name, size);
+        let done = 0;
+        while (done < size) {
+            const chunk = Buffer.alloc(Math.min(1024 * 1024, size - done));
+            const { bytesRead } = await handle.read(chunk, 0, chunk.length, done);
+            if (bytesRead === 0) {
+                throw new Error(`Backup export: ${name} shrank while it was read`);
+            }
+            done += bytesRead;
+            yield bytesRead === chunk.length ? chunk : chunk.subarray(0, bytesRead);
+        }
+    } finally {
+        await handle.close();
+    }
+}
+
+/**
+ * A pull-based stream over an async iterator; cancelling it (client gone) finishes the iterator and
+ * then runs `finalize` (a generator that never started has no `finally` to run).
+ */
+function iteratorStream(
+    iterator: AsyncGenerator<Uint8Array>,
+    finalize: () => Promise<void>,
+): ReadableStream<Uint8Array> {
+    return new ReadableStream<Uint8Array>({
+        async pull(controller) {
+            try {
+                const { value, done } = await iterator.next();
+                if (done) {
+                    controller.close();
+                } else {
+                    controller.enqueue(value);
+                }
+            } catch (error) {
+                controller.error(error);
+            }
+        },
+        async cancel() {
+            await iterator.return(undefined);
+            await finalize();
+        },
+    });
+}
+
+/** Writes the request body to `file`, counting bytes; false (and the file removed) past `limit`. */
+async function spool(body: ReadableStream<Uint8Array>, file: string, limit: number): Promise<boolean> {
+    const out = await fs.open(file, "wx");
+    const reader = body.getReader();
+    let total = 0;
+    try {
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+                return true;
+            }
+            total += value.byteLength;
+            if (total > limit) {
+                await reader.cancel().catch(() => {});
+                return false;
+            }
+            let written = 0;
+            while (written < value.byteLength) {
+                written += (await out.write(value, written, value.byteLength - written)).bytesWritten;
+            }
+        }
+    } finally {
+        await out.close();
+    }
+}
+
+/**
+ * Checks a whole archive before anything is written: `manifest.json` (version 2) first, exactly one
+ * `resources.sqlite`, and otherwise only unique `assets/` keys. A Risu Account archive and an archive
+ * made before format version 2 are refused with their own message; cold-storage records of old
+ * archives are ignored.
+ */
+async function planImport(handle: FileHandle, savePath: string) {
+    let records;
+    try {
+        records = await indexArchive(handle);
+    } catch (error) {
+        if (error instanceof ArchiveFormatError) {
+            throw new ArchiveRejectedError(error.message);
+        }
+        throw error;
+    }
+    const names = new Set<string>();
+    for (const record of records) {
+        if (record.name === "encryption.risudat") {
+            throw new ArchiveRejectedError("This backup was encrypted with a Risu Account and cannot be restored");
+        }
+        if (names.has(record.name)) {
+            throw new ArchiveRejectedError(`The archive holds ${record.name} twice`);
+        }
+        names.add(record.name);
+    }
+    if (names.has("database.risudat")) {
+        throw new ArchiveRejectedError(
+            "This backup was made by an older version, which saved the database in a format this version no longer reads",
+        );
+    }
+    const [first] = records;
+    if (!first || first.name !== "manifest.json" || first.length > MAX_MANIFEST_BYTES) {
+        throw new ArchiveRejectedError("The archive has no manifest");
+    }
+    let manifest: unknown;
+    try {
+        manifest = JSON.parse((await readRecord(handle, first)).toString("utf-8"));
+    } catch {
+        throw new ArchiveRejectedError("The archive manifest is not JSON");
+    }
+    if ((manifest as { version?: unknown } | null)?.version !== 2) {
+        throw new ArchiveRejectedError("Unsupported archive version");
+    }
+    const declared = (manifest as { assets?: unknown }).assets;
+    if (!Array.isArray(declared) || !declared.every((key) => typeof key === "string")) {
+        throw new ArchiveRejectedError("The archive manifest has no asset list");
+    }
+    if (new Set(declared).size !== declared.length) {
+        throw new ArchiveRejectedError("The archive manifest lists an asset twice");
+    }
+    let database: (typeof records)[number] | null = null;
+    const assets: { record: (typeof records)[number]; target: string }[] = [];
+    for (const record of records.slice(1)) {
+        if (record.name === "resources.sqlite") {
+            database = record;
+            continue;
+        }
+        if (record.name.startsWith("coldstorage_") && record.name.endsWith(".json")) {
+            continue;
+        }
+        const target = record.name.startsWith(ASSET_PREFIX) ? resolveStorageKey(savePath, record.name) : null;
+        if (target === null) {
+            throw new ArchiveRejectedError(`The archive holds an unexpected record: ${record.name}`);
+        }
+        assets.push({ record, target });
+    }
+    if (!database) {
+        throw new ArchiveRejectedError("The archive holds no resource database");
+    }
+    // Record names are unique (checked above) and the declared names too, so equal sizes plus
+    // membership one way is set equality: exactly the declared assets are stored.
+    const stored = new Set(assets.map((asset) => asset.record.name));
+    if (declared.length !== stored.size || !declared.every((key) => stored.has(key))) {
+        throw new ArchiveRejectedError("The archive does not hold the assets its manifest lists");
+    }
+    return { database, assets };
+}
+
+function backupErrorResponse(c: Context<AppEnv>, error: unknown): Response {
+    if (error instanceof MaintenanceError) {
+        c.header("Retry-After", "5");
+        return c.json({ error: error.message }, 503);
+    }
+    if (error instanceof ResourceEpochError) {
+        return c.json({ error: "EpochMismatch", epoch: error.epoch }, 412);
+    }
+    if (error instanceof ArchiveRejectedError || error instanceof ResourceValidationError) {
+        return c.json({ error: error.message }, 400);
+    }
+    throw error;
+}

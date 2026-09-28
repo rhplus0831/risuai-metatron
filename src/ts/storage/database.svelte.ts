@@ -10,6 +10,7 @@ import type { PromptItem } from "../process/prompt";
 import { createHypaV3Preset } from "../process/memory/hypav3";
 import { normalizeTranslatorPresetState } from "../translator/presets";
 import { safeStructuredClone } from "../polyfill";
+import { markCharacterDirtyAt } from "./resourceSync.svelte";
 import {
     DEFAULT_CHAT_LOAD_ADDITIONAL_PAGES,
     DEFAULT_CHAT_LOAD_INITIAL_PAGES,
@@ -38,6 +39,8 @@ export function setDatabase(data: Database) {
     delete (data as Database & { account?: unknown }).account;
     // Cold storage was removed; drop its flag and the orphaned plugin-storage pointer map.
     delete (data as Database & { coldstorage?: unknown }).coldstorage;
+    // Remote saving was removed with the save file; drop its flag.
+    delete (data as Database & { enableRemoteSaving?: unknown }).enableRemoteSaving;
     if (data.pluginCustomStorage) {
         delete data.pluginCustomStorage._coldplugin;
     }
@@ -789,6 +792,7 @@ export function setCharacterByIndex(index: number, char: character | groupChat) 
         DBState.db.characters = [];
     }
     DBState.db.characters[index] = char;
+    markCharacterDirtyAt(index);
 }
 
 export function getCurrentChat() {

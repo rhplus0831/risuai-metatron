@@ -37,11 +37,12 @@ export class NodeStorage {
 
     async getProxyAuth() {
         await this.checkAuth();
-        const auth = await this.createAuth();
-        if (typeof localStorage !== "undefined") {
-            localStorage.setItem("risuauth", auth);
-        }
-        return auth;
+        return await this.createAuth();
+    }
+
+    /** Makes sure this browser's key is registered (prompting for the password once if needed). */
+    async ensureAuth() {
+        await this.checkAuth();
     }
 
     async getKeyPair(): Promise<CryptoKeyPair> {
@@ -143,7 +144,48 @@ export class NodeStorage {
         }
     }
 
+    /** Registers this browser's public key with the password digest; alerts and throws on failure. */
+    private async login(passwordDigest: string) {
+        const keypair = await this.getKeyPair();
+        const publicKey = await crypto.subtle.exportKey("jwk", keypair.publicKey);
+        const s = await fetch("/api/login", {
+            method: "POST",
+            body: JSON.stringify({
+                password: passwordDigest,
+                publicKey: publicKey,
+            }),
+            headers: {
+                "content-type": "application/json",
+            },
+        });
+        if (s.status < 200 || s.status >= 300) {
+            let message = `Login failed (${s.status})`;
+            try {
+                const body = await s.json();
+                if (body?.error) {
+                    message = body.error;
+                }
+            } catch {}
+            alertError(message);
+            await waitAlert();
+            throw message;
+        }
+    }
+
+    private checking: Promise<unknown> | null = null;
+
+    /** One auth check (and password prompt) at a time; parallel requests wait for it. */
     private async checkAuth() {
+        if (this.authChecked) {
+            return;
+        }
+        this.checking ??= this.runAuthCheck().finally(() => {
+            this.checking = null;
+        });
+        await this.checking;
+    }
+
+    private async runAuthCheck() {
         if (!this.authChecked) {
             const data = await (
                 await fetch("/api/test_auth", {
@@ -164,34 +206,14 @@ export class NodeStorage {
                         "content-type": "application/json",
                     },
                 });
+                // Register this browser's key with the password just set, so the first request after
+                // setup is authorized instead of failing with "Unknown public key".
+                await this.login(input);
+                this.authChecked = true;
                 return await this.createAuth();
             } else if (data.status === "incorrect") {
-                const keypair = await this.getKeyPair();
-                const publicKey = await crypto.subtle.exportKey("jwk", keypair.publicKey);
                 const input = await digestPassword(await alertInput(language.inputNodePassword));
-
-                const s = await fetch("/api/login", {
-                    method: "POST",
-                    body: JSON.stringify({
-                        password: input,
-                        publicKey: publicKey,
-                    }),
-                    headers: {
-                        "content-type": "application/json",
-                    },
-                });
-                if (s.status < 200 || s.status >= 300) {
-                    let message = `Login failed (${s.status})`;
-                    try {
-                        const body = await s.json();
-                        if (body?.error) {
-                            message = body.error;
-                        }
-                    } catch {}
-                    alertError(message);
-                    await waitAlert();
-                    throw message;
-                }
+                await this.login(input);
                 this.authChecked = true;
                 return await this.createAuth();
             } else {
@@ -207,6 +229,14 @@ const sharedNodeStorage = new NodeStorage();
 
 export async function getNodeServerProxyAuth() {
     return await sharedNodeStorage.getProxyAuth();
+}
+
+/** `fetch` to the self-host server with a fresh `risu-auth` token. */
+export async function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
+    await sharedNodeStorage.ensureAuth();
+    const headers = new Headers(init.headers);
+    headers.set("risu-auth", await sharedNodeStorage.createAuth());
+    return await fetch(input, { ...init, headers });
 }
 
 async function digestPassword(message: string) {

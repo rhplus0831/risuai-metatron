@@ -7,7 +7,7 @@ no standalone browser build (the client without the server shows only a notice),
 they drift. Grep the identifier instead.
 
 Last full audited: 2026-09-27.
-Last scoped updated: 2026-09-29.
+Last scoped updated: 2026-09-29 (Phase 1: server resources).
 
 ## Agent Read Protocol
 
@@ -52,8 +52,9 @@ Verification
 
 Data and persistence (details: `docs/structure/persistence.md`)
 
-- D1. The live database is the single rune `DBState.db` (`src/ts/stores.svelte.ts`). Its shapes
-  (`Database`, `character`, `groupChat`, `Chat`, `Message`, `botPreset`) live in
+- D1. The live database is the single rune `DBState.db` (`src/ts/stores.svelte.ts`), the client's
+  mirror of the server resources (`shared/resources.ts`; loaded in `bootstrap.ts:loadData`). Its
+  shapes (`Database`, `character`, `groupChat`, `Chat`, `Message`, `botPreset`) live in
   `shared/database.ts` and are re-exported by `src/ts/storage/database.svelte.ts`. `shared/` is
   compiled by both the client and the strict server project: no DOM types, runes, or enums, and
   only relative `.ts` imports between `shared/` files (`persistence.md`).
@@ -62,9 +63,12 @@ Data and persistence (details: `docs/structure/persistence.md`)
 - D3. Never rename persisted keys, including misspelled ones: `seperateModels`,
   `seperateParameters`, `moduleIntergration`, `PresensePenalty`. Saved databases and shared files
   depend on them.
-- D4. The autosave loop (`saveDb` in `src/ts/globalApi.svelte.ts`) watches root fields plus only
-  the currently selected character and chat. If you mutate a non-selected character, set
-  `requiresFullEncoderReload.state = true`, or that change may never be re-encoded.
+- D4. The database lives in server resources (`root`, `presets`, `modules`, `plugins`,
+  `pluginStorage`, one `characters` record per `chaId`); the save adapter
+  (`src/ts/storage/resourceSync.svelte.ts`, started by `saveDb`) watches the root fields, the
+  collections, and only the selected character deeply. If you mutate a non-selected character, call
+  `markCharactersDirty([chaId])`, or that change is not saved. Additions and removals need nothing.
+  Every write names the revision and epoch it was based on; a stale one reloads that record.
 - D5. Shared artifacts are cross-user formats: character cards (`.png` `chara`/`ccv3`, `.json`,
   `.charx`), modules (`.risum`), presets (`.risup`/`.risupreset`), translator presets (`.risutl`),
   and plugin scripts. Keep old readers working. Never renumber `LLMFlags`, `LLMFormat`,
@@ -181,7 +185,7 @@ targeted path to read them.
 | Module (`RisuModule`, `.risum`)        | Bundle of lorebook/regex/trigger/assets/MCP, enabled globally, per chat, per character, or via a persona          | characters-modules |
 | Persona                                | User identity (name/icon/prompt), optionally with an embedded module                                              | characters-modules |
 | Bot preset (`.risup`)                  | Serializable subset of model/prompt settings (`botPreset`)                                                        | settings-i18n      |
-| Inlay                                  | Image/media stored in LocalForage `inlay` and referenced in chat text as `{{inlay::id}}`                          | chat-pipeline      |
+| Inlay                                  | Image/media stored on the server (`inlays` resource + asset) and referenced in chat text as `{{inlay::id}}`       | chat-pipeline      |
 | Asset                                  | Card media stored as `assets/<hash>.<ext>` through `saveAsset`, referenced by path                                | global-api         |
 | SupaMemory / HypaV2 / HypaV3 / Hanurai | Long-term memory and summarization algorithms                                                                     | memory             |
 | Aux model / submodel                   | Secondary model for memory/emotion/translate/`otherAx`, selected via `seperateModels`                             | llm-requests       |

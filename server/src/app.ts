@@ -8,9 +8,11 @@ import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "./data/kinds.ts";
 import { createResourceStore } from "./data/resourceStore.ts";
+import { createSnapshotManager } from "./data/snapshots.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
 import { createAuthStore } from "./routes/auth.ts";
+import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
 import { createProxyStreamJobs } from "./routes/proxyStreamJobs.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
@@ -24,13 +26,17 @@ export type ServerContext = ReturnType<typeof createServerContext>;
 
 /**
  * Builds the self-host server: `rootDir/dist` is the built client, `rootDir/save` the storage.
- * All state (password, known keys, stream jobs, rate-limit counters, the resource database) lives in
- * the returned context. `resourceKinds` replaces the default resource kinds (tests use it).
+ * All state (password, known keys, stream jobs, rate-limit counters, the resource database and its
+ * snapshots) lives in the returned context. `resourceKinds` replaces the default resource kinds and
+ * `snapshotIntervalMs` the 10-minute snapshot interval (tests use them); `maxImportBytes` caps an
+ * uploaded backup archive (default `RISU_MAX_IMPORT_BYTES`, else 16 GiB).
  */
 export function createServerContext(options: {
     rootDir: string;
     trustProxy?: string;
     resourceKinds?: readonly ResourceKind[];
+    snapshotIntervalMs?: number;
+    maxImportBytes?: number;
 }) {
     const savePath = path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -46,6 +52,12 @@ export function createServerContext(options: {
         file: path.join(savePath, "data", "resources.sqlite"),
         kinds: resourceKinds,
     });
+    const snapshots = createSnapshotManager({
+        store: resources,
+        dir: path.join(savePath, "backups"),
+        intervalMs: options.snapshotIntervalMs,
+    });
+    const maxImportBytes = options.maxImportBytes ?? parseMaxImportBytes(process.env.RISU_MAX_IMPORT_BYTES);
     const proxyStreamJobs = createProxyStreamJobs({ auth });
 
     const authenticatedRouteLimiter = createRateLimiter({
@@ -77,11 +89,13 @@ export function createServerContext(options: {
         return c.text("Internal Server Error", 500);
     });
 
-    app.use(
-        bodyLimit({
-            maxSize: MAX_BODY_BYTES,
-            onError: (c) => c.json({ error: "Request body too large" }, 413),
-        }),
+    // The backup import streams its body to disk with its own cap; Hono's limiter would buffer it.
+    const limitBody = bodyLimit({
+        maxSize: MAX_BODY_BYTES,
+        onError: (c) => c.json({ error: "Request body too large" }, 413),
+    });
+    app.use((c, next) =>
+        c.req.method === "POST" && c.req.path.replace(/\/+$/, "") === BACKUP_IMPORT_PATH ? next() : limitBody(c, next),
     );
 
     // Serves the client with the flag that makes `isNodeServer` true. Without it the client shows only a
@@ -105,24 +119,58 @@ export function createServerContext(options: {
     registerProxyRoutes(app, { auth, limiter: authenticatedRouteLimiter.middleware, clientIp });
     proxyStreamJobs.registerRoutes(app, { limiter: authenticatedRouteLimiter.middleware, clientIp });
     auth.registerRoutes(app, { auth: authRouteLimiter.middleware, login: loginRouteLimiter.middleware });
-    registerStorageRoutes(app, { savePath, auth, limiter: authenticatedRouteLimiter.middleware });
+    registerStorageRoutes(app, {
+        savePath,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        maintenance: snapshots.gate,
+    });
     registerResourceRoutes(app, {
         store: resources,
         kinds: resourceKinds,
         auth,
         limiter: authenticatedRouteLimiter.middleware,
+        maintenance: snapshots.gate,
+    });
+    registerBackupRoutes(app, {
+        savePath,
+        store: resources,
+        snapshots,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        maxImportBytes,
     });
 
     return {
         app,
+        snapshots,
         attachWebSocket: (server: http.Server) => proxyStreamJobs.attachWebSocket(server),
-        startBackgroundTasks: () => proxyStreamJobs.startGc(),
-        dispose: () => {
+        startBackgroundTasks: () => {
+            proxyStreamJobs.startGc();
+            snapshots.start();
+        },
+        /**
+         * Stops timers, refuses new backup operations, waits for running snapshots, restores,
+         * imports, and export streams, then closes the store. Calling it again is harmless.
+         */
+        dispose: async () => {
             proxyStreamJobs.dispose();
             authenticatedRouteLimiter.dispose();
             authRouteLimiter.dispose();
             loginRouteLimiter.dispose();
+            await snapshots.stop();
             resources.close();
         },
     };
+}
+
+function parseMaxImportBytes(raw: string | undefined): number {
+    if (raw === undefined || raw === "") {
+        return DEFAULT_MAX_IMPORT_BYTES;
+    }
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new Error(`Invalid RISU_MAX_IMPORT_BYTES: ${raw}`);
+    }
+    return value;
 }

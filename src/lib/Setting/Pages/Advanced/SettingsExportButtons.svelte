@@ -42,6 +42,9 @@
 
         const keyToRemove = [
             "characters",
+            "irisDialogue",
+            "googleSearchCredentials",
+            "pluginCustomStorage",
             "loreBook",
             "plugins",
             "personas",

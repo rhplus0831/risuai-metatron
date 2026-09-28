@@ -1071,7 +1071,6 @@ export const languageChineseTraditional = {
     useAdvancedEditor: "使用進階編輯器",
     noWaitForTranslate: "不等待翻譯完成",
     antiClaudeOverload: "防止 Claude 過載",
-    activeTabChange: "其他分頁目前處於啟用狀態，因此此分頁已停用。若要切換至此分頁，請按「確定」",
     maxSupaChunkSize: "SupaMemory 最大分段大小",
     addCharacter: "加入角色",
     importFromRealm: "從 RisuRealm 選擇",
@@ -1509,7 +1508,6 @@ export const languageChineseTraditional = {
         save: "儲存",
         cancel: "取消",
     },
-    enableRemoteSaving: "啟用遠端儲存",
     blockquoteStyling: "引用區塊樣式",
     dynamicModelRegistry: "動態模型註冊",
     confirmInstallPluginViaPlugin:

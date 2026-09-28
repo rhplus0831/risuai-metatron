@@ -1,11 +1,13 @@
 // @vitest-environment node
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { createKindRegistry, type ResourceKind } from "../data/kinds.ts";
 import {
     createResourceStore,
+    ResourceBatchConflictError,
     ResourceConflictError,
     type ResourceStore,
     ResourceValidationError,
@@ -14,7 +16,8 @@ import { sleep } from "./testSupport.ts";
 
 const root: ResourceKind = { name: "root", schemaVersion: 1, normalize: (input) => input };
 const presets: ResourceKind = { name: "presets", schemaVersion: 2, normalize: (input) => input };
-const kinds = createKindRegistry([root, presets]);
+const single: ResourceKind = { name: "single", schemaVersion: 1, singleton: true, normalize: (input) => input };
+const kinds = createKindRegistry([root, presets, single]);
 
 const stores: ResourceStore[] = [];
 const dirs: string[] = [];
@@ -132,10 +135,347 @@ describe("kinds", () => {
             ["a", "a2"],
             ["b", "b"],
         ]);
-        for (const id of ["", ".a", "a/b", "a".repeat(129), "가"]) {
-            expect(() => store.put(root, id, 1, null), id).toThrow(ResourceValidationError);
-            expect(() => store.get(root, id), id).toThrow("Invalid resource id");
+        // 1 to 512 UTF-16 units of well-formed Unicode, no control character, not `.` or `..`.
+        for (const id of [
+            ".",
+            "..",
+            "",
+            "a\u0000",
+            "a\tb",
+            "\u001fa",
+            "a\u007f",
+            "\ud800",
+            "a\udc00b",
+            "a".repeat(513),
+        ]) {
+            expect(() => store.put(root, id, 1, null), JSON.stringify(id)).toThrow(
+                new ResourceValidationError("Invalid resource id"),
+            );
+            expect(() => store.get(root, id), JSON.stringify(id)).toThrow("Invalid resource id");
         }
+        for (const id of [".a", "...", "a/b", "a b", "§playground", "가", "\ud83d\ude00", "a".repeat(512)]) {
+            expect(store.put(root, id, id, null).data, JSON.stringify(id)).toBe(id);
+            expect(store.get(root, id)!.data, JSON.stringify(id)).toBe(id);
+        }
+    });
+
+    it("accepts only the id main for a singleton kind and never deletes it", () => {
+        const store = memoryStore();
+        const message = "single has only the record main";
+        expect(() => store.put(single, "other", 1, null)).toThrow(new ResourceValidationError(message));
+        expect(() => store.get(single, "other")).toThrow(message);
+        expect(() => store.readRefs([{ kind: single, id: "other" }])).toThrow(message);
+        expect(() => store.applyBatch([{ kind: single, id: "other", baseRevision: null, data: 1 }])).toThrow(
+            new ResourceValidationError(`ops[0]: ${message}`),
+        );
+        const token = store.put(single, "main", 1, null).revision;
+        expect(() => store.delete(single, "main", token)).toThrow(
+            new ResourceValidationError("single cannot be deleted"),
+        );
+        expect(() => store.applyBatch([{ kind: single, id: "main", baseRevision: token, delete: true }])).toThrow(
+            new ResourceValidationError("ops[0]: single cannot be deleted"),
+        );
+        expect(store.get(single, "main")).toEqual({ revision: token, data: 1 });
+    });
+});
+
+describe("readKinds, readRefs, and applyBatch", () => {
+    it("reads several kinds and named refs with the epoch, in one call", () => {
+        const store = memoryStore();
+        const a = store.put(root, "a", 1, null).revision;
+        const p = store.put(presets, "p", 2, null).revision;
+        expect(store.readKinds([presets, root])).toEqual({
+            epoch: store.epoch(),
+            kinds: { presets: [{ id: "p", revision: p, data: 2 }], root: [{ id: "a", revision: a, data: 1 }] },
+        });
+        expect(store.readKinds([])).toEqual({ epoch: store.epoch(), kinds: {} });
+        expect(
+            store.readRefs([
+                { kind: root, id: "a" },
+                { kind: root, id: "missing" },
+            ]),
+        ).toEqual({
+            epoch: store.epoch(),
+            items: [
+                { kind: "root", id: "a", revision: a, data: 1 },
+                { kind: "root", id: "missing", revision: null, data: null },
+            ],
+        });
+        const foreign: ResourceKind = { name: "root", schemaVersion: 1, normalize: (input) => input };
+        expect(() => store.readKinds([foreign])).toThrow("Unregistered resource kind: root");
+        expect(() => store.readRefs([{ kind: foreign, id: "a" }])).toThrow("Unregistered resource kind: root");
+    });
+
+    it("validates every operation before writing, applies all or none, and counts the writes", () => {
+        const store = memoryStore();
+        const a = store.put(root, "a", 1, null).revision;
+        const before = store.writeCount();
+        expect(() =>
+            store.applyBatch([
+                { kind: root, id: "b", baseRevision: null, data: 1 },
+                { kind: root, id: "c", baseRevision: null, data: { n: NaN } },
+            ]),
+        ).toThrow(new ResourceValidationError("ops[1]: Resource data contains a non-finite number"));
+        expect(() =>
+            store.applyBatch([
+                { kind: root, id: "b", baseRevision: null, data: 1 },
+                { kind: root, id: "b", baseRevision: null, data: 1 },
+            ]),
+        ).toThrow(new ResourceValidationError("ops[1]: duplicate kind and id"));
+        expect(() => store.applyBatch([{ kind: root, id: "a", baseRevision: null, delete: true }])).toThrow(
+            new ResourceValidationError("ops[0]: a deletion needs a base revision"),
+        );
+        expect(store.get(root, "b")).toBeNull();
+
+        let error: unknown;
+        try {
+            store.applyBatch([
+                { kind: root, id: "b", baseRevision: null, data: 1 },
+                { kind: root, id: "a", baseRevision: null, data: 2 },
+                { kind: root, id: "gone", baseRevision: a, delete: true },
+            ]);
+        } catch (e) {
+            error = e;
+        }
+        expect(error).toBeInstanceOf(ResourceBatchConflictError);
+        expect((error as ResourceBatchConflictError).conflicts).toEqual([
+            { kind: "root", id: "a", revision: a },
+            { kind: "root", id: "gone", revision: null },
+        ]);
+        expect(store.get(root, "b")).toBeNull();
+        expect(store.writeCount()).toBe(before);
+
+        const results = store.applyBatch([
+            { kind: root, id: "b", baseRevision: null, data: 1 },
+            { kind: root, id: "a", baseRevision: a, data: 2 },
+            { kind: presets, id: "p", baseRevision: null, data: 3 },
+        ]);
+        expect(results).toEqual([
+            { kind: "root", id: "b", revision: expect.stringMatching(/:2:1$/) },
+            { kind: "root", id: "a", revision: a.replace(/:1$/, ":2") },
+            { kind: "presets", id: "p", revision: expect.stringMatching(/:3:1$/) },
+        ]);
+        expect(store.writeCount()).toBe(before + 3);
+        expect(store.applyBatch([{ kind: root, id: "b", baseRevision: results[0].revision!, delete: true }])).toEqual([
+            { kind: "root", id: "b", revision: null },
+        ]);
+        expect(store.get(root, "b")).toBeNull();
+        expect(() => store.transaction(() => store.applyBatch([]))).toThrow(
+            "Nested resource transactions are not supported",
+        );
+    });
+});
+
+describe("snapshots", () => {
+    function tempDir() {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-resource-store-"));
+        dirs.push(dir);
+        return dir;
+    }
+    function fileStore(dir: string, name = "live.sqlite") {
+        const store = createResourceStore({ file: path.join(dir, name), kinds });
+        stores.push(store);
+        return store;
+    }
+    /** Runs SQL against a new file and returns its path. */
+    function craft(dir: string, name: string, sql: string) {
+        const file = path.join(dir, name);
+        const db = new DatabaseSync(file);
+        try {
+            db.exec(sql);
+        } finally {
+            db.close();
+        }
+        return file;
+    }
+    const layout = `
+        PRAGMA user_version = 1;
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+        CREATE TABLE resources (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, id TEXT NOT NULL,
+            revision INTEGER NOT NULL, schemaVersion INTEGER NOT NULL, data TEXT NOT NULL
+        ) STRICT;
+        INSERT INTO meta (key, value) VALUES ('epoch', 'e');`;
+    const notResource = new ResourceValidationError("Not a resource database");
+
+    it("copies the live database to one self-contained file that reads back as a snapshot", async () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        store.put(root, "b", { v: "b" }, null);
+        store.put(root, "a", { v: "a" }, null);
+        store.put(root, "a", { v: "a2" }, store.get(root, "a")!.revision);
+        const copy = path.join(dir, "copy.sqlite");
+        await store.backupTo(copy);
+        expect(readdirSync(dir).sort()).toEqual(["copy.sqlite", "live.sqlite", "live.sqlite-shm", "live.sqlite-wal"]);
+        expect(store.readSnapshot(copy)).toEqual({
+            rows: [
+                { kind: "root", id: "b", revision: 1, schemaVersion: 1, text: '{"v":"b"}' },
+                { kind: "root", id: "a", revision: 2, schemaVersion: 1, text: '{"v":"a2"}' },
+            ],
+        });
+        // A fresh store's copy is a valid, empty snapshot.
+        const empty = fileStore(dir, "empty.sqlite");
+        await empty.backupTo(path.join(dir, "empty-copy.sqlite"));
+        expect(empty.readSnapshot(path.join(dir, "empty-copy.sqlite"))).toEqual({ rows: [] });
+        store.close();
+        await expect(store.backupTo(path.join(dir, "late.sqlite"))).rejects.toThrow("Resource store is closed");
+    });
+
+    it("refuses files that are not this store's layout: garbage, other versions, views, missing epoch, other columns", () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        writeFileSync(path.join(dir, "garbage.sqlite"), "not a database at all, but long enough to have a header");
+        writeFileSync(path.join(dir, "empty.sqlite"), "");
+        const cases: [string, string, ResourceValidationError][] = [
+            ["missing", path.join(dir, "missing.sqlite"), notResource],
+            ["garbage", path.join(dir, "garbage.sqlite"), notResource],
+            [
+                "empty file",
+                path.join(dir, "empty.sqlite"),
+                new ResourceValidationError("Unsupported resource database version 0"),
+            ],
+            [
+                "other version",
+                craft(dir, "v2.sqlite", layout.replace("user_version = 1", "user_version = 2")),
+                new ResourceValidationError("Unsupported resource database version 2"),
+            ],
+            [
+                "view",
+                craft(
+                    dir,
+                    "view.sqlite",
+                    `PRAGMA user_version = 1;
+                     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+                     INSERT INTO meta (key, value) VALUES ('epoch', 'e');
+                     CREATE TABLE t (a);
+                     CREATE VIEW resources AS SELECT 1 AS seq, 'root' AS kind, 'x' AS id, 1 AS revision, 1 AS schemaVersion, '1' AS data FROM t;`,
+                ),
+                notResource,
+            ],
+            [
+                "no meta",
+                craft(
+                    dir,
+                    "nometa.sqlite",
+                    layout.replace(/CREATE TABLE meta[^;]*;/, "").replace(/INSERT INTO meta[^;]*;/, ""),
+                ),
+                notResource,
+            ],
+            ["no epoch", craft(dir, "noepoch.sqlite", layout.replace(/INSERT INTO meta[^;]*;/, "")), notResource],
+            [
+                "extra column",
+                craft(dir, "extra.sqlite", layout.replace("data TEXT NOT NULL", "data TEXT NOT NULL, extra TEXT")),
+                notResource,
+            ],
+            [
+                "other column order",
+                craft(
+                    dir,
+                    "order.sqlite",
+                    layout.replace("kind TEXT NOT NULL, id TEXT NOT NULL", "id TEXT NOT NULL, kind TEXT NOT NULL"),
+                ),
+                notResource,
+            ],
+        ];
+        for (const [label, file, error] of cases) {
+            expect(() => store.readSnapshot(file), label).toThrow(error);
+        }
+        expect(store.readSnapshot(craft(dir, "ok.sqlite", layout))).toEqual({ rows: [] });
+    });
+
+    it("checks every row: kind, schema version, id and singleton rules, uniqueness, seq and revision, JSON, and the normalizer", () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        const withRows = (name: string, rows: string) =>
+            craft(
+                dir,
+                name,
+                `${layout.replace(",\n            UNIQUE (kind, id)", "")} INSERT INTO resources (seq, kind, id, revision, schemaVersion, data) VALUES ${rows};`,
+            );
+        const cases: [string, string, string][] = [
+            ["unknown kind", "(1, 'nope', 'a', 1, 1, '1')", "row 1: unknown kind"],
+            ["schema version", "(1, 'presets', 'a', 1, 1, '1')", "row 1: unsupported schema version"],
+            ["invalid id", "(1, 'root', '..', 1, 1, '1')", "row 1: invalid id"],
+            ["singleton id", "(1, 'single', 'other', 1, 1, '1')", "row 1: invalid id"],
+            ["duplicate", "(1, 'root', 'a', 1, 1, '1'), (2, 'root', 'a', 1, 1, '2')", "row 2: duplicate kind and id"],
+            ["zero seq", "(0, 'root', 'a', 1, 1, '1')", "row 1: invalid seq or revision"],
+            ["zero revision", "(1, 'root', 'a', 0, 1, '1')", "row 1: invalid seq or revision"],
+            ["not JSON", "(1, 'root', 'a', 1, 1, '{')", "row 1: data is not JSON"],
+            [
+                "deep JSON",
+                `(1, 'root', 'a', 1, 1, '${"[".repeat(257)}1${"]".repeat(257)}')`,
+                "row 1: Resource data is nested deeper than 256 levels",
+            ],
+            ["later row", "(1, 'root', 'a', 1, 1, '1'), (5, 'root', 'b', 3, 1, 'x')", "row 2: data is not JSON"],
+        ];
+        for (const [label, rows, message] of cases) {
+            expect(() => store.readSnapshot(withRows(`${label.replace(/ /g, "-")}.sqlite`, rows)), label).toThrow(
+                new ResourceValidationError(message),
+            );
+        }
+        // Rows come back in seq order, normalized and re-serialized.
+        expect(
+            store.readSnapshot(
+                withRows("ok.sqlite", "(7, 'root', 'b', 2, 1, '{\"b\": 1}'), (3, 'presets', 'p', 1, 2, '[]')"),
+            ).rows,
+        ).toEqual([
+            { kind: "presets", id: "p", revision: 1, schemaVersion: 2, text: "[]" },
+            { kind: "root", id: "b", revision: 2, schemaVersion: 1, text: '{"b":1}' },
+        ]);
+    });
+
+    it("replaceAll swaps every row in one transaction with a new epoch, or changes nothing when it fails", async () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        store.put(root, "old", 1, null);
+        const source = fileStore(dir, "source.sqlite");
+        source.put(root, "b", { v: "b" }, null);
+        source.put(root, "a", { v: "a" }, null);
+        source.put(presets, "p", [], null);
+        await source.backupTo(path.join(dir, "source-copy.sqlite"));
+        const validated = store.readSnapshot(path.join(dir, "source-copy.sqlite"));
+
+        const oldEpoch = store.epoch();
+        const oldToken = store.get(root, "old")!.revision;
+        const before = store.writeCount();
+        const epoch = store.replaceAll(validated);
+        expect(epoch).not.toBe(oldEpoch);
+        expect(store.epoch()).toBe(epoch);
+        expect(store.writeCount()).toBe(before + 1);
+        expect(store.list(root).map((r) => [r.id, r.data])).toEqual([
+            ["b", { v: "b" }],
+            ["a", { v: "a" }],
+        ]);
+        expect(store.list(presets).map((r) => r.id)).toEqual(["p"]);
+        for (const item of [...store.list(root), ...store.list(presets)]) {
+            expect(item.revision.startsWith(`${epoch}:`), item.id).toBe(true);
+        }
+        // Every token from before is stale, including a create based on the old state.
+        conflictWith(() => store.put(root, "old", 2, oldToken), null, "old token");
+        conflictWith(() => store.put(root, "a", 2, validated.rows[1].text), store.get(root, "a")!.revision, "text");
+
+        // The epoch survives a reopen.
+        store.close();
+        const reopened = fileStore(dir);
+        expect(reopened.epoch()).toBe(epoch);
+        expect(reopened.list(root).map((r) => r.id)).toEqual(["b", "a"]);
+
+        // A failing insert (the live UNIQUE constraint) rolls the whole replacement back.
+        const failing = {
+            rows: [
+                { kind: "root", id: "dup", revision: 1, schemaVersion: 1, text: "1" },
+                { kind: "root", id: "dup", revision: 1, schemaVersion: 1, text: "2" },
+            ],
+        };
+        const count = reopened.writeCount();
+        expect(() => reopened.replaceAll(failing)).toThrow("UNIQUE constraint failed");
+        expect(reopened.epoch()).toBe(epoch);
+        expect(reopened.writeCount()).toBe(count);
+        expect(reopened.list(root).map((r) => r.id)).toEqual(["b", "a"]);
+        expect(() => reopened.transaction(() => reopened.replaceAll({ rows: [] }))).toThrow(
+            "Nested resource transactions are not supported",
+        );
+        expect(reopened.list(root)).toHaveLength(2);
     });
 });
 

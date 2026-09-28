@@ -34,7 +34,8 @@ import { registerMCPModule, unregisterMCPModule } from "src/ts/process/mcp/plugi
 import { getInlayAsset } from "src/ts/process/files/inlays";
 import { getLLMCache, searchLLMCache } from "src/ts/translator/translator";
 import { hasher, risuChatParser, type CbsConditions } from "src/ts/parser/parser.svelte";
-import localforage from "localforage";
+import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./permissionStore";
+import { markCharacterDirtyAt, markCharactersDirty } from "src/ts/storage/resourceSync.svelte";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat, doingChat } from "src/ts/process/index.svelte";
 import { processScriptFull } from "src/ts/process/scripts";
@@ -542,6 +543,7 @@ const removePluginChatPanels = (pluginName: string) => {
 };
 
 const unloadV3Plugin = async (pluginName: string) => {
+    forgetPluginPermissions(pluginName);
     const callbacks = pluginUnloadCallbacks.get(pluginName);
     const instance = v3PluginInstances.find((p) => p.name === pluginName);
     if (instance) {
@@ -572,12 +574,22 @@ const unloadV3Plugin = async (pluginName: string) => {
     }
 };
 
-const permissionGivenPlugins: Set<string> = new Set();
-const permissionDeniedPlugins: Set<string> = new Set();
-const permissionForage = localforage.createInstance({
-    name: "plugin_permissions",
-    storeName: "plugin_permissions",
-});
+type PluginPermission = "fetchLogs" | "db" | "mainDom" | "replacer" | "provider" | "sendChat" | "inlay";
+
+/** The plugin as it was loaded: the hash of this script, not of the database copy, keys its grants. */
+type PluginIdentity = { readonly name: string; readonly script: string };
+
+/** Answers given this page load, per plugin and permission; cleared when the plugin unloads. */
+const permissionAnswers = new Map<string, boolean>();
+const permissionAnswerKey = (pluginName: string, permission: string) => `${pluginName}\u0000${permission}`;
+
+const forgetPluginPermissions = (pluginName: string) => {
+    for (const key of [...permissionAnswers.keys()]) {
+        if (key.startsWith(`${pluginName}\u0000`)) {
+            permissionAnswers.delete(key);
+        }
+    }
+};
 
 type PluginV3ProviderOptions = PluginProviderOptions & {
     model?: LLMModel;
@@ -585,26 +597,27 @@ type PluginV3ProviderOptions = PluginProviderOptions & {
 
 export const customV3ProviderMetaStore: LLMModel[] = [];
 
+/**
+ * Asks the user for a permission unless it was granted before (a grant is kept in the server-owned
+ * `pluginPermissions` record, which no plugin API can read or write). `"periodically"` asks again
+ * three days after the last grant.
+ */
 const getPluginPermission = async (
-    pluginName: string,
-    permissionDesc: "fetchLogs" | "db" | "mainDom" | "replacer" | "provider" | "sendChat" | "inlay",
+    plugin: PluginIdentity,
+    permissionDesc: PluginPermission,
     reconfirm: boolean | "periodically" = false,
 ) => {
-    if (permissionGivenPlugins.has(pluginName)) {
-        return true;
+    const answerKey = permissionAnswerKey(plugin.name, permissionDesc);
+    const answered = permissionAnswers.get(answerKey);
+    if (answered !== undefined) {
+        return answered;
     }
-    if (permissionDeniedPlugins.has(pluginName)) {
-        return false;
-    }
-
-    let pluginHash = "";
 
     let requiresReconfirm = false;
+    const lastGrantTimeKey = plugin.name + "_" + permissionDesc + "_lastGrantTime";
 
     if (reconfirm === "periodically") {
-        const lastGrantTime: number = await permissionForage.getItem(
-            pluginName + "_" + permissionDesc + "_lastGrantTime",
-        );
+        const lastGrantTime = getLastGrantTime(lastGrantTimeKey);
         const now = Date.now();
         if (!lastGrantTime || now - lastGrantTime > 3 * 24 * 60 * 60 * 1000) {
             //3 days
@@ -614,15 +627,14 @@ const getPluginPermission = async (
         requiresReconfirm = true;
     }
 
-    pluginHash =
-        (await hasher(new TextEncoder().encode(DBState.db.plugins.find((p) => p.name === pluginName)?.script))) +
-        `_${permissionDesc}`;
+    const pluginHash = (await hasher(new TextEncoder().encode(plugin.script))) + `_${permissionDesc}`;
 
-    if (!requiresReconfirm && (await permissionForage.getItem(pluginHash))) {
-        permissionGivenPlugins.add(pluginName);
+    if (!requiresReconfirm && hasPermissionGrant(pluginHash)) {
+        permissionAnswers.set(answerKey, true);
         return true;
     }
 
+    const pluginName = plugin.name;
     let alertTitle =
         permissionDesc === "fetchLogs"
             ? language.fetchLogConsent.replace("{}", pluginName)
@@ -643,15 +655,20 @@ const getPluginPermission = async (
         return false;
     }
     const conf = await alertConfirm(alertTitle);
-    if (conf && pluginHash) {
-        permissionGivenPlugins.add(pluginName);
-        await permissionForage.setItem(pluginHash, true);
-        if (reconfirm === "periodically") {
-            await permissionForage.setItem(pluginName + "_" + permissionDesc + "_lastGrantTime", Date.now());
+    if (conf) {
+        permissionAnswers.set(answerKey, true);
+        try {
+            await recordPermissionGrants({
+                grants: [pluginHash],
+                lastGrantTime: reconfirm === "periodically" ? { [lastGrantTimeKey]: Date.now() } : undefined,
+            });
+        } catch (error) {
+            // The grant still holds for this page load; it is asked again after a reload.
+            console.error(`[RisuAI Plugin: ${pluginName}] Could not save the permission grant:`, error);
         }
         return true;
     }
-    permissionDeniedPlugins.add(pluginName);
+    permissionAnswers.set(answerKey, false);
     return false;
 };
 
@@ -668,6 +685,7 @@ const setChar = (char: any) => {
     const charid = get(selectedCharID);
     db.characters[charid] = char;
     setDatabaseLite(db);
+    markCharacterDirtyAt(charid);
 };
 
 const getArg = (arg: string) => {
@@ -750,6 +768,9 @@ const setPluginDatabaseLite = (newDb: any) => {
         }
     }
     DBState.db = db;
+    if (Object.hasOwn(newDb, "characters")) {
+        markCharactersDirty("all");
+    }
 };
 
 const setPluginDatabase = async (newDb: any) => {
@@ -770,6 +791,9 @@ const setPluginDatabase = async (newDb: any) => {
         }
     }
     setDatabase(db);
+    if (Object.hasOwn(newDb, "characters")) {
+        markCharactersDirty("all");
+    }
 };
 
 const readAssetImage = (path: string) => {
@@ -786,6 +810,8 @@ const readAssetImage = (path: string) => {
 
 const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
     const safeLocalStorage = new SafeLocalStorage();
+    // Captured now: a plugin with database access could rewrite its own script in the database.
+    const identity: PluginIdentity = { name: plugin.name, script: plugin.script };
     return {
         //Older API names, kept for compatibility
         risuFetch: (url, options) => {
@@ -843,7 +869,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             let provs = get(customProviderStore);
             provs.push(name);
             (pluginHooks.providers.set(name, async (arg, abortSignal) => {
-                await getPluginPermission(plugin.name, "provider", "periodically");
+                await getPluginPermission(identity, "provider", "periodically");
                 //mode is overridden to v3, due to vulnerabilities using mode.
                 //Alternative to mode will be added in future
                 arg.mode = "v3";
@@ -888,7 +914,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         removeRisuScriptHandler: removeRisuScriptHandler,
         addRisuReplacer: async (name: string, func: Function) => {
             //permission check for replacer
-            const conf = await getPluginPermission(plugin.name, "replacer", "periodically");
+            const conf = await getPluginPermission(identity, "replacer", "periodically");
             if (!conf) {
                 return;
             }
@@ -897,7 +923,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         removeRisuReplacer: removeRisuReplacer,
         addRisuChatListener: async (mode: "output", func: Function) => {
             //permission check, lets use same as replacer
-            const conf = await getPluginPermission(plugin.name, "replacer", "periodically");
+            const conf = await getPluginPermission(identity, "replacer", "periodically");
             if (!conf) {
                 return;
             }
@@ -910,7 +936,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         loadPlugins: loadPlugins,
         readImage: readAssetImage,
         readInlay: async (id: string) => {
-            const conf = await getPluginPermission(plugin.name, "inlay", "periodically");
+            const conf = await getPluginPermission(identity, "inlay", "periodically");
             if (!conf) {
                 return null;
             }
@@ -921,7 +947,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         //Same functionality, but new implementation
         getDatabase: async (includeOnly: string[] | "all" = "all") => {
-            const conf = await getPluginPermission(plugin.name, "db", "periodically");
+            const conf = await getPluginPermission(identity, "db", "periodically");
             if (!conf) {
                 return null;
             }
@@ -1057,6 +1083,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             const charId = charIds[index];
             if (charId) {
                 DBState.db.characters[charId] = char;
+                markCharacterDirtyAt(Number(charId));
             }
         },
         getChatFromIndex: (characterIndex: number, chatIndex: number) => {
@@ -1125,6 +1152,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 const chats = db.characters[charId].chats;
                 if (chats && chats[chatIndex]) {
                     DBState.db.characters[charId].chats[chatIndex] = chat;
+                    markCharacterDirtyAt(Number(charId));
                 }
             }
         },
@@ -1184,7 +1212,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             iframe.style.display = "none";
         },
         getRootDocument: async () => {
-            const conf = await getPluginPermission(plugin.name, "mainDom");
+            const conf = await getPluginPermission(identity, "mainDom");
             if (!conf) {
                 return null;
             }
@@ -1222,7 +1250,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             return { id: menuId };
         },
         registerBodyIntercepter: async (callback: (body: any, type: string) => any) => {
-            if ((await getPluginPermission(plugin.name, "replacer")) === false) {
+            if ((await getPluginPermission(identity, "replacer")) === false) {
                 return null;
             }
 
@@ -1380,7 +1408,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         getFetchLogs: async () => {
             const unsafeFetchLog = getFetchLogs();
-            const conf = await getPluginPermission(plugin.name, "fetchLogs");
+            const conf = await getPluginPermission(identity, "fetchLogs");
             if (!conf) {
                 return null;
             }
@@ -1416,7 +1444,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         checkCharOrder: checkCharOrder,
         requestPluginPermission: (permission: string) => {
-            return getPluginPermission(plugin.name, permission as any);
+            return getPluginPermission(identity, permission as any);
         },
         //Internal use APIs
         _getPropertiesForInitialization: () => {
@@ -1525,7 +1553,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             );
         },
         sendChat: async (message: string) => {
-            const conf = await getPluginPermission(plugin.name, "sendChat");
+            const conf = await getPluginPermission(identity, "sendChat");
             if (!conf) {
                 return false;
             }

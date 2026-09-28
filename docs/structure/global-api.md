@@ -26,11 +26,10 @@
   - `getFileSrc`: returns a displayable URL: `/sw/img/<hex>` when a service worker is present, or a data URL.
   - `downloadFile`, `getBasename`.
 - Save:
-  - `saveDb`: the autosave loop.
-  - `saving`: indicator state.
-  - `requiresFullEncoderReload`.
-  - `getDbBackups`: keeps 20.
-  - `loadInternalBackup`, `setUsingSw`.
+  - `saveDb`: starts the resource save adapter (`storage/resourceSync.svelte.ts`, see `persistence.md`); called once from `loadData`.
+  - `saving`: indicator state (re-exported from the adapter).
+  - `loadInternalBackup`: lists the server's resource snapshots, restores the chosen one, reloads.
+  - `setUsingSw`.
 - Network:
   - `globalFetch(url, GlobalFetchArgs)`: buffered, returns `{ok,data,headers,status}`.
   - `fetchNative(url, args)`: returns a `Response` or stream.
@@ -92,7 +91,7 @@ Other files:
 - `src/ts/network/localNetwork.ts`: `isLocalNetworkHost`, `isLocalNetworkUrl`. Accepts private/loopback/link-local IPs, `.local`, and bare single-label hosts.
 - `src/ts/network/proxyJobWs.ts`: the `ProxyJobWsEvent` union (`job_accepted|upstream_headers|chunk|error|done|ping`), plus `parseProxyJobWsEvent`, `decodeProxyJobWsChunk`, `formatProxyStreamErrorMessage`.
 - `src/ts/dragTypes.ts`: `RISU_*_DRAG_TYPE` custom MIME types. They keep in-app drags from being treated as file imports.
-- `src/ts/iris.ts` `getIrisSystemPrompt`, and `IrisModal.svelte`: a visual-novel-style assistant. It calls `requestChatData(..., 'otherAx')` and persists dialogue in LocalForage `iris_dialogues`.
+- `src/ts/iris.ts` `getIrisSystemPrompt`, and `IrisModal.svelte`: a visual-novel-style assistant. It calls `requestChatData(..., 'otherAx')` and persists the dialogue in the root field `irisDialogue` (saved on the server; older browser copies are imported at boot).
 
 ## Flows
 
@@ -123,13 +122,13 @@ Alerts:
 
 ## State
 
-- `forageStorage` logical keys: `database/database.bin`, `database/dbbackup-*.bin`, `assets/*`, `remotes/*`.
+- `forageStorage` logical keys: `assets/*` only (the database is in the server resources).
 - `fetchLog[]` is private. `getFetchLogs` exposes the live array.
 - `chatFoldedState.data` is `{charId, chatId, messageId}`.
 
 ## Coupling
 
-- `globalApi.svelte.ts` imports `database.svelte.ts`, `risuSave.ts`, `stores.svelte.ts`, alerts, `characterCards.ts` (`characterURLImport`), and the network helpers.
+- `globalApi.svelte.ts` imports `database.svelte.ts`, `storage/resourceSync.svelte.ts`, `storage/resourceClient.ts`, `stores.svelte.ts`, alerts, `characterCards.ts` (`characterURLImport`), and the network helpers.
 - Its importers: nearly every process, storage, UI, and plugin module.
 
 ## Invariants
@@ -153,7 +152,7 @@ Alerts:
   1. Extend `alertData`.
   2. Add a helper in `alert.ts`.
   3. Add a render and resolve branch in `AlertComp.svelte`.
-- Change save behavior: `saveDb`, `getDbBackups`, and callers that toggle `requiresFullEncoderReload`. See `persistence.md`.
+- Change save behavior: `storage/resourceSync.svelte.ts` and the callers of `markCharactersDirty`. See `persistence.md`.
 
 ## Tests
 

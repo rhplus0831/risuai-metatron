@@ -2,8 +2,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { backup, DatabaseSync } from "node:sqlite";
 import { types } from "node:util";
+import { SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import type { ResourceKind, ResourceKindRegistry } from "./kinds.ts";
 
 /** Version of the table layout below, kept in `PRAGMA user_version`. */
@@ -12,7 +13,9 @@ const BUSY_TIMEOUT_MS = 5000;
 /** Deepest array/object nesting a stored value may have. */
 const MAX_JSON_DEPTH = 256;
 
-const resourceIdRegex = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const MAX_RESOURCE_ID_LENGTH = 512;
+const controlCharacterRegex = /[\u0000-\u001f\u007f]/;
+const loneSurrogateRegex = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const integerPattern = "(0|[1-9][0-9]*)";
 const revisionTokenRegex = new RegExp(`^(${uuidPattern}):${integerPattern}:${integerPattern}$`);
@@ -25,6 +28,26 @@ export class ResourceConflictError extends Error {
         super("Revision conflict");
         this.name = "ResourceConflictError";
         this.current = current;
+    }
+}
+
+/** A batch named revisions that are not current; nothing in it was applied. */
+export class ResourceBatchConflictError extends Error {
+    readonly conflicts: { kind: string; id: string; revision: string | null }[];
+    constructor(conflicts: { kind: string; id: string; revision: string | null }[]) {
+        super("Revision conflict");
+        this.name = "ResourceBatchConflictError";
+        this.conflicts = conflicts;
+    }
+}
+
+/** A mutation named another database epoch (or none): a restore replaced the data it was based on. */
+export class ResourceEpochError extends Error {
+    readonly epoch: string;
+    constructor(epoch: string) {
+        super("EpochMismatch");
+        this.name = "ResourceEpochError";
+        this.epoch = epoch;
     }
 }
 
@@ -42,6 +65,20 @@ export class ResourceValidationError extends Error {
 
 export type StoredResource<T> = { id: string; revision: string; data: T };
 
+/** One operation of `applyBatch`: a write (`data`) or, with `delete: true`, a deletion. */
+export type ResourceBatchOperation = {
+    kind: ResourceKind;
+    id: string;
+    baseRevision: string | null;
+    data?: unknown;
+    delete?: boolean;
+};
+
+/** Rows of a snapshot file that passed every check of `readSnapshot`, ready for `replaceAll`. */
+export type ValidatedSnapshot = {
+    readonly rows: readonly { kind: string; id: string; revision: number; schemaVersion: number; text: string }[];
+};
+
 export type ResourceStore = ReturnType<typeof createResourceStore>;
 
 /**
@@ -57,8 +94,21 @@ export type TransactionBody<F extends () => unknown> = F &
           ? unknown
           : never);
 
-export function isValidResourceId(id: string): boolean {
-    return resourceIdRegex.test(id);
+/**
+ * A resource id is 1 to 512 UTF-16 code units of well-formed Unicode with no control character, and
+ * not `.` or `..` (URL parsers resolve those away). Clients put it in the path through
+ * `encodeURIComponent`, so `/`, `%`, and non-ASCII characters are allowed.
+ */
+export function isValidResourceId(id: unknown): id is string {
+    return (
+        typeof id === "string" &&
+        id.length >= 1 &&
+        id.length <= MAX_RESOURCE_ID_LENGTH &&
+        id !== "." &&
+        id !== ".." &&
+        !controlCharacterRegex.test(id) &&
+        !loneSurrogateRegex.test(id)
+    );
 }
 
 /**
@@ -67,9 +117,9 @@ export function isValidResourceId(id: string): boolean {
  * is the record's incarnation (a deleted and recreated record gets a new one), and `revision` counts
  * writes. A write must name the current token and fails with `ResourceConflictError` otherwise.
  *
- * All methods are synchronous; one server process owns the file. Every method takes a kind object
- * from `kinds` and rejects any other, so a write always runs that kind's normalizer. Kinds that need
- * rows of their own (chat messages) get their own tables behind this interface later.
+ * All methods except `backupTo` are synchronous; one server process owns the file. Every method takes
+ * a kind object from `kinds` and rejects any other, so a write always runs that kind's normalizer.
+ * Kinds that need rows of their own (chat messages) get their own tables behind this interface later.
  */
 export function createResourceStore(options: { file: string; kinds: ResourceKindRegistry }) {
     const { kinds } = options;
@@ -96,10 +146,16 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
             "WHERE kind = ? AND id = ? AND seq = ? AND revision = ?",
     );
     const remove = db.prepare("DELETE FROM resources WHERE kind = ? AND id = ? AND seq = ? AND revision = ?");
+    const insertRestored = db.prepare(
+        "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES (?, ?, ?, ?, ?)",
+    );
+    const setEpoch = db.prepare("UPDATE meta SET value = ? WHERE key = 'epoch'");
 
     let closed = false;
+    /** Committed writes since the store opened; the snapshot scheduler compares it. */
+    let writeCount = 0;
     /** Set while `transaction` runs; the first conflict inside it makes the whole unit roll back. */
-    let transactionState: { conflict: ResourceConflictError | null } | null = null;
+    let transactionState: { conflict: ResourceConflictError | null; writes: number } | null = null;
     /**
      * Follows the asynchronous work a transaction body starts. Once the body returns, that work can
      * no longer write, so a body that awaited cannot autocommit writes after the rollback.
@@ -131,15 +187,38 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         }
     }
 
+    function assertNotInTransaction() {
+        if (transactionState) {
+            throw new Error("Nested resource transactions are not supported");
+        }
+    }
+
     function assertKind(kind: ResourceKind) {
         if (kinds.get(kind.name) !== kind) {
             throw new Error(`Unregistered resource kind: ${kind.name}`);
         }
     }
 
-    function assertId(id: string) {
+    function assertId(kind: ResourceKind, id: string) {
         if (!isValidResourceId(id)) {
             throw new ResourceValidationError("Invalid resource id");
+        }
+        if (kind.singleton && id !== SINGLETON_RESOURCE_ID) {
+            throw new ResourceValidationError(`${kind.name} has only the record ${SINGLETON_RESOURCE_ID}`);
+        }
+    }
+
+    function assertDeletable(kind: ResourceKind) {
+        if (kind.singleton) {
+            throw new ResourceValidationError(`${kind.name} cannot be deleted`);
+        }
+    }
+
+    function countWrite() {
+        if (transactionState) {
+            transactionState.writes += 1;
+        } else {
+            writeCount += 1;
         }
     }
 
@@ -156,25 +235,78 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         throw error;
     }
 
+    function readOne(kind: ResourceKind, id: string) {
+        const row = selectOne.get(kind.name, id) as { seq: number; revision: number; data: string } | undefined;
+        return row ? { revision: token(row.seq, row.revision), data: JSON.parse(row.data) as unknown } : null;
+    }
+
+    function readKind(kind: ResourceKind): StoredResource<unknown>[] {
+        const rows = selectKind.all(kind.name) as { id: string; seq: number; revision: number; data: string }[];
+        return rows.map((row) => ({ id: row.id, revision: token(row.seq, row.revision), data: JSON.parse(row.data) }));
+    }
+
     return {
+        /** The current database epoch. A restore replaces it. */
+        epoch(): string {
+            return epoch;
+        },
+
+        /** Committed writes since the store opened. */
+        writeCount(): number {
+            return writeCount;
+        },
+
+        /**
+         * Throws `ResourceEpochError` unless `expected` is the current epoch. Call it in the same
+         * synchronous block as the write it guards, with no await in between.
+         */
+        assertEpoch(expected: string | undefined): void {
+            if (expected !== epoch) {
+                throw new ResourceEpochError(epoch);
+            }
+        },
+
         get<T>(kind: ResourceKind<T>, id: string): { revision: string; data: T } | null {
             assertOpen();
             assertKind(kind);
-            assertId(id);
-            const row = selectOne.get(kind.name, id) as { seq: number; revision: number; data: string } | undefined;
-            return row ? { revision: token(row.seq, row.revision), data: JSON.parse(row.data) as T } : null;
+            assertId(kind, id);
+            return readOne(kind, id) as { revision: string; data: T } | null;
         },
 
-        /** Records of one kind in creation order. The order is not a client-facing sort contract. */
+        /**
+         * Records of one kind in creation order (`seq`). The client keeps `characters` in this order,
+         * which is the order the old save file kept them in.
+         */
         list<T>(kind: ResourceKind<T>): StoredResource<T>[] {
             assertOpen();
             assertKind(kind);
-            const rows = selectKind.all(kind.name) as { id: string; seq: number; revision: number; data: string }[];
-            return rows.map((row) => ({
-                id: row.id,
-                revision: token(row.seq, row.revision),
-                data: JSON.parse(row.data) as T,
-            }));
+            return readKind(kind) as StoredResource<T>[];
+        },
+
+        /** Every record of several kinds, read in one synchronous call, so one committed state. */
+        readKinds(kindList: readonly ResourceKind[]): {
+            epoch: string;
+            kinds: Record<string, StoredResource<unknown>[]>;
+        } {
+            assertOpen();
+            const result: Record<string, StoredResource<unknown>[]> = Object.create(null);
+            for (const kind of kindList) {
+                assertKind(kind);
+                result[kind.name] = readKind(kind);
+            }
+            return { epoch, kinds: result };
+        },
+
+        /** Named records, read in one synchronous call; a missing one has revision and data null. */
+        readRefs(refs: readonly { kind: ResourceKind; id: string }[]) {
+            assertOpen();
+            const items = refs.map(({ kind, id }) => {
+                assertKind(kind);
+                assertId(kind, id);
+                const row = readOne(kind, id);
+                return { kind: kind.name, id, revision: row?.revision ?? null, data: row?.data ?? null };
+            });
+            return { epoch, items };
         },
 
         /**
@@ -185,8 +317,8 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         put<T>(kind: ResourceKind<T>, id: string, input: unknown, baseRevision: string | null) {
             assertWritable();
             assertKind(kind);
-            assertId(id);
-            const { text, stored } = serialize(kind.normalize(input));
+            assertId(kind, id);
+            const { text, stored } = serialize(kind.normalize(input, { id }));
             let seq: number;
             let revision: number;
             if (baseRevision === null) {
@@ -207,6 +339,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                 seq = base.seq;
                 revision = base.revision + 1;
             }
+            countWrite();
             return { revision: token(seq, revision), data: stored as T };
         },
 
@@ -214,10 +347,94 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         delete(kind: ResourceKind, id: string, baseRevision: string): void {
             assertWritable();
             assertKind(kind);
-            assertId(id);
+            assertId(kind, id);
+            assertDeletable(kind);
             const base = parseToken(baseRevision);
             if (!base || remove.run(kind.name, id, base.seq, base.revision).changes === 0) {
                 conflict(kind, id);
+            }
+            countWrite();
+        },
+
+        /**
+         * Applies several writes and deletions as one unit. Every operation is validated and
+         * normalized first (a `ResourceValidationError` names the failing index); then, in one
+         * transaction, every base revision is compared, and if any is stale nothing is written and
+         * `ResourceBatchConflictError` lists all of them. Returns the new tokens in operation order
+         * (null for a deletion).
+         */
+        applyBatch(
+            operations: readonly ResourceBatchOperation[],
+        ): { kind: string; id: string; revision: string | null }[] {
+            assertWritable();
+            assertNotInTransaction();
+            const seen = new Set<string>();
+            const prepared = operations.map((operation, index) => {
+                try {
+                    const { kind, id } = operation;
+                    assertKind(kind);
+                    assertId(kind, id);
+                    const key = `${kind.name}\u0000${id}`;
+                    if (seen.has(key)) {
+                        throw new ResourceValidationError("duplicate kind and id");
+                    }
+                    seen.add(key);
+                    if (operation.delete) {
+                        assertDeletable(kind);
+                        if (typeof operation.baseRevision !== "string") {
+                            throw new ResourceValidationError("a deletion needs a base revision");
+                        }
+                        return { operation, text: null };
+                    }
+                    return { operation, text: serialize(kind.normalize(operation.data, { id })).text };
+                } catch (error) {
+                    if (error instanceof ResourceValidationError) {
+                        throw new ResourceValidationError(`ops[${index}]: ${error.message}`);
+                    }
+                    throw error;
+                }
+            });
+
+            db.exec("BEGIN IMMEDIATE");
+            let committed = false;
+            try {
+                const conflicts: { kind: string; id: string; revision: string | null }[] = [];
+                const bases = prepared.map(({ operation: { kind, id, baseRevision } }) => {
+                    const row = selectOne.get(kind.name, id) as { seq: number; revision: number } | undefined;
+                    const base = baseRevision === null ? null : parseToken(baseRevision);
+                    const current =
+                        baseRevision === null
+                            ? row === undefined
+                            : !!row && !!base && base.seq === row.seq && base.revision === row.revision;
+                    if (!current) {
+                        conflicts.push({ kind: kind.name, id, revision: row ? token(row.seq, row.revision) : null });
+                    }
+                    return base;
+                });
+                if (conflicts.length > 0) {
+                    throw new ResourceBatchConflictError(conflicts);
+                }
+                const results = prepared.map(({ operation: { kind, id }, text }, index) => {
+                    const base = bases[index];
+                    if (text === null) {
+                        remove.run(kind.name, id, base!.seq, base!.revision);
+                        return { kind: kind.name, id, revision: null };
+                    }
+                    if (base === null) {
+                        const result = insert.run(kind.name, id, kind.schemaVersion, text);
+                        return { kind: kind.name, id, revision: token(Number(result.lastInsertRowid), 1) };
+                    }
+                    update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision);
+                    return { kind: kind.name, id, revision: token(base.seq, base.revision + 1) };
+                });
+                db.exec("COMMIT");
+                committed = true;
+                writeCount += prepared.length;
+                return results;
+            } finally {
+                if (!committed && db.isTransaction) {
+                    db.exec("ROLLBACK");
+                }
             }
         },
 
@@ -231,11 +448,9 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
          */
         transaction<F extends () => unknown>(fn: TransactionBody<F>): ReturnType<F> {
             assertWritable();
-            if (transactionState) {
-                throw new Error("Nested resource transactions are not supported");
-            }
+            assertNotInTransaction();
             db.exec("BEGIN IMMEDIATE");
-            const state: { conflict: ResourceConflictError | null } = { conflict: null };
+            const state: { conflict: ResourceConflictError | null; writes: number } = { conflict: null, writes: 0 };
             transactionState = state;
             const scope = { ended: false };
             let committed = false;
@@ -259,6 +474,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                 }
                 db.exec("COMMIT");
                 committed = true;
+                writeCount += state.writes;
                 return result;
             } finally {
                 scope.ended = true;
@@ -269,6 +485,141 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
             }
         },
 
+        /**
+         * Copies the live database to `file` with SQLite's online backup, outside any transaction.
+         * Writes made while it runs may or may not be included. The copy is left in rollback-journal
+         * mode, so it is one self-contained file.
+         */
+        async backupTo(file: string): Promise<void> {
+            assertOpen();
+            await backup(db, file);
+            const copy = new DatabaseSync(file);
+            try {
+                copy.exec("PRAGMA journal_mode = DELETE");
+            } finally {
+                copy.close();
+            }
+        },
+
+        /**
+         * Reads and checks a snapshot file (read-only; nothing in it is executed beyond reading):
+         * `integrity_check`, the schema version, the layout (`resources` and `meta` are real tables
+         * with this store's columns, and `meta` holds an epoch), and every row (a registered kind at
+         * its current schema version, a valid id, singleton rules, unique kind and id, positive
+         * safe-integer `seq` and revision, and data the kind's normalizer and `serialize` accept).
+         * Throws `ResourceValidationError` for anything else.
+         */
+        readSnapshot(file: string): ValidatedSnapshot {
+            let source: DatabaseSync;
+            try {
+                source = new DatabaseSync(file, { readOnly: true });
+            } catch {
+                throw new ResourceValidationError("Not a resource database");
+            }
+            try {
+                let rawRows: Record<string, unknown>[];
+                try {
+                    const integrity = source.prepare("PRAGMA integrity_check").all() as { integrity_check: string }[];
+                    if (integrity.length !== 1 || integrity[0].integrity_check !== "ok") {
+                        throw new ResourceValidationError("The resource database is damaged");
+                    }
+                    const { user_version: version } = source.prepare("PRAGMA user_version").get() as {
+                        user_version: number;
+                    };
+                    if (version !== SCHEMA_VERSION) {
+                        throw new ResourceValidationError(`Unsupported resource database version ${version}`);
+                    }
+                    assertSnapshotLayout(source);
+                    rawRows = source
+                        .prepare("SELECT seq, kind, id, revision, schemaVersion, data FROM resources ORDER BY seq")
+                        .all() as Record<string, unknown>[];
+                } catch (error) {
+                    if (error instanceof ResourceValidationError) {
+                        throw error;
+                    }
+                    throw new ResourceValidationError("Not a resource database");
+                }
+                const seen = new Set<string>();
+                const rows = rawRows.map((row, index) => {
+                    const where = `row ${index + 1}`;
+                    const kind = typeof row.kind === "string" ? kinds.get(row.kind) : undefined;
+                    if (!kind) {
+                        throw new ResourceValidationError(`${where}: unknown kind`);
+                    }
+                    if (!isPositiveSafeInteger(row.seq) || !isPositiveSafeInteger(row.revision)) {
+                        throw new ResourceValidationError(`${where}: invalid seq or revision`);
+                    }
+                    if (row.schemaVersion !== kind.schemaVersion) {
+                        throw new ResourceValidationError(`${where}: unsupported schema version`);
+                    }
+                    if (!isValidResourceId(row.id) || (kind.singleton && row.id !== SINGLETON_RESOURCE_ID)) {
+                        throw new ResourceValidationError(`${where}: invalid id`);
+                    }
+                    const key = `${kind.name}\u0000${row.id}`;
+                    if (seen.has(key)) {
+                        throw new ResourceValidationError(`${where}: duplicate kind and id`);
+                    }
+                    seen.add(key);
+                    if (typeof row.data !== "string") {
+                        throw new ResourceValidationError(`${where}: data is not text`);
+                    }
+                    let parsed: unknown;
+                    try {
+                        parsed = JSON.parse(row.data);
+                    } catch {
+                        throw new ResourceValidationError(`${where}: data is not JSON`);
+                    }
+                    let text: string;
+                    try {
+                        text = serialize(kind.normalize(parsed, { id: row.id })).text;
+                    } catch (error) {
+                        if (error instanceof ResourceValidationError) {
+                            throw new ResourceValidationError(`${where}: ${error.message}`);
+                        }
+                        throw error;
+                    }
+                    return {
+                        kind: kind.name,
+                        id: row.id,
+                        revision: row.revision,
+                        schemaVersion: kind.schemaVersion,
+                        text,
+                    };
+                });
+                return { rows };
+            } finally {
+                source.close();
+            }
+        },
+
+        /**
+         * Replaces every record with the rows of a validated snapshot and gives the database a new
+         * epoch, in one transaction; every token issued before is stale afterwards. Returns the epoch.
+         */
+        replaceAll(snapshot: ValidatedSnapshot): string {
+            assertWritable();
+            assertNotInTransaction();
+            const nextEpoch = randomUUID();
+            db.exec("BEGIN IMMEDIATE");
+            let committed = false;
+            try {
+                db.exec("DELETE FROM resources");
+                for (const row of snapshot.rows) {
+                    insertRestored.run(row.kind, row.id, row.revision, row.schemaVersion, row.text);
+                }
+                setEpoch.run(nextEpoch);
+                db.exec("COMMIT");
+                committed = true;
+            } finally {
+                if (!committed && db.isTransaction) {
+                    db.exec("ROLLBACK");
+                }
+            }
+            epoch = nextEpoch;
+            writeCount += 1;
+            return nextEpoch;
+        },
+
         close() {
             if (closed) {
                 return;
@@ -277,6 +628,41 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
             db.close();
         },
     };
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+/** Column names of the store's tables, in `PRAGMA table_info` order. */
+const SNAPSHOT_TABLE_COLUMNS: Record<string, readonly string[]> = {
+    resources: ["seq", "kind", "id", "revision", "schemaVersion", "data"],
+    meta: ["key", "value"],
+};
+
+/**
+ * Requires the layout `initialize` creates: `resources` and `meta` are ordinary tables (a view or a
+ * virtual table could answer the row query with anything), with exactly these columns, and `meta`
+ * holds an epoch string. Anything else is not a resource database.
+ */
+function assertSnapshotLayout(source: DatabaseSync) {
+    for (const [table, columns] of Object.entries(SNAPSHOT_TABLE_COLUMNS)) {
+        const objects = source.prepare("SELECT type, sql FROM sqlite_schema WHERE name = ?").all(table) as {
+            type: string;
+            sql: string | null;
+        }[];
+        if (objects.length !== 1 || objects[0].type !== "table" || !/^CREATE TABLE\b/i.test(objects[0].sql ?? "")) {
+            throw new ResourceValidationError("Not a resource database");
+        }
+        const info = source.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+        if (info.length !== columns.length || !info.every((column, index) => column.name === columns[index])) {
+            throw new ResourceValidationError("Not a resource database");
+        }
+    }
+    const epoch = source.prepare("SELECT value FROM meta WHERE key = 'epoch'").get() as { value: unknown } | undefined;
+    if (typeof epoch?.value !== "string") {
+        throw new ResourceValidationError("Not a resource database");
+    }
 }
 
 /**

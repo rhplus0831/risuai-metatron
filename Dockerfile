@@ -39,6 +39,8 @@ COPY --from=builder /app/dist ./dist
 ENV NODE_ENV=production
 EXPOSE 6001
 
-CMD ["pnpm", "runserver"]
+# Node runs as PID 1 (not through pnpm) so SIGTERM reaches its graceful shutdown, which lets a
+# running snapshot, restore, or import finish before the resource database closes.
+CMD ["node", "server/src/main.ts"]
 
 # ------------------------------------------------------------------------------------------

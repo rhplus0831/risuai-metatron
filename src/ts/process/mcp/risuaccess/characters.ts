@@ -1,4 +1,5 @@
 import { language } from "src/lang";
+import { markCharactersDirty } from "src/ts/storage/resourceSync.svelte";
 import { alertConfirm } from "src/ts/alert";
 import { type character, type groupChat, type loreBook } from "src/ts/storage/database.svelte";
 import { DBState } from "src/ts/stores.svelte";
@@ -346,6 +347,19 @@ export class CharacterHandler extends MCPToolHandler {
     }
 
     async handle(toolName: string, args: any): Promise<RPCToolCallContent[] | null> {
+        const result = await this.dispatch(toolName, args);
+        // These tools may change a character that is not selected; the save adapter only watches
+        // the selected one.
+        if (/^risu-(set|delete)-/.test(toolName)) {
+            const id = getCharacter(args?.id)?.chaId;
+            if (id) {
+                markCharactersDirty([id]);
+            }
+        }
+        return result;
+    }
+
+    private async dispatch(toolName: string, args: any): Promise<RPCToolCallContent[] | null> {
         switch (toolName) {
             case "risu-get-character-info":
                 return await this.getCharacterInfo(args.id, args.fields);

@@ -3,15 +3,18 @@ import { constants, type Dirent, mkdirSync, rmSync } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { createStreamBody } from "@hono/node-server/utils/stream";
-import type { Hono, MiddlewareHandler } from "hono";
+import type { Context, Hono, MiddlewareHandler } from "hono";
+import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
 /**
- * Folders under `save/` that hold user data. A logical key `<namespace>/<name>` is stored at
+ * Folders under `save/` that hold user files. A logical key `<namespace>/<name>` is stored at
  * `save/<namespace>/<encodeFileName(name)>`; keys in any other namespace have no storage location.
+ * Only `assets` remains: the database lives in the resource store (`save/data/`), and the
+ * `save/database` and `save/remotes` folders of older versions are no longer read.
  */
-export const STORAGE_NAMESPACES = ["database", "assets", "remotes"] as const;
+export const STORAGE_NAMESPACES = ["assets"] as const;
 
 /** Staging folder for atomic writes. It is not a namespace, so the API cannot reach it. */
 const TMP_DIR = ".tmp";
@@ -93,8 +96,8 @@ export function decodeFileName(fileName: string): string | null {
     return name !== null && encodeFileName(name) === fileName ? name : null;
 }
 
-/** The file for a logical key, or null when the key has no storage location. */
-export function resolveStorageKey(savePath: string, key: string): string | null {
+/** Splits a logical key into its namespace and the file name, or null when it has no storage location. */
+function splitStorageKey(key: string): { namespace: string; fileName: string } | null {
     const slash = key.indexOf("/");
     if (slash <= 0) {
         return null;
@@ -104,11 +107,22 @@ export function resolveStorageKey(savePath: string, key: string): string | null 
         return null;
     }
     const fileName = encodeFileName(key.slice(slash + 1));
-    if (fileName === null) {
+    return fileName === null ? null : { namespace, fileName };
+}
+
+/** Whether `key` is a logical key of the `assets` namespace that the storage routes can resolve. */
+export function isAssetStorageKey(key: unknown): key is string {
+    return typeof key === "string" && splitStorageKey(key)?.namespace === "assets";
+}
+
+/** The file for a logical key, or null when the key has no storage location. */
+export function resolveStorageKey(savePath: string, key: string): string | null {
+    const parts = splitStorageKey(key);
+    if (parts === null) {
         return null;
     }
-    const namespaceDir = path.resolve(savePath, namespace);
-    const fullPath = path.resolve(namespaceDir, fileName);
+    const namespaceDir = path.resolve(savePath, parts.namespace);
+    const fullPath = path.resolve(namespaceDir, parts.fileName);
     return path.dirname(fullPath) === namespaceDir ? fullPath : null;
 }
 
@@ -119,12 +133,27 @@ function isMissingFileError(error: unknown): boolean {
 /**
  * `/api/*` storage routes over `save/`. The client sends each logical key hex-encoded in the
  * `file-path` header; the server maps it with `resolveStorageKey`. One server process owns `save/`.
+ * Writes and removals answer 503 while a restore or an import holds `maintenance`; one admitted
+ * before maintenance began finishes first (`MaintenanceGate.enter`).
  */
 export function registerStorageRoutes(
     app: Hono<AppEnv>,
-    arg: { savePath: string; auth: AuthStore; limiter: MiddlewareHandler<AppEnv> },
+    arg: { savePath: string; auth: AuthStore; limiter: MiddlewareHandler<AppEnv>; maintenance: MaintenanceGate },
 ) {
-    const { savePath, auth, limiter } = arg;
+    const { savePath, auth, limiter, maintenance } = arg;
+
+    /** Admits a mutation, or answers 503 while maintenance holds the files. */
+    function enterMaintenanceGate(c: Context<AppEnv>): { leave: () => void } | { closed: Response } {
+        try {
+            return { leave: maintenance.enter() };
+        } catch (error) {
+            if (!(error instanceof MaintenanceError)) {
+                throw error;
+            }
+            c.header("Retry-After", "5");
+            return { closed: c.json({ error: error.message }, 503) };
+        }
+    }
     const tmpPath = path.join(savePath, TMP_DIR);
     // Staged writes left by a crashed process are never renamed into place; drop them at startup.
     rmSync(tmpPath, { recursive: true, force: true });
@@ -201,10 +230,18 @@ export function registerStorageRoutes(
             }
             fullPaths.add(fullPath);
         }
-        // Sequential; a filesystem error (e.g. missing file) stops the batch with a 500 and
-        // leaves earlier deletions in place.
-        for (const fullPath of fullPaths) {
-            await fs.rm(fullPath);
+        const admitted = enterMaintenanceGate(c);
+        if ("closed" in admitted) {
+            return admitted.closed;
+        }
+        try {
+            // Sequential; a filesystem error (e.g. missing file) stops the batch with a 500 and
+            // leaves earlier deletions in place.
+            for (const fullPath of fullPaths) {
+                await fs.rm(fullPath);
+            }
+        } finally {
+            admitted.leave();
         }
         return c.json({ success: true });
     });
@@ -255,17 +292,25 @@ export function registerStorageRoutes(
         }
         // Raw request bytes, whatever the content type; zero-length writes are allowed.
         const fileContent = new Uint8Array(await c.req.arrayBuffer());
-        // Stage then rename, so a reader or a crash sees the old or the new file, never a partial one.
-        // This is atomic replacement, not a durability guarantee (no fsync).
-        await fs.mkdir(path.dirname(fullPath), { recursive: true });
-        await fs.mkdir(tmpPath, { recursive: true });
-        const stagedPath = path.join(tmpPath, `${randomUUID()}.tmp`);
+        const admitted = enterMaintenanceGate(c);
+        if ("closed" in admitted) {
+            return admitted.closed;
+        }
         try {
-            await fs.writeFile(stagedPath, fileContent, { flag: "wx" });
-            await fs.rename(stagedPath, fullPath);
-        } catch (error) {
-            await fs.rm(stagedPath, { force: true }).catch(() => {});
-            throw error;
+            // Stage then rename, so a reader or a crash sees the old or the new file, never a partial
+            // one. This is atomic replacement, not a durability guarantee (no fsync).
+            await fs.mkdir(path.dirname(fullPath), { recursive: true });
+            await fs.mkdir(tmpPath, { recursive: true });
+            const stagedPath = path.join(tmpPath, `${randomUUID()}.tmp`);
+            try {
+                await fs.writeFile(stagedPath, fileContent, { flag: "wx" });
+                await fs.rename(stagedPath, fullPath);
+            } catch (error) {
+                await fs.rm(stagedPath, { force: true }).catch(() => {});
+                throw error;
+            }
+        } finally {
+            admitted.leave();
         }
         return c.json({ success: true });
     });

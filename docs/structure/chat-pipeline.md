@@ -58,9 +58,10 @@
 - `inlayScreen.ts`:
   - `runInlayScreen`: turns image/emotion commands in the output into `{{inlay::id}}` via `generateAIImage(..., 'inlay')` and `writeInlayImage`.
   - `updateInlayScreen`.
-- `files/inlays.ts`: the LocalForage `inlay` store.
+- `files/inlays.ts`: inlays on the server. Metadata is the `inlays` resource (id = inlay id, `InlayResource` in `shared/resources.ts`); media bytes are assets named by content hash (`assets/inlay_<sha256>.<ext>`), so the same bytes are stored once; a signature keeps its JSON in the metadata `text`.
   - `writeInlayImage`: normalizes to PNG and caps the size at 1024² pixels.
-  - `postInlayAsset`, `getInlayAsset` (base64), `getInlayAssetBlob` (migrates to Blob), `listInlayAssets`, `removeInlayAsset`.
+  - `postInlayAsset`, `setInlayAsset` (Blob or data URI), `saveInlayedSignature`, `getInlayAsset` (base64 data URI), `getInlayAssetBlob` (Blob), `listInlayAssets` (metadata only, read fresh; replaces the cached view), `removeInlayAsset` (metadata only; the blob stays because retained snapshots may reference it), `getInlayMetadata`, `verifyInlay` and `repairInlayMedia` (the browser-local import), `invalidateInlayCaches`.
+  - Caches: metadata seeded at boot (`seedInlays`) plus a GET on a miss, a negative cache for unknown ids that expires after 30 s, a 64 MiB blob cache (content-addressed, so never stale), and in-flight de-duplication. Metadata is only as fresh as this tab's own writes plus `invalidateInlayCaches`, which `bootstrap.ts` runs whenever the save adapter brought another tab's records into the mirror (`onRemoteRecordApplied`). Every public write to one id (preparation, upload, and metadata) runs after the previous one; a conflict with another tab re-reads once and writes over it (last writer wins, as before).
   - `supportsInlayImage`.
 - `files/multisend.ts` `postChatFile`: file attachments (PO, TXT, XML retrieval, media → inlays). The PDF branch is unreachable from the picker.
 - `embedding/addinfo.ts` `additionalInformations`: picks the top 3 `additionalText` paragraphs by embedding similarity.
@@ -164,7 +165,7 @@ Not in `sendChat`:
   - Supports selective secondary keys, negative keys, and all-key mode.
   - Recursion is controlled by `recursiveScanning` and `@@recursive`/`@@unrecursive`/`@@no_recursive_search`, with no explicit depth counter.
   - Decorators are parsed with `CCardLib.decorator.parse`.
-- Inlays are not stored in chat text. Deleting LocalForage `inlay` entries breaks the `{{inlay::id}}` tags.
+- Inlays are not stored in chat text. Removing an inlay (`removeInlayAsset`, the Inlay Explorer) breaks the `{{inlay::id}}` tags that name it; deleting messages never removes inlays.
 - Images become `MultiModal` input only when the model has `LLMFlags.hasImageInput`. Otherwise `runImageEmbedding` generates a caption instead.
 - Built-in Jinja templates enforce role rules: Gemma has no system role, and Mistral requires alternating roles.
 
@@ -179,7 +180,7 @@ Not in `sendChat`:
 
 ## Tests
 
-- `src/ts/process/files/tests/inlays.test.ts`.
+- `src/ts/process/files/tests/inlays.test.ts`: over the fake resource server (`src/ts/storage/tests/fakeResourceServer.ts`) and an in-memory asset store, one fresh module per test: content-hash naming and de-duplicated uploads, the data-URI and Blob shapes with MIME reconstruction, signatures, the seeded, negative (with expiry), and in-flight caches, `invalidateInlayCaches` and the replacing `listInlayAssets`, the per-id write order, last-writer-wins after a conflict, 412 propagation, removal, `verifyInlay`, `repairInlayMedia`, `postInlayAsset` routing, and the `writeInlayImage` size properties.
 - Adjacent: `scriptings.test.ts`, `request/openAI/requests.responses.test.ts`, `ttsHooks.test.ts`.
 - Not tested: `sendChat` assembly and trimming, lore activation, group order, commands, multisend, `runInlayScreen`, Jinja rendering, reroll.
 

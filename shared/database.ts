@@ -488,7 +488,10 @@ export interface Database {
     echoDelay?: number;
     createFolderOnBranch?: boolean;
     hamburgerButtonBottom?: boolean;
-    enableRemoteSaving?: boolean;
+    /** The Iris help dialogue (`IrisModal.svelte`); absent until the first line is saved. */
+    irisDialogue?: { speaker: string; text: string; tip?: string }[];
+    /** Google Custom Search credentials of the internal MCP client; absent until entered. */
+    googleSearchCredentials?: { apiKey: string; searchEngineId: string };
     blockquoteStyling?: boolean;
     dynamicModelRegistry?: boolean;
     enableRisuaiProTools?: boolean;

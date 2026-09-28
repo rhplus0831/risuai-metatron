@@ -3,7 +3,7 @@
 ## Scope
 
 - Owns:
-  - `server/src/**`: the Hono self-host server on Node (`@hono/node-server`). Handles static `dist`, auth, disk storage, the resource store and its routes, the reverse proxy, the hub proxy, and streaming proxy jobs over WebSocket.
+  - `server/src/**`: the Hono self-host server on Node (`@hono/node-server`). Handles static `dist`, auth, asset storage, the resource store and its routes, resource snapshots and backup archives, the reverse proxy, the hub proxy, and streaming proxy jobs over WebSocket.
   - Local TLS certificates.
   - Docker packaging.
   - The launcher scripts.
@@ -18,20 +18,23 @@
 
 The server is TypeScript run directly by Node's type stripping (`pnpm runserver` = `node server/src/main.ts`, Node `>=24`). There is no build step. Layout: `main.ts`, `app.ts`, and `types.ts` (`AppEnv`) at the root; route modules in `routes/`; the resource data layer in `data/`; shared HTTP helpers in `http/`; tests and their support in `tests/`. The server may import the persisted types in the root `shared/` folder (`persistence.md`); `server/tsconfig.json` includes it, so `pnpm check` strict-checks it. Relative imports use explicit `.ts` extensions, and only erasable syntax is allowed (`server/tsconfig.json` sets `erasableSyntaxOnly`; `pnpm check` runs `tsc -p server/tsconfig.json`).
 
-- `server/src/main.ts`: entry. Reads `PORT` (default 6001) and `TRUST_PROXY`, loads the TLS certificate (`getHttpsOptions`), calls `serve()`, attaches the WebSocket upgrade handler, and starts job GC. `cwd` is the root: `cwd/dist`, `cwd/save`, `cwd/server/ssl/certificate`.
-- `server/src/app.ts` `createServerContext({ rootDir, trustProxy, resourceKinds })`: builds the Hono app and owns all state, including the resource store (closed by `dispose`; closing it twice is safe). `resourceKinds` replaces `DEFAULT_RESOURCE_KINDS` (tests use it). Returns `{ app, attachWebSocket, startBackgroundTasks, dispose }`. `app.request()` works for in-process checks, but it has no Node socket, so the client IP is undefined there.
+- `server/src/main.ts`: entry. Reads `PORT` (default 6001), `TRUST_PROXY`, and `RISU_MAX_IMPORT_BYTES`, loads the TLS certificate (`getHttpsOptions`), calls `serve()`, attaches the WebSocket upgrade handler, and starts job GC and the snapshot timer. On SIGINT/SIGTERM it stops accepting connections, waits up to 30 s for `dispose()` and open responses, then force-closes and exits. `cwd` is the root: `cwd/dist`, `cwd/save`, `cwd/server/ssl/certificate`.
+- `server/src/app.ts` `createServerContext({ rootDir, trustProxy, resourceKinds, snapshotIntervalMs, maxImportBytes })`: builds the Hono app and owns all state, including the resource store and the snapshot manager. `resourceKinds` replaces `DEFAULT_RESOURCE_KINDS` and `snapshotIntervalMs` the 10-minute interval (tests use them). Returns `{ app, snapshots, attachWebSocket, startBackgroundTasks, dispose }`; `dispose` is async and idempotent (it waits for running backup operations before closing the store). `app.request()` works for in-process checks, but it has no Node socket, so the client IP is undefined there.
 - `server/src/routes/auth.ts` `createAuthStore`: `save/server/password` plus `save/server/known_public_key_hashes.json`, `verifyJwt`, `checkAuth`, `checkProxyAuth`, `isAuthorizedProxyToken`, and the `/api/test_auth|login|crypto|set_password` routes.
-- `server/src/routes/storage.ts`: the key-to-file mapping (`STORAGE_NAMESPACES`, `decodeKeyHeader`, `encodeFileName`/`decodeFileName`, `resolveStorageKey`) and `/api/read|write|list|remove`. `registerStorageRoutes` empties `save/.tmp/` at startup.
-- `server/src/data/resourceStore.ts` `createResourceStore({ file, kinds })`: typed resource documents in one `node:sqlite` database (`save/data/resources.sqlite`), with revision tokens, conditional writes, `transaction`, `ResourceConflictError`, `ResourceValidationError`, and `isValidResourceId`.
-- `server/src/data/kinds.ts`: `ResourceKind<T>` (name, `schemaVersion`, pure `normalize`), `createKindRegistry`, and `DEFAULT_RESOURCE_KINDS` (`root`, `presets`, `modules`, `plugins`, `pluginStorage`, `characters`, identity normalizers until Phase 1 of `docs/plan/PLAN.md`).
-- `server/src/routes/resources.ts` `registerResourceRoutes`: `/api/resources/:kind[/:id]`. No client caller yet.
+- `server/src/routes/storage.ts`: the key-to-file mapping (`STORAGE_NAMESPACES` = `assets` only, `decodeKeyHeader`, `encodeFileName`/`decodeFileName`, `isAssetStorageKey`, `resolveStorageKey`) and `/api/read|write|list|remove`. `registerStorageRoutes` empties `save/.tmp/` at startup; writes and removals hold the maintenance gate.
+- `server/src/data/resourceStore.ts` `createResourceStore({ file, kinds })`: typed resource documents in one `node:sqlite` database (`save/data/resources.sqlite`), with revision tokens, conditional writes, `epoch`/`assertEpoch`, `writeCount`, `readKinds`, `readRefs`, `applyBatch`, `transaction`, `backupTo` (online backup to a single-file copy), `readSnapshot` (validates a snapshot file) and `replaceAll` (installs it with a new epoch), `ResourceConflictError`, `ResourceBatchConflictError`, `ResourceEpochError`, `ResourceValidationError`, and `isValidResourceId`.
+- `server/src/data/kinds.ts`: `ResourceKind<T>` (name, `schemaVersion`, `singleton`, pure `normalize(input, { id })`), `createKindRegistry` (reserves `batch` and `read`), and `DEFAULT_RESOURCE_KINDS`: `root`, `presets`, `modules`, `plugins`, `pluginStorage`, `pluginPermissions` (singletons, id `main`), `characters`, `inlays`, with minimum-shape normalizers that return the input unchanged (defaults stay on the client until Phases 2 and 3 of `docs/plan/PLAN.md`).
+- `server/src/data/snapshots.ts` `createSnapshotManager`: periodic snapshots under `save/backups/`, the lock every whole-database operation takes (`exclusive`), `withMaintenance` (closes the `MaintenanceGate`, waits for admitted storage mutations), `track` (admits a backup operation; refused after `stop`), `list`, `resolve`, `snapshotNow`, `start`, `stop`. `MaintenanceError` answers 503.
+- `server/src/data/archive.ts`: the backup archive container (`encodeRecordHeader`, `indexArchive` with record-count and name-byte caps, `readRecord`, `copyRecordToFile`).
+- `server/src/routes/resources.ts` `registerResourceRoutes`: `/api/resources` (multi-kind read), `/api/resources/read`, `/api/resources/batch`, `/api/resources/:kind[/:id]`.
+- `server/src/routes/backups.ts` `registerBackupRoutes`: `/api/backups` (list), `/api/backups/:id/restore`, `/api/backups/export`, `/api/backups/import`.
 - `server/src/routes/proxy.ts`: `/proxy`, `/proxy2`, `/hub-proxy/*`. `ownBody` re-streams an upstream body and keeps the timeout alive until the body ends.
 - `server/src/routes/proxyStreamJobs.ts` `createProxyStreamJobs`: the job map, `sanitizeTargetUrl`, `isLocalNetworkHost`, `requestLocalTargetStream` (Node `http`/`https`), the POST/DELETE routes, the `ws` upgrade handler, and GC.
 - `server/src/http/rateLimit.ts` `createRateLimiter`: an in-memory limiter that reproduces the former express-rate-limit v8 setup (see Invariants).
 - `server/src/http/clientIp.ts`: `parseTrustProxyEnv`, `compileTrust` (Express semantics), and `getClientIp` (`proxy-addr` over `c.env.incoming`).
 - `server/src/http/body.ts` `readJsonBody`: JSON body parsing with Express-like defaults.
 - `server/ssl/Generate Certificate.sh|.bat`, `ca.conf`, `server.conf`: generate a local CA and server certificate into `server/ssl/certificate/` (run from `server/ssl/`). `main.ts` uses HTTPS when `server.key`/`server.crt` exist there, relative to `cwd`.
-- `Dockerfile`: Node 24, pnpm 10.34.1, multi-stage build of `dist`. Copies `server/` + `shared/` + `dist/` + prod `node_modules`, `EXPOSE 6001`, `CMD pnpm runserver`.
+- `Dockerfile`: Node 24, pnpm 10.34.1, multi-stage build of `dist`. Copies `server/` + `shared/` + `dist/` + prod `node_modules`, `EXPOSE 6001`, `CMD node server/src/main.ts` (Node is PID 1, so `docker stop` reaches its graceful shutdown; `pnpm runserver` would exit without waiting).
 - `server.sh`/`server.bat`: install, build, run. The runtime env exports are commented out.
 
 ## Routes
@@ -39,7 +42,7 @@ The server is TypeScript run directly by Node's type stripping (`pnpm runserver`
 Registration order in `createServerContext`:
 
 1. `onError` (`HTTPException` responses pass through; anything else is a 500 `Internal Server Error`).
-2. `bodyLimit` (100 MiB, 413 `{error:"Request body too large"}`).
+2. `bodyLimit` (100 MiB, 413 `{error:"Request body too large"}`), skipped only for `POST /api/backups/import`, which streams its body to disk under its own cap.
 3. `GET /` and `GET /index.html` (one shared handler).
 4. `serveStatic` for every other GET/HEAD.
 5. The routes below.
@@ -61,10 +64,19 @@ Routing is non-strict (a trailing slash matches).
 | POST       | `/api/set_password`                     | **none**, only works while unset                                             | **none**       | first-run password setup                                                                                                             |
 | GET        | `/api/read`, `/api/remove`, `/api/list` | `checkAuth` (JWT)                                                            | 2000/min       | storage. The `file-path` header is the hex UTF-8 key; `remove` takes `$$`-joined hex keys.                                           |
 | POST       | `/api/write`                            | `checkAuth`                                                                  | 2000/min       | storage write, raw body bytes                                                                                                        |
-| GET        | `/api/resources/:kind`                  | `checkAuth`                                                                  | 2000/min       | `{ items: [{ id, revision, data }] }` in creation order; 404 for an unknown kind                                                     |
-| GET        | `/api/resources/:kind/:id`              | `checkAuth`                                                                  | 2000/min       | `{ revision, data }`; 404 when missing, 400 for an invalid id                                                                        |
-| PUT        | `/api/resources/:kind/:id`              | `checkAuth`                                                                  | 2000/min       | body `{ baseRevision: string \| null, data }`; returns `{ revision, data }` as stored; 409 `{ error, revision }` on a stale revision |
-| DELETE     | `/api/resources/:kind/:id`              | `checkAuth`                                                                  | 2000/min       | `?baseRevision=<token>`; `{ success: true }`; 409 `{ error, revision }` when stale or already gone                                   |
+| GET        | `/api/resources?kinds=a,b`              | `checkAuth`                                                                  | 2000/min       | `{ epoch, kinds: { <kind>: [{ id, revision, data }] } }`, one committed state; 400 for an unknown or missing kind                    |
+| POST       | `/api/resources/read`                   | `checkAuth`                                                                  | 2000/min       | body `{ refs: [{ kind, id }] }` (1-5000); `{ epoch, items: [{ kind, id, revision, data }] }` (null for a missing record)             |
+| POST       | `/api/resources/batch`                  | `checkAuth` + epoch                                                          | 2000/min       | body `{ ops }` (1-5000, see Invariants); `{ epoch, results }`; 409 `{ error, conflicts }` with nothing applied                       |
+| GET        | `/api/resources/:kind`                  | `checkAuth`                                                                  | 2000/min       | `{ epoch, items: [{ id, revision, data }] }` in creation order; 404 for an unknown kind                                              |
+| GET        | `/api/resources/:kind/:id`              | `checkAuth`                                                                  | 2000/min       | `{ epoch, revision, data }`; 404 when missing, 400 for an invalid id                                                                 |
+| PUT        | `/api/resources/:kind/:id`              | `checkAuth` + epoch                                                          | 2000/min       | body `{ baseRevision: string \| null, data }`; `{ epoch, revision, data }` as stored; 409 `{ error, revision }` on a stale revision  |
+| DELETE     | `/api/resources/:kind/:id`              | `checkAuth` + epoch                                                          | 2000/min       | `?baseRevision=<token>`; `{ success: true, epoch }`; 409 `{ error, revision }` when stale or already gone; 400 for a singleton       |
+| GET        | `/api/backups`                          | `checkAuth`                                                                  | 2000/min       | `{ items: [{ id, createdAt, size }] }`, newest first                                                                                 |
+| POST       | `/api/backups/:id/restore`              | `checkAuth` + epoch                                                          | 2000/min       | replaces every resource with the snapshot (safety snapshot first); `{ epoch }`; 404 unknown id, 400 invalid snapshot                 |
+| POST       | `/api/backups/export`                   | `checkAuth`                                                                  | 2000/min       | body `{ partial?: string[] }` (asset keys); streams an archive (see Flows); 413 when it cannot fit the format                        |
+| POST       | `/api/backups/import`                   | `checkAuth` + epoch                                                          | 2000/min       | raw archive body (no 100 MiB limit; `RISU_MAX_IMPORT_BYTES`, default 16 GiB); `{ epoch, assetsWritten, assetsSkipped }`; 400/413     |
+
+"+ epoch" means the `x-resource-epoch` header must name the current database epoch (412 `{ error: "EpochMismatch", epoch }` otherwise). Mutations answer 503 with `Retry-After` while a restore or an import runs. Every `/api/resources` response is `Cache-Control: no-store`.
 
 The storage, resource, proxy, and job rows marked "2000/min" share one limiter; `test_auth` has its own. Login has its own.
 
@@ -91,8 +103,29 @@ Development (`pnpm dev`):
 Auth:
 
 1. `NodeStorage.checkAuth` creates an ES256 JWT (P-256, 5-minute expiry, public JWK). The key pair is kept in IndexedDB `DPoPDB`, entry `node`.
-2. It calls `/api/test_auth`, then either `/api/set_password` (first run) or `/api/login`.
+2. It calls `/api/test_auth`, then either `/api/set_password` followed by `/api/login` with the same digest (first run, so the first request is already authorized) or `/api/login`. One check runs at a time per `NodeStorage` instance.
 3. Once logged in, the server knows the key hash, and later requests only send the JWT.
+
+Resources and saving (client side: `persistence.md`):
+
+1. The client reads every kind with one `GET /api/resources?kinds=...` at boot and keeps the epoch.
+2. Its save adapter sends one `/api/resources/batch` per save cycle: all operations are validated and normalized first, then every base revision is compared inside one transaction; any stale one rolls the whole batch back and the 409 lists all of them.
+3. Inlays and plugin permission grants use the single-record routes.
+
+Snapshots and restore:
+
+1. `startBackgroundTasks` starts a timer (10 minutes). A tick takes a snapshot only when committed writes happened since the last one: `backupTo` writes `.<name>.tmp`, switches it to rollback-journal mode, and renames it to `resources-<UTC yyyymmddThhmmssmmmZ>-<8 hex>.sqlite`; the newest 20 are kept.
+2. Restore (`/api/backups/:id/restore`) runs under maintenance: epoch check, `readSnapshot` (integrity check, layout version, real `resources`/`meta` tables with this store's columns and an epoch, then every row: registered kind at its schema version, valid id, singleton rules, unique kind and id, JSON the kind's normalizer accepts), a safety snapshot, a second epoch check, then `replaceAll` in one transaction with a new random epoch. Every token issued before is stale afterwards.
+
+Backup archives:
+
+1. The container is concatenated records of `u32le nameLength`, the UTF-8 name, `u32le dataLength`, and the bytes. Version 2 starts with `manifest.json` (`{ version: 2, createdAt, partial, assets, missing }`), then `resources.sqlite` (a fresh copy), then each asset under its full key `assets/<name>`.
+2. Export takes the database copy first, then lists the assets (every file of `save/assets`, or the `partial` keys), so every asset the copy references already exists. The copy lives in `save/.tmp/export-<uuid>/` and is removed once, when the stream ends, is cancelled, or the client left before it started. A listed asset that can no longer be read fails the stream.
+3. Import authenticates and checks the epoch before reading the body, spools it to `save/.tmp/import-<uuid>/` with a byte count, then validates the whole archive before writing anything: manifest first and unique, the declared assets exactly the asset records, exactly one `resources.sqlite` that `readSnapshot` accepts, only `assets/` keys. Refused: a Risu Account archive (`encryption.risudat`), an archive from before version 2 (`database.risudat`), a truncated or malformed one. `coldstorage_*.json` records are ignored. Then, under maintenance: epoch check, safety snapshot, assets that do not exist yet are added by hard link (existing files are never overwritten), and `replaceAll`. One import at a time.
+
+Shutdown:
+
+1. `dispose()` stops the snapshot timer, refuses new backup operations, and waits for the admitted ones (including running export streams) before closing the store.
 
 Proxying:
 
@@ -142,9 +175,10 @@ Disk, under `save/`:
 
 - `server/password`: the client-side SHA-256 digest via `/api/crypto`.
 - `server/known_public_key_hashes.json`. Deleting only `password` lets you set a new one but does not revoke registered clients; delete this file too for that.
-- `.tmp/`: staged writes, emptied at startup.
+- `.tmp/`: staged writes and the per-operation export/import staging folders, emptied at startup.
 - `data/resources.sqlite` (plus its `-wal` and `-shm` files): the resource store. Table `resources` (`seq` autoincrement, `kind`, `id`, `revision`, `schemaVersion`, `data` JSON text, unique `(kind, id)`) and table `meta` holding the random `epoch`; `PRAGMA user_version` is the layout version (1). The connection runs with `journal_mode=WAL`, `busy_timeout=5000`, and `foreign_keys=ON`. `data/` is not a storage namespace.
-- User files, one folder per namespace: a logical key `<namespace>/<name>` lives at `save/<namespace>/<encodeFileName(name)>`, e.g. `database/database.bin`, `database/dbbackup-*.bin`, `assets/<sha>.png`, `remotes/<chaId>.local.bin`.
+- `backups/`: resource snapshots (`resources-*.sqlite`, single files, newest 20), not a storage namespace. Assets are not in snapshots.
+- User files: a logical key `assets/<name>` lives at `save/assets/<encodeFileName(name)>`, e.g. `assets/<sha>.png` or `assets/inlay_<sha256>.png`. The `save/database` and `save/remotes` folders of versions before Phase 1 are left in place and no longer read.
   - `encodeFileName` keeps `a-z 0-9 . _ -` readable and writes every other UTF-8 byte (uppercase letters, `/`, `%`, spaces, non-ASCII) as `%XX`. It also escapes a trailing dot and the first character of a Windows device name (`con.png` → `%63on.png`). A name whose readable form exceeds 255 bytes is stored as `~<lowercase hex>`; longer than that is rejected.
   - Only one encoding per name is canonical, and canonical names never differ by case alone, so case-insensitive filesystems do not merge keys.
   - The old flat layout (hex file names and `__password` directly in `save/`) is not read and was not migrated.
@@ -154,6 +188,7 @@ Process memory, inside the `createServerContext` closure:
 - `password` and the known key hashes.
 - The proxy stream job map.
 - Rate-limit counters.
+- The resource store's epoch and committed-write counter, the snapshot lock, the maintenance gate, and the import-in-progress flag.
 
 ## Coupling
 
@@ -167,7 +202,7 @@ Process memory, inside the `createServerContext` closure:
 
 ## Invariants
 
-- Storage routes never use a raw path. `decodeKeyHeader` requires even-length hex and valid UTF-8 (verified by an exact byte round trip), then `resolveStorageKey` requires a namespace from `STORAGE_NAMESPACES` (`database`, `assets`, `remotes`) and encodes the whole rest of the key, `/` included, into one file name. Only these folders are reachable; `save/server/` and `save/.tmp/` are not.
+- Storage routes never use a raw path. `decodeKeyHeader` requires even-length hex and valid UTF-8 (verified by an exact byte round trip), then `resolveStorageKey` requires a namespace from `STORAGE_NAMESPACES` (only `assets`) and encodes the whole rest of the key, `/` included, into one file name. Only these folders are reachable; `save/server/` and `save/.tmp/` are not.
 - Unsupported keys: malformed hex/UTF-8 is 400 `Invaild Path` on every route. A well-formed key with no storage location (other namespace, empty or too-long name) reads as missing (empty 200, no disk access), because the client reads whatever paths an old database stored; `write` and `remove` reject it with 400.
 - `/api/list` returns only regular files whose names are canonical `encodeFileName` output, so every listed key reads back the same file. Other entries (subfolders, symlinks, noncanonical file names) are ignored.
 - Keep the logical keys and the hex wire encoding; the client depends on both. The mapping to file names must stay reversible and injective.
@@ -175,7 +210,7 @@ Process memory, inside the `createServerContext` closure:
   - the `__NODE__` injection;
   - the `risu-*` header names and `x-risu-node-path`;
   - status codes and JSON error bodies, including the `Invaild Path` typo (one deliberate change: a `/api/read` filesystem error other than a missing file, symlink, or non-regular file is now a 500 instead of an empty 200);
-  - the 100 MiB body limit.
+  - the 100 MiB body limit (the backup import is the one route exempt from it).
 - Rate limits must keep matching the former express-rate-limit v8 setup:
   - thresholds as in the Routes table;
   - windows start at a key's first hit;
@@ -192,6 +227,11 @@ Process memory, inside the `createServerContext` closure:
 - The WebSocket upgrade handler is `ws` attached directly to the server returned by `serve()`. Do not also pass `websocket` to `serve()` or add `@hono/node-ws`: two upgrade listeners conflict.
 - Resource revisions: a token is `<epoch>:<seq>:<revision>`, opaque to clients. A write matches all three parts, so a token from another database epoch, or from a deleted and recreated record (new `seq`), never passes. `baseRevision: null` creates and conflicts if the record exists; a write to a missing record is a 409 with `revision: null`. A token string that does not parse, including an empty `?baseRevision=`, is a 409 with the current revision; a `baseRevision` of the wrong JSON type, or a DELETE without the query parameter, is a 400.
 - Resource writes normalize inside the store: `put` runs the kind's `normalize` once and stores its JSON result. The store is built with the kind registry and every method refuses a kind object the registry does not hold, so no caller can swap in another normalizer. A value is stored as `JSON.stringify` produces it (`toJSON` applies, `undefined` fields drop, Dates become strings, `-0` becomes `0`), and `put` and later reads return that stored form. `put` refuses, with `ResourceValidationError` (400), data whose JSON form would turn a non-finite number into `null` (`1e400` parses to `Infinity`), data `JSON.stringify` cannot serialize (a bigint, a cycle, a throwing getter, runaway nesting), and a JSON form nested deeper than 256 levels. `transaction(fn)` is one synchronous `BEGIN IMMEDIATE`; a throw, or any conflict inside it even if `fn` caught it, rolls back every write. A body whose return type can be a promise does not type-check (`TransactionBody`, best-effort: a body returning `any` passes, and an overloaded function reference is judged by its last overload, so wrap it in a zero-argument arrow), and at runtime a returned promise or thenable rolls back and throws. An `AsyncLocalStorage` scope follows the work the body starts through awaits, promise continuations, and timers: once the body returns, a write from that work throws, so it cannot autocommit after a rollback. Callbacks the body registers on an event emitter do not carry the scope and are not covered. Never await inside a transaction.
+- Resource ids: 1-512 UTF-16 code units of well-formed Unicode, no control character, not `.` or `..`; clients encode them once with `encodeURIComponent` (so `§playground` and `assets/x.png` are valid ids). A singleton kind accepts only `main` and cannot be deleted.
+- Epoch fencing: every mutation (PUT, DELETE, batch, restore, import) names the epoch in `x-resource-epoch`, checked in the same synchronous block as the write (restore and import check again inside maintenance), so nothing based on data from before a restore lands, including a create with `baseRevision: null`. Reads return the epoch; tokens stay opaque.
+- Batch operations are `{ kind, id, baseRevision, data }` or `{ kind, id, baseRevision, delete: true }` (a string base revision); duplicates of one kind and id, both or neither of `data`/`delete`, unknown kinds, and invalid ids are 400 with the operation index.
+- Maintenance (restore, import) closes resource and storage mutations with 503 and waits for storage writes already admitted; a restore or export that arrives meanwhile waits for the lock instead.
+- Backup import never overwrites an existing asset file; resources are replaced atomically, assets are only added.
 - Docker persistence depends on `/app/save`. Removing the volume loses the password, registered keys, and all data.
 
 ## Recipes
@@ -206,31 +246,39 @@ Process memory, inside the `createServerContext` closure:
   - Verify first run, restart, token expiry, and unknown keys.
 - Change proxy policy: server `sanitizeTargetUrl`, client `localNetwork.ts` + `fetchNative`.
 - Change streaming: `routes/proxyStreamJobs.ts` (`runJob`, `attachWebSocket`, `onConnection`), `ProxyJobWsEvent`, `fetchViaProxyJobWs`, and `proxyJobWs.test.ts`.
-- Add a resource kind: add a `ResourceKind` to `DEFAULT_RESOURCE_KINDS` with a pure `normalize` (throw `ResourceValidationError` to reject) and a `schemaVersion`; the routes pick it up.
+- Add a resource kind: add a `ResourceKind` to `DEFAULT_RESOURCE_KINDS` with a pure `normalize` (throw `ResourceValidationError` to reject), a `schemaVersion`, and `singleton` if it has one record; the routes, snapshots, and archives pick it up. Add the kind name to `RESOURCE_KIND` in `shared/resources.ts` for the client.
+- Change the archive format: `server/src/data/archive.ts`, `planImport` and the export in `routes/backups.ts`, `BackupArchiveManifest`, and the client reader in `src/ts/drive/backuplocal.ts`; bump the manifest version.
 - Change packaging: `Dockerfile`, the README Docker steps, and `package.json` `runserver` together. Any new root folder the server imports at runtime (like `shared/`) needs a `COPY` in the `runtime` stage.
 
 ## Tests
 
 - Server (`// @vitest-environment node`, type-checked by `pnpm check` through `server/tsconfig.json`):
-  - `server/src/tests/app.test.ts`: `__NODE__` injection (`/` and `/index.html`), auth flow and JWT failure bodies, JSON rules, login limiter, storage layout (including `save/data/`) and key mapping, batch remove.
+  - `server/src/tests/app.test.ts`: `__NODE__` injection (`/` and `/index.html`), auth flow and JWT failure bodies, JSON rules, login limiter, storage layout (including `save/data/` and `save/backups/`) and key mapping (only `assets/`; `database/` and `remotes/` keys have no storage location), batch remove.
   - `server/src/tests/proxy.test.ts`: proxy auth, raw bodies, header filtering, SSE, timeout, HEAD, hub proxy.
   - `server/src/tests/proxyStreamJobs.test.ts`: target allowlist, job validation, a real `serve()` WebSocket lifecycle, DELETE and `dispose()` closing upstreams.
   - `server/src/tests/testSupport.ts`: temp-root context, ES256 signer, recording upstream.
-  - `server/src/tests/resources.test.ts`: resource routes: round trip, stale and duplicate writes (409 with the current revision), envelope and token validation, non-finite and over-deep data, normalizer rejection through the `resourceKinds` seam of `createTestServer`, list order, delete and recreate, unknown kind, invalid id, auth.
+  - `server/src/tests/resources.test.ts`: resource routes: round trip, stale and duplicate writes (409 with the current revision), envelope and token validation, epoch header, non-finite and over-deep data, normalizer rejection through the `resourceKinds` seam of `createTestServer`, list order, delete and recreate, unknown kind, invalid id, auth.
+  - `server/src/tests/resourcesBatch.test.ts`: the batch route (all conflicts listed, nothing applied, variants, duplicates, singletons, 5,000 ops, 412), multi-kind and ref reads, relaxed ids end to end.
+  - `server/src/tests/kinds.test.ts`: the default kinds' shape normalizers and reserved names.
+  - `server/src/tests/snapshots.test.ts`: snapshot publish and retention, periodic only after committed writes, stop and lazy admission, the maintenance gate draining storage mutations.
+  - `server/src/tests/backups.test.ts`: list, restore (invalid source leaves data untouched, queued restore gets 412), maintenance 503, export full/partial/missing/cancel paths, import round trip and refusals, never overwriting assets, caps, auth before the body, one import at a time, shutdown admission.
+  - `server/src/tests/shutdown.test.ts`: the real `main.ts` answers an import admitted before SIGTERM and exits promptly on SIGINT.
   - `server/src/tests/resourceStore.test.ts`: revision tokens (epoch, incarnation, malformed), reopen and idempotent `close`, unregistered kind objects, the stored JSON form and its limits (non-finite numbers, unserializable values including a `Number` box whose conversion hook returns a bigint, 256/257 depth), and `transaction`: commit, rollback, nested, caught conflict, promise and thenable bodies, the ended-scope write rejection, plus the `TransactionBody` compile-time checks (`@ts-expect-error`, checked by the server `tsc`).
   - `server/src/tests/sharedImports.test.ts`: spawns plain `node` to import every `shared/*.ts`, the runtime guard for the `.ts` import convention (type-only imports are erased before Node resolves them; the `nodenext` server `tsc` checks those).
-- In-process tests use `createServerContext({ rootDir: <tmp> }).app.request()` (no socket, so the client IP is undefined). Socket-level behavior (client IP, aborts, TLS, WebSocket) needs a real listening server. Call `dispose()` afterwards.
+- In-process tests use `createServerContext({ rootDir: <tmp> }).app.request()` (no socket, so the client IP is undefined). Socket-level behavior (client IP, aborts, TLS, WebSocket) needs a real listening server. Await `dispose()` afterwards.
 - Client helpers: `src/ts/network/proxyJobWs.test.ts`, `src/ts/network/localNetwork.test.ts`.
 - No Docker tests. The Phase 0 check built the image and started it by hand (see the phase file).
 
 ## Known Hazards
 
 - `put` validates a value's depth on its parsed JSON form, so an over-deep value is rejected only after it has been fully serialized and parsed. Over HTTP the body is already parsed and capped at 100 MiB; only in-process callers could pass costlier values (getters, `toJSON`).
-- The resource store assumes one server process and a local filesystem for `save/data/` (SQLite WAL uses shared memory; network filesystems are unsupported). Restore and backups are not implemented yet (Phase 1 of `docs/plan/PLAN.md`); deleting `save/data/` loses every resource.
-- Storage writes stage into `save/.tmp/` and `rename` onto the target: atomic replacement, but no fsync, so no power-loss durability. `save/.tmp/` must be on the same filesystem as the namespace folders (one Docker volume at `/app/save`). One server process per `save/` is assumed: startup deletes `save/.tmp/`, and concurrent writes to one key are last-writer-wins. A failed rename (e.g. a Windows file locked by another process) returns 500 and keeps the old file; the server does not retry. The client does not retry either: `saveDb` clears `changed` before writing and does not restore it on failure, so the unsaved state is written only after the next change (pre-existing client behavior).
+- The resource store assumes one server process and a local filesystem for `save/data/` (SQLite WAL uses shared memory; network filesystems are unsupported). Snapshots cover only `save/data/`; deleting both `save/data/` and `save/backups/` loses every resource.
+- Snapshots do not hold assets, and inlay blobs are never deleted (a retained snapshot may reference them), so `save/assets/` only grows. Restoring the oldest retained snapshot can evict that file through the safety snapshot's retention (it was read in full first, so the restore itself succeeds).
+- Restore and import validate and install the database synchronously on the serving thread; a very large database blocks other requests for that time.
+- An asset over 4 GiB cannot be stored in an archive record and is reported as missing by an export.
+- Storage writes stage into `save/.tmp/` and `rename` onto the target: atomic replacement, but no fsync, so no power-loss durability. `save/.tmp/` must be on the same filesystem as the namespace folders (one Docker volume at `/app/save`). One server process per `save/` is assumed: startup deletes `save/.tmp/`, and concurrent writes to one key are last-writer-wins. A failed rename (e.g. a Windows file locked by another process) returns 500 and keeps the old file; the server does not retry. The client save adapter retries resource batches with backoff; asset writes are not retried.
 - Auth files are still written directly with `writeFileSync` (not atomic).
 - `/api/read` opens with `O_NOFOLLOW | O_NONBLOCK` where the OS has them and takes size and bytes from one handle. Namespace folders themselves are trusted: a symlinked `save/assets` is followed. A hostile local process modifying `save/` is out of scope.
-- Local backups carry only `.png` assets by basename and restore them under `assets/`; asset names containing `/` do not survive a backup round trip (pre-existing, client side).
 - A batch remove stops at the first filesystem error, such as a missing file. It returns 500, and files deleted before the error stay deleted.
 - `/api/set_password` and `/api/crypto` have no auth and no rate limit. The first caller can set the password, and an empty password leaves the server effectively unset.
 - `/proxy`, `/proxy2`, and `/hub-proxy` (through `x-risu-node-path`, unauthenticated) forward to arbitrary targets. Only proxy jobs are restricted to local targets.

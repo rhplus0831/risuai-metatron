@@ -362,12 +362,6 @@ export const advancedSettingsItems: SettingItem[] = [
         condition: (ctx) => ctx.db.promptInfoInsideChat,
         classes: "mt-4",
     },
-    {
-        id: "adv.remoteSave",
-        type: "check",
-        labelKey: "enableRemoteSaving",
-        bindKey: "enableRemoteSaving",
-    },
 
     // Dynamic Assets & Others
     {

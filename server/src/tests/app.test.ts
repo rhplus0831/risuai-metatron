@@ -18,10 +18,8 @@ beforeAll(() => {
 afterAll(() => {
     vi.restoreAllMocks();
 });
-afterEach(() => {
-    for (const s of servers.splice(0)) {
-        s.close();
-    }
+afterEach(async () => {
+    await Promise.all(servers.splice(0).map((s) => s.close()));
 });
 function freshServer(options?: { password?: string }) {
     server = createTestServer(options);
@@ -258,13 +256,16 @@ describe("storage key codec", () => {
 
     it("resolves only <namespace>/<name> keys to a file directly inside the namespace folder", () => {
         const save = path.resolve("/tmp/save");
-        expect(resolveStorageKey(save, "database/database.bin")).toBe(path.join(save, "database", "database.bin"));
+        expect(resolveStorageKey(save, "assets/database.bin")).toBe(path.join(save, "assets", "database.bin"));
         expect(resolveStorageKey(save, "assets/../server/password")).toBe(
             path.join(save, "assets", "..%2Fserver%2Fpassword"),
         );
         expect(resolveStorageKey(save, "assets/x.a/b")).toBe(path.join(save, "assets", "x.a%2Fb"));
         for (const key of [
             "database.bin",
+            // The database and remote-character namespaces of older versions are gone (Phase 1).
+            "database/database.bin",
+            "remotes/cha-1.local.bin",
             "/assets/x.png",
             "assets/",
             "server/password",
@@ -312,22 +313,22 @@ describe("storage routes", () => {
     it("stores each key at save/<namespace>/<encoded name>, reads it back by GET and HEAD, and lists the written keys", async () => {
         const s = await authedServer();
         const bytes = new Uint8Array([0, 1, 2, 255, 254, 10, 13]);
-        expect(await (await write(s, "database/database.bin", bytes)).json()).toEqual({ success: true });
-        expect(new Uint8Array(readFileSync(path.join(s.savePath, "database", "database.bin")))).toEqual(bytes);
+        expect(await (await write(s, "assets/blob.bin", bytes)).json()).toEqual({ success: true });
+        expect(new Uint8Array(readFileSync(path.join(s.savePath, "assets", "blob.bin")))).toEqual(bytes);
 
-        const get = await read(s, "database/database.bin");
+        const get = await read(s, "assets/blob.bin");
         expect(get.status).toBe(200);
         expect(get.headers.get("content-type")).toBe("application/octet-stream");
         expect(get.headers.get("content-length")).toBe("7");
         expect(new Uint8Array(await get.arrayBuffer())).toEqual(bytes);
 
-        const head = await read(s, "database/database.bin", false, "HEAD");
+        const head = await read(s, "assets/blob.bin", false, "HEAD");
         expect(head.status).toBe(200);
         expect(head.headers.get("content-length")).toBe("7");
         expect((await head.arrayBuffer()).byteLength).toBe(0);
 
         // The uppercase spelling of the same hex addresses the same file.
-        const upper = await read(s, hex("database/database.bin").toUpperCase(), true);
+        const upper = await read(s, hex("assets/blob.bin").toUpperCase(), true);
         expect(new Uint8Array(await upper.arrayBuffer())).toEqual(bytes);
 
         const missing = await read(s, "assets/missing.png");
@@ -349,7 +350,7 @@ describe("storage routes", () => {
             ["assets/con.png", "assets/%63on.png"],
             ["assets/%2F", "assets/%252%46"],
             ["assets/..", "assets/.%2E"],
-            ["remotes/cha-1.local.bin", "remotes/cha-1.local.bin"],
+            ["assets/cha-1.local.bin", "assets/cha-1.local.bin"],
             ["assets/" + "가".repeat(29) + ".png", "assets/~" + Buffer.from("가".repeat(29) + ".png").toString("hex")],
         ];
         for (const [key, relative] of escaped) {
@@ -358,11 +359,11 @@ describe("storage routes", () => {
             expect(await (await read(s, key)).text(), key).toBe(`v:${key}`);
         }
 
-        const keys = ["database/database.bin", "assets/empty", ...escaped.map(([key]) => key)];
+        const keys = ["assets/blob.bin", "assets/empty", ...escaped.map(([key]) => key)];
         expect((await list(s)).sort()).toEqual([...keys].sort());
         // Nothing lands flat in save/: only the server folder, the staging folder, the resource database
-        // folder, and the namespaces.
-        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "assets", "data", "database", "remotes", "server"]);
+        // and snapshot folders, and the one namespace.
+        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "assets", "backups", "data", "server"]);
         expect(readdirSync(path.join(s.savePath, ".tmp"))).toEqual([]);
     });
 
@@ -371,6 +372,8 @@ describe("storage routes", () => {
         const unsupported = [
             "missing",
             "database.bin",
+            "database/database.bin",
+            "remotes/cha-1.local.bin",
             "server/password",
             "server/known_public_key_hashes.json",
             ".tmp/x",
@@ -394,7 +397,7 @@ describe("storage routes", () => {
             await invalidPath(await remove(s, hex(key)), `remove ${key}`);
         }
         expect(readFileSync(path.join(s.savePath, "server", "password"), "utf-8")).toBe("pw");
-        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "data", "server"]);
+        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "backups", "data", "server"]);
         expect(readdirSync(path.join(s.savePath, "server")).sort()).toEqual([
             "known_public_key_hashes.json",
             "password",
@@ -418,7 +421,7 @@ describe("storage routes", () => {
         const noHeader = await s.app.request("/api/write", { method: "POST", headers: await s.headers(), body: "x" });
         expect(noHeader.status).toBe(400);
         expect(await noHeader.json()).toEqual({ error: "File path required" });
-        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "data", "server"]);
+        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "backups", "data", "server"]);
     });
 
     it("lists only canonical regular files and reads other entries as missing", async () => {
@@ -502,8 +505,8 @@ describe("storage routes", () => {
 
     it("empties save/.tmp at startup and keeps the password, registered keys, and data across a restart", async () => {
         const s = await authedServer();
-        await write(s, "database/database.bin", "db");
-        s.context.dispose();
+        await write(s, "assets/kept.bin", "db");
+        await s.context.dispose();
         writeFileSync(path.join(s.savePath, ".tmp", "stale.tmp"), "half-written");
 
         const restarted = createServerContext({ rootDir: s.rootDir });
@@ -514,11 +517,11 @@ describe("storage routes", () => {
             });
             expect(await auth.json()).toEqual({ status: "success" });
             const db = await restarted.app.request("/api/read", {
-                headers: { "risu-auth": await s.signer.jwt(), "file-path": hex("database/database.bin") },
+                headers: { "risu-auth": await s.signer.jwt(), "file-path": hex("assets/kept.bin") },
             });
             expect(await db.text()).toBe("db");
         } finally {
-            restarted.dispose();
+            await restarted.dispose();
         }
     });
 });

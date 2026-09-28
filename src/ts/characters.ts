@@ -22,14 +22,7 @@ import {
 import { v4 as uuidv4, v4 } from "uuid";
 import { getImageType } from "./media";
 import { DBState, OpenRealmStore, selectedCharID } from "./stores.svelte";
-import {
-    AppendableBuffer,
-    changeChatTo,
-    checkCharOrder,
-    downloadFile,
-    getFileSrc,
-    requiresFullEncoderReload,
-} from "./globalApi.svelte";
+import { AppendableBuffer, changeChatTo, checkCharOrder, downloadFile, getFileSrc } from "./globalApi.svelte";
 import { updateInlayScreen } from "./process/inlayScreen";
 import { parseMarkdownSafe } from "./parser/parser.svelte";
 import { translateHTML } from "./translator/translator";
@@ -896,7 +889,6 @@ export async function removeChar(
     }
     checkCharOrder();
     DBState.db.characters = chars;
-    requiresFullEncoderReload.state = true;
     selectedCharID.set(-1);
 }
 

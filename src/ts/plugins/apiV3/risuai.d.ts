@@ -1060,9 +1060,9 @@ interface PluginStorage {
 }
 
 /**
- * Device-local storage that persists outside of save files.
+ * Storage shared between all plugins, saved on the self-host server (it follows the user across
+ * browsers). Values must be plain JSON; anything else is rejected with a `TypeError`.
  * Uses generic types for flexible value storage.
- * Storage is shared between all plugins under a common prefix.
  *
  * **All methods return Promises** due to iframe message passing.
  *
@@ -1418,8 +1418,8 @@ interface RisuaiPluginAPI {
     safeLocalStorage: SafeLocalStorage;
 
     /**
-     * Gets a device-local storage instance shared between plugins
-     * @returns SafeLocalPluginStorage instance for device-local storage
+     * Gets a storage instance shared between plugins, saved on the server (plain JSON values only)
+     * @returns SafeLocalPluginStorage instance
      *
      * @example
      * ```typescript

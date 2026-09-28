@@ -71,7 +71,7 @@ Playground (`PlaygroundMenu.svelte` maps `PlaygroundStore` IDs to components):
 | `PlaygroundImageTrans`    | multimodal image-text translation                               |
 | `PlaygroundTranslation`   | translation tool                                                |
 | `PlaygroundDocs`          | live CBS docs from `registerCBS`                                |
-| `PlaygroundInlayExplorer` | browse inlay storage                                            |
+| `PlaygroundInlayExplorer` | browse and delete inlays (server metadata, sizes from `size`)   |
 
 The playground chat uses the special `§playground` character.
 

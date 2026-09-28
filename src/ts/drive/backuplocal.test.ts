@@ -1,72 +1,100 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BackupArchiveManifest } from "../../../shared/resources.ts";
 
-// Risu Account sync and cold storage were both removed. These tests pin the
-// replacement behavior of `LoadLocalBackup`: an archive carrying `encryption.risudat`
-// is rejected before any asset or database write happens, ordinary archives still
-// restore in full, and legacy `coldstorage_<uuid>.json` records from older archives
-// are skipped instead of being written into `assets/`.
+// Local backups over the server's export/import routes (`backuplocal.ts`): every change is flushed
+// first, the archive stream goes to the file writer while the manifest is read from its head, the
+// missing-asset report names what the database referenced, a failed or cancelled download cancels
+// the response and aborts the writer, and a restore posts the file and reloads.
 
-const {
-    alertError,
-    alertNormal,
-    alertWait,
-    alertStoreSet,
-    forageSetItem,
-    setDatabaseLite,
-    decodeRisuSave,
-    requiresFullEncoderReload,
-} = vi.hoisted(() => ({
-    alertError: vi.fn(),
-    alertNormal: vi.fn(),
-    alertWait: vi.fn(),
-    alertStoreSet: vi.fn(),
-    forageSetItem: vi.fn(async (_key: string, _value: unknown) => undefined),
-    setDatabaseLite: vi.fn(),
-    decodeRisuSave: vi.fn(async (_data: Uint8Array) => ({ characters: [] })),
-    requiresFullEncoderReload: { state: false },
-}));
-
-vi.mock("../alert", () => ({
-    alertError,
-    alertNormal,
-    alertWait,
-    alertMd: vi.fn(),
-    alertConfirm: vi.fn(async () => true),
-    alertStore: { set: alertStoreSet },
-}));
-
-vi.mock("../globalApi.svelte", () => ({
-    LocalWriter: class {},
-    forageStorage: {
-        setItem: forageSetItem,
-        getItem: vi.fn(async () => null),
+const { alerts, flush, writer, requests, exportResponse } = vi.hoisted(() => ({
+    alerts: {
+        alertError: vi.fn(),
+        alertNormal: vi.fn(),
+        alertWait: vi.fn(),
+        alertMd: vi.fn(),
+        alertConfirm: vi.fn(async () => true),
+        alertStore: { set: vi.fn() },
     },
-    requiresFullEncoderReload,
+    flush: vi.fn(async () => ({ discarded: [] as string[] })),
+    writer: {
+        initResult: true as boolean | Error,
+        chunks: [] as Uint8Array[],
+        failWriteAt: -1,
+        abort: vi.fn(async () => undefined),
+        close: vi.fn(async () => undefined),
+    },
+    requests: [] as { path: string; init: RequestInit }[],
+    exportResponse: { current: null as (() => Response) | null },
 }));
 
-vi.mock("../storage/risuSave", () => ({
-    decodeRisuSave,
-    encodeRisuSaveLegacy: vi.fn(),
-}));
-
-vi.mock("../storage/database.svelte", () => ({
-    getDatabase: vi.fn(() => ({ characters: [] })),
-    setDatabaseLite,
-}));
-
-vi.mock("../util", () => ({
-    sleep: vi.fn(async () => undefined),
-}));
-
+vi.mock("../alert", () => alerts);
+vi.mock("../storage/resourceSync.svelte", () => ({ flushResources: flush }));
 vi.mock("src/lang", () => ({
-    language: {},
+    language: { partialBackupFirstConfirm: "first?", partialBackupSecondConfirm: "second?" },
+}));
+vi.mock("../storage/database.svelte", () => ({
+    getDatabase: () => ({
+        characters: [
+            {
+                name: "Alice",
+                type: "character",
+                image: "assets/alice.png",
+                emotionImages: [["happy", "assets/happy.png"]],
+            },
+            { name: "Group", type: "group", image: "assets/group.png" },
+        ],
+        userIcon: "assets/icon.png",
+        personas: [{ name: "Me", icon: "assets/me.png" }],
+        botPresets: [{ name: "P", image: "assets/preset.png" }],
+        characterOrder: [{ name: "F", img: "assets/folder.png" }],
+    }),
+}));
+vi.mock("../globalApi.svelte", () => ({
+    LocalWriter: class {
+        writer = { abort: writer.abort };
+        async init() {
+            if (writer.initResult instanceof Error) {
+                throw writer.initResult;
+            }
+            return writer.initResult;
+        }
+        async write(data: Uint8Array) {
+            if (writer.chunks.length === writer.failWriteAt) {
+                throw new Error("disk full");
+            }
+            writer.chunks.push(new Uint8Array(data));
+        }
+        async close() {
+            await writer.close();
+        }
+    },
+}));
+vi.mock("../storage/nodeStorage", () => ({
+    authFetch: async (path: string, init: RequestInit = {}) => {
+        requests.push({ path, init });
+        if (path === "/api/backups/export") {
+            return exportResponse.current!();
+        }
+        if (path === "/api/backups/import") {
+            const header = new Headers(init.headers);
+            if (header.get("x-resource-epoch") !== "epoch-1") {
+                return Response.json({ error: "EpochMismatch", epoch: "epoch-2" }, { status: 412 });
+            }
+            if ((await new Response(init.body as Blob).text()) === "bad archive") {
+                return Response.json({ error: "The archive is from before this version" }, { status: 400 });
+            }
+            return Response.json({ epoch: "epoch-1", assetsWritten: 1, assetsSkipped: 0 });
+        }
+        return Response.json({ error: "unexpected" }, { status: 500 });
+    },
 }));
 
-import { LoadLocalBackup } from "./backuplocal";
+import { setResourceEpoch } from "../storage/resourceClient";
+import { LoadLocalBackup, SaveLocalBackup, SavePartialLocalBackup } from "./backuplocal";
 
 const encoder = new TextEncoder();
 
-/** Mirrors `LocalWriter.writeBackup`: u32 LE name length, utf8 name, u32 LE data length, bytes. */
+/** One archive record: u32 LE name length, utf8 name, u32 LE data length, bytes. */
 function record(name: string, data: Uint8Array): Uint8Array {
     const encodedName = encoder.encode(name);
     const out = new Uint8Array(4 + encodedName.byteLength + 4 + data.byteLength);
@@ -78,146 +106,228 @@ function record(name: string, data: Uint8Array): Uint8Array {
     return out;
 }
 
-function archive(records: Uint8Array[]): File {
-    const total = records.reduce((sum, r) => sum + r.byteLength, 0);
-    const out = new Uint8Array(total);
+function archive(manifest: Partial<BackupArchiveManifest>, assets: string[] = manifest.assets ?? []): Uint8Array {
+    const full: BackupArchiveManifest = {
+        version: 2,
+        createdAt: "now",
+        partial: false,
+        assets,
+        missing: [],
+        ...manifest,
+    };
+    const records = [
+        record("manifest.json", encoder.encode(JSON.stringify(full))),
+        record("resources.sqlite", new Uint8Array(64).fill(7)),
+        ...assets.map((key) => record(key, encoder.encode(`bytes of ${key}`))),
+    ];
+    const out = new Uint8Array(records.reduce((sum, r) => sum + r.byteLength, 0));
     let offset = 0;
     for (const r of records) {
         out.set(r, offset);
         offset += r.byteLength;
     }
-    return new File([out], "backup.bin");
+    return out;
 }
 
-/** Runs `LoadLocalBackup` against `file` by capturing the hidden file input it creates. */
-async function loadBackup(file: File): Promise<void> {
-    const realCreate = document.createElement.bind(document);
-    let input: HTMLInputElement | null = null;
-    vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
-        const el = realCreate(tag);
-        if (tag === "input") {
-            input = el as HTMLInputElement;
-            el.click = () => {};
-        }
-        return el;
+/** A streaming export response delivered in `chunkSize` pieces, with a cancel hook. */
+function streamed(bytes: Uint8Array, chunkSize: number, options: { failAfter?: number } = {}) {
+    const cancelled = vi.fn();
+    let offset = 0;
+    let delivered = 0;
+    const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+            if (options.failAfter !== undefined && delivered >= options.failAfter) {
+                controller.error(new Error("connection reset"));
+                return;
+            }
+            if (offset >= bytes.length) {
+                controller.close();
+                return;
+            }
+            controller.enqueue(bytes.slice(offset, offset + chunkSize));
+            offset += chunkSize;
+            delivered += 1;
+        },
+        cancel: cancelled,
+    });
+    return { response: () => new Response(body, { status: 200 }), cancelled };
+}
+
+const written = () => {
+    const total = writer.chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of writer.chunks) {
+        out.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return out;
+};
+
+beforeEach(() => {
+    requests.length = 0;
+    writer.chunks.length = 0;
+    writer.initResult = true;
+    writer.failWriteAt = -1;
+    setResourceEpoch("epoch-1");
+    vi.stubGlobal("location", { reload: vi.fn() });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+});
+
+afterEach(() => {
+    vi.clearAllMocks();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+});
+
+describe("SaveLocalBackup", () => {
+    it("flushes, streams the archive to the file, reads the manifest across chunk boundaries, and reports success", async () => {
+        const bytes = archive({
+            assets: ["assets/alice.png", "assets/happy.png", "assets/group.png", "assets/icon.png"],
+        });
+        const stream = streamed(bytes, 7);
+        exportResponse.current = stream.response;
+        await SaveLocalBackup();
+        expect(flush).toHaveBeenCalledTimes(1);
+        expect(requests.map((r) => r.path)).toEqual(["/api/backups/export"]);
+        expect(JSON.parse(requests[0].init.body as string)).toEqual({});
+        expect(written()).toEqual(bytes);
+        expect(writer.close).toHaveBeenCalledTimes(1);
+        expect(writer.abort).not.toHaveBeenCalled();
+        expect(stream.cancelled).not.toHaveBeenCalled();
+        expect(alerts.alertNormal).toHaveBeenCalledWith("Success");
+        expect(alerts.alertError).not.toHaveBeenCalled();
     });
 
-    LoadLocalBackup();
+    it("reports the referenced assets the archive did not contain, by character and role", async () => {
+        exportResponse.current = streamed(archive({ assets: ["assets/alice.png", "assets/icon.png"] }), 1024).response;
+        await SaveLocalBackup();
+        expect(alerts.alertNormal).not.toHaveBeenCalled();
+        const report = alerts.alertMd.mock.calls[0][0] as string;
+        expect(report).toContain("Backup Successful");
+        expect(report).toContain("**happy** (from *Alice*)");
+        expect(report).toContain("assets/happy.png");
+        expect(report).toContain("**Main Image** (from *Group*)");
+        expect(report).not.toContain("alice.png");
+    });
 
-    expect(input).not.toBeNull();
-    Object.defineProperty(input, "files", { value: [file], configurable: true });
-    await input!.onchange!(new Event("change"));
-}
+    it("does not export when the flush fails", async () => {
+        flush.mockRejectedValueOnce(new Error("A character is still being generated"));
+        await SaveLocalBackup();
+        expect(requests).toEqual([]);
+        expect(alerts.alertError).toHaveBeenCalledWith(expect.stringContaining("still being generated"));
+    });
 
-const coldKey = "11111111-1111-1111-1111-111111111111";
-const coldRecordName = `coldstorage_${coldKey}.json`;
-const dbBytes = new Uint8Array([9, 8, 7, 6]);
+    it("cancels the export stream when the file writer cannot be opened", async () => {
+        const stream = streamed(archive({ assets: [] }), 16);
+        exportResponse.current = stream.response;
+        writer.initResult = false;
+        await SaveLocalBackup();
+        expect(stream.cancelled).toHaveBeenCalledTimes(1);
+        expect(alerts.alertError).toHaveBeenCalledWith("Failed");
+        expect(writer.close).not.toHaveBeenCalled();
+    });
 
-describe("LoadLocalBackup after Risu Account and cold storage removal", () => {
-    beforeEach(() => {
-        vi.clearAllMocks();
-        requiresFullEncoderReload.state = false;
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async () => {
-                throw new Error("network must not be used while restoring a local backup");
-            }),
+    it("cancels the stream and aborts the writer when a write fails", async () => {
+        const stream = streamed(archive({ assets: ["assets/alice.png"] }), 8);
+        exportResponse.current = stream.response;
+        writer.failWriteAt = 2;
+        await SaveLocalBackup();
+        expect(stream.cancelled).toHaveBeenCalledTimes(1);
+        expect(writer.abort).toHaveBeenCalledTimes(1);
+        expect(writer.close).not.toHaveBeenCalled();
+        expect(alerts.alertError).toHaveBeenCalledWith(expect.stringContaining("disk full"));
+    });
+
+    it("aborts the writer when the download breaks", async () => {
+        exportResponse.current = streamed(archive({ assets: ["assets/alice.png"] }), 8, { failAfter: 3 }).response;
+        await SaveLocalBackup();
+        expect(writer.abort).toHaveBeenCalledTimes(1);
+        expect(writer.close).not.toHaveBeenCalled();
+        expect(alerts.alertError).toHaveBeenCalledWith(expect.stringContaining("connection reset"));
+    });
+
+    it("reports a refused export", async () => {
+        exportResponse.current = () => Response.json({ error: "Too many assets for one archive" }, { status: 413 });
+        await SaveLocalBackup();
+        expect(alerts.alertError).toHaveBeenCalledWith(expect.stringContaining("Too many assets"));
+        expect(writer.chunks).toEqual([]);
+    });
+});
+
+describe("SavePartialLocalBackup", () => {
+    it("asks twice, sends the profile-image keys, and reports what the server could not find", async () => {
+        const stream = streamed(
+            archive({ partial: true, assets: ["assets/alice.png"], missing: ["assets/me.png"] }),
+            32,
         );
-    });
-
-    afterEach(() => {
-        vi.restoreAllMocks();
-        vi.unstubAllGlobals();
-    });
-
-    it("rejects an account-encrypted archive before writing any record", async () => {
-        // The old writer emitted assets and cold payloads first, then encryption.risudat,
-        // then the encrypted database. The preflight must catch the marker anyway.
-        const file = archive([
-            record("a1b2c3d4.png", new Uint8Array([1, 2, 3])),
-            record(coldRecordName, encoder.encode(JSON.stringify({ message: [] }))),
-            record("encryption.risudat", encoder.encode(JSON.stringify({ type: "account", time: 123 }))),
-            record("database.risudat", dbBytes),
+        exportResponse.current = stream.response;
+        await SavePartialLocalBackup();
+        expect(alerts.alertConfirm).toHaveBeenCalledTimes(2);
+        const body = JSON.parse(requests[0].init.body as string);
+        expect(body.partial.sort()).toEqual([
+            "assets/alice.png",
+            "assets/folder.png",
+            "assets/group.png",
+            "assets/icon.png",
+            "assets/me.png",
+            "assets/preset.png",
         ]);
-
-        await loadBackup(file);
-
-        expect(alertError).toHaveBeenCalledTimes(1);
-        expect(alertError.mock.calls[0][0]).toMatch(/Risu Account/);
-        expect(forageSetItem).not.toHaveBeenCalled();
-        expect(setDatabaseLite).not.toHaveBeenCalled();
-        expect(decodeRisuSave).not.toHaveBeenCalled();
-        expect(fetch).not.toHaveBeenCalled();
-        expect(requiresFullEncoderReload.state).toBe(false);
+        expect(body.partial).not.toContain("assets/happy.png");
+        const report = alerts.alertMd.mock.calls[0][0] as string;
+        expect(report).toContain("**Me Icon** (from *Persona*)");
     });
 
-    it("restores a plain archive and only scans record headers for the marker", async () => {
-        // The marker string inside record *data* must not trigger the rejection.
-        const assetData = encoder.encode("not a header: encryption.risudat");
-        const file = archive([record("a1b2c3d4.png", assetData), record("database.risudat", dbBytes)]);
+    it("stops at the first declined confirmation", async () => {
+        alerts.alertConfirm.mockResolvedValueOnce(false);
+        await SavePartialLocalBackup();
+        expect(flush).not.toHaveBeenCalled();
+        expect(requests).toEqual([]);
+    });
+});
 
-        await loadBackup(file);
+describe("LoadLocalBackup", () => {
+    async function load(file: File) {
+        const realCreate = document.createElement.bind(document);
+        let input: HTMLInputElement | null = null;
+        vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+            const el = realCreate(tag);
+            if (tag === "input") {
+                input = el as HTMLInputElement;
+                el.click = () => {};
+            }
+            return el;
+        });
+        LoadLocalBackup();
+        expect(input).not.toBeNull();
+        expect(input!.accept).toBe(".bin");
+        Object.defineProperty(input, "files", { value: [file], configurable: true });
+        await input!.onchange!(new Event("change"));
+    }
 
-        expect(alertError).not.toHaveBeenCalled();
-        expect(fetch).not.toHaveBeenCalled();
-
-        expect(forageSetItem).toHaveBeenCalledWith("assets/a1b2c3d4.png", expect.any(Uint8Array));
-        const assetCall = forageSetItem.mock.calls.find((c) => c[0] === "assets/a1b2c3d4.png")!;
-        expect(Array.from(assetCall[1] as Uint8Array)).toEqual(Array.from(assetData));
-
-        expect(decodeRisuSave).toHaveBeenCalledTimes(1);
-        expect(Array.from(decodeRisuSave.mock.calls[0][0] as Uint8Array)).toEqual(Array.from(dbBytes));
-        expect(setDatabaseLite).toHaveBeenCalledWith({ characters: [] });
-        expect(forageSetItem).toHaveBeenCalledWith("database/database.bin", expect.any(Uint8Array));
-        expect(requiresFullEncoderReload.state).toBe(true);
-        expect(alertNormal).toHaveBeenCalledWith("Success");
+    it("posts the file to the import route with the loaded epoch and reloads", async () => {
+        await load(new File(["archive bytes"], "backup.bin"));
+        expect(requests).toHaveLength(1);
+        expect(requests[0].path).toBe("/api/backups/import");
+        const headers = new Headers(requests[0].init.headers);
+        expect(headers.get("content-type")).toBe("application/octet-stream");
+        expect(headers.get("x-resource-epoch")).toBe("epoch-1");
+        expect(await new Response(requests[0].init.body as Blob).text()).toBe("archive bytes");
+        expect(alerts.alertStore.set).toHaveBeenCalledWith({ type: "wait", msg: "Success, Refreshing your app." });
+        expect((location as any).reload).toHaveBeenCalled();
+        expect(alerts.alertError).not.toHaveBeenCalled();
     });
 
-    it("skips legacy cold storage records and still writes every other record to assets/", async () => {
-        // Older archives carry `coldstorage_<uuid>.json` payloads. Nothing reads them
-        // anymore, so they must not be restored as assets. The skip is by name only:
-        // any other `.json` record is an ordinary asset and is written as before.
-        const assetData = encoder.encode("png bytes");
-        const otherJson = encoder.encode('{"not":"cold"}');
-        const file = archive([
-            record(coldRecordName, encoder.encode(JSON.stringify({ message: [{ data: "hello" }] }))),
-            record("a1b2c3d4.png", assetData),
-            record("notes.json", otherJson),
-            record(`coldstorage_${coldKey.replace(/1/g, "2")}.json`, encoder.encode(JSON.stringify({ character: {} }))),
-            record("database.risudat", dbBytes),
-        ]);
-
-        await loadBackup(file);
-
-        expect(alertError).not.toHaveBeenCalled();
-
-        const writtenKeys = forageSetItem.mock.calls.map((c) => c[0] as string);
-        expect(writtenKeys.filter((k) => k.startsWith("assets/")).sort()).toEqual([
-            "assets/a1b2c3d4.png",
-            "assets/notes.json",
-        ]);
-        expect(writtenKeys.some((k) => k.includes("coldstorage_"))).toBe(false);
-        const notesCall = forageSetItem.mock.calls.find((c) => c[0] === "assets/notes.json")!;
-        expect(Array.from(notesCall[1] as Uint8Array)).toEqual(Array.from(otherJson));
-
-        expect(decodeRisuSave).toHaveBeenCalledTimes(1);
-        expect(setDatabaseLite).toHaveBeenCalledWith({ characters: [] });
-        expect(forageSetItem).toHaveBeenCalledWith("database/database.bin", expect.any(Uint8Array));
-        expect(alertNormal).toHaveBeenCalledWith("Success");
+    it("shows the server's refusal and does not reload", async () => {
+        await load(new File(["bad archive"], "backup.bin"));
+        expect(alerts.alertError).toHaveBeenCalledWith("The archive is from before this version");
+        expect((location as any).reload).not.toHaveBeenCalled();
     });
 
-    it("does not treat a truncated archive as encrypted and still reports the missing database", async () => {
-        // A header that claims more bytes than the file holds ends the scan, then the
-        // streaming loader reports the corruption as before.
-        const bogus = record("a1b2c3d4.png", new Uint8Array([1, 2, 3]));
-        new DataView(bogus.buffer).setUint32(4 + "a1b2c3d4.png".length, 1024, true);
-        const file = archive([bogus]);
-
-        await loadBackup(file);
-
-        expect(alertError).toHaveBeenCalledTimes(1);
-        expect(alertError.mock.calls[0][0]).toBe("Failed, Is file corrupted?");
-        expect(forageSetItem).not.toHaveBeenCalled();
-        expect(setDatabaseLite).not.toHaveBeenCalled();
+    it("reloads without an error when the server data changed since this tab loaded (412)", async () => {
+        setResourceEpoch("stale");
+        await load(new File(["archive bytes"], "backup.bin"));
+        expect(alerts.alertError).not.toHaveBeenCalled();
+        expect((location as any).reload).toHaveBeenCalled();
     });
 });

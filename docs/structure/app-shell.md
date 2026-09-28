@@ -13,7 +13,7 @@
 - `src/lib/Others/NodeServerRequired.svelte`: the notice shown when the client is opened without the self-host server (static hosting, a bare `vite build` output). English only (`language.nodeServerRequiredTitle`/`Desc`), since `changeLanguage` runs only after the DB loads.
 - `src/App.svelte`: the "router" (ordered `{#if}` chain), plus drag/drop import, overlays (alerts, popups, modals), and keep-alive audio.
 - `src/ts/bootstrap.ts`:
-  - `loadData`: `forageStorage` DB load, then migrations, plugins, theme, `loadedStore = true`, then services such as `saveDb`.
+  - `loadData`: the server resources are read and assembled into the DB, then migrations, theme, `saveDb` (the save adapter), the browser-local import, plugins, `loadedStore = true`, then services.
   - `checkNewFormat`: legacy data repair.
   - `registerSw`: service worker.
 - `src/ts/stores.svelte.ts`: all global UI stores plus the `DBState` rune (see State).
@@ -40,13 +40,14 @@ Boot:
 
 1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`, which stops at the notice unless `__NODE__` was injected, and otherwise loads `boot.ts`.
 2. `boot.ts:boot` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
-3. `bootstrap.ts:loadData` loads the database: `forageStorage.Init()` (`AutoStorage`), local load with backup fallback, `registerSw`, then `characterURLImport`.
+3. `bootstrap.ts:loadData` loads the database: `forageStorage.Init()` (`AutoStorage`), one `readKinds` of every resource kind (the first request prompts for the password on a new browser), `seedResources`/`seedInlays`, `setDatabase` on the assembled DB, `registerSw`, then `characterURLImport`. A failed read only alerts; there is no local fallback.
 4. Common tail of `loadData`:
-   1. `loadPlugins`.
-   2. `checkNewFormat`, which ends in `setDatabase`.
-   3. Theme functions: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`.
-   4. `loadedStore.set(true)` and `selectedCharID.set(-1)`.
-   5. Observers, ID assignment, `registerModelDynamic`, `saveDb()` (exactly once), `moduleUpdate`, `cleanLegacyAccountData`. There is no boot-time asset cleanup: orphaned `assets/*` and `remotes/*` files are never purged automatically.
+   1. `checkNewFormat`, which ends in `setDatabase`, then `assignIds`.
+   2. Theme functions: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`.
+   3. `saveDb()` (exactly once; starts the save adapter) and the generation watch (`doingChat`): it tells the adapter which character is generating (`setGeneratingCharacter`), marks that character dirty when the generation ends, wakes the deferred reloads (`releaseDeferredCharacters`), and drops the inlay caches whenever the adapter brought another tab's records in (`onRemoteRecordApplied` → `invalidateInlayCaches`).
+   4. `importBrowserLocalData` (moves old browser-only data to the server), `loadPluginPermissions`, then `loadPlugins`. Plugins load after normalization and ID assignment (before Phase 1 they loaded first).
+   5. `loadedStore.set(true)` and `selectedCharID.set(-1)`.
+   6. Observers, `registerModelDynamic`, `moduleUpdate`, `cleanLegacyAccountData`. There is no boot-time asset cleanup: orphaned `assets/*` files (including inlay blobs) are never purged automatically.
 
 Screen selection. `App.svelte` checks these in order:
 
@@ -93,7 +94,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 - Do not flip `loadedStore` to true before `setDatabase`, `checkNewFormat`, and theme setup finish. `App` assumes `DBState.db` is normalized after that point. When `loadData` fails it only calls `alertError`, and the loading screen stays up.
 - `selectedCharID === -1` is the home sentinel. Components index `DBState.db.characters[$selectedCharID]` whenever it is nonnegative.
-- Call `saveDb()` only once, from `loadData`. It installs effects and runs an infinite loop.
+- Call `saveDb()` only once, from `loadData`. It installs the save adapter's effects; `startResourceSync` ignores a second call.
 - `isNodeServer` depends on `server/src/app.ts` (`GET /` and `/index.html`) or the Vite dev plugin `risu-node-flag` injecting `globalThis.__NODE__ = true` into `index.html`. Keep everything the app needs behind the dynamic `boot.ts` import so the notice path initializes nothing.
 - New hotkey actions need:
   - an entry in `defaultHotkeys`,

@@ -1,13 +1,12 @@
 import { checkNullish, sleep } from "./util";
 import { v4 as uuidv4 } from "uuid";
 import { get } from "svelte/store";
-import { setDatabase, defaultSdDataFunc, getDatabase } from "./storage/database.svelte";
+import { setDatabase, defaultSdDataFunc, getDatabase, presetTemplate, type Database } from "./storage/database.svelte";
 import { botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./alert";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
-import { decodeRisuSave, encodeRisuSaveLegacy } from "./storage/risuSave";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
 import { language } from "src/lang";
@@ -15,7 +14,20 @@ import { startObserveDom } from "./observer.svelte";
 import { updateGuisize } from "./gui/guisize";
 import { updateLorebooks } from "./characters";
 import { moduleUpdate } from "./process/modules";
-import { forageStorage, saveDb, getDbBackups, setUsingSw, checkCharOrder } from "./globalApi.svelte";
+import { forageStorage, saveDb, setUsingSw, checkCharOrder } from "./globalApi.svelte";
+import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
+import { readKinds } from "./storage/resourceClient";
+import {
+    markCharactersDirty,
+    onRemoteRecordApplied,
+    releaseDeferredCharacters,
+    seedResources,
+    setGeneratingCharacter,
+} from "./storage/resourceSync.svelte";
+import { importBrowserLocalData } from "./storage/browserLocalImport";
+import { invalidateInlayCaches, seedInlays } from "./process/files/inlays";
+import { loadPluginPermissions } from "./plugins/apiV3/permissionStore";
+import { doingChat } from "./process/index.svelte";
 import { registerModelDynamic } from "./model/modellist";
 
 /**
@@ -27,37 +39,13 @@ export async function loadData() {
         try {
             await forageStorage.Init();
 
-            LoadingStatusState.text = "Loading Local Save File...";
-            let gotStorage: Uint8Array = (await forageStorage.getItem(
-                "database/database.bin",
-            )) as unknown as Uint8Array;
-            LoadingStatusState.text = "Decoding Local Save File...";
-            if (checkNullish(gotStorage)) {
-                gotStorage = encodeRisuSaveLegacy({});
-                await forageStorage.setItem("database/database.bin", gotStorage);
-            }
-            try {
-                const decoded = await decodeRisuSave(gotStorage);
-                console.log(decoded);
-                setDatabase(decoded);
-            } catch (error) {
-                console.error(error);
-                const backups = await getDbBackups();
-                let backupLoaded = false;
-                for (const backup of backups) {
-                    try {
-                        LoadingStatusState.text = `Reading Backup File ${backup}...`;
-                        const backupData: Uint8Array = (await forageStorage.getItem(
-                            `database/dbbackup-${backup}.bin`,
-                        )) as unknown as Uint8Array;
-                        setDatabase(await decodeRisuSave(backupData));
-                        backupLoaded = true;
-                    } catch (error) {}
-                }
-                if (!backupLoaded) {
-                    throw "Forage: Your save file is corrupted";
-                }
-            }
+            LoadingStatusState.text = "Loading Save Data...";
+            const snapshot = await readKinds(Object.values(RESOURCE_KIND));
+            // What the server holds, recorded before normalization changes anything, so the first save
+            // writes exactly what the client normalized.
+            seedResources(snapshot);
+            seedInlays(snapshot.kinds[RESOURCE_KIND.inlays] ?? []);
+            setDatabase(assembleDatabase(snapshot));
 
             LoadingStatusState.text = "Checking Service Worker...";
             if (navigator.serviceWorker) {
@@ -69,10 +57,6 @@ export async function loadData() {
             if (getDatabase().didFirstSetup) {
                 characterURLImport();
             }
-            LoadingStatusState.text = "Loading Plugins...";
-            try {
-                await loadPlugins();
-            } catch (error) {}
             try {
                 const isInStandaloneMode =
                     window.matchMedia("(display-mode: standalone)").matches ||
@@ -85,6 +69,7 @@ export async function loadData() {
             } catch (error) {}
             LoadingStatusState.text = "Checking For Format Update...";
             await checkNewFormat();
+            assignIds();
             const db = getDatabase();
 
             LoadingStatusState.text = "Updating States...";
@@ -99,21 +84,86 @@ export async function loadData() {
                 await waitAlert();
                 localStorage.setItem("nightlyWarned", "true");
             }
+
+            // Saving starts before plugins load, so the browser-local import below can save.
+            saveDb();
+            watchGeneration();
+            LoadingStatusState.text = "Moving Browser Data To The Server...";
+            await importBrowserLocalData();
+            await loadPluginPermissions();
+            LoadingStatusState.text = "Loading Plugins...";
+            try {
+                await loadPlugins();
+            } catch (error) {}
+
             if (db.botSettingAtStart) {
                 botMakerMode.set(true);
             }
             loadedStore.set(true);
             selectedCharID.set(-1);
             startObserveDom();
-            assignIds();
             registerModelDynamic();
-            saveDb();
             moduleUpdate();
             cleanLegacyAccountData();
         } catch (error) {
             alertError(error);
         }
     }
+}
+
+/**
+ * Builds the in-memory `Database` from the server resources: `root` holds every field except the
+ * collections that have a resource of their own; characters come in creation order. Missing records
+ * are left for `setDatabase` to default.
+ */
+function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
+    const single = (kind: string) =>
+        snapshot.kinds[kind]?.find((record) => record.id === SINGLETON_RESOURCE_ID)?.data as any;
+    const db = { ...(single(RESOURCE_KIND.root) ?? {}) } as Database;
+    const presets = single(RESOURCE_KIND.presets);
+    if (presets !== undefined) {
+        db.botPresets = presets;
+    }
+    if (!Array.isArray(db.botPresets) || db.botPresets.length === 0) {
+        db.botPresets = [safeStructuredClone(presetTemplate)];
+        db.botPresetsId = 0;
+    }
+    const modules = single(RESOURCE_KIND.modules);
+    if (modules !== undefined) {
+        db.modules = modules;
+    }
+    const plugins = single(RESOURCE_KIND.plugins);
+    if (plugins !== undefined) {
+        db.plugins = plugins;
+    }
+    const pluginStorage = single(RESOURCE_KIND.pluginStorage);
+    if (pluginStorage !== undefined) {
+        db.pluginCustomStorage = pluginStorage;
+    }
+    db.characters = (snapshot.kinds[RESOURCE_KIND.characters] ?? []).map((record) => record.data as any);
+    return db;
+}
+
+/**
+ * While a generation runs, a conflict does not swap its character out; when it ends, the character it
+ * wrote is saved (it may no longer be selected) and any deferred reload runs. Records another tab
+ * wrote may reference inlays this tab has not seen, so a remote reload drops the inlay caches.
+ */
+function watchGeneration() {
+    let generatingId: string | null = null;
+    setGeneratingCharacter(() => generatingId);
+    onRemoteRecordApplied(() => invalidateInlayCaches());
+    doingChat.subscribe((running) => {
+        if (running) {
+            generatingId = DBState.db.characters?.[get(selectedCharID)]?.chaId ?? null;
+            return;
+        }
+        if (generatingId) {
+            markCharactersDirty([generatingId]);
+            generatingId = null;
+        }
+        releaseDeferredCharacters();
+    });
 }
 
 /**

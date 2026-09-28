@@ -2,7 +2,7 @@ import { MCPClientLike } from "./internalmcp";
 import type { MCPTool, RPCToolCallContent } from "./mcplib";
 import { fetchNative } from "../../globalApi.svelte";
 import { alertInput } from "../../alert";
-import localforage from "localforage";
+import { DBState } from "../../stores.svelte";
 
 interface WebSearchArgs {
     query: string;
@@ -32,12 +32,15 @@ interface GoogleSearchCredentials {
 
 export class GoogleSearchClient extends MCPClientLike {
     private initialized: boolean = false;
-    private API_KEY = "";
-    private SEARCH_ENGINE_ID = "";
-    private credentialsStorage = localforage.createInstance({
-        name: "google-search-credentials",
-        storeName: "credentials",
-    });
+
+    // Read from the root settings on every use, so a change from another tab applies.
+    private get API_KEY() {
+        return DBState.db.googleSearchCredentials?.apiKey ?? "";
+    }
+
+    private get SEARCH_ENGINE_ID() {
+        return DBState.db.googleSearchCredentials?.searchEngineId ?? "";
+    }
 
     constructor() {
         super("internal:googlesearch");
@@ -56,11 +59,9 @@ export class GoogleSearchClient extends MCPClientLike {
     }
 
     private async initializeCredentials(): Promise<void> {
-        const storedCredentials = await this.credentialsStorage.getItem<GoogleSearchCredentials>("google-search-creds");
+        const storedCredentials = DBState.db.googleSearchCredentials;
 
         if (storedCredentials && storedCredentials.apiKey && storedCredentials.searchEngineId) {
-            this.API_KEY = storedCredentials.apiKey;
-            this.SEARCH_ENGINE_ID = storedCredentials.searchEngineId;
             return;
         }
 
@@ -79,10 +80,7 @@ export class GoogleSearchClient extends MCPClientLike {
             searchEngineId: searchEngineId.trim(),
         };
 
-        await this.credentialsStorage.setItem("google-search-creds", credentials);
-
-        this.API_KEY = credentials.apiKey;
-        this.SEARCH_ENGINE_ID = credentials.searchEngineId;
+        DBState.db.googleSearchCredentials = credentials;
     }
 
     async getToolList(): Promise<MCPTool[]> {
@@ -342,7 +340,5 @@ export class GoogleSearchClient extends MCPClientLike {
 
     destroy() {
         this.initialized = false;
-        this.API_KEY = "";
-        this.SEARCH_ENGINE_ID = "";
     }
 }

@@ -13,28 +13,146 @@ export const TEST_INDEX_HTML = '<!doctype html><html lang="en"><head><meta chars
  * A server context over a temporary `rootDir` with a minimal `dist/index.html`. `resourceKinds`
  * replaces the default resource kinds (for a rejecting or transforming normalizer).
  */
-export function createTestServer(options: { password?: string; resourceKinds?: readonly ResourceKind[] } = {}) {
-    const rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-server-test-"));
-    mkdirSync(path.join(rootDir, "dist"));
-    writeFileSync(path.join(rootDir, "dist", "index.html"), TEST_INDEX_HTML);
+export type TestServerOptions = {
+    password?: string;
+    resourceKinds?: readonly ResourceKind[];
+    snapshotIntervalMs?: number;
+    maxImportBytes?: number;
+    /** Reuse an existing root (a restart); `password` is ignored then. */
+    rootDir?: string;
+};
+
+export function createTestServer(options: TestServerOptions = {}) {
+    const rootDir = options.rootDir ?? mkdtempSync(path.join(os.tmpdir(), "risu-server-test-"));
     const savePath = path.join(rootDir, "save");
-    mkdirSync(savePath);
-    if (options.password !== undefined) {
-        // The server's own files live under `save/server/`, outside the storage namespaces.
-        mkdirSync(path.join(savePath, "server"));
-        writeFileSync(path.join(savePath, "server", "password"), options.password);
+    if (!options.rootDir) {
+        mkdirSync(path.join(rootDir, "dist"));
+        writeFileSync(path.join(rootDir, "dist", "index.html"), TEST_INDEX_HTML);
+        mkdirSync(savePath);
+        if (options.password !== undefined) {
+            // The server's own files live under `save/server/`, outside the storage namespaces.
+            mkdirSync(path.join(savePath, "server"));
+            writeFileSync(path.join(savePath, "server", "password"), options.password);
+        }
     }
-    const context = createServerContext({ rootDir, resourceKinds: options.resourceKinds });
+    const context = createServerContext({
+        rootDir,
+        resourceKinds: options.resourceKinds,
+        snapshotIntervalMs: options.snapshotIntervalMs,
+        maxImportBytes: options.maxImportBytes,
+    });
     return {
         rootDir,
         savePath,
         context,
         app: context.app,
-        close() {
-            context.dispose();
+        async close() {
+            await context.dispose();
             rmSync(rootDir, { recursive: true, force: true });
         },
     };
+}
+
+export type ResourceTestClient = Awaited<ReturnType<typeof createResourceTestClient>>;
+
+/**
+ * A test server with a registered client: every request carries a fresh JWT, and every request
+ * carries the database epoch the client last read (`x-resource-epoch`), unless `epoch` overrides it
+ * (`null` omits the header). `readEpoch` refreshes it after a restore.
+ */
+export async function createResourceTestClient(
+    options: Omit<TestServerOptions, "password"> & { epochKind?: string } = {},
+) {
+    const { epochKind = "root", ...serverOptions } = options;
+    const s = createTestServer({ password: "pw", ...serverOptions });
+    const signer = await createSigner();
+    await s.app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
+    const client = {
+        ...s,
+        signer,
+        epoch: "",
+        async headers(extra: Record<string, string> = {}, epoch: string | null | undefined = undefined) {
+            const headers: Record<string, string> = { "risu-auth": await signer.jwt() };
+            const value = epoch === undefined ? client.epoch : epoch;
+            if (value !== null) {
+                headers["x-resource-epoch"] = value;
+            }
+            return { ...headers, ...extra };
+        },
+        async request(url: string, init: RequestInit = {}, epoch?: string | null) {
+            return s.app.request(url, {
+                ...init,
+                headers: await client.headers((init.headers as Record<string, string> | undefined) ?? {}, epoch),
+            });
+        },
+        async json(url: string, body: unknown, init: RequestInit = {}, epoch?: string | null) {
+            return client.request(
+                url,
+                {
+                    method: "POST",
+                    ...init,
+                    headers: { "content-type": "application/json", ...init.headers },
+                    body: JSON.stringify(body),
+                },
+                epoch,
+            );
+        },
+        async readEpoch() {
+            const res = await client.request(`/api/resources/${epochKind}`);
+            client.epoch = ((await res.json()) as { epoch: string }).epoch;
+            return client.epoch;
+        },
+        put: (kind: string, id: string, body: unknown, epoch?: string | null) =>
+            client.json(`/api/resources/${kind}/${encodeURIComponent(id)}`, body, { method: "PUT" }, epoch),
+        get: (kind: string, id: string) => client.request(`/api/resources/${kind}/${encodeURIComponent(id)}`),
+        list: (kind: string) => client.request(`/api/resources/${kind}`),
+        remove: (kind: string, id: string, query: string, epoch?: string | null) =>
+            client.request(`/api/resources/${kind}/${encodeURIComponent(id)}${query}`, { method: "DELETE" }, epoch),
+        batch: (ops: unknown, epoch?: string | null) => client.json("/api/resources/batch", { ops }, {}, epoch),
+        readKinds: (kinds: string) => client.request(`/api/resources?kinds=${kinds}`),
+        readRefs: (refs: unknown) => client.json("/api/resources/read", { refs }),
+        /** Creates a record and returns its revision token. */
+        async create(kind: string, id: string, data: unknown): Promise<string> {
+            const res = await client.put(kind, id, { baseRevision: null, data });
+            if (res.status !== 200) {
+                throw new Error(`create ${kind}/${id}: ${res.status} ${await res.text()}`);
+            }
+            return ((await res.json()) as { revision: string }).revision;
+        },
+    };
+    await client.readEpoch();
+    return client;
+}
+
+/** Builds a local backup archive (`u32le nameLength, name, u32le dataLength, bytes` records). */
+export function buildArchive(records: [string, Uint8Array | string][]): Uint8Array {
+    const parts: Buffer[] = [];
+    for (const [name, data] of records) {
+        const nameBytes = Buffer.from(name, "utf-8");
+        const bytes = typeof data === "string" ? Buffer.from(data, "utf-8") : Buffer.from(data);
+        const header = Buffer.alloc(8 + nameBytes.length);
+        header.writeUInt32LE(nameBytes.length, 0);
+        nameBytes.copy(header, 4);
+        header.writeUInt32LE(bytes.length, 4 + nameBytes.length);
+        parts.push(header, bytes);
+    }
+    return Buffer.concat(parts);
+}
+
+/** Splits an archive into its records. */
+export function parseArchive(bytes: Uint8Array): { name: string; data: Buffer }[] {
+    const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const records: { name: string; data: Buffer }[] = [];
+    let offset = 0;
+    while (offset < buffer.length) {
+        const nameLength = buffer.readUInt32LE(offset);
+        const name = buffer.subarray(offset + 4, offset + 4 + nameLength).toString("utf-8");
+        const dataLength = buffer.readUInt32LE(offset + 4 + nameLength);
+        const start = offset + 8 + nameLength;
+        records.push({ name, data: buffer.subarray(start, start + dataLength) });
+        offset = start + dataLength;
+    }
+    return records;
 }
 
 export const hex = (s: string) => Buffer.from(s, "utf-8").toString("hex");

@@ -7,7 +7,6 @@
     import { alertError } from "src/ts/alert";
     import { getIrisSystemPrompt } from "src/ts/iris";
     import { RisuAccessClient } from "src/ts/process/mcp/risuaccess";
-    import localforage from "localforage";
     import { getModelInfo, LLMFormat } from "src/ts/model/modellist";
 
     interface DialogueLine {
@@ -65,11 +64,6 @@
             },
         ],
     };
-
-    const forageInstance = localforage.createInstance({
-        name: "iris_dialogues",
-        storeName: "iris_dialogues",
-    });
 
     let dialogue = $state<DialogueLine[]>(introDialogue[DBState.db.language] ?? introDialogue.en);
 
@@ -175,9 +169,8 @@
     }
 
     function saveDialogue() {
-        forageInstance.setItem("current_dialogue", safeStructuredClone(dialogue)).catch((e) => {
-            console.warn("Failed to save dialogue to localforage.", e);
-        });
+        // Saved with the root settings on the server.
+        DBState.db.irisDialogue = safeStructuredClone($state.snapshot(dialogue));
     }
 
     async function submitUserInput() {
@@ -259,24 +252,16 @@
     }
 
     onMount(() => {
-        //get dialogue from localforage if exists
-        forageInstance
-            .getItem<DialogueLine[]>("current_dialogue")
-            .then((saved) => {
-                if (saved && saved.length > 0) {
-                    dialogue = saved;
-                    currentIndex = dialogue.length - 1;
-                } else {
-                    dialogue = introDialogue[DBState.db.language] ?? introDialogue.en;
-                    currentIndex = 0;
-                }
-                startTyping(dialogue[currentIndex].text);
-            })
-            .catch(() => {
-                dialogue = introDialogue[DBState.db.language] ?? introDialogue.en;
-                currentIndex = 0;
-                startTyping(dialogue[currentIndex].text);
-            });
+        //get the saved dialogue if one exists
+        const saved = DBState.db.irisDialogue;
+        if (saved && saved.length > 0) {
+            dialogue = safeStructuredClone($state.snapshot(saved));
+            currentIndex = dialogue.length - 1;
+        } else {
+            dialogue = introDialogue[DBState.db.language] ?? introDialogue.en;
+            currentIndex = 0;
+        }
+        startTyping(dialogue[currentIndex].text);
     });
 
     $effect(() => {

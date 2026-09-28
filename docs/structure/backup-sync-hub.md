@@ -3,7 +3,7 @@
 ## Scope
 
 - Owns:
-  - local `.bin` backup export and import (full and partial),
+  - local `.bin` backup export and import (full and partial) and the server snapshot restore button, as client UI over the server backup routes,
   - Realm hub browse and download (upload, report, and remove were removed),
   - the settings report export.
 - Paths:
@@ -11,22 +11,23 @@
   - `src/lib/UI/Realm/*`
   - `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`
 - Not here:
-  - The save format and backends → `persistence.md`.
+  - The save adapter and resources → `persistence.md`.
+  - The archive format, snapshots, and the backup routes → `self-host-server.md`.
   - Hub URL and card codecs → `characters-modules.md` (`characterCards.ts`).
   - Node `/hub-proxy` → `self-host-server.md`.
   - `localNetwork.ts`/`proxyJobWs.ts` → `global-api.md`.
 
 ## Files
 
-- `drive/backuplocal.ts`:
-  - `SaveLocalBackup`: all `.png` assets and `database.risudat` (legacy compressed DB).
-  - `SavePartialLocalBackup`: profile, persona, background, folder, and preset images only, plus the DB.
-  - `LoadLocalBackup`: stream parse, restore, `setDatabaseLite`, persist, reload. Before writing anything, `isAccountEncryptedBackup` scans only the record headers (random-access `File.slice`) for `encryption.risudat`, which marks a Risu Account-encrypted archive. Such archives are rejected with an error because the key server is no longer used.
-  - The record framing is `globalApi.svelte.ts:LocalWriter.writeBackup`: `u32 nameLen`, `utf8 basename`, `u32 dataLen`, bytes. No header or version.
+- `drive/backuplocal.ts` (the server builds and reads the archive; see `self-host-server.md`):
+  - `SaveLocalBackup`: `flushResources`, then `POST /api/backups/export` (every asset on the server, inlays included, plus a snapshot of the resources), streamed to a file through `LocalWriter.write`. The manifest (first record) is read from the stream head; assets the database references but the archive lacks are reported.
+  - `SavePartialLocalBackup`: the same with `partial`: character/group profile images, user icon, persona icons, background, folder images, preset images (no inlays, emotion images, additional assets, VITS, or CC assets); the manifest's `missing` list is reported.
+  - `LoadLocalBackup`: posts the chosen `File` to `POST /api/backups/import` and reloads. The server refuses Risu Account archives (`encryption.risudat`) and archives from before Phase 1 (`database.risudat`, no migration owed).
+- `globalApi.svelte.ts` `loadInternalBackup` ("Load Internal Backup" in `UserSettings.svelte`): lists the server snapshots (taken every 10 minutes while data changes, 20 kept), restores the chosen one, reloads.
 - `UI/Realm/RealmMain.svelte`: browse via `characterCards.ts:getRisuHub`.
 - `RealmPopUp.svelte`: detail, copy link, and `downloadRisuHub`.
 - `RealmHubIcon.svelte`, `RealmLicense.svelte` (`CCLicenseData`).
-- `SettingsExportButtons.svelte`: a redacted settings report (strips characters and keys), request logs, and statistics.
+- `SettingsExportButtons.svelte`: a redacted settings report (strips characters, keys, `irisDialogue`, `googleSearchCredentials`, and `pluginCustomStorage`), request logs, and statistics.
 
 ## Flows
 
@@ -42,28 +43,27 @@
 
 ## Coupling
 
-- Depends on `database.svelte.ts`, `globalApi.svelte.ts` (writers, `forageStorage`, fetch), `risuSave.ts` (`encodeRisuSaveLegacy`, `decodeRisuSave`), `characterCards.ts` (`hubURL` and hub APIs), `alert.ts`, `platform.ts`.
+- Depends on `database.svelte.ts`, `globalApi.svelte.ts` (`LocalWriter`, fetch), `storage/resourceClient.ts` (`exportBackup`, `importBackup`, `listBackups`, `restoreBackup`), `storage/resourceSync.svelte.ts` (`flushResources`), `characterCards.ts` (`hubURL` and hub APIs), `alert.ts`, `platform.ts`.
 
 ## Invariants
 
-- The local backup format has no header. `LocalWriter.writeBackup` and `LoadLocalBackup` must change together, and old archives should still load.
-- Backups no longer carry cold-storage records. `LoadLocalBackup` skips legacy `coldstorage_<uuid>.json` records from older archives and writes every other non-database record to `assets/`.
-- Unencrypted local archives must keep loading. Risu Account-encrypted archives (`encryption.risudat`) are rejected, not decrypted.
+- The archive format (version 2, `manifest.json` first) is defined by the server; the client only streams it and reads the manifest. Archives made before Phase 1 are not restorable.
+- A backup restore replaces every resource and only adds assets that do not exist yet; the app reloads afterwards because every revision the tab held is void (new epoch).
+- Private backups carry everything, including `googleSearchCredentials`, the Iris dialogue, plugin storage, and the plugin permission grants.
 - `getLocalNetworkRequestOptions` must stay paired with `isLocalNetworkUrl`. Browsers reject the local route.
 
 ## Recipes
 
-- Add a backup asset category: the asset map or scan in `SaveLocalBackup`/`SavePartialLocalBackup`, and `LoadLocalBackup` if record naming changes. Verify a `forageStorage` restore on the self-host server.
-- Change the archive format: `LocalWriter.writeBackup` and `LoadLocalBackup` together. Add a round-trip test.
+- Add a partial-backup asset category: `partialAssets` in `backuplocal.ts` (a full backup already takes every asset).
+- Change the archive format: the server side (see `self-host-server.md`) and `tryReadManifest` here. Add a round-trip test.
 - Change Realm: `characterCards.ts` hub functions and the matching `Realm*` component together. Check `hubURL` on Node (`/hub-proxy`).
 
 ## Tests
 
-- `src/ts/drive/backuplocal.test.ts`: `LoadLocalBackup` record parsing, rejection of account-encrypted archives, and the skip of legacy `coldstorage_<uuid>.json` records.
+- `src/ts/drive/backuplocal.test.ts`: over a fake `authFetch` and a fake `LocalWriter`: the flush before an export, the archive streamed to the file with the manifest read across chunk boundaries, the missing-asset report by character and role, no export when the flush fails, response cancelled when the writer cannot open, stream cancelled and writer aborted on a write failure, writer aborted on a broken download, a refused export reported; the partial backup's two confirmations and key list; `LoadLocalBackup` posting the file with the epoch header and reloading, the server's refusal shown, and a 412 reloading without an error.
 - Adjacent: `src/ts/network/localNetwork.test.ts`, `src/ts/network/proxyJobWs.test.ts`.
-- Not tested: the backup writers, Realm, settings redaction.
+- Not tested: `LocalWriter` itself (streamSaver), Realm, settings redaction.
 
 ## Known Hazards
 
-- `LoadLocalBackup` writes `assets/` plus the record name, which is untrusted. The writer strips names to their basename, but the importer does not sanitize path separators.
 - `MainMenu` and `RealmMain` render `hubAdditionalHTML` via `{@html}`.

@@ -1,9 +1,38 @@
-import localforage from "localforage";
+import { DBState } from "../stores.svelte";
 
-const pluginStorage = localforage.createInstance({
-    name: "plugin",
-    storeName: "plugin",
-});
+/** Where `SafeLocalPluginStorage` keeps its values inside `pluginCustomStorage` (saved with it). */
+export const SAFE_LOCAL_PLUGIN_STORAGE_KEY = "_safeLocalPluginStorage";
+
+const MAX_JSON_DEPTH = 256;
+
+/**
+ * Whether a value is plain JSON data: null, a boolean, a finite number, a string, or plain arrays and
+ * objects of those (no class instances, Dates, Blobs, Maps, typed arrays, functions, or cycles).
+ */
+export function isJsonValue(value: unknown, depth = 0, seen = new Set<object>()): boolean {
+    if (value === null || typeof value === "boolean" || typeof value === "string") {
+        return true;
+    }
+    if (typeof value === "number") {
+        return Number.isFinite(value);
+    }
+    if (typeof value !== "object" || depth >= MAX_JSON_DEPTH || seen.has(value)) {
+        return false;
+    }
+    seen.add(value);
+    try {
+        if (Array.isArray(value)) {
+            return value.every((item) => isJsonValue(item, depth + 1, seen));
+        }
+        const proto = Object.getPrototypeOf(value);
+        if (proto !== Object.prototype && proto !== null) {
+            return false;
+        }
+        return Object.values(value).every((item) => isJsonValue(item, depth + 1, seen));
+    } finally {
+        seen.delete(value);
+    }
+}
 
 export class SafeLocalStorage {
     getItem(key: string): string | null {
@@ -44,31 +73,70 @@ export class SafeLocalStorage {
     }
 }
 
+/**
+ * The plugin API's `getLocalPluginStorage()`: shared by every plugin and saved on the server inside
+ * `pluginCustomStorage` (it was browser-local before Phase 1). Values must be plain JSON data; any
+ * other value throws a `TypeError` and changes nothing. Reads return copies.
+ */
+/** The shared `_safeLocalPluginStorage` dictionary inside `pluginCustomStorage`, created on demand. */
+function safeLocalPluginValues(create: true): Record<string, unknown>;
+function safeLocalPluginValues(create: false): Record<string, unknown> | undefined;
+function safeLocalPluginValues(create: boolean): Record<string, unknown> | undefined {
+    if (create) {
+        DBState.db.pluginCustomStorage ??= {};
+        DBState.db.pluginCustomStorage[SAFE_LOCAL_PLUGIN_STORAGE_KEY] ??= {};
+    }
+    return DBState.db.pluginCustomStorage?.[SAFE_LOCAL_PLUGIN_STORAGE_KEY] as Record<string, unknown> | undefined;
+}
+
+/**
+ * Stores a JSON value under a plugin-chosen key. Any string is a valid key: `__proto__` gets an own
+ * property through a rebuilt dictionary, since assigning it would change the prototype instead
+ * (and Svelte's proxy cannot define it in place).
+ */
+export function setSafeLocalPluginValue(key: string, value: unknown) {
+    const values = safeLocalPluginValues(true);
+    if (key === "__proto__") {
+        DBState.db.pluginCustomStorage[SAFE_LOCAL_PLUGIN_STORAGE_KEY] = { ...values, ["__proto__"]: value };
+        return;
+    }
+    values[key] = value;
+}
+
 export class SafeLocalPluginStorage {
     __classType = "REMOTE_REQUIRED" as const;
+
     async getItem<T>(key: string): Promise<T | null> {
-        return await pluginStorage.getItem<T>(`safe_plugin_${key}`);
+        const values = safeLocalPluginValues(false);
+        const name = String(key);
+        if (!values || !Object.hasOwn(values, name)) {
+            return null;
+        }
+        return JSON.parse(JSON.stringify(values[name])) as T;
     }
     async setItem<T>(key: string, value: T): Promise<void> {
-        await pluginStorage.setItem(`safe_plugin_${key}`, value);
+        if (value === undefined) {
+            // LocalForage stored `undefined` as null; keep that.
+            setSafeLocalPluginValue(String(key), null);
+            return;
+        }
+        if (!isJsonValue(value)) {
+            throw new TypeError("getLocalPluginStorage() stores only JSON-serializable values");
+        }
+        setSafeLocalPluginValue(String(key), JSON.parse(JSON.stringify(value)));
     }
     async removeItem(key: string): Promise<void> {
-        await pluginStorage.removeItem(`safe_plugin_${key}`);
+        const values = safeLocalPluginValues(false);
+        if (values) {
+            delete values[String(key)];
+        }
     }
     async keys(): Promise<string[]> {
-        const keys: string[] = [];
-        await pluginStorage.iterate((value, key) => {
-            if (key.startsWith("safe_plugin_")) {
-                keys.push(key.substring("safe_plugin_".length));
-            }
-        });
-        return keys;
+        return Object.keys(safeLocalPluginValues(false) ?? {});
     }
     async clear(): Promise<void> {
-        const keys = await this.keys();
-        for (const key of keys) {
-            await this.removeItem(key);
-        }
+        DBState.db.pluginCustomStorage ??= {};
+        DBState.db.pluginCustomStorage[SAFE_LOCAL_PLUGIN_STORAGE_KEY] = {};
     }
 }
 

@@ -1033,7 +1033,6 @@ export const languageVietnamese = {
     useAdvancedEditor: "Sử dụng trình biên tập nâng cao",
     noWaitForTranslate: "Không chờ dịch",
     antiClaudeOverload: "Chống quá tải Claude",
-    activeTabChange: "Tab hiện tại bị vô hiệu hóa vì tab khác đang hoạt động. Để kích hoạt tab này, nhấp OK",
     maxSupaChunkSize: "Kích thước SupaMemory Chunk tối đa",
     addCharacter: "Thêm nhân vật",
     importFromRealm: "Chọn từ RisuRealm",

@@ -706,7 +706,7 @@ const deviceId = await Risuai.safeLocalStorage.getItem("device_id");
 
 ### Local Plugin Storage
 
-`getLocalPluginStorage()` returns a `SafeLocalPluginStorage` instance: device-local storage that supports any JSON-serializable value (unlike `safeLocalStorage` which is strings-only), with generic type support:
+`getLocalPluginStorage()` returns a `SafeLocalPluginStorage` instance: storage shared between plugins that holds plain JSON values (unlike `safeLocalStorage` which is strings-only), with generic type support. It is saved on the self-host server, so it follows the user to every browser and device (it was device-local in older versions; their values are moved to the server on the first start). A value that is not plain JSON (a `Date`, `Blob`, `Map`, typed array, class instance, or a non-finite number) is rejected with a `TypeError`:
 
 ```javascript
 const storage = await Risuai.getLocalPluginStorage();
@@ -728,7 +728,9 @@ await storage.clear();
 **Use `getLocalPluginStorage()` when:**
 
 - You need to store structured objects (not just strings)
-- Data should stay on one device
+- The data is shared between plugins
+
+Use `safeLocalStorage` for data that must stay on one device.
 
 ### Database Access
 

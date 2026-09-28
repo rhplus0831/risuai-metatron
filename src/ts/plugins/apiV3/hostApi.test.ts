@@ -60,7 +60,6 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     readImage: vi.fn(),
     getFileSrc: vi.fn(),
     downloadFile: vi.fn(),
-    requiresFullEncoderReload: { state: false },
 }));
 
 vi.mock("src/ts/alert", () => ({

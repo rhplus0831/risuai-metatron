@@ -975,7 +975,6 @@ export const languageChinese = {
     useAdvancedEditor: "使用高级编辑器",
     noWaitForTranslate: "不等待翻译",
     antiClaudeOverload: "防止 Claude 超载",
-    activeTabChange: "目前的标签已停用，因其他标签处于活动中。若要激活此标签，请按“确定”。",
     maxSupaChunkSize: "最大 SupaMemory Chunk 大小",
     addCharacter: "新增角色",
     importFromRealm: "从 RisuRealm 选择",

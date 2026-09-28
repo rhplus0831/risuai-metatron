@@ -6,6 +6,7 @@ import { serve } from "@hono/node-server";
 import { createServerContext } from "./app.ts";
 
 const rootDir = process.cwd();
+const SHUTDOWN_GRACE_MS = 30_000;
 const sslPath = path.join(rootDir, "server/ssl/certificate");
 
 async function getHttpsOptions(): Promise<{ key: Buffer; cert: Buffer } | null> {
@@ -44,6 +45,36 @@ async function startServer() {
     });
     context.attachWebSocket(server);
     context.startBackgroundTasks();
+
+    // Stop accepting connections, let a running snapshot, restore, import, or export finish and
+    // answer (`server.close` completes once every connection has ended; idle keep-alive ones are
+    // closed at once), then close the resource database. Connections still open at the
+    // SHUTDOWN_GRACE_MS deadline are destroyed, and their operations' cleanup is awaited.
+    let shuttingDown = false;
+    const shutdown = (signal: string) => {
+        if (shuttingDown) {
+            return;
+        }
+        shuttingDown = true;
+        console.log(`[Server] ${signal} received, shutting down...`);
+        const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+        const deadline = new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS).unref());
+        const disposed = context.dispose();
+        Promise.race([Promise.all([closed, disposed]), deadline])
+            .then(() => {
+                server.closeAllConnections?.();
+                return disposed;
+            })
+            .then(
+                () => process.exit(0),
+                (error) => {
+                    console.error("[Server] Shutdown failed:", error);
+                    process.exit(1);
+                },
+            );
+    };
+    process.on("SIGINT", () => shutdown("SIGINT"));
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 startServer().catch((error) => {

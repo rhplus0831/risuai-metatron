@@ -25,7 +25,8 @@ import { alertConfirm, alertError, alertMd, alertNormal, alertNormalWait, alertS
 import { hasher } from "./parser/parser.svelte";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
-import { decodeRisuSave, encodeRisuSaveLegacy, RisuSaveEncoder, type toSaveType } from "./storage/risuSave";
+import { startResourceSync } from "./storage/resourceSync.svelte";
+import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storage/resourceClient";
 import { AutoStorage } from "./storage/autoStorage";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
@@ -200,212 +201,14 @@ export async function loadAsset(id: string) {
     return (await forageStorage.getItem(id)) as unknown as Uint8Array;
 }
 
-let lastSave = "";
-export let saving = $state({
-    state: false,
-});
+export { saving } from "./storage/resourceSync.svelte";
 
 /**
- * Saves the current state of the database.
- *
- * @returns {Promise<void>} - A promise that resolves when the database has been saved.
+ * Starts saving `DBState.db` to the server resources, one record per collection and per character
+ * (`storage/resourceSync.svelte.ts`). Called once after the database is loaded.
  */
-export let requiresFullEncoderReload = $state({
-    state: false,
-});
-export async function saveDb() {
-    let changed = false;
-    let gotChannel = false;
-    const sessionID = v4();
-    let channel: BroadcastChannel;
-    if (window.BroadcastChannel) {
-        channel = new BroadcastChannel("risu-db");
-    }
-    if (channel) {
-        channel.onmessage = (ev) => {
-            if (ev.data === sessionID) {
-                return;
-            }
-            if (!gotChannel) {
-                gotChannel = true;
-                alertNormalWait(language.activeTabChange).then(() => {
-                    location.reload();
-                });
-            }
-        };
-    }
-
-    const changeTracker: toSaveType = {
-        character: [],
-        chat: [],
-        botPreset: false,
-        modules: false,
-        plugins: false,
-        pluginCustomStorage: false,
-    };
-
-    let encoder = new RisuSaveEncoder();
-    await encoder.init(getDatabase());
-
-    $effect.root(() => {
-        let selIdState = $state(0);
-
-        const debounceTime = 500; // 500 milliseconds
-        let saveTimeout: ReturnType<typeof setTimeout> | null = null;
-
-        selectedCharID.subscribe((v) => {
-            selIdState = v;
-        });
-
-        function saveTimeoutExecute() {
-            if (saveTimeout) {
-                clearTimeout(saveTimeout);
-            }
-            saveTimeout = setTimeout(() => {
-                changed = true;
-            }, debounceTime);
-        }
-
-        $effect(() => {
-            DBState.db.botPresetsId;
-            DBState.db.botPresets.length;
-            changeTracker.botPreset = true;
-            saveTimeoutExecute();
-        });
-        $effect(() => {
-            $state.snapshot(DBState.db.modules);
-            changeTracker.modules = true;
-            saveTimeoutExecute();
-        });
-        $effect(() => {
-            $state.snapshot(DBState.db.plugins);
-            changeTracker.plugins = true;
-            saveTimeoutExecute();
-        });
-        $effect(() => {
-            $state.snapshot(DBState.db.pluginCustomStorage);
-            changeTracker.pluginCustomStorage = true;
-            saveTimeoutExecute();
-        });
-        $effect(() => {
-            for (const key in DBState.db) {
-                if (
-                    key !== "characters" &&
-                    key !== "botPresets" &&
-                    key !== "modules" &&
-                    key !== "plugins" &&
-                    key !== "pluginCustomStorage"
-                ) {
-                    $state.snapshot(DBState.db[key]);
-                }
-            }
-            if (DBState?.db?.characters?.[selIdState]) {
-                for (const key in DBState.db.characters[selIdState]) {
-                    if (key !== "chats") {
-                        $state.snapshot(DBState.db.characters[selIdState][key]);
-                    }
-                }
-                $state.snapshot(DBState.db.characters[selIdState].chats);
-                if (changeTracker.character[0] !== DBState.db.characters[selIdState]?.chaId) {
-                    changeTracker.character.unshift(DBState.db.characters[selIdState]?.chaId);
-                }
-                if (
-                    changeTracker.chat[0]?.[0] !== DBState.db.characters[selIdState]?.chaId ||
-                    changeTracker.chat[0]?.[1] !==
-                        DBState.db.characters[selIdState]?.chats[DBState.db.characters[selIdState]?.chatPage].id
-                ) {
-                    changeTracker.chat.unshift([
-                        DBState.db.characters[selIdState]?.chaId,
-                        DBState.db.characters[selIdState]?.chats[DBState.db.characters[selIdState]?.chatPage].id,
-                    ]);
-                }
-            }
-            saveTimeoutExecute();
-        });
-    });
-
-    let savetrys = 0;
-    let lastDbData = new Uint8Array(0);
-    await sleep(1000);
-    while (true) {
-        if (!changed) {
-            await sleep(500);
-            continue;
-        }
-
-        saving.state = true;
-        changed = false;
-        try {
-            if (requiresFullEncoderReload.state) {
-                encoder = new RisuSaveEncoder();
-                await encoder.init(getDatabase(), {
-                    skipRemoteSavingOnCharacters: false,
-                });
-                requiresFullEncoderReload.state = false;
-            }
-
-            let toSave = safeStructuredClone(changeTracker);
-            changeTracker.character = changeTracker.character.length === 0 ? [] : [changeTracker.character[0]];
-            changeTracker.chat = changeTracker.chat.length === 0 ? [] : [changeTracker.chat[0]];
-            changeTracker.botPreset = false;
-            changeTracker.modules = false;
-            if (gotChannel) {
-                //Data is saved in other tab
-                await sleep(1000);
-                continue;
-            }
-            if (channel) {
-                channel.postMessage(sessionID);
-            }
-            let db = getDatabase();
-            if (!db.characters) {
-                await sleep(1000);
-                continue;
-            }
-
-            await encoder.set(db, toSave);
-            const encoded = encoder.encode();
-            if (!encoded) {
-                await sleep(1000);
-                continue;
-            }
-            const dbData = new Uint8Array(encoded);
-            await forageStorage.setItem("database/database.bin", dbData);
-            await forageStorage.setItem(`database/dbbackup-${(Date.now() / 100).toFixed()}.bin`, dbData);
-            await getDbBackups();
-            savetrys = 0;
-            await sleep(500);
-        } catch (error) {
-            savetrys += 1;
-            if (savetrys > 4) {
-                alertError(error);
-            } else {
-                console.error(error);
-            }
-        }
-
-        saving.state = false;
-    }
-}
-
-/**
- * Retrieves the database backups.
- *
- * @returns {Promise<number[]>} - A promise that resolves to an array of backup timestamps.
- */
-export async function getDbBackups() {
-    const keys = await forageStorage.keys();
-
-    const backups = keys
-        .filter((key) => key.startsWith("database/dbbackup-"))
-        .map((key) => parseInt(key.slice(18, -4)))
-        .sort((a, b) => b - a);
-
-    while (backups.length > 20) {
-        const last = backups.pop();
-        await forageStorage.removeItem(`database/dbbackup-${last}.bin`);
-    }
-    return backups;
+export function saveDb() {
+    startResourceSync();
 }
 
 let usingSw = false;
@@ -1465,37 +1268,37 @@ export class BlankWriter {
     }
 }
 
+/**
+ * Lets the user pick one of the server's resource snapshots (taken every 10 minutes while data
+ * changes, 20 kept) and restores it; the app then reloads.
+ */
 export async function loadInternalBackup() {
-    const keys = await forageStorage.keys();
-    let internalBackups: string[] = [];
-    for (const key of keys) {
-        if (key.includes("dbbackup-")) {
-            internalBackups.push(key);
-        }
-    }
-
-    const selectOptions = [
-        "Cancel",
-        ...internalBackups.map((a) => {
-            return new Date(
-                parseInt(a.replace("database/dbbackup-", "").replace("dbbackup-", "")) * 100,
-            ).toLocaleString();
-        }),
-    ];
-
-    const alertResult = parseInt(await alertSelect(selectOptions)) - 1;
-
-    if (alertResult === -1) {
+    let backups: Awaited<ReturnType<typeof listBackups>>;
+    try {
+        backups = await listBackups();
+    } catch (error) {
+        alertError(error instanceof Error ? error.message : String(error));
         return;
     }
 
-    const selectedBackup = internalBackups[alertResult];
+    const selectOptions = ["Cancel", ...backups.map((backup) => new Date(backup.createdAt).toLocaleString())];
 
-    const data = await forageStorage.getItem(selectedBackup);
+    const alertResult = parseInt(await alertSelect(selectOptions)) - 1;
 
-    setDatabase(await decodeRisuSave(Buffer.from(data) as unknown as Uint8Array));
+    if (!(alertResult >= 0 && alertResult < backups.length)) {
+        return;
+    }
 
-    alertNormal("Loaded backup");
+    try {
+        await restoreBackup(backups[alertResult].id);
+    } catch (error) {
+        if (!(error instanceof ResourceEpochMismatchError)) {
+            alertError(error instanceof Error ? error.message : String(error));
+            return;
+        }
+    }
+    await alertNormalWait("Loaded backup");
+    location.reload();
 }
 
 /**

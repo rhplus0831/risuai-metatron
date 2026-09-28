@@ -1039,8 +1039,6 @@ export const languageSpanish = {
     useAdvancedEditor: "Usar Editor Avanzado",
     noWaitForTranslate: "Sin Espera para Traducir",
     antiClaudeOverload: "Anti-Sobrecarga de Claude",
-    activeTabChange:
-        "La pestaña actual se desactivó porque otra pestaña está activa. para activar esta pestaña, haz clic en Aceptar",
     maxSupaChunkSize: "Tamaño Máximo del Chunk de SupaMemoria",
     addCharacter: "Agregar Personaje",
     importFromRealm: "Elegir desde RisuRealm",

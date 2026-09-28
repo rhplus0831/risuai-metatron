@@ -138,3 +138,8 @@ Observations for Phase 1:
   exclusion set for the `root` kind.
 - `list` returns records in creation order (`seq`). That is not a client ordering contract;
   `characters` order needs its own key when Phase 1 splits them.
+
+Resolved in Phase 1: the `root` kind excludes `characters`, `botPresets`, `modules`, `plugins`, and
+`pluginCustomStorage` (`ROOT_EXCLUDED_KEYS`); characters load in creation order, which matches the
+old block order because nothing reorders `db.characters`; the resource id rule was relaxed (see the
+Phase 1 phase file).

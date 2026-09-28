@@ -101,7 +101,7 @@ describe("proxy stream jobs", () => {
         vi.restoreAllMocks();
     });
     afterEach(async () => {
-        server?.close();
+        await server?.close();
         if (node) {
             node.closeAllConnections();
             await new Promise((resolve) => node?.close(resolve));
@@ -264,7 +264,7 @@ describe("proxy stream jobs", () => {
         const record = await upstream.received(1);
         await sleep(50);
         expect(record.closed).toBe(false);
-        server.context.dispose();
+        await server.context.dispose();
         await waitFor(() => record.closed);
     });
 });

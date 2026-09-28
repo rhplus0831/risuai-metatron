@@ -1055,8 +1055,6 @@ export const languageGerman = {
     useAdvancedEditor: "Erweiterten Editor verwenden",
     noWaitForTranslate: "Nicht auf Übersetzung warten",
     antiClaudeOverload: "Anti-Claude-Überlastung",
-    activeTabChange:
-        "Aktueller Tab ist inaktiv, da ein anderer Tab aktiv ist. Um diesen Tab zu aktivieren, klicken Sie auf OK",
     maxSupaChunkSize: "Maximale SupaMemory-Chunk-Größe",
     addCharacter: "Charakter hinzufügen",
     importFromRealm: "Aus RisuRealm auswählen",

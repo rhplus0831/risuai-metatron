@@ -1036,7 +1036,6 @@ export const languageKorean = {
     useAdvancedEditor: "고급 에디터 사용",
     noWaitForTranslate: "번역 기다리지 않기",
     antiClaudeOverload: "Claude 오버로드 방지",
-    activeTabChange: "현재 탭이 비활성화되었습니다. OK를 누르면 탭이 다시 활성화됩니다.",
     maxSupaChunkSize: "최대 수파메모리 청크 크기",
     addCharacter: "캐릭터 추가",
     importFromRealm: "RisuRealm에서 고르기",

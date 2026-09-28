@@ -16,8 +16,8 @@ afterAll(() => {
     upstream.close();
     vi.restoreAllMocks();
 });
-afterEach(() => {
-    server?.close();
+afterEach(async () => {
+    await server?.close();
     upstream.requests.length = 0;
 });
 

@@ -1123,7 +1123,8 @@ export const languageEnglish = {
     useAdvancedEditor: "Use Advanced Editor",
     noWaitForTranslate: "No Wait for Translate",
     antiClaudeOverload: "Anti-Claude Overload",
-    activeTabChange: "Current tab is inactivated since other tab is active. To activate this tab, click OK",
+    resourceReloaded: "Another tab or device changed this data. The latest version was loaded.",
+    resourceRestored: "The server data was restored from a backup. The app will reload.",
     maxSupaChunkSize: "Max SupaMemory Chunk Size",
     addCharacter: "Add Character",
     importFromRealm: "Choose from RisuRealm",
@@ -1582,7 +1583,6 @@ export const languageEnglish = {
         save: "Save",
         cancel: "Cancel",
     },
-    enableRemoteSaving: "Enable Remote Saving",
     blockquoteStyling: "Blockquote Styling",
     dynamicModelRegistry: "Dynamic Model Registry",
     confirmInstallPluginViaPlugin:
