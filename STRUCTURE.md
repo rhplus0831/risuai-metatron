@@ -45,7 +45,8 @@ Verification
   are the standard gates. `pnpm build` bundles. Service-worker and server paths have no
   automated tests and need manual verification.
 - V2. Tests are `*.test.ts`, colocated next to the code or in a sibling `tests/` folder.
-  `vitest.setup.ts` mocks KaTeX and replaces `safeStructuredClone` with a JSON clone.
+  `vitest.setup.ts` mocks KaTeX, replaces `safeStructuredClone` with a JSON clone, and patches
+  happy-dom's `Node.prototype.nodeName` getter for DOMPurify (see `build-test-platforms.md`).
 
 Data and persistence (details: `docs/structure/persistence.md`)
 

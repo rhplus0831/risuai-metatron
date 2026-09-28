@@ -44,7 +44,12 @@ Config files:
   - Alias `src` → `/src`. Workers are built as `es`.
   - Neither `define` nor `manualChunks` is set.
 - `vitest.config.ts`: Svelte plugin, `src` alias, browser resolve conditions, `happy-dom`, setup file `vitest.setup.ts`, default include pattern.
-- `vitest.setup.ts`: mocks KaTeX and sets `globalThis.safeStructuredClone` to a JSON clone.
+- `vitest.setup.ts`: mocks KaTeX, sets `globalThis.safeStructuredClone` to a JSON clone, and
+  patches happy-dom's `Node.prototype.nodeName` getter so it dispatches by node type. DOMPurify
+  > = 3.4.6 reads tag names through that prototype getter, which happy-dom leaves returning `""`
+  > (capricorn86/happy-dom#2182); without the patch the sanitizer strips every element under
+  > happy-dom. The patch is guarded, runs only under the happy-dom environment, and its contract is
+  > pinned by `vitest.setup.test.ts`. Remove both once happy-dom fixes the getter.
 - `tsconfig.json`: includes `src/**/*` and `public/sw.js`.
 
 Environment variables:
@@ -98,6 +103,7 @@ Test inventory:
 | Storage and core | `src/ts/chatLoadPages.test.ts`, `src/ts/sourcemap.test.ts`, `src/ts/tokenizer.test.ts`, `src/ts/storage/{autoStorage,database.setDatabase}.test.ts`                                                                          |
 | Plugins          | `src/ts/plugins/apiV3/pluginStorage.test.ts`                                                                                                                                                                                 |
 | Backup           | `src/ts/drive/backuplocal.test.ts`                                                                                                                                                                                           |
+| Test harness     | `vitest.setup.test.ts` (happy-dom `nodeName` shim contract and the accessors DOMPurify captures)                                                                                                                             |
 | Network          | `src/ts/network/{localNetwork,proxyJobWs}.test.ts`                                                                                                                                                                           |
 | Media            | `src/ts/media/tests/imageType.test.ts`, `src/ts/media/compressImage/tests/compressImage.test.ts`                                                                                                                             |
 | Translator       | `src/ts/translator/{edittransRegex,presets}.test.ts`                                                                                                                                                                         |
