@@ -1,16 +1,6 @@
 #!/usr/bin/env sh
 set -eu
 
-# Optional build-time flags. Uncomment or pass them before running this script.
-# These values are baked into the frontend during `pnpm run build`.
-#
-# Advertisement configuration:
-# Optional Google AdSense client and slot IDs for desktop and mobile ad units.
-# export VITE_AD_CLIENT="${VITE_AD_CLIENT:-}"
-# export VITE_AD_CLIENT_MOBILE="${VITE_AD_CLIENT_MOBILE:-}"
-# export VITE_AD_SLOT="${VITE_AD_SLOT:-}"
-# export VITE_AD_SLOT_MOBILE="${VITE_AD_SLOT_MOBILE:-}"
-
 npm install -g pnpm@10.34.1
 pnpm install
 pnpm run build

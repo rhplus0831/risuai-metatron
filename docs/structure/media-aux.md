@@ -16,7 +16,7 @@
   - `src/ts/media/*`
   - `src/ts/voice.ts` (unused)
   - `src/ts/3d/*` (unused)
-  - `src/lib/UI/{3DLoader,Googli}.svelte` (unused)
+  - `src/lib/UI/3DLoader.svelte` (unused)
   - `src/lib/Playground/*`, except `PlaygroundMenu` (→ `ui-theming.md`), `PlaygroundEmbedding` (→ `memory.md`), `PlaygroundMCP` (→ `plugins-mcp.md`), and `PlaygroundRegex`/`Syntax`/`Parser` (→ `scripts-triggers.md`)
   - `src/lib/Setting/Pages/Language/TranslatorPresetSettings.svelte`
   - `src/lib/Setting/Pages/Model/AuxModelSelectors.svelte`

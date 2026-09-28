@@ -1,16 +1,6 @@
 @echo off
 setlocal
 
-REM Optional build-time flags. Uncomment or set them before running this script.
-REM These values are baked into the frontend during `pnpm run build`.
-REM
-REM Advertisement configuration:
-REM Optional Google AdSense client and slot IDs for desktop and mobile ad units.
-REM if not defined VITE_AD_CLIENT set "VITE_AD_CLIENT="
-REM if not defined VITE_AD_CLIENT_MOBILE set "VITE_AD_CLIENT_MOBILE="
-REM if not defined VITE_AD_SLOT set "VITE_AD_SLOT="
-REM if not defined VITE_AD_SLOT_MOBILE set "VITE_AD_SLOT_MOBILE="
-
 call npm install -g pnpm@10.34.1
 call pnpm install
 call pnpm run build
