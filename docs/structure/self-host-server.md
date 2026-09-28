@@ -9,7 +9,7 @@
   - The launcher scripts.
   - The edge proxy functions.
   - The client/server contract, seen from the server side.
-- Paths: `server/{src/*,tsconfig.json,ssl/*}`, `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `server.sh`, `server.bat`, `public/functions/{proxy,proxy2}.js`.
+- Paths: `server/{src/*,tsconfig.json,ssl/*}`, `Dockerfile`, `.dockerignore`, `server.sh`, `server.bat`, `public/functions/{proxy,proxy2}.js`.
 - Client counterparts, owned by other guides:
   - `src/ts/storage/nodeStorage.ts` → `persistence.md`.
   - `globalApi.svelte.ts` `fetchNative`/`fetchViaProxyJobWs` → `global-api.md`.
@@ -30,7 +30,6 @@ The server is TypeScript run directly by Node's type stripping (`pnpm runserver`
 - `server/src/body.ts` `readJsonBody`: JSON body parsing with Express-like defaults.
 - `server/ssl/Generate Certificate.sh|.bat`, `ca.conf`, `server.conf`: generate a local CA and server certificate into `server/ssl/certificate/` (run from `server/ssl/`). `main.ts` uses HTTPS when `server.key`/`server.crt` exist there, relative to `cwd`.
 - `Dockerfile`: Node 24, pnpm 10.34.1, multi-stage build of `dist`. Copies `server/` + `dist/` + prod `node_modules`, `EXPOSE 6001`, `CMD pnpm runserver`.
-- `docker-compose.yml`: GHCR image, `6001:6001`, volume `risuai-save:/app/save`.
 - `server.sh`/`server.bat`: install, build, run. The env exports (legal, ads) are commented out.
 - `public/functions/proxy.js`, `proxy2.js`: edge `onRequest` open proxies with no auth or allowlist. `proxy2` prefers the `risu-url` header.
 
@@ -185,7 +184,7 @@ Process memory, inside the `createServerContext` closure:
   - Verify first run, restart, token expiry, and unknown keys.
 - Change proxy policy: server `sanitizeTargetUrl`, client `localNetwork.ts` + `fetchNative`, and the edge `proxy*.js`.
 - Change streaming: `proxyStreamJobs.ts` (`runJob`, `attachWebSocket`, `onConnection`), `ProxyJobWsEvent`, `fetchViaProxyJobWs`, and `proxyJobWs.test.ts`.
-- Change packaging: `Dockerfile`, `docker-compose.yml`, and `package.json` `runserver` together.
+- Change packaging: `Dockerfile`, the README Docker steps, and `package.json` `runserver` together.
 
 ## Tests
 
