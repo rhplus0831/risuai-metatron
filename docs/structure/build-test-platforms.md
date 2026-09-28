@@ -11,7 +11,7 @@
   - version bumping,
   - repo dotfiles.
 - Paths:
-  - Root config: `package.json`, `vite.config.ts`, `vitest.config.ts`, `vitest.setup.ts`, `tsconfig.json`, `tsconfig.node.json`, `version.json`, `t.py`
+  - Root config: `package.json`, `vite.config.ts`, `vitest.config.ts`, `vitest.setup.ts`, `tsconfig.json`, `tsconfig.node.json`, `version.json`
   - Dotfiles: `.gitignore`, `.ignore`, `.gitattributes`, `.npmrc`, `.vscode/`
   - `public/sw.js`, `public/manifest.json`
   - `util/risuUserscript.user.js`
@@ -110,4 +110,3 @@ Test inventory:
 ## Known Hazards
 
 - The service-worker share branch calls `registerCache` with a relative URL, and `new URL(urlr)` has no base (unverified).
-- `package.json` `sync`/`electron` point to a missing `electron/` directory. `t.py` is an unrelated toy.
