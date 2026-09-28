@@ -24,7 +24,7 @@
 Plugins:
 
 - `plugins/plugins.svelte.ts`: plugin install and loading.
-  - `RisuPlugin` (the persisted shape). New imports store `version: '3.0'`; saved entries with any other version stay in the list but never load.
+  - `RisuPlugin` (the persisted shape, declared in `shared/plugins.ts`). New imports store `version: '3.0'`; saved entries with any other version stay in the list but never load.
   - `importPlugin`: parses the `//@name`, `//@api`, `//@display-name`, `//@arg`/`//@risu-arg`, `//@link`, `//@update-url`, `//@version`, `//@allowed-ipc` headers, then transpiles TypeScript. Rejects any plugin whose `//@api` tokens do not include `3.0` (`pluginApiVersionUnsupported`).
   - `loadPlugins`: `clearPluginHooks`, then `loadV3Plugins` with the enabled `'3.0'` plugins.
   - `allowedDbKeys` (the DB keys the plugin DB API reads and writes directly), `handlePluginInstallViaPlugin`.
@@ -112,7 +112,7 @@ MCP:
   2. Declare it in `risuai.d.ts:RisuaiPluginAPI`.
   3. Document it in `plugins.md`.
   4. Verify with a real v3 plugin, including the callback and error paths.
-- Add plugin metadata: `importPlugin`, `RisuPlugin`, `PluginSettings.svelte`, `risuai.d.ts` comments, and `plugins.md`.
+- Add plugin metadata: `importPlugin`, `RisuPlugin` (`shared/plugins.ts`), `PluginSettings.svelte`, `risuai.d.ts` comments, and `plugins.md`.
 - Add an internal MCP server: subclass `MCPClientLike` (`getToolList`, `callTool`), add a switch case in `mcp.ts:initializeMCPs`, and optionally add a choice to `importMCPModule`.
 - Change the tool loop: `mcp.ts` `getTools`/`callTool` plus every adapter (`openAI/requests.ts`, `openAI/responses.ts`, `google.ts`, `anthropic.ts`). Update `requests.responses.test.ts`.
 

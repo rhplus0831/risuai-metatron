@@ -32,9 +32,9 @@
 ## Files
 
 - `index.svelte.ts`: the core pipeline.
-  - Exports `sendChat(chatProcessIndex, {signal, continue, preview, ...})`, `OpenAIChat`, `MultiModal`, `doingChat`, `chatProcessStage`, `abortChat`, `requestTokenPart`.
+  - Exports `sendChat(chatProcessIndex, {signal, continue, preview, ...})`, `OpenAIChat` and `MultiModal` (declared in `shared/openai.ts`), `doingChat`, `chatProcessStage`, `abortChat`, `requestTokenPart`.
   - Internal: `runCurrentChatFunction`, `positionParser`, `resolvePosition`, `systemizeChat`, `runChatOutputListeners`.
-- `prompt.ts`: prompt types and legacy-preset conversion.
+- `prompt.ts`: `tokenizePreset` and legacy-preset conversion; re-exports the prompt types declared in `shared/prompt.ts`.
   - Types: `PromptItem` (discriminated union), `PromptSettings`, `PromptRole`.
   - `tokenizePreset`.
   - Legacy import: `detectPromptJSONType`, `stChatConvert`, `promptConvertion`.
@@ -170,7 +170,7 @@ Not in `sendChat`:
 
 ## Recipes
 
-- Add a prompt card type: `prompt.ts` (`PromptItem`), both `sendChat` switches, `tokenizePreset`, `templateCheck`, `PromptDataItem.svelte`, `normalizePromptTemplate`. Verify the prompt preview (DevTool), token counts, and a preset reload.
+- Add a prompt card type: `shared/prompt.ts` (`PromptItem`), both `sendChat` switches, `tokenizePreset`, `templateCheck`, `PromptDataItem.svelte`, `normalizePromptTemplate`. Verify the prompt preview (DevTool), token counts, and a preset reload.
 - Change input processing: `DefaultChatScreen.sendMain`, plus `scripts.ts` or `triggers.ts` input handling. Verify character and group chats and slash-command fallthrough.
 - Add a response command or inlay: `inlayScreen.ts:runInlayScreen`, both the streaming and non-streaming branches in `sendChat`, and `files/inlays.ts` or the parser.
 - Change lore activation: `lorebook.svelte.ts` (search, decorators, budget) and the position mapping in `sendChat`.

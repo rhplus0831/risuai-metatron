@@ -6,27 +6,9 @@ import { DBState, hotReloading } from "../stores.svelte";
 import { loadV3Plugins } from "./apiV3/v3.svelte";
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
 import { clearPluginHooks } from "./pluginHooks";
+import type { RisuPlugin, ProviderPluginCustomLink } from "../../../shared/plugins.ts";
 
-interface ProviderPlugin {
-    name: string;
-    displayName?: string;
-    script: string;
-    arguments: { [key: string]: "int" | "string" | string[] };
-    realArg: { [key: string]: number | string };
-    version?: "3.0";
-    customLink: ProviderPluginCustomLink[];
-    argMeta: { [key: string]: { [key: string]: string } };
-    versionOfPlugin?: string;
-    updateURL?: string;
-    enabled?: boolean;
-    allowedIPC?: string[];
-}
-interface ProviderPluginCustomLink {
-    link: string;
-    hoverText?: string;
-}
-
-export type RisuPlugin = ProviderPlugin;
+export type { RisuPlugin } from "../../../shared/plugins.ts";
 
 export async function createBlankPlugin() {
     await importPlugin(

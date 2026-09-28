@@ -28,28 +28,9 @@ import { DBState, HideIconStore, moduleBackgroundEmbedding, ReloadGUIPointer } f
 import { get } from "svelte/store";
 import { convertCharacterToModule, convertModuleToCharacter } from "../interchangeability";
 import { exportCharacterCard, importCharacterProcess } from "../characterCards";
+import type { RisuModule } from "../../../shared/modules.ts";
 
-export interface MCPModule {
-    url: string;
-}
-
-export interface RisuModule {
-    name: string;
-    description: string;
-    lorebook?: loreBook[];
-    regex?: customscript[];
-    cjs?: string;
-    trigger?: triggerscript[];
-    id: string;
-    lowLevelAccess?: boolean;
-    hideIcon?: boolean;
-    backgroundEmbedding?: string;
-    assets?: [string, string, string][];
-    namespace?: string;
-    customModuleToggle?: string;
-    mcp?: MCPModule;
-    icon?: string;
-}
+export type { MCPModule, RisuModule } from "../../../shared/modules.ts";
 
 export async function exportModule(
     module: RisuModule,

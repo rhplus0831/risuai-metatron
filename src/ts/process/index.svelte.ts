@@ -50,18 +50,9 @@ import { hypaMemoryV3 } from "./memory/hypav3";
 import { getModuleAssets, getModuleToggles } from "./modules";
 import { readImage } from "../globalApi.svelte";
 import { pluginHooks } from "../plugins/pluginHooks";
+import type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
 
-export interface OpenAIChat {
-    role: "system" | "user" | "assistant" | "function";
-    content: string;
-    memo?: string;
-    name?: string;
-    removable?: boolean;
-    attr?: string[];
-    multimodals?: MultiModal[];
-    thoughts?: string[];
-    cachePoint?: boolean;
-}
+export type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
 
 function findMessageIndexByChatId(chat: Chat, chatId?: string) {
     if (!chatId) {
@@ -97,13 +88,6 @@ async function runChatOutputListeners(
             console.error(e);
         }
     }
-}
-
-export interface MultiModal {
-    type: "image" | "video" | "audio" | "signature";
-    base64: string;
-    height?: number;
-    width?: number;
 }
 
 export interface requestTokenPart {

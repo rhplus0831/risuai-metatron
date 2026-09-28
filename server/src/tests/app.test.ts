@@ -360,8 +360,9 @@ describe("storage routes", () => {
 
         const keys = ["database/database.bin", "assets/empty", ...escaped.map(([key]) => key)];
         expect((await list(s)).sort()).toEqual([...keys].sort());
-        // Nothing lands flat in save/: only the server folder, the staging folder, and the namespaces.
-        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "assets", "database", "remotes", "server"]);
+        // Nothing lands flat in save/: only the server folder, the staging folder, the resource database
+        // folder, and the namespaces.
+        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "assets", "data", "database", "remotes", "server"]);
         expect(readdirSync(path.join(s.savePath, ".tmp"))).toEqual([]);
     });
 
@@ -393,7 +394,7 @@ describe("storage routes", () => {
             await invalidPath(await remove(s, hex(key)), `remove ${key}`);
         }
         expect(readFileSync(path.join(s.savePath, "server", "password"), "utf-8")).toBe("pw");
-        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "server"]);
+        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "data", "server"]);
         expect(readdirSync(path.join(s.savePath, "server")).sort()).toEqual([
             "known_public_key_hashes.json",
             "password",
@@ -417,7 +418,7 @@ describe("storage routes", () => {
         const noHeader = await s.app.request("/api/write", { method: "POST", headers: await s.headers(), body: "x" });
         expect(noHeader.status).toBe(400);
         expect(await noHeader.json()).toEqual({ error: "File path required" });
-        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "server"]);
+        expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "data", "server"]);
     });
 
     it("lists only canonical regular files and reads other entries as missing", async () => {

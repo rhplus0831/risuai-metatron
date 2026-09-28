@@ -2,7 +2,6 @@ import { type memoryVector, HypaProcesser, similarity } from "./hypamemory";
 import { isContextModel, getContextProvider } from "./contextualEmbedding";
 import { TaskRateLimiter } from "./taskRateLimiter";
 import { type EmbeddingText, type EmbeddingResult, HypaProcessorV2 } from "./hypamemoryv2";
-import { type DisplayMode as ModalDisplayMode } from "src/lib/Others/HypaV3Modal/types";
 import { parseChatML } from "src/ts/parser/chatML";
 import { type Chat, type character, type groupChat, getDatabase } from "src/ts/storage/database.svelte";
 import { type OpenAIChat } from "../index.svelte";
@@ -11,71 +10,20 @@ import { chatCompletion, unloadEngine } from "../webllm";
 import { hypaV3ProgressStore } from "src/ts/stores.svelte";
 import { type ChatTokenizer } from "src/ts/tokenizer";
 import { inlayTokenRegex } from "src/ts/util/inlayTokens";
+import type {
+    HypaV3Preset,
+    HypaV3Settings,
+    HypaV3Data,
+    SerializableHypaV3Data,
+    Summary,
+} from "../../../../shared/memory.ts";
 
-export interface HypaV3Preset {
-    name: string;
-    settings: HypaV3Settings;
-}
-
-export interface HypaV3Settings {
-    summarizationModel: string;
-    summarizationPrompt: string;
-    reSummarizationPrompt: string;
-    memoryTokensRatio: number;
-    extraSummarizationRatio: number;
-    maxChatsPerSummary: number;
-    recentMemoryRatio: number;
-    similarMemoryRatio: number;
-    enableSimilarityCorrection: boolean;
-    preserveOrphanedMemory: boolean;
-    processRegexScript: boolean;
-    doNotSummarizeUserMessage: boolean;
-    summaryChunkSeparator: string;
-    // Experimental
-    useExperimentalImpl: boolean;
-    summarizationRequestsPerMinute: number;
-    summarizationMaxConcurrent: number;
-    embeddingRequestsPerMinute: number;
-    embeddingMaxConcurrent: number;
-    alwaysToggleOn: boolean;
-    queryChatCount: number;
-}
-
-interface HypaV3Data {
-    summaries: Summary[];
-    categories?: { id: string; name: string }[];
-    lastSelectedSummaries?: number[]; // legacy
-    metrics?: {
-        lastImportantSummaries: number[];
-        lastRecentSummaries: number[];
-        lastSimilarSummaries: number[];
-        lastRandomSummaries: number[];
-    };
-    modalSettings?: {
-        displayMode: ModalDisplayMode;
-        displayRangeFrom: number;
-        displayRangeTo: number;
-        displayRecentCount: number;
-        displayImportant: boolean;
-        displaySelected: boolean;
-    };
-}
-
-export interface SerializableHypaV3Data extends Omit<HypaV3Data, "summaries"> {
-    summaries: SerializableSummary[];
-}
-
-interface Summary {
-    text: string;
-    chatMemos: Set<string>;
-    isImportant: boolean;
-    categoryId?: string;
-    tags?: string[];
-}
-
-export interface SerializableSummary extends Omit<Summary, "chatMemos"> {
-    chatMemos: string[];
-}
+export type {
+    HypaV3Preset,
+    HypaV3Settings,
+    SerializableHypaV3Data,
+    SerializableSummary,
+} from "../../../../shared/memory.ts";
 
 interface SummaryChunk {
     text: string;

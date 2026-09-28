@@ -7,7 +7,7 @@ no standalone browser build (the client without the server shows only a notice),
 they drift. Grep the identifier instead.
 
 Last full audited: 2026-09-27.
-Last scoped updated: 2026-09-28.
+Last scoped updated: 2026-09-29.
 
 ## Agent Read Protocol
 
@@ -32,7 +32,8 @@ Tooling
   TypeScript directly through Node type stripping).
 - T2. Import alias `src/...` resolves to `/src` in both Vite and Vitest (`vite.config.ts` and
   `vitest.config.ts` `resolve.alias`). Both alias imports and relative imports are used; match the
-  surrounding file.
+  surrounding file. The root `shared/` folder has no alias: import it by a relative path with the
+  `.ts` extension (`tsconfig.json` sets `allowImportingTsExtensions`).
 - T3. Svelte 5 runes (`$state`, `$derived`, `$effect`) may appear only in `*.svelte` and
   `*.svelte.ts` files. Legacy `writable` stores coexist with runes, so follow the local file's
   pattern and do not convert store boundaries casually.
@@ -53,7 +54,9 @@ Data and persistence (details: `docs/structure/persistence.md`)
 
 - D1. The live database is the single rune `DBState.db` (`src/ts/stores.svelte.ts`). Its shapes
   (`Database`, `character`, `groupChat`, `Chat`, `Message`, `botPreset`) live in
-  `src/ts/storage/database.svelte.ts`.
+  `shared/database.ts` and are re-exported by `src/ts/storage/database.svelte.ts`. `shared/` is
+  compiled by both the client and the strict server project: no DOM types, runes, or enums, and
+  only relative `.ts` imports between `shared/` files (`persistence.md`).
 - D2. A new persisted field needs both a type entry and a backward-compatible default or migration
   in `setDatabase`. `setDatabaseLite` only assigns and does not normalize.
 - D3. Never rename persisted keys, including misspelled ones: `seperateModels`,
@@ -141,7 +144,7 @@ The first matching row wins. Scan from the top.
 | `src/ts/process/request/`, `src/ts/process/models/`, `src/ts/process/webllm.ts`, `src/ts/model/`, `src/ts/horde/`, `src/ts/tokenizer.ts`, `src/lib/UI/Model*.svelte`, `src/lib/UI/NanoGPT*`, `src/lib/UI/OpenrouterProviderList.svelte`, `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte`                                                                                                                                                                 | llm-requests                            |
 | `src/ts/process/mcp/`, `src/ts/plugins/`, `plugins.md`, `src/lib/Setting/Pages/PluginSettings.svelte`, `src/lib/Others/Plugin*.svelte`, `src/lib/Playground/PlaygroundMCP.svelte`                                                                                                                                                                                                                                                                                     | plugins-mcp                             |
 | `src/ts/process/scripts.ts`, `src/ts/process/triggers.ts`, `src/ts/process/scriptings.ts`, `src/lib/SideBars/Scripts/`, `src/lib/Setting/Pages/GlobalRegex.svelte`, `src/lib/Playground/Playground{Regex,Syntax,Parser}.svelte`, `public/lua/`                                                                                                                                                                                                                        | scripts-triggers                        |
-| `src/ts/storage/`, `src/ts/chatLoadPages.ts`                                                                                                                                                                                                                                                                                                                                                                                                                          | persistence                             |
+| `src/ts/storage/`, `src/ts/chatLoadPages.ts`, `shared/` (shapes; semantics stay with the original module's guide)                                                                                                                                                                                                                                                                                                                                                     | persistence                             |
 | `src/ts/process/processzip.ts`, `src/ts/process/modules.ts`, `src/ts/characterCards.ts`, `src/ts/characters.ts`, `src/ts/persona.ts`, `src/ts/pngChunk.ts`, `src/ts/interchangeability.ts`, `src/lib/SideBars/CharConfig.svelte`, `src/lib/SideBars/LoreBook/`, `src/lib/Setting/Pages/Module/`, `src/lib/Setting/Pages/PersonaSettings.svelte`, `src/lib/Setting/listedPersona.svelte`, `src/lib/Others/GridCatalog.svelte`, `src/lib/ChatScreens/AssetInput.svelte` | characters-modules                      |
 | `src/lib/Playground/PlaygroundMenu.svelte`                                                                                                                                                                                                                                                                                                                                                                                                                            | ui-theming                              |
 | `src/ts/process/tts*.ts`, `src/ts/process/stableDiff.ts`, `src/ts/translator/`, `src/ts/media/`, `src/ts/voice.ts`, `src/ts/3d/`, `src/lib/Playground/` (the remaining tools), `src/lib/UI/3DLoader.svelte`, `src/lib/Setting/Pages/Language/TranslatorPresetSettings.svelte`, `src/lib/Setting/Pages/Model/AuxModelSelectors.svelte`                                                                                                                                 | media-aux                               |

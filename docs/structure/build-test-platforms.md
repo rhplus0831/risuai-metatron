@@ -48,7 +48,8 @@ Config files:
   > (capricorn86/happy-dom#2182); without the patch the sanitizer strips every element under
   > happy-dom. The patch is guarded, runs only under the happy-dom environment, and its contract is
   > pinned by `vitest.setup.test.ts`. Remove both once happy-dom fixes the getter.
-- `tsconfig.json`: includes `src/**/*` and `public/sw.js`.
+- `tsconfig.json`: includes `src/**/*`, `shared/**/*.ts`, and `public/sw.js`. `noEmit: true` and `allowImportingTsExtensions: true`: Vite builds the client and Node runs the server, so `tsc` only type-checks, and imports of `shared/` use explicit `.ts` extensions.
+- `server/tsconfig.json`: strict, `erasableSyntaxOnly`, `lib: es2023` without DOM; includes `src/**/*.ts` and `../shared/**/*.ts`, so `pnpm check` strict-checks the shared persisted types. `tsconfig.node.json` (Vite config only) has a pre-existing `module: ESNext` / `moduleResolution: nodenext` mismatch (TS5110 under `tsc -p`); `pnpm check` does not build it.
 
 Environment variables:
 

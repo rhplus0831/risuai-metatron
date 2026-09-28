@@ -53,7 +53,7 @@ Translation:
   - `applyEdittransRegex`: collects `presetRegex`, then module scripts, then character scripts, keeping `type === 'edittrans'`.
   - Also `translateVox`, `isExpTranslator`.
 - `translator/bergamotTranslator.ts` `bergamotTranslate`: local Mozilla models, cached in IndexedDB `firefox-translations-models`.
-- `translator/presets.ts`: `TranslatorPreset {name, prompt, maxResponse}`, `normalizeTranslatorPresetState`, `syncCurrentTranslatorPresetToLegacyFields`, and the `.risutl` codec (`encodeTranslatorPresetFile`/`decodeTranslatorPresetFile`: encrypted msgpack, `translatorPresetVersion: 1`, `type: 'translator-preset'`).
+- `translator/presets.ts`: `TranslatorPreset {name, prompt, maxResponse}` (declared in `shared/settings.ts`), `normalizeTranslatorPresetState`, `syncCurrentTranslatorPresetToLegacyFields`, and the `.risutl` codec (`encodeTranslatorPresetFile`/`decodeTranslatorPresetFile`: encrypted msgpack, `translatorPresetVersion: 1`, `type: 'translator-preset'`).
 
 Media:
 

@@ -24,7 +24,7 @@
 - `src/ts/hotkey.ts`:
   - `initHotkey`: keydown dispatch switch.
   - `hotkeyMatches`.
-- `src/ts/defaulthotkeys.ts`: the `Hotkey` type and `defaultHotkeys`.
+- `src/ts/defaulthotkeys.ts`: `defaultHotkeys`; re-exports the `Hotkey` type declared in `shared/settings.ts`.
 - `src/ts/observer.svelte.ts`:
   - `startObserveDom`: idempotent. Adds one `document` `contextmenu` delegate (Copy/Download menu for `x-hl-lang` code blocks) and a `MutationObserver` on `document.body` that syncs BGM from `risu-ctrl="bgm___<volume|auto>___<src>"` markers.
   - BGM: one track at a time. When nothing is playing, it starts the first marker in document order (the newest message, since the chat body is column-reversed). A playing track keeps playing while its marker stays in the DOM, even if a newer marker appears, and replays on `ended`. It stops `BGM_STOP_GRACE_MS` (1 s) after its marker is gone.

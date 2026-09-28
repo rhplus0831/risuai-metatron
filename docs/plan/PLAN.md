@@ -2,7 +2,8 @@
 
 Date: 2026-09-28
 
-Status: decisions confirmed on 2026-09-28. No phase has started. Phase 0 is the first change.
+Status: decisions confirmed on 2026-09-28. Phase 0 done on 2026-09-29 (see its phase file). No other
+phase has started; Phase 1 is next.
 
 ## Goal
 
@@ -163,6 +164,9 @@ follow-up that cleans up `botPreset` and the separate-model concept after this p
 - Restore is a server operation: it drains jobs and mutations, imports atomically, and advances a
   database epoch that is part of every revision token and cache namespace, so a client holding
   pre-restore revisions refetches instead of passing a compare-and-set by coincidence.
+- A revision token is `<epoch>:<seq>:<revision>`. `seq` is the record's incarnation (an
+  autoincrement row id), so a deleted and recreated record never accepts a token from its previous
+  life; a write to a missing record is a conflict, not a 404 (Phase 0).
 
 ### 2. Shared-module convention
 

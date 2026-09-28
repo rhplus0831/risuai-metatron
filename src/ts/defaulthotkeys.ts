@@ -1,10 +1,6 @@
-export interface Hotkey {
-    key: string;
-    ctrl?: boolean;
-    shift?: boolean;
-    alt?: boolean;
-    action: string;
-}
+import type { Hotkey } from "../../shared/settings.ts";
+
+export type { Hotkey } from "../../shared/settings.ts";
 
 export const defaultHotkeys: Hotkey[] = [
     {

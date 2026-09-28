@@ -80,7 +80,7 @@ Theme and GUI helpers:
   - Shared classes `x-risu-button-default` and `x-risu-risu-comment`.
   - CBS `::highlight(...)` colors.
 - `src/ts/gui/colorscheme.ts`:
-  - `ColorScheme` has nine colors plus `type`.
+  - `ColorScheme` (declared in `shared/settings.ts`) has nine colors plus `type`.
   - `colorShemes` presets: default, dark, light, cherry, galaxy, nature, ocean, aurora, twilight, realblack, Monokai, lite, ...
   - `changeColorScheme`, `updateColorScheme`, `updateTextThemeAndCSS` (text theme, fonts, custom CSS unless `SafeModeStore`), and import/export.
 - `src/ts/gui/guisize.ts`: `updateGuisize`. `--sidebar-size = 24 + 4*sideBarSize` rem.
@@ -126,7 +126,7 @@ Theme and GUI helpers:
 ## Recipes
 
 - Change message rendering: `DefaultChatScreen` props → `Chats.updateChatBody` (hash and props) → `Chat`/`ChatBody`. Verify streaming, reroll, the first greeting, and custom HTML manually.
-- Add a sidebar chat operation: `SideChatList.svelte`, plus `Chat` in `database.svelte.ts` if the shape changes. Use `changeChatTo` and bump `ReloadGUIPointer`.
+- Add a sidebar chat operation: `SideChatList.svelte`, plus `Chat` in `shared/database.ts` if the shape changes. Use `changeChatTo` and bump `ReloadGUIPointer`.
 - Add a form primitive: follow the prop convention in `src/lib/UI/GUI/` and add cases to `guiRendering.test.ts`.
 - Add a popup or portal: a store in `stores.svelte.ts`, then the trigger and host (`PopupButton`/`PopupList` or `Portal`). Clean up mounts and listeners.
 

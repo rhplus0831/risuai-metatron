@@ -24,7 +24,7 @@
   - `processScriptFull(char, data, mode, chatID, cbsConditions)` returns `{data, emoChanged}`. `processScript` returns only `.data`.
   - `exportRegex`/`importRegex`, `resetScriptCache`.
   - Internal: `executeScript`, `processScriptCache`, `bestMatchCache`.
-- `triggers.ts`: the trigger model and runtime.
+- `triggers.ts`: the trigger runtime. The trigger model (`triggerscript`, `triggerEffect`, the `triggerV2*` effect types) is declared in `shared/triggers.ts` and re-exported here.
   - Types: `triggerscript`, `triggerEffect` = `triggerCode | triggerEffectV2`.
   - `triggerscript.conditions` is `unknown[]`, kept for shared-format compatibility with upstream readers. Newly created triggers write `[]`; imported arrays are preserved, and `runTrigger` skips triggers with non-empty conditions.
   - Allowlists: `displayAllowList`, `requestAllowList`.
@@ -89,7 +89,7 @@ Lua:
 
 ## State
 
-- `customscript` = `{comment, in, out, type, flag?, ableFlag?}` (in `database.svelte.ts`). `type` is a free string. The UI also offers `edittrans` and `disabled`.
+- `customscript` = `{comment, in, out, type, flag?, ableFlag?}` (declared in `shared/database.ts`). `type` is a free string. The UI also offers `edittrans` and `disabled`.
 - Sources:
   - DB: `presetRegex` (active) and `globalscript` (unused).
   - Character: `customscript`, `triggerscript`, `lowLevelAccess`.
@@ -122,7 +122,7 @@ Lua:
 - Add a regex mode: extend `ScriptMode`, wire its caller, add the UI option in `RegexData.svelte`, and update `translator.ts:applyEdittransRegex` if the mode is translation-only.
 - Add a regex flag: add it to the UI in `RegexData.svelte`, parse the `<...>` metadata in `processScriptFull`, implement it in `executeScript`, and add the translator equivalent if needed.
 - Add a v2 effect:
-  1. Add the type and union member in `triggers.ts`.
+  1. Add the type and union member in `shared/triggers.ts`.
   2. Update `effectCategories`, `checkSupported`, and `makeDefaultEditType` in `TriggerV2List.svelte`.
   3. Add the field editor branch.
   4. Add a `runTrigger` case.

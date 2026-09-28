@@ -1,6 +1,8 @@
 # Phase 0: Shared Schema And Server Store
 
-Status: not started.
+Status: done on 2026-09-29 (implemented, challenged four times by GPT-6-Astra, reviewed and tested
+by Claude Fable, Docker image checked). See [Implementation Record](#implementation-record) and the slices in
+[`slices/phase-0-shared-schema-and-server-store/`](slices/phase-0-shared-schema-and-server-store/).
 
 Depends on: nothing. Implements Decisions 1 and 2 in `PLAN.md`.
 
@@ -74,3 +76,65 @@ importer of `database.svelte.ts` keep working unchanged. The new routes are unus
 
 `pnpm check`, `pnpm test`, `pnpm build`, `pnpm format:check`, `server/src/tests/resources.test.ts`,
 and a Docker image build and start.
+
+## Implementation Record
+
+Implemented on 2026-09-29 from a plan reviewed by GPT-6-Astra and Claude Fable.
+
+- **Shared schema.** `shared/` holds `database.ts`, `triggers.ts`, `prompt.ts`, `memory.ts`,
+  `modules.ts`, `plugins.ts`, `settings.ts`, `openai.ts`, and `llm.ts` (the only runtime values:
+  `LLMFlags`, `LLMFormat`, `LLMTokenizer`, and `DISPLAY_MODE` in `memory.ts`). Declarations moved
+  verbatim; four private helpers the old modules still use became exported (`AINsettings`,
+  `ProviderPluginCustomLink`, `HypaV3Data`, `Summary`). `triggerMode` and `additonalSysPrompt` are
+  runtime-only and stayed in `triggers.ts`. Every old module re-exports its types; no importer
+  changed. `DisplayMode` (with `DISPLAY_MODE`) moved from `HypaV3Modal/types.ts` because
+  `HypaV3Data` needs it.
+- **Store.** `server/src/data/resourceStore.ts` and `kinds.ts`, at `save/data/resources.sqlite`.
+  Revision tokens are `<epoch>:<seq>:<revision>` (Decision 1). The six kinds are registered with
+  identity normalizers and `unknown` payloads; the store is generic over `ResourceKind<T>`, is built
+  with the kind registry, and refuses kind objects the registry does not hold, and Phase 1 binds the
+  payload types. Values are stored as `JSON.stringify` produces them; a JSON form that would lose a
+  non-finite number, fails to serialize, or nests deeper than 256 levels is refused. `transaction`
+  takes a synchronous body (a promise-returning body does not type-check, best-effort, and rolls
+  back at runtime); any conflict inside it rolls the unit back even when the body caught it; an
+  `AsyncLocalStorage` scope makes writes from work the body started through awaits, promises, or
+  timers throw once it returns (event-emitter callbacks are not covered). Plan-review and challenge
+  decisions are recorded in the slice files.
+- **Routes.** `server/src/routes/resources.ts`. PUT takes `{ baseRevision, data }`, DELETE takes
+  `?baseRevision=` (an empty value is a malformed token, 409); a write to a missing record is a 409
+  with `revision: null`; DELETE answers
+  `{ success: true }` like the storage routes.
+- **Behavior change.** None for the client. The server creates `save/data/` at startup, so three
+  existing `app.test.ts` assertions that list the exact top-level contents of `save/` need a `data`
+  entry (updated by the review step).
+
+Validation on 2026-09-29, before the review step: `pnpm check` 0 errors (5,046 files, server `tsc`
+included); `pnpm build` passes; `pnpm format:check` passes; `pnpm test` 305 passed, 3 failed (the
+three `save/` layout assertions above, updated in the review), 3 skipped; plain `node` imports every `shared/*.ts`; `docker build` succeeds and
+the container serves `/` (200), `/api/test_auth` (`{"status":"unset"}`), and `/api/resources/root`
+(400 `No auth header`), creates `/app/save/data/resources.sqlite` with its WAL files at startup, and
+imports every `/app/shared/*.ts` with plain `node`.
+
+Review on 2026-09-29 (Claude Fable, after four GPT-6-Astra challenge rounds recorded in
+`slices/phase-0-shared-schema-and-server-store/store-and-routes.md`): the fourth challenge found one
+exotic edge case, fixed by Fable under the user's instruction for that round: the store's
+`JSON.stringify` replacer converted a `Number` box with `Number()`, which accepts a bigint returned by
+the box's `valueOf` or `Symbol.toPrimitive` and rounds it, where `JSON.stringify` throws; it now uses
+unary plus (`ToNumber`), so such a value is refused (400 / `ResourceValidationError`), and Astra's
+probes confirm the other cases unchanged. Tests added: `server/src/tests/resources.test.ts` (routes),
+`server/src/tests/resourceStore.test.ts` (store, including the `TransactionBody` compile-time
+checks), `server/src/tests/sharedImports.test.ts` (plain `node` imports every `shared/*.ts`), and the
+three `save/` layout assertions in `app.test.ts` now include `data`. Results: `pnpm check` 0 errors
+(5,046 files, server `tsc` included); `pnpm test` 335 passed, 3 skipped (38 files); `pnpm build`
+passes; `pnpm format:check` passes. The Docker recheck after the review passed: the image built
+from the final tree serves `/` (200), `/api/test_auth` (`{"status":"unset"}`), and
+`/api/resources/root` (400 `No auth header`), creates `/app/save/data/resources.sqlite`, and imports
+every `/app/shared/*.ts` with plain `node`.
+
+Observations for Phase 1:
+
+- `RisuSaveEncoder.init` excludes `characters`, `botPresets`, and `modules` from the root block,
+  while `set` also excludes `plugins` and `pluginCustomStorage`. Phase 1 picks the canonical
+  exclusion set for the `root` kind.
+- `list` returns records in creation order (`seq`). That is not a client ordering contract;
+  `characters` order needs its own key when Phase 1 splits them.

@@ -7,16 +7,18 @@
   - the save-file encoding,
   - the choice of storage backend per platform,
   - chat paging defaults.
-- Paths: `src/ts/storage/*`, `src/ts/chatLoadPages.ts`, plus their tests.
+- Paths: `src/ts/storage/*`, `src/ts/chatLoadPages.ts`, `shared/` (the persisted shapes; the meaning of a shape stays with the guide that owns its original module, e.g. `shared/triggers.ts` → `scripts-triggers.md`, `shared/llm.ts` → `llm-requests.md`), plus their tests.
 - Not here:
   - The `saveDb` loop implementation lives in `src/ts/globalApi.svelte.ts` (see `global-api.md`), but its persistence rules are listed below.
   - Backup and sync exports → `backup-sync-hub.md`.
-  - Node server storage routes → `self-host-server.md`.
+  - Node server storage routes and the server resource store → `self-host-server.md`.
 
 ## Files
 
-- `src/ts/storage/database.svelte.ts`: canonical types and DB helpers.
-  - Types: `Database`, `character`, `groupChat`, `Chat`, `Message`, `MessageGenerationInfo`, `loreBook`, `customscript`, `botPreset`, `RisuPersona`.
+- `shared/`: the persisted shapes, compiled by both the client (`tsconfig.json`) and the server (`server/tsconfig.json`, strict). `database.ts` (`Database`, `character`, `groupChat`, `Chat`, `Message`, `MessageGenerationInfo`, `loreBook`, `customscript`, `botPreset`, `RisuPersona`, ...), `triggers.ts`, `prompt.ts`, `memory.ts`, `modules.ts`, `plugins.ts`, `settings.ts`, `openai.ts`, and `llm.ts` (the `LLMFlags`/`LLMFormat`/`LLMTokenizer` constants). Each old module re-exports its types, so importers keep their paths.
+  - Rules: type declarations and plain `as const` objects only (no enums, namespaces, parameter properties, runes, or DOM types); imports only between `shared/` files, relative with a `.ts` extension, `import type` for types. Node runs these files directly in the server, and the `Dockerfile` runtime stage copies the folder.
+- `src/ts/storage/database.svelte.ts`: DB helpers; re-exports the `shared/database.ts` types.
+  - Types: `Database`, `character`, `groupChat`, `Chat`, `Message`, `MessageGenerationInfo`, `loreBook`, `customscript`, `botPreset`, `RisuPersona` (declared in `shared/database.ts`).
   - Normalization: `setDatabase` (defaults and migrations), `setDatabaseLite` (assign only).
   - Accessors: `getDatabase({snapshot?})`, `getCurrentCharacter`, `getCurrentChat`, `setCurrentChat`.
   - Presets: `saveCurrentPreset`, `changeToPreset`, `setPreset`, `downloadPreset`, `importPreset`.
@@ -116,7 +118,7 @@ Cold storage (removed):
 ## Recipes
 
 - Add a persisted setting:
-  1. Add the field to `Database`.
+  1. Add the field to `Database` in `shared/database.ts`.
   2. Add a default or migration in `setDatabase`.
   3. If it is preset-owned, update the preset functions listed above.
   4. Verify by loading an old save: `getDatabase()` has the default after normalization.

@@ -2,12 +2,9 @@ import { decode as decodeMsgpack, encode as encodeMsgpack } from "msgpackr/index
 import * as fflate from "fflate";
 import { decryptBuffer, encryptBuffer } from "src/ts/util";
 import { decodeRPack, encodeRPack } from "src/ts/rpack/rpack_js.js";
+import type { TranslatorPreset } from "../../../shared/settings.ts";
 
-export interface TranslatorPreset {
-    name: string;
-    prompt: string;
-    maxResponse: number;
-}
+export type { TranslatorPreset } from "../../../shared/settings.ts";
 
 export interface TranslatorPresetStateLike {
     translatorPrompt?: string;

@@ -5,8 +5,9 @@
     "module": "es2022",
     "useDefineForClassFields": true,
 
-    /* Bundler Mode - Vite handles the actual build */
-    "noEmit": false,
+    /* Bundler Mode - Vite builds the client and Node runs the server, so tsc only type-checks */
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
     "moduleResolution": "bundler",
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
@@ -29,7 +30,7 @@
     /* Debugging */
     "sourceMap": true
   },
-  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte", "public/sw.js"],
+  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte", "shared/**/*.ts", "public/sw.js"],
   "exclude": ["src/**/web/*.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

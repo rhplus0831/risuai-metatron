@@ -5,11 +5,15 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createServerContext } from "../app.ts";
+import type { ResourceKind } from "../data/kinds.ts";
 
 export const TEST_INDEX_HTML = '<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body></body></html>';
 
-/** A server context over a temporary `rootDir` with a minimal `dist/index.html`. */
-export function createTestServer(options: { password?: string } = {}) {
+/**
+ * A server context over a temporary `rootDir` with a minimal `dist/index.html`. `resourceKinds`
+ * replaces the default resource kinds (for a rejecting or transforming normalizer).
+ */
+export function createTestServer(options: { password?: string; resourceKinds?: readonly ResourceKind[] } = {}) {
     const rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-server-test-"));
     mkdirSync(path.join(rootDir, "dist"));
     writeFileSync(path.join(rootDir, "dist", "index.html"), TEST_INDEX_HTML);
@@ -20,7 +24,7 @@ export function createTestServer(options: { password?: string } = {}) {
         mkdirSync(path.join(savePath, "server"));
         writeFileSync(path.join(savePath, "server", "password"), options.password);
     }
-    const context = createServerContext({ rootDir });
+    const context = createServerContext({ rootDir, resourceKinds: options.resourceKinds });
     return {
         rootDir,
         savePath,

@@ -27,7 +27,7 @@
 
 ## Files
 
-- `model/types.ts`: the catalogue enums and types.
+- `model/types.ts`: the catalogue types and `LLMProvider`. `LLMFlags`, `LLMFormat`, and `LLMTokenizer` are declared in `shared/llm.ts` (persisted numeric codes) and re-exported here.
   - Numeric enums `LLMFlags`, `LLMProvider`, `LLMFormat`, `LLMTokenizer`.
   - `LLMModel`: `id`, `name`, `internalID`, `provider`, `format`, `flags[]`, `parameters`, `tokenizer`, `endpoint`, `keyIdentifier`.
   - `ProviderNames`, and parameter presets such as `OpenAIParameters`/`ClaudeParameters`.
@@ -39,7 +39,7 @@
   - `getModelInfo(id)`: resolves static IDs and `hf:::`, `horde:::`, `xcustom:::`, `pluginmodel:::` IDs. Falls back to an as-is OpenAI-compatible model.
   - `getModelList`: grouped models for the UI.
 - `model/{openrouter,nanogpt,ollama}.ts`: dynamic catalogue fetch, normalized to `ModelGridItem`.
-- `model/ooba.ts`: types only.
+- `model/ooba.ts`: re-exports `OobaChatCompletionRequestParams` from `shared/settings.ts`.
 - `model/modelGrid.ts`: UI types.
 - `request/request.ts`: request entry points and dispatch.
   - `requestChatData(arg, mode, abortSignal)`: the public entry. Handles fallback models, retries, plugin before/after replacers, `runTrigger('request')`, escaping, blank-response fallback, and attribution.

@@ -4,19 +4,9 @@ import { downloadFile } from "../globalApi.svelte";
 import { BufferToText, selectSingleFile } from "../util";
 import { alertError } from "../alert";
 import { CustomCSSStore, DBState, SafeModeStore } from "../stores.svelte";
+import type { ColorScheme } from "../../../shared/settings.ts";
 
-export interface ColorScheme {
-    bgcolor: string;
-    darkbg: string;
-    borderc: string;
-    selected: string;
-    draculared: string;
-    textcolor: string;
-    textcolor2: string;
-    darkBorderc: string;
-    darkbutton: string;
-    type: "light" | "dark";
-}
+export type { ColorScheme } from "../../../shared/settings.ts";
 
 export const defaultColorScheme: ColorScheme = {
     bgcolor: "#282a36",

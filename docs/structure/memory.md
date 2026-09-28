@@ -22,7 +22,7 @@ Algorithms:
   4. Prepends a `memo:'supaMemory'` card.
 - `memory/hypav2.ts` `hypaMemoryV2`: the active V2 algorithm.
   - Chunked summaries plus `HypaProcesser` retrieval, wrapped in `<Past Events Summary>`/`<Past Events Details>`.
-  - Types: `HypaV2Data` (runtime, uses `Set`), `SerializableHypaV2Data` (arrays), and `convertOldToNewHypaV2Data` (legacy).
+  - Types (declared in `shared/memory.ts`, re-exported): `HypaV2Data` (runtime, uses `Set`), `SerializableHypaV2Data` (arrays). `convertOldToNewHypaV2Data` converts the legacy shape.
   - `regenerateSummary` is an empty stub.
 - `memory/hypav3.ts`: the current V3 implementation.
   - Entry: `hypaMemoryV3`. Dispatches to `hypaMemoryV3Main`, or to `hypaMemoryV3MainExp` when the active preset has `useExperimentalImpl`.
@@ -110,7 +110,7 @@ Embedding routing:
 - Add an embedding model: `hypamemory.ts` (`HypaModel`, `localModels`, `getEmbeds`), `hypamemoryv2.ts:getAPIEmbeds`, `transformers.ts` `EmbeddingModel`, and the UI options.
 - Add a contextual provider: `contextualEmbedding.ts`, the grouped paths in `HypaProcessorV2`, and `HypaProcesserEx.addSummaryChunksContextual`.
 - Change V3 behavior: both V3 mains, `HypaV3Settings`, `createHypaV3Preset`, and the settings bindings.
-- Add summary metadata: the serializable types, `HypaV3Modal/types.ts`, the modal, and its child components. Keep the modal's `$derived`/`$effect.pre` patterns.
+- Add summary metadata: the serializable types in `shared/memory.ts` (with `HypaV3Data`, `Summary`, and `DISPLAY_MODE`), `HypaV3Modal/types.ts`, the modal, and its child components. Keep the modal's `$derived`/`$effect.pre` patterns.
 
 ## Tests
 

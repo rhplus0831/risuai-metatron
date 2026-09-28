@@ -4,25 +4,9 @@ import { runEmbedding } from "../transformers";
 import { appendLastPath } from "src/ts/util";
 import { getDatabase } from "src/ts/storage/database.svelte";
 import { isContextModel, getContextProvider } from "./contextualEmbedding";
+import type { HypaModel } from "../../../../shared/memory.ts";
 
-export type HypaModel =
-    | "custom"
-    | "ada"
-    | "openai3small"
-    | "openai3large"
-    | "MiniLM"
-    | "MiniLMGPU"
-    | "nomic"
-    | "nomicGPU"
-    | "bgeSmallEn"
-    | "bgeSmallEnGPU"
-    | "bgem3"
-    | "bgem3GPU"
-    | "multiMiniLM"
-    | "multiMiniLMGPU"
-    | "bgeM3Ko"
-    | "bgeM3KoGPU"
-    | "voyageContext3";
+export type { HypaModel } from "../../../../shared/memory.ts";
 
 // In a typical environment, bge-m3 is a heavy model.
 // If your GPU can't handle this model, you'll see errror below.

@@ -10,6 +10,7 @@ import { unzip } from "fflate";
 import { loadAsset, saveAsset } from "src/ts/globalApi.svelte";
 import { selectSingleFile, asBuffer } from "src/ts/util";
 import { v4 } from "uuid";
+import type { OnnxModelFiles } from "../../../shared/settings.ts";
 let tfCache: Cache = null;
 let tfLoaded = false;
 let tfMap: { [key: string]: string } = {};
@@ -119,11 +120,7 @@ export const runImageEmbedding = async (dataurl: string) => {
 let synthesizer: TextToAudioPipeline = null;
 let lastSynth: string = null;
 
-export interface OnnxModelFiles {
-    files: { [key: string]: string };
-    id: string;
-    name?: string;
-}
+export type { OnnxModelFiles } from "../../../shared/settings.ts";
 
 export const runVITS = async (text: string, modelData: string | OnnxModelFiles = "Xenova/mms-tts-eng") => {
     await initTransformers();

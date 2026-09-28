@@ -87,10 +87,5 @@ export interface UIState {
     dropdownOpen: boolean;
 }
 
-export const DISPLAY_MODE = {
-    All: "All",
-    Range: "Range",
-    Recent: "Recent",
-} as const;
-
-export type DisplayMode = (typeof DISPLAY_MODE)[keyof typeof DISPLAY_MODE];
+export { DISPLAY_MODE } from "../../../../shared/memory.ts";
+export type { DisplayMode } from "../../../../shared/memory.ts";
