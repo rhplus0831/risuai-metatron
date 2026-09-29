@@ -7,8 +7,8 @@ import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "./data/kinds.ts";
-import { createResourceStore } from "./data/resourceStore.ts";
-import { createSnapshotManager } from "./data/snapshots.ts";
+import { createResourceStore, ResourceStoreClosedError } from "./data/resourceStore.ts";
+import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
 import { createAuthStore } from "./routes/auth.ts";
@@ -80,13 +80,57 @@ export function createServerContext(options: {
     });
 
     const app = new Hono<AppEnv>({ strict: false });
+    let shuttingDown = false;
+    let disposing: Promise<void> | undefined;
+
+    function beginShutdown() {
+        if (shuttingDown) {
+            return;
+        }
+        shuttingDown = true;
+        proxyStreamJobs.dispose();
+        authenticatedRouteLimiter.dispose();
+        authRouteLimiter.dispose();
+        loginRouteLimiter.dispose();
+        void snapshots.stop();
+    }
 
     app.onError((error, c) => {
+        if (error instanceof ResourceStoreClosedError || error instanceof MaintenanceError) {
+            c.header("Retry-After", "5");
+            return c.json({ error: error.message }, 503);
+        }
         if (error instanceof HTTPException) {
             return error.getResponse();
         }
         console.error(error);
         return c.text("Internal Server Error", 500);
+    });
+
+    // Admit resource handlers before their first await (including body parsing and auth). Tracking
+    // them also makes in-process dispose safe; maintenance only waits for storage-gate admissions.
+    app.use(async (c, next) => {
+        const resource = /^\/api\/resources(?:\/|$)/.test(c.req.path);
+        const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
+        if (shuttingDown) {
+            c.header("Connection", "close");
+        }
+        try {
+            if (shuttingDown && (resource || backup)) {
+                c.header("Retry-After", "5");
+                c.header("Cache-Control", "no-store");
+                return c.json({ error: "The server is shutting down" }, 503);
+            }
+            if (resource) {
+                await snapshots.track(next);
+            } else {
+                await next();
+            }
+        } finally {
+            if (shuttingDown) {
+                c.header("Connection", "close");
+            }
+        }
     });
 
     // The backup import streams its body to disk with its own cap; Hono's limiter would buffer it.
@@ -144,22 +188,21 @@ export function createServerContext(options: {
     return {
         app,
         snapshots,
+        beginShutdown,
         attachWebSocket: (server: http.Server) => proxyStreamJobs.attachWebSocket(server),
         startBackgroundTasks: () => {
             proxyStreamJobs.startGc();
             snapshots.start();
         },
         /**
-         * Stops timers, refuses new backup operations, waits for running snapshots, restores,
-         * imports, and export streams, then closes the store. Calling it again is harmless.
+         * Begins shutdown, waits for admitted resource handlers and backup operations, then closes
+         * the store. The HTTP entrypoint drains connections before calling this; in-process callers
+         * can use it alone. Calling it again returns the same promise.
          */
-        dispose: async () => {
-            proxyStreamJobs.dispose();
-            authenticatedRouteLimiter.dispose();
-            authRouteLimiter.dispose();
-            loginRouteLimiter.dispose();
-            await snapshots.stop();
-            resources.close();
+        dispose: () => {
+            beginShutdown();
+            disposing ??= snapshots.stop().then(() => resources.close());
+            return disposing;
         },
     };
 }

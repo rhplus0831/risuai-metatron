@@ -14,6 +14,11 @@ vi.mock("../../process/modules", () => ({
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../alert", () => ({
+    alertError: vi.fn(),
+    alertNormal: vi.fn(),
+    alertNormalWait: vi.fn(async () => undefined),
+}));
 
 type ChatModule = typeof import("../chatStore.svelte");
 type Stores = typeof import("../../stores.svelte");
@@ -376,7 +381,7 @@ describe("generation lock", () => {
     });
 
     it("defers the reload of a chat a generation runs in until the generation ends", async () => {
-        const { server, chat, ref, take, recover } = await boot();
+        const { server, chat, ref, take, recover, commit } = await boot();
         chat.beginGeneration(ref, "a", "g");
         const begin = take();
         chat.ackChatWork(begin, server.store.applyChanges({ chats: begin.groups as any }).chats, []);
@@ -401,18 +406,123 @@ describe("generation lock", () => {
         expect(texts(chat.findChat(ref))).toEqual(["streamed so far"]);
 
         chat.endGeneration(ref, "a", "g");
-        expect(chat.isMessageLocked(ref, "a")).toBe(false);
-        expect(chat.isChatDeferred("c\u0000k")).toBe(false);
+        // The generated text is retained through the reload: the lock stays until it is re-sent.
+        expect(chat.isMessageLocked(ref, "a")).toBe(true);
         expect(chat.deferredReloads()).toEqual([ref]);
         expect(chat.finishDeferredReload(server.chat("c", "k")! as any)).toBeNull();
-        expect(texts(chat.findChat(ref))).toEqual(["A", "B", "C"]);
+        expect(chat.isChatDeferred("c\u0000k")).toBe(false);
+        // The bulk removal is discarded with the reload; the final text is put back on the server copy.
+        expect(texts(chat.findChat(ref))).toEqual(["streamed so far", "B", "C"]);
         expect((chat.findChat(ref) as any).note).toBe("remote");
         expect(chat.chatDiscardsSince(0)).toEqual(["c/k"]);
+        expect(chat.isMessageLocked(ref, "a")).toBe(true);
+        const fresh = server.chat("c", "k")!.revision;
+        const recovered = commit();
+        expect(recovered.work.groups[0].baseRevision).toBe(fresh);
+        expect(recovered.work.groups[0].ops).toEqual([
+            {
+                op: "setText",
+                id: "a",
+                text: "streamed so far",
+                generation: { id: "g", seq: expect.any(Number), final: true },
+            },
+        ]);
+        expect(server.texts("c", "k")).toEqual(["streamed so far", "B", "C"]);
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("keeps both finals when an auto-continue's group conflicts on a stale base", async () => {
+        const { server, chat, ref, take, recover, commit } = await boot();
+        chat.beginGeneration(ref, "a", "g1");
+        commit();
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "meta", set: { name: "Remote" } }],
+            },
+        ]);
+        // A by-id write lands on the older base: the client keeps that base.
+        chat.setChatMeta(ref, { note: "mine" });
+        expect(commit().result.chats[0].stale).toBe(true);
+        chat.setMessageText(ref, "a", "first", { generationId: "g1" });
+        // g1 ends and g2 continues the same message before g1's final is sent: one group carries
+        // g1's final and g2's `begin`, which the stale base refuses.
+        chat.endGeneration(ref, "a", "g1");
+        chat.beginGeneration(ref, "a", "g2");
+        chat.setMessageText(ref, "a", "first, second", { generationId: "g2" });
+        const work = take();
+        expect(work.groups[0].ops.map((op) => op.op)).toEqual(["setText", "begin"]);
+        const { conflicts } = recover(work);
+        expect(conflicts).toHaveLength(1);
+        expect(chat.isChatDeferred("c\u0000k")).toBe(true);
+
+        chat.endGeneration(ref, "a", "g2");
+        expect(chat.deferredReloads()).toEqual([ref]);
+        expect(chat.finishDeferredReload(server.chat("c", "k")! as any)).toBeNull();
+        expect(texts(chat.findChat(ref))[0]).toBe("first, second");
+        expect((chat.findChat(ref) as any).name).toBe("Remote");
+        expect((chat.findChat(ref) as any).note).toBe("mine");
+        const recovered = commit();
+        const tag = (op: any) => `${op.op}:${op.generation?.id ?? op.generationId}`;
+        expect(recovered.work.groups[0].ops.map(tag)).toEqual(["setText:g1", "begin:g2", "setText:g2"]);
+        expect(server.texts("c", "k")[0]).toBe("first, second");
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
         expect(chat.hasChatWork()).toBe(false);
     });
 });
 
 describe("conflict recovery", () => {
+    it("sends a new chat's create without generation ops for a reply a hook removed", async () => {
+        const { server, chat, take, apply, ack } = await boot();
+        const ref = { chaId: "c", chatId: "n" };
+        chat.createChat("c", { id: "n", name: "N", message: [m("u", "hello")] } as any);
+        chat.appendMessage(ref, m("r", "", "char"));
+        chat.beginGeneration(ref, "r", "g");
+        chat.setMessageText(ref, "r", "partial", { generationId: "g" });
+        // An output trigger with the generation's capability removed the reply before the save
+        // loop ran: the create must not carry a `begin` for a message its payload does not hold.
+        chat.removeMessages(ref, ["r"], { generationId: "g" });
+        const work = take();
+        expect(work.groups[0].ops.map((op) => op.op)).toEqual(["create"]);
+        ack(work, apply(work));
+        chat.endGeneration(ref, "r", "g");
+        expect(chat.isMessageLocked(ref, "r")).toBe(false);
+        expect(server.texts("c", "n")).toEqual(["hello"]);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("keeps a chat whose create the server refused: quarantined with an alert, not dropped", async () => {
+        const { server, stores, chat } = await boot();
+        const alert = await import("../../alert");
+        stores.DBState.db.characters.push({ chaId: "z", name: "Z", chats: [], chatPage: 0 } as any);
+        const ref = { chaId: "z", chatId: "n" };
+        chat.createChat("z", { id: "n", name: "N", message: [m("u", "typed before the refusal")] } as any);
+        const work = chat.takeChatWork(new Set(["z"]));
+        expect(work.groups.map((group) => group.ops[0].op)).toEqual(["create"]);
+        // The character never reached the server, so the create is refused and reads back as gone.
+        expect(() => server.store.applyChanges({ chats: work.groups as any })).toThrow(
+            server.errors.ResourceBatchConflictError,
+        );
+        const remote = server.store.readRefs([], { chats: [{ characterId: "z", id: "n" }] }).chats;
+        expect(remote[0].revision).toBeNull();
+        const result = chat.recoverChatConflicts(work, new Set(["z\u0000n"]), new Set(), remote as any);
+        expect([...result.refresh]).toEqual(["z"]);
+        expect(alert.alertError).toHaveBeenCalledTimes(1);
+        expect(texts(chat.findChat(ref))).toEqual(["typed before the refusal"]);
+        // Nothing more is sent for it, and a later collection refresh keeps it in the mirror.
+        expect(chat.hasChatWork()).toBe(false);
+        expect(chat.takeChatWork(new Set(["z"])).groups).toEqual([]);
+        chat.acceptRemoteCollection({
+            characterId: "z",
+            order: { characterId: "z", revision: `${server.store.epoch()}:1:1`, ids: [] },
+            chats: [],
+        });
+        expect(texts(chat.findChat(ref))).toEqual(["typed before the refusal"]);
+    });
+
     it("recognizes a create whose acknowledgement was lost and sends the edit made meanwhile after it", async () => {
         const { server, chat, take, apply, recover, commit } = await boot();
         const ref = { chaId: "c", chatId: "n" };
@@ -811,12 +921,17 @@ describe("unload checkpoint (pagehide)", () => {
         // A generation runs in the chat: its reload waits for the end of the generation.
         expect(chat.isChatDeferred("c\u0000k")).toBe(true);
         chat.endGeneration(ref, "a", "g2");
-        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        // The refused op was g2's `begin`: after the reload it is retried together with the final.
+        expect(chat.isMessageLocked(ref, "a")).toBe(true);
         expect(chat.deferredReloads()).toEqual([ref]);
         const remote = server.store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0];
         expect(chat.finishDeferredReload(remote as any)).toBeNull();
         expect((chat.findChat(ref) as any).note).toBe("after the lost answer");
         expect(texts(chat.findChat(ref))[0]).toBe("streamed");
+        const recovered = commit();
+        expect(recovered.work.groups[0].ops.map((op) => op.op)).toEqual(["begin", "setText"]);
+        expect(recovered.result.chats[0].stale).toBeUndefined();
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
         expect(chat.hasChatWork()).toBe(false);
 
         // Stale answer (another tab wrote meanwhile): the base stays older, as for any acknowledgement.
@@ -855,6 +970,20 @@ describe("unload checkpoint (pagehide)", () => {
         chat.setMessageText(ref, "a", "late", { generationId: "g3" });
         expect(chat.findChat(ref)!.message[0].data).toBe("fourth");
         expect(server.texts("c", "k")[0]).toBe("third");
+
+        // Idle after the stale answers: the chat is read back and re-based without a discard or a
+        // notice, so the next revision-bound op applies instead of conflicting.
+        expect(chat.idleChatRefreshes()).toEqual([ref]);
+        const discardsBefore = chat.chatDiscardsSince(0).length;
+        const refreshed = server.store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0];
+        expect(chat.finishIdleChatRefresh(refreshed as any)).toBe(true);
+        expect(texts(chat.findChat(ref))).toEqual(["third", "remote", "C"]);
+        expect(chat.idleChatRefreshes()).toEqual([]);
+        expect(chat.chatDiscardsSince(0)).toHaveLength(discardsBefore);
+        chat.removeMessages(ref, ["b", "c"]);
+        const bulk = commit();
+        expect(bulk.result.chats[0].stale).toBeUndefined();
+        expect(server.texts("c", "k")).toEqual(["third"]);
     });
 });
 

@@ -448,7 +448,7 @@ describe("restore (412) and errors", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("reports a 413 once as permanent and does not retry on its own until the next change", async () => {
+    it("quarantines a record the server refuses as too large, keeps saving the rest, and retries it once it changes", async () => {
         const { fake, sync, db } = await boot();
         fake.maxBodyBytes = 200;
         db().username = "x".repeat(300);
@@ -456,14 +456,61 @@ describe("restore (412) and errors", () => {
         expect(alerts.error).toHaveBeenCalledTimes(1);
         await vi.advanceTimersByTimeAsync(1200);
         expect(fake.batchCount()).toBe(1);
-        // An explicit flush tries again (the caller asked), still without a second alert.
+        // An explicit flush rejects at once with the same reason; unchanged content is not resent.
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 413 });
         expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(fake.batchCount()).toBe(1);
+        // Other records keep saving around the refused one, on the loop's own schedule.
+        db().botPresets.push({ name: "p2" });
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 413 });
+        await vi.advanceTimersByTimeAsync(1200);
+        expect(fake.data("presets", "main")).toEqual([{ name: "p1" }, { name: "p2" }]);
+        expect(
+            fake
+                .batchBodies()
+                .at(-1)!
+                .ops.map((op) => op.kind),
+        ).toEqual(["presets"]);
         expect(fake.batchCount()).toBe(2);
         fake.maxBodyBytes = Infinity;
         db().username = "small again";
         await sync.flushResources();
         expect(fake.data("root", "main").username).toBe("small again");
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+    });
+
+    it("quarantines a record the server refuses as invalid by its content, alerts once, and keeps saving the others", async () => {
+        const { fake, sync, db } = await boot();
+        fake.failNext = {
+            status: 400,
+            body: { error: "ops[0]: root main: username must be a string" },
+            times: 1,
+            match: (path) => path === "/api/resources/batch",
+        };
+        db().username = "refused";
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 400 });
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        // Not resent while unchanged, even though the server would now accept it.
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(fake.batchCount()).toBe(1);
+        expect(fake.data("root", "main").username).toBe("u");
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 400 });
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        // Another record saves on its own, without the refused one.
+        db().botPresets.push({ name: "p2" });
+        await vi.advanceTimersByTimeAsync(1200);
+        expect(fake.data("presets", "main")).toEqual([{ name: "p1" }, { name: "p2" }]);
+        expect(
+            fake
+                .batchBodies()
+                .at(-1)!
+                .ops.map((op) => op.kind),
+        ).toEqual(["presets"]);
+        // A change to the refused record retries it.
+        db().username = "repaired";
+        await sync.flushResources();
+        expect(fake.data("root", "main").username).toBe("repaired");
+        expect(alerts.error).toHaveBeenCalledTimes(1);
     });
 
     it("keeps everything dirty through a retryable failure and saves once the server answers", async () => {

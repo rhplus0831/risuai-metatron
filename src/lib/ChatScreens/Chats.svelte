@@ -9,13 +9,8 @@
     import { mount, onDestroy, unmount } from "svelte";
     import Chat from "./Chat.svelte";
     import { getCharImage } from "src/ts/characters";
-    import {
-        createSimpleCharacter,
-        DBState,
-        selectedCharID,
-        ReloadChatPointer,
-        streamingDisplayState,
-    } from "src/ts/stores.svelte";
+    import { createSimpleCharacter, DBState, selectedCharID, ReloadChatPointer } from "src/ts/stores.svelte";
+    import { streamingState } from "src/ts/storage/chatStore.svelte";
     import { chatFoldedStateMessageIndex } from "src/ts/globalApi.svelte";
     import { get } from "svelte/store";
 
@@ -89,14 +84,14 @@
         const currentChat = currentCharacter.chats?.[currentCharacter.chatPage];
         const configuredPerformanceMode = DBState.db.streamingDisplayOptimizationMode ?? "off";
         const streaming =
-            streamingDisplayState.messageId !== null &&
-            streamingDisplayState.chaId === currentCharacter.chaId &&
-            streamingDisplayState.chatId === currentChat?.id;
-        const performanceMode = streaming ? streamingDisplayState.mode : configuredPerformanceMode;
+            streamingState.messageId !== null &&
+            streamingState.chaId === currentCharacter.chaId &&
+            streamingState.chatId === currentChat?.id;
+        const performanceMode = streaming ? streamingState.mode : configuredPerformanceMode;
         // The streaming message by id, not by position (another message may follow it).
         const activeStreamingIndex =
             performanceMode !== "off" && streaming
-                ? messages.findIndex((message) => message.chatId === streamingDisplayState.messageId)
+                ? messages.findIndex((message) => message.chatId === streamingState.messageId)
                 : -1;
 
         if (chatFoldedStateMessageIndex.index !== -1) {

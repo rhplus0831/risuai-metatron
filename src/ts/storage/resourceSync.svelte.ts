@@ -1,4 +1,4 @@
-import { tick } from "svelte";
+import { tick, untrack } from "svelte";
 import { get } from "svelte/store";
 import { v4 as uuidv4 } from "uuid";
 import {
@@ -26,10 +26,12 @@ import {
     checkpointAllGenerations,
     forgetCharacter,
     hasChatWork,
+    hasUnsavedChatWork,
     isCharacterGenerating,
     isChatDeferred,
     noteMirrorReplaced,
     quarantineChat,
+    quarantineChatOrder,
     rebaseChatOrders,
     type RemoteChat,
     recoverChatConflicts,
@@ -40,11 +42,13 @@ import {
     startChatDriftCheck,
     deferredReloads,
     finishDeferredReload,
-    hasRunningGenerations,
+    idleChatRefreshes,
+    finishIdleChatRefresh,
     settleUnloadCheckpoint,
     takeChatWork,
     trackUnloadCheckpoint,
     unloadCheckpoint,
+    unloadPendingChatWork,
     unsettledChatObligations,
 } from "./chatStore.svelte";
 import {
@@ -116,6 +120,11 @@ const characterKey = (id: string) => recordKey(RESOURCE_KIND.characters, id);
 const persisted = new Map<string, { revision: string; text: string }>();
 /** Dirty record keys → the generation of their latest mark. */
 const dirty = new Map<string, number>();
+/** Refused content, keyed by the same kind + NUL + id as dirty/persisted; edits release it. */
+const quarantinedRecords = new Map<string, { text: string | null; error: ResourceRequestError }>();
+const recordAlerts = new Set<string>();
+/** An unindexed refusal is isolated into one resource, chat group, or order per request. */
+let isolateBatches = false;
 /**
  * Record keys → the highest generation known to be settled: saved, unchanged, or discarded by a
  * conflict. `flushResources` waits until every key dirty at its call is settled at that generation.
@@ -214,7 +223,7 @@ function isBlockedKey(key: string): boolean {
 
 /** Whether anything waits to be saved or reloaded, not counting characters whose generation still runs. */
 function hasPendingWork(): boolean {
-    if (membershipGeneration > membershipAcked || hasChatWork() || hydrate.size > 0) {
+    if (hasPendingMembership() || hasChatWork(canSaveCharacter) || hydrate.size > 0) {
         return true;
     }
     for (const id of deferredCharacters) {
@@ -223,7 +232,7 @@ function hasPendingWork(): boolean {
         }
     }
     for (const key of dirty.keys()) {
-        if (!isBlockedKey(key)) {
+        if (!isBlockedKey(key) && !recordQuarantine(key)) {
             return true;
         }
     }
@@ -257,6 +266,12 @@ function schedule(delay = DEBOUNCE_MS) {
     if (!started || halted) {
         return;
     }
+    // Watchers call schedule: avoid subscribing them to other records while checking quarantine.
+    untrack(() => {
+        if (hasUnsavedWork()) {
+            prepareUnloadAuth();
+        }
+    });
     const now = Date.now();
     const deadline = Math.max(now + delay, backoffUntil);
     if (timer) {
@@ -318,6 +333,71 @@ function projectRecord(kind: string, id: string): string | undefined {
         return character ? projectCharacter(character) : undefined;
     }
     return COLLECTIONS.includes(kind as Collection) ? projectCollection(kind as Collection) : undefined;
+}
+
+function recordQuarantine(key: string): ResourceRequestError | null {
+    const refused = quarantinedRecords.get(key);
+    if (!refused) {
+        return null;
+    }
+    const separator = key.indexOf("\u0000");
+    const text = projectRecord(key.slice(0, separator), key.slice(separator + 1)) ?? null;
+    if (text === refused.text) {
+        return refused.error;
+    }
+    quarantinedRecords.delete(key);
+    return null;
+}
+
+function canSaveCharacter(id: string): boolean {
+    return persisted.has(characterKey(id)) || !recordQuarantine(characterKey(id));
+}
+
+function hasPendingMembership(): boolean {
+    if (membershipGeneration <= membershipAcked) {
+        return false;
+    }
+    const ids = new Set((DBState.db.characters ?? []).filter(Boolean).map((character) => character.chaId));
+    for (const id of ids) {
+        if (!persisted.has(characterKey(id)) && !recordQuarantine(characterKey(id))) {
+            return true;
+        }
+    }
+    for (const key of persisted.keys()) {
+        if (key.startsWith(characterPrefix) && !ids.has(key.slice(characterPrefix.length)) && !recordQuarantine(key)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function hasUnsavedWork(): boolean {
+    return (
+        inFlight !== null ||
+        [...dirty.keys()].some((key) => !recordQuarantine(key)) ||
+        hasPendingMembership() ||
+        hasUnsavedChatWork(canSaveCharacter)
+    );
+}
+
+function quarantineRecord(op: PendingOp, error: ResourceRequestError, indexed = true) {
+    quarantinedRecords.set(op.key, { text: op.text, error });
+    // Indexed errors alert once per key per session. An isolated unindexed refusal alerts once
+    // per content change; unchanged content never makes it back to this function.
+    if (!indexed || !recordAlerts.has(op.key)) {
+        alertError(`${language.resourceRecordRefused}\n${op.kind}/${op.id}: ${error.message}`);
+        recordAlerts.add(op.key);
+    }
+}
+
+function quarantineReason(): ResourceRequestError | null {
+    for (const key of quarantinedRecords.keys()) {
+        const error = recordQuarantine(key);
+        if (error) {
+            return error;
+        }
+    }
+    return null;
 }
 
 type PendingOp = {
@@ -384,6 +464,16 @@ function collectOperations(): {
     const captured = new Map(dirty);
     const membership = membershipGeneration;
     const ops: PendingOp[] = [];
+    function addOperation(op: PendingOp) {
+        if (recordQuarantine(op.key)) {
+            return;
+        }
+        if (op.bytes + BATCH_FRAME_BYTES > MAX_BATCH_BYTES) {
+            quarantineRecord(op, new ResourceRequestError(413, `${op.kind} ${op.id} is too large to save`));
+            return;
+        }
+        ops.push(op);
+    }
     for (const collection of COLLECTIONS) {
         const key = collectionKey(collection);
         if (!captured.has(key)) {
@@ -393,7 +483,7 @@ function collectOperations(): {
         const current = persisted.get(key);
         // An absent collection (e.g. no plugin storage yet) has no record to write.
         if (text !== undefined && text !== current?.text) {
-            ops.push(
+            addOperation(
                 pendingOp({
                     key,
                     kind: collection,
@@ -424,7 +514,7 @@ function collectOperations(): {
         }
         const text = projectCharacter(character);
         if (text !== current?.text) {
-            ops.push(
+            addOperation(
                 pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: current?.revision ?? null, text }),
             );
         }
@@ -441,7 +531,7 @@ function collectOperations(): {
             const id = key.slice(characterPrefix.length);
             if (!present.has(id) && !deferredCharacters.has(id)) {
                 forgetCharacter(id);
-                ops.push(
+                addOperation(
                     pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: current.revision, text: null }),
                 );
             }
@@ -499,7 +589,10 @@ function planBatches(ops: readonly PendingOp[], work: ChatWork): { batches: Batc
         return true;
     });
     const batches: Batch[] = [];
-    for (const chunk of splitBatches(sendable.map((unit) => ({ ...unit, bytes: unit.bytes, weight: unit.count })))) {
+    const chunks = isolateBatches
+        ? sendable.map((unit) => [unit])
+        : splitBatches(sendable.map((unit) => ({ ...unit, bytes: unit.bytes, weight: unit.count })));
+    for (const chunk of chunks) {
         const batch: Batch = { ops: [], work: { groups: [], orders: [] } };
         for (const unit of chunk) {
             if (unit.type === "op") {
@@ -575,6 +668,7 @@ async function cycle() {
     await reloadDeferredCharacters();
     await reloadDeferredChats();
     await hydrateCharacters();
+    await refreshIdleChats();
     const { ops, captured, membership, chatWork } = collectOperations();
     const { batches, oversized } = planBatches(ops, chatWork);
     for (const group of oversized) {
@@ -585,16 +679,6 @@ async function cycle() {
         saving.state = true;
         for (const [index, batch] of batches.entries()) {
             const later = mergeWork(batches.slice(index + 1).map((entry) => entry.work));
-            const [only] = batch.ops;
-            if (
-                batch.ops.length === 1 &&
-                batch.work.groups.length === 0 &&
-                batch.work.orders.length === 0 &&
-                only.bytes + BATCH_FRAME_BYTES > MAX_BATCH_BYTES
-            ) {
-                requeueChatWork(later);
-                throw new ResourceRequestError(413, `${only.kind} ${only.id} is too large to save`);
-            }
             if (index > 0) {
                 // An earlier request of this cycle may have created or deleted chats of a character
                 // whose reorder travels here: base it on the order revision that acknowledgement gave.
@@ -614,6 +698,26 @@ async function cycle() {
                     return;
                 }
                 requeueChatWork(batch.work);
+                if (error instanceof ResourceRequestError && (error.status === 400 || error.status === 413)) {
+                    const match = /^ops\[(\d+)\]/.exec(error.message);
+                    const op = match ? batch.ops[Number(match[1])] : undefined;
+                    if (op) {
+                        quarantineRecord(op, error);
+                    } else if (batch.ops.length + batch.work.groups.length + batch.work.orders.length > 1) {
+                        // The error names no record (including order/envelope errors). Probe each
+                        // unit separately next cycle so unrelated records and chats can still save.
+                        isolateBatches = true;
+                    } else if (batch.ops[0]) {
+                        quarantineRecord(batch.ops[0], error, false);
+                    } else if (batch.work.groups[0]) {
+                        quarantineChat(batch.work.groups[0]);
+                        alertError(`${language.chatSaveRefused}\n${error.message}`);
+                    } else if (batch.work.orders[0]) {
+                        quarantineChatOrder(batch.work.orders[0]);
+                        alertError(`${language.chatOrderRefused}\n${error.message}`);
+                    }
+                    return;
+                }
                 throw error;
             }
             batch.ops.forEach((op, opIndex) => {
@@ -630,6 +734,9 @@ async function cycle() {
         }
     }
     for (const [key, marked] of captured) {
+        if (recordQuarantine(key)) {
+            continue;
+        }
         if (key.startsWith(characterPrefix) && deferredCharacters.has(key.slice(characterPrefix.length))) {
             // Not saved: its reload waits for the running generation.
             continue;
@@ -639,9 +746,10 @@ async function cycle() {
             dirty.delete(key);
         }
     }
-    if (membershipAcked < membership) {
+    if (membershipAcked < membership && !collectMembershipChanges()) {
         membershipAcked = membership;
     }
+    await refreshIdleChats();
 }
 
 function mergeWork(works: readonly ChatWork[]): ChatWork {
@@ -715,6 +823,7 @@ type RemoteItem = { kind: string; id: string; revision: string | null; data: unk
  */
 function acceptRemote(item: RemoteItem) {
     const key = recordKey(item.kind, item.id);
+    quarantinedRecords.delete(key);
     applyToMirror(item.kind, item.id, item.revision === null ? null : item.data);
     if (item.revision === null) {
         persisted.delete(key);
@@ -864,6 +973,22 @@ async function reloadDeferredChats() {
     showReloadedNotice();
 }
 
+/** Stale acknowledgements rebase only idle chats, inside the cycle and without a reload notice. */
+async function refreshIdleChats() {
+    const refs = idleChatRefreshes();
+    if (refs.length === 0) {
+        return;
+    }
+    const read = await readRefs([], {
+        chats: refs.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
+    });
+    for (const chat of read.chats ?? []) {
+        if (finishIdleChatRefresh(chat as RemoteChat) && chat.revision === null) {
+            hydrate.add(chat.characterId);
+        }
+    }
+}
+
 /**
  * Reloads the deferred characters whose generation ended (part of the cycle, so it never races a
  * write; a failed read is retried with the cycle's backoff and keeps the characters excluded).
@@ -961,6 +1086,10 @@ function applyToMirror(kind: string, id: string, data: unknown) {
  */
 export async function flushResources(): Promise<{ discarded: string[] }> {
     await tick();
+    const refused = quarantineReason();
+    if (refused) {
+        throw refused;
+    }
     // A running generation's text so far becomes a checkpoint, so it is part of what is flushed.
     checkpointAllGenerations();
     // What must be settled: every key dirty now, at its current generation, every membership
@@ -994,6 +1123,10 @@ export async function flushResources(): Promise<{ discarded: string[] }> {
             timer = null;
         }
         await runCycle();
+        const refused = quarantineReason();
+        if (refused) {
+            throw refused;
+        }
         if (lastError || permanentError) {
             throw lastError ?? permanentError;
         }
@@ -1046,26 +1179,68 @@ export function startResourceSync() {
         void haltForRestore();
     });
     setChatWorkListener(() => {
-        if (hasRunningGenerations()) {
-            prepareUnloadAuth();
-        }
         schedule();
     });
-    // Best effort: the text a reply reached since its last checkpoint, as the tab goes away. If the
-    // page survives (back-forward cache), the answer settles the chats' revisions like any other.
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState !== "hidden" || halted) {
+            return;
+        }
+        void (async () => {
+            await tick();
+            checkpointAllGenerations();
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+            backoffUntil = 0;
+            const wasInFlight = inFlight !== null;
+            await runCycle();
+            if (wasInFlight && hasPendingWork() && !lastError && !halted) {
+                await runCycle();
+            }
+        })();
+    });
+    window.addEventListener("beforeunload", (event) => {
+        if (hasUnsavedWork()) {
+            event.preventDefault();
+            event.returnValue = "";
+        }
+    });
+    // One shared budget, including requests still in flight from an earlier pagehide. Checkpoints
+    // have priority; ordinary by-id work follows in separate requests. Resource writes use only
+    // normal cycles, so they never race a keepalive write on the same revision.
+    let unloadBytes = 0;
+    function sendUnload(request: { body: string; work: ChatWork }) {
+        const bytes = utf8ByteLength(request.body);
+        if (bytes + unloadBytes > UNLOAD_BODY_LIMIT) {
+            return;
+        }
+        if (
+            sendBatchOnUnload(request.body, (result) => {
+                unloadBytes -= bytes;
+                settleUnloadCheckpoint(request.work, result?.chats ?? null);
+            })
+        ) {
+            unloadBytes += bytes;
+            trackUnloadCheckpoint(request.work);
+        }
+    }
     window.addEventListener("pagehide", () => {
         try {
-            const checkpoint = unloadCheckpoint(UNLOAD_BODY_LIMIT);
-            if (
-                checkpoint &&
-                sendBatchOnUnload(checkpoint.body, (result) =>
-                    settleUnloadCheckpoint(checkpoint.work, result?.chats ?? null),
-                )
-            ) {
-                trackUnloadCheckpoint(checkpoint.work);
+            const checkpoint = unloadCheckpoint(UNLOAD_BODY_LIMIT - unloadBytes);
+            if (checkpoint) {
+                sendUnload(checkpoint);
+            }
+            for (const request of unloadPendingChatWork(UNLOAD_BODY_LIMIT - unloadBytes)) {
+                sendUnload(request);
             }
         } catch {}
     });
+    setInterval(() => {
+        if (!halted && hasUnsavedWork()) {
+            prepareUnloadAuth();
+        }
+    }, 60_000);
     startChatDriftCheck();
     for (const collection of COLLECTIONS) {
         markKey(collectionKey(collection));

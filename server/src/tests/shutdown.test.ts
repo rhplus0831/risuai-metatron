@@ -128,6 +128,48 @@ describe("main.ts graceful shutdown", () => {
         expect(server.output()).toContain("SIGTERM received");
     }, 20_000);
 
+    it("lets a resource write admitted before SIGTERM land with 200, then exits 0", async () => {
+        const server = await startMain();
+        const result: { status?: number; ended?: boolean; error?: string } = {};
+        const request = http.request(
+            {
+                host: "127.0.0.1",
+                port: server.port,
+                path: "/api/resources/characters/late",
+                method: "PUT",
+                headers: {
+                    ...(await server.headers()),
+                    "content-type": "application/json",
+                    "x-resource-epoch": server.epoch,
+                },
+            },
+            (res) => {
+                result.status = res.statusCode;
+                res.on("data", () => {});
+                res.on("end", () => (result.ended = true));
+            },
+        );
+        request.on("error", (error) => (result.error = error.message));
+        // The handler is admitted and waits for the rest of the body when the signal arrives.
+        request.write('{"baseRevision":null,"data":');
+        await sleep(100);
+
+        child!.kill("SIGTERM");
+        await sleep(150);
+        request.end('{"chaId":"late"}}');
+        const code = await server.exited;
+        request.destroy();
+
+        expect(result).toEqual({ status: 200, ended: true });
+        expect(code).toBe(0);
+        const live = new DatabaseSync(path.join(server.savePath, "data", "resources.sqlite"), { readOnly: true });
+        try {
+            expect(live.prepare("SELECT id FROM resources WHERE id = 'late'").all()).toEqual([{ id: "late" }]);
+        } finally {
+            live.close();
+        }
+    }, 20_000);
+
     it("exits promptly on SIGINT with an idle keep-alive connection open", async () => {
         const server = await startMain();
         const agent = new http.Agent({ keepAlive: true });

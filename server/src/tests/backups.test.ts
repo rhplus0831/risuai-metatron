@@ -1082,9 +1082,13 @@ describe("shutdown admission", () => {
         await sleep(20);
         expect(readdirSync(tmpDir(s))).toEqual([]);
         expect(assetFiles(s)).toEqual([]);
-        // Resources are still served until the store closes with the last tracked operation.
-        expect(await s.readEpoch()).toBe(epoch);
-        expect(await listBackups(s)).toEqual(before);
+        // New resource requests, reads included, are refused too; the store stays open only for
+        // the operations admitted before shutdown began.
+        const refused = await s.request("/api/resources/root", {}, epoch);
+        expect(refused.status).toBe(503);
+        expect(refused.headers.get("retry-after")).toBe("5");
+        expect(refused.headers.get("connection")).toBe("close");
+        expect((await s.request("/api/backups", {}, epoch)).status).toBe(503);
         expect(before.map((b) => b.id)).toContain(snapshot.id);
         holding.resolve();
         await disposing;

@@ -280,6 +280,30 @@ describe("snapshots", () => {
         stores.push(store);
         return store;
     }
+
+    it("refuses a put that would overflow the revision counter before it writes, even when a transaction body swallows the error", () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        store.put(root, "main", { a: 1 }, null);
+        store.close();
+        // A restored snapshot can carry a counter at the limit.
+        const db = new DatabaseSync(path.join(dir, "live.sqlite"));
+        db.exec(`UPDATE resources SET revision = ${Number.MAX_SAFE_INTEGER}`);
+        db.close();
+        const reopened = fileStore(dir);
+        const token = reopened.get(root, "main")!.revision;
+        expect(() => reopened.put(root, "main", { a: 2 }, token)).toThrow("Revision counter exhausted");
+        // Inside a transaction whose body catches the error, nothing may have been written either:
+        // a committed counter past the limit makes every later read of the kind throw.
+        reopened.transaction(() => {
+            try {
+                reopened.put(root, "main", { a: 3 }, token);
+            } catch {}
+        });
+        expect(reopened.get(root, "main")).toEqual({ revision: token, data: { a: 1 } });
+        expect(reopened.readKinds([root]).kinds.root.map((record) => record.revision)).toEqual([token]);
+    });
+
     /** Runs SQL against a new file and returns its path. */
     function craft(dir: string, name: string, sql: string) {
         const file = path.join(dir, name);

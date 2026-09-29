@@ -388,13 +388,41 @@ describe("one chat's trouble does not block the rest", () => {
         expect(chat.isMessageLocked(refK, "a")).toBe(true);
 
         chat.endGeneration(refK, "a", "g");
-        expect(chat.isMessageLocked(refK, "a")).toBe(false);
+        expect(chat.isMessageLocked(refK, "a")).toBe(true);
         const result = await sync.flushResources();
+        // The bulk removal is discarded with the reload; the generated text survives it.
         expect(result.discarded).toEqual(["chats/c/k"]);
-        expect(chat.findChat(refK)!.message.map((message) => message.data)).toEqual(["A", "B", "C"]);
+        expect(chat.findChat(refK)!.message.map((message) => message.data)).toEqual(["streamed", "B", "C"]);
         expect((chat.findChat(refK) as any).note).toBe("remote");
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
-        expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
+        expect(fake.texts("c", "k")).toEqual(["streamed", "B", "C"]);
+        expect(chat.isMessageLocked(refK, "a")).toBe(false);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("re-bases a chat acknowledged on an older revision once it is idle, so a later revision-bound op does not conflict", async () => {
+        const { fake, sync, chat } = await boot();
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: fake.chat("c", "k")!.revision,
+                ops: [{ op: "setText", id: "b", text: "remote" }],
+            },
+        ]);
+        chat.setChatMeta(refK, { note: "mine" });
+        const stale = await sync.flushResources();
+        expect(stale.discarded).toEqual([]);
+        await vi.waitFor(() => expect(chat.findChat(refK)!.message[1].data).toBe("remote"), { timeout: 5000 });
+        expect(chat.idleChatRefreshes()).toEqual([]);
+        expect((chat.findChat(refK) as any).note).toBe("mine");
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+
+        chat.removeMessages(refK, ["b", "c"]);
+        const bulk = await sync.flushResources();
+        expect(bulk.discarded).toEqual([]);
+        expect(fake.texts("c", "k")).toEqual(["A"]);
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
     });
 
     it("removes a character another tab deleted, with its chats, and moves the selection home", async () => {
@@ -437,7 +465,7 @@ describe("one chat's trouble does not block the rest", () => {
 });
 
 describe("pagehide", () => {
-    it("sends the running generations' text with one keepalive request, and a page that survives settles its revision so a later continue does not conflict with its own write", async () => {
+    it("sends the running generations' text and pending by-id work with keepalive requests, and a page that survives settles its revision so a later continue does not conflict with its own write", async () => {
         const { fake, sync, chat } = await boot();
         // The unload request bypasses `authFetch` (a pre-signed token, `keepalive`): the raw fetch.
         // Listeners of earlier module graphs stay on the shared window; only this graph's epoch counts.
@@ -455,8 +483,9 @@ describe("pagehide", () => {
         const batches = fake.batchCount();
 
         window.dispatchEvent(new Event("pagehide"));
-        expect(keepalive).toHaveLength(1);
-        expect(keepalive[0].keepalive).toBe(true);
+        // The checkpoint first, then the pending by-id work of an existing chat in its own request.
+        expect(keepalive).toHaveLength(2);
+        expect(keepalive.map((init) => init.keepalive)).toEqual([true, true]);
         expect(new Headers(keepalive[0].headers).get("risu-auth")).toBe("signed-token");
         expect(JSON.parse(keepalive[0].body as string)).toEqual({
             chats: [
@@ -469,10 +498,21 @@ describe("pagehide", () => {
                 },
             ],
         });
+        expect(JSON.parse(keepalive[1].body as string)).toEqual({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "j",
+                    baseRevision: expect.any(String),
+                    ops: [{ op: "meta", set: { note: "j is not held" }, unset: [] }],
+                },
+            ],
+        });
         await vi.waitFor(() => expect(fake.texts("c", "k")[0]).toBe("streamed"));
+        await vi.waitFor(() => expect((fake.chat("c", "j")!.data as any).note).toBe("j is not held"));
 
-        // The page survived (back-forward cache): the answer settles k, and k's later work goes out
-        // on the revision the unload write produced. j was never held.
+        // The page survived (back-forward cache): the answers settle k and j, and k's later work
+        // goes out on the revision the unload write produced.
         chat.setChatMeta(refK, { note: "after the page came back" });
         await vi.waitFor(() => expect(chat.hasChatWork()).toBe(true));
         await sync.flushResources();

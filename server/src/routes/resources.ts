@@ -8,6 +8,7 @@ import {
     ResourceConflictError,
     ResourceEpochError,
     type ResourceStore,
+    ResourceStoreClosedError,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
@@ -311,7 +312,7 @@ function storeErrorResponse(c: Context<AppEnv>, error: unknown): Response {
     if (error instanceof ResourceValidationError) {
         return c.json({ error: error.message }, 400);
     }
-    if (error instanceof MaintenanceError) {
+    if (error instanceof MaintenanceError || error instanceof ResourceStoreClosedError) {
         c.header("Retry-After", "5");
         return c.json({ error: error.message }, 503);
     }

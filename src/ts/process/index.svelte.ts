@@ -25,7 +25,7 @@ import {
     setMessageText,
     setStreamingState,
 } from "../storage/chatStore.svelte";
-import { DBState, streamingDisplayState } from "../stores.svelte";
+import { DBState } from "../stores.svelte";
 import { CharEmotion, selectedCharID } from "../stores.svelte";
 import { ChatTokenizer, tokenize, tokenizeNum } from "../tokenizer";
 import { language } from "../../lang";
@@ -1903,10 +1903,12 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
         startGeneration(outputMessageId, generationId);
         const msgIndex = () => indexOfMessage(outputMessageId);
         const performanceMode: StreamingDisplayOptimizationMode = DBState.db.streamingDisplayOptimizationMode ?? "off";
-        streamingDisplayState.chaId = chatTarget.chaId;
-        streamingDisplayState.chatId = chatTarget.chatId;
-        streamingDisplayState.messageId = outputMessageId;
-        streamingDisplayState.mode = performanceMode;
+        setStreamingState({
+            chaId: chatTarget.chaId,
+            chatId: chatTarget.chatId,
+            messageId: outputMessageId,
+            mode: performanceMode,
+        });
         bumpReloadKey();
         let lastResponseChunk: { [key: string]: string } = {};
         let streamAborted: boolean = abortSignal.aborted;
@@ -2066,9 +2068,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
                     emoChanged = result2.emoChanged;
                 }
             } finally {
-                streamingDisplayState.chaId = null;
-                streamingDisplayState.chatId = null;
-                streamingDisplayState.messageId = null;
+                setStreamingState(null);
                 bumpReloadKey();
                 void reader.cancel().catch(() => {});
             }

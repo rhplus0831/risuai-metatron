@@ -72,7 +72,7 @@ export function createSnapshotManager(options: {
     let tickQueued = false;
     let stopped = false;
     let stopping: Promise<void> | null = null;
-    /** Backup operations (exports, imports, restores) admitted and not yet finished. */
+    /** Resource handlers and backup operations admitted and not yet finished. */
     const active = new Set<Promise<unknown>>();
     /** `store.writeCount()` covered by the last periodic snapshot (none is taken before the first write). */
     let snapshotWrites = store.writeCount();
@@ -198,7 +198,7 @@ export function createSnapshotManager(options: {
         exclusive,
 
         /**
-         * Admits a backup operation (an export stream, an import, a restore) and starts it: `stop`
+         * Admits a resource handler or backup operation and starts it: `stop`
          * waits for it. Once the server is shutting down, `start` is never called and
          * `MaintenanceError` is thrown, so no work of a refused operation begins.
          */

@@ -30,6 +30,7 @@ import { doingChat } from "./process/index.svelte";
 import { createChat, ensureChat, isCharacterGenerating, setChatMeta, syncChatPage } from "./storage/chatStore.svelte";
 import { importCharacter } from "./characterCards";
 import { PngChunk } from "./pngChunk";
+import { markCharactersDirty } from "./storage/resourceSync.svelte";
 
 export function createNewCharacter() {
     DBState.db.characters.push(createBlankChar());
@@ -99,17 +100,23 @@ export async function getCharImage(loc: string, type: "plain" | "css" | "contain
 }
 
 export async function selectCharImg(charIndex: number) {
+    const target = DBState.db.characters[charIndex];
+    if (!target) {
+        return;
+    }
+    const chaId = target.chaId;
+    const isCharacter = target.type === "character";
     const selected = await selectSingleFile(["png", "webp", "gif", "jpg", "jpeg"]);
     if (!selected) {
         return;
     }
     const img = selected.data;
-    let db = DBState.db;
+    const pngExif: Record<string, string> = {};
 
     const type = getImageType(img);
 
     try {
-        if (type === "PNG" && db.characters[charIndex].type === "character") {
+        if (type === "PNG" && isCharacter) {
             const gen = PngChunk.readGenerator(img);
             const allowedChunk = [
                 "parameters",
@@ -135,20 +142,27 @@ export async function selectCharImg(charIndex: number) {
                 }
                 if (allowedChunk.includes(chunk.key)) {
                     console.log(chunk.key, chunk.value);
-                    db.characters[charIndex].extentions ??= {};
-                    db.characters[charIndex].extentions.pngExif ??= {};
-                    db.characters[charIndex].extentions.pngExif[chunk.key] = chunk.value;
+                    pngExif[chunk.key] = chunk.value;
                 }
             }
-            console.log(db.characters[charIndex].extentions);
         }
     } catch (error) {
         console.error(error);
     }
 
     const imgp = await saveImage(img);
+    charIndex = findCharacterIndexbyId(chaId);
+    if (charIndex === -1) {
+        return;
+    }
+    const current = DBState.db.characters[charIndex];
+    if (current.type === "character" && Object.keys(pngExif).length > 0) {
+        current.extentions ??= {};
+        current.extentions.pngExif = { ...current.extentions.pngExif, ...pngExif };
+    }
     dumpCharImage(charIndex);
-    DBState.db.characters[charIndex].image = imgp;
+    current.image = imgp;
+    markCharactersDirty([chaId]);
 }
 
 export function dumpCharImage(charIndex: number) {
@@ -165,6 +179,7 @@ export function dumpCharImage(charIndex: number) {
     });
     char.image = "";
     DBState.db.characters[charIndex] = char;
+    markCharactersDirty([char.chaId]);
 }
 
 export function changeCharImage(charIndex: number, changeIndex: number) {
@@ -174,6 +189,7 @@ export function changeCharImage(charIndex: number, changeIndex: number) {
     dumpCharImage(charIndex);
     char.image = image;
     DBState.db.characters[charIndex] = char;
+    markCharactersDirty([char.chaId]);
 }
 
 export const addingEmotion = writable(false);
@@ -811,6 +827,7 @@ export async function makeGroupImage() {
         if (group.type !== "group") {
             return;
         }
+        const chaId = group.chaId;
 
         const imageUrls = await Promise.all(
             group.characters.map((v) => {
@@ -861,7 +878,12 @@ export async function makeGroupImage() {
 
         const uri = canvas.toDataURL();
         canvas.remove();
-        db.characters[charID].image = await saveImage(dataURLtoBuffer(uri));
+        const image = await saveImage(dataURLtoBuffer(uri));
+        const index = findCharacterIndexbyId(chaId);
+        if (index !== -1) {
+            DBState.db.characters[index].image = image;
+            markCharactersDirty([chaId]);
+        }
         alertStore.set({
             type: "none",
             msg: "",
@@ -878,6 +900,16 @@ function dataURLtoBuffer(string: string) {
     const ext = matches[1];
     const data = matches[2];
     return Buffer.from(data, "base64");
+}
+
+export function restoreChar(chaId: string) {
+    const index = findCharacterIndexbyId(chaId);
+    if (index === -1) {
+        return;
+    }
+    DBState.db.characters[index].trashTime = undefined;
+    markCharactersDirty([chaId]);
+    checkCharOrder();
 }
 
 export async function removeChar(
@@ -898,7 +930,7 @@ export async function removeChar(
             return;
         }
     }
-    let chars = db.characters;
+    const chars = DBState.db.characters;
     const index = chaId === undefined ? -1 : findCharacterIndexbyId(chaId);
     if (index === -1 || index >= chars.length) {
         return;
@@ -910,6 +942,7 @@ export async function removeChar(
     }
     if (type === "normal") {
         chars[index].trashTime = Date.now();
+        markCharactersDirty([chaId]);
     } else {
         chars.splice(index, 1);
     }

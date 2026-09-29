@@ -63,8 +63,8 @@ export type ChatGroupResult = {
     checkpoints?: CheckpointOutcome[];
     /**
      * The group was applied on an older revision (by-id ops allow that): the chat holds changes the
-     * client has not seen, so the client keeps its older base revision and a later operation that
-     * needs the current revision conflicts and reloads the chat instead of overwriting them.
+     * client has not seen. The client keeps its older base until an idle read refreshes the mirror
+     * and revision together; revision-bound work can still conflict before that refresh.
      */
     stale?: true;
 };

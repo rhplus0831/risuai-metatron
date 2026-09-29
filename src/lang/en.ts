@@ -1124,6 +1124,12 @@ export const languageEnglish = {
     noWaitForTranslate: "No Wait for Translate",
     antiClaudeOverload: "Anti-Claude Overload",
     resourceReloaded: "Another tab or device changed this data. The latest version was loaded.",
+    chatCreateRefused:
+        "This chat could not be created on the server. Its local messages have been kept, but this chat will not save during this session. Export it before reloading.",
+    resourceRecordRefused:
+        "This record could not be saved. Other records will continue saving. Edit the refused record to try again.",
+    chatSaveRefused: "This chat could not be saved and will not save during this session.",
+    chatOrderRefused: "This chat order could not be saved. Change the order to try again.",
     resourceRestored: "The server data was restored from a backup. The app will reload.",
     characterGenerating: "This character is generating a reply. Wait until it finishes.",
     chatGenerating: "This chat is generating a reply. Wait until it finishes.",

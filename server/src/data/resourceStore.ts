@@ -31,6 +31,14 @@ const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 const integerPattern = "(0|[1-9][0-9]*)";
 const revisionTokenRegex = new RegExp(`^(${uuidPattern}):${integerPattern}:${integerPattern}$`);
 
+/** Shutdown has closed the database; clients may retry against the next server. */
+export class ResourceStoreClosedError extends Error {
+    constructor() {
+        super("Resource store is closed");
+        this.name = "ResourceStoreClosedError";
+    }
+}
+
 /** A write named a revision that is not the current one, or the record it addressed is gone. */
 export class ResourceConflictError extends Error {
     /** The current revision token, or null when the record does not exist. */
@@ -212,7 +220,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
 
     function assertOpen() {
         if (closed) {
-            throw new Error("Resource store is closed");
+            throw new ResourceStoreClosedError();
         }
     }
 
@@ -422,14 +430,14 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                     }
                 } else {
                     const base = parseToken(baseRevision);
-                    if (
-                        !base ||
-                        update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision).changes === 0
-                    ) {
+                    if (!base) {
+                        conflict(kind, id);
+                    }
+                    revision = nextRevision(base.revision, 1);
+                    if (update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision).changes === 0) {
                         conflict(kind, id);
                     }
                     seq = base.seq;
-                    revision = nextRevision(base.revision, 1);
                 }
                 countWrite();
                 return { revision: token(seq, revision), data: stored as T };

@@ -11,6 +11,8 @@ import type {
 } from "../../../shared/chats.ts";
 import { CHAT_META_FORBIDDEN_KEYS } from "../../../shared/chats.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
+import { language } from "src/lang";
+import { alertError } from "../alert";
 import { DBState, selectedCharID } from "../stores.svelte";
 import type { character, Chat, groupChat, Message } from "./database.svelte";
 
@@ -33,6 +35,15 @@ import type { character, Chat, groupChat, Message } from "./database.svelte";
  *   lock stays until that is acknowledged or discarded. A generation the server stopped accepting
  *   (another tab took the message over, or it was closed) is rejected: writes carrying its id do
  *   nothing from then on.
+ * - Final writes are retained by generation id until acknowledged or discarded, independently of
+ *   the current message lock (auto-continue can supersede an ending generation). A conflict waits
+ *   for producers to end, reloads, then reapplies those finals in order for surviving message ids.
+ *   The current lock survives that reload until acknowledgement. Recovery keeps the original
+ *   generation id and sequence: acknowledged begins are never reopened, unacknowledged begins are
+ *   retried, and the server's fence history still rejects displaced or closed generations. Message
+ *   id adoption renames retained finals along with queued work and locks.
+ * - A stale acknowledgement keeps the old base and requests an idle refresh. Only a chat with no
+ *   pending/in-flight work, lock, deferral, or quarantine may accept it; this is not a discard.
  * - The selected chat is per tab: `selectChat` records the chat id, and `chatPage` is derived from it.
  */
 
@@ -78,6 +89,8 @@ export type SentChatGroup = {
     finals: { messageKey: string; generationId: string }[];
     /** For each generation-carrying op in order: its generation id and message key. */
     generationOps: { generationId: string; messageKey: string }[];
+    /** Unload work taken from the ordinary queue, rather than a synthetic generation checkpoint. */
+    unloadPending?: boolean;
 };
 
 export type SentChatOrder = { characterId: string; baseRevision: string; ids: string[]; seq: number };
@@ -96,6 +109,12 @@ type Generation = {
     begun: boolean;
 };
 
+type GenerationFinal = {
+    messageKey: string;
+    op: Extract<ChatOp, { op: "setText" }> & { generation: MessageGeneration };
+    begun: boolean;
+};
+
 const chatRevisions = new Map<string, string>();
 const orderRevisions = new Map<string, string>();
 const pending = new Map<string, Pending>();
@@ -110,10 +129,16 @@ const discarded = new Map<string, number>();
 let discardSequence = 0;
 /** Chats whose work the server refused as invalid; nothing more is sent for them this session. */
 const quarantined = new Set<string>();
+/** Refused reorders wait until the ordered ids change. */
+const quarantinedOrders = new Map<string, string>();
 /** Chats whose conflict reload waits for the generation running in them. */
 const deferred = new Set<string>();
+/** Chats acknowledged on an older base, awaiting an idle read of the server's complete state. */
+const staleChats = new Set<string>();
 /** Locked messages (`messageKeyOf`) → their running generation. */
 const generations = new Map<string, Generation>();
+/** Finals in producer order, including generations superseded by auto-continue before their ack. */
+const generationFinals = new Map<string, GenerationFinal>();
 /** Bumped whenever `generations` gains or loses a lock, so the chat screen's lock reads re-run. */
 const lockState = $state({ version: 0 });
 /** Generations the server stopped accepting → their message key. */
@@ -422,7 +447,7 @@ export function beginGeneration(ref: ChatRef, messageId: string, generationId: s
     if (existing) {
         // The previous generation already queued its final text (continue right after it ended);
         // that write still goes out before this `begin`, and its acknowledgement matches by id.
-        releaseGeneration(messageKey, existing.generationId);
+        releaseGeneration(messageKey, existing.generationId, true);
     }
     const generation: Generation = {
         generationId,
@@ -538,6 +563,15 @@ export function unloadCheckpoint(limitBytes: number): { body: string; work: Chat
 /** Marks an unload checkpoint's groups in flight (the request was sent). */
 export function trackUnloadCheckpoint(work: ChatWork) {
     for (const group of work.groups) {
+        if (group.unloadPending) {
+            const entry = pending.get(group.key);
+            if (entry) {
+                entry.ops = entry.ops.slice(group.ops.length);
+                if (entry.ops.length === 0) {
+                    pending.delete(group.key);
+                }
+            }
+        }
         inflight.set(group.key, group);
     }
 }
@@ -546,11 +580,20 @@ export function trackUnloadCheckpoint(work: ChatWork) {
  * Records the answer to an unload checkpoint the page survived to receive (`results` in group
  * order; null: the request failed or was refused, and the ordinary checkpoints carry on). The
  * revision rule is the acknowledgement's: a group applied on the current revision moves the base,
- * a `stale` one leaves it (the chat holds changes this client has not seen), and a generation the
- * server no longer accepts stops. The chats' queued work goes out again.
+ * a `stale` one requests an idle refresh (the chat holds changes this client has not seen), and a
+ * generation the server no longer accepts stops. The chats' queued work goes out again.
  */
 export function settleUnloadCheckpoint(work: ChatWork, results: readonly ChatGroupResult[] | null) {
     work.groups.forEach((group, index) => {
+        if (group.unloadPending) {
+            const taken = { groups: [group], orders: [] };
+            if (results?.[index]) {
+                ackChatWork(taken, [results[index]], []);
+            } else {
+                requeueChatWork(taken);
+            }
+            return;
+        }
         if (inflight.get(group.key) === group) {
             inflight.delete(group.key);
         }
@@ -560,6 +603,9 @@ export function settleUnloadCheckpoint(work: ChatWork, results: readonly ChatGro
         }
         if (result.revision !== null && (!result.stale || !chatRevisions.has(group.key))) {
             chatRevisions.set(group.key, result.revision);
+        }
+        if (result.stale) {
+            staleChats.add(group.key);
         }
         (result.checkpoints ?? []).forEach((outcome, opIndex) => {
             const op = group.generationOps[opIndex];
@@ -573,10 +619,56 @@ export function settleUnloadCheckpoint(work: ChatWork, results: readonly ChatGro
 }
 
 /**
+ * Pending by-id work for existing chats, one request per chat within the remaining shared budget.
+ * Take only an eligible prefix: jumping past a replace/begin/delete could change its meaning.
+ * Nothing leaves the queue until `trackUnloadCheckpoint` confirms the request was sent.
+ */
+export function unloadPendingChatWork(limitBytes: number): { body: string; work: ChatWork }[] {
+    const requests: { body: string; work: ChatWork }[] = [];
+    const encoder = new TextEncoder();
+    for (const [key, entry] of pending) {
+        const base = chatRevisions.get(key);
+        if (!base || entry.create || entry.resend || inflight.has(key) || deferred.has(key) || quarantined.has(key)) {
+            continue;
+        }
+        const ops: ChatOp[] = [];
+        for (const op of entry.ops) {
+            if (
+                op.op !== "append" &&
+                op.op !== "setText" &&
+                op.op !== "setMessage" &&
+                op.op !== "meta" &&
+                !(op.op === "remove" && op.ids.length === 1)
+            ) {
+                break;
+            }
+            if (ops.length === 5000) {
+                break;
+            }
+            ops.push(op);
+        }
+        if (ops.length === 0) {
+            continue;
+        }
+        const group = sentGroup(key, entry, base, ops, ops.length === entry.ops.length ? entry.seq : 0);
+        group.unloadPending = true;
+        const work = { groups: [group], orders: [] };
+        const body = `{"chats":[${chatWorkBody(work).chats.join(",")}]}`;
+        const bytes = encoder.encode(body).length;
+        if (bytes > limitBytes) {
+            continue;
+        }
+        requests.push({ body, work });
+        limitBytes -= bytes;
+    }
+    return requests;
+}
+
+/**
  * Ends a generation: sends the message's current text as its final write. The lock stays until
  * that write is acknowledged or discarded, so no older checkpoint can land after it. A generation
- * whose chat reload waits (a conflict deferred it) ends at once: its work cannot be sent, and the
- * reload that follows replaces it.
+ * whose chat reload waits retains its final text and lock: the reload reapplies the final on the
+ * fresh revision before the lock can be released.
  */
 export function endGeneration(ref: ChatRef, messageId: string, generationId: string) {
     const messageKey = messageKeyOf(ref, messageId);
@@ -586,21 +678,26 @@ export function endGeneration(ref: ChatRef, messageId: string, generationId: str
     }
     stopTimer(generation);
     const message = mirrorChat(ref)?.message.find((entry) => entry.chatId === messageId);
-    if (!message || deferred.has(keyOf(ref.chaId, ref.chatId))) {
+    if (!message) {
         releaseGeneration(messageKey, generationId);
         return;
     }
     generation.ending = true;
     generation.seq += 1;
-    enqueue(ref, {
+    const op: GenerationFinal["op"] = {
         op: "setText",
         id: messageId,
         text: message.data,
         generation: { id: generationId, seq: generation.seq, final: true },
-    });
+    };
+    generationFinals.set(generationId, { messageKey, op: clone(op), begun: generation.begun });
+    enqueue(ref, op);
 }
 
-function releaseGeneration(messageKey: string, generationId: string) {
+function releaseGeneration(messageKey: string, generationId: string, keepFinal = false) {
+    if (!keepFinal) {
+        generationFinals.delete(generationId);
+    }
     const generation = generations.get(messageKey);
     if (!generation || generation.generationId !== generationId) {
         return;
@@ -625,6 +722,11 @@ function rejectGeneration(messageKey: string, generationId: string) {
 
 /** Releases (and rejects, when still running) every generation of a chat whose work is dropped. */
 function dropGenerations(key: string) {
+    for (const [id, final] of generationFinals) {
+        if (final.messageKey.startsWith(`${key}\u0000`)) {
+            releaseGeneration(final.messageKey, id);
+        }
+    }
     for (const [messageKey, generation] of [...generations]) {
         if (messageKey.startsWith(`${key}\u0000`)) {
             if (generation.ending) {
@@ -1234,6 +1336,7 @@ export function reconcileCharacterChats(chaId: string, incoming: readonly DeepRe
 export function seedChats(chats: readonly ChatRecord[], orders: readonly ChatOrderRecord[]) {
     chatRevisions.clear();
     orderRevisions.clear();
+    staleChats.clear();
     for (const chat of chats) {
         chatRevisions.set(keyOf(chat.characterId, chat.id), chat.revision);
     }
@@ -1301,18 +1404,62 @@ export function initializeChats() {
 // Save loop
 
 /** Whether any chat work waits to be sent or a deferred reload can run. */
-export function hasChatWork(): boolean {
+export function hasChatWork(canSaveCharacter: (id: string) => boolean = () => true): boolean {
     for (const [key, entry] of pending) {
         if (
             !quarantined.has(key) &&
             !deferred.has(key) &&
             !inflight.has(key) &&
+            canSaveCharacter(entry.characterId) &&
             (entry.create || entry.resend || entry.ops.length > 0)
         ) {
             return true;
         }
     }
-    return pendingOrders.size > 0 || deferredReloads().length > 0;
+    return (
+        [...pendingOrders.keys()].some((id) => canSaveCharacter(id) && !isOrderQuarantined(id)) ||
+        deferredReloads().length > 0 ||
+        idleChatRefreshes().length > 0
+    );
+}
+
+/** Unsaved user work, including requests in flight and live text between checkpoints. */
+export function hasUnsavedChatWork(canSaveCharacter: (id: string) => boolean = () => true): boolean {
+    for (const key of new Set(
+        [...pending.keys(), ...inflight.keys(), ...generations.keys()].map((key) =>
+            key.split("\u0000").slice(0, 2).join("\u0000"),
+        ),
+    )) {
+        if (!quarantined.has(key) && canSaveCharacter(key.split("\u0000")[0])) {
+            return true;
+        }
+    }
+    return [...pendingOrders.keys(), ...inflightOrders.keys()].some(
+        (id) => canSaveCharacter(id) && !isOrderQuarantined(id),
+    );
+}
+
+function isOrderQuarantined(chaId: string): boolean {
+    const refused = quarantinedOrders.get(chaId);
+    if (refused === undefined) {
+        return false;
+    }
+    const ids = (findCharacter(chaId)?.chats ?? [])
+        .map((chat) => chat.id)
+        .filter((id) => chatRevisions.has(keyOf(chaId, id!)));
+    if (JSON.stringify(ids) === refused) {
+        return true;
+    }
+    quarantinedOrders.delete(chaId);
+    return false;
+}
+
+export function quarantineChatOrder(order: SentChatOrder) {
+    inflightOrders.delete(order.characterId);
+    quarantinedOrders.set(order.characterId, JSON.stringify(order.ids));
+    if (!pendingOrders.has(order.characterId)) {
+        pendingOrders.set(order.characterId, order.seq);
+    }
 }
 
 /**
@@ -1364,6 +1511,13 @@ export function adoptCharacter(chaId: string) {
 /** Drops all chat state of a character that is deleted (the server deletes its chats with it). */
 export function forgetCharacter(chaId: string) {
     const prefix = `${chaId}\u0000`;
+    for (const key of [...staleChats, ...deferred]) {
+        if (key.startsWith(prefix)) {
+            staleChats.delete(key);
+            deferred.delete(key);
+            dropGenerations(key);
+        }
+    }
     for (const key of [...pending.keys()]) {
         if (key.startsWith(prefix)) {
             settleKey(key, workSeq(key));
@@ -1382,6 +1536,7 @@ export function forgetCharacter(chaId: string) {
     }
     pendingOrders.delete(chaId);
     orderRevisions.delete(chaId);
+    quarantinedOrders.delete(chaId);
 }
 
 /** Whether the server knows a character's chats (its order exists) or this batch creates it. */
@@ -1405,6 +1560,13 @@ function mirrorIndex(entry: Pending): number {
  */
 export function takeChatWork(creating: ReadonlySet<string>, options: { maxOps?: number } = {}): ChatWork {
     const maxOps = options.maxOps ?? Infinity;
+    // A quarantined character create may be removed or re-keyed before ever reaching the server.
+    // There is no persisted character deletion to clear its old chat obligations in that case.
+    for (const id of new Set([...pending.values()].map((entry) => entry.characterId))) {
+        if (!findCharacter(id)) {
+            forgetCharacter(id);
+        }
+    }
     const groups: SentChatGroup[] = [];
     const createdHere = new Set<string>();
     const deletedHere = new Set<string>();
@@ -1449,9 +1611,12 @@ export function takeChatWork(creating: ReadonlySet<string>, options: { maxOps?: 
                 return chatRevisions.has(otherKey) || createdHere.has(otherKey);
             }).length;
         // Only the generation ops remain: the mirror copy already holds every other change.
+        const messageIds = new Set(chat.message.map((message) => message.chatId));
         const ops: ChatOp[] = [
             { op: "create", chat: projectChat(chat), index },
-            ...entry.ops.filter((op) => op.op === "begin" || (op.op === "setText" && op.generation)),
+            ...entry.ops.filter(
+                (op) => (op.op === "begin" || (op.op === "setText" && op.generation)) && messageIds.has(op.id),
+            ),
         ];
         const group = sentGroup(key, entry, null, ops);
         inflight.set(key, group);
@@ -1501,7 +1666,7 @@ export function takeChatWork(creating: ReadonlySet<string>, options: { maxOps?: 
     for (const [chaId, seq] of pendingOrders) {
         const base = orderRevisions.get(chaId);
         const character = findCharacter(chaId);
-        if (base === undefined || !character || inflightOrders.has(chaId)) {
+        if (base === undefined || !character || inflightOrders.has(chaId) || isOrderQuarantined(chaId)) {
             continue;
         }
         const visible = new Set(chatsOf(character).map((chat) => chat.id!));
@@ -1648,16 +1813,24 @@ export function ackChatWork(
         if (result) {
             if (result.revision === null) {
                 chatRevisions.delete(group.key);
+                staleChats.delete(group.key);
             } else if (!result.stale || !chatRevisions.has(group.key)) {
                 // A group applied on an older revision leaves the older base: this client has not
                 // seen every change up to the new revision.
                 chatRevisions.set(group.key, result.revision);
+            }
+            if (result.stale && result.revision !== null) {
+                staleChats.add(group.key);
             }
             if (result.messageIds) {
                 adoptMessageIds(group, result.messageIds);
             }
             for (const op of group.ops) {
                 if (op.op === "begin") {
+                    const final = generationFinals.get(op.generationId);
+                    if (final) {
+                        final.begun = true;
+                    }
                     for (const generation of generations.values()) {
                         if (generation.generationId === op.generationId) {
                             generation.begun = true;
@@ -1747,6 +1920,19 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
         }
     }
     for (const [from, to] of firstRename) {
+        const fromKey = messageKeyOf(ref, from);
+        const toKey = messageKeyOf(ref, to);
+        for (const final of generationFinals.values()) {
+            if (final.messageKey === fromKey) {
+                final.messageKey = toKey;
+                final.op.id = to;
+            }
+        }
+        for (const op of [...group.finals, ...group.generationOps]) {
+            if (op.messageKey === fromKey) {
+                op.messageKey = toKey;
+            }
+        }
         const generation = generations.get(messageKeyOf(ref, from));
         if (generation) {
             generations.delete(messageKeyOf(ref, from));
@@ -1797,13 +1983,20 @@ export function requeueChatWork(work: ChatWork) {
 }
 
 /** Stops sending a chat whose work the server refused as invalid (its generations stop too). */
-export function quarantineChat(group: SentChatGroup) {
+export function quarantineChat(group: Pick<SentChatGroup, "key" | "seq">) {
     inflight.delete(group.key);
     quarantined.add(group.key);
+    deferred.delete(group.key);
+    staleChats.delete(group.key);
     const seq = Math.max(group.seq, workSeq(group.key));
     pending.delete(group.key);
     markDiscarded(group.key, seq);
     dropGenerations(group.key);
+}
+
+function quarantineRefusedCreate(key: string, seq: number) {
+    quarantineChat({ key, seq });
+    alertError(language.chatCreateRefused);
 }
 
 function markDiscarded(key: string, seq: number) {
@@ -1819,7 +2012,8 @@ export type RemoteChat = { characterId: string; id: string; revision: string | n
  * Handles the chat part of a 409 (the whole batch was rolled back). Work that did not conflict is
  * queued again. For each conflicting chat, with the server's copy read back: our own create or
  * delete that already landed (a replay) keeps the local state and the rest of its work; a chat a
- * generation runs in is deferred (excluded from batches, reloaded when the generation ends); a chat
+ * generation locks is deferred (excluded from batches, reloaded when producers end, preserving
+ * their finals even if they ended during the request); a chat
  * that is gone is dropped and its character's chat list is to be refreshed (`refresh`); any other
  * is replaced by the server copy and its local work discarded. Reorders that conflicted are dropped
  * (the caller refreshes those characters). Returns whether a chat was reloaded.
@@ -1860,8 +2054,15 @@ export function recoverChatConflicts(
             pending.delete(group.key);
             continue;
         }
-        if (hasLiveGeneration(ref)) {
-            // A producer still writes into this chat: its reload waits until it ends.
+        if (create && server.revision === null) {
+            // This create never landed. Keep the local chat; a missing parent is recovered by
+            // the character read, and retrying this same group would loop.
+            quarantineRefusedCreate(group.key, group.seq);
+            refresh.add(group.characterId);
+            continue;
+        }
+        if (isChatGenerating(ref)) {
+            // Also preserve finals whose producer ended while the request/read was in flight.
             deferred.add(group.key);
             retry.push(group);
             continue;
@@ -1917,11 +2118,22 @@ function requeueRecovered(groups: readonly SentChatGroup[]) {
     }
 }
 
-function discardChatWork(key: string, seq: number) {
+function discardChatWork(key: string, seq: number, keepFinals = false) {
     const highest = Math.max(seq, workSeq(key));
     pending.delete(key);
     inflight.delete(key);
-    markDiscarded(key, highest);
+    staleChats.delete(key);
+    // Recovered finals still owe an acknowledgement, including to a flush already waiting on
+    // the discarded group's sequence. Their re-enqueued work will settle that sequence later.
+    markDiscarded(key, keepFinals ? 0 : highest);
+    if (keepFinals) {
+        return;
+    }
+    for (const [id, final] of generationFinals) {
+        if (final.messageKey.startsWith(`${key}\u0000`)) {
+            releaseGeneration(final.messageKey, id);
+        }
+    }
     for (const [messageKey, generation] of [...generations]) {
         if (messageKey.startsWith(`${key}\u0000`) && generation.ending) {
             releaseGeneration(messageKey, generation.generationId);
@@ -1931,11 +2143,19 @@ function discardChatWork(key: string, seq: number) {
 
 /**
  * Replaces a chat in the mirror with the server's copy and discards its local work. A chat that is
- * gone on the server is removed (a character left without chats gets a new one).
+ * gone on the server is removed (a character left without chats gets a new one). Deferred recovery
+ * uses `keepFinals` to retain final writes and ending locks across the replacement.
  */
-export function acceptRemoteChat(server: RemoteChat, seq = 0) {
+export function acceptRemoteChat(server: RemoteChat, seq = 0, keepFinals = false) {
     const key = keyOf(server.characterId, server.id);
-    discardChatWork(key, seq);
+    discardChatWork(key, seq, keepFinals);
+    applyRemoteChat(server);
+}
+
+/** Applies a server copy without settling or discarding any work (callers establish eligibility). */
+function applyRemoteChat(server: RemoteChat) {
+    const key = keyOf(server.characterId, server.id);
+    staleChats.delete(key);
     const character = findCharacter(server.characterId);
     if (character) {
         const chats = chatsOf(character);
@@ -1959,6 +2179,33 @@ export function acceptRemoteChat(server: RemoteChat, seq = 0) {
         chatRevisions.set(key, server.revision);
     }
     remoteListener?.({ chaId: server.characterId, chatId: server.id });
+}
+
+function canRefreshChat(ref: ChatRef): boolean {
+    const key = keyOf(ref.chaId, ref.chatId);
+    return (
+        !pending.has(key) && !inflight.has(key) && !isChatGenerating(ref) && !deferred.has(key) && !quarantined.has(key)
+    );
+}
+
+/** Stale chats eligible for a read inside the save cycle, never alongside a batch. */
+export function idleChatRefreshes(): ChatRef[] {
+    return [...staleChats]
+        .map((key) => {
+            const [chaId, chatId] = key.split("\u0000");
+            return { chaId, chatId };
+        })
+        .filter(canRefreshChat);
+}
+
+/** Rechecks eligibility after the read's await; busy chats retain their refresh mark for later. */
+export function finishIdleChatRefresh(server: RemoteChat): boolean {
+    const key = keyOf(server.characterId, server.id);
+    if (!staleChats.has(key) || !canRefreshChat({ chaId: server.characterId, chatId: server.id })) {
+        return false;
+    }
+    applyRemoteChat(server);
+    return true;
 }
 
 /**
@@ -1997,7 +2244,7 @@ export function acceptRemoteCollection(collection: {
         const key = keyOf(chaId, id);
         const mine = local.get(id);
         const entry = pending.get(key);
-        const busy = entry !== undefined || inflight.has(key) || isChatGenerating({ chaId, chatId: id });
+        const busy = !canRefreshChat({ chaId, chatId: id });
         if (entry?.resend || entry?.create) {
             // Our create landed (its answer was lost): the rest of its group and later work
             // continue on this revision.
@@ -2021,6 +2268,7 @@ export function acceptRemoteCollection(collection: {
         } else {
             next.push(record.data);
             chatRevisions.set(key, record.revision);
+            staleChats.delete(key);
             changed(key);
         }
     }
@@ -2030,7 +2278,7 @@ export function acceptRemoteCollection(collection: {
         }
         const key = keyOf(chaId, id);
         const entry = pending.get(key);
-        if (entry?.create || entry?.resend || inflight.get(key)?.ops[0]?.op === "create") {
+        if (quarantined.has(key) || entry?.create || entry?.resend || inflight.get(key)?.ops[0]?.op === "create") {
             // Not on the server yet (never sent, or a create whose attempt was rolled back or is
             // unresolved): it stays and its create goes out.
             next.push(chat);
@@ -2045,7 +2293,7 @@ export function acceptRemoteCollection(collection: {
     }
     chatsOf(character).splice(0, chatsOf(character).length, ...next);
     mutationToken += 1;
-    if (next.some((chat) => !chatRevisions.has(keyOf(chaId, chat.id!)))) {
+    if (next.some((chat) => !chatRevisions.has(keyOf(chaId, chat.id!)) && !quarantined.has(keyOf(chaId, chat.id!)))) {
         // Local chats still to be created were placed after the server's; a reorder sent after
         // their creates makes the server's order match the mirror.
         pendingOrders.set(chaId, nextSeq());
@@ -2062,19 +2310,51 @@ export function deferredReloads(): ChatRef[] {
             const [chaId, chatId] = key.split("\u0000");
             return { chaId, chatId };
         })
-        .filter((ref) => !isChatGenerating(ref));
+        .filter((ref) => !hasLiveGeneration(ref) && !inflight.has(keyOf(ref.chaId, ref.chatId)));
 }
 
 /** Applies a deferred chat's reload (after a successful read) and ends its deferral. */
 export function finishDeferredReload(server: RemoteChat): string | null {
     const key = keyOf(server.characterId, server.id);
+    const ref = { chaId: server.characterId, chatId: server.id };
+    // A continue may have taken the lock while the read was in flight.
+    if (!deferred.has(key) || hasLiveGeneration(ref) || inflight.has(key)) {
+        return null;
+    }
     deferred.delete(key);
     if (server.revision === null) {
-        discardChatWork(key, 0);
+        const entry = pending.get(key);
+        if (entry?.create || entry?.resend) {
+            quarantineRefusedCreate(key, workSeq(key));
+        } else {
+            discardChatWork(key, 0);
+        }
         chatRevisions.delete(key);
         return server.characterId;
     }
-    acceptRemoteChat(server);
+    const seq = workSeq(key);
+    acceptRemoteChat(server, 0, true);
+    let requeued = false;
+    for (const [id, final] of generationFinals) {
+        if (!final.messageKey.startsWith(`${key}\u0000`)) {
+            continue;
+        }
+        const message = mirrorChat(ref)?.message.find((entry) => entry.chatId === final.op.id);
+        if (!message) {
+            releaseGeneration(final.messageKey, id);
+            continue;
+        }
+        message.data = final.op.text;
+        changed(key);
+        if (!final.begun) {
+            enqueue(ref, { op: "begin", id: final.op.id, generationId: id });
+        }
+        enqueue(ref, clone(final.op));
+        requeued = true;
+    }
+    if (!requeued) {
+        settleKey(key, seq);
+    }
     return null;
 }
 

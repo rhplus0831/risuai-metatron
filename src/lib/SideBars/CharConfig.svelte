@@ -70,6 +70,7 @@
     import MultiLangInput from "../UI/GUI/MultiLangInput.svelte";
     import { applyModule } from "src/ts/process/modules";
     import { exportRegex, importRegex } from "src/ts/process/scripts";
+    import { markCharactersDirty } from "src/ts/storage/resourceSync.svelte";
     import SliderInput from "../UI/GUI/SliderInput.svelte";
     import Toggles from "./Toggles.svelte";
     import { convertCharacterToModule } from "src/ts/interchangeability";
@@ -995,9 +996,14 @@
             <button
                 class="font-medium cursor-pointer hover:text-green-500"
                 onclick={async () => {
-                    DBState.db.characters[$selectedCharID].customscript = await importRegex(
-                        DBState.db.characters[$selectedCharID].customscript,
-                    );
+                    const character = DBState.db.characters[$selectedCharID];
+                    const chaId = character.chaId;
+                    const scripts = await importRegex($state.snapshot(character.customscript));
+                    const current = DBState.db.characters.find((entry) => entry.chaId === chaId);
+                    if (current) {
+                        current.customscript = scripts;
+                        markCharactersDirty([chaId]);
+                    }
                 }}><HardDriveUploadIcon /></button
             >
         </div>

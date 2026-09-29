@@ -6,7 +6,7 @@ import { serve } from "@hono/node-server";
 import { createServerContext } from "./app.ts";
 
 const rootDir = process.cwd();
-const SHUTDOWN_GRACE_MS = 30_000;
+const SHUTDOWN_GRACE_MS = 8_000;
 const sslPath = path.join(rootDir, "server/ssl/certificate");
 
 async function getHttpsOptions(): Promise<{ key: Buffer; cert: Buffer } | null> {
@@ -46,10 +46,10 @@ async function startServer() {
     context.attachWebSocket(server);
     context.startBackgroundTasks();
 
-    // Stop accepting connections, let a running snapshot, restore, import, or export finish and
-    // answer (`server.close` completes once every connection has ended; idle keep-alive ones are
-    // closed at once), then close the resource database. Connections still open at the
-    // SHUTDOWN_GRACE_MS deadline are destroyed, and their operations' cleanup is awaited.
+    // Refuse new resource/backup admissions and close keep-alive responses before draining HTTP.
+    // Admitted handlers keep the store open through body reads, auth, and their responses. After
+    // at most eight seconds (leaving cleanup time within Docker's default ten-second stop timeout),
+    // destroy remaining connections, await operation cleanup, and only then close the database.
     let shuttingDown = false;
     const shutdown = (signal: string) => {
         if (shuttingDown) {
@@ -57,13 +57,13 @@ async function startServer() {
         }
         shuttingDown = true;
         console.log(`[Server] ${signal} received, shutting down...`);
+        context.beginShutdown();
         const closed = new Promise<void>((resolve) => server.close(() => resolve()));
         const deadline = new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS).unref());
-        const disposed = context.dispose();
-        Promise.race([Promise.all([closed, disposed]), deadline])
+        Promise.race([closed, deadline])
             .then(() => {
                 server.closeAllConnections?.();
-                return disposed;
+                return context.dispose();
             })
             .then(
                 () => process.exit(0),

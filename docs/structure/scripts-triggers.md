@@ -69,7 +69,7 @@ Where each hook runs:
 
 `runTrigger` steps:
 
-1. Clone the character and chat. Display and request runs clone the character not at all and copy only the chat and its message list (they run per rendered message); their effects replace messages instead of editing them. The caller captures a chat baseline before the run and applies the returned chat with `applyChatResult` (`persistence.md`); chat variables and the author's note are also written to the live chat as the trigger runs (`setChatMeta`), so later effects and CBS read them.
+1. Clone the character and chat. Display and request runs clone the character not at all and copy only the chat and its message list (they run per rendered message); their effects replace messages instead of editing them. For other runs, the caller captures a chat baseline and applies the returned chat with `applyChatResult` (`persistence.md`); chat variables and the author's note are also written to the live chat as the trigger runs (`setChatMeta`), so later effects and CBS read them. Display and request runs pass `displayMode: true`, which leaves `chatTarget` null: variables use `tempVars`, and nothing is written to the live chat.
 2. Copy the character's `lowLevelAccess` onto its triggers.
 3. Append `getModuleTriggers()`.
 4. Resolve variables.

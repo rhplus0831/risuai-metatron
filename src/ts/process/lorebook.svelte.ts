@@ -5,7 +5,7 @@ import { type Message, type loreBook } from "../storage/database.svelte";
 import { DBState } from "../stores.svelte";
 import { tokenize } from "../tokenizer";
 import { risuChatParser } from "../parser/parser.svelte";
-import { findCharacterbyId, pickHashRand, selectSingleFile } from "../util";
+import { findCharacterbyId, findCharacterIndexbyId, pickHashRand, selectSingleFile } from "../util";
 import { alertError, alertNormal } from "../alert";
 import { language } from "../../lang";
 import { downloadFile } from "../globalApi.svelte";
@@ -14,6 +14,7 @@ import { CCardLib } from "@risuai/ccardlib";
 import { v4 } from "uuid";
 import { type ChatRef, currentChatRef, findChat, setChatMeta } from "../storage/chatStore.svelte";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
+import { markCharactersDirty } from "../storage/resourceSync.svelte";
 
 /** Appends entries to the selected chat's local lore (through the chat module). */
 function appendLocalLore(entries: loreBook[]) {
@@ -702,9 +703,10 @@ export async function loadLoreBookV3Prompt(chatRef?: ChatRef | null) {
 
 export async function importLoreBook(mode: "global" | "local" | "sglobal") {
     const selectedID = get(selectedCharID);
+    const chaId = DBState.db.characters[selectedID]?.chaId;
     // The chat (for local lore) is captured before the file dialog, so a chat switch cannot redirect it.
     const chatTarget = mode === "local" ? currentChatRef() : null;
-    let lore: loreBook[] = mode === "global" ? DBState.db.characters[selectedID].globalLore : [];
+    const lore: loreBook[] = [];
     const lorebook = (await selectSingleFile(["json", "lorebook"])).data;
     if (!lorebook) {
         return;
@@ -722,7 +724,12 @@ export async function importLoreBook(mode: "global" | "local" | "sglobal") {
             lore.push(...convertExternalLorebook(entries));
         }
         if (mode === "global") {
-            DBState.db.characters[selectedID].globalLore = lore;
+            const index = chaId === undefined ? -1 : findCharacterIndexbyId(chaId);
+            if (index !== -1) {
+                const character = DBState.db.characters[index];
+                character.globalLore = [...(character.globalLore ?? []), ...lore];
+                markCharactersDirty([chaId]);
+            }
         } else if (chatTarget) {
             const chat = findChat(chatTarget);
             if (chat) {

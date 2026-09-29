@@ -139,7 +139,7 @@ Not in `sendChat`:
 - `PromptItem` types: `plain|jailbreak|cot`, `chatML`, typed `persona|description|lorebook|postEverything|memory`, `authornote`, `chat` (with a range), and `cache`.
 - Reactive singletons: `DBState.db`, `selectedCharID`, `doingChat`, `chatProcessStage`, `CharEmotion`.
 - The pipeline never mutates the chat in place: `chats` are read-only mirror fields, and every write goes through `src/ts/storage/chatStore.svelte.ts` (see `persistence.md`), addressed by chat and message id. Autosave does not see chats.
-- Streaming display: `streamingDisplayState` (`stores.svelte.ts`: `chaId`, `chatId`, `messageId`, `mode`) drives `Chats.svelte`; `Chat.svelte` disables the controls of a message `isMessageLocked` reports.
+- Streaming display: `streamingState` (`chatStore.svelte.ts`: `chaId`, `chatId`, `messageId`, `mode`) drives `Chats.svelte`; `Chat.svelte` disables the controls of a message `isMessageLocked` reports.
 
 ## Coupling
 
