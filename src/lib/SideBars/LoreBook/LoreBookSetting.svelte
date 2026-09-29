@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { useLocalLoreDraft } from "src/ts/storage/localLoreDraft.svelte";
     import { DBState } from "src/ts/stores.svelte";
     import { language } from "../../../lang";
     import { DownloadIcon, HardDriveUploadIcon, PlusIcon, SunIcon, LinkIcon, FolderPlusIcon } from "@lucide/svelte";
@@ -45,8 +46,8 @@
     }
 
     function toggleChatLoreAlwaysActive() {
-        const localLore =
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].localLore;
+        // Edits the chat's local lorebook copy, which is saved through the chat module.
+        const localLore = useLocalLoreDraft().value;
 
         if (!localLore) return;
 

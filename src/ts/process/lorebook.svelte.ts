@@ -1,5 +1,5 @@
 import { get } from "svelte/store";
-import { getChatVar, setChatVar } from "../parser/chatVar.svelte";
+import { getChatVar, getChatVarOf, setChatVar, setChatVarOf } from "../parser/chatVar.svelte";
 import { selectedCharID } from "../stores.svelte";
 import { type Message, type loreBook } from "../storage/database.svelte";
 import { DBState } from "../stores.svelte";
@@ -12,6 +12,17 @@ import { downloadFile } from "../globalApi.svelte";
 import { getModuleLorebooks } from "./modules";
 import { CCardLib } from "@risuai/ccardlib";
 import { v4 } from "uuid";
+import { type ChatRef, currentChatRef, findChat, setChatMeta } from "../storage/chatStore.svelte";
+import type { DeepReadonly } from "../../../shared/readonly.ts";
+
+/** Appends entries to the selected chat's local lore (through the chat module). */
+function appendLocalLore(entries: loreBook[]) {
+    const ref = currentChatRef();
+    const chat = ref ? findChat(ref) : undefined;
+    if (ref && chat) {
+        setChatMeta(ref, { localLore: [...$state.snapshot(chat.localLore ?? []), ...entries] });
+    }
+}
 
 export function addLorebook(type: number) {
     const selectedID = get(selectedCharID);
@@ -28,16 +39,18 @@ export function addLorebook(type: number) {
         });
     } else {
         const page = DBState.db.characters[selectedID].chatPage;
-        DBState.db.characters[selectedID].chats[page].localLore.push({
-            key: "",
-            comment: `New Lore ${DBState.db.characters[selectedID].chats[page].localLore.length + 1}`,
-            content: "",
-            mode: "normal",
-            insertorder: 100,
-            alwaysActive: false,
-            secondkey: "",
-            selective: false,
-        });
+        appendLocalLore([
+            {
+                key: "",
+                comment: `New Lore ${DBState.db.characters[selectedID].chats[page].localLore.length + 1}`,
+                content: "",
+                mode: "normal",
+                insertorder: 100,
+                alwaysActive: false,
+                secondkey: "",
+                selective: false,
+            },
+        ]);
     }
 }
 
@@ -56,29 +69,33 @@ export function addLorebookFolder(type: number) {
             selective: false,
         });
     } else {
-        const page = DBState.db.characters[selectedID].chatPage;
-        DBState.db.characters[selectedID].chats[page].localLore.push({
-            key: "\uf000folder:" + id,
-            comment: `New Folder`,
-            content: "",
-            mode: "folder",
-            insertorder: 100,
-            alwaysActive: false,
-            secondkey: "",
-            selective: false,
-        });
+        appendLocalLore([
+            {
+                key: "\uf000folder:" + id,
+                comment: `New Folder`,
+                content: "",
+                mode: "folder",
+                insertorder: 100,
+                alwaysActive: false,
+                secondkey: "",
+                selective: false,
+            },
+        ]);
     }
 }
 
-export async function loadLoreBookV3Prompt() {
-    const selectedID = get(selectedCharID);
-    const char = DBState.db.characters[selectedID];
-    const page = char.chatPage;
+/** The active lore of `chatRef`'s chat (default: the selected character's selected chat). */
+export async function loadLoreBookV3Prompt(chatRef?: ChatRef | null) {
+    const ref = chatRef ?? currentChatRef();
+    const char = ref
+        ? DBState.db.characters.find((entry) => entry?.chaId === ref.chaId)
+        : DBState.db.characters[get(selectedCharID)];
+    const lorechat = ref ? findChat(ref) : char.chats[char.chatPage];
     const characterLore = char.globalLore ?? [];
-    const chatLore = char.chats[page].localLore ?? [];
-    const moduleLorebook = getModuleLorebooks();
-    const fullLore = safeStructuredClone(characterLore.concat(chatLore).concat(moduleLorebook));
-    const currentChat = char.chats[page].message;
+    const chatLore = lorechat.localLore ?? [];
+    const moduleLorebook = getModuleLorebooks(ref);
+    const fullLore = safeStructuredClone([...characterLore, ...chatLore, ...moduleLorebook]) as loreBook[];
+    const currentChat = lorechat.message;
     const loreDepth = char.loreSettings?.scanDepth ?? DBState.db.loreBookDepth;
     const loreToken = char.loreSettings?.tokenBudget ?? DBState.db.loreBookToken;
     const fullWordMatchingSetting = char.loreSettings?.fullWordMatching ?? false;
@@ -96,7 +113,7 @@ export async function loadLoreBookV3Prompt() {
     }[] = [];
 
     const searchMatch = (
-        messages: Message[],
+        messages: readonly DeepReadonly<Message>[],
         arg: {
             keys: string[];
             searchDepth: number;
@@ -335,7 +352,8 @@ export async function loadLoreBookV3Prompt() {
                         return;
                     }
                     case "keep_activate_after_match": {
-                        const vara = getChatVar(
+                        const vara = getChatVarOf(
+                            ref,
                             "__internal_ka_" + (fullLore[i].id ?? pickHashRand(5555, fullLore[i].content).toString()),
                         );
                         if (vara === "true") {
@@ -346,7 +364,8 @@ export async function loadLoreBookV3Prompt() {
                         return false;
                     }
                     case "dont_activate_after_match": {
-                        const vara = getChatVar(
+                        const vara = getChatVarOf(
+                            ref,
                             "__internal_da_" + (fullLore[i].id ?? pickHashRand(5555, fullLore[i].content).toString()),
                         );
                         if (vara === "true") {
@@ -388,7 +407,7 @@ export async function loadLoreBookV3Prompt() {
                         if (Number.isNaN(int)) {
                             return false;
                         }
-                        if ((char.chats[page].fmIndex ?? -1) + 1 !== int) {
+                        if ((lorechat.fmIndex ?? -1) + 1 !== int) {
                             activated = false;
                         }
                         return;
@@ -584,7 +603,7 @@ export async function loadLoreBookV3Prompt() {
                     // so cutoff reflects what actually reaches the context, not the unevaluated source.
                     // runVar is left false (matching the output path in index.svelte.ts), so this
                     // evaluation has no side effects like setvar.
-                    tokens: await tokenize(risuChatParser(content, { chara: char })),
+                    tokens: await tokenize(risuChatParser(content, { chara: char, chatRef: ref })),
                     priority: priority,
                     source: fullLore[i].comment || `lorebook ${i}`,
                     inject: inject ?? null,
@@ -592,13 +611,15 @@ export async function loadLoreBookV3Prompt() {
                 activatedIndexes.push(i);
 
                 if (keepActivateAfterMatch) {
-                    setChatVar(
+                    setChatVarOf(
+                        ref,
                         "__internal_ka_" + (fullLore[i].id ?? pickHashRand(5555, fullLore[i].content).toString()),
                         "true",
                     );
                 }
                 if (dontActivateAfterMatch) {
-                    setChatVar(
+                    setChatVarOf(
+                        ref,
                         "__internal_da_" + (fullLore[i].id ?? pickHashRand(5555, fullLore[i].content).toString()),
                         "true",
                     );
@@ -681,11 +702,9 @@ export async function loadLoreBookV3Prompt() {
 
 export async function importLoreBook(mode: "global" | "local" | "sglobal") {
     const selectedID = get(selectedCharID);
-    const page = mode === "sglobal" ? -1 : DBState.db.characters[selectedID].chatPage;
-    let lore =
-        mode === "global"
-            ? DBState.db.characters[selectedID].globalLore
-            : DBState.db.characters[selectedID].chats[page].localLore;
+    // The chat (for local lore) is captured before the file dialog, so a chat switch cannot redirect it.
+    const chatTarget = mode === "local" ? currentChatRef() : null;
+    let lore: loreBook[] = mode === "global" ? DBState.db.characters[selectedID].globalLore : [];
     const lorebook = (await selectSingleFile(["json", "lorebook"])).data;
     if (!lorebook) {
         return;
@@ -704,8 +723,11 @@ export async function importLoreBook(mode: "global" | "local" | "sglobal") {
         }
         if (mode === "global") {
             DBState.db.characters[selectedID].globalLore = lore;
-        } else {
-            DBState.db.characters[selectedID].chats[page].localLore = lore;
+        } else if (chatTarget) {
+            const chat = findChat(chatTarget);
+            if (chat) {
+                setChatMeta(chatTarget, { localLore: [...$state.snapshot(chat.localLore ?? []), ...lore] });
+            }
         }
     } catch (error) {
         alertError(error);

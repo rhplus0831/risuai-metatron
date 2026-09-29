@@ -1,7 +1,7 @@
 <script lang="ts">
     import { requestChatData } from "src/ts/process/request/request";
     import { doingChat, type OpenAIChat } from "../../ts/process/index.svelte";
-    import { type character, type Message, type groupChat } from "../../ts/storage/database.svelte";
+    import { type character, type DeepReadonly, type Message, type groupChat } from "../../ts/storage/database.svelte";
     import { DBState } from "src/ts/stores.svelte";
     import { selectedCharID } from "../../ts/stores.svelte";
     import { translate } from "src/ts/translator/translator";
@@ -10,6 +10,7 @@
     import { language } from "src/lang";
     import { getUserName, replacePlaceholders } from "../../ts/util";
     import { onDestroy } from "svelte";
+    import { setChatMeta } from "src/ts/storage/chatStore.svelte";
     import { ParseMarkdown } from "src/ts/parser/parser.svelte";
     import { defaultAutoSuggestPrompt } from "../../ts/storage/defaultPrompts.js";
 
@@ -19,7 +20,7 @@
     }
 
     let { send, messageInput }: Props = $props();
-    let suggestMessages: string[] = $state(
+    let suggestMessages: readonly string[] = $state(
         DBState.db.characters[$selectedCharID]?.chats[DBState.db.characters[$selectedCharID].chatPage]?.suggestMessages,
     );
     let suggestMessagesTranslated: string[] = $state();
@@ -62,10 +63,12 @@
         if (!currentChat) {
             return;
         }
-        let messages: Message[] = [];
+        // The chat the suggestions are for, captured before the request.
+        const requestChatRef = { chaId: currentChar.chaId, chatId: currentChat.id };
+        let messages: DeepReadonly<Message>[] = [];
 
         messages = [...messages, ...currentChat.message];
-        let lastMessages: Message[] = messages.slice(Math.max(messages.length - 10, 0));
+        let lastMessages: DeepReadonly<Message>[] = messages.slice(Math.max(messages.length - 10, 0));
         if (lastMessages.length === 0) return;
         const prompt =
             DBState.db.autoSuggestPrompt && DBState.db.autoSuggestPrompt.length > 0
@@ -135,7 +138,7 @@
                         .split("\n")
                         .filter((msg) => msg.startsWith("-"))
                         .map((msg) => msg.replace("-", "").trim());
-                    currentTargetChat.suggestMessages = suggestMessagesNew;
+                    setChatMeta(requestChatRef, { suggestMessages: suggestMessagesNew });
                     suggestMessages = suggestMessagesNew;
                 }
             })

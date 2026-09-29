@@ -1,12 +1,12 @@
 import {
     type BackupSnapshotInfo,
+    type BatchConflict,
     RESOURCE_EPOCH_HEADER,
     type ResourceBatchResult,
-    type ResourceConflict,
     type ResourceReadKindsResult,
     type ResourceReadRefsResult,
 } from "../../../shared/resources.ts";
-import { authFetch } from "./nodeStorage";
+import { authFetch, getNodeServerProxyAuth } from "./nodeStorage";
 
 /**
  * Transport for the server resource routes (`/api/resources`, `/api/backups`). Every mutation sends
@@ -14,10 +14,10 @@ import { authFetch } from "./nodeStorage";
  * replaced the data since, which surfaces as `ResourceEpochMismatchError`.
  */
 
-/** A write named a stale revision; `conflicts` has the current revision of each record. */
+/** A write named a stale revision; `conflicts` has the current revision of each record, chat, or chat order. */
 export class ResourceConflictError extends Error {
-    readonly conflicts: ResourceConflict[];
-    constructor(conflicts: ResourceConflict[]) {
+    readonly conflicts: BatchConflict[];
+    constructor(conflicts: BatchConflict[]) {
         super("Revision conflict");
         this.name = "ResourceConflictError";
         this.conflicts = conflicts;
@@ -95,7 +95,7 @@ async function send(path: string, init: RequestInit & { mutation?: boolean } = {
     if (response.ok) {
         return response;
     }
-    let body: { error?: string; epoch?: string; conflicts?: ResourceConflict[]; revision?: string | null } = {};
+    let body: { error?: string; epoch?: string; conflicts?: BatchConflict[]; revision?: string | null } = {};
     try {
         body = await response.json();
     } catch {}
@@ -116,18 +116,28 @@ async function sendJson<T>(path: string, init: RequestInit & { mutation?: boolea
 
 const jsonHeaders = { "content-type": "application/json" };
 
-export async function readKinds(kinds: readonly string[]): Promise<ResourceReadKindsResult> {
-    return checkedEpoch(
-        await sendJson<ResourceReadKindsResult>(`/api/resources?kinds=${kinds.map(encodeURIComponent).join(",")}`),
-    );
+/** Every record of `kinds`; with `chats`, also every chat and chat order (the boot read). */
+export async function readKinds(
+    kinds: readonly string[],
+    options: { chats?: boolean } = {},
+): Promise<ResourceReadKindsResult> {
+    const query = `kinds=${kinds.map(encodeURIComponent).join(",")}${options.chats ? "&chats=1" : ""}`;
+    return checkedEpoch(await sendJson<ResourceReadKindsResult>(`/api/resources?${query}`));
 }
 
-export async function readRefs(refs: readonly { kind: string; id: string }[]): Promise<ResourceReadRefsResult> {
+/** Named records, chats (`chats`), and characters' whole chat lists with their order (`chatCollections`). */
+export async function readRefs(
+    refs: readonly { kind: string; id: string }[],
+    options: {
+        chats?: readonly { characterId: string; id: string }[];
+        chatCollections?: readonly string[];
+    } = {},
+): Promise<ResourceReadRefsResult> {
     return checkedEpoch(
         await sendJson<ResourceReadRefsResult>("/api/resources/read", {
             method: "POST",
             headers: jsonHeaders,
-            body: JSON.stringify({ refs }),
+            body: JSON.stringify({ refs, ...options }),
         }),
     );
 }
@@ -186,9 +196,74 @@ function singleConflict(error: unknown, kind: string, id: string): unknown {
     return error;
 }
 
-/** Sends a batch whose JSON body the caller already built (`{"ops":[...]}`). */
+/** Sends a batch whose JSON body the caller already built (`{"ops":[...],"chats":[...],"chatOrders":[...]}`). */
 export function applyBatchText(body: string): Promise<ResourceBatchResult> {
     return sendJson("/api/resources/batch", { method: "POST", headers: jsonHeaders, body, mutation: true });
+}
+
+/** The body budget of a `keepalive` request (browsers refuse larger bodies; 64 KiB less headroom). */
+export const UNLOAD_BODY_LIMIT = 60 * 1024;
+/** Signed tokens live five minutes; one older than this is not used for an unload request. */
+const UNLOAD_AUTH_MAX_AGE_MS = 4 * 60 * 1000;
+const UNLOAD_AUTH_REFRESH_MS = 60 * 1000;
+let unloadAuth: { token: string; at: number } | null = null;
+let unloadAuthPending = false;
+
+/**
+ * Keeps a signed `risu-auth` token ready for `sendBatchOnUnload`: signing is asynchronous and a
+ * `pagehide` handler cannot wait for it. Refreshes at most once a minute.
+ */
+export function prepareUnloadAuth() {
+    if (unloadAuthPending || (unloadAuth && Date.now() - unloadAuth.at < UNLOAD_AUTH_REFRESH_MS)) {
+        return;
+    }
+    unloadAuthPending = true;
+    const at = Date.now();
+    // Never lets a failure reach the chat write that asked for it.
+    Promise.resolve()
+        .then(() => getNodeServerProxyAuth())
+        .then((token) => {
+            unloadAuth = { token, at };
+        })
+        .catch(() => {})
+        .finally(() => {
+            unloadAuthPending = false;
+        });
+}
+
+/**
+ * Sends a batch as the page goes away: one `keepalive` request, nothing awaited, every error
+ * swallowed. Returns whether it was sent (not whether it landed). When the page survives to see the
+ * answer (back-forward cache), `onResult` gets the batch result, or null when the request failed or
+ * was refused; it is called at most once and its own errors are swallowed too.
+ */
+export function sendBatchOnUnload(body: string, onResult?: (result: ResourceBatchResult | null) => void): boolean {
+    if (!unloadAuth || Date.now() - unloadAuth.at > UNLOAD_AUTH_MAX_AGE_MS || currentEpoch === "") {
+        return false;
+    }
+    try {
+        fetch("/api/resources/batch", {
+            method: "POST",
+            keepalive: true,
+            cache: "no-store",
+            headers: {
+                "content-type": "application/json",
+                "risu-auth": unloadAuth.token,
+                [RESOURCE_EPOCH_HEADER]: currentEpoch,
+            },
+            body,
+        })
+            .then((response) => (response.ok ? (response.json() as Promise<ResourceBatchResult>) : null))
+            .catch(() => null)
+            .then((result) => {
+                try {
+                    onResult?.(result);
+                } catch {}
+            });
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 export async function listBackups(): Promise<BackupSnapshotInfo[]> {

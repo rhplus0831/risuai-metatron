@@ -1,20 +1,29 @@
 import { get } from "svelte/store";
+import { getDatabase } from "../storage/database.svelte";
 import {
-    getCurrentCharacter,
-    getCurrentChat,
-    getDatabase,
-    setCurrentChat,
-    setDatabase,
-} from "../storage/database.svelte";
+    appendMessage,
+    applyChatResult,
+    captureChatBaseline,
+    type ChatRef,
+    currentChatRef,
+    findChat,
+    removeMessages,
+    setChatMeta,
+    setMessageText,
+} from "../storage/chatStore.svelte";
 import { selectedCharID } from "../stores.svelte";
 import { alertInput, alertMd, alertNormal, alertSelect } from "../alert";
 import { sayTTS } from "./tts";
 import { risuChatParser } from "../parser/parser.svelte";
-import { sendChat } from "./index.svelte";
+import { doingChat, sendChat } from "./index.svelte";
 import { loadLoreBookV3Prompt } from "./lorebook.svelte";
 import { runTrigger } from "./triggers";
 
-export async function processMultiCommand(command: string) {
+/**
+ * Runs a command line. Every command writes to and reads (CBS arguments, lore) `ref`: a trigger's
+ * chat, or by default the chat selected when the line started.
+ */
+export async function processMultiCommand(command: string, ref: ChatRef | null = currentChatRef()) {
     let pipe = "";
     const splited: string[] = [];
     let lastIndex = 0;
@@ -31,7 +40,11 @@ export async function processMultiCommand(command: string) {
     splited.push(command.slice(lastIndex));
     console.log(splited);
     for (let i = 0; i < splited.length; i++) {
-        const result = await processCommand(splited[i].trim(), pipe);
+        if (ref && !findChat(ref)) {
+            // The chat went away while an earlier command waited: the line is consumed, not sent.
+            return "";
+        }
+        const result = await processCommand(splited[i].trim(), pipe, ref);
         console.log(pipe);
         if (result === false) {
             return false;
@@ -42,10 +55,17 @@ export async function processMultiCommand(command: string) {
     return pipe;
 }
 
-async function processCommand(command: string, pipe: string): Promise<false | string> {
+async function processCommand(command: string, pipe: string, ref: ChatRef | null): Promise<false | string> {
     const db = getDatabase();
-    const currentChar = db.characters[get(selectedCharID)];
-    const currentChat = currentChar.chats[currentChar.chatPage];
+    const currentChar = ref
+        ? db.characters.find((character) => character?.chaId === ref.chaId)
+        : db.characters[get(selectedCharID)];
+    if (!currentChar) {
+        // Its character went away; `false` would mean "not a command" and send the line as text.
+        return "";
+    }
+    // The chat as it is now; chat writes go through the chat module, addressed by `ref`.
+    const currentChat = ref ? findChat(ref) : undefined;
     let { commandName, arg, namedArg } = commandParser(command, pipe);
 
     if (!arg) {
@@ -54,12 +74,14 @@ async function processCommand(command: string, pipe: string): Promise<false | st
 
     arg = risuChatParser(arg, {
         chara: currentChar.type === "character" ? currentChar : null,
+        chatRef: ref,
     });
 
     const namedArgKeys = Object.keys(namedArg);
     for (const key of namedArgKeys) {
         namedArg[key] = risuChatParser(namedArg[key], {
             chara: currentChar.type === "character" ? currentChar : null,
+            chatRef: ref,
         });
     }
 
@@ -105,51 +127,53 @@ async function processCommand(command: string, pipe: string): Promise<false | st
             return pipe;
         }
         case "send": {
-            currentChat.message.push({
-                role: "user",
-                data: arg,
-            });
-            setDatabase(db);
+            appendMessage(ref, { role: "user", data: arg });
             return pipe;
         }
         case "sendas": {
             //name not implemented
-            currentChat.message.push({
-                role: "char",
-                data: arg,
-            });
-            setDatabase(db);
+            appendMessage(ref, { role: "char", data: arg });
             return pipe;
         }
         case "comment": {
             //works differently, but its close enough
             const addition = `<Comment>\n${arg}\n</Comment>`;
-            currentChat.message[currentChat.message.length - 1].data += addition;
-            setDatabase(db);
+            const last = currentChat.message.at(-1);
+            if (last) {
+                setMessageText(ref, last.chatId, last.data + addition);
+            }
             return pipe;
         }
         case "cut": {
             if (arg.includes("-")) {
+                // Keeps the messages of the range (as `Array.slice` does), removes the rest.
                 const [start, end] = arg.split("-");
-                currentChat.message = currentChat.message.slice(parseInt(start), parseInt(end));
-                setDatabase(db);
+                const kept = new Set(currentChat.message.slice(parseInt(start), parseInt(end)));
+                removeMessages(
+                    ref,
+                    currentChat.message.filter((message) => !kept.has(message)).map((message) => message.chatId),
+                );
             } else if (!isNaN(parseInt(arg))) {
-                const index = parseInt(arg);
-                currentChat.message = currentChat.message.splice(index, 1);
-                setDatabase(db);
+                // Removes the one message at the index (a negative one takes the range branch above, as upstream).
+                const target = currentChat.message.at(parseInt(arg));
+                if (target) {
+                    removeMessages(ref, [target.chatId]);
+                }
             } else {
                 //For risu, doesn'ts work for STScript
-                const id = arg;
-                currentChat.message = currentChat.message.filter((e) => e.chatId !== id);
-                setDatabase(db);
+                removeMessages(ref, [arg]);
             }
             return pipe;
         }
         case "del": {
+            // Keeps the last `size` messages (as `slice(length - size)` does), removes the rest.
             const size = parseInt(arg);
             if (!isNaN(size)) {
-                currentChat.message = currentChat.message.slice(currentChat.message.length - size);
-                setDatabase(db);
+                const kept = new Set(currentChat.message.slice(currentChat.message.length - size));
+                removeMessages(
+                    ref,
+                    currentChat.message.filter((message) => !kept.has(message)).map((message) => message.chatId),
+                );
             }
             return pipe;
         }
@@ -169,75 +193,71 @@ async function processCommand(command: string, pipe: string): Promise<false | st
                 clearMode = true;
                 splited.shift();
             }
+            if (get(doingChat)) {
+                return "";
+            }
             for (const e of splited) {
-                if (clearMode) {
-                    currentChat.message = [];
+                const chat = findChat(ref);
+                if (!chat) {
+                    break;
                 }
-                currentChat.message.push({
-                    role: "user",
-                    data: e,
-                });
-                await sendChat(-1);
+                if (clearMode) {
+                    removeMessages(
+                        ref,
+                        chat.message.map((message) => message.chatId),
+                    );
+                }
+                appendMessage(ref, { role: "user", data: e });
+                let sent = false;
+                try {
+                    sent = await sendChat(-1, { target: ref });
+                } finally {
+                    // Each send is its own action; the next one needs the flag clear.
+                    doingChat.set(false);
+                }
+                if (!sent) {
+                    break;
+                }
             }
             return "";
         }
         case "setvar": {
-            console.log(namedArg, arg);
-            const db = getDatabase();
-            const selectedChar = get(selectedCharID);
-            const char = db.characters[selectedChar];
-            const chat = char.chats[char.chatPage];
-            chat.scriptstate = chat.scriptstate ?? {};
-            chat.scriptstate["$" + namedArg["key"]] = arg;
-            console.log(chat.scriptstate);
-
-            char.chats[char.chatPage] = chat;
-            db.characters[selectedChar] = char;
-            setDatabase(db);
+            const scriptstate = { ...(findChat(ref)?.scriptstate ?? {}) };
+            scriptstate["$" + namedArg["key"]] = arg;
+            setChatMeta(ref, { scriptstate });
             return "";
         }
         case "addvar": {
-            const db = getDatabase();
-            const selectedChar = get(selectedCharID);
-            const char = db.characters[selectedChar];
-            const chat = char.chats[char.chatPage];
-            chat.scriptstate = chat.scriptstate ?? {};
-            chat.scriptstate["$" + namedArg["key"]] = (
-                Number(chat.scriptstate["$" + namedArg["key"]]) + Number(arg)
-            ).toString();
-
-            char.chats[char.chatPage] = chat;
-            db.characters[selectedChar] = char;
-            setDatabase(db);
+            const scriptstate = { ...(findChat(ref)?.scriptstate ?? {}) };
+            scriptstate["$" + namedArg["key"]] = (Number(scriptstate["$" + namedArg["key"]]) + Number(arg)).toString();
+            setChatMeta(ref, { scriptstate });
             return "";
         }
         case "getvar": {
-            const db = getDatabase();
-            const selectedChar = get(selectedCharID);
-            const char = db.characters[selectedChar];
-            const chat = char.chats[char.chatPage];
-            chat.scriptstate = chat.scriptstate ?? {};
-            pipe = chat.scriptstate["$" + namedArg["key"]].toString() ?? "null";
+            // A read: a missing variable answers "null" and nothing is written.
+            const value = findChat(ref)?.scriptstate?.["$" + namedArg["key"]];
+            pipe = value === undefined || value === null ? "null" : value.toString();
             return pipe;
         }
         case "test_lorebook": {
-            const p = await loadLoreBookV3Prompt();
+            const p = await loadLoreBookV3Prompt(ref);
             console.log(p);
             alertNormal(p.actives.map((e) => e.prompt).join("§"));
             return JSON.stringify(p);
         }
         case "trigger": {
-            const currentChar = getCurrentCharacter();
-            if (currentChar.type === "group") {
+            if (currentChar.type === "group" || !ref) {
                 return;
             }
+            const baseline = captureChatBaseline(ref);
             const triggerResult = await runTrigger(currentChar, "manual", {
-                chat: getCurrentChat(),
+                chat: findChat(ref),
+                chatRef: ref,
                 manualName: arg,
             });
 
             if (triggerResult) {
-                setCurrentChat(triggerResult.chat);
+                applyChatResult(baseline, triggerResult.chat);
             }
             return;
         }

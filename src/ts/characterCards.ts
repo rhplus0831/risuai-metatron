@@ -533,6 +533,7 @@ function convertOffSpecCards(
         notes: "",
         chats: [
             {
+                id: uuidv4(),
                 message: [],
                 note: "",
                 name: "Chat 1",
@@ -853,6 +854,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
         notes: "",
         chats: [
             {
+                id: uuidv4(),
                 message: [],
                 note: "",
                 name: "Chat 1",

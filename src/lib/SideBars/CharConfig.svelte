@@ -3,10 +3,12 @@
     import { tokenizeAccurate } from "../../ts/tokenizer";
     import {
         getCurrentCharacter,
+        getCurrentChat,
         saveImage as saveAsset,
         type character,
         type groupChat,
     } from "../../ts/storage/database.svelte";
+    import { setCurrentChatMeta } from "../../ts/storage/chatEdits";
     import { DBState } from "src/ts/stores.svelte";
     import { untrack } from "svelte";
     import { CharConfigSubMenu, selectedCharID, hypaV3ModalOpen } from "../../ts/stores.svelte";
@@ -462,7 +464,10 @@
     <TextAreaInput
         margin="both"
         autocomplete="off"
-        bind:value={DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].note}
+        bind:value={
+            () => DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].note,
+            (note) => setCurrentChatMeta({ note })
+        }
         highlight
         placeholder={getAuthorNoteDefaultText()}
     />
@@ -898,9 +903,7 @@
                                         class="hover:text-blue-500"
                                         onclick={() => {
                                             if (DBState.db.characters[$selectedCharID].type === "character") {
-                                                DBState.db.characters[$selectedCharID].chats[
-                                                    DBState.db.characters[$selectedCharID].chatPage
-                                                ].fmIndex = -1;
+                                                setCurrentChatMeta({ fmIndex: -1 });
                                                 let additionalAssets =
                                                     DBState.db.characters[$selectedCharID].additionalAssets;
                                                 additionalAssets.splice(i, 1);
@@ -1678,9 +1681,7 @@
                                         class="hover:text-red-500 p-1"
                                         onclick={() => {
                                             if (DBState.db.characters[$selectedCharID].type === "character") {
-                                                DBState.db.characters[$selectedCharID].chats[
-                                                    DBState.db.characters[$selectedCharID].chatPage
-                                                ].fmIndex = -1;
+                                                setCurrentChatMeta({ fmIndex: -1 });
                                                 let alternateGreetings =
                                                     DBState.db.characters[$selectedCharID].alternateGreetings;
                                                 alternateGreetings.splice(i, 1);
@@ -1720,13 +1721,9 @@
         {#if DBState.db.supaModelType !== "none" && DBState.db.hypav2}
             <Button
                 onclick={() => {
-                    DBState.db.characters[$selectedCharID].chats[
-                        DBState.db.characters[$selectedCharID].chatPage
-                    ].hypaV2Data ??= {
-                        lastMainChunkID: 0,
-                        mainChunks: [],
-                        chunks: [],
-                    };
+                    if (!getCurrentChat()?.hypaV2Data) {
+                        setCurrentChatMeta({ hypaV2Data: { lastMainChunkID: 0, mainChunks: [], chunks: [] } });
+                    }
                     showHypaV2Alert();
                 }}
                 className="mt-4"
@@ -1748,8 +1745,10 @@
                 margin="both"
                 autocomplete="off"
                 bind:value={
-                    DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
-                        .supaMemoryData
+                    () =>
+                        DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
+                            .supaMemoryData,
+                    (supaMemoryData) => setCurrentChatMeta({ supaMemoryData })
                 }
             ></TextAreaInput>
         {/if}
@@ -1779,8 +1778,10 @@
                 margin="both"
                 autocomplete="off"
                 bind:value={
-                    DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
-                        .supaMemoryData
+                    () =>
+                        DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
+                            .supaMemoryData,
+                    (supaMemoryData) => setCurrentChatMeta({ supaMemoryData })
                 }
             ></TextAreaInput>
         {/if}

@@ -27,6 +27,7 @@ import { updateInlayScreen } from "./process/inlayScreen";
 import { parseMarkdownSafe } from "./parser/parser.svelte";
 import { translateHTML } from "./translator/translator";
 import { doingChat } from "./process/index.svelte";
+import { createChat, ensureChat, isCharacterGenerating, setChatMeta, syncChatPage } from "./storage/chatStore.svelte";
 import { importCharacter } from "./characterCards";
 import { PngChunk } from "./pngChunk";
 
@@ -43,6 +44,7 @@ export function createNewGroup() {
         firstMessage: "",
         chats: [
             {
+                id: uuidv4(),
                 message: [],
                 note: "",
                 name: "Chat 1",
@@ -414,6 +416,13 @@ export async function importChat() {
     }
     try {
         const selectedID = get(selectedCharID);
+        const chaId = DBState.db.characters[selectedID].chaId;
+        /** Adds imported chats at the top of the list, in their order (new chat and message ids where needed). */
+        const addChats = (chats: Chat[]) => {
+            chats.forEach((chat, index) => {
+                createChat(chaId, chat, { index });
+            });
+        };
 
         if (dat.name.endsWith("jsonl")) {
             const lines = Buffer.from(dat.data).toString("utf-8").split("\n");
@@ -453,7 +462,7 @@ export async function importChat() {
                 newChat.folderId = null;
             }
 
-            DBState.db.characters[selectedID].chats.unshift(newChat);
+            addChats([newChat]);
             changeChatTo(0);
             alertNormal(language.successImport);
         } else if (dat.name.endsWith("json")) {
@@ -483,15 +492,15 @@ export async function importChat() {
                     }
                     chat.id = v4();
                 });
-                DBState.db.characters[selectedID].chats.unshift(...chats);
+                addChats(chats);
                 alertNormal(language.successImport);
                 return;
             }
             if (json.type === "risuAllChats" && json.ver === 1) {
                 const chats = json.data;
                 if (Array.isArray(chats) && chats.length > 0) {
-                    DBState.db.characters[selectedID].chats.unshift(
-                        ...chats.map((v) => {
+                    addChats(
+                        chats.map((v) => {
                             if (!v.id) {
                                 v.id = uuidv4();
                             }
@@ -519,7 +528,7 @@ export async function importChat() {
                 )) {
                     das.fmIndex ??= -1;
                     das.id = v4();
-                    DBState.db.characters[selectedID].chats.unshift(das);
+                    addChats([das]);
                     alertNormal(language.successImport);
                     return;
                 } else {
@@ -535,7 +544,7 @@ export async function importChat() {
             const chat = doc.querySelector(".idat").textContent;
             const json = JSON.parse(chat);
             if (json.message && json.note && json.name && json.localLore) {
-                DBState.db.characters[selectedID].chats.unshift(json);
+                addChats([json]);
                 alertNormal(language.successImport);
             } else {
                 alertError(language.errors.noData);
@@ -584,21 +593,22 @@ export function characterFormatUpdate(
     } = {},
 ) {
     let cha = typeof indexOrCharacter === "number" ? getCharacterByIndex(indexOrCharacter) : indexOrCharacter;
-    if (cha.chats.length === 0) {
-        cha.chats = [
+    // A character in the mirror gets its chat defaults through the chat module; a detached one (not
+    // yet added) directly, and the save loop creates its chats with it.
+    const live = typeof indexOrCharacter === "number";
+    if (live) {
+        ensureChat(cha.chaId);
+        syncChatPage(cha.chaId);
+    } else if (cha.chats.length === 0) {
+        (cha as unknown as { chats: Chat[] }).chats = [
             {
+                id: uuidv4(),
                 message: [],
                 note: "",
                 name: "Chat 1",
                 localLore: [],
             },
         ];
-    }
-    if (!cha.chats[cha.chatPage]) {
-        cha.chatPage = 0;
-    }
-    if (!cha.chats[cha.chatPage].message) {
-        cha.chats[cha.chatPage].message = [];
     }
     if (!cha.type) {
         cha.type = "character";
@@ -636,8 +646,14 @@ export function characterFormatUpdate(
             VOLUME_SCALE: 1,
         };
         if (cha.postHistoryInstructions) {
-            cha.chats[cha.chatPage].note += "\n" + cha.postHistoryInstructions;
-            cha.chats[cha.chatPage].note = cha.chats[cha.chatPage].note.trim();
+            // Moved into the selected chat's note (and cleared) together.
+            const chat = cha.chats[cha.chatPage] ?? cha.chats[0];
+            const note = ((chat?.note ?? "") + "\n" + cha.postHistoryInstructions).trim();
+            if (live && chat?.id) {
+                setChatMeta({ chaId: cha.chaId, chatId: chat.id }, { note });
+            } else if (chat) {
+                (chat as Chat).note = note;
+            }
             cha.postHistoryInstructions = null;
         }
         cha.additionalText ??= "";
@@ -683,14 +699,18 @@ export function characterFormatUpdate(
     if (typeof indexOrCharacter === "number") {
         setCharacterByIndex(indexOrCharacter, cha);
     }
-    for (let i = 0; i < cha.chats.length; i++) {
-        const chat = cha.chats[i];
-        chat.fmIndex ??= cha.firstMsgIndex ?? -1;
-        if (!chat.id) {
-            chat.id = uuidv4();
+    // Chat defaults: `fmIndex` follows the character's greeting (ids and `localLore` come from the
+    // chat module and the server).
+    for (const chat of cha.chats) {
+        if (chat.fmIndex === undefined || chat.fmIndex === null) {
+            if (live && chat.id) {
+                setChatMeta({ chaId: cha.chaId, chatId: chat.id }, { fmIndex: cha.firstMsgIndex ?? -1 });
+            } else {
+                (chat as Chat).fmIndex = cha.firstMsgIndex ?? -1;
+            }
         }
-        if (!chat.localLore) {
-            chat.localLore = [];
+        if (!live && !chat.localLore) {
+            (chat as Chat).localLore = [];
         }
     }
     return cha;
@@ -725,6 +745,7 @@ export function createBlankChar(): character {
         notes: "",
         chats: [
             {
+                id: uuidv4(),
                 message: [],
                 note: "",
                 name: "Chat 1",
@@ -865,6 +886,8 @@ export async function removeChar(
     type: "normal" | "permanent" | "permanentForce" = "normal",
 ) {
     const db = getDatabase();
+    // The character is resolved by id after the confirmations (the list may change meanwhile).
+    const chaId = typeof identifier === "string" ? identifier : db.characters[identifier]?.chaId;
     if (type !== "permanentForce") {
         const conf = await alertConfirm(language.removeConfirm + name);
         if (!conf) {
@@ -876,10 +899,13 @@ export async function removeChar(
         }
     }
     let chars = db.characters;
-    // Resolve identifier to actual index at the time of deletion to avoid
-    // race conditions when concurrent deletions shift the array.
-    const index = typeof identifier === "string" ? findCharacterIndexbyId(identifier) : identifier;
+    const index = chaId === undefined ? -1 : findCharacterIndexbyId(chaId);
     if (index === -1 || index >= chars.length) {
+        return;
+    }
+    if (type !== "normal" && isCharacterGenerating(chaId)) {
+        // Deleting it would delete the chat a reply is being written to.
+        alertError(language.characterGenerating);
         return;
     }
     if (type === "normal") {

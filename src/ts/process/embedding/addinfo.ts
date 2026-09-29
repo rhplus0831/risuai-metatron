@@ -1,8 +1,11 @@
 import { getDatabase, type Chat, type character } from "src/ts/storage/database.svelte";
 import { HypaProcesser } from "../memory/hypamemory";
 import { getUserName } from "src/ts/util";
+import type { ChatRef } from "src/ts/storage/chatStore.svelte";
+import type { DeepReadonly } from "../../../../shared/readonly.ts";
 
-export async function additionalInformations(char: character, chats: Chat) {
+/** `chatRef` is the chat being sent in (its bound persona names the user). */
+export async function additionalInformations(char: character, chats: DeepReadonly<Chat>, chatRef?: ChatRef | null) {
     const processer = new HypaProcesser();
     const db = getDatabase();
 
@@ -18,7 +21,7 @@ export async function additionalInformations(char: character, chats: Chat) {
 
                 if (!name) {
                     if (chat.role === "user") {
-                        name = getUserName();
+                        name = getUserName(chatRef);
                     } else {
                         name = char.name;
                     }

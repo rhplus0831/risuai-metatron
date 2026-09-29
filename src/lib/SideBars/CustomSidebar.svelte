@@ -11,6 +11,7 @@
     import SettingRenderer from "../Setting/SettingRenderer.svelte";
     import { checkPersonaBinded, getUserName } from "src/ts/util";
     import { v4 } from "uuid";
+    import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     let configPage: "list" | "add" | "addSettingsSubmenu" = $state("list");
     let search = $state("");
 
@@ -62,15 +63,13 @@
                     }}
                     onclick={(e) => {
                         e.stopPropagation();
-                        const chatIndex = DBState.db.characters[$selectedCharID].chatPage;
                         if (!DBState.db.personas[DBState.db.selectedPersona].id) {
                             DBState.db.personas[DBState.db.selectedPersona].id = v4();
                         }
                         if (checkPersonaBinded()) {
-                            DBState.db.characters[$selectedCharID].chats[chatIndex].bindedPersona = "";
+                            setCurrentChatMeta({ bindedPersona: "" });
                         } else {
-                            DBState.db.characters[$selectedCharID].chats[chatIndex].bindedPersona =
-                                DBState.db.personas[DBState.db.selectedPersona].id;
+                            setCurrentChatMeta({ bindedPersona: DBState.db.personas[DBState.db.selectedPersona].id });
                         }
                     }}
                 >

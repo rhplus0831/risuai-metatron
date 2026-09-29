@@ -1,6 +1,6 @@
 <script lang="ts">
     import { type SerializableHypaV3Data, getCurrentHypaV3Preset } from "src/ts/process/memory/hypav3";
-    import { type Message } from "src/ts/storage/database.svelte";
+    import { type DeepReadonly, type Message } from "src/ts/storage/database.svelte";
     import { DBState, selectedCharID } from "src/ts/stores.svelte";
     import { language } from "src/lang";
     import { getFirstMessage, processRegexScript } from "./utils";
@@ -11,7 +11,7 @@
 
     let { hypaV3Data }: Props = $props();
 
-    async function getNextSummarizationTarget(): Promise<Message | null> {
+    async function getNextSummarizationTarget(): Promise<DeepReadonly<Message> | null> {
         const char = DBState.db.characters[$selectedCharID];
         const chat = char.chats[DBState.db.characters[$selectedCharID].chatPage];
         const shouldProcess = getCurrentHypaV3Preset().settings.processRegexScript;

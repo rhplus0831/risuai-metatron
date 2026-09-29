@@ -833,6 +833,22 @@ const chat = await Risuai.getChatFromIndex(charIndex, chatIndex);
 await Risuai.setChatToIndex(charIndex, chatIndex, chat);
 ```
 
+How chat changes are saved: chats are stored message by message, so the host compares the object
+you hand back with the chat as it is **when you call the setter** and saves the differences
+(messages are matched by their `chatId`, chats by their `id`). The object you hand back wins
+wherever it differs: if you read a chat, the user then edits message B, and you hand back your copy
+with only message A changed, your old copy of B overwrites the user's edit. Read the chat right
+before changing it and hand it back without awaiting in between; this is still not an atomic
+read-modify-write. A character's `chats` list passed to `setCharacter`/`setCharacterToIndex`/
+`setDatabase` works the same way: chats with a new or missing `id` are created, chats you left out
+are deleted (the last chat is always kept), the list order becomes the chat order, and `chatPage`
+selects a chat in the current tab only. While a reply is being generated, a change that touches the
+message being generated skips that whole chat (a warning is logged; changes to other chats still
+apply), and a character that is generating a reply is not removed and not replaced by a character with
+another `chaId` (its own fields still update); try again after the reply finishes. A `characters`
+list with two entries of the same `chaId` is refused as a whole, and `setCharacter`/
+`setCharacterToIndex` skip a character whose `chaId` another character already has.
+
 ## Advanced Features
 
 ### Network Requests

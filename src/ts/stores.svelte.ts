@@ -1,5 +1,5 @@
 import { writable } from "svelte/store";
-import type { character, Database, groupChat } from "./storage/database.svelte";
+import type { character, Database, groupChat, StreamingDisplayOptimizationMode } from "./storage/database.svelte";
 import { type simpleCharacterArgument } from "./parser/parser.svelte";
 import type { alertData } from "./alert";
 import { moduleUpdate } from "./process/modules";
@@ -37,6 +37,16 @@ export const SettingsMenuIndex = writable(-1);
 export const ReloadGUIPointer = writable(0);
 export const ReloadChatPointer = writable({} as Record<number, number>);
 export const ScrollToMessageStore = $state({ value: -1 });
+/**
+ * The message whose stream is being displayed, and the display mode used for it (client-only; the
+ * chat screen reads it instead of the per-chat streaming flags that are no longer persisted).
+ */
+export const streamingDisplayState = $state({
+    chaId: null as string | null,
+    chatId: null as string | null,
+    messageId: null as string | null,
+    mode: "off" as StreamingDisplayOptimizationMode,
+});
 export const OpenRealmStore = writable(false);
 export const RealmInitialOpenChar = writable<null | hubType>(null);
 export const PlaygroundStore = writable(0);

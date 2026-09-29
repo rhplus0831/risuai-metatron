@@ -39,7 +39,7 @@
   - `fetchViaProxyJobWs`: internal.
 - Writers: `LocalWriter` (the backup record framing `writeBackup`, streamed through `streamsaver`), `VirtualWriter`, `BlankWriter`, `AppendableBuffer`.
 - Chat and UI:
-  - `changeChatTo`, `createChatCopyName`.
+  - `changeChatTo` (selects a chat of the selected character by index through the chat module's `selectChat`; per tab), `createChatCopyName`.
   - `chatFoldedState`, `chatFoldedStateMessageIndex`, `foldChatToMessage`.
   - `checkCharOrder`.
   - `toggleFullscreen`.

@@ -13,6 +13,7 @@
     } from "src/ts/stores.svelte";
     import { language } from "src/lang";
     import { alertInput } from "src/ts/alert";
+    import { currentChatRef, findChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
 
     const close = () => ($bookmarkListOpen = false);
     let chara = $derived(DBState.db.characters[$selectedCharID]);
@@ -97,19 +98,27 @@
     }
 
     async function editName(chatId: string) {
+        // The chat is captured before the dialog, so a chat switch cannot redirect the rename.
+        const ref = currentChatRef();
         const chat = chara.chats[chara.chatPage];
         const newName = await alertInput(language.bookmarkAskNameOrCancel, [], chat.bookmarkNames?.[chatId] || "");
-        if (newName && newName.trim() !== "") {
-            chat.bookmarkNames[chatId] = newName;
+        const current = ref ? findChat(ref) : undefined;
+        if (ref && current && newName && newName.trim() !== "") {
+            setChatMeta(ref, { bookmarkNames: { ...(current.bookmarkNames ?? {}), [chatId]: newName } });
         }
     }
 
     function removeBookmark(chatId: string) {
-        const chat = chara.chats[chara.chatPage];
-        const index = chat.bookmarks.indexOf(chatId);
+        const ref = currentChatRef();
+        const chat = ref ? findChat(ref) : undefined;
+        if (!ref || !chat) {
+            return;
+        }
+        const index = (chat.bookmarks ?? []).indexOf(chatId);
         if (index > -1) {
-            chat.bookmarks.splice(index, 1);
-            delete chat.bookmarkNames[chatId];
+            const bookmarkNames = { ...(chat.bookmarkNames ?? {}) };
+            delete bookmarkNames[chatId];
+            setChatMeta(ref, { bookmarks: chat.bookmarks.filter((id) => id !== chatId), bookmarkNames });
         }
     }
 

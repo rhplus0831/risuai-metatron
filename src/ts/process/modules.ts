@@ -404,10 +404,19 @@ function deduplicateModuleById(modules: RisuModule[]) {
 
 let lastModules = "";
 let lastModuleData: RisuModule[] = [];
-export function getModules() {
-    const currentChat = getCurrentChat();
-    const character = getCurrentCharacter();
-    const persona = checkPersonaBinded();
+/** A chat by id (structural, so this module does not depend on the chat module). */
+export type ModuleChatRef = { chaId: string; chatId: string } | null | undefined;
+
+/**
+ * The enabled modules for `chatRef`'s chat and character (default: the selected ones): the global
+ * list, the chat's and the character's modules, and the bound persona's embedded module.
+ */
+export function getModules(chatRef?: ModuleChatRef) {
+    const character = chatRef
+        ? DBState.db.characters?.find((entry) => entry?.chaId === chatRef.chaId)
+        : getCurrentCharacter();
+    const currentChat = chatRef ? character?.chats?.find((chat) => chat.id === chatRef.chatId) : getCurrentChat();
+    const persona = checkPersonaBinded(chatRef);
     const db = getDatabase();
     let ids = db.enabledModules ?? [];
     if (currentChat) {
@@ -434,8 +443,8 @@ export function getModules() {
     return modules;
 }
 
-export function getModuleLorebooks() {
-    const modules = getModules();
+export function getModuleLorebooks(chatRef?: ModuleChatRef) {
+    const modules = getModules(chatRef);
     let lorebooks: loreBook[] = [];
     for (const module of modules) {
         if (!module) {
@@ -448,8 +457,8 @@ export function getModuleLorebooks() {
     return lorebooks;
 }
 
-export function getModuleAssets() {
-    const modules = getModules();
+export function getModuleAssets(chatRef?: ModuleChatRef) {
+    const modules = getModules(chatRef);
     let assets: [string, string, string][] = [];
     for (const module of modules) {
         if (!module) {
@@ -462,8 +471,8 @@ export function getModuleAssets() {
     return assets;
 }
 
-export function getModuleTriggers() {
-    const modules = getModules();
+export function getModuleTriggers(chatRef?: ModuleChatRef) {
+    const modules = getModules(chatRef);
     let triggers: triggerscript[] = [];
     for (const module of modules) {
         if (!module) {
@@ -481,8 +490,8 @@ export function getModuleTriggers() {
     return triggers;
 }
 
-export function getModuleRegexScripts() {
-    const modules = getModules();
+export function getModuleRegexScripts(chatRef?: ModuleChatRef) {
+    const modules = getModules(chatRef);
     let customscripts: customscript[] = [];
     for (const module of modules) {
         if (!module) {
@@ -495,8 +504,8 @@ export function getModuleRegexScripts() {
     return customscripts;
 }
 
-export function getModuleToggles() {
-    const modules = getModules();
+export function getModuleToggles(chatRef?: ModuleChatRef) {
+    const modules = getModules(chatRef);
     let costomModuleToggles: string = "";
     for (const module of modules) {
         if (!module) {

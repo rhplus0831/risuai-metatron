@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { useLocalLoreDraft } from "src/ts/storage/localLoreDraft.svelte";
     import { XIcon, LinkIcon, SunIcon, BookCopyIcon, FolderIcon, FolderOpen, PlusIcon } from "@lucide/svelte";
     import { v4 } from "uuid";
     import { language } from "../../../lang";
@@ -68,14 +69,13 @@
             selective: false,
             id: book.id,
         };
-        getCurrentChat().localLore.push(childLore);
+        useLocalLoreDraft().value.push(childLore);
     }
     function deactivateLocally(book: loreBook) {
         if (!book.id) return;
-        const chat = getCurrentChat();
-        const childLore = chat?.localLore?.find((e) => e.id === book.id);
-        if (childLore) {
-            chat.localLore = chat.localLore.filter((e) => e.id !== book.id);
+        const draft = useLocalLoreDraft();
+        if (draft.value.some((e) => e.id === book.id)) {
+            draft.value = draft.value.filter((e) => e.id !== book.id);
         }
     }
     function toggleLocalActive(check: boolean, book: loreBook) {

@@ -1324,7 +1324,10 @@ interface RisuaiPluginAPI {
     getCharacterFromIndex(index: number): Promise<any|null>;
 
     /**
-     * Saves a character at a specific index
+     * Saves a character at a specific index. Its `chats` are applied as changes against the chats as
+     * they are now (your copy wins where it differs): new or missing ids create chats, chats left
+     * out are deleted (the last one is kept), and `chatPage` selects a chat in this tab only. A
+     * character that is generating a reply is not replaced by one with another `chaId`.
      * @param index - Character index
      * @param character - Character object to save
      */
@@ -1380,7 +1383,10 @@ interface RisuaiPluginAPI {
     
 
     /**
-     * Saves a chat at a specific index
+     * Saves a chat at a specific index. The chat is compared with the chat as it is when you call
+     * this, and every difference is saved (messages matched by `chatId`): a message someone else
+     * changed after you read the chat is overwritten by your copy. Read right before writing.
+     * Skipped (with a console warning) when it changes the message a reply is being generated into.
      * @param characterIndex - Character index
      * @param chatIndex - Chat index
      * @param chat - Chat object to save
@@ -1894,9 +1900,12 @@ interface RisuaiPluginAPI {
      * changes saved by another listener, read the latest chat with `getChatFromIndex`
      * before saving.
      *
-     * The `characterIndex` and `chatIndex` are captured when the listener fires,
-     * so background work can locate the original chat even if the user navigates
-     * elsewhere. `messageIndex` is resolved against the provided chat snapshot and
+     * The `characterIndex` and `chatIndex` are the generated chat's positions right
+     * before this listener is called (resolved from its ids, again for each
+     * listener), so background work can locate
+     * the original chat even if the user navigates elsewhere; a later reorder or
+     * deletion of characters or chats moves them, so resolve again (for example by
+     * `chat.id`) before writing back after long-running work. `messageIndex` is resolved against the provided chat snapshot and
      * points to the model output message when it is still present. It may be -1 if a
      * Lua output trigger or host-side output processing removed that message.
      *

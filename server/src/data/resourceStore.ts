@@ -4,11 +4,22 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { types } from "node:util";
-import { SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
+import type { ChatGroupResult, ChatOrderRecord, ChatOrderResult, ChatRecord } from "../../../shared/chats.ts";
+import { type BatchConflict, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
+import {
+    CHAT_TABLE_COLUMNS,
+    CHAT_TABLES_SQL,
+    type ChatSnapshotRows,
+    countChatOperations,
+    createChatTables,
+    prepareChatGroups,
+    prepareChatOrders,
+    readChatSnapshotRows,
+} from "./chatStore.ts";
 import type { ResourceKind, ResourceKindRegistry } from "./kinds.ts";
 
-/** Version of the table layout below, kept in `PRAGMA user_version`. */
-const SCHEMA_VERSION = 1;
+/** Version of the table layout below, kept in `PRAGMA user_version`. Version 2 added the chat tables. */
+const SCHEMA_VERSION = 2;
 const BUSY_TIMEOUT_MS = 5000;
 /** Deepest array/object nesting a stored value may have. */
 const MAX_JSON_DEPTH = 256;
@@ -31,10 +42,10 @@ export class ResourceConflictError extends Error {
     }
 }
 
-/** A batch named revisions that are not current; nothing in it was applied. */
+/** A batch named revisions that are not current (resources, chats, or chat orders); nothing in it was applied. */
 export class ResourceBatchConflictError extends Error {
-    readonly conflicts: { kind: string; id: string; revision: string | null }[];
-    constructor(conflicts: { kind: string; id: string; revision: string | null }[]) {
+    readonly conflicts: BatchConflict[];
+    constructor(conflicts: BatchConflict[]) {
         super("Revision conflict");
         this.name = "ResourceBatchConflictError";
         this.conflicts = conflicts;
@@ -65,6 +76,21 @@ export class ResourceValidationError extends Error {
 
 export type StoredResource<T> = { id: string; revision: string; data: T };
 
+/**
+ * The revision counter after `increment` more writes. Every counter increment (resources, chats,
+ * chat orders) goes through here: a counter at `Number.MAX_SAFE_INTEGER` (reachable only through a
+ * crafted snapshot, whose counters a restore keeps) would otherwise commit a value SQLite stores but
+ * `node:sqlite` cannot read back, making every later read fail. The write is refused instead, with a
+ * `ResourceValidationError` that rolls the transaction back.
+ */
+export function nextRevision(current: number, increment: number): number {
+    const next = current + increment;
+    if (!Number.isSafeInteger(next)) {
+        throw new ResourceValidationError("Revision counter exhausted");
+    }
+    return next;
+}
+
 /** One operation of `applyBatch`: a write (`data`) or, with `delete: true`, a deletion. */
 export type ResourceBatchOperation = {
     kind: ResourceKind;
@@ -77,6 +103,13 @@ export type ResourceBatchOperation = {
 /** Rows of a snapshot file that passed every check of `readSnapshot`, ready for `replaceAll`. */
 export type ValidatedSnapshot = {
     readonly rows: readonly { kind: string; id: string; revision: number; schemaVersion: number; text: string }[];
+} & ChatSnapshotRows;
+
+/** What `applyChanges` wrote: resource tokens in op order, chat group results, and every changed chat order. */
+export type AppliedChanges = {
+    results: { kind: string; id: string; revision: string | null }[];
+    chats: ChatGroupResult[];
+    chatOrders: ChatOrderResult[];
 };
 
 export type ResourceStore = ReturnType<typeof createResourceStore>;
@@ -129,7 +162,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
     const db = new DatabaseSync(options.file);
     let epoch: string;
     try {
-        epoch = initialize(db);
+        epoch = initialize(db, options.file);
     } catch (error) {
         db.close();
         throw error;
@@ -174,6 +207,9 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         return Number.isSafeInteger(seq) && Number.isSafeInteger(revision) ? { seq, revision } : null;
     }
 
+    const chatTables = createChatTables(db, { token, parse: parseToken });
+    const isCharacterKind = (kind: ResourceKind) => kind.name === RESOURCE_KIND.characters;
+
     function assertOpen() {
         if (closed) {
             throw new Error("Resource store is closed");
@@ -184,6 +220,28 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         assertOpen();
         if (transactionScope.getStore()?.ended) {
             throw new Error("Resource transaction already ended");
+        }
+    }
+
+    /**
+     * Runs a multi-statement write (a character with its chat order) as one unit: inside the caller's
+     * transaction when there is one, otherwise in its own.
+     */
+    function atomically<T>(fn: () => T): T {
+        if (db.isTransaction) {
+            return fn();
+        }
+        db.exec("BEGIN IMMEDIATE");
+        let committed = false;
+        try {
+            const result = fn();
+            db.exec("COMMIT");
+            committed = true;
+            return result;
+        } finally {
+            if (!committed && db.isTransaction) {
+                db.exec("ROLLBACK");
+            }
         }
     }
 
@@ -245,7 +303,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         return rows.map((row) => ({ id: row.id, revision: token(row.seq, row.revision), data: JSON.parse(row.data) }));
     }
 
-    return {
+    const store = {
         /** The current database epoch. A restore replaces it. */
         epoch(): string {
             return epoch;
@@ -283,10 +341,18 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
             return readKind(kind) as StoredResource<T>[];
         },
 
-        /** Every record of several kinds, read in one synchronous call, so one committed state. */
-        readKinds(kindList: readonly ResourceKind[]): {
+        /**
+         * Every record of several kinds, read in one synchronous call, so one committed state. With
+         * `chats`, also every chat (metadata plus messages in order) and every chat order.
+         */
+        readKinds(
+            kindList: readonly ResourceKind[],
+            options: { chats?: boolean } = {},
+        ): {
             epoch: string;
             kinds: Record<string, StoredResource<unknown>[]>;
+            chats?: ChatRecord[];
+            chatOrders?: ChatOrderRecord[];
         } {
             assertOpen();
             const result: Record<string, StoredResource<unknown>[]> = Object.create(null);
@@ -294,11 +360,24 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                 assertKind(kind);
                 result[kind.name] = readKind(kind);
             }
+            if (options.chats) {
+                return { epoch, kinds: result, ...chatTables.readAll() };
+            }
             return { epoch, kinds: result };
         },
 
-        /** Named records, read in one synchronous call; a missing one has revision and data null. */
-        readRefs(refs: readonly { kind: ResourceKind; id: string }[]) {
+        /**
+         * Named records, read in one synchronous call; a missing one has revision and data null.
+         * `chats` names single chats (missing: revision and data null); `chatCollections` names
+         * characters whose order and every chat are read (no order: null).
+         */
+        readRefs(
+            refs: readonly { kind: ResourceKind; id: string }[],
+            options: {
+                chats?: readonly { characterId: string; id: string }[];
+                chatCollections?: readonly string[];
+            } = {},
+        ) {
             assertOpen();
             const items = refs.map(({ kind, id }) => {
                 assertKind(kind);
@@ -306,68 +385,103 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                 const row = readOne(kind, id);
                 return { kind: kind.name, id, revision: row?.revision ?? null, data: row?.data ?? null };
             });
-            return { epoch, items };
+            const chats = (options.chats ?? []).map(({ characterId, id }) => {
+                const record = chatTables.readChat(characterId, id);
+                return record ?? { characterId, id, revision: null, data: null };
+            });
+            const chatCollections = (options.chatCollections ?? []).map((characterId) => {
+                const collection = chatTables.readCollection(characterId);
+                return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
+            });
+            return { epoch, items, chats, chatCollections };
         },
 
         /**
          * Normalizes `input` with the kind's normalizer and stores it. `baseRevision` null creates the
          * record and conflicts if it exists; a token updates it and conflicts unless it is current.
-         * Returns the new token and the data as stored.
+         * Returns the new token and the data as stored. Creating a character also creates its empty
+         * chat order, in the same transaction.
          */
         put<T>(kind: ResourceKind<T>, id: string, input: unknown, baseRevision: string | null) {
             assertWritable();
             assertKind(kind);
             assertId(kind, id);
             const { text, stored } = serialize(kind.normalize(input, { id }));
-            let seq: number;
-            let revision: number;
-            if (baseRevision === null) {
-                const result = insert.run(kind.name, id, kind.schemaVersion, text);
-                if (result.changes === 0) {
-                    conflict(kind, id);
+            return atomically(() => {
+                let seq: number;
+                let revision: number;
+                if (baseRevision === null) {
+                    const result = insert.run(kind.name, id, kind.schemaVersion, text);
+                    if (result.changes === 0) {
+                        conflict(kind, id);
+                    }
+                    seq = Number(result.lastInsertRowid);
+                    revision = 1;
+                    if (isCharacterKind(kind)) {
+                        chatTables.createOrder(id);
+                    }
+                } else {
+                    const base = parseToken(baseRevision);
+                    if (
+                        !base ||
+                        update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision).changes === 0
+                    ) {
+                        conflict(kind, id);
+                    }
+                    seq = base.seq;
+                    revision = nextRevision(base.revision, 1);
                 }
-                seq = Number(result.lastInsertRowid);
-                revision = 1;
-            } else {
-                const base = parseToken(baseRevision);
-                if (
-                    !base ||
-                    update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision).changes === 0
-                ) {
-                    conflict(kind, id);
-                }
-                seq = base.seq;
-                revision = base.revision + 1;
-            }
-            countWrite();
-            return { revision: token(seq, revision), data: stored as T };
+                countWrite();
+                return { revision: token(seq, revision), data: stored as T };
+            });
         },
 
-        /** Deletes the record if `baseRevision` is current; a missing record is a conflict. */
+        /**
+         * Deletes the record if `baseRevision` is current; a missing record is a conflict. Deleting a
+         * character also deletes its chats, their messages, and its chat order, in the same transaction.
+         */
         delete(kind: ResourceKind, id: string, baseRevision: string): void {
             assertWritable();
             assertKind(kind);
             assertId(kind, id);
             assertDeletable(kind);
-            const base = parseToken(baseRevision);
-            if (!base || remove.run(kind.name, id, base.seq, base.revision).changes === 0) {
-                conflict(kind, id);
-            }
-            countWrite();
+            atomically(() => {
+                const base = parseToken(baseRevision);
+                if (!base || remove.run(kind.name, id, base.seq, base.revision).changes === 0) {
+                    conflict(kind, id);
+                }
+                if (isCharacterKind(kind)) {
+                    chatTables.deleteCharacter(id);
+                }
+                countWrite();
+            });
         },
 
-        /**
-         * Applies several writes and deletions as one unit. Every operation is validated and
-         * normalized first (a `ResourceValidationError` names the failing index); then, in one
-         * transaction, every base revision is compared, and if any is stale nothing is written and
-         * `ResourceBatchConflictError` lists all of them. Returns the new tokens in operation order
-         * (null for a deletion).
-         */
+        /** `applyChanges` with resource operations only; returns their tokens in operation order. */
         applyBatch(
             operations: readonly ResourceBatchOperation[],
         ): { kind: string; id: string; revision: string | null }[] {
+            return store.applyChanges({ ops: operations }).results;
+        },
+
+        /**
+         * Applies resource writes and deletions, chat groups, and chat reorders as one unit. Every
+         * operation is validated and normalized first (a `ResourceValidationError` names the failing
+         * entry; `chats` and `chatOrders` are the raw batch body entries, see `shared/chats.ts`).
+         * Then, in one transaction: every resource base revision is compared; resource ops are
+         * applied (creating a character creates its chat order, deleting one deletes its chats);
+         * chat groups are applied in order, then reorders, each checked as `shared/chats.ts`
+         * describes. If anything conflicts, nothing is written and `ResourceBatchConflictError`
+         * lists every conflict. A batch that deletes a character and also names its chats is invalid.
+         */
+        applyChanges(batch: {
+            ops?: readonly ResourceBatchOperation[];
+            chats?: unknown;
+            chatOrders?: unknown;
+        }): AppliedChanges {
             assertWritable();
             assertNotInTransaction();
+            const operations = batch.ops ?? [];
             const seen = new Set<string>();
             const prepared = operations.map((operation, index) => {
                 try {
@@ -394,11 +508,25 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                     throw error;
                 }
             });
+            const chatGroups = prepareChatGroups(batch.chats);
+            const chatOrders = prepareChatOrders(batch.chatOrders);
+            const deletedCharacters = new Set(
+                prepared
+                    .filter(({ operation, text }) => text === null && isCharacterKind(operation.kind))
+                    .map(({ operation }) => operation.id),
+            );
+            for (const entry of [...chatGroups, ...chatOrders]) {
+                if (deletedCharacters.has(entry.characterId)) {
+                    throw new ResourceValidationError(
+                        `the batch deletes character ${entry.characterId} and also changes its chats`,
+                    );
+                }
+            }
 
             db.exec("BEGIN IMMEDIATE");
             let committed = false;
             try {
-                const conflicts: { kind: string; id: string; revision: string | null }[] = [];
+                const conflicts: BatchConflict[] = [];
                 const bases = prepared.map(({ operation: { kind, id, baseRevision } }) => {
                     const row = selectOne.get(kind.name, id) as { seq: number; revision: number } | undefined;
                     const base = baseRevision === null ? null : parseToken(baseRevision);
@@ -411,26 +539,41 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                     }
                     return base;
                 });
+                // With a stale resource op nothing will be written, but chat entries are still
+                // checked so the 409 lists every conflict.
+                const orderBases = chatTables.orderBases(chatOrders);
+                const results =
+                    conflicts.length > 0
+                        ? []
+                        : prepared.map(({ operation: { kind, id }, text }, index) => {
+                              const base = bases[index];
+                              if (text === null) {
+                                  remove.run(kind.name, id, base!.seq, base!.revision);
+                                  if (isCharacterKind(kind)) {
+                                      chatTables.deleteCharacter(id);
+                                  }
+                                  return { kind: kind.name, id, revision: null };
+                              }
+                              if (base === null) {
+                                  const result = insert.run(kind.name, id, kind.schemaVersion, text);
+                                  if (isCharacterKind(kind)) {
+                                      chatTables.createOrder(id);
+                                  }
+                                  return { kind: kind.name, id, revision: token(Number(result.lastInsertRowid), 1) };
+                              }
+                              const revision = nextRevision(base.revision, 1);
+                              update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision);
+                              return { kind: kind.name, id, revision: token(base.seq, revision) };
+                          });
+                const chatOutcome = chatTables.apply(chatGroups, chatOrders, orderBases, conflicts.length > 0);
+                conflicts.push(...chatOutcome.conflicts);
                 if (conflicts.length > 0) {
                     throw new ResourceBatchConflictError(conflicts);
                 }
-                const results = prepared.map(({ operation: { kind, id }, text }, index) => {
-                    const base = bases[index];
-                    if (text === null) {
-                        remove.run(kind.name, id, base!.seq, base!.revision);
-                        return { kind: kind.name, id, revision: null };
-                    }
-                    if (base === null) {
-                        const result = insert.run(kind.name, id, kind.schemaVersion, text);
-                        return { kind: kind.name, id, revision: token(Number(result.lastInsertRowid), 1) };
-                    }
-                    update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision);
-                    return { kind: kind.name, id, revision: token(base.seq, base.revision + 1) };
-                });
                 db.exec("COMMIT");
                 committed = true;
-                writeCount += prepared.length;
-                return results;
+                writeCount += prepared.length + chatOutcome.applied;
+                return { results, chats: chatOutcome.results, chatOrders: chatOutcome.orders };
             } finally {
                 if (!committed && db.isTransaction) {
                     db.exec("ROLLBACK");
@@ -506,8 +649,9 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
          * `integrity_check`, the schema version, the layout (`resources` and `meta` are real tables
          * with this store's columns, and `meta` holds an epoch), and every row (a registered kind at
          * its current schema version, a valid id, singleton rules, unique kind and id, positive
-         * safe-integer `seq` and revision, and data the kind's normalizer and `serialize` accept).
-         * Throws `ResourceValidationError` for anything else.
+         * safe-integer `seq` and revision, and data the kind's normalizer and `serialize` accept), and
+         * the chat tables (`readChatSnapshotRows`: chats of existing characters, messages of existing
+         * chats, one exact order per character). Throws `ResourceValidationError` for anything else.
          */
         readSnapshot(file: string): ValidatedSnapshot {
             let source: DatabaseSync;
@@ -586,7 +730,10 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                         text,
                     };
                 });
-                return { rows };
+                const characterIds = new Set(
+                    rows.filter((row) => row.kind === RESOURCE_KIND.characters).map((row) => row.id),
+                );
+                return { rows, ...readChatSnapshotRows(source, characterIds) };
             } finally {
                 source.close();
             }
@@ -595,6 +742,9 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         /**
          * Replaces every record with the rows of a validated snapshot and gives the database a new
          * epoch, in one transaction; every token issued before is stale afterwards. Returns the epoch.
+         * Revision counters are restored as stored (the new epoch already makes every old token
+         * stale; `nextRevision` keeps a counter a crafted snapshot placed at the limit from
+         * overflowing on the next write).
          */
         replaceAll(snapshot: ValidatedSnapshot): string {
             assertWritable();
@@ -607,6 +757,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                 for (const row of snapshot.rows) {
                     insertRestored.run(row.kind, row.id, row.revision, row.schemaVersion, row.text);
                 }
+                chatTables.replaceAll(snapshot);
                 setEpoch.run(nextEpoch);
                 db.exec("COMMIT");
                 committed = true;
@@ -628,6 +779,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
             db.close();
         },
     };
+    return store;
 }
 
 function isPositiveSafeInteger(value: unknown): value is number {
@@ -635,18 +787,21 @@ function isPositiveSafeInteger(value: unknown): value is number {
 }
 
 /** Column names of the store's tables, in `PRAGMA table_info` order. */
-const SNAPSHOT_TABLE_COLUMNS: Record<string, readonly string[]> = {
-    resources: ["seq", "kind", "id", "revision", "schemaVersion", "data"],
-    meta: ["key", "value"],
-};
+function snapshotTableColumns(): Record<string, readonly string[]> {
+    return {
+        resources: ["seq", "kind", "id", "revision", "schemaVersion", "data"],
+        meta: ["key", "value"],
+        ...CHAT_TABLE_COLUMNS,
+    };
+}
 
 /**
- * Requires the layout `initialize` creates: `resources` and `meta` are ordinary tables (a view or a
- * virtual table could answer the row query with anything), with exactly these columns, and `meta`
- * holds an epoch string. Anything else is not a resource database.
+ * Requires the layout `initialize` creates: `resources`, `meta`, and the chat tables are ordinary
+ * tables (a view or a virtual table could answer the row query with anything), with exactly these
+ * columns, and `meta` holds an epoch string. Anything else is not a resource database.
  */
 function assertSnapshotLayout(source: DatabaseSync) {
-    for (const [table, columns] of Object.entries(SNAPSHOT_TABLE_COLUMNS)) {
+    for (const [table, columns] of Object.entries(snapshotTableColumns())) {
         const objects = source.prepare("SELECT type, sql FROM sqlite_schema WHERE name = ?").all(table) as {
             type: string;
             sql: string | null;
@@ -672,7 +827,7 @@ function assertSnapshotLayout(source: DatabaseSync) {
  * throwing getter, runaway nesting), or whose JSON form nests deeper than `MAX_JSON_DEPTH`. Returns
  * the text and the value parsed back from it, which is what a read returns.
  */
-function serialize(value: unknown): { text: string; stored: unknown } {
+export function serialize(value: unknown): { text: string; stored: unknown } {
     let text: string | undefined;
     try {
         text = JSON.stringify(value, rejectNonFiniteNumber);
@@ -730,8 +885,11 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
     );
 }
 
-/** Opens the connection settings and creates the schema and epoch on first use. Returns the epoch. */
-function initialize(db: DatabaseSync): string {
+/**
+ * Opens the connection settings and creates the schema and epoch on first use. Returns the epoch. A
+ * version-1 database (Phase 1, characters with embedded chats) is refused: no migration is owed.
+ */
+function initialize(db: DatabaseSync, file: string): string {
     db.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON;`);
     const { user_version: version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
     if (version === 0) {
@@ -748,6 +906,7 @@ function initialize(db: DatabaseSync): string {
                     data TEXT NOT NULL,
                     UNIQUE (kind, id)
                 ) STRICT;
+                ${CHAT_TABLES_SQL}
                 PRAGMA user_version = ${SCHEMA_VERSION};
             `);
             db.prepare("INSERT INTO meta (key, value) VALUES ('epoch', ?)").run(randomUUID());
@@ -758,6 +917,12 @@ function initialize(db: DatabaseSync): string {
             }
             throw error;
         }
+    } else if (version === 1) {
+        throw new Error(
+            `${file} holds resource database version 1 (characters with their chats inside), which this ` +
+                "server no longer reads. It is disposable alpha data: move it away or delete it and restart " +
+                "to begin with an empty database.",
+        );
     } else if (version !== SCHEMA_VERSION) {
         throw new Error(`Unsupported resource database version ${version}`);
     }

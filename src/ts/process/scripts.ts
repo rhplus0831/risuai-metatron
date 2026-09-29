@@ -23,6 +23,7 @@ import { HypaProcesser } from "./memory/hypamemory";
 import { runLuaEditTrigger } from "./scriptings";
 import { pluginHooks } from "../plugins/pluginHooks";
 import { runTrigger } from "./triggers";
+import { type ChatRef, currentChatRef, findChat, setMessageText } from "../storage/chatStore.svelte";
 
 const dreg = /{{data}}/g;
 const randomness = /\|\|\|/g;
@@ -40,8 +41,9 @@ export async function processScript(
     data: string,
     mode: ScriptMode,
     cbsConditions: CbsConditions = {},
+    chatRef?: ChatRef | null,
 ) {
-    return (await processScriptFull(char, data, mode, -1, cbsConditions)).data;
+    return (await processScriptFull(char, data, mode, -1, cbsConditions, chatRef)).data;
 }
 
 export function exportRegex(s?: customscript[]) {
@@ -92,13 +94,16 @@ function generateScriptCacheKey(
     mode: ScriptMode,
     chatID = -1,
     cbsConditions: CbsConditions = {},
+    chatRef?: ChatRef | null,
 ) {
-    let hash = data + "|||" + mode + "|||";
+    // Dynamic (`<cbs>`) inputs are expanded for the same chat the scripts then run for, and that chat
+    // is part of the key (`chatID` indexes it).
+    let hash = data + "|||" + mode + "|||" + (chatRef ? `${chatRef.chaId}/${chatRef.chatId}` : "") + "|||";
     for (const script of scripts) {
         if (script.type !== mode) {
             continue;
         }
-        hash += `${script.flag?.includes("<cbs>") ? risuChatParser(script.in, { chatID: chatID, cbsConditions }) : script.in}|||${script.out}${chatID}|||${script.flag ?? ""}|||${script.ableFlag ? 1 : 0}`;
+        hash += `${script.flag?.includes("<cbs>") ? risuChatParser(script.in, { chatID: chatID, cbsConditions, chatRef }) : script.in}|||${script.out}${chatID}|||${script.flag ?? ""}|||${script.ableFlag ? 1 : 0}`;
     }
     return hash;
 }
@@ -125,10 +130,16 @@ export async function processScriptFull(
     mode: ScriptMode,
     chatID = -1,
     cbsConditions: CbsConditions = {},
+    chatRef?: ChatRef | null,
 ) {
     let db = getDatabase();
     let emoChanged = false;
-    data = await runLuaEditTrigger(char, mode, data, { index: chatID });
+    // `@@inject` writes the message at `chatID` of `chatRef` (the caller's chat; default: the
+    // selected one): resolve it to a message id now, before the awaits, so a message removed
+    // meanwhile cannot redirect the write.
+    const injectTarget = chatID === -1 ? null : (chatRef ?? currentChatRef());
+    const injectMessageId = injectTarget ? findChat(injectTarget)?.message[chatID]?.chatId : undefined;
+    data = await runLuaEditTrigger(char, mode, data, { index: chatID }, chatRef);
 
     if (mode === "editdisplay") {
         const currentChar = getCurrentCharacter();
@@ -158,9 +169,9 @@ export async function processScriptFull(
         }
     }
 
-    data = risuChatParser(data, { chatID: chatID, cbsConditions });
-    const scripts = (db.presetRegex ?? []).concat(char.customscript).concat(getModuleRegexScripts());
-    const hash = generateScriptCacheKey(scripts, data, mode, chatID, cbsConditions);
+    data = risuChatParser(data, { chatID: chatID, cbsConditions, chatRef });
+    const scripts = (db.presetRegex ?? []).concat(char.customscript).concat(getModuleRegexScripts(chatRef));
+    const hash = generateScriptCacheKey(scripts, data, mode, chatID, cbsConditions, chatRef);
     const cached = getScriptCache(hash);
     if (cached) {
         return { data: cached, emoChanged: false };
@@ -210,7 +221,7 @@ export async function processScriptFull(
 
             let input = script.in;
             if (pscript.actions.includes("cbs")) {
-                input = risuChatParser(input, { chatID: chatID, cbsConditions });
+                input = risuChatParser(input, { chatID: chatID, cbsConditions, chatRef });
             }
 
             const reg = new RegExp(input, flag);
@@ -242,8 +253,14 @@ export async function processScriptFull(
                         (outScript.startsWith("@@inject") || pscript.actions.includes("inject")) &&
                         chatID !== -1
                     ) {
-                        const selchar = db.characters[get(selectedCharID)];
-                        selchar.chats[selchar.chatPage].message[chatID].data = data;
+                        if (injectTarget && injectMessageId) {
+                            try {
+                                setMessageText(injectTarget, injectMessageId, data);
+                            } catch (error) {
+                                // The message is being generated (its own stream sets its text).
+                                console.warn("[Script] @@inject skipped a message being generated", error);
+                            }
+                        }
                         data = data.replace(reg, "");
                     } else if (
                         outScript.startsWith("@@move_top") ||
@@ -283,7 +300,7 @@ export async function processScriptFull(
                             }
                         }
                     } else {
-                        data = risuChatParser(data.replace(reg, outScript), { chatID: chatID, cbsConditions });
+                        data = risuChatParser(data.replace(reg, outScript), { chatID: chatID, cbsConditions, chatRef });
                     }
                 } else {
                     if (
@@ -291,8 +308,11 @@ export async function processScriptFull(
                         chatID !== -1
                     ) {
                         const v = outScript.split(" ", 2)[1];
-                        const selchar = db.characters[get(selectedCharID)];
-                        const chat = selchar.chats[selchar.chatPage];
+                        // The chat `chatID` indexes: the caller's (`chatRef`), or the selected one.
+                        const selchar = chatRef
+                            ? db.characters.find((entry) => entry?.chaId === chatRef.chaId)
+                            : db.characters[get(selectedCharID)];
+                        const chat = chatRef ? findChat(chatRef) : selchar.chats[selchar.chatPage];
                         let lastChat =
                             chat.fmIndex === -1 ? selchar.firstMessage : selchar.alternateGreetings[chat.fmIndex];
                         let pointer = chatID - 1;
@@ -326,7 +346,7 @@ export async function processScriptFull(
                     }
                 }
             } else {
-                data = risuChatParser(data.replace(reg, outScript), { chatID: chatID, cbsConditions });
+                data = risuChatParser(data.replace(reg, outScript), { chatID: chatID, cbsConditions, chatRef });
             }
         }
     }
@@ -393,7 +413,7 @@ export async function processScriptFull(
         }
         const assetNames = char.additionalAssets.map((v) => v[0]);
 
-        const moduleAssets = getModuleAssets();
+        const moduleAssets = getModuleAssets(chatRef);
         if (moduleAssets.length > 0) {
             for (const asset of moduleAssets) {
                 assetNames.push(asset[0]);

@@ -11,6 +11,7 @@ import type {
     SerializableHypaV3Data,
 } from "./memory.ts";
 import type { RisuModule } from "./modules.ts";
+import type { DeepReadonly } from "./readonly.ts";
 import type { OpenAIChat } from "./openai.ts";
 import type { RisuPlugin } from "./plugins.ts";
 import type { PromptItem, PromptSettings } from "./prompt.ts";
@@ -575,9 +576,11 @@ export interface character {
     firstMessage: string;
     desc: string;
     notes: string;
-    chats: Chat[];
+    /** The chat mirror: change it through the chat module (`chatStore.svelte.ts`), never directly. */
+    readonly chats: readonly DeepReadonly<Chat>[];
     chatFolders: ChatFolder[];
-    chatPage: number;
+    /** Derived from this tab's selected chat id; select with `selectChat`. */
+    readonly chatPage: number;
     viewScreen: "emotion" | "none" | "imggen";
     bias: [string, number][];
     emotionImages: [string, string][];
@@ -734,9 +737,11 @@ export interface groupChat {
     type: "group";
     image?: string;
     firstMessage: string;
-    chats: Chat[];
+    /** The chat mirror: change it through the chat module (`chatStore.svelte.ts`), never directly. */
+    readonly chats: readonly DeepReadonly<Chat>[];
     chatFolders: ChatFolder[];
-    chatPage: number;
+    /** Derived from this tab's selected chat id; select with `selectChat`. */
+    readonly chatPage: number;
     name: string;
     viewScreen: "single" | "multiple" | "none" | "emp";
     characters: string[];

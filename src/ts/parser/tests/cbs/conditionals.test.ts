@@ -41,9 +41,11 @@ vi.mock(import("../../../stores.svelte"), () => {
             db: {
                 characters: [
                     {
+                        chaId: "c",
                         chatPage: 0,
                         chats: [
                             {
+                                id: "k",
                                 scriptstate: varStorage,
                             },
                         ],
@@ -58,7 +60,7 @@ vi.mock(import("../../../stores.svelte"), () => {
             selId: 0,
         },
         selectedCharID: writable(0),
-    } as typeof import("../../../stores.svelte");
+    } as unknown as typeof import("../../../stores.svelte");
 });
 
 //#endregion

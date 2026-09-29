@@ -33,6 +33,7 @@ export let appVer = "2026.8.250"; //<APP_VERSION_POINT>
 export let appSubVer = "";
 
 export type * from "../../../shared/database.ts";
+export type { DeepReadonly } from "../../../shared/readonly.ts";
 
 export function setDatabase(data: Database) {
     // Risu Account was removed; drop the login token older saves still carry.
@@ -737,12 +738,6 @@ export function setDatabase(data: Database) {
     data.longPressToPopupEditor ??= false;
     data.customSidebarItems ??= [];
     data.moveInsteadOfCopyOnCMPConvert ??= false;
-    for (const char of data.characters) {
-        for (const chat of char.chats ?? []) {
-            chat.isStreaming = false;
-            chat.activeStreamingDisplayOptimizationMode = undefined;
-        }
-    }
     changeLanguage(data.language);
     setDatabaseLite(data);
 }
@@ -771,11 +766,22 @@ export function getCurrentCharacter(options: getDatabaseOptions = {}): character
     return char;
 }
 
+/**
+ * Replaces a character's own fields with `char`'s, for the character with `char.chaId` (the one a
+ * caller captured, not whatever is selected now). The mirror keeps its chats, selection, and render
+ * key: chats are written only through the chat module, and a caller's copy may hold stale ones.
+ */
 export function setCurrentCharacter(char: character | groupChat) {
     if (!DBState.db.characters) {
         DBState.db.characters = [];
     }
-    DBState.db.characters[get(selectedCharID)] = char;
+    const index = DBState.db.characters.findIndex((entry) => entry?.chaId === char.chaId);
+    if (index === -1) {
+        return;
+    }
+    replaceCharacterFields(index, char);
+    // It may no longer be the selected character, which alone the save adapter watches.
+    markCharacterDirtyAt(index);
 }
 
 export function getCharacterByIndex(index: number, options: getDatabaseOptions = {}): character | groupChat {
@@ -787,23 +793,35 @@ export function getCharacterByIndex(index: number, options: getDatabaseOptions =
     return char;
 }
 
+/** `setCurrentCharacter` for the character at an index (the mirror's chats are kept the same way). */
 export function setCharacterByIndex(index: number, char: character | groupChat) {
     if (!DBState.db.characters) {
         DBState.db.characters = [];
     }
-    DBState.db.characters[index] = char;
+    replaceCharacterFields(index, char);
     markCharacterDirtyAt(index);
+}
+
+function replaceCharacterFields(index: number, char: character | groupChat) {
+    const current = DBState.db.characters[index];
+    if (current === char) {
+        return;
+    }
+    if (!current) {
+        DBState.db.characters[index] = char;
+        return;
+    }
+    DBState.db.characters[index] = {
+        ...char,
+        chats: current.chats,
+        chatPage: current.chatPage,
+        reloadKeys: current.reloadKeys,
+    } as character | groupChat;
 }
 
 export function getCurrentChat() {
     const char = getCurrentCharacter();
     return char?.chats?.[char.chatPage];
-}
-
-export function setCurrentChat(chat: Chat) {
-    const char = getCurrentCharacter();
-    char.chats[char.chatPage] = chat;
-    setCurrentCharacter(char);
 }
 
 export const saveImage = saveImageGlobal;

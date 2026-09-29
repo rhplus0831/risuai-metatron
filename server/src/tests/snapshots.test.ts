@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { createKindRegistry, type ResourceKind } from "../data/kinds.ts";
-import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
+import { createResourceStore, ResourceBatchConflictError, type ResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
 import { sleep, waitFor } from "./testSupport.ts";
 
@@ -128,6 +128,54 @@ describe("periodic snapshots", () => {
         store.put(docs, "c", 1, null);
         await sleep(100);
         expect(manager.list()).toHaveLength(2);
+    });
+
+    it("counts a chat-only write as a write, but not an ignored checkpoint or a rolled-back batch", async () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-snapshots-"));
+        dirs.push(dir);
+        const defaults = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+        const store = createResourceStore({ file: path.join(dir, "data", "resources.sqlite"), kinds: defaults });
+        stores.push(store);
+        const manager = createSnapshotManager({ store, dir: path.join(dir, "backups"), intervalMs: 30 });
+        managers.push(manager);
+        const group = (baseRevision: string | null, ops: unknown[]) => ({
+            characterId: "c",
+            chatId: "k",
+            baseRevision,
+            ops,
+        });
+        store.put(defaults.get("characters")!, "c", { chaId: "c" }, null);
+        const created = store.applyChanges({
+            chats: [group(null, [{ op: "create", chat: { message: [{ role: "user", data: "", chatId: "a" }] } }])],
+        });
+        manager.start();
+        await waitFor(() => manager.list().length === 1);
+        await sleep(100);
+        expect(manager.list()).toHaveLength(1);
+
+        const revision = created.chats[0].revision!;
+        store.applyChanges({ chats: [group(revision, [{ op: "setText", id: "a", text: "edited" }])] });
+        await waitFor(() => manager.list().length === 2);
+        await sleep(100);
+        expect(manager.list()).toHaveLength(2);
+
+        // A checkpoint for a message without its generation is ignored; a conflicting batch rolls back.
+        store.applyChanges({
+            chats: [group(revision, [{ op: "setText", id: "a", text: "x", generation: { id: "g", seq: 1 } }])],
+        });
+        expect(() =>
+            store.applyChanges({
+                chats: [
+                    group(revision, [
+                        { op: "meta", set: { note: "n" } },
+                        { op: "setText", id: "missing", text: "x" },
+                    ]),
+                ],
+            }),
+        ).toThrow(ResourceBatchConflictError);
+        await sleep(100);
+        expect(manager.list()).toHaveLength(2);
+        await manager.stop();
     });
 });
 

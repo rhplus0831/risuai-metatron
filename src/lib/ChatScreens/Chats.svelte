@@ -2,13 +2,20 @@
     import type {
         character,
         groupChat,
+        DeepReadonly,
         Message,
         StreamingDisplayOptimizationMode,
     } from "src/ts/storage/database.svelte";
     import { mount, onDestroy, unmount } from "svelte";
     import Chat from "./Chat.svelte";
     import { getCharImage } from "src/ts/characters";
-    import { createSimpleCharacter, DBState, selectedCharID, ReloadChatPointer } from "src/ts/stores.svelte";
+    import {
+        createSimpleCharacter,
+        DBState,
+        selectedCharID,
+        ReloadChatPointer,
+        streamingDisplayState,
+    } from "src/ts/stores.svelte";
     import { chatFoldedStateMessageIndex } from "src/ts/globalApi.svelte";
     import { get } from "svelte/store";
 
@@ -31,7 +38,7 @@
         userIconPortrait,
         hasNewUnreadMessage = $bindable(false),
     }: {
-        messages: Message[];
+        messages: readonly DeepReadonly<Message>[];
         currentCharacter: character | groupChat;
         onReroll: () => void;
         unReroll: () => void;
@@ -81,10 +88,16 @@
         let loadEnd = messages.length - loadPages;
         const currentChat = currentCharacter.chats?.[currentCharacter.chatPage];
         const configuredPerformanceMode = DBState.db.streamingDisplayOptimizationMode ?? "off";
-        const performanceMode = currentChat?.isStreaming
-            ? (currentChat.activeStreamingDisplayOptimizationMode ?? configuredPerformanceMode)
-            : configuredPerformanceMode;
-        const activeStreamingIndex = performanceMode !== "off" && currentChat?.isStreaming ? messages.length - 1 : -1;
+        const streaming =
+            streamingDisplayState.messageId !== null &&
+            streamingDisplayState.chaId === currentCharacter.chaId &&
+            streamingDisplayState.chatId === currentChat?.id;
+        const performanceMode = streaming ? streamingDisplayState.mode : configuredPerformanceMode;
+        // The streaming message by id, not by position (another message may follow it).
+        const activeStreamingIndex =
+            performanceMode !== "off" && streaming
+                ? messages.findIndex((message) => message.chatId === streamingDisplayState.messageId)
+                : -1;
 
         if (chatFoldedStateMessageIndex.index !== -1) {
             loadStart = chatFoldedStateMessageIndex.index;
@@ -122,6 +135,7 @@
                         message: message.data,
                         isLastMemory: false,
                         idx: i,
+                        messageId: message.chatId,
                         totalLength: messages.length,
                         img: message.role === "user" ? userImage : charImage,
                         onReroll: onReroll,

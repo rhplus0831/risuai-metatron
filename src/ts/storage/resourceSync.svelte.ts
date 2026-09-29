@@ -2,6 +2,8 @@ import { tick } from "svelte";
 import { get } from "svelte/store";
 import { v4 as uuidv4 } from "uuid";
 import {
+    isChatConflict,
+    isChatOrderConflict,
     RESOURCE_KIND,
     ROOT_EXCLUDED_KEYS,
     type ResourceBatchResult,
@@ -13,19 +15,57 @@ import { alertError, alertNormal, alertNormalWait } from "../alert";
 import { DBState, selectedCharID } from "../stores.svelte";
 import type { character, Database, groupChat } from "./database.svelte";
 import {
+    acceptRemoteCollection,
+    ackChatWork,
+    adoptCharacter,
+    captureChatObligations,
+    chatDiscardSequence,
+    chatDiscardsSince,
+    type ChatWork,
+    chatWorkBody,
+    checkpointAllGenerations,
+    forgetCharacter,
+    hasChatWork,
+    isCharacterGenerating,
+    isChatDeferred,
+    noteMirrorReplaced,
+    quarantineChat,
+    rebaseChatOrders,
+    type RemoteChat,
+    recoverChatConflicts,
+    requeueChatWork,
+    type SentChatGroup,
+    type SentChatOrder,
+    setChatWorkListener,
+    startChatDriftCheck,
+    deferredReloads,
+    finishDeferredReload,
+    hasRunningGenerations,
+    settleUnloadCheckpoint,
+    takeChatWork,
+    trackUnloadCheckpoint,
+    unloadCheckpoint,
+    unsettledChatObligations,
+} from "./chatStore.svelte";
+import {
     applyBatchText,
+    prepareUnloadAuth,
     readRefs,
     ResourceConflictError,
     ResourceEpochMismatchError,
     ResourceRequestError,
+    sendBatchOnUnload,
     setEpochMismatchListener,
     setResourceEpoch,
+    UNLOAD_BODY_LIMIT,
 } from "./resourceClient";
 
 /**
  * The write adapter of PLAN invariant 2 for Phase 1: `DBState.db` stays the live model, and this
  * module writes it back to the server resources per collection (`root`, `presets`, `modules`,
- * `plugins`, `pluginStorage`, one `characters` record per `chaId`).
+ * `plugins`, `pluginStorage`, one `characters` record per `chaId`). Chats are not part of a
+ * character record (Phase 2): the chat module (`chatStore.svelte.ts`) queues explicit chat
+ * operations, and each cycle sends them in the same batch, after the resource ops.
  *
  * - Watchers mark collections dirty (the selected character, the root fields, and so on); writers
  *   that change a character while it is not selected call `markCharactersDirty`.
@@ -57,8 +97,11 @@ const MAX_BACKOFF_MS = 30_000;
 /** Largest batch body the server accepts (its global body limit is 100 MiB), in UTF-8 bytes. */
 const MAX_BATCH_BYTES = 100 * 1024 * 1024 - 64 * 1024;
 const MAX_BATCH_OPERATIONS = 5000;
-/** Bytes of the batch envelope around the operations: `{"ops":[` and `]}`. */
-const BATCH_FRAME_BYTES = 10;
+/** Bytes of the batch envelope around its parts: `{"ops":[],"chats":[],"chatOrders":[]}`. */
+const BATCH_FRAME_BYTES = 38;
+
+/** Character fields that are client-only: chats (saved on their own), the selection, a render key. */
+const CHARACTER_LOCAL_KEYS = new Set(["chats", "chatPage", "reloadKeys"]);
 
 const excludedRootKeys = new Set<string>(ROOT_EXCLUDED_KEYS);
 
@@ -85,6 +128,12 @@ let membershipAcked = 0;
 let started = false;
 let halted = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
+/** When the scheduled cycle runs; a later mark never postpones it. */
+let timerDeadline = 0;
+/** No cycle before this time after a failure (retry backoff), whatever marks arrive. */
+let backoffUntil = 0;
+/** Characters whose chat list must be read from the server (a recovery inserted or emptied them). */
+const hydrate = new Set<string>();
 let inFlight: Promise<void> | null = null;
 let failures = 0;
 /** The last cycle's failure that a retry may fix (network, 5xx, 429); retried with backoff. */
@@ -165,7 +214,7 @@ function isBlockedKey(key: string): boolean {
 
 /** Whether anything waits to be saved or reloaded, not counting characters whose generation still runs. */
 function hasPendingWork(): boolean {
-    if (membershipGeneration > membershipAcked) {
+    if (membershipGeneration > membershipAcked || hasChatWork() || hydrate.size > 0) {
         return true;
     }
     for (const id of deferredCharacters) {
@@ -199,17 +248,33 @@ export function markCharacterDirtyAt(index: number) {
     }
 }
 
+/**
+ * Schedules a cycle `delay` from now. An already scheduled earlier cycle is kept (marks never
+ * postpone a pending cycle, so a stream of marks cannot starve saving), and nothing runs before the
+ * retry backoff after a failure ends.
+ */
 function schedule(delay = DEBOUNCE_MS) {
     if (!started || halted) {
         return;
     }
+    const now = Date.now();
+    const deadline = Math.max(now + delay, backoffUntil);
     if (timer) {
+        if (timerDeadline <= deadline) {
+            return;
+        }
         clearTimeout(timer);
     }
+    timerDeadline = deadline;
     timer = setTimeout(() => {
         timer = null;
+        if (Date.now() < backoffUntil) {
+            // A failure after this timer was set moved the earliest retry later.
+            schedule(0);
+            return;
+        }
         void runCycle();
-    }, delay);
+    }, deadline - now);
 }
 
 function projectCollection(collection: Collection): string | undefined {
@@ -232,18 +297,16 @@ function projectCollection(collection: Collection): string | undefined {
 }
 
 /**
- * A character as stored: without the per-chat streaming flags, which are client-only state
- * (`setDatabase` resets them on every load) and would otherwise make every booting tab rewrite a
- * character another tab is streaming into.
+ * A character as stored: its own fields in their order, without `CHARACTER_LOCAL_KEYS` (the chats
+ * are saved on their own; the selection and the render key are client-only). Reads only those
+ * fields, so a watcher built on it does not track the chats.
  */
 function projectCharacter(character: character | groupChat): string {
-    const copy = $state.snapshot(character) as character | groupChat;
-    if (!Array.isArray(copy.chats)) {
-        copy.chats = [];
-    }
-    for (const chat of copy.chats) {
-        delete chat.isStreaming;
-        delete chat.activeStreamingDisplayOptimizationMode;
+    const copy: Record<string, unknown> = {};
+    for (const key in character) {
+        if (!CHARACTER_LOCAL_KEYS.has(key)) {
+            copy[key] = $state.snapshot((character as unknown as Record<string, unknown>)[key]);
+        }
     }
     return JSON.stringify(copy);
 }
@@ -308,8 +371,16 @@ function dedupeCharacterIds(characters: (character | groupChat)[]) {
     }
 }
 
-/** Builds this cycle's operations and the generation each dirty key had when it was captured. */
-function collectOperations(): { ops: PendingOp[]; captured: Map<string, number>; membership: number } {
+/**
+ * Builds this cycle's operations and the generation each dirty key had when it was captured, then
+ * takes the chat work: a new character's chats are created with it, a deleted one's are dropped.
+ */
+function collectOperations(): {
+    ops: PendingOp[];
+    captured: Map<string, number>;
+    membership: number;
+    chatWork: ChatWork;
+} {
     const captured = new Map(dirty);
     const membership = membershipGeneration;
     const ops: PendingOp[] = [];
@@ -358,40 +429,113 @@ function collectOperations(): { ops: PendingOp[]; captured: Map<string, number>;
             );
         }
     }
+    const creating = new Set<string>();
+    for (const op of ops) {
+        if (op.kind === RESOURCE_KIND.characters && op.baseRevision === null) {
+            creating.add(op.id);
+            adoptCharacter(op.id);
+        }
+    }
     for (const [key, current] of persisted) {
         if (key.startsWith(characterPrefix)) {
             const id = key.slice(characterPrefix.length);
             if (!present.has(id) && !deferredCharacters.has(id)) {
+                forgetCharacter(id);
                 ops.push(
                     pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: current.revision, text: null }),
                 );
             }
         }
     }
-    return { ops, captured, membership };
+    return { ops, captured, membership, chatWork: takeChatWork(creating, { maxOps: MAX_BATCH_OPERATIONS }) };
 }
 
-function batchBody(ops: readonly PendingOp[]): string {
-    return `{"ops":[${ops.map((op) => op.part).join(",")}]}`;
+/** One request of a cycle: resource ops, then chat groups and reorders. */
+type Batch = { ops: PendingOp[]; work: ChatWork };
+
+function batchBody(batch: Batch): string {
+    const { chats, chatOrders } = chatWorkBody(batch.work);
+    return `{"ops":[${batch.ops.map((op) => op.part).join(",")}],"chats":[${chats.join(",")}],"chatOrders":[${chatOrders.join(",")}]}`;
+}
+
+type BatchUnit =
+    | { type: "op"; op: PendingOp; bytes: number; count: number }
+    | { type: "group"; group: SentChatGroup; bytes: number; count: number }
+    | { type: "order"; order: SentChatOrder; bytes: number; count: number };
+
+/**
+ * Splits a cycle into requests under the operation and byte caps: resource ops first (a character
+ * is created before its chats), then chat groups (each whole), then reorders. A chat group that is
+ * larger than one request on its own (its bytes, or its nested ops: the module already splits an
+ * ordinary chat's work, so only a create or a resent group can reach that) is returned in
+ * `oversized` and not sent.
+ */
+function planBatches(ops: readonly PendingOp[], work: ChatWork): { batches: Batch[]; oversized: SentChatGroup[] } {
+    const body = chatWorkBody(work);
+    const units: BatchUnit[] = [
+        ...ops.map((op) => ({ type: "op" as const, op, bytes: op.bytes, count: 1 })),
+        ...work.groups.map((group, index) => ({
+            type: "group" as const,
+            group,
+            bytes: utf8ByteLength(body.chats[index]),
+            count: group.ops.length,
+        })),
+        ...work.orders.map((order, index) => ({
+            type: "order" as const,
+            order,
+            bytes: utf8ByteLength(body.chatOrders[index]),
+            count: 1,
+        })),
+    ];
+    const oversized: SentChatGroup[] = [];
+    const sendable = units.filter((unit) => {
+        if (
+            unit.type === "group" &&
+            (unit.bytes + BATCH_FRAME_BYTES > MAX_BATCH_BYTES || unit.count > MAX_BATCH_OPERATIONS)
+        ) {
+            oversized.push(unit.group);
+            return false;
+        }
+        return true;
+    });
+    const batches: Batch[] = [];
+    for (const chunk of splitBatches(sendable.map((unit) => ({ ...unit, bytes: unit.bytes, weight: unit.count })))) {
+        const batch: Batch = { ops: [], work: { groups: [], orders: [] } };
+        for (const unit of chunk) {
+            if (unit.type === "op") {
+                batch.ops.push(unit.op);
+            } else if (unit.type === "group") {
+                batch.work.groups.push(unit.group);
+            } else {
+                batch.work.orders.push(unit.order);
+            }
+        }
+        batches.push(batch);
+    }
+    return { batches, oversized };
 }
 
 /**
  * Splits operations into batches under the operation and byte caps, measured in UTF-8 bytes as the
  * server counts them (only a boot pass needs more than one batch).
  */
-export function splitBatches<T extends { bytes: number }>(ops: readonly T[]): T[][] {
+export function splitBatches<T extends { bytes: number; weight?: number }>(ops: readonly T[]): T[][] {
     const batches: T[][] = [];
     let current: T[] = [];
     let bytes = BATCH_FRAME_BYTES;
+    let count = 0;
     for (const op of ops) {
         const size = op.bytes + 1;
-        if (current.length > 0 && (current.length >= MAX_BATCH_OPERATIONS || bytes + size > MAX_BATCH_BYTES)) {
+        const weight = op.weight ?? 1;
+        if (current.length > 0 && (count + weight > MAX_BATCH_OPERATIONS || bytes + size > MAX_BATCH_BYTES)) {
             batches.push(current);
             current = [];
             bytes = BATCH_FRAME_BYTES;
+            count = 0;
         }
         current.push(op);
         bytes += size;
+        count += weight;
     }
     if (current.length > 0) {
         batches.push(current);
@@ -415,8 +559,9 @@ function runCycle(): Promise<void> {
         } finally {
             inFlight = null;
             saving.state = false;
+            backoffUntil = lastError ? Date.now() + Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(failures, 5)) : 0;
             if (!halted && !permanentError && (hasPendingWork() || lastError)) {
-                schedule(lastError ? Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(failures, 5)) : DEBOUNCE_MS);
+                schedule(DEBOUNCE_MS);
             }
         }
     })();
@@ -428,31 +573,60 @@ async function cycle() {
         return;
     }
     await reloadDeferredCharacters();
-    const { ops, captured, membership } = collectOperations();
-    if (ops.length > 0) {
+    await reloadDeferredChats();
+    await hydrateCharacters();
+    const { ops, captured, membership, chatWork } = collectOperations();
+    const { batches, oversized } = planBatches(ops, chatWork);
+    for (const group of oversized) {
+        quarantineChat(group);
+        alertError(`The chat ${group.chatId} is too large to save`);
+    }
+    if (batches.length > 0) {
         saving.state = true;
-        for (const batch of splitBatches(ops)) {
-            if (batch.length === 1 && batch[0].bytes + BATCH_FRAME_BYTES > MAX_BATCH_BYTES) {
-                throw new ResourceRequestError(413, `${batch[0].kind} ${batch[0].id} is too large to save`);
+        for (const [index, batch] of batches.entries()) {
+            const later = mergeWork(batches.slice(index + 1).map((entry) => entry.work));
+            const [only] = batch.ops;
+            if (
+                batch.ops.length === 1 &&
+                batch.work.groups.length === 0 &&
+                batch.work.orders.length === 0 &&
+                only.bytes + BATCH_FRAME_BYTES > MAX_BATCH_BYTES
+            ) {
+                requeueChatWork(later);
+                throw new ResourceRequestError(413, `${only.kind} ${only.id} is too large to save`);
+            }
+            if (index > 0) {
+                // An earlier request of this cycle may have created or deleted chats of a character
+                // whose reorder travels here: base it on the order revision that acknowledgement gave.
+                rebaseChatOrders(batch.work);
             }
             let result: ResourceBatchResult;
             try {
                 result = await applyBatchText(batchBody(batch));
             } catch (error) {
+                // Nothing of this request or the later ones was saved.
+                requeueChatWork(later);
                 if (error instanceof ResourceConflictError) {
-                    await recoverFromConflict(error, batch);
+                    await recoverFromConflict(error, batch.ops, batch.work);
                     return;
                 }
+                if (quarantineRejectedChat(error, batch.work)) {
+                    return;
+                }
+                requeueChatWork(batch.work);
                 throw error;
             }
-            batch.forEach((op, index) => {
-                const revision = result.results[index]?.revision;
+            batch.ops.forEach((op, opIndex) => {
+                const revision = result.results[opIndex]?.revision;
                 if (op.text === null || revision === null || revision === undefined) {
                     persisted.delete(op.key);
                 } else {
                     persisted.set(op.key, { revision, text: op.text });
                 }
             });
+            for (const characterId of ackChatWork(batch.work, result.chats ?? [], result.chatOrders ?? [])) {
+                hydrate.add(characterId);
+            }
         }
     }
     for (const [key, marked] of captured) {
@@ -468,6 +642,29 @@ async function cycle() {
     if (membershipAcked < membership) {
         membershipAcked = membership;
     }
+}
+
+function mergeWork(works: readonly ChatWork[]): ChatWork {
+    return { groups: works.flatMap((work) => work.groups), orders: works.flatMap((work) => work.orders) };
+}
+
+/**
+ * A 400 that names one chat group (`chats[i]...`) is that chat's invalid data: stop sending it (one
+ * alert) and send the rest again, so one bad chat never blocks every other save.
+ */
+function quarantineRejectedChat(error: unknown, work: ChatWork): boolean {
+    if (!(error instanceof ResourceRequestError) || error.status !== 400) {
+        return false;
+    }
+    const match = /^chats\[(\d+)\]/.exec(error.message);
+    const group = match ? work.groups[Number(match[1])] : undefined;
+    if (!group) {
+        return false;
+    }
+    quarantineChat(group);
+    alertError(`The chat ${group.chatId} could not be saved: ${error.message}`);
+    requeueChatWork({ groups: work.groups.filter((entry) => entry !== group), orders: work.orders });
+    return true;
 }
 
 function handleCycleError(error: unknown) {
@@ -556,11 +753,36 @@ function showReloadedNotice() {
  * version into the mirror, unless the server already holds exactly what this client sent (a retry
  * after a lost response). The rest of the batch goes out in the next cycle.
  */
-async function recoverFromConflict(error: ResourceConflictError, batch: readonly PendingOp[]) {
+async function recoverFromConflict(error: ResourceConflictError, batch: readonly PendingOp[], work: ChatWork) {
     const sent = new Map(batch.map((op) => [op.key, op.text]));
-    const refs = error.conflicts.map(({ kind, id }) => ({ kind, id }));
-    const read = await readRefs(refs);
-    let reloaded = false;
+    const refs: { kind: string; id: string }[] = [];
+    const chatRefs: { characterId: string; id: string }[] = [];
+    const conflictedChats = new Set<string>();
+    const conflictedOrders = new Set<string>();
+    for (const conflict of error.conflicts) {
+        if (isChatConflict(conflict)) {
+            chatRefs.push({ characterId: conflict.characterId, id: conflict.id });
+            conflictedChats.add(`${conflict.characterId}\u0000${conflict.id}`);
+        } else if (isChatOrderConflict(conflict)) {
+            conflictedOrders.add(conflict.characterId);
+        } else {
+            refs.push({ kind: conflict.kind, id: conflict.id });
+        }
+    }
+    let read: Awaited<ReturnType<typeof readRefs>>;
+    try {
+        read = refs.length + chatRefs.length > 0 ? await readRefs(refs, { chats: chatRefs }) : { epoch: "", items: [] };
+    } catch (readError) {
+        // Nothing was applied: the chat work goes out again in the next cycle.
+        requeueChatWork(work);
+        throw readError;
+    }
+    const recovered = recoverChatConflicts(work, conflictedChats, conflictedOrders, (read.chats ?? []) as RemoteChat[]);
+    let reloaded = recovered.reloaded;
+    for (const characterId of recovered.refresh) {
+        // Read in `hydrateCharacters` (now, and again next cycle if the read fails).
+        hydrate.add(characterId);
+    }
     for (const item of read.items) {
         const key = recordKey(item.kind, item.id);
         const text = item.revision === null ? null : JSON.stringify(item.data);
@@ -572,12 +794,74 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
             deferredCharacters.add(item.id);
             continue;
         }
+        if (item.kind === RESOURCE_KIND.characters && item.revision !== null && !findMirrorCharacter(item.id)) {
+            // A character the mirror did not have: its chats come with their order.
+            hydrate.add(item.id);
+        }
         acceptRemote(item);
         reloaded = true;
+    }
+    if (hydrate.size > 0) {
+        reloaded = (await hydrateCharacters()) || reloaded;
     }
     if (reloaded) {
         showReloadedNotice();
     }
+}
+
+/**
+ * Reads the chat lists of characters a recovery inserted or whose chats changed on the server, and
+ * puts them into the mirror. A character stays listed until its read succeeds.
+ */
+async function hydrateCharacters(): Promise<boolean> {
+    // A character with a running generation waits until it ends.
+    const ids = [...hydrate].filter((id) => !isCharacterGenerating(id));
+    if (ids.length === 0) {
+        return false;
+    }
+    const read = await readRefs(
+        ids.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
+        { chatCollections: ids },
+    );
+    const records = new Map(read.items.map((item) => [item.id, item]));
+    for (const collection of read.chatCollections ?? []) {
+        const record = records.get(collection.characterId);
+        if (!collection.order && record && record.revision === null) {
+            // The character itself is gone on the server: remove it with its chats.
+            acceptRemote(record);
+        } else if (collection.order) {
+            acceptRemoteCollection(collection);
+        } else {
+            console.error(`[Save] Character ${collection.characterId} has no chat order on the server`);
+        }
+        hydrate.delete(collection.characterId);
+    }
+    return true;
+}
+
+function findMirrorCharacter(id: string) {
+    return DBState.db.characters?.find((character) => character?.chaId === id);
+}
+
+/**
+ * Reloads chats whose reload waited for a generation that has ended (part of the cycle). A chat
+ * stays deferred until its read succeeds; one that is gone refreshes its character's chat list.
+ */
+async function reloadDeferredChats() {
+    const released = deferredReloads();
+    if (released.length === 0) {
+        return;
+    }
+    const read = await readRefs([], {
+        chats: released.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
+    });
+    for (const chat of read.chats ?? []) {
+        const refresh = finishDeferredReload(chat as RemoteChat);
+        if (refresh) {
+            hydrate.add(refresh);
+        }
+    }
+    showReloadedNotice();
 }
 
 /**
@@ -638,21 +922,32 @@ function applyToMirror(kind: string, id: string, data: unknown) {
         case RESOURCE_KIND.characters: {
             const characters = DBState.db.characters;
             const index = characters.findIndex((character) => character?.chaId === id);
+            noteMirrorReplaced();
             if (data === null) {
                 if (index === -1) {
                     return;
                 }
                 const selected = get(selectedCharID);
                 characters.splice(index, 1);
+                forgetCharacter(id);
                 if (selected === index) {
                     selectedCharID.set(-1);
                 } else if (selected > index) {
                     selectedCharID.set(selected - 1);
                 }
             } else if (index === -1) {
-                characters.push(data as character | groupChat);
+                // Its chats arrive with a collection read (`recoverFromConflict`).
+                characters.push({ ...(data as character | groupChat), chats: [], chatPage: 0 });
             } else {
-                characters[index] = data as character | groupChat;
+                // The server record has only the character's own fields: keep the mirror's chats,
+                // selection, and render key.
+                const local = characters[index];
+                characters[index] = {
+                    ...(data as character | groupChat),
+                    chats: local.chats,
+                    chatPage: local.chatPage,
+                    reloadKeys: local.reloadKeys,
+                };
             }
             return;
         }
@@ -666,22 +961,32 @@ function applyToMirror(kind: string, id: string, data: unknown) {
  */
 export async function flushResources(): Promise<{ discarded: string[] }> {
     await tick();
-    // What must be settled: every key dirty now, at its current generation, and every membership
-    // change so far (a later mark of the same key raises the bar but never lowers it).
+    // A running generation's text so far becomes a checkpoint, so it is part of what is flushed.
+    checkpointAllGenerations();
+    // What must be settled: every key dirty now, at its current generation, every membership
+    // change so far (a later mark of the same key raises the bar but never lowers it), and every
+    // chat and chat order with queued or in-flight work.
     const obligations = new Map(dirty);
     if (collectMembershipChanges()) {
         markMembership();
     }
+    const chatObligations = captureChatObligations();
     const membershipTarget = membershipGeneration;
     const firstDiscard = discardSequence + 1;
+    const firstChatDiscard = chatDiscardSequence();
     const unsettled = () =>
         [...obligations].filter(([key, marked]) => (acked.get(key) ?? 0) < marked).map(([key]) => key);
-    const pending = () => unsettled().length > 0 || membershipAcked < membershipTarget;
+    const hydrating = new Set(hydrate);
+    const pending = () =>
+        unsettled().length > 0 ||
+        membershipAcked < membershipTarget ||
+        unsettledChatObligations(chatObligations).length > 0 ||
+        [...hydrating].some((id) => hydrate.has(id));
     for (let attempt = 0; attempt < 10 && pending(); attempt += 1) {
         if (halted) {
             throw new Error("Saving stopped: the server data was restored");
         }
-        if (unsettled().some(isBlockedKey)) {
+        if (unsettled().some(isBlockedKey) || unsettledChatObligations(chatObligations).some(isChatDeferred)) {
             throw new Error("A character is still being generated; try again when it finishes");
         }
         if (timer) {
@@ -697,9 +1002,12 @@ export async function flushResources(): Promise<{ discarded: string[] }> {
         throw new Error("Could not save every change");
     }
     return {
-        discarded: [...discarded]
-            .filter(([, sequence]) => sequence >= firstDiscard)
-            .map(([key]) => key.replace("\u0000", "/")),
+        discarded: [
+            ...[...discarded]
+                .filter(([, sequence]) => sequence >= firstDiscard)
+                .map(([key]) => key.replace("\u0000", "/")),
+            ...chatDiscardsSince(firstChatDiscard).map((key) => `chats/${key}`),
+        ],
     };
 }
 
@@ -737,6 +1045,28 @@ export function startResourceSync() {
     setEpochMismatchListener(() => {
         void haltForRestore();
     });
+    setChatWorkListener(() => {
+        if (hasRunningGenerations()) {
+            prepareUnloadAuth();
+        }
+        schedule();
+    });
+    // Best effort: the text a reply reached since its last checkpoint, as the tab goes away. If the
+    // page survives (back-forward cache), the answer settles the chats' revisions like any other.
+    window.addEventListener("pagehide", () => {
+        try {
+            const checkpoint = unloadCheckpoint(UNLOAD_BODY_LIMIT);
+            if (
+                checkpoint &&
+                sendBatchOnUnload(checkpoint.body, (result) =>
+                    settleUnloadCheckpoint(checkpoint.work, result?.chats ?? null),
+                )
+            ) {
+                trackUnloadCheckpoint(checkpoint.work);
+            }
+        } catch {}
+    });
+    startChatDriftCheck();
     for (const collection of COLLECTIONS) {
         markKey(collectionKey(collection));
     }
@@ -779,10 +1109,11 @@ export function startResourceSync() {
             }
             markMembership();
         });
+        // The selected character's own fields (never its chats, selection, or render key).
         $effect(() => {
             const character = DBState.db.characters?.[selectedIndex];
             if (character) {
-                $state.snapshot(character);
+                projectCharacter(character);
                 markCharactersDirty([character.chaId]);
             }
         });

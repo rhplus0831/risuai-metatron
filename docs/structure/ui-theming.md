@@ -115,7 +115,7 @@ Theme and GUI helpers:
 
 - Use theme tokens (see STRUCTURE.md U1). To add a color: a root variable, an `@theme` token, a `ColorScheme` field, `updateColorScheme`, and presets.
 - Message identity: `Chats` hashes data, `chatId`, index, portrait, disabled, and the reload pointer. The text of an actively streaming message is excluded from the hash.
-- Chat structure operations must preserve `chatPage` and folder IDs, and must call `changeChatTo` the way the existing code does.
+- Chat structure operations go through the chat module (`createChat`, `deleteChat`, `reorderChats`, `setChatMeta` for `folderId`; `persistence.md`) and select with `changeChatTo`/`selectChat`; `chatPage` is derived from the per-tab selected chat id and is never assigned. Components never `bind:` a chat field directly: bind a getter/setter pair that calls the module, or a synced editing copy. A locked message (`isMessageLocked`: generating, or its final write not yet acknowledged) has its edit, delete, and regenerate controls disabled; reroll and chat deletion alert `chatGenerating` while the chat holds a lock.
 - HTML boundaries:
   - `ChatBody`, `BackgroundDom`, suggestions, and plugin panels use `{@html}` only on sanitized parser output.
   - `renderGuiHtmlPart` whitelists tags and allows only `https` links.
@@ -126,7 +126,7 @@ Theme and GUI helpers:
 ## Recipes
 
 - Change message rendering: `DefaultChatScreen` props → `Chats.updateChatBody` (hash and props) → `Chat`/`ChatBody`. Verify streaming, reroll, the first greeting, and custom HTML manually.
-- Add a sidebar chat operation: `SideChatList.svelte`, plus `Chat` in `shared/database.ts` if the shape changes. Use `changeChatTo` and bump `ReloadGUIPointer`.
+- Add a sidebar chat operation: `SideChatList.svelte`, plus `Chat` in `shared/database.ts` if the shape changes. Write through the chat module, select with `changeChatTo`, and bump `ReloadGUIPointer`.
 - Add a form primitive: follow the prop convention in `src/lib/UI/GUI/` and add cases to `guiRendering.test.ts`.
 - Add a popup or portal: a store in `stores.svelte.ts`, then the trigger and host (`PopupButton`/`PopupList` or `Portal`). Clean up mounts and listeners.
 

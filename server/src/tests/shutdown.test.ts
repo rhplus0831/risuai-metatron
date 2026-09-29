@@ -81,7 +81,7 @@ describe("main.ts graceful shutdown", () => {
         const server = await startMain();
         // A resource database with one character, built by a second in-process server.
         const source = await createResourceTestClient();
-        await source.create("characters", "c1", { chaId: "c1", chats: [] });
+        await source.create("characters", "c1", { chaId: "c1" });
         const snapshot = await source.context.snapshots.snapshotNow();
         const database = readFileSync(path.join(source.savePath, "backups", `${snapshot.id}.sqlite`));
         await source.close();

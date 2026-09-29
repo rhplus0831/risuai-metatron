@@ -13,7 +13,7 @@
         BookmarkCheckIcon,
     } from "@lucide/svelte";
 
-    import type { Chat, ChatFolder, character, groupChat } from "src/ts/storage/database.svelte";
+    import type { Chat, ChatFolder, character, DeepReadonly, groupChat } from "src/ts/storage/database.svelte";
     import { DBState, ReloadGUIPointer } from "src/ts/stores.svelte";
     import { selectedCharID } from "src/ts/stores.svelte";
 
@@ -28,6 +28,23 @@
     import { language } from "src/lang";
     import Toggles from "./Toggles.svelte";
     import { changeChatTo, createChatCopyName } from "src/ts/globalApi.svelte";
+    import {
+        createChat,
+        deleteChat,
+        isChatGenerating,
+        reorderChats,
+        setChatMeta,
+    } from "src/ts/storage/chatStore.svelte";
+
+    /** Sets a chat's folder (null or undefined: no folder) through the chat module. */
+    function setChatFolder(chat: DeepReadonly<Chat>, folderId: string | null | undefined) {
+        const ref = { chaId: chara.chaId, chatId: chat.id };
+        if (folderId) {
+            setChatMeta(ref, { folderId });
+        } else if (chat.folderId != null) {
+            setChatMeta(ref, {}, ["folderId"]);
+        }
+    }
 
     interface Props {
         chara: character | groupChat;
@@ -50,8 +67,7 @@
                 new Sortable(chat, {
                     group: "chats",
                     onEnd: async (event) => {
-                        const currentChatPage = chara.chatPage;
-                        const newChats: Chat[] = [];
+                        const newChats: DeepReadonly<Chat>[] = [];
 
                         // const chats: HTMLElement = event.to
                         // chats.querySelectorAll()
@@ -61,7 +77,9 @@
                             folder.querySelectorAll("[data-risu-chat-idx]").forEach((chatInFolder) => {
                                 const chatIdx = parseInt(chatInFolder.getAttribute("data-risu-chat-idx"));
                                 const newChat = chara.chats[chatIdx];
-                                newChat.folderId = chara.chatFolders[folderIdx].id;
+                                if (newChat.folderId !== chara.chatFolders[folderIdx].id) {
+                                    setChatFolder(newChat, chara.chatFolders[folderIdx].id);
+                                }
                                 newChats.push(newChat);
                             });
                         });
@@ -70,13 +88,16 @@
                             const idx = parseInt(chatEle.getAttribute("data-risu-chat-idx"));
                             const newChat = chara.chats[idx];
                             if (newChats.includes(newChat) == false) {
-                                if (newChat.folderId != null) newChat.folderId = null;
+                                setChatFolder(newChat, null);
                                 newChats.push(newChat);
                             }
                         });
 
-                        changeChatTo(newChats.indexOf(chara.chats[currentChatPage]));
-                        chara.chats = newChats;
+                        // The selected chat stays selected (the selection is by id).
+                        reorderChats(
+                            chara.chaId,
+                            newChats.map((chat) => chat.id),
+                        );
 
                         try {
                             this.destroy();
@@ -93,10 +114,8 @@
             group: "folders",
             onEnd: async (event) => {
                 const newFolders: ChatFolder[] = [];
-                const newChats: Chat[] = [];
+                const newChats: DeepReadonly<Chat>[] = [];
                 const folders: HTMLElement[] = Array.from<HTMLElement>(event.to.children);
-
-                const currentChatPage = chara.chatPage;
 
                 folders.forEach((folder) => {
                     const folderIdx = parseInt(folder.getAttribute("data-risu-chat-folder-idx"));
@@ -116,8 +135,10 @@
                 });
 
                 chara.chatFolders = newFolders;
-                changeChatTo(newChats.indexOf(chara.chats[currentChatPage]));
-                chara.chats = newChats;
+                reorderChats(
+                    chara.chaId,
+                    newChats.map((chat) => chat.id),
+                );
                 try {
                     folderStb.destroy();
                 } catch (e) {}
@@ -151,25 +172,24 @@
         onclick={() => {
             const cha = chara;
             const len = chara.chats.length;
-            let chats = chara.chats;
-            chats.unshift({
+            const newChat: Chat = {
                 message: [],
                 note: "",
                 name: `New Chat ${len + 1}`,
                 localLore: [],
                 fmIndex: -1,
                 id: v4(),
-            });
+            };
             if (cha.type === "group") {
-                cha.characters.map((c) => {
-                    chats[len].message.push({
-                        saying: c,
-                        role: "char",
-                        data: findCharacterbyId(c).firstMessage,
-                    });
-                });
+                // A group chat starts with each member's first message (they went into the oldest
+                // chat before, an indexing slip).
+                newChat.message = cha.characters.map((c) => ({
+                    saying: c,
+                    role: "char" as const,
+                    data: findCharacterbyId(c).firstMessage,
+                }));
             }
-            chara.chats = chats;
+            createChat(cha.chaId, newChat, { index: 0, select: true });
             changeChatTo(0);
             $ReloadGUIPointer += 1;
         }}>{language.newChat}</Button
@@ -279,7 +299,7 @@
                                             folders.splice(i, 1);
                                             chara.chats.forEach((chat) => {
                                                 if (chat.folderId == folder.id) {
-                                                    chat.folderId = null;
+                                                    setChatFolder(chat, null);
                                                 }
                                             });
                                             chara.chatFolders = folders;
@@ -314,7 +334,12 @@
                                     >
                                         {#if editMode}
                                             <TextInput
-                                                bind:value={chat.name}
+                                                value={chat.name}
+                                                oninput={(e) =>
+                                                    setChatMeta(
+                                                        { chaId: chara.chaId, chatId: chat.id },
+                                                        { name: e.currentTarget.value },
+                                                    )}
                                                 className="grow min-w-0"
                                                 padding={false}
                                             />
@@ -335,14 +360,19 @@
                                                     const option = await alertChatOptions();
                                                     switch (option) {
                                                         case 0: {
-                                                            const newChat = $state.snapshot(
+                                                            const source = $state.snapshot(
                                                                 chara.chats[chara.chats.indexOf(chat)],
                                                             );
-                                                            newChat.name = createChatCopyName(newChat.name, "Copy");
-                                                            newChat.id = v4();
-                                                            chara.chats.unshift(newChat);
+                                                            const newChat = {
+                                                                ...source,
+                                                                name: createChatCopyName(source.name, "Copy"),
+                                                                id: v4(),
+                                                            };
+                                                            createChat(chara.chaId, newChat, {
+                                                                index: 0,
+                                                                select: true,
+                                                            });
                                                             changeChatTo(0);
-                                                            chara.chats = chara.chats;
                                                             break;
                                                         }
                                                         case 1: {
@@ -351,7 +381,10 @@
                                                                     language.doYouWantToUnbindCurrentPersona,
                                                                 );
                                                                 if (confirm) {
-                                                                    chat.bindedPersona = "";
+                                                                    setChatMeta(
+                                                                        { chaId: chara.chaId, chatId: chat.id },
+                                                                        { bindedPersona: "" },
+                                                                    );
                                                                     alertNormal(language.personaUnbindedSuccess);
                                                                 }
                                                             } else {
@@ -367,10 +400,15 @@
                                                                             DBState.db.selectedPersona
                                                                         ].id = v4();
                                                                     }
-                                                                    chat.bindedPersona =
-                                                                        DBState.db.personas[
-                                                                            DBState.db.selectedPersona
-                                                                        ].id;
+                                                                    setChatMeta(
+                                                                        { chaId: chara.chaId, chatId: chat.id },
+                                                                        {
+                                                                            bindedPersona:
+                                                                                DBState.db.personas[
+                                                                                    DBState.db.selectedPersona
+                                                                                ].id,
+                                                                        },
+                                                                    );
                                                                     console.log(
                                                                         DBState.db.personas[DBState.db.selectedPersona],
                                                                     );
@@ -430,15 +468,22 @@
                                                         alertError(language.errors.onlyOneChat);
                                                         return;
                                                     }
+                                                    const ref = { chaId: chara.chaId, chatId: chat.id };
+                                                    if (isChatGenerating(ref)) {
+                                                        alertError(language.chatGenerating);
+                                                        return;
+                                                    }
                                                     const d = await alertConfirm(
                                                         `${language.removeConfirm}${chat.name}`,
                                                     );
                                                     if (d) {
+                                                        if (isChatGenerating(ref)) {
+                                                            alertError(language.chatGenerating);
+                                                            return;
+                                                        }
+                                                        deleteChat(ref);
                                                         changeChatTo(0);
                                                         $ReloadGUIPointer += 1;
-                                                        let chats = chara.chats;
-                                                        chats.splice(chara.chats.indexOf(chat), 1);
-                                                        chara.chats = chats;
                                                     }
                                                 }}
                                             >
@@ -468,7 +513,16 @@
                             class:bg-selected={i === chara.chatPage}
                         >
                             {#if editMode}
-                                <TextInput bind:value={chara.chats[i].name} className="grow min-w-0" padding={false} />
+                                <TextInput
+                                    value={chat.name}
+                                    oninput={(e) =>
+                                        setChatMeta(
+                                            { chaId: chara.chaId, chatId: chat.id },
+                                            { name: e.currentTarget.value },
+                                        )}
+                                    className="grow min-w-0"
+                                    padding={false}
+                                />
                             {:else}
                                 <span>{chat.name}</span>
                             {/if}
@@ -486,12 +540,14 @@
                                         const option = await alertChatOptions();
                                         switch (option) {
                                             case 0: {
-                                                const newChat = $state.snapshot(chara.chats[i]);
-                                                newChat.name = createChatCopyName(newChat.name, "Copy");
-                                                newChat.id = v4();
-                                                chara.chats.unshift(newChat);
+                                                const source = $state.snapshot(chara.chats[i]);
+                                                const newChat = {
+                                                    ...source,
+                                                    name: createChatCopyName(source.name, "Copy"),
+                                                    id: v4(),
+                                                };
+                                                createChat(chara.chaId, newChat, { index: 0, select: true });
                                                 changeChatTo(0);
-                                                chara.chats = chara.chats;
                                                 break;
                                             }
                                             case 1: {
@@ -501,7 +557,10 @@
                                                         language.doYouWantToUnbindCurrentPersona,
                                                     );
                                                     if (confirm) {
-                                                        chat.bindedPersona = "";
+                                                        setChatMeta(
+                                                            { chaId: chara.chaId, chatId: chat.id },
+                                                            { bindedPersona: "" },
+                                                        );
                                                         alertNormal(language.personaUnbindedSuccess);
                                                     }
                                                 } else {
@@ -512,8 +571,13 @@
                                                         if (!DBState.db.personas[DBState.db.selectedPersona].id) {
                                                             DBState.db.personas[DBState.db.selectedPersona].id = v4();
                                                         }
-                                                        chat.bindedPersona =
-                                                            DBState.db.personas[DBState.db.selectedPersona].id;
+                                                        setChatMeta(
+                                                            { chaId: chara.chaId, chatId: chat.id },
+                                                            {
+                                                                bindedPersona:
+                                                                    DBState.db.personas[DBState.db.selectedPersona].id,
+                                                            },
+                                                        );
                                                         console.log(DBState.db.personas[DBState.db.selectedPersona]);
                                                         alertNormal(language.personaBindedSuccess);
                                                     }
@@ -571,13 +635,20 @@
                                             alertError(language.errors.onlyOneChat);
                                             return;
                                         }
+                                        const ref = { chaId: chara.chaId, chatId: chat.id };
+                                        if (isChatGenerating(ref)) {
+                                            alertError(language.chatGenerating);
+                                            return;
+                                        }
                                         const d = await alertConfirm(`${language.removeConfirm}${chat.name}`);
                                         if (d) {
+                                            if (isChatGenerating(ref)) {
+                                                alertError(language.chatGenerating);
+                                                return;
+                                            }
+                                            deleteChat(ref);
                                             changeChatTo(0);
                                             $ReloadGUIPointer += 1;
-                                            let chats = chara.chats;
-                                            chats.splice(i, 1);
-                                            chara.chats = chats;
                                         }
                                     }}
                                 >

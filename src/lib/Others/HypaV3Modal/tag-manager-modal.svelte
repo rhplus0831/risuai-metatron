@@ -1,18 +1,17 @@
 <script lang="ts">
+    import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
     import { XIcon, SquarePenIcon, Trash2Icon, CheckIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import { DBState, selectedCharID } from "src/ts/stores.svelte";
     import type { TagManagerState } from "./types";
 
     interface Props {
+        /** The modal's editing copy of the memory data (its changes are saved by the modal). */
+        hypaV3Data: SerializableHypaV3Data;
         tagManagerState: TagManagerState;
     }
 
-    let { tagManagerState = $bindable() }: Props = $props();
-
-    const hypaV3Data = $derived(
-        DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].hypaV3Data,
-    );
+    let { tagManagerState = $bindable(), hypaV3Data }: Props = $props();
 
     function closeTagManager() {
         tagManagerState.isOpen = false;

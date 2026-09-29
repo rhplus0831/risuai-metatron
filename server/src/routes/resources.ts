@@ -27,7 +27,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * send it in `x-resource-epoch` (412 otherwise, so nothing based on data from before a restore can
  * land), is refused with 503 while a restore or import runs, and names the revision it was based on
  * (`baseRevision`: null to create); a stale one is a 409 carrying the current revision (null when the
- * record is gone). Responses are never cached.
+ * record is gone). The batch also carries chat groups and reorders, and the reads chats and chat
+ * collections (`shared/chats.ts`). Responses are never cached.
  */
 export function registerResourceRoutes(
     app: Hono<AppEnv>,
@@ -71,7 +72,11 @@ export function registerResourceRoutes(
             }
             selected.push(kind);
         }
-        return c.json(store.readKinds(selected));
+        const chats = c.req.query("chats");
+        if (chats !== undefined && chats !== "1") {
+            return c.json({ error: "chats query parameter must be 1" }, 400);
+        }
+        return c.json(store.readKinds(selected, { chats: chats === "1" }));
     });
 
     app.post("/api/resources/read", limiter, async (c) => {
@@ -83,9 +88,13 @@ export function registerResourceRoutes(
         if (!parsed.ok) {
             return parsed.response;
         }
-        const refs = parsed.body.refs;
-        if (!Array.isArray(refs) || refs.length === 0 || refs.length > MAX_BATCH_OPERATIONS) {
-            return c.json({ error: `Body must be { refs } with 1 to ${MAX_BATCH_OPERATIONS} entries` }, 400);
+        const { refs = [], chats = [], chatCollections = [] } = parsed.body as Record<string, unknown>;
+        if (!Array.isArray(refs) || !Array.isArray(chats) || !Array.isArray(chatCollections)) {
+            return c.json({ error: "Body must be { refs?, chats?, chatCollections? } of arrays" }, 400);
+        }
+        const total = refs.length + chats.length + chatCollections.length;
+        if (total === 0 || total > MAX_BATCH_OPERATIONS) {
+            return c.json({ error: `Body must name 1 to ${MAX_BATCH_OPERATIONS} entries` }, 400);
         }
         const resolved: { kind: ResourceKind; id: string }[] = [];
         for (const [index, ref] of refs.entries()) {
@@ -95,8 +104,18 @@ export function registerResourceRoutes(
             }
             resolved.push({ kind, id: ref.id });
         }
+        const chatRefs: { characterId: string; id: string }[] = [];
+        for (const [index, ref] of chats.entries()) {
+            if (!isPlainObject(ref) || !isValidResourceId(ref.characterId) || !isValidResourceId(ref.id)) {
+                return c.json({ error: `chats[${index}] must name a valid characterId and id` }, 400);
+            }
+            chatRefs.push({ characterId: ref.characterId, id: ref.id });
+        }
+        if (!chatCollections.every(isValidResourceId)) {
+            return c.json({ error: "chatCollections must be character ids" }, 400);
+        }
         try {
-            return c.json(store.readRefs(resolved));
+            return c.json(store.readRefs(resolved, { chats: chatRefs, chatCollections }));
         } catch (error) {
             return storeErrorResponse(c, error);
         }
@@ -111,9 +130,27 @@ export function registerResourceRoutes(
         if (!parsed.ok) {
             return parsed.response;
         }
-        const ops = parsed.body.ops;
-        if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_BATCH_OPERATIONS) {
-            return c.json({ error: `Body must be { ops } with 1 to ${MAX_BATCH_OPERATIONS} operations` }, 400);
+        const { ops = [], chats, chatOrders } = parsed.body as Record<string, unknown>;
+        if (!Array.isArray(ops)) {
+            return c.json({ error: "ops must be an array" }, 400);
+        }
+        // Every nested chat op and every reorder counts toward the cap; malformed chat entries are
+        // counted as one and rejected by the store.
+        const total =
+            ops.length +
+            (Array.isArray(chats)
+                ? chats.reduce<number>(
+                      (sum, group) =>
+                          sum + (isPlainObject(group) && Array.isArray(group.ops) ? Math.max(group.ops.length, 1) : 1),
+                      0,
+                  )
+                : 0) +
+            (Array.isArray(chatOrders) ? chatOrders.length : 0);
+        if (total === 0 || total > MAX_BATCH_OPERATIONS) {
+            return c.json(
+                { error: `Body must be { ops?, chats?, chatOrders? } with 1 to ${MAX_BATCH_OPERATIONS} operations` },
+                400,
+            );
         }
         const operations: ResourceBatchOperation[] = [];
         for (const [index, op] of ops.entries()) {
@@ -125,8 +162,8 @@ export function registerResourceRoutes(
         }
         try {
             assertMutable(c);
-            const results = store.applyBatch(operations);
-            return c.json({ epoch: store.epoch(), results });
+            const applied = store.applyChanges({ ops: operations, chats, chatOrders });
+            return c.json({ epoch: store.epoch(), ...applied });
         } catch (error) {
             return storeErrorResponse(c, error);
         }

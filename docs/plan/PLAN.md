@@ -2,8 +2,8 @@
 
 Date: 2026-09-28
 
-Status: decisions confirmed on 2026-09-28. Phase 0 done on 2026-09-29, Phase 1 implemented on
-2026-09-29 (see their phase files). Phases 2 and 3 are next.
+Status: decisions confirmed on 2026-09-28. Phase 0 done on 2026-09-29, Phases 1 and 2 implemented
+on 2026-09-29 (see their phase files). Phase 3 is next.
 
 ## Goal
 
@@ -228,9 +228,13 @@ follow-up that cleans up `botPreset` and the separate-model concept after this p
 - Messages are rows keyed by (`chat id`, `message id`) with an order key and data; ids are unique
   within a chat, and the normalizer de-duplicates them. The chat keeps its metadata as a resource
   with one revision that every operation advances. Message-id assignment moves to the normalizer
-  on its own; `assignIds` assigns only character and chat ids today.
-- The message being generated is locked against editing from the first chunk until the reply's
-  last persistence step, including the asynchronous inlay. While the client generates (Phases 2 to 4) the lock is a client rule; from Phase 5 the server rejects edits to a message its job owns.
+  on its own; `assignIds` assigns only character and chat ids today. (Phase 2: the chat module
+  assigns message ids optimistically; the server keeps them, renames a colliding id only inside a
+  whole-chat payload, and refuses an `append` that reuses an id with other content. A character's
+  chat order is its own record with its own revision, not an id list inside the character.)
+- The message being generated is locked against editing from the reply's creation (Phase 2: the
+  lock starts when the reply is appended, or when continue starts, not at the first chunk) until the
+  reply's last persistence step, including the asynchronous inlay. While the client generates (Phases 2 to 4) the lock is a client rule; from Phase 5 the server rejects edits to a message its job owns.
   Checkpoints carry the generation id and are accepted only while that generation holds the lock,
   so a late checkpoint cannot overwrite the final text.
 - Operations that address one unlocked message by id (`appendMessage`, `setMessageText`,
@@ -244,8 +248,10 @@ follow-up that cleans up `botPreset` and the separate-model concept after this p
 - Stream chunks carry the whole text so far. Checkpoints run every three seconds, at stream end,
   and on abort; the durability promise is the last acknowledged checkpoint. While the client still
   generates it also tries a `pagehide` flush with `fetch` `keepalive`, sending the whole text only
-  under the 64 KiB keepalive budget and otherwise only the suffix since the last acknowledged
-  checkpoint; this flush is best effort. The 125 ms display flush stays separate from persistence.
+  under the 64 KiB keepalive budget and otherwise nothing; this flush is best effort. (Phase 2
+  amendment: the suffix form was dropped, because `editoutput` scripts and trimming can rewrite the
+  text before the last checkpoint, so a suffix has no stable prefix to append to.) The 125 ms
+  display flush stays separate from persistence.
 - Until Phase 5 checkpoints hold what the mirror holds today: the `editoutput` result, or the
   pre-`editoutput` text in the strong streaming display mode. From Phase 5 they hold the raw text
   and the final write holds the `editoutput` result.

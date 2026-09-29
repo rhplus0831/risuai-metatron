@@ -10,6 +10,9 @@
     import { tokenizePreset } from "src/ts/process/prompt";
 
     import { DBState } from "src/ts/stores.svelte";
+    import { appendMessage, currentChatRef } from "src/ts/storage/chatStore.svelte";
+    import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
+    import { getCurrentChat } from "src/ts/storage/database.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import { HardDriveUploadIcon, PlusIcon, TrashIcon } from "@lucide/svelte";
     import { selectSingleFile } from "src/ts/util";
@@ -108,6 +111,14 @@
     };
 
     let autopilot = $state([]);
+
+    /** Sets one chat variable of the selected chat (through the chat module). */
+    function setScriptVariable(key: string, value: string | number) {
+        const chat = getCurrentChat();
+        if (chat) {
+            setCurrentChatMeta({ scriptstate: { ...$state.snapshot(chat.scriptstate ?? {}), [key]: value } });
+        }
+    }
 </script>
 
 <Accordion styled name={"Variables"}>
@@ -120,17 +131,21 @@
                 {:else if typeof DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate[key] === "string"}
                     <TextInput
                         bind:value={
-                            DBState.db.characters[$selectedCharID].chats[
-                                DBState.db.characters[$selectedCharID].chatPage
-                            ].scriptstate[key] as string
+                            () =>
+                                DBState.db.characters[$selectedCharID].chats[
+                                    DBState.db.characters[$selectedCharID].chatPage
+                                ].scriptstate[key] as string,
+                            (value) => setScriptVariable(key, value)
                         }
                     />
                 {:else if typeof DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate[key] === "number"}
                     <NumberInput
                         bind:value={
-                            DBState.db.characters[$selectedCharID].chats[
-                                DBState.db.characters[$selectedCharID].chatPage
-                            ].scriptstate[key] as number
+                            () =>
+                                DBState.db.characters[$selectedCharID].chats[
+                                    DBState.db.characters[$selectedCharID].chatPage
+                                ].scriptstate[key] as number,
+                            (value) => setScriptVariable(key, value)
                         }
                     />
                 {/if}
@@ -235,24 +250,15 @@
                 return;
             }
             for (let i = 0; i < autopilot.length; i++) {
-                const db = DBState.db;
-                let currentChar = db.characters[$selectedCharID];
-                let currentChat = currentChar.chats[currentChar.chatPage];
-                currentChat.message.push({
-                    role: "user",
-                    data: autopilot[i],
-                });
-                currentChar.chats[currentChar.chatPage] = currentChat;
-                db.characters[$selectedCharID] = currentChar;
+                const ref = currentChatRef();
+                if (ref) {
+                    appendMessage(ref, { role: "user", data: autopilot[i] });
+                }
                 if ($doingChat) {
                     return;
                 }
-                currentChar.chats[currentChar.chatPage] = currentChat;
-                db.characters[$selectedCharID] = currentChar;
                 doingChat.set(false);
                 await sendChat(i);
-                currentChar = db.characters[$selectedCharID];
-                currentChat = currentChar.chats[currentChar.chatPage];
             }
             doingChat.set(false);
         }}>Run</Button

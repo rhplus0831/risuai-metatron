@@ -1,6 +1,6 @@
 import { get } from "svelte/store";
 import { processScriptFull, risuChatParser } from "src/ts/process/scripts";
-import { type Message } from "src/ts/storage/database.svelte";
+import { type DeepReadonly, type Message } from "src/ts/storage/database.svelte";
 import { alertConfirm } from "src/ts/alert";
 import { DBState, selectedCharID } from "src/ts/stores.svelte";
 import { language } from "src/lang";
@@ -87,7 +87,10 @@ export function getFirstMessage(): string | null {
           : null;
 }
 
-export async function processRegexScript(msg: Message, msgIndex: number = -1): Promise<Message> {
+export async function processRegexScript(
+    msg: DeepReadonly<Message>,
+    msgIndex: number = -1,
+): Promise<DeepReadonly<Message>> {
     const char = DBState.db.characters[get(selectedCharID)];
     const newData: string = (
         await processScriptFull(

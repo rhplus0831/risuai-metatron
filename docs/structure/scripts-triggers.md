@@ -69,7 +69,7 @@ Where each hook runs:
 
 `runTrigger` steps:
 
-1. Clone the character and chat. Display mode is the exception and mutates in place.
+1. Clone the character and chat. Display and request runs clone the character not at all and copy only the chat and its message list (they run per rendered message); their effects replace messages instead of editing them. The caller captures a chat baseline before the run and applies the returned chat with `applyChatResult` (`persistence.md`); chat variables and the author's note are also written to the live chat as the trigger runs (`setChatMeta`), so later effects and CBS read them.
 2. Copy the character's `lowLevelAccess` onto its triggers.
 3. Append `getModuleTriggers()`.
 4. Resolve variables.
@@ -85,6 +85,8 @@ v2 layout:
 Lua:
 
 - The wasmoon factory loads lazily and mounts `/lua/json.lua` (up to 3 retries).
+- Read context: the Lua `cbs`, persona, global-variable, and lore APIs (`getLoreBooks`, `loadLoreBooks`) read the run's chat (`contextRef`: a trigger's chat, or the live chat). In a trigger's working copy, `cbs` and `loadLoreBooks` still read the live chat, as trigger CBS always has, while the message getters and `getLoreBooks`' local lore read the copy; `loadLoreBooks` records its keep/don't-activate-after-match flags on the live chat.
+- Chat functions (`setChat`, `setChatRole`, `cutChat`, `removeChat`, `addChat`, `insertChat`, `setFullChat`, `upsertLocalLoreBook`) and chat variables: inside `runTrigger` they use the trigger's working copy and its variable accessors; elsewhere (edit hooks, buttons) they use the chat the run was given (`runScripted`'s `chatRef`; default: the chat selected when the run started), looked up again on every call (a replacement or reload installs a new object), and write through the chat module, resolving an index to a message id when called. A write the module refuses (the message is being generated) is skipped with a warning.
 - Each call gets a UUID access key registered in `ScriptingSafeIds`, `ScriptingEditDisplayIds`, and `ScriptingLowLevelIds` as appropriate. It is removed afterwards.
 
 ## State
@@ -94,7 +96,7 @@ Lua:
   - DB: `presetRegex` (active) and `globalscript` (unused).
   - Character: `customscript`, `triggerscript`, `lowLevelAccess`.
   - Module: `regex`, `trigger`, `lowLevelAccess`.
-- Runtime variables are strings. They persist as `chat.scriptstate['$'+key]`. Display mode uses temp variables only.
+- Runtime variables are strings. They persist as `chat.scriptstate['$'+key]`, written with `setChatMeta` (the whole `scriptstate` object; two tabs changing different variables of one chat at once keep the later write). Display-mode triggers use temp variables only. Lua `editDisplay` hooks are the exception, as before: `setChatVar` there writes the chat (a hook that changes a variable on every render causes a save each time).
 - `processScriptCache` holds at most 1000 entries and is reset by `resetScriptCache` (called on the `ReloadGUIPointer` bump). `bestMatchCache` has no cap.
 
 ## Coupling

@@ -1,5 +1,5 @@
 import { asBuffer } from "src/ts/util";
-import { getChatVar, getGlobalChatVar, setChatVar } from "../parser/chatVar.svelte";
+import { getChatVarOf, getGlobalChatVar, getGlobalChatVarOf, setChatVarOf } from "../parser/chatVar.svelte";
 import { hasher, type simpleCharacterArgument, risuChatParser } from "../parser/parser.svelte";
 import { LuaEngine, LuaFactory } from "wasmoon";
 import {
@@ -10,8 +10,22 @@ import {
     type Chat,
     type character,
     type groupChat,
+    type loreBook,
+    type Message,
     type triggerscript,
 } from "../storage/database.svelte";
+import type { DeepReadonly } from "../../../shared/readonly.ts";
+import {
+    appendMessage,
+    type ChatRef,
+    currentChatRef,
+    findChat,
+    removeMessages,
+    replaceChat,
+    replaceMessage,
+    setChatMeta,
+    setMessageText,
+} from "../storage/chatStore.svelte";
 import { get } from "svelte/store";
 import { DBState, ReloadChatPointer, ReloadGUIPointer, selectedCharID } from "../stores.svelte";
 import { alertSelect, alertError, alertInput, alertNormal, alertConfirm } from "../alert";
@@ -37,7 +51,14 @@ let lastRequestsCount = 0;
 interface BasicScriptingEngineState {
     code?: string;
     mutex: Mutex;
-    chat?: Chat;
+    chat?: DeepReadonly<Chat>;
+    /**
+     * Set when `chat` is the live selected chat (edit hooks, buttons): chat writes go through the
+     * chat module. Unset when a trigger passed its own working copy, which the script edits directly.
+     */
+    chatRef?: ChatRef | null;
+    /** The chat CBS parses read (`cbs`): the live chat, or the chat a trigger's working copy is of. */
+    contextRef?: ChatRef | null;
     setVar?: (key: string, value: string) => boolean | void;
     getVar?: (key: string) => string;
 }
@@ -54,7 +75,9 @@ export async function runScripted(
     code: string,
     arg: {
         char?: character | groupChat | simpleCharacterArgument;
-        chat?: Chat;
+        chat?: DeepReadonly<Chat>;
+        /** The live chat to run on (default: the selected chat); ignored when `chat` (a working copy) is given. */
+        chatRef?: ChatRef | null;
         data?: string | OpenAIChat[];
         setVar?: (key: string, value: string) => boolean | void;
         getVar?: (key: string) => string;
@@ -65,12 +88,16 @@ export async function runScripted(
 ) {
     const char = arg.char ?? getCurrentCharacter();
     const data = arg.data ?? "";
-    const setVar = arg.setVar ?? setChatVar;
-    const getVar = arg.getVar ?? getChatVar;
     const meta = arg.meta ?? {};
     const mode = arg.mode ?? "manual";
 
-    let chat = arg.chat ?? getCurrentChat();
+    const chatRef = arg.chat ? null : (arg.chatRef ?? currentChatRef());
+    let chat = arg.chat ?? (chatRef ? findChat(chatRef) : getCurrentChat());
+    const contextRef = arg.chatRef ?? chatRef;
+    // Chat variables follow the chat this run captured (a trigger passes its own working-copy
+    // accessors), never whatever is selected when a callback runs.
+    const setVar = arg.setVar ?? ((key: string, value: string) => setChatVarOf(chatRef, key, value));
+    const getVar = arg.getVar ?? ((key: string) => getChatVarOf(chatRef, key));
     let stopSending = false;
     let lowLevelAccess = arg.lowLevelAccess ?? false;
 
@@ -79,6 +106,8 @@ export async function runScripted(
 
     return await ScriptingEngineState.mutex.runExclusive(async () => {
         ScriptingEngineState.chat = chat;
+        ScriptingEngineState.chatRef = chatRef;
+        ScriptingEngineState.contextRef = contextRef;
         ScriptingEngineState.setVar = setVar;
         ScriptingEngineState.getVar = getVar;
         if (code !== ScriptingEngineState.code) {
@@ -90,6 +119,20 @@ export async function runScripted(
             const declareAPI = (name: string, func: Function) => {
                 luaEngine.global.set(name, func);
             };
+            /**
+             * The chat the script reads: the live chat as it is now (looked up on every call, since a
+             * replacement or reload installs a new object), or the caller's working copy.
+             */
+            /** The character the run's chat belongs to (the selected one when the run has no chat ref). */
+            const engineCharacter = () => {
+                const ref = ScriptingEngineState.contextRef;
+                return ref
+                    ? getDatabase().characters.find((entry) => entry?.chaId === ref.chaId)
+                    : getDatabase().characters[get(selectedCharID)];
+            };
+            const engineChat = (): DeepReadonly<Chat> =>
+                (ScriptingEngineState.chatRef ? findChat(ScriptingEngineState.chatRef) : undefined) ??
+                ScriptingEngineState.chat;
             declareAPI("getChatVar", (id: string, key: string) => {
                 return ScriptingEngineState.getVar(key);
             });
@@ -108,7 +151,8 @@ export async function runScripted(
                 }
             });
             declareAPI("getGlobalVar", (id: string, key: string) => {
-                return getGlobalChatVar(key);
+                const ref = ScriptingEngineState.contextRef;
+                return ref ? getGlobalChatVarOf(ref, key) : getGlobalChatVar(key);
             });
             declareAPI("stopChat", (id: string) => {
                 if (!ScriptingSafeIds.has(id)) {
@@ -148,7 +192,7 @@ export async function runScripted(
             });
 
             declareAPI("getChatMain", (id: string, index: number) => {
-                const chat = ScriptingEngineState.chat.message.at(index);
+                const chat = engineChat().message.at(index);
                 if (!chat) {
                     return JSON.stringify(null);
                 }
@@ -161,17 +205,17 @@ export async function runScripted(
             });
 
             declareAPI("getChatData", (id: string, index: number) => {
-                const chat = ScriptingEngineState.chat.message.at(index);
+                const chat = engineChat().message.at(index);
                 return chat?.data ?? "";
             });
 
             declareAPI("getChatRole", (id: string, index: number) => {
-                const chat = ScriptingEngineState.chat.message.at(index);
+                const chat = engineChat().message.at(index);
                 return chat?.role ?? "";
             });
 
             declareAPI("getRecentChatsMain", (id: string, count: number) => {
-                const chats = ScriptingEngineState.chat.message;
+                const chats = engineChat().message;
                 const safeCount = Math.max(0, Math.floor(count || 0));
                 const start = Math.max(0, chats.length - safeCount);
                 return JSON.stringify(
@@ -183,49 +227,103 @@ export async function runScripted(
                 );
             });
 
+            // On the live chat (`chatRef`) these write through the chat module, resolving the index to
+            // a message id when called; a write the module refuses (a message being generated) is
+            // skipped with a warning. On a trigger's working copy they edit the copy.
+            /** The trigger's working copy (no `chatRef`); its message objects may be shared, so replace them. */
+            const workingCopy = () => ScriptingEngineState.chat as Chat;
+            const replaceCopyMessage = (index: number, message: DeepReadonly<Message>) => {
+                const messages = workingCopy().message;
+                messages[index < 0 ? messages.length + index : index] = message as Message;
+            };
+            const liveWrite = (write: (ref: ChatRef) => void) => {
+                try {
+                    write(ScriptingEngineState.chatRef!);
+                } catch (error) {
+                    console.warn("[Lua] A chat change was refused", error);
+                }
+            };
             declareAPI("setChat", (id: string, index: number, value: string) => {
                 if (!ScriptingSafeIds.has(id)) {
                     return;
                 }
-                const message = ScriptingEngineState.chat.message?.at(index);
-                if (message) {
-                    message.data = value ?? "";
+                const message = engineChat().message?.at(index);
+                if (!message) {
+                    return;
+                }
+                if (ScriptingEngineState.chatRef) {
+                    liveWrite((ref) => setMessageText(ref, message.chatId, value ?? ""));
+                } else {
+                    replaceCopyMessage(index, { ...message, data: value ?? "" });
                 }
             });
             declareAPI("setChatRole", (id: string, index: number, value: string) => {
                 if (!ScriptingSafeIds.has(id)) {
                     return;
                 }
-                const message = ScriptingEngineState.chat.message?.at(index);
-                if (message) {
-                    message.role = value === "user" ? "user" : "char";
+                const message = engineChat().message?.at(index);
+                if (!message) {
+                    return;
+                }
+                const role: "user" | "char" = value === "user" ? "user" : "char";
+                if (ScriptingEngineState.chatRef) {
+                    liveWrite((ref) => replaceMessage(ref, { ...JSON.parse(JSON.stringify(message)), role }));
+                } else {
+                    replaceCopyMessage(index, { ...message, role });
                 }
             });
             declareAPI("cutChat", (id: string, start: number, end: number) => {
                 if (!ScriptingSafeIds.has(id)) {
                     return;
                 }
-                ScriptingEngineState.chat.message = ScriptingEngineState.chat.message.slice(start, end);
+                const messages = engineChat().message;
+                if (ScriptingEngineState.chatRef) {
+                    const kept = new Set(messages.slice(start, end));
+                    const removed = messages.filter((message) => !kept.has(message)).map((message) => message.chatId);
+                    liveWrite((ref) => removeMessages(ref, removed));
+                } else {
+                    workingCopy().message = workingCopy().message.slice(start, end);
+                }
             });
             declareAPI("removeChat", (id: string, index: number) => {
                 if (!ScriptingSafeIds.has(id)) {
                     return;
                 }
-                ScriptingEngineState.chat.message.splice(index, 1);
+                if (ScriptingEngineState.chatRef) {
+                    const message = engineChat().message.at(index);
+                    if (message) {
+                        liveWrite((ref) => removeMessages(ref, [message.chatId]));
+                    }
+                } else {
+                    workingCopy().message.splice(index, 1);
+                }
             });
             declareAPI("addChat", (id: string, role: string, value: string) => {
                 if (!ScriptingSafeIds.has(id)) {
                     return;
                 }
                 let roleData: "user" | "char" = role === "user" ? "user" : "char";
-                ScriptingEngineState.chat.message.push({ role: roleData, data: value ?? "" });
+                if (ScriptingEngineState.chatRef) {
+                    liveWrite((ref) => appendMessage(ref, { role: roleData, data: value ?? "" }));
+                } else {
+                    workingCopy().message.push({ role: roleData, data: value ?? "" });
+                }
             });
             declareAPI("insertChat", (id: string, index: number, role: string, value: string) => {
                 if (!ScriptingSafeIds.has(id)) {
                     return;
                 }
                 let roleData: "user" | "char" = role === "user" ? "user" : "char";
-                ScriptingEngineState.chat.message.splice(index, 0, { role: roleData, data: value ?? "" });
+                if (ScriptingEngineState.chatRef) {
+                    // Where `splice(index, 0, ...)` would insert.
+                    const messages = engineChat().message;
+                    const position =
+                        index < 0 ? Math.max(messages.length + index, 0) : Math.min(index, messages.length);
+                    const anchor = position === 0 ? { start: true as const } : { after: messages[position - 1].chatId };
+                    liveWrite((ref) => appendMessage(ref, { role: roleData, data: value ?? "" }, { anchor }));
+                } else {
+                    workingCopy().message.splice(index, 0, { role: roleData, data: value ?? "" });
+                }
             });
 
             declareAPI("getTokens", async (id: string, value: string) => {
@@ -236,12 +334,12 @@ export async function runScripted(
             });
 
             declareAPI("getChatLength", (id: string) => {
-                return ScriptingEngineState.chat.message.length;
+                return engineChat().message.length;
             });
 
             declareAPI("getFullChatMain", (id: string) => {
                 const data = JSON.stringify(
-                    ScriptingEngineState.chat.message.map((v) => {
+                    engineChat().message.map((v) => {
                         return {
                             role: v.role,
                             data: v.data,
@@ -264,7 +362,10 @@ export async function runScripted(
             });
 
             declareAPI("cbs", (value) => {
-                return risuChatParser(value, { chara: getCurrentCharacter() });
+                return risuChatParser(value, {
+                    chara: engineCharacter(),
+                    chatRef: ScriptingEngineState.contextRef,
+                });
             });
 
             declareAPI("setFullChatMain", (id: string, value: string) => {
@@ -272,13 +373,23 @@ export async function runScripted(
                     return;
                 }
                 const realValue = JSON.parse(value);
-
-                ScriptingEngineState.chat.message = realValue.map((v) => {
+                const messages = realValue.map((v) => {
                     return {
                         role: v.role,
                         data: v.data,
                     };
                 });
+                if (ScriptingEngineState.chatRef) {
+                    // A whole-list replacement (the messages get new ids, as before).
+                    liveWrite((ref) =>
+                        replaceChat(ref, {
+                            ...JSON.parse(JSON.stringify(engineChat())),
+                            message: messages,
+                        }),
+                    );
+                } else {
+                    workingCopy().message = messages;
+                }
             });
 
             declareAPI("logMain", (value: string) => {
@@ -569,6 +680,7 @@ export async function runScripted(
                             useStreaming: options.streaming === true,
                             forceStreaming: options.streaming === true,
                             noMultiGen: true,
+                            chatRef: ScriptingEngineState.contextRef,
                         },
                         "model",
                     );
@@ -623,6 +735,7 @@ export async function runScripted(
                         bias: {},
                         useStreaming: false,
                         noMultiGen: true,
+                        chatRef: ScriptingEngineState.contextRef,
                     },
                     "model",
                 );
@@ -715,19 +828,18 @@ export async function runScripted(
             });
 
             declareAPI("getPersonaName", (id: string) => {
-                return getUserName();
+                return getUserName(ScriptingEngineState.contextRef);
             });
 
             declareAPI("getPersonaDescription", (id: string) => {
-                const db = getDatabase();
-                const selectedChar = get(selectedCharID);
-                const char = db.characters[selectedChar];
-
-                return risuChatParser(getPersonaPrompt(), { chara: char });
+                return risuChatParser(getPersonaPrompt(ScriptingEngineState.contextRef), {
+                    chara: engineCharacter(),
+                    chatRef: ScriptingEngineState.contextRef,
+                });
             });
 
             declareAPI("getAuthorsNote", (id: string) => {
-                return ScriptingEngineState.chat?.note ?? "";
+                return engineChat()?.note ?? "";
             });
 
             declareAPI("getBackgroundEmbedding", (id: string) => {
@@ -756,22 +868,29 @@ export async function runScripted(
             // Lore books
             declareAPI("getLoreBooksMain", (id: string, search: string) => {
                 const db = getDatabase();
-                const selectedChar = db.characters[get(selectedCharID)];
+                const selectedChar = engineCharacter();
                 if (selectedChar.type !== "character") {
                     return;
                 }
 
+                // The run's chat: the live chat, or a trigger's working copy.
                 const loreSources = [
-                    selectedChar.chats[selectedChar.chatPage]?.localLore ?? [],
+                    engineChat()?.localLore ?? [],
                     selectedChar.globalLore,
-                    getModuleLorebooks(),
+                    getModuleLorebooks(ScriptingEngineState.contextRef),
                 ];
 
                 const found = [];
                 for (const source of loreSources) {
                     for (const b of source) {
                         if (b.comment === search) {
-                            found.push({ ...b, content: risuChatParser(b.content, { chara: selectedChar }) });
+                            found.push({
+                                ...b,
+                                content: risuChatParser(b.content, {
+                                    chara: selectedChar,
+                                    chatRef: ScriptingEngineState.contextRef,
+                                }),
+                            });
                         }
                     }
                 }
@@ -806,9 +925,16 @@ export async function runScripted(
                         secondKey = "",
                     } = options;
 
-                    const currentChat = char.chats[char.chatPage];
+                    // This run's chat: the live one through the chat module, or the trigger's working copy.
+                    const target = ScriptingEngineState.chatRef;
+                    const currentChat = engineChat();
+                    if (!currentChat) {
+                        return;
+                    }
 
-                    const newLocalLoreBooks = currentChat.localLore.filter((book) => book.comment !== name);
+                    const newLocalLoreBooks = (
+                        JSON.parse(JSON.stringify(currentChat.localLore ?? [])) as loreBook[]
+                    ).filter((book) => book.comment !== name);
                     newLocalLoreBooks.push({
                         alwaysActive,
                         comment: name,
@@ -820,7 +946,15 @@ export async function runScripted(
                         selective: !!secondKey,
                         useRegex: regex,
                     });
-                    currentChat.localLore = newLocalLoreBooks;
+                    if (!target) {
+                        workingCopy().localLore = newLocalLoreBooks;
+                        return;
+                    }
+                    try {
+                        setChatMeta(target, { localLore: newLocalLoreBooks });
+                    } catch (error) {
+                        console.warn("[Lua] A local lorebook change was refused", error);
+                    }
                 },
             );
 
@@ -831,13 +965,13 @@ export async function runScripted(
 
                 const db = getDatabase();
 
-                const selectedChar = db.characters[get(selectedCharID)];
+                const selectedChar = engineCharacter();
 
-                if (selectedChar.type !== "character") {
+                if (selectedChar?.type !== "character") {
                     return;
                 }
 
-                const fullLoreBooks = (await loadLoreBookV3Prompt()).actives;
+                const fullLoreBooks = (await loadLoreBookV3Prompt(ScriptingEngineState.contextRef)).actives;
                 const maxContext = db.maxContext - reserve;
                 if (maxContext < 0) {
                     return JSON.stringify([]);
@@ -847,7 +981,10 @@ export async function runScripted(
                 const loreBooks = [];
 
                 for (const book of fullLoreBooks) {
-                    const parsed = risuChatParser(book.prompt, { chara: selectedChar }).trim();
+                    const parsed = risuChatParser(book.prompt, {
+                        chara: selectedChar,
+                        chatRef: ScriptingEngineState.contextRef,
+                    }).trim();
                     if (parsed.length === 0) {
                         continue;
                     }
@@ -943,6 +1080,7 @@ export async function runScripted(
                             useStreaming: options.streaming === true,
                             forceStreaming: options.streaming === true,
                             noMultiGen: true,
+                            chatRef: ScriptingEngineState.contextRef,
                         },
                         "otherAx",
                     );
@@ -983,7 +1121,7 @@ export async function runScripted(
             );
 
             declareAPI("getCharacterLastMessage", (id: string) => {
-                const chat = ScriptingEngineState.chat;
+                const chat = engineChat();
                 if (!chat) {
                     return "";
                 }
@@ -1004,7 +1142,7 @@ export async function runScripted(
             });
 
             declareAPI("getUserLastMessage", (id: string) => {
-                const chat = ScriptingEngineState.chat;
+                const chat = engineChat();
                 if (!chat) {
                     return "";
                 }
@@ -1022,7 +1160,7 @@ export async function runScripted(
             });
 
             declareAPI("getCharacterLastMessage", (id: string) => {
-                const chat = ScriptingEngineState.chat;
+                const chat = engineChat();
                 if (!chat) {
                     return "";
                 }
@@ -1043,7 +1181,7 @@ export async function runScripted(
             });
 
             declareAPI("getUserLastMessage", (id: string) => {
-                const chat = ScriptingEngineState.chat;
+                const chat = engineChat();
                 if (!chat) {
                     return "";
                 }
@@ -1375,6 +1513,8 @@ export async function runLuaEditTrigger<T extends string | OpenAIChat[]>(
     mode: string,
     content: T,
     meta?: object,
+    /** The chat the hook runs for (default: the selected chat). */
+    chatRef?: ChatRef | null,
 ): Promise<T> {
     switch (mode) {
         case "editinput":
@@ -1395,13 +1535,13 @@ export async function runLuaEditTrigger<T extends string | OpenAIChat[]>(
 
         const triggers =
             char.type === "group"
-                ? getModuleTriggers()
+                ? getModuleTriggers(chatRef)
                 : char.triggerscript
                       .map((v) => {
                           v.lowLevelAccess = false;
                           return v;
                       })
-                      .concat(getModuleTriggers());
+                      .concat(getModuleTriggers(chatRef));
 
         for (let trigger of triggers) {
             if (trigger?.effect?.[0]?.type === "triggerlua") {
@@ -1411,6 +1551,7 @@ export async function runLuaEditTrigger<T extends string | OpenAIChat[]>(
                     mode: mode,
                     data,
                     meta,
+                    chatRef,
                 });
                 data = runResult.res ?? data;
             }
@@ -1425,23 +1566,30 @@ export async function runLuaEditTrigger<T extends string | OpenAIChat[]>(
 export async function runLuaButtonTrigger(
     char: character | groupChat | simpleCharacterArgument,
     data: string,
+    /** The chat the button was clicked in (default: the selected chat when the click is handled). */
+    chatRef: ChatRef | null = currentChatRef(),
 ): Promise<any> {
     let runResult;
     try {
         const triggers =
             char.type === "group"
-                ? getModuleTriggers()
+                ? getModuleTriggers(chatRef)
                 : char.triggerscript
                       .map<triggerscript>((v) => ({
                           ...v,
                           lowLevelAccess: char.type !== "simple" ? (char.lowLevelAccess ?? false) : false,
                       }))
-                      .concat(getModuleTriggers());
+                      .concat(getModuleTriggers(chatRef));
 
         for (let trigger of triggers) {
+            if (chatRef && !findChat(chatRef)) {
+                // The chat went away while an earlier script ran; the later ones do not run elsewhere.
+                break;
+            }
             if (trigger?.effect?.[0]?.type === "triggerlua") {
                 runResult = await runScripted(trigger.effect[0].code, {
                     char: char,
+                    chatRef,
                     lowLevelAccess: trigger.lowLevelAccess,
                     mode: "onButtonClick",
                     data: data,

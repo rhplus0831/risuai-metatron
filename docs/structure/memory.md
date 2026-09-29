@@ -43,7 +43,7 @@ Embedding processors:
 
 UI:
 
-- `HypaV3Modal.svelte` and its children in `HypaV3Modal/` edit the current chat's `hypaV3Data` in place: search, filters, categories, tags, bulk edit, resummarize, reset, and V2→V3 conversion.
+- `HypaV3Modal.svelte` and its children in `HypaV3Modal/` edit a synced copy of the current chat's `hypaV3Data` (passed down as the `hypaV3Data` prop) and save every change with `setChatMeta`: search, filters, categories, tags, bulk edit, resummarize, reset, and V2→V3 conversion. `sendChat` saves the memory data the memory functions return the same way (they get a detached copy of the chat).
 - `HypaV3Modal/utils.ts` `processRegexScript`: routes messages through `risuChatParser` and `processScriptFull(..., 'editprocess')`.
 - `HypaV3Progress.svelte` renders `hypaV3ProgressStore`.
 

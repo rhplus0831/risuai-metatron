@@ -1,20 +1,29 @@
 // @vitest-environment node
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { BackupArchiveManifest } from "../../../shared/resources.ts";
+import type { ChatOrderRecord, ChatRecord } from "../../../shared/chats.ts";
+import type {
+    BackupArchiveManifest,
+    ResourceBatchConflictBody,
+    ResourceBatchResult,
+} from "../../../shared/resources.ts";
 import { MAX_ARCHIVE_RECORDS } from "../data/archive.ts";
+import { CHAT_TABLES_SQL } from "../data/chatStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import {
     buildArchive,
     createResourceTestClient,
+    createTestServer,
     hex,
     parseArchive,
     type ResourceTestClient,
     sleep,
+    TEST_INDEX_HTML,
     type TestServerOptions,
     waitFor,
 } from "./testSupport.ts";
@@ -43,7 +52,7 @@ async function defaultServer(options: Omit<TestServerOptions, "password"> = {}) 
     servers.push(s);
     return s;
 }
-const character = (id: string, extra: Record<string, unknown> = {}) => ({ chaId: id, chats: [], ...extra });
+const character = (id: string, extra: Record<string, unknown> = {}) => ({ chaId: id, ...extra });
 const backupsDir = (s: ResourceTestClient) => path.join(s.savePath, "backups");
 const tmpDir = (s: ResourceTestClient) => path.join(s.savePath, ".tmp");
 /** File names under `save/assets`, or none when the folder was never created. */
@@ -217,15 +226,22 @@ describe("POST /api/backups/:id/restore", () => {
         const badRow = "resources-20300101T000000000Z-00000002";
         const db = new DatabaseSync(path.join(backupsDir(s), `${badRow}.sqlite`));
         db.exec(`
-            PRAGMA user_version = 1;
+            PRAGMA user_version = 2;
             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
             CREATE TABLE resources (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, id TEXT NOT NULL,
                 revision INTEGER NOT NULL, schemaVersion INTEGER NOT NULL, data TEXT NOT NULL, UNIQUE (kind, id)) STRICT;
+            ${CHAT_TABLES_SQL}
             INSERT INTO meta (key, value) VALUES ('epoch', 'e');
-            INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES ('characters', 'x', 1, 1, '{"chaId":"y","chats":[]}');`);
+            INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES ('characters', 'x', 1, 1, '{"chaId":"y"}');`);
         db.close();
+        // A Phase 1 database (schema version 1: characters with their chats inside) is a listed
+        // snapshot too, and is refused by its version.
+        const v1 = "resources-20300101T000000000Z-00000003";
+        const old = new DatabaseSync(path.join(backupsDir(s), `${v1}.sqlite`));
+        old.exec("PRAGMA user_version = 1; CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;");
+        old.close();
         const before = await listBackups(s);
-        expect(before.map((b) => b.id)).toEqual([badRow, garbage]);
+        expect(before.map((b) => b.id)).toEqual([v1, badRow, garbage]);
 
         const notResource = await restore(s, garbage);
         expect(notResource.status).toBe(400);
@@ -233,6 +249,9 @@ describe("POST /api/backups/:id/restore", () => {
         const rejectedRow = await restore(s, badRow);
         expect(rejectedRow.status).toBe(400);
         expect(await rejectedRow.json()).toEqual({ error: "row 1: character.chaId must equal the resource id" });
+        const rejectedVersion = await restore(s, v1);
+        expect(rejectedVersion.status).toBe(400);
+        expect(await rejectedVersion.json()).toEqual({ error: "Unsupported resource database version 1" });
 
         expect(await listBackups(s)).toEqual(before);
         expect(await s.readEpoch()).toBe(epoch);
@@ -848,6 +867,193 @@ describe("POST /api/backups/import", () => {
         const after = await importArchive(s, archiveOf(await databaseBytes(s)));
         expect(after.status).toBe(200);
         expect(readdirSync(tmpDir(s))).toEqual([]);
+    });
+});
+
+describe("chats in snapshots and archives", () => {
+    type ChatsRead = { epoch: string; chats: ChatRecord[]; chatOrders: ChatOrderRecord[] };
+    const m = (id: string, data = "", role: "user" | "char" = "user") => ({ role, data, chatId: id });
+    const group = (chatId: string, baseRevision: string | null, ops: unknown[], characterId = "c") => ({
+        characterId,
+        chatId,
+        baseRevision,
+        ops,
+    });
+    const batch = async (s: ResourceTestClient, body: unknown) => {
+        const res = await s.json("/api/resources/batch", body);
+        expect(res.status, await res.clone().text()).toBe(200);
+        return (await res.json()) as Required<ResourceBatchResult>;
+    };
+    const readAll = async (s: ResourceTestClient) =>
+        (await (await s.request("/api/resources?kinds=characters&chats=1")).json()) as ChatsRead;
+    /** Content without tokens: what a restore must preserve. */
+    const content = (all: ChatsRead) => ({
+        chats: all.chats.map((c) => [c.characterId, c.id, c.data]),
+        orders: all.chatOrders.map((o) => [o.characterId, o.ids]),
+    });
+    /** Character `c` with chats `k` (messages a, b; b under the open generation `g`) and `k2`, ordered [k2, k]. */
+    async function seedChats(s: ResourceTestClient) {
+        const created = await batch(s, {
+            ops: [{ kind: "characters", id: "c", baseRevision: null, data: character("c") }],
+            chats: [
+                group("k", null, [
+                    { op: "create", chat: { name: "K", message: [m("a", "A"), m("b", "", "char")] } },
+                    { op: "begin", id: "b", generationId: "g" },
+                    { op: "setText", id: "b", text: "partial", generation: { id: "g", seq: 1 } },
+                ]),
+                group("k2", null, [{ op: "create", chat: { name: "Two", message: [m("x", "X")] }, index: 0 }]),
+            ],
+        });
+        return {
+            chat: created.chats[0].revision!,
+            chat2: created.chats[1].revision!,
+            order: created.chatOrders[0].revision,
+        };
+    }
+
+    it("restores chats, messages, order, and fences from a snapshot under a new epoch, and refuses old-epoch and old-token writes", async () => {
+        const s = await defaultServer();
+        const tokens = await seedChats(s);
+        const before = await readAll(s);
+        const snapshot = await s.context.snapshots.snapshotNow();
+        // Move on: remove and append in `k`, delete `k2`.
+        const edited = await batch(s, {
+            chats: [
+                group("k", tokens.chat, [
+                    { op: "remove", ids: ["a"] },
+                    { op: "append", messages: [m("n", "N")], anchor: { end: true } },
+                ]),
+                group("k2", tokens.chat2, [{ op: "delete" }]),
+            ],
+        });
+        expect((await readAll(s)).chats.map((c) => c.id)).toEqual(["k"]);
+        const oldEpoch = s.epoch;
+
+        const res = await restore(s, snapshot.id);
+        expect(res.status).toBe(200);
+        const { epoch } = (await res.json()) as { epoch: string };
+        expect(await s.readEpoch()).toBe(epoch);
+        const after = await readAll(s);
+        expect(after.epoch).toBe(epoch);
+        expect(content(after)).toEqual(content(before));
+        for (const token of [...after.chats.map((c) => c.revision), ...after.chatOrders.map((o) => o.revision)]) {
+            expect(token.startsWith(`${epoch}:`)).toBe(true);
+        }
+        // A write based on the old epoch is a 412; with the new epoch, an old token is a 409.
+        const stale = await s.json(
+            "/api/resources/batch",
+            { chats: [group("k", tokens.chat, [{ op: "setText", id: "a", text: "x" }])] },
+            {},
+            oldEpoch,
+        );
+        expect(stale.status).toBe(412);
+        expect(await stale.json()).toEqual({ error: "EpochMismatch", epoch });
+        const k = after.chats.find((c) => c.id === "k")!.revision;
+        const oldToken = await s.json("/api/resources/batch", {
+            chats: [group("k", edited.chats[0].revision, [{ op: "remove", ids: ["a", "b"] }])],
+            chatOrders: [{ characterId: "c", baseRevision: tokens.order, ids: ["k", "k2"] }],
+        });
+        expect(oldToken.status).toBe(409);
+        expect(((await oldToken.json()) as ResourceBatchConflictBody).conflicts).toEqual([
+            { kind: "chat", characterId: "c", id: "k", revision: k },
+            { kind: "chatOrder", characterId: "c", revision: after.chatOrders[0].revision },
+        ]);
+        // The open generation continues where the snapshot left it: seq 1 is a duplicate, seq 2 lands.
+        const continued = await batch(s, {
+            chats: [
+                group("k", k, [
+                    { op: "setText", id: "b", text: "late", generation: { id: "g", seq: 1 } },
+                    { op: "setText", id: "b", text: "continued", generation: { id: "g", seq: 2, final: true } },
+                ]),
+            ],
+        });
+        expect(continued.chats[0].checkpoints).toEqual(["duplicate", "applied"]);
+        expect((await readAll(s)).chats.find((c) => c.id === "k")!.data.message.map((x) => x.data)).toEqual([
+            "A",
+            "continued",
+        ]);
+        // The safety snapshot holds the pre-restore chats.
+        const backups = await listBackups(s);
+        const safety = reader.readSnapshot(path.join(backupsDir(s), `${backups[0].id}.sqlite`));
+        expect(safety.chats.map((c) => c.id)).toEqual(["k"]);
+        expect(safety.messages.map((x) => x.id)).toEqual(["b", "n"]);
+    });
+
+    it("carries chats, messages, order, and fences through export and import", async () => {
+        const source = await defaultServer();
+        await seedChats(source);
+        const expected = await readAll(source);
+        const archive = await exportArchive(source);
+        const records = parseArchive(archive);
+        const extracted = path.join(source.rootDir, "extracted.sqlite");
+        writeFileSync(extracted, records[1].data);
+        const snapshot = reader.readSnapshot(extracted);
+        expect(snapshot.chats.map((c) => [c.id, c.revision])).toEqual([
+            ["k", 3],
+            ["k2", 1],
+        ]);
+        expect(
+            snapshot.messages.map((x) => [x.id, x.position, x.generationId, x.generationSeq, x.generationFinal]),
+        ).toEqual([
+            ["a", 0, null, null, null],
+            ["b", 1, "g", 1, 0],
+            ["x", 0, null, null, null],
+        ]);
+        expect(snapshot.chatOrders).toEqual([{ characterId: "c", revision: 3, ids: '["k2","k"]' }]);
+
+        const target = await defaultServer();
+        await target.create("characters", "z", character("z"));
+        await batch(target, { chats: [group("zc", null, [{ op: "create", chat: {} }], "z")] });
+        const res = await importArchive(target, archive);
+        expect(res.status).toBe(200);
+        await target.readEpoch();
+        const imported = await readAll(target);
+        expect(content(imported)).toEqual(content(expected));
+        const k = imported.chats.find((c) => c.id === "k")!.revision;
+        const continued = await batch(target, {
+            chats: [group("k", k, [{ op: "setText", id: "b", text: "x", generation: { id: "g", seq: 2 } }])],
+        });
+        expect(continued.chats[0].checkpoints).toEqual(["applied"]);
+        // The target's previous chats are in its safety snapshot only.
+        const backups = await listBackups(target);
+        expect(
+            reader.readSnapshot(path.join(backupsDir(target), `${backups[0].id}.sqlite`)).chats.map((c) => c.id),
+        ).toEqual(["zc"]);
+    });
+
+    it("refuses a schema-version-1 database inside a manifest-version-2 archive, and at startup with a message naming the file", async () => {
+        const s = await defaultServer();
+        const revision = await s.create("characters", "a", character("a"));
+        const epoch = s.epoch;
+        const v1 = path.join(s.rootDir, "v1.sqlite");
+        const db = new DatabaseSync(v1);
+        db.exec("PRAGMA user_version = 1; CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;");
+        db.close();
+        // The manifest is version 2 (the archive format); the database inside is schema version 1.
+        const refused = await importArchive(s, archiveOf(readFileSync(v1), { "assets/x": "X" }));
+        expect(refused.status).toBe(400);
+        expect(await refused.json()).toEqual({ error: "Unsupported resource database version 1" });
+        expect(assetFiles(s)).toEqual([]);
+        expect(await s.readEpoch()).toBe(epoch);
+        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: character("a") });
+
+        const rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-server-v1-"));
+        try {
+            mkdirSync(path.join(rootDir, "dist"));
+            writeFileSync(path.join(rootDir, "dist", "index.html"), TEST_INDEX_HTML);
+            mkdirSync(path.join(rootDir, "save", "data"), { recursive: true });
+            const file = path.join(rootDir, "save", "data", "resources.sqlite");
+            const old = new DatabaseSync(file);
+            old.exec("PRAGMA user_version = 1");
+            old.close();
+            expect(() => createTestServer({ rootDir })).toThrow(
+                `${file} holds resource database version 1 (characters with their chats inside), which this server ` +
+                    "no longer reads. It is disposable alpha data: move it away or delete it and restart to begin " +
+                    "with an empty database.",
+            );
+        } finally {
+            rmSync(rootDir, { recursive: true, force: true });
+        }
     });
 });
 

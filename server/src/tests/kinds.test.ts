@@ -38,7 +38,7 @@ describe("createKindRegistry", () => {
 
     it("rejects invalid, reserved, and duplicate names and invalid schema versions", () => {
         const make = (name: string, schemaVersion = 1): ResourceKind => ({ name, schemaVersion, normalize: (i) => i });
-        for (const name of ["", "1a", "a b", "a/b", "a".repeat(65), "batch", "read"]) {
+        for (const name of ["", "1a", "a b", "a/b", "a".repeat(65), "batch", "read", "chat", "chatOrder"]) {
             expect(() => createKindRegistry([make(name)]), name).toThrow(`Invalid resource kind name: ${name}`);
         }
         expect(() => createKindRegistry([make("a"), make("a")])).toThrow("Duplicate resource kind: a");
@@ -62,8 +62,8 @@ describe("default normalizers", () => {
         accepts("pluginStorage", "main", { _safeLocalPluginStorage: { a: 1 } });
         accepts("pluginPermissions", "main", { grants: {}, lastGrantTime: {} });
         accepts("pluginPermissions", "main", { grants: { h_db: true }, lastGrantTime: { p_db_lastGrantTime: 1 } });
-        accepts("characters", "c1", { chaId: "c1", chats: [] });
-        accepts("characters", "§playground", { chaId: "§playground", chats: [{}], name: "n" });
+        accepts("characters", "c1", { chaId: "c1" });
+        accepts("characters", "§playground", { chaId: "§playground", name: "n", chatPage: 0 });
         accepts("inlays", "i", { name: "n", ext: "png", type: "image", asset: "assets/inlay_x.png" });
         accepts("inlays", "i", {
             name: "n",
@@ -94,11 +94,12 @@ describe("default normalizers", () => {
         }
     });
 
-    it("require the character id to match and the chats to be an array", () => {
-        rejects("characters", "c1", { chats: [] }, "character.chaId must equal the resource id");
-        rejects("characters", "c1", { chaId: "c2", chats: [] }, "character.chaId must equal the resource id");
-        rejects("characters", "c1", { chaId: "c1" }, "character.chats must be an array");
-        rejects("characters", "c1", { chaId: "c1", chats: {} }, "character.chats must be an array");
+    it("require the character id to match and refuse a character record holding chats", () => {
+        rejects("characters", "c1", {}, "character.chaId must equal the resource id");
+        rejects("characters", "c1", { chaId: "c2" }, "character.chaId must equal the resource id");
+        // Chats are their own resource (Phase 2); a Phase 1 record with embedded chats is refused.
+        rejects("characters", "c1", { chaId: "c1", chats: [] }, "character must not hold chats");
+        rejects("characters", "c1", { chaId: "c1", chats: undefined }, "character must not hold chats");
     });
 
     it("require the plugin permission maps to hold true and numbers", () => {

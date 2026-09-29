@@ -9,6 +9,7 @@
     import { findCharacterbyId } from "../../ts/util";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import { changeChatTo } from "src/ts/globalApi.svelte";
+    import { createChat, deleteChat, isChatGenerating, setChatMeta } from "src/ts/storage/chatStore.svelte";
 
     let editMode = $state(false);
     /** @type {{close?: any}} */
@@ -37,7 +38,15 @@
                 class:bg-selected={i === DBState.db.characters[$selectedCharID].chatPage}
             >
                 {#if editMode}
-                    <TextInput bind:value={DBState.db.characters[$selectedCharID].chats[i].name} padding={false} />
+                    <TextInput
+                        value={chat.name}
+                        oninput={(e) =>
+                            setChatMeta(
+                                { chaId: DBState.db.characters[$selectedCharID].chaId, chatId: chat.id },
+                                { name: e.currentTarget.value },
+                            )}
+                        padding={false}
+                    />
                 {:else}
                     <span>{chat.name}</span>
                 {/if}
@@ -64,12 +73,19 @@
                                 alertError(language.errors.onlyOneChat);
                                 return;
                             }
+                            const ref = { chaId: DBState.db.characters[$selectedCharID].chaId, chatId: chat.id };
+                            if (isChatGenerating(ref)) {
+                                alertError(language.chatGenerating);
+                                return;
+                            }
                             const d = await alertConfirm(`${language.removeConfirm}${chat.name}`);
                             if (d) {
+                                if (isChatGenerating(ref)) {
+                                    alertError(language.chatGenerating);
+                                    return;
+                                }
+                                deleteChat(ref);
                                 changeChatTo(0);
-                                let chats = DBState.db.characters[$selectedCharID].chats;
-                                chats.splice(i, 1);
-                                DBState.db.characters[$selectedCharID].chats = chats;
                             }
                         }}
                         onkeydown={() => {}}
@@ -85,25 +101,21 @@
                 onclick={() => {
                     const cha = DBState.db.characters[$selectedCharID];
                     const len = DBState.db.characters[$selectedCharID].chats.length;
-                    let chats = DBState.db.characters[$selectedCharID].chats;
-                    chats.unshift({
-                        message: [],
-                        note: "",
-                        name: `New Chat ${len + 1}`,
-                        localLore: [],
-                        fmIndex: -1,
-                    });
-                    if (cha.type === "group") {
-                        cha.characters.map((c) => {
-                            chats[len].message.push({
-                                saying: c,
-                                role: "char",
-                                data: findCharacterbyId(c).firstMessage,
-                            });
-                        });
-                    }
-                    DBState.db.characters[$selectedCharID].chats = chats;
-                    changeChatTo(len);
+                    // A group chat starts with each member's first message.
+                    const message =
+                        cha.type === "group"
+                            ? cha.characters.map((c) => ({
+                                  saying: c,
+                                  role: "char",
+                                  data: findCharacterbyId(c).firstMessage,
+                              }))
+                            : [];
+                    createChat(
+                        cha.chaId,
+                        { message, note: "", name: `New Chat ${len + 1}`, localLore: [], fmIndex: -1 },
+                        { index: 0, select: true },
+                    );
+                    changeChatTo(0);
                     close();
                 }}
             >

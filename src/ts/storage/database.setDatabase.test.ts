@@ -108,6 +108,8 @@ describe("setDatabase after cold storage removal", () => {
 
         const char = DBState.db.characters[0] as any;
         expect(char.chats[0].message[0].data).toBe(pointer);
-        expect(char.chats[0].isStreaming).toBe(false);
+        // The streaming flags are client-only state of the chat module (`streamingState`) since
+        // Phase 2; `setDatabase` no longer writes them into chats.
+        expect(char.chats[0]).not.toHaveProperty("isStreaming");
     });
 });

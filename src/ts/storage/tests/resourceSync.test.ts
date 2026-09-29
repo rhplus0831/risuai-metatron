@@ -41,8 +41,9 @@ type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
 type Stores = typeof import("../../stores.svelte");
 
+/** A character record as the server stores it: its own fields, no chats (they are resources of their own). */
 function character(chaId: string, name: string, extra: Record<string, unknown> = {}) {
-    return { chaId, name, type: "character", chats: [{ id: `${chaId}-chat`, message: [] }], ...extra };
+    return { chaId, name, type: "character", ...extra };
 }
 
 /**
@@ -130,20 +131,26 @@ describe("seeding and no echo", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("strips the per-chat streaming flags from what it saves", async () => {
+    it("neither tracks nor saves the mirror's chats, selection, and render key with the character record", async () => {
         const { fake, sync, db, stores } = await boot();
         stores.selectedCharID.set(0);
-        db().characters[0].chats[0].isStreaming = true;
-        db().characters[0].chats[0].activeStreamingDisplayOptimizationMode = true;
+        await tick();
+        db().characters[0].chats = [{ id: "a-chat", message: [{ role: "user", data: "hi", chatId: "m1" }] }];
+        db().characters[0].chatPage = 0;
+        db().characters[0].reloadKeys = { 0: 1 };
         await sync.flushResources();
-        // Only the flags changed, and they are not part of the record: nothing to save.
+        // Chats are saved by the chat module; the selection and the render key are client-only.
+        expect(fake.batchCount()).toBe(0);
+        db().characters[0].chats[0].message[0].data = "edited outside the chat module";
+        await sync.flushResources();
         expect(fake.batchCount()).toBe(0);
         db().characters[0].name = "Alice 2";
         await sync.flushResources();
         const saved = fake.data("characters", "a");
         expect(saved.name).toBe("Alice 2");
-        expect(saved.chats[0]).not.toHaveProperty("isStreaming");
-        expect(saved.chats[0]).not.toHaveProperty("activeStreamingDisplayOptimizationMode");
+        expect(saved).not.toHaveProperty("chats");
+        expect(saved).not.toHaveProperty("chatPage");
+        expect(saved).not.toHaveProperty("reloadKeys");
     });
 });
 

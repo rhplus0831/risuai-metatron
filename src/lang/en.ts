@@ -1125,6 +1125,8 @@ export const languageEnglish = {
     antiClaudeOverload: "Anti-Claude Overload",
     resourceReloaded: "Another tab or device changed this data. The latest version was loaded.",
     resourceRestored: "The server data was restored from a backup. The app will reload.",
+    characterGenerating: "This character is generating a reply. Wait until it finishes.",
+    chatGenerating: "This chat is generating a reply. Wait until it finishes.",
     maxSupaChunkSize: "Max SupaMemory Chunk Size",
     addCharacter: "Add Character",
     importFromRealm: "Choose from RisuRealm",

@@ -20,7 +20,7 @@
         getCurrentHypaV3Preset,
     } from "src/ts/process/memory/hypav3";
     import { type OpenAIChat } from "src/ts/process/index.svelte";
-    import { type Message } from "src/ts/storage/database.svelte";
+    import { type DeepReadonly, type Message } from "src/ts/storage/database.svelte";
     import { translateHTML } from "src/ts/translator/translator";
     import { alertConfirm } from "src/ts/alert";
     import { DBState, selectedCharID } from "src/ts/stores.svelte";
@@ -180,7 +180,7 @@
         }
     }
 
-    async function getMessageFromChatMemo(chatMemo: string | null): Promise<Message | null> {
+    async function getMessageFromChatMemo(chatMemo: string | null): Promise<DeepReadonly<Message> | null> {
         const char = DBState.db.characters[$selectedCharID];
         const chat = char.chats[DBState.db.characters[$selectedCharID].chatPage];
         const shouldProcess = getCurrentHypaV3Preset().settings.processRegexScript;

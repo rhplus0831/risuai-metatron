@@ -25,6 +25,7 @@ import {
     setGeneratingCharacter,
 } from "./storage/resourceSync.svelte";
 import { importBrowserLocalData } from "./storage/browserLocalImport";
+import { assembleChats, initializeChats, seedChats, setRemoteChatListener } from "./storage/chatStore.svelte";
 import { invalidateInlayCaches, seedInlays } from "./process/files/inlays";
 import { loadPluginPermissions } from "./plugins/apiV3/permissionStore";
 import { doingChat } from "./process/index.svelte";
@@ -40,10 +41,11 @@ export async function loadData() {
             await forageStorage.Init();
 
             LoadingStatusState.text = "Loading Save Data...";
-            const snapshot = await readKinds(Object.values(RESOURCE_KIND));
+            const snapshot = await readKinds(Object.values(RESOURCE_KIND), { chats: true });
             // What the server holds, recorded before normalization changes anything, so the first save
             // writes exactly what the client normalized.
             seedResources(snapshot);
+            seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
             seedInlays(snapshot.kinds[RESOURCE_KIND.inlays] ?? []);
             setDatabase(assembleDatabase(snapshot));
 
@@ -70,6 +72,9 @@ export async function loadData() {
             LoadingStatusState.text = "Checking For Format Update...";
             await checkNewFormat();
             assignIds();
+            // Each tab selects its own chat (the browser's last choice), and a character without a
+            // chat gets one; queued work waits until saving starts below.
+            initializeChats();
             const db = getDatabase();
 
             LoadingStatusState.text = "Updating States...";
@@ -113,8 +118,8 @@ export async function loadData() {
 
 /**
  * Builds the in-memory `Database` from the server resources: `root` holds every field except the
- * collections that have a resource of their own; characters come in creation order. Missing records
- * are left for `setDatabase` to default.
+ * collections that have a resource of their own; characters come in creation order, each with its
+ * chats in their server order. Missing records are left for `setDatabase` to default.
  */
 function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
     const single = (kind: string) =>
@@ -141,6 +146,7 @@ function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
         db.pluginCustomStorage = pluginStorage;
     }
     db.characters = (snapshot.kinds[RESOURCE_KIND.characters] ?? []).map((record) => record.data as any);
+    assembleChats(db.characters, snapshot.chats ?? [], snapshot.chatOrders ?? []);
     return db;
 }
 
@@ -153,6 +159,7 @@ function watchGeneration() {
     let generatingId: string | null = null;
     setGeneratingCharacter(() => generatingId);
     onRemoteRecordApplied(() => invalidateInlayCaches());
+    setRemoteChatListener(() => invalidateInlayCaches());
     doingChat.subscribe((running) => {
         if (running) {
             generatingId = DBState.db.characters?.[get(selectedCharID)]?.chaId ?? null;
@@ -240,8 +247,6 @@ async function checkNewFormat(): Promise<void> {
             }
             v.chaId ??= uuidv4();
             v.type ??= "character";
-            v.chatPage ??= 0;
-            v.chats ??= [];
             v.customscript ??= [];
             v.firstMessage ??= "";
             v.globalLore ??= [];
@@ -420,7 +425,8 @@ function cleanLegacyAccountData() {
 }
 
 /**
- * Assigns unique IDs to characters and chats.
+ * Assigns unique character ids. Chat and message ids come from the server (and the chat module for
+ * new ones).
  */
 function assignIds() {
     if (!DBState?.db?.characters) {
@@ -437,16 +443,5 @@ function assignIds() {
             cha.chaId = uuidv4();
         }
         assignedIds.add(cha.chaId);
-        for (let i2 = 0; i2 < cha.chats.length; i2++) {
-            const chat = cha.chats[i2];
-            if (!chat.id) {
-                chat.id = uuidv4();
-            }
-            if (assignedIds.has(chat.id)) {
-                console.warn(`Duplicate chat ID found: ${chat.id}. Assigning new ID.`);
-                chat.id = uuidv4();
-            }
-            assignedIds.add(chat.id);
-        }
     }
 }

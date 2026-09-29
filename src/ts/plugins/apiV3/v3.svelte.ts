@@ -9,7 +9,22 @@ import {
     type ReplacerFunction,
 } from "../pluginHooks";
 import { SandboxHost } from "./factory";
-import { getCurrentCharacter, getDatabase, setDatabase, setDatabaseLite } from "src/ts/storage/database.svelte";
+import {
+    getCurrentCharacter,
+    getDatabase,
+    setCharacterByIndex,
+    setDatabase,
+    setDatabaseLite,
+} from "src/ts/storage/database.svelte";
+import {
+    appendMessage,
+    applyChatResult,
+    captureChatBaseline,
+    isCharacterGenerating,
+    normalizeNewCharacter,
+    reconcileCharacterChats,
+    selectChat,
+} from "src/ts/storage/chatStore.svelte";
 import { SafeLocalPluginStorage, SafeLocalStorage, tagWhitelist } from "../pluginSafeClass";
 import DOMPurify from "dompurify";
 import {
@@ -681,12 +696,103 @@ const getChar = () => {
 };
 
 const setChar = (char: any) => {
-    const db = getDatabase();
-    const charid = get(selectedCharID);
-    db.characters[charid] = char;
-    setDatabaseLite(db);
-    markCharacterDirtyAt(charid);
+    applyPluginCharacter(get(selectedCharID), char);
 };
+
+/**
+ * Applies a whole character a plugin hands back (last writer wins): its own fields replace the
+ * character's, and its chats are reconciled by id through the chat module (changed chats diffed,
+ * new ones created, missing ones deleted, the order and a given `chatPage` followed). A character
+ * with another `chaId` replaces the one at the index, unless that `chaId` is already another
+ * character's (skipped with a console warning, like the list setter's duplicate refusal).
+ */
+/** Gives a character a plugin hands in without a `chaId` one, so its chats are addressable at once. */
+function assignMissingChaId(char: any) {
+    if (char && typeof char === "object" && (typeof char.chaId !== "string" || char.chaId === "")) {
+        char.chaId = v4();
+    }
+}
+
+function applyPluginCharacter(index: number, char: any) {
+    const current = DBState.db.characters[index];
+    if (!current || !char || typeof char !== "object" || char.chaId !== current.chaId) {
+        if (current && isCharacterGenerating(current.chaId)) {
+            console.warn("[Plugin] Kept a character that is generating a reply; the replacement was skipped");
+            return;
+        }
+        assignMissingChaId(char);
+        const chaId = char && typeof char === "object" ? char.chaId : undefined;
+        if (chaId && DBState.db.characters.some((other, i) => i !== index && other?.chaId === chaId)) {
+            console.warn("[Plugin] Skipped a character whose chaId another character already has");
+            return;
+        }
+        DBState.db.characters[index] = char;
+        markCharacterDirtyAt(index);
+        if (typeof chaId === "string") {
+            normalizeNewCharacter(chaId);
+        }
+        return;
+    }
+    const { chats, chatPage, ...fields } = char;
+    setCharacterByIndex(index, { ...fields, chats: current.chats, chatPage: current.chatPage });
+    if (Array.isArray(chats)) {
+        reconcileCharacterChats(current.chaId, chats, typeof chatPage === "number" ? chatPage : undefined);
+    } else if (typeof chatPage === "number") {
+        selectChat(current.chaId, chatPage);
+    }
+}
+
+/**
+ * Applies a whole character list a plugin hands back: characters matched by `chaId` go through
+ * `applyPluginCharacter`, new ones are added (their chats are saved with them), missing ones removed,
+ * except a character that is generating a reply: it stays where it was (with a console warning).
+ */
+function applyPluginCharacters(incoming: unknown) {
+    if (!Array.isArray(incoming)) {
+        return;
+    }
+    // Missing ids are assigned first, so one object listed twice counts as a duplicate too.
+    incoming.forEach(assignMissingChaId);
+    // Two entries with one id would become two characters sharing one set of chats (and the save
+    // loop would give one a new id): refuse the whole list before anything changes.
+    const ids = incoming.map((char: any) => char?.chaId).filter((id) => typeof id === "string" && id !== "");
+    if (new Set(ids).size !== ids.length) {
+        console.warn(
+            "[Plugin] Refused a character list with duplicate chaId values; the character list was not changed",
+        );
+        return;
+    }
+    const before = [...DBState.db.characters];
+    const added: string[] = [];
+    const next = incoming.map((char: any) => {
+        const index = DBState.db.characters.findIndex((entry) => entry?.chaId === char?.chaId);
+        if (index === -1) {
+            if (typeof char?.chaId === "string") {
+                added.push(char.chaId);
+            }
+            return char;
+        }
+        applyPluginCharacter(index, char);
+        return DBState.db.characters[index];
+    });
+    before.forEach((character, index) => {
+        if (
+            character &&
+            isCharacterGenerating(character.chaId) &&
+            !next.some((entry) => entry?.chaId === character.chaId)
+        ) {
+            console.warn("[Plugin] Kept a character that is generating a reply; its removal was skipped");
+            next.splice(
+                Math.min(index, next.length),
+                0,
+                DBState.db.characters.find((entry) => entry?.chaId === character.chaId),
+            );
+        }
+    });
+    DBState.db.characters = next;
+    // New characters' chats get their ids now, so they can be sent in and edited at once.
+    added.forEach(normalizeNewCharacter);
+}
 
 const getArg = (arg: string) => {
     const db = getDatabase();
@@ -761,7 +867,9 @@ const setPluginDatabaseLite = (newDb: any) => {
     const db = getDatabase();
     db.pluginCustomStorage ??= {};
     for (const key of Object.keys(newDb)) {
-        if (allowedDbKeys.includes(key)) {
+        if (key === "characters") {
+            applyPluginCharacters(newDb[key]);
+        } else if (allowedDbKeys.includes(key)) {
             (db as any)[key] = newDb[key];
         } else {
             db.pluginCustomStorage[key] = newDb[key];
@@ -784,7 +892,9 @@ const setPluginDatabase = async (newDb: any) => {
             newDb[key] = await handlePluginInstallViaPlugin(newDb.plugins);
         }
 
-        if (allowedDbKeys.includes(key)) {
+        if (key === "characters") {
+            applyPluginCharacters(newDb[key]);
+        } else if (allowedDbKeys.includes(key)) {
             (db as any)[key] = newDb[key];
         } else {
             db.pluginCustomStorage[key] = newDb[key];
@@ -1082,8 +1192,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             const charIds = Object.keys(db.characters);
             const charId = charIds[index];
             if (charId) {
-                DBState.db.characters[charId] = char;
-                markCharacterDirtyAt(Number(charId));
+                applyPluginCharacter(Number(charId), char);
             }
         },
         getChatFromIndex: (characterIndex: number, chatIndex: number) => {
@@ -1149,10 +1258,16 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             const charIds = Object.keys(db.characters);
             const charId = charIds[characterIndex];
             if (charId) {
-                const chats = db.characters[charId].chats;
-                if (chats && chats[chatIndex]) {
-                    DBState.db.characters[charId].chats[chatIndex] = chat;
-                    markCharacterDirtyAt(Number(charId));
+                const character = db.characters[charId];
+                const target = character.chats?.[chatIndex];
+                if (target?.id && chat && typeof chat === "object") {
+                    // Last writer wins: the plugin's chat is diffed against the chat as it is now.
+                    const ref = { chaId: character.chaId, chatId: target.id };
+                    try {
+                        applyChatResult(captureChatBaseline(ref), { ...chat, id: target.id });
+                    } catch (error) {
+                        console.warn("[Plugin] Skipped a chat change to a message being generated", error);
+                    }
                 }
             }
         },
@@ -1174,7 +1289,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             const characterLore = char.globalLore ?? [];
             const chatLore = char.chats?.[page]?.localLore ?? [];
             const moduleLore = getModuleLorebooks();
-            return $state.snapshot(characterLore.concat(chatLore).concat(moduleLore));
+            return $state.snapshot([...characterLore, ...chatLore, ...moduleLore]);
         },
         //New names for character APIs, to match API naming conventions
         getCharacter: getChar,
@@ -1582,12 +1697,11 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 throw new Error("No active chat found");
             }
 
-            if (message) {
-                chat.message.push({
-                    role: "user",
-                    data: message,
-                    time: Date.now(),
-                });
+            if (message && chat.id) {
+                appendMessage(
+                    { chaId: char.chaId, chatId: chat.id },
+                    { role: "user", data: message, time: Date.now() },
+                );
             }
 
             try {

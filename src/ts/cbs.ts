@@ -62,6 +62,11 @@ export const defaultCBSRegisterArg: CBSRegisterArg = {
 
 export type matcherArg = {
     chatID: number;
+    /**
+     * The chat this parse runs for (a send, a trigger, a Lua hook), by id; without it the selected
+     * character's selected chat. Chat variables and chat/history macros read this chat.
+     */
+    chatRef?: { chaId: string; chatId: string } | null;
     db: Database;
     chara: character | string;
     rmVar: boolean;
@@ -109,20 +114,20 @@ export type CBSRegisterArg = {
         internalOnly?: boolean;
     }) => void | Promise<void>;
     getDatabase: () => Database;
-    getUserName: () => string;
-    getPersonaPrompt: () => string;
+    getUserName: (chatRef?: matcherArg["chatRef"]) => string;
+    getPersonaPrompt: (chatRef?: matcherArg["chatRef"]) => string;
     risuChatParser: (text: string, arg: matcherArg) => string;
     makeArray: (arr: unknown[]) => string;
     safeStructuredClone: <T>(obj: T) => T;
     parseArray: (str: string) => unknown[];
     parseDict: (str: string) => { [key: string]: unknown };
-    getChatVar: (key: string) => string;
-    setChatVar: (key: string, value: string) => void;
-    getGlobalChatVar: (key: string) => string;
+    getChatVar: (key: string, chatRef?: matcherArg["chatRef"]) => string;
+    setChatVar: (key: string, value: string, chatRef?: matcherArg["chatRef"]) => void;
+    getGlobalChatVar: (key: string, chatRef?: matcherArg["chatRef"]) => string;
     calcString: (str: string) => number;
     dateTimeFormat: (format: string, timestamp?: number) => string;
-    getModules: () => RisuModule[];
-    getModuleLorebooks: () => loreBook[];
+    getModules: (chatRef?: matcherArg["chatRef"]) => RisuModule[];
+    getModuleLorebooks: (chatRef?: matcherArg["chatRef"]) => loreBook[];
     pickHashRand: (seed: number, hash: string) => number;
     getSelectedCharID: () => number;
     getModelInfo: (model: string) => LLMModel;
@@ -157,6 +162,21 @@ export function registerCBS(arg: CBSRegisterArg) {
         callInternalFunction,
     } = arg;
 
+    /** The character a parse runs for: its `chatRef`'s, or the selected one. */
+    const contextChar = (matcherArg: matcherArg) => {
+        const db = getDatabase();
+        return matcherArg?.chatRef
+            ? db.characters?.find((entry) => entry?.chaId === matcherArg.chatRef.chaId)
+            : db.characters?.[getSelectedCharID()];
+    };
+    /** The chat a parse runs for: its `chatRef`, or the selected character's selected chat. */
+    const contextChat = (matcherArg: matcherArg) => {
+        const character = contextChar(matcherArg);
+        return matcherArg?.chatRef
+            ? character?.chats?.find((chat) => chat.id === matcherArg.chatRef.chatId)
+            : character?.chats?.[character.chatPage];
+    };
+
     // Basic character/user variables
     registerFunction({
         name: "char",
@@ -165,8 +185,7 @@ export function registerCBS(arg: CBSRegisterArg) {
                 return "botname";
             }
             const db = getDatabase();
-            let selectedChar = getSelectedCharID();
-            let currentChar = db.characters[selectedChar];
+            let currentChar = contextChar(matcherArg);
             if (currentChar && currentChar.type !== "group") {
                 return currentChar.nickname || currentChar.name;
             }
@@ -190,7 +209,7 @@ export function registerCBS(arg: CBSRegisterArg) {
             if (matcherArg.consistantChar) {
                 return "username";
             }
-            return getUserName();
+            return getUserName(matcherArg.chatRef);
         },
         alias: [],
         description:
@@ -212,8 +231,8 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "previouscharchat",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
-            const chat = selchar.chats[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
             let pointer = matcherArg.chatID !== -1 ? matcherArg.chatID - 1 : chat.message.length - 1;
             while (pointer >= 0) {
                 if (chat.message[pointer].role === "char") {
@@ -234,8 +253,8 @@ export function registerCBS(arg: CBSRegisterArg) {
             const chatID = matcherArg.chatID;
             if (chatID !== -1) {
                 const db = getDatabase();
-                const selchar = db.characters[getSelectedCharID()];
-                const chat = selchar.chats[selchar.chatPage];
+                const selchar = contextChar(matcherArg);
+                const chat = contextChat(matcherArg);
                 let pointer = chatID - 1;
                 while (pointer >= 0) {
                     if (chat.message[pointer].role === "user") {
@@ -258,7 +277,7 @@ export function registerCBS(arg: CBSRegisterArg) {
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
             const argChara = matcherArg.chara;
-            const achara = argChara && typeof argChara !== "string" ? argChara : db.characters[getSelectedCharID()];
+            const achara = argChara && typeof argChara !== "string" ? argChara : contextChar(matcherArg);
             if (achara.type === "group") {
                 return "";
             }
@@ -274,7 +293,7 @@ export function registerCBS(arg: CBSRegisterArg) {
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
             const argChara = matcherArg.chara;
-            const achara = argChara && typeof argChara !== "string" ? argChara : db.characters[getSelectedCharID()];
+            const achara = argChara && typeof argChara !== "string" ? argChara : contextChar(matcherArg);
             if (achara.type === "group") {
                 return "";
             }
@@ -290,7 +309,7 @@ export function registerCBS(arg: CBSRegisterArg) {
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
             const argChara = matcherArg.chara;
-            const achara = argChara && typeof argChara !== "string" ? argChara : db.characters[getSelectedCharID()];
+            const achara = argChara && typeof argChara !== "string" ? argChara : contextChar(matcherArg);
             if (achara.type === "group") {
                 return "";
             }
@@ -306,7 +325,7 @@ export function registerCBS(arg: CBSRegisterArg) {
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
             const argChara = matcherArg.chara;
-            const achara = argChara && typeof argChara !== "string" ? argChara : db.characters[getSelectedCharID()];
+            const achara = argChara && typeof argChara !== "string" ? argChara : contextChar(matcherArg);
             if (achara.type === "group") {
                 return "";
             }
@@ -321,7 +340,7 @@ export function registerCBS(arg: CBSRegisterArg) {
     registerFunction({
         name: "persona",
         callback: (str, matcherArg, args, vars) => {
-            return risuChatParser(getPersonaPrompt(), matcherArg);
+            return risuChatParser(getPersonaPrompt(matcherArg.chatRef), matcherArg);
         },
         alias: ["userpersona"],
         description:
@@ -344,12 +363,12 @@ export function registerCBS(arg: CBSRegisterArg) {
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
             const argChara = matcherArg.chara;
-            const achara = argChara && typeof argChara !== "string" ? argChara : db.characters[getSelectedCharID()];
-            const selchar = db.characters[getSelectedCharID()];
-            const chat = selchar.chats[selchar.chatPage];
+            const achara = argChara && typeof argChara !== "string" ? argChara : contextChar(matcherArg);
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
             const characterLore = achara.type === "group" ? [] : (achara.globalLore ?? []);
             const chatLore = chat.localLore ?? [];
-            const fullLore = characterLore.concat(chatLore.concat(getModuleLorebooks()));
+            const fullLore = [...characterLore, ...chatLore, ...getModuleLorebooks(matcherArg.chatRef)];
             return makeArray(
                 fullLore.map((v) => {
                     return JSON.stringify(v);
@@ -365,17 +384,15 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "userhistory",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
-            const chat = selchar.chats[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
             return makeArray(
                 chat.message
                     .filter((v) => {
                         return v.role === "user";
                     })
                     .map((v) => {
-                        v = safeStructuredClone(v);
-                        v.data = risuChatParser(v.data, matcherArg);
-                        return JSON.stringify(v);
+                        return JSON.stringify({ ...v, data: risuChatParser(v.data, matcherArg) });
                     }),
             );
         },
@@ -388,17 +405,15 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "charhistory",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
-            const chat = selchar.chats[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
             return makeArray(
                 chat.message
                     .filter((v) => {
                         return v.role === "char";
                     })
                     .map((v) => {
-                        v = safeStructuredClone(v);
-                        v.data = risuChatParser(v.data, matcherArg);
-                        return JSON.stringify(v);
+                        return JSON.stringify({ ...v, data: risuChatParser(v.data, matcherArg) });
                     }),
             );
         },
@@ -433,8 +448,8 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "authornote",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters?.[getSelectedCharID()];
-            const chat = selchar?.chats?.[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
             if (chat?.note) {
                 return risuChatParser(chat.note, matcherArg);
             }
@@ -467,8 +482,8 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "firstmsgindex",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
-            const chat = selchar.chats[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
             return chat.fmIndex.toString();
         },
         alias: ["firstmessageindex", "first_msg_index"],
@@ -497,8 +512,8 @@ export function registerCBS(arg: CBSRegisterArg) {
             }
 
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
-            const chat = selchar.chats[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
             const message = chat.message[matcherArg.chatID];
             if (!message.time) {
                 return "[Cannot get time, message was sent in older version]";
@@ -521,8 +536,8 @@ export function registerCBS(arg: CBSRegisterArg) {
                 return "[Cannot get time]";
             }
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
-            const chat = selchar.chats[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
             const message = chat.message[matcherArg.chatID];
             if (!message.time) {
                 return "[Cannot get time, message was sent in older version]";
@@ -539,8 +554,8 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "messageunixtimearray",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
-            const chat = selchar.chats[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
             return makeArray(
                 chat.message.map((f) => {
                     return `${f.time ?? 0}`;
@@ -607,8 +622,8 @@ export function registerCBS(arg: CBSRegisterArg) {
                 return "[Cannot get time]";
             }
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
-            const chat = selchar.chats[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
 
             let pointer = matcherArg.chatID;
             let pointerMode: "findLast" | "findSecondLast" = "findLast";
@@ -663,8 +678,8 @@ export function registerCBS(arg: CBSRegisterArg) {
                 return `00:00:00`;
             }
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
-            const chat = selchar.chats[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
             const messages = chat.message;
             if (messages.length === 0) {
                 return `00:00:00`;
@@ -739,8 +754,8 @@ export function registerCBS(arg: CBSRegisterArg) {
             }
             if (matcherArg.chatID !== -1) {
                 const db = getDatabase();
-                const selchar = db.characters[getSelectedCharID()];
-                return selchar.chats[selchar.chatPage].message[matcherArg.chatID].role;
+                const selchar = contextChar(matcherArg);
+                return contextChat(matcherArg).message[matcherArg.chatID].role;
             }
             return matcherArg.role ?? "null";
         },
@@ -788,11 +803,11 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "lastmessage",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
+            const selchar = contextChar(matcherArg);
             if (!selchar) {
                 return "";
             }
-            const chat = selchar.chats[selchar.chatPage];
+            const chat = contextChat(matcherArg);
             return chat.message[chat.message.length - 1].data;
         },
         alias: [],
@@ -804,11 +819,11 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "lastmessageid",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
+            const selchar = contextChar(matcherArg);
             if (!selchar) {
                 return "";
             }
-            const chat = selchar.chats[selchar.chatPage];
+            const chat = contextChat(matcherArg);
             return (chat.message.length - 1).toString();
         },
         alias: ["lastmessageindex"],
@@ -862,7 +877,7 @@ export function registerCBS(arg: CBSRegisterArg) {
     registerFunction({
         name: "getvar",
         callback: (str, matcherArg, args, vars) => {
-            return getChatVar(args[0]);
+            return getChatVar(args[0], matcherArg.chatRef);
         },
         alias: [],
         description:
@@ -886,7 +901,11 @@ export function registerCBS(arg: CBSRegisterArg) {
                 return "";
             }
             if (matcherArg.runVar) {
-                setChatVar(args[0], (Number(getChatVar(args[0])) + Number(args[1])).toString());
+                setChatVar(
+                    args[0],
+                    (Number(getChatVar(args[0], matcherArg.chatRef)) + Number(args[1])).toString(),
+                    matcherArg.chatRef,
+                );
                 return "";
             }
             return null;
@@ -903,7 +922,7 @@ export function registerCBS(arg: CBSRegisterArg) {
                 return "";
             }
             if (matcherArg.runVar) {
-                setChatVar(args[0], args[1]);
+                setChatVar(args[0], args[1], matcherArg.chatRef);
                 return "";
             }
             return null;
@@ -920,9 +939,9 @@ export function registerCBS(arg: CBSRegisterArg) {
                 return "";
             }
             if (matcherArg.runVar) {
-                const currentValue = getChatVar(args[0]);
+                const currentValue = getChatVar(args[0], matcherArg.chatRef);
                 if (!currentValue || currentValue === "null") {
-                    setChatVar(args[0], args[1]);
+                    setChatVar(args[0], args[1], matcherArg.chatRef);
                 }
                 return "";
             }
@@ -936,7 +955,7 @@ export function registerCBS(arg: CBSRegisterArg) {
     registerFunction({
         name: "getglobalvar",
         callback: (str, matcherArg, args, vars) => {
-            return getGlobalChatVar(args[0]);
+            return getGlobalChatVar(args[0], matcherArg.chatRef);
         },
         alias: [],
         description:
@@ -1254,8 +1273,8 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "previouschatlog",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
-            const chat = selchar?.chats?.[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
             return chat?.message[Number(args[0])]?.data ?? "Out of range";
         },
         alias: ["previous_chat_log"],
@@ -1448,7 +1467,7 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "emotionlist",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
+            const selchar = contextChar(matcherArg);
             if (!selchar) {
                 return "";
             }
@@ -1469,7 +1488,7 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "assetlist",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
+            const selchar = contextChar(matcherArg);
             if (!selchar || selchar.type === "group") {
                 return "";
             }
@@ -1632,7 +1651,7 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "chardisplayasset",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
+            const selchar = contextChar(matcherArg);
 
             if (!selchar.prebuiltAssetCommand) {
                 return makeArray([]);
@@ -1660,8 +1679,8 @@ export function registerCBS(arg: CBSRegisterArg) {
         callback: (str, matcherArg, args, vars) => {
             if (args.length === 0) {
                 const db = getDatabase();
-                const selchar = db.characters[getSelectedCharID()];
-                const chat = selchar.chats[selchar.chatPage];
+                const selchar = contextChar(matcherArg);
+                const chat = contextChat(matcherArg);
                 return makeArray(
                     [
                         {
@@ -1678,8 +1697,8 @@ export function registerCBS(arg: CBSRegisterArg) {
                 );
             }
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
-            const chat = selchar.chats[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const chat = contextChat(matcherArg);
             return makeArray(
                 chat.message.map((f) => {
                     let data = "";
@@ -1763,7 +1782,7 @@ export function registerCBS(arg: CBSRegisterArg) {
     registerFunction({
         name: "moduleenabled",
         callback: (str, matcherArg, args, vars) => {
-            const modules = getModules();
+            const modules = getModules(matcherArg.chatRef);
             for (const module of modules) {
                 if (module.namespace === args[0]) {
                     return "1";
@@ -1779,7 +1798,7 @@ export function registerCBS(arg: CBSRegisterArg) {
     registerFunction({
         name: "moduleassetlist",
         callback: (str, matcherArg, args, vars) => {
-            const module = getModules()?.find((f) => {
+            const module = getModules(matcherArg.chatRef)?.find((f) => {
                 return f.namespace === args[0];
             });
             if (!module) {
@@ -2224,8 +2243,8 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "pick",
         callback: (str, matcherArg, args, vars) => {
             const db = getDatabase();
-            const selchar = db.characters[getSelectedCharID()];
-            const selChat = selchar.chats[selchar.chatPage];
+            const selchar = contextChar(matcherArg);
+            const selChat = contextChat(matcherArg);
             const cid = selChat.message.length;
             const hashRand = pickHashRand(cid, selchar.chaId + (selChat.id ?? ""));
             return randomPickImpl(str, matcherArg, args, hashRand);
@@ -2285,8 +2304,8 @@ export function registerCBS(arg: CBSRegisterArg) {
             let total = 0;
             for (let i = 0; i < num; i++) {
                 const db = getDatabase();
-                const selchar = db.characters[getSelectedCharID()];
-                const selChat = selchar.chats[selchar.chatPage];
+                const selchar = contextChar(matcherArg);
+                const selChat = contextChat(matcherArg);
                 const cid = selChat.message.length + i * 15;
                 const hashRand = pickHashRand(cid, selchar.chaId + (selChat.id ?? ""));
                 total += Math.floor(hashRand * sides) + 1;

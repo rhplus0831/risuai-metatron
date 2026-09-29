@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
+import { CHAT_TABLES_SQL } from "../data/chatStore.ts";
 import { createKindRegistry, type ResourceKind } from "../data/kinds.ts";
 import {
     createResourceStore,
@@ -200,6 +201,8 @@ describe("readKinds, readRefs, and applyBatch", () => {
                 { kind: "root", id: "a", revision: a, data: 1 },
                 { kind: "root", id: "missing", revision: null, data: null },
             ],
+            chats: [],
+            chatCollections: [],
         });
         const foreign: ResourceKind = { name: "root", schemaVersion: 1, normalize: (input) => input };
         expect(() => store.readKinds([foreign])).toThrow("Unregistered resource kind: root");
@@ -288,15 +291,18 @@ describe("snapshots", () => {
         }
         return file;
     }
+    /** The version-2 layout: `resources`, `meta`, and the chat tables. */
     const layout = `
-        PRAGMA user_version = 1;
+        PRAGMA user_version = 2;
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
         CREATE TABLE resources (
             seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, id TEXT NOT NULL,
             revision INTEGER NOT NULL, schemaVersion INTEGER NOT NULL, data TEXT NOT NULL
         ) STRICT;
+        ${CHAT_TABLES_SQL}
         INSERT INTO meta (key, value) VALUES ('epoch', 'e');`;
     const notResource = new ResourceValidationError("Not a resource database");
+    const noChats = { chats: [], messages: [], chatOrders: [] };
 
     it("copies the live database to one self-contained file that reads back as a snapshot", async () => {
         const dir = tempDir();
@@ -312,11 +318,12 @@ describe("snapshots", () => {
                 { kind: "root", id: "b", revision: 1, schemaVersion: 1, text: '{"v":"b"}' },
                 { kind: "root", id: "a", revision: 2, schemaVersion: 1, text: '{"v":"a2"}' },
             ],
+            ...noChats,
         });
         // A fresh store's copy is a valid, empty snapshot.
         const empty = fileStore(dir, "empty.sqlite");
         await empty.backupTo(path.join(dir, "empty-copy.sqlite"));
-        expect(empty.readSnapshot(path.join(dir, "empty-copy.sqlite"))).toEqual({ rows: [] });
+        expect(empty.readSnapshot(path.join(dir, "empty-copy.sqlite"))).toEqual({ rows: [], ...noChats });
         store.close();
         await expect(store.backupTo(path.join(dir, "late.sqlite"))).rejects.toThrow("Resource store is closed");
     });
@@ -335,21 +342,32 @@ describe("snapshots", () => {
                 new ResourceValidationError("Unsupported resource database version 0"),
             ],
             [
+                "version 1 (Phase 1, chats inside characters)",
+                craft(dir, "v1.sqlite", layout.replace("user_version = 2", "user_version = 1")),
+                new ResourceValidationError("Unsupported resource database version 1"),
+            ],
+            [
                 "other version",
-                craft(dir, "v2.sqlite", layout.replace("user_version = 1", "user_version = 2")),
-                new ResourceValidationError("Unsupported resource database version 2"),
+                craft(dir, "v3.sqlite", layout.replace("user_version = 2", "user_version = 3")),
+                new ResourceValidationError("Unsupported resource database version 3"),
             ],
             [
                 "view",
                 craft(
                     dir,
                     "view.sqlite",
-                    `PRAGMA user_version = 1;
-                     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
-                     INSERT INTO meta (key, value) VALUES ('epoch', 'e');
-                     CREATE TABLE t (a);
-                     CREATE VIEW resources AS SELECT 1 AS seq, 'root' AS kind, 'x' AS id, 1 AS revision, 1 AS schemaVersion, '1' AS data FROM t;`,
+                    layout.replace(
+                        /CREATE TABLE resources \([^;]*;/,
+                        `CREATE TABLE t (a);
+                         CREATE VIEW resources AS SELECT 1 AS seq, 'root' AS kind, 'x' AS id, 1 AS revision, 1 AS schemaVersion, '1' AS data FROM t;`,
+                    ),
                 ),
+                notResource,
+            ],
+            ["no chat tables", craft(dir, "nochats.sqlite", layout.replace(CHAT_TABLES_SQL, "")), notResource],
+            [
+                "chat table column missing",
+                craft(dir, "nofence.sqlite", layout.replace("generationHistory TEXT,", "")),
                 notResource,
             ],
             [
@@ -380,7 +398,7 @@ describe("snapshots", () => {
         for (const [label, file, error] of cases) {
             expect(() => store.readSnapshot(file), label).toThrow(error);
         }
-        expect(store.readSnapshot(craft(dir, "ok.sqlite", layout))).toEqual({ rows: [] });
+        expect(store.readSnapshot(craft(dir, "ok.sqlite", layout))).toEqual({ rows: [], ...noChats });
     });
 
     it("checks every row: kind, schema version, id and singleton rules, uniqueness, seq and revision, JSON, and the normalizer", () => {
@@ -466,13 +484,14 @@ describe("snapshots", () => {
                 { kind: "root", id: "dup", revision: 1, schemaVersion: 1, text: "1" },
                 { kind: "root", id: "dup", revision: 1, schemaVersion: 1, text: "2" },
             ],
+            ...noChats,
         };
         const count = reopened.writeCount();
         expect(() => reopened.replaceAll(failing)).toThrow("UNIQUE constraint failed");
         expect(reopened.epoch()).toBe(epoch);
         expect(reopened.writeCount()).toBe(count);
         expect(reopened.list(root).map((r) => r.id)).toEqual(["b", "a"]);
-        expect(() => reopened.transaction(() => reopened.replaceAll({ rows: [] }))).toThrow(
+        expect(() => reopened.transaction(() => reopened.replaceAll({ rows: [], ...noChats }))).toThrow(
             "Nested resource transactions are not supported",
         );
         expect(reopened.list(root)).toHaveLength(2);

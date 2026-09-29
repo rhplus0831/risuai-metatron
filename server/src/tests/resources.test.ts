@@ -442,11 +442,11 @@ describe("default kinds over the routes", () => {
 
     it("keeps characters and inlays keyed by their own ids, with the character's chaId matching", async () => {
         const s = await defaultServer();
-        const mismatch = await s.put("characters", "c1", { baseRevision: null, data: { chaId: "c2", chats: [] } });
+        const mismatch = await s.put("characters", "c1", { baseRevision: null, data: { chaId: "c2" } });
         expect(mismatch.status).toBe(400);
         expect(await mismatch.json()).toEqual({ error: "character.chaId must equal the resource id" });
-        const revision = await s.create("characters", "c1", { chaId: "c1", chats: [] });
-        await s.create("characters", "§playground", { chaId: "§playground", chats: [] });
+        const revision = await s.create("characters", "c1", { chaId: "c1" });
+        await s.create("characters", "§playground", { chaId: "§playground" });
         await s.create("inlays", "assets/abc.png", {
             name: "a",
             ext: "png",

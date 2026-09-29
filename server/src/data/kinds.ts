@@ -18,8 +18,11 @@ export interface ResourceKind<T = unknown> {
 export type ResourceKindRegistry = ReadonlyMap<string, ResourceKind>;
 
 const kindNameRegex = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
-/** Path segments the resource routes use themselves (`/api/resources/batch`, `/api/resources/read`). */
-const reservedKindNames = new Set(["batch", "read"]);
+/**
+ * Path segments the resource routes use themselves (`/api/resources/batch`, `/api/resources/read`),
+ * and the `kind` values of chat and chat-order entries in a batch conflict.
+ */
+const reservedKindNames = new Set(["batch", "read", "chat", "chatOrder"]);
 
 /** Builds the kind lookup for the resource routes. Rejects invalid, reserved, and duplicate names. */
 export function createKindRegistry(kinds: readonly ResourceKind[]): ResourceKindRegistry {
@@ -133,8 +136,9 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
             if (character.chaId !== id) {
                 throw new ResourceValidationError("character.chaId must equal the resource id");
             }
-            if (!Array.isArray(character.chats)) {
-                throw new ResourceValidationError("character.chats must be an array");
+            // Chats live in the chat tables (Phase 2); the character record holds only its own fields.
+            if (Object.hasOwn(character, "chats")) {
+                throw new ResourceValidationError("character must not hold chats");
             }
             return character;
         },

@@ -57,18 +57,32 @@ Data and persistence (details: `docs/structure/persistence.md`)
   shapes (`Database`, `character`, `groupChat`, `Chat`, `Message`, `botPreset`) live in
   `shared/database.ts` and are re-exported by `src/ts/storage/database.svelte.ts`. `shared/` is
   compiled by both the client and the strict server project: no DOM types, runes, or enums, and
-  only relative `.ts` imports between `shared/` files (`persistence.md`).
+  only relative `.ts` imports between `shared/` files (`persistence.md`). `character.chats` and
+  `chatPage` are read-only mirror fields (`DeepReadonly`): only the chat module
+  (`src/ts/storage/chatStore.svelte.ts`) writes them, and every chat change goes through its
+  functions (`appendMessage`, `setMessageText`, `setChatMeta`, `applyChatResult`, ...), addressed by
+  chat id and message id (`Message.chatId`), never by index after an await. Svelte `bind:` on a
+  chat field bypasses the type check: bind a getter/setter pair or a synced editing copy.
 - D2. A new persisted field needs both a type entry and a backward-compatible default or migration
-  in `setDatabase`. `setDatabaseLite` only assigns and does not normalize.
+  in `setDatabase`. `setDatabaseLite` only assigns and does not normalize. Chat and message fields
+  are the exception: they are stored as the client sends them (the server normalizer in
+  `server/src/data/chats.ts` fills only `name`, `note`, and `localLore`), so readers default a
+  missing chat field where they read it.
 - D3. Never rename persisted keys, including misspelled ones: `seperateModels`,
   `seperateParameters`, `moduleIntergration`, `PresensePenalty`. Saved databases and shared files
   depend on them.
 - D4. The database lives in server resources (`root`, `presets`, `modules`, `plugins`,
-  `pluginStorage`, one `characters` record per `chaId`); the save adapter
+  `pluginStorage`, one `characters` record per `chaId` without its chats) and in chat records (one
+  per chat, messages as rows, one chat order per character); the save adapter
   (`src/ts/storage/resourceSync.svelte.ts`, started by `saveDb`) watches the root fields, the
-  collections, and only the selected character deeply. If you mutate a non-selected character, call
-  `markCharactersDirty([chaId])`, or that change is not saved. Additions and removals need nothing.
-  Every write names the revision and epoch it was based on; a stale one reloads that record.
+  collections, and only the selected character's own fields deeply, and sends the chat module's
+  queued ops. If you mutate a non-selected character, call `markCharactersDirty([chaId])`, or that
+  change is not saved. Additions and removals need nothing. Every write names the revision and epoch
+  it was based on; a stale one reloads that record, except chat ops that address one message by id
+  (and per-field chat metadata), which still apply to an older chat revision while that message
+  exists. Message ids are assigned optimistically by the client; the server keeps them, renames a
+  colliding id only inside a whole-chat payload, and refuses an `append` that reuses an id with
+  other content (409).
 - D5. Shared artifacts are cross-user formats: character cards (`.png` `chara`/`ccv3`, `.json`,
   `.charx`), modules (`.risum`), presets (`.risup`/`.risupreset`), translator presets (`.risutl`),
   and plugin scripts. Keep old readers working. Never renumber `LLMFlags`, `LLMFormat`,

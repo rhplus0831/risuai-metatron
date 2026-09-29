@@ -12,7 +12,14 @@ import {
 } from "../storage/database.svelte";
 import { DBState, selIdState } from "../stores.svelte";
 import { aiWatermarkingLawApplies, getFileSrc } from "../globalApi.svelte";
-import { getChatVar, setChatVar, getGlobalChatVar } from "./chatVar.svelte";
+import {
+    getChatVar,
+    getChatVarOf,
+    setChatVar,
+    setChatVarOf,
+    getGlobalChatVar,
+    getGlobalChatVarOf,
+} from "./chatVar.svelte";
 import { processScriptFull } from "../process/scripts";
 import { get } from "svelte/store";
 import css, { type CssAtRuleAST } from "@adobe/css-tools";
@@ -1105,9 +1112,16 @@ function initMatcher() {
         safeStructuredClone: safeStructuredClone,
         parseArray: parseArray,
         parseDict: parseDict,
-        getChatVar: getChatVar,
-        setChatVar: setChatVar,
-        getGlobalChatVar: getGlobalChatVar,
+        // A parse with a `chatRef` reads and writes that chat's variables, not the selected chat's.
+        getChatVar: (key, chatRef) => (chatRef ? getChatVarOf(chatRef, key) : getChatVar(key)),
+        setChatVar: (key, value, chatRef) => {
+            if (chatRef) {
+                setChatVarOf(chatRef, key, value);
+            } else {
+                setChatVar(key, value);
+            }
+        },
+        getGlobalChatVar: (key, chatRef) => (chatRef ? getGlobalChatVarOf(chatRef, key) : getGlobalChatVar(key)),
         calcString: calcString,
         dateTimeFormat: dateTimeFormat,
         getModules: getModules,
@@ -1270,6 +1284,9 @@ function blockStartMatcher(
     p1: string,
     matcherArg: matcherArg,
 ): { type: blockMatch; type2?: string; funcArg?: string[]; mode?: string } {
+    const readVar = (key: string) => (matcherArg.chatRef ? getChatVarOf(matcherArg.chatRef, key) : getChatVar(key));
+    const readGlobalVar = (key: string) =>
+        matcherArg.chatRef ? getGlobalChatVarOf(matcherArg.chatRef, key) : getGlobalChatVar(key);
     if (p1.startsWith("#if") || p1.startsWith("#if_pure ")) {
         const statement = p1.split(" ", 2);
         const state = statement[1];
@@ -1356,7 +1373,7 @@ function blockStartMatcher(
                         break;
                     }
                     case "var": {
-                        const variable = getChatVar(condition);
+                        const variable = readVar(condition);
                         if (isTruthy(variable)) {
                             statement.push("1");
                         } else {
@@ -1365,7 +1382,7 @@ function blockStartMatcher(
                         break;
                     }
                     case "toggle": {
-                        const variable = getGlobalChatVar("toggle_" + condition);
+                        const variable = readGlobalVar("toggle_" + condition);
                         if (isTruthy(variable)) {
                             statement.push("1");
                         } else {
@@ -1375,7 +1392,7 @@ function blockStartMatcher(
                     }
                     case "vis": {
                         //vis = variable is
-                        const variable = getChatVar(statement.pop());
+                        const variable = readVar(statement.pop());
                         if (variable === condition) {
                             statement.push("1");
                         } else {
@@ -1385,7 +1402,7 @@ function blockStartMatcher(
                     }
                     case "visnot": {
                         //visnot = variable is not
-                        const variable = getChatVar(statement.pop());
+                        const variable = readVar(statement.pop());
                         if (variable !== condition) {
                             statement.push("1");
                         } else {
@@ -1395,7 +1412,7 @@ function blockStartMatcher(
                     }
                     case "tis": {
                         //tis = toggle is
-                        const variable = getGlobalChatVar("toggle_" + statement.pop());
+                        const variable = readGlobalVar("toggle_" + statement.pop());
                         if (variable === condition) {
                             statement.push("1");
                         } else {
@@ -1405,7 +1422,7 @@ function blockStartMatcher(
                     }
                     case "tisnot": {
                         //tisnot = toggle is not
-                        const variable = getGlobalChatVar("toggle_" + statement.pop());
+                        const variable = readGlobalVar("toggle_" + statement.pop());
                         if (variable !== condition) {
                             statement.push("1");
                         } else {
@@ -1664,6 +1681,8 @@ export function risuChatParser(
         functions?: Map<string, { data: string; arg: string[] }>;
         callStack?: number;
         cbsConditions?: CbsConditions;
+        /** The chat this parse runs for (default: the selected chat); see `matcherArg.chatRef`. */
+        chatRef?: { chaId: string; chatId: string } | null;
     } = {},
 ): string {
     const chatID = arg.chatID ?? -1;
@@ -1673,8 +1692,11 @@ export function risuChatParser(
 
     if (aChara) {
         if (typeof aChara !== "string" && aChara.type === "group") {
-            if (aChara.chats[aChara.chatPage].message.length > 0) {
-                const gc = findCharacterbyId(aChara.chats[aChara.chatPage].message.at(-1).saying ?? "");
+            const groupChat = arg.chatRef
+                ? aChara.chats.find((chat) => chat.id === arg.chatRef.chatId)
+                : aChara.chats[aChara.chatPage];
+            if (groupChat?.message.length > 0) {
+                const gc = findCharacterbyId(groupChat.message.at(-1).saying ?? "");
                 if (gc.name !== "Unknown Character") {
                     chara = gc;
                 }
@@ -1738,6 +1760,7 @@ export function risuChatParser(
         runVar: arg.runVar ?? false,
         consistantChar: arg.consistantChar ?? false,
         cbsConditions: arg.cbsConditions ?? {},
+        chatRef: arg.chatRef ?? null,
         callStack: arg.callStack,
         getNested: () => {
             return nested;

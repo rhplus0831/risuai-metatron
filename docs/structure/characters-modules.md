@@ -125,7 +125,8 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - `getModuleTriggers` mutates the triggers' `lowLevelAccess`. Aggregate order follows the DB module order.
 - Keep `character.modules`, `chat.modules`, `enabledModules`, and `moduleIntergration` (which matches namespaces) distinct.
 - `LoreBookList` must rebuild its Svelte arrays after SortableJS DOM moves. `characterFormatUpdate` and `updateLorebooks` are the lore migration points.
-- `chaId` and chat IDs must be unique. `bootstrap.ts:assignIds` repairs duplicates.
+- `chaId` and chat IDs must be unique. `bootstrap.ts:assignIds` repairs duplicate character ids; chat and message ids are assigned by the chat module (`createChat`, `appendMessage`) and kept unique by the server.
+- A character's chats are created through the chat module once it is in the mirror: `importChat` calls `createChat` (a copy gets a fresh chat id and keeps its message ids), and `characterFormatUpdate` on a live character calls `ensureChat` and moves `postHistoryInstructions` into the chat note with `setChatMeta`. A character that is not yet added (a new card, an import) carries its initial chats directly; the save loop creates them with it.
 
 ## Recipes
 

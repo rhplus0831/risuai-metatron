@@ -31,9 +31,62 @@
     import { shouldShowSummary, isGuidLike, parseSelectionInput } from "./HypaV3Modal/utils";
     import type { OpenAIChat } from "src/ts/process/index.svelte";
 
-    const hypaV3Data = $derived(
+    import { currentChatRef, setChatMeta } from "src/ts/storage/chatStore.svelte";
+    import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
+
+    /** The selected chat's memory data as the chat holds it (read-only). */
+    const chatHypaV3Data = $derived(
         DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].hypaV3Data,
     );
+
+    // The modal and its children edit a copy of the memory data; every change of the copy is written
+    // to the chat through the chat module, and a change of the chat's copy from elsewhere (a
+    // summary made by a send) replaces the copy.
+    /** The memory data of a chat that has none yet. */
+    function emptyHypaV3Data(): SerializableHypaV3Data {
+        return {
+            summaries: [],
+            categories: [{ id: "", name: language.hypaV3Modal.unclassified }],
+            lastSelectedSummaries: [],
+        };
+    }
+
+    // Initial values; the effects below keep both in step afterwards.
+    let hypaV3Data = $state<SerializableHypaV3Data>(
+        untrack(() =>
+            chatHypaV3Data
+                ? (structuredClone($state.snapshot(chatHypaV3Data)) as SerializableHypaV3Data)
+                : emptyHypaV3Data(),
+        ),
+    );
+    let syncedHypaV3Text = untrack(() => JSON.stringify($state.snapshot(chatHypaV3Data)));
+    $effect.pre(() => {
+        const text = JSON.stringify($state.snapshot(chatHypaV3Data));
+        untrack(() => {
+            if (text !== syncedHypaV3Text) {
+                syncedHypaV3Text = text;
+                hypaV3Data = text === undefined ? emptyHypaV3Data() : JSON.parse(text);
+            }
+        });
+    });
+    $effect(() => {
+        const text = JSON.stringify($state.snapshot(hypaV3Data));
+        untrack(() => {
+            const ref = currentChatRef();
+            if (text !== syncedHypaV3Text && text !== undefined && ref) {
+                syncedHypaV3Text = text;
+                setChatMeta(ref, { hypaV3Data: JSON.parse(text) });
+            }
+        });
+    });
+
+    /** Writes new memory data to the selected chat (the copy follows). */
+    function writeHypaV3Data(data: SerializableHypaV3Data) {
+        const ref = currentChatRef();
+        if (ref) {
+            setChatMeta(ref, { hypaV3Data: data });
+        }
+    }
 
     let categories = $derived(
         (() => {
@@ -92,12 +145,9 @@
         filterSelected;
 
         untrack(() => {
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].hypaV3Data ??=
-                {
-                    summaries: [],
-                    categories: [{ id: "", name: language.hypaV3Modal.unclassified }],
-                    lastSelectedSummaries: [],
-                };
+            if (!chatHypaV3Data) {
+                writeHypaV3Data(emptyHypaV3Data());
+            }
 
             expandedMessageState = null;
             searchState = null;
@@ -344,9 +394,9 @@
                 language.hypaV3Modal.resetConfirmSecondMessage,
             )
         ) {
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].hypaV3Data = {
+            writeHypaV3Data({
                 summaries: [],
-            };
+            });
         }
     }
 
@@ -621,7 +671,7 @@
                 })),
             };
 
-            chat.hypaV3Data = newHypaV3Data;
+            writeHypaV3Data(newHypaV3Data);
 
             return {
                 success: true,
@@ -807,6 +857,7 @@
 
             <!-- Bulk Edit Actions -->
             <BulkEditActions
+                {hypaV3Data}
                 {bulkEditState}
                 {categories}
                 showImportantOnly={filterState.showImportantOnly}
@@ -825,10 +876,11 @@
 
 <!-- Component Modals -->
 <CategoryManagerModal
+    {hypaV3Data}
     bind:categoryManagerState
     bind:searchState
     {filterState}
     onCategoryFilter={handleCategoryFilter}
 />
 
-<TagManagerModal bind:tagManagerState />
+<TagManagerModal {hypaV3Data} bind:tagManagerState />

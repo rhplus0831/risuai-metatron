@@ -65,12 +65,16 @@ export const replacePlaceholders = (msg: string, name: string) => {
         .replace(/(\{\{((set)|(get))var::.+?\}\})/gu, "");
 };
 
-export function checkPersonaBinded() {
+/** The persona bound to `chatRef`'s chat (default: the selected chat), or null. */
+export function checkPersonaBinded(chatRef?: { chaId: string; chatId: string } | null) {
     try {
         let db = DBState.db;
-        const selectedChar = get(selectedCharID);
-        const character = db.characters[selectedChar];
-        const chat = character.chats[character.chatPage];
+        const character = chatRef
+            ? db.characters.find((entry) => entry?.chaId === chatRef.chaId)
+            : db.characters[get(selectedCharID)];
+        const chat = chatRef
+            ? character.chats.find((entry) => entry.id === chatRef.chatId)
+            : character.chats[character.chatPage];
         if (!chat.bindedPersona) {
             return null;
         }
@@ -81,8 +85,8 @@ export function checkPersonaBinded() {
     }
 }
 
-export function getUserName() {
-    const bindedPersona = checkPersonaBinded();
+export function getUserName(chatRef?: { chaId: string; chatId: string } | null) {
+    const bindedPersona = checkPersonaBinded(chatRef);
     if (bindedPersona) {
         return bindedPersona.name;
     }
@@ -90,8 +94,8 @@ export function getUserName() {
     return db.username ?? "User";
 }
 
-export function getUserIcon() {
-    const bindedPersona = checkPersonaBinded();
+export function getUserIcon(chatRef?: { chaId: string; chatId: string } | null) {
+    const bindedPersona = checkPersonaBinded(chatRef);
     if (bindedPersona) {
         return bindedPersona.icon;
     }
@@ -99,8 +103,8 @@ export function getUserIcon() {
     return db.userIcon ?? "";
 }
 
-export function getPersonaPrompt() {
-    const bindedPersona = checkPersonaBinded();
+export function getPersonaPrompt(chatRef?: { chaId: string; chatId: string } | null) {
+    const bindedPersona = checkPersonaBinded(chatRef);
     if (bindedPersona) {
         return bindedPersona.personaPrompt;
     }

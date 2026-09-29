@@ -1,3 +1,11 @@
+import type {
+    ChatConflict,
+    ChatGroupResult,
+    ChatOrderConflict,
+    ChatOrderRecord,
+    ChatOrderResult,
+    ChatRecord,
+} from "./chats.ts";
 import type { Database } from "./database.ts";
 
 /**
@@ -61,21 +69,54 @@ export type ResourceBatchOp =
     | { kind: string; id: string; baseRevision: string | null; data: unknown }
     | { kind: string; id: string; baseRevision: string; delete: true };
 
-export type ResourceBatchResult = { epoch: string; results: { kind: string; id: string; revision: string | null }[] };
+export type ResourceBatchResult = {
+    epoch: string;
+    results: { kind: string; id: string; revision: string | null }[];
+    /** One result per chat group sent (Phase 2). */
+    chats?: ChatGroupResult[];
+    /** Every chat order the batch changed, including through chat creates and deletes. */
+    chatOrders?: ChatOrderResult[];
+};
 
+/** A resource entry of a 409: `kind` is the resource kind name. */
 export type ResourceConflict = { kind: string; id: string; revision: string | null };
 
+/**
+ * An entry of a batch 409. `kind` is `"chat"` or `"chatOrder"` for chat entries (both reserved as
+ * resource kind names) and the resource kind name otherwise; `isChatConflict` and
+ * `isChatOrderConflict` tell them apart.
+ */
+export type BatchConflict = ResourceConflict | ChatConflict | ChatOrderConflict;
+
+export function isChatConflict(conflict: BatchConflict): conflict is ChatConflict {
+    return conflict.kind === "chat";
+}
+
+export function isChatOrderConflict(conflict: BatchConflict): conflict is ChatOrderConflict {
+    return conflict.kind === "chatOrder";
+}
+
 /** Body of a 409 from the batch route. */
-export type ResourceBatchConflictBody = { error: string; conflicts: ResourceConflict[] };
+export type ResourceBatchConflictBody = { error: string; conflicts: BatchConflict[] };
 
 /** Body of a 412: the mutation named another database epoch (a restore happened). */
 export type ResourceEpochMismatchBody = { error: "EpochMismatch"; epoch: string };
 
-export type ResourceReadKindsResult = { epoch: string; kinds: Record<string, ResourceRecord[]> };
+export type ResourceReadKindsResult = {
+    epoch: string;
+    kinds: Record<string, ResourceRecord[]>;
+    /** With `chats=1`: every chat and every chat order. */
+    chats?: ChatRecord[];
+    chatOrders?: ChatOrderRecord[];
+};
 
 export type ResourceReadRefsResult = {
     epoch: string;
     items: { kind: string; id: string; revision: string | null; data: unknown }[];
+    /** The named chats; a missing one has revision and data null. */
+    chats?: (ChatRecord | { characterId: string; id: string; revision: null; data: null })[];
+    /** The named characters' orders (null: no order) and all their chats. */
+    chatCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatRecord[] }[];
 };
 
 export type BackupSnapshotInfo = { id: string; createdAt: string; size: number };

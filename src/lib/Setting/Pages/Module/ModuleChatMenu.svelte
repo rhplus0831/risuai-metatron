@@ -7,6 +7,7 @@
 
     import { DBState, ReloadGUIPointer } from "src/ts/stores.svelte";
     import { selectedCharID } from "src/ts/stores.svelte";
+    import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import { SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
 
     interface Props {
@@ -87,37 +88,23 @@
                                 <button
                                     class={DBState.db.characters[$selectedCharID].chats[
                                         DBState.db.characters[$selectedCharID].chatPage
-                                    ].modules.includes(rmodule.id)
+                                    ].modules?.includes(rmodule.id)
                                         ? "mr-2 cursor-pointer text-blue-500"
                                         : DBState.db.characters[$selectedCharID]?.modules?.includes(rmodule.id)
                                           ? "mr-2 cursor-pointer text-violet-500"
                                           : "text-textcolor2 hover:text-blue-400 mr-2 cursor-pointer"}
                                     onclick={async (e) => {
                                         e.stopPropagation();
-                                        if (
-                                            DBState.db.characters[$selectedCharID].chats[
+                                        const chatModules = [
+                                            ...(DBState.db.characters[$selectedCharID].chats[
                                                 DBState.db.characters[$selectedCharID].chatPage
-                                            ].modules.includes(rmodule.id)
-                                        ) {
-                                            DBState.db.characters[$selectedCharID].chats[
-                                                DBState.db.characters[$selectedCharID].chatPage
-                                            ].modules.splice(
-                                                DBState.db.characters[$selectedCharID].chats[
-                                                    DBState.db.characters[$selectedCharID].chatPage
-                                                ].modules.indexOf(rmodule.id),
-                                                1,
-                                            );
-                                        } else {
-                                            DBState.db.characters[$selectedCharID].chats[
-                                                DBState.db.characters[$selectedCharID].chatPage
-                                            ].modules.push(rmodule.id);
-                                        }
-                                        DBState.db.characters[$selectedCharID].chats[
-                                            DBState.db.characters[$selectedCharID].chatPage
-                                        ].modules =
-                                            DBState.db.characters[$selectedCharID].chats[
-                                                DBState.db.characters[$selectedCharID].chatPage
-                                            ].modules;
+                                            ].modules ?? []),
+                                        ];
+                                        setCurrentChatMeta({
+                                            modules: chatModules.includes(rmodule.id)
+                                                ? chatModules.filter((id) => id !== rmodule.id)
+                                                : [...chatModules, rmodule.id],
+                                        });
                                         $ReloadGUIPointer += 1;
                                     }}
                                     oncontextmenu={(e) => {

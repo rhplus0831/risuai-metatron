@@ -39,15 +39,36 @@
     import { type Unsubscriber } from "svelte/store";
     import { v4 as uuidv4, v4 } from "uuid";
     import { language } from "../../lang";
-    import { alertClear, alertConfirm, alertInput, alertNormal, alertRequestData, alertWait } from "../../ts/alert";
+    import {
+        alertClear,
+        alertConfirm,
+        alertError,
+        alertInput,
+        alertNormal,
+        alertRequestData,
+        alertWait,
+    } from "../../ts/alert";
     import { ParseMarkdown, type CbsConditions, type simpleCharacterArgument } from "../../ts/parser/parser.svelte";
     import {
         getCurrentCharacter,
         getCurrentChat,
-        setCurrentChat,
+        type Message,
         type MessageGenerationInfo,
         type StreamingDisplayOptimizationMode,
     } from "../../ts/storage/database.svelte";
+    import {
+        applyChatResult,
+        captureChatBaseline,
+        type ChatRef,
+        createChat,
+        currentChatRef,
+        findChat,
+        isMessageLocked,
+        removeMessages,
+        replaceMessage,
+        setChatMeta,
+        setMessageText,
+    } from "../../ts/storage/chatStore.svelte";
     import { selectedCharID } from "../../ts/stores.svelte";
     import { HideIconStore, ReloadGUIPointer, selIdState } from "../../ts/stores.svelte";
     import AutoresizeArea from "../UI/GUI/TextAreaResizable.svelte";
@@ -73,6 +94,8 @@
         isLastMemory: boolean;
         img?: string | Promise<string>;
         idx?: number;
+        /** The message's id (`Message.chatId`); handlers address the message by it, not by `idx`. */
+        messageId?: string;
         messageGenerationInfo?: MessageGenerationInfo | null;
         rerollIcon?: boolean | "dynamic";
         role?: string;
@@ -98,6 +121,7 @@
         isLastMemory,
         img = "",
         idx = -1,
+        messageId = undefined,
         rerollIcon = false,
         messageGenerationInfo = null,
         role = null,
@@ -120,7 +144,18 @@
     let translated = $state(false);
     let partialEditEnabled = $state(true);
     let translationViewControlsDisabled = $derived(editMode || editTranslationMode || loadingTranslationEdit);
-    let originalEditControlDisabled = $derived(editTranslationMode || loadingTranslationEdit);
+    /** The chat this message is shown in (a branched or copied chat shares its source's message ids). */
+    let displayedChat = $derived.by((): ChatRef | null => {
+        const character = DBState.db.characters[selIdState.selId];
+        const chat = character?.chats?.[character.chatPage];
+        return character && chat?.id ? { chaId: character.chaId, chatId: chat.id } : null;
+    });
+    /**
+     * Whether this message is locked by a generation (its edit, delete, and regenerate are off): while
+     * it streams and until its final write is acknowledged, and also a previous group speaker's reply.
+     */
+    let locked = $derived(isMessageLocked(displayedChat, messageId));
+    let originalEditControlDisabled = $derived(editTranslationMode || loadingTranslationEdit || locked);
     let translationEditControlDisabled = $derived(editMode || loadingTranslationEdit);
 
     export function updateStreamingDisplay(state: {
@@ -133,13 +168,43 @@
         rawStreamingText = state.rawStreamingText;
     }
 
+    /** The chat this message belongs to, captured before any await (a later chat switch cannot redirect a write). */
+    function messageTarget(): { ref: ChatRef; id: string } | null {
+        const ref = currentChatRef();
+        return ref && messageId ? { ref, id: messageId } : null;
+    }
+
+    /**
+     * Alerts and returns true when a generation locks any of `ids` (checked when the write is made:
+     * a continue may have started while a dialog was open, and the button state alone is stale).
+     */
+    function refuseLocked(ref: ChatRef, ids: readonly string[]): boolean {
+        if (ids.some((id) => isMessageLocked(ref, id))) {
+            alertError(language.chatGenerating);
+            return true;
+        }
+        return false;
+    }
+
+    /** Removes the message and every message after it (by id, where they are now). */
+    function removeFromMessage(target: { ref: ChatRef; id: string }) {
+        const messages = findChat(target.ref)?.message ?? [];
+        const index = messages.findIndex((entry) => entry.chatId === target.id);
+        if (index !== -1) {
+            const ids = messages.slice(index).map((entry) => entry.chatId);
+            if (!refuseLocked(target.ref, ids)) {
+                removeMessages(target.ref, ids);
+            }
+        }
+    }
+
     async function rm(e: MouseEvent, rec?: boolean) {
+        const target = messageTarget();
+        if (!target || locked) {
+            return;
+        }
         if (e.shiftKey) {
-            let msg =
-                DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message;
-            msg = msg.slice(0, idx);
-            DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message =
-                msg;
+            removeFromMessage(target);
             return;
         }
 
@@ -147,33 +212,27 @@
         if (rm) {
             if (DBState.db.instantRemove || rec) {
                 const r = await alertConfirm(language.instantRemoveConfirm);
-                let msg =
-                    DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage]
-                        .message;
                 if (!r) {
-                    msg = msg.slice(0, idx);
-                } else {
-                    msg.splice(idx, 1);
+                    removeFromMessage(target);
+                } else if (!refuseLocked(target.ref, [target.id])) {
+                    removeMessages(target.ref, [target.id]);
                 }
-                DBState.db.characters[selIdState.selId].chats[
-                    DBState.db.characters[selIdState.selId].chatPage
-                ].message = msg;
-            } else {
-                let msg =
-                    DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage]
-                        .message;
-                msg.splice(idx, 1);
-                DBState.db.characters[selIdState.selId].chats[
-                    DBState.db.characters[selIdState.selId].chatPage
-                ].message = msg;
+            } else if (!refuseLocked(target.ref, [target.id])) {
+                removeMessages(target.ref, [target.id]);
             }
         }
     }
 
-    async function edit() {
-        DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message[
-            idx
-        ].data = message;
+    /** Saves the edited text; false (the editor stays open) when a generation locked the message meanwhile. */
+    function edit(): boolean {
+        const target = messageTarget();
+        if (target && refuseLocked(target.ref, [target.id])) {
+            return false;
+        }
+        if (target) {
+            setMessageText(target.ref, target.id, message);
+        }
+        return true;
     }
 
     function startOriginalEdit() {
@@ -185,8 +244,9 @@
         if (originalEditControlDisabled) return;
 
         if (editMode) {
-            editMode = false;
-            edit();
+            if (edit()) {
+                editMode = false;
+            }
         } else {
             startOriginalEdit();
         }
@@ -214,10 +274,14 @@
             return;
         }
 
+        const target = messageTarget();
+        if (target && refuseLocked(target.ref, [target.id])) {
+            return;
+        }
         message = e.detail.newData;
-        DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message[
-            idx
-        ].data = e.detail.newData;
+        if (target) {
+            setMessageText(target.ref, target.id, e.detail.newData);
+        }
         displaya(e.detail.newData);
     }
 
@@ -376,73 +440,73 @@
         const triggerId = origin.getAttribute("risu-id");
         const btnEvent = origin.getAttribute("risu-btn");
 
-        const triggerResult = triggerName
-            ? await runTrigger(currentChar, "manual", {
-                  chat: getCurrentChat(),
-                  manualName: triggerName,
-                  triggerId: triggerId || undefined,
-              })
-            : btnEvent
-              ? await runLuaButtonTrigger(currentChar, btnEvent)
-              : null;
+        // A manual trigger works on a copy of the chat and its changes are applied afterwards; a Lua
+        // button works on the live chat and writes through the chat module as it runs.
+        const ref = currentChatRef();
+        const baseline = triggerName && ref ? captureChatBaseline(ref) : null;
+        try {
+            const triggerResult = triggerName
+                ? await runTrigger(currentChar, "manual", {
+                      chat: ref ? findChat(ref) : getCurrentChat(),
+                      chatRef: ref,
+                      manualName: triggerName,
+                      triggerId: triggerId || undefined,
+                  })
+                : btnEvent
+                  ? await runLuaButtonTrigger(currentChar, btnEvent, ref)
+                  : null;
 
-        if (triggerResult) {
-            setCurrentChat(triggerResult.chat);
-            ReloadChatPointer.update((v) => {
-                v[idx] = (v[idx] ?? 0) + 1;
-                return v;
-            });
-        }
-
-        if (triggerName && triggerId) {
-            setTimeout(() => {
-                CurrentTriggerIdStore.set(null);
-            }, 100); // Small delay to allow display mode to complete
+            if (triggerResult) {
+                if (baseline) {
+                    // Throws (shown by the global error alert) when the trigger changed a locked message.
+                    applyChatResult(baseline, triggerResult.chat);
+                }
+                ReloadChatPointer.update((v) => {
+                    v[idx] = (v[idx] ?? 0) + 1;
+                    return v;
+                });
+            }
+        } finally {
+            if (triggerName && triggerId) {
+                setTimeout(() => {
+                    CurrentTriggerIdStore.set(null);
+                }, 100); // Small delay to allow display mode to complete
+            }
         }
     }
 
     let isBookmarked = $derived(
-        DBState.db.characters[selIdState.selId]?.chats[
-            DBState.db.characters[selIdState.selId].chatPage
-        ]?.bookmarks?.includes(
-            DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message[idx]
-                ?.chatId,
-        ) ?? false,
+        messageId !== undefined &&
+            (DBState.db.characters[selIdState.selId]?.chats[
+                DBState.db.characters[selIdState.selId].chatPage
+            ]?.bookmarks?.includes(messageId) ??
+                false),
     );
 
     async function toggleBookmark() {
-        const chat = DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage];
+        const target = messageTarget();
+        const chat = target ? findChat(target.ref) : undefined;
+        const current = chat?.message.find((entry) => entry.chatId === target?.id);
+        if (!target || !chat || !current) return;
 
-        if (!chat.message[idx]) return;
+        const bookmarkedId = target.id;
+        const messageContent = current.data;
+        const bookmarks = [...(chat.bookmarks ?? [])];
+        const bookmarkNames = { ...(chat.bookmarkNames ?? {}) };
 
-        let messageId = chat.message[idx]?.chatId;
-        const messageContent = chat.message[idx]?.data;
-
-        if (!messageId) {
-            messageId = uuidv4();
-            chat.message[idx].chatId = messageId;
-        }
-
-        chat.bookmarks ??= [];
-        chat.bookmarkNames ??= {};
-
-        const bookmarkIndex = chat.bookmarks.indexOf(messageId);
+        const bookmarkIndex = bookmarks.indexOf(bookmarkedId);
 
         if (bookmarkIndex > -1) {
-            chat.bookmarks.splice(bookmarkIndex, 1);
-            delete chat.bookmarkNames[messageId];
+            bookmarks.splice(bookmarkIndex, 1);
+            delete bookmarkNames[bookmarkedId];
         } else {
-            chat.bookmarks.push(messageId);
+            bookmarks.push(bookmarkedId);
 
-            const msgSender = chat.message[idx]?.role === "user" ? getUserName() : name;
-            const newName = await alertInput(
-                language.bookmarkAskNameOrDefault,
-                [],
-                chat.bookmarkNames[messageId] || "",
-            );
+            const msgSender = current.role === "user" ? getUserName() : name;
+            const newName = await alertInput(language.bookmarkAskNameOrDefault, [], bookmarkNames[bookmarkedId] || "");
 
             if (newName && newName.trim() !== "") {
-                chat.bookmarkNames[messageId] = newName;
+                bookmarkNames[bookmarkedId] = newName;
             } else {
                 let defaultName;
 
@@ -488,11 +552,11 @@
                 if (!defaultName) {
                     defaultName = messageContent.slice(0, 50) + "...";
                 }
-                chat.bookmarkNames[messageId] = msgSender + "| " + defaultName;
+                bookmarkNames[bookmarkedId] = msgSender + "| " + defaultName;
             }
         }
 
-        chat.bookmarks = [...chat.bookmarks];
+        setChatMeta(target.ref, { bookmarks, bookmarkNames });
     }
 </script>
 
@@ -641,7 +705,7 @@
                 />
             {/key}
         </span>
-        {#if idx >= 0 && !editMode && !editTranslationMode && !isOptimizedStreamingMessage && partialEditEnabled && (DBState.db.enableBlockPartialEdit || DBState.db.enableDragPartialEdit)}
+        {#if idx >= 0 && !editMode && !editTranslationMode && !isOptimizedStreamingMessage && !locked && partialEditEnabled && (DBState.db.enableBlockPartialEdit || DBState.db.enableDragPartialEdit)}
             <PartialEditController
                 messageData={message}
                 chatIndex={idx}
@@ -1008,7 +1072,9 @@
             </button>
         {/if}
         <button
-            class="flex items-center hover:text-blue-500 transition-colors button-icon-remove"
+            class={"flex items-center transition-colors button-icon-remove " +
+                (locked ? "opacity-50 cursor-not-allowed" : "hover:text-blue-500")}
+            disabled={locked}
             onclick={(e) => rm(e, false)}
             use:longpress={(e) => rm(e, true)}
         >
@@ -1065,6 +1131,8 @@
             <button
                 class="flex items-center hover:text-blue-500 transition-colors button-icon-unreroll"
                 class:dyna-icon={rerollIcon === "dynamic"}
+                class:opacity-50={locked}
+                disabled={locked}
                 onclick={unReroll}
             >
                 <ArrowLeft size={22} />
@@ -1075,6 +1143,8 @@
             <button
                 class="flex items-center hover:text-blue-500 transition-colors button-icon-reroll"
                 class:dyna-icon={rerollIcon === "dynamic"}
+                class:opacity-50={locked}
+                disabled={locked}
                 onclick={onReroll}
             >
                 <ArrowRight size={22} />
@@ -1083,6 +1153,8 @@
             <button
                 class="flex items-center hover:text-blue-500 transition-colors button-icon-reroll"
                 class:dyna-icon={rerollIcon === "dynamic"}
+                class:opacity-50={locked}
+                disabled={locked}
                 onclick={onReroll}
             >
                 <RefreshCcwIcon size={20} />
@@ -1112,9 +1184,13 @@
     <button
         class="flex items-center hover:text-blue-500 transition-colors"
         onclick={async () => {
+            const target = messageTarget();
             await sleep(1);
-            const currentChat =
-                DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage];
+            const currentChat = target ? findChat(target.ref) : undefined;
+            const branchIndex = currentChat?.message.findIndex((entry) => entry.chatId === target?.id) ?? -1;
+            if (!target || !currentChat || branchIndex === -1) {
+                return;
+            }
 
             if (DBState.db.createFolderOnBranch && !currentChat.folderId) {
                 const folderId = v4();
@@ -1124,15 +1200,12 @@
                     name: `Branches of ${currentChat.name}`,
                     folded: false,
                 });
-                currentChat.folderId = folderId;
+                setChatMeta(target.ref, { folderId });
             }
 
-            const currentMessage = currentChat.message[idx];
-            const newChat = $state.snapshot(currentChat);
-            newChat.name = createChatCopyName(newChat.name, "Branch");
-            newChat.id = v4();
-            newChat.message = newChat.message.slice(0, idx + 1);
-            newChat.message.push({
+            const currentMessage = currentChat.message[branchIndex];
+            const source = $state.snapshot(currentChat);
+            const branchComment: Message = {
                 role: "char",
                 data:
                     "{{specialcomment::branchedfrom::" +
@@ -1145,9 +1218,15 @@
                 isComment: true,
                 disabled: true,
                 chatId: v4(),
-            });
+            };
+            const newChat = {
+                ...source,
+                name: createChatCopyName(source.name, "Branch"),
+                id: v4(),
+                message: [...source.message.slice(0, branchIndex + 1), branchComment],
+            };
 
-            DBState.db.characters[selIdState.selId].chats.unshift(newChat);
+            createChat(target.ref.chaId, newChat, { index: 0, select: true });
             changeChatTo(0);
         }}
     >
@@ -1159,15 +1238,17 @@
 
     <button
         class="flex items-center hover:text-blue-500 transition-colors"
+        class:opacity-50={locked}
+        disabled={locked}
         onclick={async () => {
+            const target = messageTarget();
             await sleep(1);
-            const currentMessage =
-                DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message[
-                    idx
-                ];
-            DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message[
-                idx
-            ].disabled = !currentMessage.disabled;
+            const currentMessage = target
+                ? findChat(target.ref)?.message.find((entry) => entry.chatId === target.id)
+                : undefined;
+            if (target && currentMessage && !refuseLocked(target.ref, [target.id])) {
+                replaceMessage(target.ref, { ...$state.snapshot(currentMessage), disabled: !currentMessage.disabled });
+            }
         }}
     >
         <PowerOff size={20} />
@@ -1178,15 +1259,20 @@
 
     <button
         class="flex items-center hover:text-blue-500 transition-colors"
+        class:opacity-50={locked}
+        disabled={locked}
         onclick={async () => {
+            const target = messageTarget();
             await sleep(1);
-            const currentMessage =
-                DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message[
-                    idx
-                ];
-            DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage].message[
-                idx
-            ].disabled = currentMessage.disabled === "allBefore" ? false : "allBefore";
+            const currentMessage = target
+                ? findChat(target.ref)?.message.find((entry) => entry.chatId === target.id)
+                : undefined;
+            if (target && currentMessage && !refuseLocked(target.ref, [target.id])) {
+                replaceMessage(target.ref, {
+                    ...$state.snapshot(currentMessage),
+                    disabled: currentMessage.disabled === "allBefore" ? false : "allBefore",
+                });
+            }
         }}
     >
         <Scissors size={20} />
@@ -1485,15 +1571,19 @@
                             >
                             <button
                                 class="ml-2 text-textcolor2 hover:text-textcolor"
+                                class:opacity-50={locked}
+                                disabled={locked}
                                 onclick={() => {
-                                    DBState.db.characters[selIdState.selId].chats[
-                                        DBState.db.characters[selIdState.selId].chatPage
-                                    ].message[idx].role =
-                                        DBState.db.characters[selIdState.selId].chats[
-                                            DBState.db.characters[selIdState.selId].chatPage
-                                        ].message[idx].role === "char"
-                                            ? "user"
-                                            : "char";
+                                    const target = messageTarget();
+                                    const current = target
+                                        ? findChat(target.ref)?.message.find((entry) => entry.chatId === target.id)
+                                        : undefined;
+                                    if (target && current && !refuseLocked(target.ref, [target.id])) {
+                                        replaceMessage(target.ref, {
+                                            ...$state.snapshot(current),
+                                            role: current.role === "char" ? "user" : "char",
+                                        });
+                                    }
                                     ReloadChatPointer.update((v) => {
                                         v[idx] = (v[idx] ?? 0) + 1;
                                         return v;

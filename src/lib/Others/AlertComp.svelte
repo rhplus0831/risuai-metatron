@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import { alertGenerationInfoStore } from "../../ts/alert";
 
     import { DBState } from "src/ts/stores.svelte";
@@ -23,7 +24,7 @@
     import ModuleChatMenu from "../Setting/Pages/Module/ModuleChatMenu.svelte";
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
     import { getChatBranches } from "src/ts/gui/branches";
-    import { getCurrentCharacter } from "src/ts/storage/database.svelte";
+    import { type Chat, getCurrentCharacter, getCurrentChat } from "src/ts/storage/database.svelte";
     import { translateStackTrace } from "../../ts/sourcemap";
     import { getDetailedOSLabel, getFallbackOSLabel, getRisuEnvironmentLabel } from "src/ts/platform";
     import versionData from "../../../version.json";
@@ -178,6 +179,17 @@
             return data;
         }
     };
+
+    /** Edits the text of one HypaV2 chunk of the selected chat (the whole memory data is saved through the chat module). */
+    function setHypaV2ChunkText(list: "chunks" | "mainChunks", index: number, text: string) {
+        const data = getCurrentChat()?.hypaV2Data;
+        if (!data?.[list]?.[index]) {
+            return;
+        }
+        const next = JSON.parse(JSON.stringify(data)) as Chat["hypaV2Data"];
+        next[list][index].text = text;
+        setCurrentChatMeta({ hypaV2Data: next });
+    }
 </script>
 
 {#if $alertStore.type !== "none" && $alertStore.type !== "toast" && $alertStore.type !== "cardexport" && $alertStore.type !== "branches" && $alertStore.type !== "selectModule" && $alertStore.type !== "pukmakkurit" && $alertStore.type !== "requestlogs"}
@@ -647,7 +659,9 @@
                 {#if generationInfoMenuIndex === 0}
                     <div class="flex flex-col gap-2 w-full">
                         {#each DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].hypaV2Data.chunks as chunk, i}
-                            <TextAreaInput bind:value={chunk.text} />
+                            <TextAreaInput
+                                bind:value={() => chunk.text, (text) => setHypaV2ChunkText("chunks", i, text)}
+                            />
                         {/each}
 
                         <!-- Adding non-bound chunk is not okay, change the user flow to edit existing ones. -->
@@ -661,7 +675,9 @@
                             {:else}
                                 <span>Inactive</span>
                             {/if}
-                            <TextAreaInput bind:value={chunk.text} />
+                            <TextAreaInput
+                                bind:value={() => chunk.text, (text) => setHypaV2ChunkText("mainChunks", i, text)}
+                            />
                         </div>
                     {/each}
                 {/if}

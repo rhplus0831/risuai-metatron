@@ -1,3 +1,4 @@
+import { appendMessage } from "../storage/chatStore.svelte";
 import shuffle from "lodash/shuffle";
 import { findCharacterbyId } from "../util";
 import { alertConfirm, alertError, alertSelectChar } from "../alert";
@@ -16,11 +17,13 @@ export async function addGroupChar() {
                 alertError(language.errors.alreadyCharInGroup);
             } else {
                 if (await alertConfirm(language.askLoadFirstMsg)) {
-                    group.chats[group.chatPage].message.push({
-                        role: "char",
-                        data: findCharacterbyId(res).firstMessage,
-                        saying: res,
-                    });
+                    const chat = group.chats[group.chatPage];
+                    if (chat?.id) {
+                        appendMessage(
+                            { chaId: group.chaId, chatId: chat.id },
+                            { role: "char", data: findCharacterbyId(res).firstMessage, saying: res },
+                        );
+                    }
                 }
 
                 group.characters.push(res);

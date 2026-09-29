@@ -13,7 +13,7 @@ vi.mock(
         ({
             appVer: "1234.5.67",
             getCurrentCharacter: () => ({}),
-            getCurrentChat: () => ({}),
+            getCurrentChat: () => DBState.db.characters[0].chats[0],
             getDatabase: () => ({}),
         }) as typeof import("../../storage/database.svelte"),
 );
@@ -29,9 +29,11 @@ vi.mock(import("../../stores.svelte"), () => {
             db: {
                 characters: [
                     {
+                        chaId: "c",
                         chatPage: 0,
                         chats: [
                             {
+                                id: "k",
                                 scriptstate: {},
                             },
                         ],
@@ -46,7 +48,7 @@ vi.mock(import("../../stores.svelte"), () => {
             selId: 0,
         },
         selectedCharID: writable(0),
-    } as typeof import("../../stores.svelte");
+    } as unknown as typeof import("../../stores.svelte");
 });
 
 //#endregion

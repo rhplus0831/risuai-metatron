@@ -1,6 +1,5 @@
 import { getDatabase, setDatabase } from "src/ts/storage/database.svelte";
-import { DBState, selectedCharID } from "src/ts/stores.svelte";
-import { get } from "svelte/store";
+import { appendMessage, currentChatRef, findChat } from "../../storage/chatStore.svelte";
 import { doingChat, sendChat } from "../index.svelte";
 import { downloadFile } from "src/ts/globalApi.svelte";
 import { HypaProcesser } from "../memory/hypamemory";
@@ -18,8 +17,11 @@ async function sendPofile(arg: sendFileArg) {
     let note = "";
     let speaker = "";
     let parseMode = 0;
-    let currentChar = DBState.db.characters[get(selectedCharID)];
-    let currentChat = currentChar.chats[currentChar.chatPage];
+    // Every line is sent in the chat selected when the file was sent.
+    const ref = currentChatRef();
+    if (!ref) {
+        return;
+    }
     const lines = arg.file.split("\n");
     for (let i = 0; i < lines.length; i++) {
         console.log(i);
@@ -36,17 +38,13 @@ async function sendPofile(arg: sendFileArg) {
             if (note !== "") {
                 text = `Note: ${note}\n${text}`;
             }
-            currentChat.message.push({
-                role: "user",
-                data: text,
-            });
-            currentChar.chats[currentChar.chatPage] = currentChat;
-            DBState.db.characters[get(selectedCharID)] = currentChar;
+            appendMessage(ref, { role: "user", data: text });
             doingChat.set(false);
-            await sendChat(-1);
-            currentChar = DBState.db.characters[get(selectedCharID)];
-            currentChat = currentChar.chats[currentChar.chatPage];
-            const res = currentChat.message[currentChat.message.length - 1];
+            await sendChat(-1, { target: ref });
+            const res = findChat(ref)?.message.at(-1);
+            if (!res) {
+                break;
+            }
             const msgStr = res.data
                 .split("\n")
                 .filter((a) => {

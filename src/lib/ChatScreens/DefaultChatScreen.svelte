@@ -35,6 +35,18 @@
     import { tick } from "svelte";
     import Chat from "./Chat.svelte";
     import { type Message } from "../../ts/storage/database.svelte";
+    import {
+        appendMessage,
+        applyChatResult,
+        captureChatBaseline,
+        type ChatRef,
+        currentChatRef,
+        findChat,
+        isChatGenerating,
+        setChatMeta,
+        setMessageText,
+    } from "../../ts/storage/chatStore.svelte";
+    import { editChatSync } from "../../ts/storage/chatEdits";
     import { DBState } from "src/ts/stores.svelte";
     import { getCharImage } from "../../ts/characters";
     import { chatProcessStage, doingChat, sendChat } from "../../ts/process/index.svelte";
@@ -166,7 +178,6 @@
     }
 
     async function sendMain(continueResponse: boolean) {
-        let selectedChar = $selectedCharID;
         if ($doingChat) {
             return;
         }
@@ -175,7 +186,13 @@
             rerollid = -1;
         }
 
-        let cha = DBState.db.characters[selectedChar].chats[DBState.db.characters[selectedChar].chatPage].message;
+        // The chat this send writes to, captured before any await; everything after an await
+        // resolves it again by id (and stops when it is gone).
+        const ref = currentChatRef();
+        if (!ref) {
+            return;
+        }
+        const characterOf = () => DBState.db.characters.find((character) => character?.chaId === ref.chaId);
 
         if (messageInput.startsWith("/")) {
             const commandProcessed = await processMultiCommand(messageInput);
@@ -183,6 +200,11 @@
                 messageInput = "";
                 return;
             }
+        }
+        const char = characterOf();
+        const cha = findChat(ref)?.message;
+        if (!char || !cha) {
+            return;
         }
 
         if (fileInput.length > 0) {
@@ -193,44 +215,39 @@
         }
 
         if (messageInput === "") {
-            if (DBState.db.characters[selectedChar].type !== "group") {
+            if (char.type !== "group") {
                 if (cha.length === 0 || cha[cha.length - 1].role !== "user") {
                     if (DBState.db.useSayNothing) {
-                        cha.push({
-                            role: "user",
-                            data: "*says nothing*",
-                        });
+                        appendMessage(ref, { role: "user", data: "*says nothing*" });
                     }
                 }
             }
         } else {
-            const char = DBState.db.characters[selectedChar];
             if (char.type === "character") {
-                let triggerResult = await runTrigger(char, "input", { chat: char.chats[char.chatPage] });
-                if (triggerResult) {
-                    cha = triggerResult.chat.message;
+                const baseline = captureChatBaseline(ref);
+                let triggerResult = await runTrigger(char, "input", { chat: findChat(ref), chatRef: ref });
+                if (!findChat(ref)) {
+                    // The chat went away while the trigger ran: the send is cancelled.
+                    return;
                 }
-
-                cha.push({
-                    role: "user",
-                    data: await processScript(char, messageInput, "editinput"),
-                    time: Date.now(),
-                });
+                if (triggerResult) {
+                    applyChatResult(baseline, triggerResult.chat);
+                }
+                const data = await processScript(char, messageInput, "editinput", {}, ref);
+                if (!findChat(ref)) {
+                    return;
+                }
+                appendMessage(ref, { role: "user", data, time: Date.now() });
             } else {
-                cha.push({
-                    role: "user",
-                    data: messageInput,
-                    time: Date.now(),
-                });
+                appendMessage(ref, { role: "user", data: messageInput, time: Date.now() });
             }
         }
         messageInput = "";
         messageInputTranslate = "";
-        DBState.db.characters[selectedChar].chats[DBState.db.characters[selectedChar].chatPage].message = cha;
         rerolls = [];
         await sleep(10);
         updateInputSizeAll();
-        await sendChatMain(continueResponse);
+        await sendChatMain(continueResponse, ref);
     }
 
     async function reroll() {
@@ -241,31 +258,37 @@
             rerolls = [];
             rerollid = -1;
         }
-        const genId =
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message.at(-1)
-                ?.generationInfo?.generationId;
+        const ref = currentChatRef();
+        if (!ref) {
+            return;
+        }
+        // The last reply stays locked until its final write is acknowledged, after the send returned.
+        if (isChatGenerating(ref)) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        const lastMessage =
+            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message.at(
+                -1,
+            );
+        const genId = lastMessage?.generationInfo?.generationId;
         if (genId) {
             const r = Prereroll(genId);
             if (r) {
-                DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message[
-                    DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
-                        .message.length - 1
-                ].data = r;
+                setMessageText(ref, lastMessage.chatId, r);
                 return;
             }
         }
         if (rerollid < rerolls.length - 1) {
             if (Array.isArray(rerolls[rerollid + 1])) {
                 rerollid += 1;
-                let rerollData = safeStructuredClone(rerolls[rerollid]);
-                let msgs =
-                    DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
-                        .message;
-                for (let i = 0; i < rerollData.length; i++) {
-                    msgs[msgs.length - rerollData.length + i] = rerollData[i];
-                }
-                DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message =
-                    msgs;
+                const rerollData = safeStructuredClone(rerolls[rerollid]);
+                // The last messages become the stored reroll (by id: the replaced ones go, these come).
+                editChatSync(ref, (chat) => {
+                    for (let i = 0; i < rerollData.length; i++) {
+                        chat.message[chat.message.length - rerollData.length + i] = rerollData[i];
+                    }
+                });
             }
             return;
         }
@@ -275,13 +298,13 @@
                     DBState.db.characters[$selectedCharID].chats[
                         DBState.db.characters[$selectedCharID].chatPage
                     ].message.at(-1),
-                ]),
+                ]) as Message[],
             );
             rerollid = rerolls.length - 1;
         }
         let cha = safeStructuredClone(
             DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message,
-        );
+        ) as Message[];
         if (cha.length === 0) {
             return;
         }
@@ -300,7 +323,11 @@
                 return;
             }
         }
-        DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message = cha;
+        // The replies after the last user message go, then the send runs again.
+        const kept = new Set(cha.map((message) => message.chatId));
+        editChatSync(ref, (chat) => {
+            chat.message = chat.message.filter((message) => kept.has(message.chatId));
+        });
         await sendChatMain();
     }
 
@@ -312,16 +339,24 @@
             rerolls = [];
             rerollid = -1;
         }
-        const genId =
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message.at(-1)
-                ?.generationInfo?.generationId;
+        const ref = currentChatRef();
+        if (!ref) {
+            return;
+        }
+        // The last reply stays locked until its final write is acknowledged, after the send returned.
+        if (isChatGenerating(ref)) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        const lastMessage =
+            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message.at(
+                -1,
+            );
+        const genId = lastMessage?.generationInfo?.generationId;
         if (genId) {
             const r = PreUnreroll(genId);
             if (r) {
-                DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message[
-                    DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
-                        .message.length - 1
-                ].data = r;
+                setMessageText(ref, lastMessage.chatId, r);
                 return;
             }
         }
@@ -330,41 +365,34 @@
         }
         if (Array.isArray(rerolls[rerollid - 1])) {
             rerollid -= 1;
-            let rerollData = safeStructuredClone(rerolls[rerollid]);
-            let msgs =
-                DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message;
-            for (let i = 0; i < rerollData.length; i++) {
-                msgs[msgs.length - rerollData.length + i] = rerollData[i];
-            }
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message =
-                msgs;
+            const rerollData = safeStructuredClone(rerolls[rerollid]);
+            editChatSync(ref, (chat) => {
+                for (let i = 0; i < rerollData.length; i++) {
+                    chat.message[chat.message.length - rerollData.length + i] = rerollData[i];
+                }
+            });
         }
     }
 
     let abortController: null | AbortController = null;
 
-    async function sendChatMain(continued: boolean = false) {
-        let previousLength =
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message
-                .length;
+    /** Sends in `target` (default: the selected chat now), captured by the caller before its awaits. */
+    async function sendChatMain(continued: boolean = false, target: ChatRef | null = currentChatRef()) {
+        if (!target) {
+            return;
+        }
+        let previousLength = findChat(target)?.message.length ?? 0;
         messageInput = "";
         abortController = new AbortController();
         try {
             await sendChat(-1, {
+                target,
                 signal: abortController.signal,
                 continue: continued,
             });
-            if (
-                previousLength <
-                DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message
-                    .length
-            ) {
-                rerolls.push(
-                    safeStructuredClone(
-                        DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
-                            .message,
-                    ).slice(previousLength),
-                );
+            const messages = findChat(target)?.message ?? [];
+            if (previousLength < messages.length) {
+                rerolls.push((safeStructuredClone(messages) as Message[]).slice(previousLength));
                 rerollid = rerolls.length - 1;
             }
         } catch (error) {
@@ -780,18 +808,10 @@
                 {:else}
                     <div
                         onclick={(e) => {
-                            DBState.db.characters[$selectedCharID].chats[
-                                DBState.db.characters[$selectedCharID].chatPage
-                            ].message.push({
-                                role: "char",
-                                data: "",
-                            });
-                            DBState.db.characters[$selectedCharID].chats[
-                                DBState.db.characters[$selectedCharID].chatPage
-                            ] =
-                                DBState.db.characters[$selectedCharID].chats[
-                                    DBState.db.characters[$selectedCharID].chatPage
-                                ];
+                            const ref = currentChatRef();
+                            if (ref) {
+                                appendMessage(ref, { role: "char", data: "" });
+                            }
                         }}
                         class="peer-focus:border-textcolor mr-2 flex border-y border-r border-darkborderc justify-center items-center text-textcolor p-3 rounded-r-md hover:bg-blue-500 hover:text-white transition-colors"
                         style:height={inputHeight}
@@ -965,37 +985,23 @@
                         firstMessage={true}
                         onReroll={() => {
                             const cha = DBState.db.characters[$selectedCharID];
-                            const chat =
-                                DBState.db.characters[$selectedCharID].chats[
-                                    DBState.db.characters[$selectedCharID].chatPage
-                                ];
-                            if (cha.type !== "group") {
-                                if (chat.fmIndex >= cha.alternateGreetings.length - 1) {
-                                    chat.fmIndex = -1;
-                                } else {
-                                    chat.fmIndex += 1;
-                                }
+                            const ref = currentChatRef();
+                            const chat = ref ? findChat(ref) : undefined;
+                            if (cha.type !== "group" && ref && chat) {
+                                setChatMeta(ref, {
+                                    fmIndex: chat.fmIndex >= cha.alternateGreetings.length - 1 ? -1 : chat.fmIndex + 1,
+                                });
                             }
-                            DBState.db.characters[$selectedCharID].chats[
-                                DBState.db.characters[$selectedCharID].chatPage
-                            ] = chat;
                         }}
                         unReroll={() => {
                             const cha = DBState.db.characters[$selectedCharID];
-                            const chat =
-                                DBState.db.characters[$selectedCharID].chats[
-                                    DBState.db.characters[$selectedCharID].chatPage
-                                ];
-                            if (cha.type !== "group") {
-                                if (chat.fmIndex === -1) {
-                                    chat.fmIndex = cha.alternateGreetings.length - 1;
-                                } else {
-                                    chat.fmIndex -= 1;
-                                }
+                            const ref = currentChatRef();
+                            const chat = ref ? findChat(ref) : undefined;
+                            if (cha.type !== "group" && ref && chat) {
+                                setChatMeta(ref, {
+                                    fmIndex: chat.fmIndex === -1 ? cha.alternateGreetings.length - 1 : chat.fmIndex - 1,
+                                });
                             }
-                            DBState.db.characters[$selectedCharID].chats[
-                                DBState.db.characters[$selectedCharID].chatPage
-                            ] = chat;
                         }}
                         isLastMemory={false}
                         currentPage={(DBState.db.characters[$selectedCharID].chats[
@@ -1133,13 +1139,12 @@
                                 class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
                                 onclick={() => {
                                     if (DBState.db.hypav2) {
-                                        DBState.db.characters[$selectedCharID].chats[
-                                            DBState.db.characters[$selectedCharID].chatPage
-                                        ].hypaV2Data ??= {
-                                            lastMainChunkID: 0,
-                                            mainChunks: [],
-                                            chunks: [],
-                                        };
+                                        const ref = currentChatRef();
+                                        if (ref && !findChat(ref)?.hypaV2Data) {
+                                            setChatMeta(ref, {
+                                                hypaV2Data: { lastMainChunkID: 0, mainChunks: [], chunks: [] },
+                                            });
+                                        }
                                         showHypaV2Alert();
                                     } else if (DBState.db.hypaV3) {
                                         $hypaV3ModalOpen = true;
@@ -1213,9 +1218,6 @@
                     <div
                         class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
                         onclick={() => {
-                            DBState.db.characters[$selectedCharID].chats[
-                                DBState.db.characters[$selectedCharID].chatPage
-                            ].modules ??= [];
                             openModuleList = true;
                             openMenu = false;
                         }}

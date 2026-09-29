@@ -77,20 +77,22 @@ Send, in `DefaultChatScreen.svelte`:
    3. Append queued `{{inlayed::id}}` tags.
    4. `runTrigger(...,'input')`.
    5. `processScript(...,'editinput')`.
-   6. Push the user `Message`.
+   6. Append the user `Message` (`appendMessage`; the input trigger's changes to the messages are applied with `applyChatResult`).
    7. `sendChatMain`.
-2. `sendChatMain` creates an `AbortController` and calls `sendChat(-1, {signal, continue})`.
-3. `reroll`/`unReroll` use `Prereroll`/`PreUnreroll`. If those have nothing, they remove the last reply and call `sendChatMain` again.
+2. `sendChatMain` creates an `AbortController` and calls `sendChat(-1, {target, signal, continue})`, where `target` is the chat `sendMain` captured before the input trigger's awaits (commands and multisend capture theirs the same way).
+3. `reroll`/`unReroll` refuse with the `chatGenerating` alert while the chat holds a lock (the last reply stays locked until its final write is acknowledged, after the send returned; the buttons are disabled meanwhile). They use `Prereroll`/`PreUnreroll` (`setMessageText`) and swap stored rerolls with `editChatSync`. If those have nothing, they remove the replies after the last user message (`editChatSync`) and call `sendChatMain` again.
 
 `sendChat` in `index.svelte.ts`:
+
+`sendChat` wraps `sendChatInner` with a `GenerationScope` and ends the scope's generation whatever happens (return, throw, abort).
 
 1. Setup:
    1. Stages and abort.
    2. Optional random preset from `presetChain`.
-   3. Resolve `selectedCharID` and `chatPage`.
-   4. Assign missing `chatId`s.
+   3. Capture the chat this send runs on as `chatTarget` (a `ChatRef`): `arg.target`, or the selected chat. Every later read (`chatNow`) and write resolves the chat and its messages by id, whatever is selected, reordered, or deleted meanwhile. The code the send calls gets it too: every `risuChatParser` call (`chatRef`: CBS chat variables, per-chat global-variable overrides, `#if` variable and toggle conditions, and chat/history, persona, and module macros read that chat), `processScript`/`processScriptFull` (regex scripts and their cache key, `@@inject`, `@@repeat_back`, Lua edit hooks), triggers (`runTrigger`'s `chatRef`: the CBS in their effects, their Lua, and their `v2Command` lines; display and request runs read it but never write it), `loadLoreBookV3Prompt`, the enabled modules (`getModules(chatRef)` and its lore, trigger, regex, asset, and toggle getters), the bound persona (`getUserName`, `getPersonaPrompt`, `additionalInformations`), the `editRequest` hook and the request trigger (`requestChatData`'s `chatRef`), and output listeners (indices resolved from it before each listener). Recursive sends (group speakers by `speakerChaId`, auto-continue with `continueMessageId`, trigger resends) pass it on. A send whose chat disappears while the provider answers stops before any output hook. The reply is appended with `chatId: generationId`; other messages get their ids from the chat module.
+   4. A continue locks the message it extends (`continueMessageId`, or the chat's last message) at once, before any await; the finally of `sendChat` releases it on failure or abort.
 2. Groups: `sendChat(-1)` computes `groupOrder`, then recursively calls `sendChat(index)` once per selected speaker.
-3. `runCurrentChatFunction` runs CBS with `runVar: true` over the history. The prompt buckets are `main`, `jailbreak`, `chats`, `lorebook`, `globalNote`, `authorNote`, `lastChat`, `description`, `postEverything`, and `personaPrompt`.
+3. `runCurrentChatFunction` runs CBS with `runVar: true` over the history and writes changed texts with `setMessageText` (the reply with its generation's capability). The prompt buckets are `main`, `jailbreak`, `chats`, `lorebook`, `globalNote`, `authorNote`, `lastChat`, `description`, `postEverything`, and `personaPrompt`.
 4. Lore: `loadLoreBookV3Prompt` returns the active entries, placed by position:
    - default → `lorebook`,
    - `before_desc`/`after_desc`/personality/scenario → description,
@@ -103,7 +105,7 @@ Send, in `DefaultChatScreen.svelte`:
    3. The first greeting, run through `editprocess`.
    4. Messages, skipping `disabled`, converted to `OpenAIChat` and marked `removable`.
    5. Depth lore spliced in.
-6. Memory: the first enabled of `hanuraiMemory` → `hypaMemoryV2` → `hypaMemoryV3` → `supaMemory` (see `memory.md`). Without memory, drop the oldest chats until under `maxContext`.
+6. Memory: the first enabled of `hanuraiMemory` → `hypaMemoryV2` → `hypaMemoryV3` → `supaMemory` (see `memory.md`), each given a detached copy of the chat; the memory data they return is saved with `setChatMeta` (`hypaV2Data`, `hypaV3Data` incl. the error-summary path, `supaMemoryData`, `lastMemory`). Without memory, drop the oldest chats until under `maxContext`.
 7. Final template pass:
    1. Materialize the cards in order.
    2. `systemizeChat` when `sendChatAsSystem`.
@@ -115,10 +117,11 @@ Send, in `DefaultChatScreen.svelte`:
    8. Reduce `outputTokens` to fit.
 8. `requestChatData(..., 'model', abortSignal)` returns `success | fail | streaming | multiline`.
 9. Streaming:
-   1. Create or reuse the reply `Message` and set `Chat.isStreaming`.
-   2. For each chunk: apply `processScriptFull(...,'editoutput')` and write the cumulative text to `message.data`.
-   3. Then: `runTrigger('output')`, `runInlayScreen`, `runChatOutputListeners` (plugins), and `sayTTS` if `ttsAutoSpeech`.
-   4. Non-streaming replies take the same path. Extra `multiline` outputs become reroll alternatives.
+   1. Append the reply `Message` (id = the generation id), or for continue use the message locked at the start and keep its id. `startGeneration` locks it (`beginGeneration`: the server fences the message for this generation) and sets `streamingState`.
+   2. For each chunk: apply `processScriptFull(...,'editoutput')` and write the cumulative text with `setMessageText(..., { generationId })` on the 125 ms display coalescer. The chat module checkpoints the text every three seconds.
+   3. Then: `runTrigger('output')` (applied with `applyChatResult` and the generation's capability), `runInlayScreen`, `runChatOutputListeners` (plugins), `generationInfo`, and `sayTTS` if `ttsAutoSpeech`. The generation ends (its final text queued; the lock stays until the server acknowledges it) before the send recurses and when it returns.
+   4. Non-streaming replies: inlays run before the reply is appended; then the same tail. Extra `multiline` outputs become reroll alternatives.
+   5. Abort or a read failure keeps the text reached (the final write carries it; the strong display mode's deferred `editoutput` runs only on a completed stream); a tab killed mid-stream keeps the last acknowledged checkpoint, plus the best-effort `pagehide` request (see `persistence.md`).
 10. Tail:
     - Trigger `sendAIprompt` can recurse into a resend. Short or incomplete replies can auto-continue.
     - Emotion/IGP or image generation (`viewScreen === 'imggen'` → `stableDiff`), notifications.
@@ -135,7 +138,8 @@ Not in `sendChat`:
   - `memo` values `supaMemory`/`hypaMemory` mark memory cards.
 - `PromptItem` types: `plain|jailbreak|cot`, `chatML`, typed `persona|description|lorebook|postEverything|memory`, `authornote`, `chat` (with a range), and `cache`.
 - Reactive singletons: `DBState.db`, `selectedCharID`, `doingChat`, `chatProcessStage`, `CharEmotion`.
-- The pipeline mutates `DBState.db.characters[i].chats[j]` in place and relies on autosave.
+- The pipeline never mutates the chat in place: `chats` are read-only mirror fields, and every write goes through `src/ts/storage/chatStore.svelte.ts` (see `persistence.md`), addressed by chat and message id. Autosave does not see chats.
+- Streaming display: `streamingDisplayState` (`stores.svelte.ts`: `chaId`, `chatId`, `messageId`, `mode`) drives `Chats.svelte`; `Chat.svelte` disables the controls of a message `isMessageLocked` reports.
 
 ## Coupling
 
@@ -144,7 +148,9 @@ Not in `sendChat`:
 
 ## Invariants
 
-- `chatId` is the identity used to relocate a reply after triggers and inlays run. Never replace message arrays without preserving `chatId`.
+- `chatId` is the identity used to relocate a reply after triggers and inlays run, and the address of every message write. Never address a message by index after an await; resolve the id again.
+- Triggers run on a copy (`runTrigger` clones the chat; a display or request run copies only the chat and its message list and replaces messages instead of editing them). The caller captures a baseline before and applies the returned chat with `applyChatResult`. Lua outside triggers (edit hooks, buttons) writes the live chat through the module, resolving an index to an id when called.
+- The reply being generated is locked: only writes carrying its generation id change it. Other writers (UI, triggers, commands) skip it or get an error from the module.
 - Script modes are distinct:
 
   | Mode          | Stage                       |
@@ -182,9 +188,12 @@ Not in `sendChat`:
 
 - `src/ts/process/files/tests/inlays.test.ts`: over the fake resource server (`src/ts/storage/tests/fakeResourceServer.ts`) and an in-memory asset store, one fresh module per test: content-hash naming and de-duplicated uploads, the data-URI and Blob shapes with MIME reconstruction, signatures, the seeded, negative (with expiry), and in-flight caches, `invalidateInlayCaches` and the replacing `listInlayAssets`, the per-id write order, last-writer-wins after a conflict, 412 propagation, removal, `verifyInlay`, `repairInlayMedia`, `postInlayAsset` routing, and the `writeInlayImage` size properties.
 - Adjacent: `scriptings.test.ts`, `request/openAI/requests.responses.test.ts`, `ttsHooks.test.ts`.
-- Not tested: `sendChat` assembly and trimming, lore activation, group order, commands, multisend, `runInlayScreen`, Jinja rendering, reroll.
+- The chat module and the save loop's chat paths: `src/ts/storage/tests/chatStore.test.ts`, `resourceSyncChats.test.ts` (see `persistence.md`).
+- `src/ts/process/command.test.ts`: `/cut`, `/del`, `/send`/`/sendas`/`/comment`, the variable commands, the captured target across an await and a deleted target, `/trigger`, and `/multisend`'s busy flag, over the real chat module and server store.
+- Not tested: `sendChat` assembly and trimming, lore activation, group order, `runInlayScreen`, Jinja rendering, reroll.
 
 ## Known Hazards
 
 - `disable_ui_prompt` lore decorators are collected into `disabledUIPrompts`, but that array is never consumed.
 - `prereroll.ts` history is in memory only, and `DefaultChatScreen` keeps a second reroll array of its own.
+- A whole-chat result (trigger, plugin) is applied with last-writer semantics per message and field: a message another writer changed after the baseline keeps that change unless the result changed it too.

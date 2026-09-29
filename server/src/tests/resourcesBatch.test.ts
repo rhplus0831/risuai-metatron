@@ -23,9 +23,14 @@ async function defaultServer() {
 type BatchResult = { epoch: string; results: { kind: string; id: string; revision: string | null }[] };
 type BatchConflict = { error: string; conflicts: { kind: string; id: string; revision: string | null }[] };
 type ReadKinds = { epoch: string; kinds: Record<string, { id: string; revision: string; data: unknown }[]> };
-type ReadRefs = { epoch: string; items: { kind: string; id: string; revision: string | null; data: unknown }[] };
+type ReadRefs = {
+    epoch: string;
+    items: { kind: string; id: string; revision: string | null; data: unknown }[];
+    chats: unknown[];
+    chatCollections: unknown[];
+};
 
-const character = (id: string, extra: Record<string, unknown> = {}) => ({ chaId: id, chats: [], ...extra });
+const character = (id: string, extra: Record<string, unknown> = {}) => ({ chaId: id, ...extra });
 const create = (kind: string, id: string, data: unknown) => ({ kind, id, baseRevision: null, data });
 
 describe("POST /api/resources/batch", () => {
@@ -152,7 +157,7 @@ describe("POST /api/resources/batch", () => {
             ],
             [
                 "normalizer",
-                [create("characters", "x", { chaId: "y", chats: [] })],
+                [create("characters", "x", { chaId: "y" })],
                 "ops[0]: character.chaId must equal the resource id",
             ],
             [
@@ -162,8 +167,8 @@ describe("POST /api/resources/batch", () => {
             ],
             [
                 "later op",
-                [create("characters", "ok", character("ok")), create("characters", "bad", { chaId: "bad" })],
-                "ops[1]: character.chats must be an array",
+                [create("characters", "ok", character("ok")), create("characters", "bad", { chaId: "bad", chats: [] })],
+                "ops[1]: character must not hold chats",
             ],
         ];
         for (const [label, ops, error] of cases) {
@@ -171,19 +176,20 @@ describe("POST /api/resources/batch", () => {
             expect(res.status, label).toBe(400);
             expect(await res.json(), label).toEqual({ error });
         }
-        const envelope = "Body must be { ops } with 1 to 5000 operations";
-        for (const [label, body] of [
-            ["empty", { ops: [] }],
-            ["not an array", { ops: {} }],
-            ["missing", {}],
+        const envelope = "Body must be { ops?, chats?, chatOrders? } with 1 to 5000 operations";
+        for (const [label, body, error] of [
+            ["empty", { ops: [] }, envelope],
+            ["not an array", { ops: {} }, "ops must be an array"],
+            ["missing", {}, envelope],
             [
                 "too many",
                 { ops: Array.from({ length: 5001 }, (_, i) => create("characters", `c${i}`, character(`c${i}`))) },
+                envelope,
             ],
-        ] as [string, unknown][]) {
+        ] as [string, unknown, string][]) {
             const res = await s.json("/api/resources/batch", body);
             expect(res.status, label).toBe(400);
-            expect(await res.json(), label).toEqual({ error: envelope });
+            expect(await res.json(), label).toEqual({ error });
         }
         expect(await (await s.readKinds("root,characters,presets")).json()).toEqual({
             epoch: s.epoch,
@@ -247,13 +253,16 @@ describe("multi-kind and ref reads", () => {
                 { kind: "root", id: "main", revision: root, data: { username: "u" } },
                 { kind: "characters", id: "a", revision: a, data: character("a") },
             ],
+            chats: [],
+            chatCollections: [],
         } satisfies ReadRefs);
 
-        const envelope = "Body must be { refs } with 1 to 5000 entries";
+        const envelope = "Body must name 1 to 5000 entries";
         for (const [label, body, error] of [
             ["empty", { refs: [] }, envelope],
             ["missing", {}, envelope],
             ["too many", { refs: Array.from({ length: 5001 }, () => ({ kind: "characters", id: "a" })) }, envelope],
+            ["not arrays", { refs: {} }, "Body must be { refs?, chats?, chatCollections? } of arrays"],
             ["unknown kind", { refs: [{ kind: "nope", id: "a" }] }, "refs[0] must name a known kind and a valid id"],
             [
                 "invalid id",

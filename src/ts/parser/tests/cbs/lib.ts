@@ -11,7 +11,8 @@ export const cbs = (op: string, ...args: string[]): string =>
 export const resetChatVariables = (): void => {
     for (const char of DBState.db.characters) {
         for (const chat of char.chats) {
-            chat.scriptstate = {};
+            // The mocked mirror is plain data here (the module is the only writer in the app).
+            (chat as { scriptstate?: Record<string, unknown> }).scriptstate = {};
         }
         char.defaultVariables = "";
     }

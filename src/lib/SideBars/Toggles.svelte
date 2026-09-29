@@ -11,6 +11,7 @@
         type groupChat,
     } from "src/ts/storage/database.svelte";
     import Accordion from "../UI/Accordion.svelte";
+    import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import CheckInput from "../UI/GUI/CheckInput.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
@@ -265,10 +266,9 @@
                 check={getCurrentChat()?.useLocallySetGlobalVariables}
                 name={language.localToggles}
                 onChange={() => {
-                    const chatIndx = DBState.db.characters[$selectedCharID].chatPage;
-                    const chat = DBState.db.characters[$selectedCharID].chats[chatIndx];
+                    const chat = getCurrentChat();
                     if (chat) {
-                        chat.useLocallySetGlobalVariables = !chat.useLocallySetGlobalVariables;
+                        setCurrentChatMeta({ useLocallySetGlobalVariables: !chat.useLocallySetGlobalVariables });
                     }
                 }}
             />

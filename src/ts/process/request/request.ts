@@ -5,6 +5,8 @@ import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/mo
 import { risuChatParser, risuEscape, risuUnescape } from "../../parser/parser.svelte";
 import { pluginHooks } from "../../plugins/pluginHooks";
 import { getCurrentCharacter, getCurrentChat, getDatabase, type character } from "../../storage/database.svelte";
+import { type ChatRef, findChat } from "../../storage/chatStore.svelte";
+import { DBState } from "../../stores.svelte";
 import { tokenizeNum } from "../../tokenizer";
 import { sleep } from "../../util";
 import type { OpenAIChat } from "../index.svelte";
@@ -41,6 +43,8 @@ interface requestDataArgument {
     useEmotion?: boolean;
     continue?: boolean;
     chatId?: string;
+    /** The chat the request is for (request triggers run on it; default: the selected chat). */
+    chatRef?: ChatRef | null;
     noMultiGen?: boolean;
     schema?: string;
     extractJson?: string;
@@ -254,11 +258,15 @@ export async function requestChatData(
             }
 
             try {
-                const currentChar = getCurrentCharacter();
-                if (currentChar?.type !== "group") {
+                const currentChar = arg.chatRef
+                    ? DBState.db.characters.find((entry) => entry?.chaId === arg.chatRef.chaId)
+                    : getCurrentCharacter();
+                const requestChat = arg.chatRef ? findChat(arg.chatRef) : getCurrentChat();
+                if (currentChar && requestChat && currentChar.type !== "group") {
                     const perf = performance.now();
                     const d = await runTrigger(currentChar, "request", {
-                        chat: getCurrentChat(),
+                        chat: requestChat,
+                        chatRef: arg.chatRef ?? null,
                         displayMode: true,
                         displayData: JSON.stringify(arg.formated),
                     });
@@ -683,7 +691,7 @@ async function requestOobaLegacy(arg: RequestDataArgumentExtended): Promise<requ
     let stopStrings = getStopStrings(false);
     if (db.localStopStrings) {
         stopStrings = db.localStopStrings.map((v) => {
-            return risuChatParser(v.replace(/\\n/g, "\n"));
+            return risuChatParser(v.replace(/\\n/g, "\n"), { chatRef: arg.chatRef });
         });
     }
 
@@ -819,7 +827,7 @@ async function requestOoba(arg: RequestDataArgumentExtended): Promise<requestDat
     let stopStrings = getStopStrings(false);
     if (db.localStopStrings) {
         stopStrings = db.localStopStrings.map((v) => {
-            return risuChatParser(v.replace(/\\n/g, "\n"));
+            return risuChatParser(v.replace(/\\n/g, "\n"), { chatRef: arg.chatRef });
         });
     }
     let bodyTemplate: Record<string, any> = {

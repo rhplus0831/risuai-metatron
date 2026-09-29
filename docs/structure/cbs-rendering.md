@@ -37,7 +37,7 @@
   - Assets: `parseAdditionalAssets`, `assetRegex`, `resetAssetsCache`.
   - Also `postTranslationParse`, `applyMarkdownToNode`, `risuEscape`/`risuUnescape`, `addMetadataToElement`, `hasher`, `CbsConditions`.
 - `parser/chatVar.svelte.ts`: variable accessors.
-  - Chat variables: `getChatVar`/`setChatVar`, stored in `Chat.scriptstate` as `$name`.
+  - Chat variables: `getChatVar`/`setChatVar`, stored in `Chat.scriptstate` as `$name`. A parse given `chatRef` (`risuChatParser(text, { chatRef })`, set by the send pipeline, triggers, and Lua) reads and writes that chat's variables and messages (`getChatVarOf`/`setChatVarOf`, `contextChar`/`contextChat` in `cbs.ts`); without it, the selected character's selected chat.
   - Globals: `getGlobalChatVar`/`setGlobalChatVar` (`db.globalChatVariables`, or chat-local overrides when `useLocallySetGlobalVariables`), plus `getGLChatVar`/`setGLChatVar` and `isLocallyHandledGlobalChatVar`.
 - `parser/chatML.ts` `parseChatML`: a lightweight `<|im_start|>` splitter that extracts `<Thoughts>` and CBS-parses each part. Used by `sendChat` `chatML` cards, the translator, and memory.
 - `parser/partialEdit.ts`: maps rendered text back to markdown ranges.

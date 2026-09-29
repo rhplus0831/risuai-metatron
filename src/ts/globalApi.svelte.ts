@@ -26,6 +26,7 @@ import { hasher } from "./parser/parser.svelte";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
 import { startResourceSync } from "./storage/resourceSync.svelte";
+import { selectChat } from "./storage/chatStore.svelte";
 import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storage/resourceClient";
 import { AutoStorage } from "./storage/autoStorage";
 import { updateAnimationSpeed } from "./gui/animation";
@@ -1616,24 +1617,13 @@ export function foldChatToMessage(targetMessageIdOrIndex: string | number) {
     };
 }
 
+/** Selects a chat of the selected character by id or index (per tab; `chatPage` follows). */
 export function changeChatTo(IdOrIndex: string | number) {
-    let index = -1;
-    if (typeof IdOrIndex === "number") {
-        index = IdOrIndex;
-    }
-
-    if (typeof IdOrIndex === "string") {
-        const currentCharacter = getCurrentCharacter();
-        index = currentCharacter.chats.findIndex((v) => {
-            return v.id === IdOrIndex;
-        });
-    }
-
-    if (index === -1) {
+    const character = DBState.db.characters[selIdState.selId];
+    if (!character) {
         return;
     }
-
-    DBState.db.characters[selIdState.selId].chatPage = index;
+    selectChat(character.chaId, IdOrIndex);
     ReloadGUIPointer.set(Math.random());
 }
 
