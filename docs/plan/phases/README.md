@@ -15,19 +15,41 @@ the triggers, and the display transform to the server. Phase 6 thins the client 
 ## Phase Index
 
 - [Phase 0: Shared schema and server store](phase-0-shared-schema-and-server-store.md)
+  (done; slices in [`slices/phase-0-shared-schema-and-server-store/`](slices/phase-0-shared-schema-and-server-store/))
 - [Phase 1: Per-collection resources](phase-1-per-collection-resources.md)
+  (done; slices in [`slices/phase-1-per-collection-resources/`](slices/phase-1-per-collection-resources/))
 - [Phase 2: Chat resource and mutation API](phase-2-chat-resource-and-mutation-api.md)
+  (done; slices in [`slices/phase-2-chat-resource-and-mutation-api/`](slices/phase-2-chat-resource-and-mutation-api/))
 - [Phase 3: Settings sections](phase-3-settings-sections.md)
+  (planned slices in [`slices/phase-3-settings-sections/`](slices/phase-3-settings-sections/))
 - [Phase 4: External contracts](phase-4-external-contracts.md)
+  (planned slices in [`slices/phase-4-external-contracts/`](slices/phase-4-external-contracts/))
 - [Phase 5: Server-side processing](phase-5-server-side-processing.md)
+  (planned slices in [`slices/phase-5-server-side-processing/`](slices/phase-5-server-side-processing/))
 - [Phase 6: Thin client and closeout](phase-6-thin-client-and-closeout.md)
+  (planned slices in [`slices/phase-6-thin-client-and-closeout/`](slices/phase-6-thin-client-and-closeout/))
 
 ## Slices
 
-When a phase starts, split it into slices under `phases/slices/phase-<n>-<slug>/<slice>.md`. One
-slice migrates one collection, one write-site group, or one processing stage. A slice records its
-status, the exact files and identifiers it touches, the allowed files, the validation it ran with
-results, residual risk, and its stopping condition. No slice exists yet.
+Each phase is split into slices under `phases/slices/phase-<n>-<slug>/<slice>.md`, with a `README.md`
+in the folder giving the execution order and the dependencies. One slice migrates one collection,
+one write-site group, one processing stage, or one spike. A slice records its status, the exact
+files and identifiers it touches, the allowed files, its stopping condition, the validation it ran
+with results, and residual risk.
+
+Slices may be written before their phase starts, as a validation of the phase file against the
+tree. A slice written that way has status `planned` and two extra sections: `Assumptions`, the
+decisions of earlier phases or slices it rests on, stated as checkable lines, and
+`Proposed decisions`, the design choices it recommends. When the phase starts, the first step is
+to re-verify every Assumption and every identifier against the tree; a false Assumption re-plans
+that slice, and a `planned` slice becomes `in progress` only after that check. The folder's
+`planning-notes.md` records what the pre-planning found: the drift between the phase file and the
+tree with the proposed phase-file edits, the boundaries that depend on other phases, and the open
+questions for the plan owner; `review-decisions.md` records the review points raised against the
+planned slices and the decision on each. Phase-file edits proposed there are applied when the phase
+starts, in the same change that advances its status line. A proposed exception to the Common Entry
+Gate below (for example, starting a phase's independent slices before its dependencies are complete)
+takes effect only once it is recorded in this file.
 
 ## Common Entry Gate
 
