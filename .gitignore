@@ -48,3 +48,6 @@ dist.zip
 # Local agent files
 AGENTS.override.md
 CLAUDE.local.md
+# Playwright
+test-results/
+playwright-report/

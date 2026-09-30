@@ -11,10 +11,11 @@
   - version bumping,
   - repo dotfiles.
 - Paths:
-  - Root config: `package.json`, `vite.config.ts`, `vitest.config.ts`, `vitest.setup.ts`, `tsconfig.json`, `tsconfig.node.json`, `version.json`
+  - Root config: `package.json`, `vite.config.ts`, `vitest.config.ts`, `vitest.setup.ts`, `playwright.config.ts`, `tsconfig.json`, `tsconfig.node.json`, `version.json`
   - Dotfiles: `.gitignore`, `.ignore`, `.gitattributes`, `.npmrc`, `.vscode/`
   - `public/sw.js`, `public/manifest.json`
   - `util/risuUserscript.user.js`
+  - `util/playwright/` (browser automation helpers and capture scripts), `e2e/` (Playwright specs)
 - Not here:
   - `globalApi.svelte.ts` `fetchNative` → `global-api.md`.
   - The self-host server → `self-host-server.md`.
@@ -29,6 +30,7 @@
 | `build`     | `vite build --sourcemap`                                                 | production build (served by `runserver`) |
 | `check`     | `svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json` | type check (client + server)             |
 | `test`      | `vitest run`                                                             | tests                                    |
+| `test:e2e`  | `playwright test`                                                        | browser specs in `e2e/` (not in `test`)  |
 | `runserver` | `node server/src/main.ts`                                                | self-host server                         |
 
 - Prettier config lives in `.prettierrc.json` (4-space indent, double quotes, semicolons, width 120, 2-space for JSON/YAML/Markdown, `prettier-plugin-svelte`). `.prettierignore` mirrors `.ignore` plus lockfiles, snapshots, `dist/`, and `src/ts/plugins/apiV3/risuai.d.ts` (a doc comment there contains a literal `*/`, so Prettier cannot parse it).
@@ -41,7 +43,10 @@ Config files:
   - `envPrefix` is Vite's default (`VITE_`). `build.minify` is `oxc`.
   - Alias `src` → `/src`. Workers are built as `es`.
   - Neither `define` nor `manualChunks` is set.
-- `vitest.config.ts`: Svelte plugin, `src` alias, browser resolve conditions, `happy-dom`, setup file `vitest.setup.ts`, default include pattern.
+- `vitest.config.ts`: Svelte plugin, `src` alias, browser resolve conditions, `happy-dom`, setup file `vitest.setup.ts`, default include pattern, and `e2e/**` excluded (Vitest's default include also matches the Playwright `*.spec.ts` files).
+- `playwright.config.ts`: specs in `e2e/**/*.spec.ts`, one worker, the system Chrome (`/usr/bin/google-chrome`, override with `RISU_CHROME`; no browser download), `baseURL` `http://localhost:5201`. `globalSetup` is `util/playwright/globalSetup.mjs`, which starts one isolated stack per run.
+- `util/playwright/stack.mjs`: `startStack({ serverPort, vitePort })` runs `server/src/main.ts` in a fresh temporary working directory (the server takes `save/` from `process.cwd()`, so the store starts empty and the repository `save/` is never touched) and the Vite dev server with `RISU_DEV_SERVER` pointing at it; `stop()` ends both and deletes the directory. `openApp(page, baseURL)` answers the node-password prompts and waits for `loadedStore`. Page code reaches app modules with `await import("/src/...")`, which is the same module instance the app uses; a two-client check opens a second browser context (tabs of one context share `localStorage`).
+- `util/playwright/capturePhase3Fixtures.mjs`: captures the Phase 3 pre-phase fixtures in `src/ts/storage/tests/fixtures/phase3/` (see its README).
 - `vitest.setup.ts`: mocks KaTeX, sets `globalThis.safeStructuredClone` to a JSON clone, and
   patches happy-dom's `Node.prototype.nodeName` getter so it dispatches by node type. DOMPurify
   > = 3.4.6 reads tag names through that prototype getter, which happy-dom leaves returning `""`
@@ -108,6 +113,7 @@ Test inventory:
 | Translator       | `src/ts/translator/{edittransRegex,presets}.test.ts`                                                                                                                                                                                                                                       |
 
 - No automated tests for the service worker, the manifest, or the userscript. Verify those manually.
+- Browser checks use Playwright against the stack above: plain `playwright-core` scripts in `util/playwright/` for captures and one-off observations, `@playwright/test` specs in `e2e/` for repeatable checks (`pnpm test:e2e`). `playwright.config.ts`, `e2e/`, and `util/playwright/` are outside `tsconfig.json`'s include, so `pnpm check` does not type-check them.
 
 ## Known Hazards
 

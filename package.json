@@ -12,6 +12,7 @@
     "build": "vite build --sourcemap",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "runserver": "node server/src/main.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
