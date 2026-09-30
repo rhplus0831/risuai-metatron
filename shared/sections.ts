@@ -98,7 +98,7 @@ export const SECTION_FIELDS = {
         "doNotChangeFallbackModels",
         "disableSeperateParameterChangeOnPresetChange",
     ],
-    /** LLM provider credentials (Decision 6). Client-readable until Phase 5 makes the section write-only; `proxyKey` joins it keyed by preset id when slice 5 forwards it. */
+    /** LLM provider credentials (Decision 6). Client-readable until Phase 5 makes the section write-only; it also holds each preset's `proxyKey` by preset id (`presets`). */
     llmSecrets: [
         "openAIKey",
         "claudeAPIKey",
@@ -352,12 +352,12 @@ export const COLLECTION_SELECTION_FIELDS = {
 const presetRootNames: Record<string, string> = Object.fromEntries(
     Object.entries(PRESET_ROOT_ALIASES).map(([root, preset]) => [preset, root]),
 );
-const notForwarded = new Set<string>(["name", "image", "proxyKey", ...PRESET_KEEP_ON_SWITCH_FIELDS]);
+const notForwarded = new Set<string>(["name", "image", ...PRESET_KEEP_ON_SWITCH_FIELDS]);
 
 /**
  * Root fields that mirror the selected preset one to one (by their root name): every preset field
- * except `name`, `image`, `proxyKey` (forwarded to the per-preset secret map instead), and the
- * keep-on-switch group.
+ * except `name`, `image`, and the keep-on-switch group. `proxyKey` is forwarded too, to the
+ * selected preset's `llmSecrets.presets` entry (`FORWARDED_ROOT_KEYS`).
  */
 export const FORWARDED_PRESET_KEYS = PRESET_FIELDS.filter((field) => !notForwarded.has(field)).map(
     (field) => (presetRootNames[field] ?? field) as keyof Database,

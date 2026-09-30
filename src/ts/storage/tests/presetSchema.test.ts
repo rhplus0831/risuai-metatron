@@ -91,7 +91,8 @@ describe("PRESET_DEFAULTS", () => {
         expect(PRESET_FIELDS).not.toContain("forceReplaceUrl2");
         expect(PRESET_FIELDS).not.toContain("autoSuggestPrefix");
         expect(PRESET_FIELDS).not.toContain("autoSuggestClean");
-        expect(PRESET_FIELDS).toContain("proxyKey");
+        // Slice 7: both LLM credentials live in `llmSecrets` (`proxyKey` by preset id), so neither is a preset field.
+        expect(PRESET_FIELDS).not.toContain("proxyKey");
         const unset = PRESET_FIELDS.filter((field) => PRESET_DEFAULTS[field] === undefined).sort();
         expect(unset).toEqual([
             "koboldURL",
@@ -454,12 +455,14 @@ describe("field-to-resource partition", () => {
     });
 
     it("derives the forwarded list from the preset schema: 69 preset keys, proxyKey, 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
-        const notForwarded = new Set<string>(["name", "image", "proxyKey", ...PRESET_KEEP_ON_SWITCH_FIELDS]);
+        // `proxyKey` is not a preset field since slice 7, so `name` and `image` are the only exclusions
+        // besides the keep-on-switch group.
+        const notForwarded = new Set<string>(["name", "image", ...PRESET_KEEP_ON_SWITCH_FIELDS]);
         const expectedForwarded = PRESET_FIELDS.filter((field) => !notForwarded.has(field)).map(
             (field) => presetToRootName[field] ?? field,
         );
         expect(FORWARDED_PRESET_KEYS).toEqual(expectedForwarded);
-        expect(FORWARDED_PRESET_KEYS).toHaveLength(PRESET_FIELDS.length - 3 - PRESET_KEEP_ON_SWITCH_FIELDS.length);
+        expect(FORWARDED_PRESET_KEYS).toHaveLength(PRESET_FIELDS.length - 2 - PRESET_KEEP_ON_SWITCH_FIELDS.length);
         expect(FORWARDED_PRESET_KEYS).toHaveLength(69);
         // The aliases appear under their root names, never their preset names.
         expect(FORWARDED_PRESET_KEYS).toEqual(

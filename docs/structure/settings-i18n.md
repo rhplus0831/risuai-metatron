@@ -99,7 +99,7 @@ Languages (`src/lang/`):
 - Keep `item.id` values unique and stable. User custom sidebars reference them.
 - Value precedence: `getValue`, then `bindPath`, then `bindKey`. `setSettingValue` creates missing path objects.
 - `SettingSelect`/`SettingSegmented` reset a value whose option becomes hidden. `SettingSegmented` supports only `bindKey`.
-- A preset-owned field must be added to `botPreset` and `PRESET_DEFAULTS` in `shared/presets.ts` (the canonical list `normalizePreset` uses), and scrubbed in `downloadPreset` if it is secret. The forwarding layer serves it as a flat field of the selected preset.
+- A preset-owned field must be added to `botPreset` and `PRESET_DEFAULTS` in `shared/presets.ts` (the canonical list `normalizePreset` uses), and never be a secret: credentials belong in the `llmSecrets` section (`proxyKey` per preset in its `presets` map), and `downloadPreset` blanks the endpoint fields. The forwarding layer serves it as a flat field of the selected preset.
 - Preserve misspelled keys: `PresensePenalty`, `seperateParameters`, `seperateModels`, `JinjaTemplate`.
 - Prompt edits must keep the `PromptItem` discriminated shape and reassign arrays after splicing. `normalizePromptTemplate` (`shared/presets.ts`) handles imports.
 - `select` option `labelKey` has no fallback label. Missing locale keys fall back to English only because `changeLanguage` merges.

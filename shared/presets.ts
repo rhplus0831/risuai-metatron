@@ -88,7 +88,12 @@ export function plainClone<T>(value: T): T {
 }
 
 type PresetDefaults = { [K in Exclude<keyof botPreset, PresetOnlyExcluded>]-?: botPreset[K] | null | undefined };
-type PresetOnlyExcluded = "id" | "openAIKey" | "forceReplaceUrl2" | "autoSuggestPrefix" | "autoSuggestClean";
+/**
+ * Not preset fields: the id, the two LLM credentials (`openAIKey` is a global `llmSecrets` field;
+ * `proxyKey` lives in `llmSecrets.presets` by preset id), and fields that were never saved per preset.
+ */
+type PresetOnlyExcluded =
+    "id" | "openAIKey" | "proxyKey" | "forceReplaceUrl2" | "autoSuggestPrefix" | "autoSuggestClean";
 
 export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     name: "New Preset",
@@ -113,7 +118,6 @@ export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     promptPreprocess: undefined,
     bias: [],
     koboldURL: undefined,
-    proxyKey: "",
     ooba: defaultOoba,
     ainconfig: defaultAIN,
     openrouterRequestModel: "openai/gpt-3.5-turbo",
@@ -389,7 +393,8 @@ export function migrateKeepOnSwitchFields(record: Record<string, unknown>): void
  * root copy (a number field cleared in the UI comes back as its default after a reload, as the
  * working copy's did before Phase 3). The keep-on-switch fields are never filled:
  * they stay on the pre-Phase 3 path, where `setPreset` applies their fallback. The input is never
- * mutated and must be plain data (pass `$state.snapshot` of a proxy). The id is `options.id` when
+ * mutated and must be plain data (pass `plainClone` of a proxy: `$state.snapshot` drops an own
+ * `__proto__` key). The id is `options.id` when
  * given (a copy or an import passes a fresh one), else the input's valid id, else a new one.
  */
 export function normalizePreset(input: unknown, options: { id?: string } = {}): botPreset {

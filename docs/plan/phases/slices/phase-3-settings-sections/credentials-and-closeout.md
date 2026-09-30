@@ -1,6 +1,6 @@
 # Slice: Preset Credentials, Boot-Snapshot Comparison, And Closeout
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented 2026-09-30 (record below).
 
 Phase: [Phase 3](../../phase-3-settings-sections.md), "Secrets" (the preset lifecycle part),
 "Preset formats", "Docs", the Safety Contract (the boot-snapshot comparison), and the Exit
@@ -123,3 +123,139 @@ entry; the user re-enters the key for that preset (Astra P4, accepted for this a
 `llmSecrets` is readable by the client until Phase 5 (by design). Custom-model keys stay in a
 client-readable collection. The shared-copy hazard for the keep-on-switch fields stays until the
 follow-up after this plan.
+
+## Implementation record
+
+Implemented on 2026-09-30 by Opus on `2dc2efa3` (slice 6).
+
+The `proxyKey` lifecycle (copy, delete, import into the map, `downloadPreset` blanking) moved to
+slice 5 (amendment A11) and was verified there. This slice:
+
+- `shared/presets.ts`: `proxyKey` leaves `PRESET_DEFAULTS` and so `PRESET_FIELDS` (added to
+  `PresetOnlyExcluded` with a comment naming where both credentials live). `normalizePreset` keeps
+  only the canonical fields, so the server `presets` normalizer (unchanged, it runs
+  `normalizePresets`) drops `proxyKey` and `openAIKey` from stored presets through the startup
+  pass. `presetTemplate` (the import base) and the prebuilt templates keep their `proxyKey: ""`: the
+  import base is unchanged so old files import as before, and the normalizer drops the key.
+- `shared/sections.ts`: `proxyKey` left the not-forwarded set (it is no longer a preset field);
+  `FORWARDED_PRESET_KEYS` is still 69.
+- `database.svelte.ts`: `importPreset` no longer blanks the record's `proxyKey` (there is none);
+  `downloadPreset` still writes `proxyKey: ""` and `openAIKey: ""` with the endpoint fields, so the
+  exported keys are those of the pre-phase format.
+- Credential classification: unchanged from slice 2 (`SECTION_FIELDS`), as the decisions above
+  list. `customModels[].key` stays in its collection and `authRefreshes` stays its own collection
+  (recorded in the phase file for Phase 5, with the auxiliary `openAIKey` and `google.accessToken`
+  consumers).
+- Docs: the phase file (status, dropped fields, the boot-snapshot comparison, behavior changes,
+  residual risk, Implementation Record), `PLAN.md` (status), `persistence.md` (the credential
+  invariant), `settings-i18n.md` (a preset field is never a secret), `plugins-mcp.md` (test
+  inventory). `STRUCTURE.md` D1, D2, and D4, `media-aux.md`, `memory.md`, `global-api.md`,
+  `self-host-server.md`, and `characters-modules.md` were already current from slices 3 to 6.
+
+Tests invalidated (6 cases in 3 files, all from `proxyKey` leaving the preset record):
+`presetSchema.test.ts` (2: the `PRESET_DEFAULTS` credential list and the `PRESET_FIELDS` count
+behind the 69 forwarded keys), `presetIds.test.ts` (2: the imported record no longer has
+`proxyKey: ""`; the decoded export still equals the fixture), `forwarding.test.ts` (2: "the
+record's field stays empty" now means absent).
+
+Boot-snapshot comparison: run with `compareBoot.mjs` (session scratchpad; Playwright on a fresh
+server, the rule above as amended by A10); the result is recorded in the phase file (nine preset
+fields the pre-phase first boot left unset now read the canonical default; the keep-on-switch
+fields are compared in `providers`; everything else equal apart from ids and the id selections).
+The comparison as a kept vitest, the decoded `.risup` round trips through the pre-phase reader,
+the `.risutl` round trip, and the HypaV3 export check belong to the review step.
+
+Docker smoke (`dockerSmoke2.mjs`, image `risu-metatron:phase3`, fresh volume, port 6195): the
+first run stores version 3 with every section and collection; a batch editing `ui.zoomsize`,
+`presets[0].temperature`, and `personas[0].name` survives `docker restart` (SIGTERM logged, the
+rows read back from the volume); the browser reload afterwards writes nothing; an archive export
+(200), its import (200, new epoch), and the restore of the listed snapshot (200) leave the edited
+values intact.
+
+Exit-criteria walk:
+
+- No `root` resource remains: `rg "RESOURCE_KIND.root"` and `rg 'kind: "root"'` find nothing in
+  source; the server answers 400 for `root` (slice 6).
+- Every section and collection has a normalizer with tests (`normalizeSections.test.ts`,
+  `normalizeCollections.test.ts`, the fixed-point cases), and `setDatabase` holds no section
+  defaults.
+- The empty-save boot snapshot matches apart from the recorded differences (above).
+- Preset export and import round-trip against the pre-phase `.risup` fixtures (`presetIds.test.ts`,
+  decoded comparison).
+- No root working copy remains; two clients with different presets or personas keep their own
+  (slices 5 and 6, `presetSelection.spec.ts`, `personaBinding.spec.ts`), apart from the five
+  keep-on-switch fields.
+- A chat bound to a persona keeps its binding after an icon change (`personaBinding.spec.ts`).
+
+Checks: `pnpm check` and `pnpm build` pass; `pnpm test` fails only the 6 invalidated cases before
+the adapter.
+
+## Astra challenge (2026-09-30) and decisions
+
+1. The `.risup` export was a JSON copy of the normalized record, which omits unset fields
+   (`promptPreprocess`, `koboldURL`, `proxyRequestModel`, `localStopStrings`, and an absent
+   keep-on-switch field) that the pre-phase export carried as explicit `undefined`; an importer
+   spreads `presetTemplate` under the file, so `promptPreprocess` became `false` instead of keeping
+   the reader's value. The existing round trip used `toEqual`, which treats a missing key and an
+   `undefined` one alike. **Adopted**: `downloadPreset` writes every `PRESET_FIELDS` key, an unset
+   one as `undefined`. Verified with `risupKeys.mjs` (session scratchpad): importing each fixture and
+   decoding its export gives exactly the fixture's keys, values, and `undefined`s.
+2. The comparison script did not exclude the keep-on-switch fields from the selected-preset rule and
+   only logged differences. **Adopted**: `compareBoot.mjs` excludes them there, compares them as
+   `providers` fields against the fixture's root, asserts one initial preset, pins the nine allowed
+   differences by field and value, and exits non-zero on anything else (result: 25 allowed
+   differences, all of the recorded kinds, 0 unexpected).
+3. The closeout left out accepted qualifications from slices 3 and 4. **Adopted**: the phase file
+   now records the server validation changes, the startup pass cost and refusal, the two intended
+   boot mutations, and the `ui` conflict reload not rerunning the presentation functions.
+4. The Phase 5 credential consumers were incomplete. **Adopted**: `PlaygroundSubtitle.svelte` and
+   `model/modellist.ts` added.
+5. Overstated statements. **Adopted**: reads write only the selection; the asynchronous writers are
+   described as they work; the byte-compatibility promise of the phase file's Required Work is
+   marked superseded by decoded compatibility; the slice 7 review is recorded in its slice file; the
+   `normalizePreset` comment recommends `plainClone`. The `persistence.md` "same keys" statement
+   holds after point 1.
+
+Astra's testing advice goes to the Fable reviewer, including a stronger Docker smoke (change the
+values after the export, then check that the import and the restore bring the earlier values back).
+
+## Fable review (2026-09-30)
+
+Verdict: no problem. The diff (`shared/presets.ts`, `shared/sections.ts`, `database.svelte.ts`, the
+docs) matches the record above; the six adapted cases are expected invalidations of `proxyKey`
+leaving the record (none masks a regression: the strict `.risup` check below covers what
+`toEqual` could not). Checks on the final tree: `pnpm check`, `pnpm test`, `pnpm format:check`, and
+`pnpm test:e2e` (5 passed; a first run had one load-induced timeout in `personaBinding.spec.ts`
+while a Docker build and the vitest suite ran beside it, and passed alone).
+
+Tests written (every Astra testing-advice item was judged necessary and done):
+
+- `src/ts/storage/tests/bootSnapshot.test.ts`: the boot-snapshot comparison as a kept vitest over
+  the real server store (`storeBackedServer.ts`, the normalizers materialize a fresh store), by the
+  A10 rule: the nine allowed differences pinned by field and value as root reads and as the
+  selected preset's fields, the keep-on-switch fields compared as `providers` fields (unset in
+  both roots except `fallbackModels` and `seperateParameters`), the five unset preset fields
+  `undefined` in both, one initial preset, personas and the id collections equal apart from ids
+  with the first item selected, every other collection deep-equal.
+- `src/ts/storage/tests/presetIds.test.ts` (new describe): both fixtures through the real codecs
+  with `toStrictEqual` (a missing key is not an `undefined` one), the exact key set, a second
+  import/export cycle, and the pre-phase `importPreset` logic (`577c43ae`) storing the same preset
+  from the new export as from the fixture, `promptPreprocess` kept `undefined`; the JSON export
+  drops the unset keys as before.
+- `src/ts/translator/presetsCodec.test.ts`: the `.risutl` round trip through the real codecs.
+- `src/lib/Setting/Pages/OtherBotSettings.hypaV3Export.test.ts`: the page mounted on the HypaV3
+  section; the export button's file is exactly `{ type, ver, data: { name, settings } }` with no id,
+  and the import button gives it a fresh id and selects it.
+- `server/src/tests/normalizationPass.test.ts` (new case): a stored `presets` record carrying
+  `proxyKey` and `openAIKey` is rewritten once without them, ids kept, the `llmSecrets.presets`
+  map untouched, and the result is a fixed point.
+
+Docker (image `risu-metatron:phase3` rebuilt from this tree, fresh volume, port 6195; the
+container and volume were removed afterwards): the first run stores version 3 with every section
+and collection and the first boot writes only `modules` and `plugins`; the stored preset has no
+`proxyKey` or `openAIKey` key; a batch edit V1 (`ui.zoomsize` 123, `presets[0].temperature` 42,
+`personas[0].name` "Docker V1"), an archive export (200), a second edit V2 (77, 13, "Docker V2"),
+then the import of the archive (200, new epoch) brought V1 back in the rows; the restore of the
+safety snapshot the import took (200) brought V2 back; a browser reload afterwards sent no batch;
+`docker restart` (SIGTERM logged) kept V2. The export streams a fresh snapshot without retaining
+it, so the list holds only the import's safety snapshot.

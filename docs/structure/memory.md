@@ -115,6 +115,7 @@ Embedding routing:
 ## Tests
 
 - `src/ts/process/memory/hypaV3Presets.test.ts`: `selectedHypaV3Preset` (by id, the first-preset fallback, no state write, undefined for an empty list).
+- `src/lib/Setting/Pages/OtherBotSettings.hypaV3Export.test.ts` (mounted under happy-dom): the HypaV3 preset export button writes exactly `{ type: "risu", ver: 1, data: { name, settings } }` without the id, and the import button gives that file a fresh id and selects it.
 - None cover the algorithms, processors, rate limiter, or modal.
 - `scriptings.test.ts` only mocks `HypaProcesser`.
 

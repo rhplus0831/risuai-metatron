@@ -287,6 +287,55 @@ describe("the pass at startup", () => {
     });
 });
 
+describe("the pass strips preset credentials (Phase 3, slice 7)", () => {
+    // `proxyKey` and `openAIKey` left the preset schema: `normalizePreset` keeps only `PRESET_FIELDS`,
+    // so a preset stored with either (before slice 7, or by hand) is rewritten without them at the
+    // next start, its id kept. The per-preset `proxyKey` lives in `llmSecrets.presets`, which the
+    // pass leaves as it is.
+    it("rewrites a presets record that carries proxyKey and openAIKey once, keeping ids and the llmSecrets map untouched", () => {
+        const file = path.join(tempDir(), "resources.sqlite");
+        const before = observe(open(file));
+        stores.pop()!.close();
+        const stored = before.kinds.presets[0].data as Record<string, unknown>[];
+        const [first] = stored;
+        const map = { [first.id as string]: { proxyKey: "pk-in-map" }, "other-id": { proxyKey: "pk-other" } };
+        raw(
+            file,
+            "UPDATE resources SET data = ? WHERE kind = 'presets'",
+            JSON.stringify([
+                { ...first, proxyKey: "pk-in-preset", openAIKey: "sk-in-preset" },
+                { ...first, id: "second", name: "Second", proxyKey: "", openAIKey: "" },
+            ]),
+        );
+        const secrets = before.kinds.llmSecrets[0].data as Record<string, unknown>;
+        raw(
+            file,
+            "UPDATE resources SET data = ? WHERE kind = 'llmSecrets'",
+            JSON.stringify({ ...secrets, presets: map }),
+        );
+
+        const store = open(file);
+        expect(store.writeCount()).toBe(1);
+        const after = observe(store);
+        const presets = after.kinds.presets[0];
+        expect(presets.data).toEqual([first, { ...first, id: "second", name: "Second" }]);
+        for (const preset of presets.data as Record<string, unknown>[]) {
+            expect(Object.hasOwn(preset, "proxyKey"), String(preset.id)).toBe(false);
+            expect(Object.hasOwn(preset, "openAIKey"), String(preset.id)).toBe(false);
+        }
+        expect(parseToken(presets.revision)).toMatchObject({ epoch: before.epoch, revision: 2 });
+        const llmSecrets = after.kinds.llmSecrets[0];
+        expect(llmSecrets.data).toEqual({ ...secrets, presets: map });
+        expect(parseToken(llmSecrets.revision)).toMatchObject({ epoch: before.epoch, revision: 1 });
+        stores.pop()!.close();
+
+        // The rewritten record is a fixed point: the next start writes nothing.
+        const again = open(file);
+        expect(again.writeCount()).toBe(0);
+        expect(observe(again)).toEqual(after);
+    });
+});
+
 describe("the pass inside replaceAll", () => {
     // `pluginStorage` stands in for the pre-Phase 3 `root` (removed in slice 6): a Phase 1 singleton the
     // store does not materialize, whose normalizer keeps the input unchanged.

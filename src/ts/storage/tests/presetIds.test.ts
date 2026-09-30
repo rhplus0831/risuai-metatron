@@ -77,7 +77,7 @@ import {
     type Database,
 } from "../database.svelte";
 import { selection, selectPreset } from "../selection.svelte";
-import { PRESET_KEEP_ON_SWITCH_FIELDS } from "../../../../shared/presets.ts";
+import { normalizePromptTemplate, PRESET_KEEP_ON_SWITCH_FIELDS, presetTemplate } from "../../../../shared/presets.ts";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const fixtureDir = path.resolve(__dirname, "fixtures/phase3");
@@ -422,12 +422,16 @@ describe(".risup round trip against the step-0 fixtures", () => {
             expect(ownKeys(decoded)).not.toContain("id");
             expect(decoded).toEqual(fixture);
             // The import itself, apart from the id, is the fixture preset too: the normalizer changed
-            // nothing the pre-phase reader wrote (no default was added, no explicit value replaced).
+            // nothing the pre-phase reader wrote (no default was added, no explicit value replaced),
+            // except that the record carries no credential (`openAIKey`, and `proxyKey` since slice 7)
+            // and no `forceReplaceUrl2`; `downloadPreset` writes the blank credentials back into the export.
             const { id, ...importedWithoutId } = imported as botPreset & Record<string, unknown>;
             expect(id).toMatch(UUID_V4);
+            expect(Object.hasOwn(importedWithoutId, "proxyKey")).toBe(false);
             expect(importedWithoutId).toEqual({
                 ...fixture,
                 openAIKey: undefined,
+                proxyKey: undefined,
                 forceReplaceUrl2: undefined,
             });
         });
@@ -440,5 +444,81 @@ describe(".risup round trip against the step-0 fixtures", () => {
         expect(custom.regex).not.toEqual([]);
         expect((custom.seperateParameters as { overrides: object }).overrides).not.toEqual({});
         expect(Array.isArray(custom.promptTemplate)).toBe(true);
+    });
+});
+
+/**
+ * The pre-Phase 3 `importPreset` logic for a decoded `.risup` preset (commit `577c43ae`): the
+ * template spread under the file, the prompt template normalized, and the object stored as it is
+ * (no canonical list, so every key the file carries, an explicit `undefined` included, lands in the
+ * stored preset; the old `setPreset` kept the working value for an `undefined` field and applied a
+ * `false`). `presetTemplate` is the pre-phase template unchanged.
+ */
+function legacyImportPreset(decoded: Record<string, unknown>): Record<string, unknown> {
+    const pre: Record<string, unknown> = { ...presetTemplate, ...decoded };
+    if (pre.promptTemplate !== undefined) {
+        pre.promptTemplate = normalizePromptTemplate(pre.promptTemplate as never);
+    }
+    return pre;
+}
+
+describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
+    beforeEach(() => {
+        DBState.db = {} as Database;
+        selectPreset("");
+    });
+
+    for (const name of ["default.risup", "custom.risup"]) {
+        it(`${name}: the export carries exactly the fixture's keys and values, explicit undefined included, over two cycles, and the pre-phase reader stores the same preset`, async () => {
+            bootWith();
+            const fixture = await decodeRisup(readFixture(name));
+            // The pre-phase export carried the unset fields as explicit `undefined` keys: the check
+            // below is about them, so they must exist in the fixture (Astra slice 7 challenge point 1).
+            const unsetInFixture = Object.keys(fixture)
+                .filter((key) => fixture[key] === undefined)
+                .sort();
+            expect(unsetInFixture).toEqual(
+                expect.arrayContaining(["promptPreprocess", "koboldURL", "proxyRequestModel", "localStopStrings"]),
+            );
+
+            await importPreset({ name, data: readFixture(name) });
+            const first = await downloadPreset(DBState.db.botPresets[1].id, "return");
+            const decodedFirst = await decodeRisup(first.buf as Uint8Array);
+            // `toStrictEqual` distinguishes a missing key from an `undefined` one (`toEqual` does not).
+            expect(ownKeys(decodedFirst)).toEqual(ownKeys(fixture));
+            expect(decodedFirst).toStrictEqual(fixture);
+            for (const key of unsetInFixture) {
+                expect(Object.hasOwn(decodedFirst, key), key).toBe(true);
+                expect(decodedFirst[key], key).toBeUndefined();
+            }
+            expect((first.data as botPreset).proxyKey).toBe("");
+            expect((first.data as botPreset).openAIKey).toBe("");
+
+            // A second import/export cycle of the new export is a fixed point.
+            await importPreset({ name, data: first.buf as Uint8Array });
+            expect(DBState.db.botPresets).toHaveLength(3);
+            const second = await downloadPreset(DBState.db.botPresets[2].id, "return");
+            expect(await decodeRisup(second.buf as Uint8Array)).toStrictEqual(fixture);
+
+            // The pre-phase reader stores the same preset from the new export as from the fixture: in
+            // particular `promptPreprocess` stays `undefined` (its working value kept), not the
+            // template's `false` an absent key would have given it.
+            const fromExport = legacyImportPreset(decodedFirst);
+            expect(fromExport).toStrictEqual(legacyImportPreset(fixture));
+            expect(presetTemplate.promptPreprocess).toBe(false);
+            expect(Object.hasOwn(fromExport, "promptPreprocess")).toBe(true);
+            expect(fromExport.promptPreprocess).toBeUndefined();
+        });
+    }
+
+    it("the JSON export drops the unset fields, as the pre-phase JSON export did (JSON has no undefined)", async () => {
+        bootWith();
+        await importPreset({ name: "default.risup", data: readFixture("default.risup") });
+        const exported = await downloadPreset(DBState.db.botPresets[1].id, "json");
+        // The `.json` path hands the same object to the file writer; its JSON text has no unset key.
+        const text = JSON.stringify(exported.data);
+        expect(Object.hasOwn(exported.data, "promptPreprocess")).toBe(true);
+        expect(JSON.parse(text)).not.toHaveProperty("promptPreprocess");
+        expect(JSON.parse(text)).not.toHaveProperty("id");
     });
 });

@@ -303,12 +303,13 @@ describe("missing and null values", () => {
 });
 
 describe("proxyKey", () => {
-    it("reads and writes the selected preset's llmSecrets entry; an empty write deletes it; the record's field stays empty", () => {
+    it("reads and writes the selected preset's llmSecrets entry; an empty write deletes it; the record has no proxyKey field", () => {
         boot();
         expect(db().proxyKey).toBe("");
         db().proxyKey = "pk-a";
         expect(getPresetSecret("a")).toEqual({ proxyKey: "pk-a" });
-        expect(preset("a").proxyKey).toBe("");
+        // Slice 7: `proxyKey` is not a preset field, so the write never lands on the record.
+        expect(Object.hasOwn(preset("a"), "proxyKey")).toBe(false);
         expect(db().proxyKey).toBe("pk-a");
 
         changeToPreset("b", false);
@@ -335,7 +336,7 @@ describe("proxyKey", () => {
         const copy = db().botPresets[2];
         expect(copy.name).toBe("A Copy");
         expect(copy.id).not.toBe("a");
-        expect(copy.proxyKey).toBe("");
+        expect(Object.hasOwn(copy, "proxyKey")).toBe(false);
         expect(getPresetSecret(copy.id)).toEqual({ proxyKey: "pk-a" });
 
         await importPreset({
@@ -343,7 +344,8 @@ describe("proxyKey", () => {
             data: new TextEncoder().encode(JSON.stringify({ name: "Hand", proxyKey: "pk-hand", temperature: 33 })),
         });
         const imported = db().botPresets[3];
-        expect(imported).toMatchObject({ name: "Hand", proxyKey: "", temperature: 33 });
+        expect(imported).toMatchObject({ name: "Hand", temperature: 33 });
+        expect(Object.hasOwn(imported, "proxyKey")).toBe(false);
         expect(getPresetSecret(imported.id)).toEqual({ proxyKey: "pk-hand" });
         expect(Object.keys(llmSecretPresets.value).sort()).toEqual(["a", copy.id, imported.id].sort());
     });

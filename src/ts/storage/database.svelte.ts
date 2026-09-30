@@ -12,6 +12,7 @@ import {
     normalizePresets,
     normalizePromptTemplate,
     plainClone,
+    PRESET_FIELDS,
     presetTemplate,
 } from "../../../shared/presets.ts";
 import { normalizePersonas } from "../../../shared/personas.ts";
@@ -290,6 +291,14 @@ export async function downloadPreset(id: string, type: "json" | "risupreset" | "
         return;
     }
     let pres = plainClone(source);
+    // Every canonical field is written, an unset one as an explicit `undefined`, as the pre-Phase 3
+    // export did (the JSON copy drops them): an importer spreads `presetTemplate` under the file, so
+    // an absent key would take the template's value instead (`promptPreprocess: false`).
+    for (const field of PRESET_FIELDS) {
+        if (!Object.hasOwn(pres, field)) {
+            (pres as unknown as Record<string, unknown>)[field] = undefined;
+        }
+    }
     // The `.risup` format carries no id (D5); the credentials are blanked as before.
     delete pres.id;
     pres.openAIKey = "";
@@ -499,7 +508,7 @@ export async function importPreset(
     // file carries (a hand-written JSON; exports blank it) goes to the per-preset secret map.
     const id = newPresetId();
     const proxyKey = typeof pre.proxyKey === "string" ? pre.proxyKey : "";
-    db.botPresets.push(normalizePreset({ ...pre, proxyKey: "" }, { id }));
+    db.botPresets.push(normalizePreset(pre, { id }));
     if (proxyKey !== "") {
         setPresetSecret(id, { proxyKey });
     }
