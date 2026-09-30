@@ -119,7 +119,10 @@ function personaForWrite(db: Db): PersonaRecord | undefined {
 }
 
 function readPresetField(db: Db, field: PresetField): unknown {
-    const record = resolvePreset(db);
+    return presetFieldValue(resolvePreset(db), field);
+}
+
+function presetFieldValue(record: PresetRecord | undefined, field: PresetField): unknown {
     const fallback = PRESET_DEFAULTS[field];
     if (record === undefined) {
         return plainClone(fallback);
@@ -303,6 +306,17 @@ export function forwardedPresetField(rootKey: string): PresetField | undefined {
 /** Whether a preset with `id` exists in `db` (untracked). */
 export function hasPreset(db: Database, id: string): boolean {
     return untrack(() => findPreset(db as unknown as Db, id)) !== undefined;
+}
+
+/**
+ * Reads a forwarded preset field (by its root name) from the preset with `presetId`, as the accessor
+ * reads the selected one (the same fallbacks): for a caller that captured its preset (a plugin
+ * hook's `getDatabase`). `undefined` when the key is not forwarded or no preset has that id.
+ */
+export function readPresetFieldOf(db: Database, presetId: string, rootKey: string): unknown {
+    const field = forwardedPresetField(rootKey);
+    const record = untrack(() => findPreset(db as unknown as Db, presetId));
+    return field === undefined || record === undefined ? undefined : presetFieldValue(record, field);
 }
 
 /**

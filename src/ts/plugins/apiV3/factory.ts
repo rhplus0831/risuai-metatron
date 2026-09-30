@@ -941,6 +941,10 @@ export class SandboxHost {
         }
         this.closeActiveStreams();
         this.instanceRegistry.clear();
+        // A host runner awaiting one of this plugin's callbacks (a hook) settles instead of waiting forever.
+        for (const pending of this.pendingCallbacks.values()) {
+            pending.reject(new Error("The plugin was unloaded"));
+        }
         this.pendingCallbacks.clear();
         this.abortControllers.clear();
         this.callbackWrapperCache.clear();

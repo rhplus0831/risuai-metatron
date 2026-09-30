@@ -3,6 +3,7 @@ import { language } from "../../../lang";
 import { fetchNative, globalFetch } from "../../globalApi.svelte";
 import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/modellist";
 import { risuChatParser, risuEscape, risuUnescape } from "../../parser/parser.svelte";
+import { capturePluginContext, invokeHook, type PluginCallContext } from "../../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../../plugins/pluginHooks";
 import { getCurrentCharacter, getCurrentChat, getDatabase, type character } from "../../storage/database.svelte";
 import { type ChatRef, findChat } from "../../storage/chatStore.svelte";
@@ -45,6 +46,11 @@ interface requestDataArgument {
     chatId?: string;
     /** The chat the request is for (request triggers run on it; default: the selected chat). */
     chatRef?: ChatRef | null;
+    /**
+     * The plugin call context the request's replacers and plugin provider get: the caller's (a send's,
+     * or a plugin hook's own), else `requestChatData` captures one from `chatRef` at its start.
+     */
+    pluginContext?: PluginCallContext;
     noMultiGen?: boolean;
     schema?: string;
     extractJson?: string;
@@ -220,6 +226,8 @@ export async function requestChatData(
     abortSignal: AbortSignal = null,
 ): Promise<requestDataResponse> {
     const db = getDatabase();
+    arg.pluginContext ??= capturePluginContext(arg.chatRef);
+    const pluginContext = arg.pluginContext;
     const fallBackModels: string[] = safeStructuredClone(db?.fallbackModels?.[model] ?? []);
     const tools = arg.tools ?? (await getTools());
     fallBackModels.push("");
@@ -253,7 +261,7 @@ export async function requestChatData(
 
             if (pluginHooks.replacerbeforeRequest.size > 0) {
                 for (const replacer of pluginHooks.replacerbeforeRequest) {
-                    arg.formated = await replacer(arg.formated, model);
+                    arg.formated = await invokeHook(replacer, pluginContext, arg.formated, model);
                 }
             }
 
@@ -305,7 +313,7 @@ export async function requestChatData(
 
             if (da.type === "success" && pluginHooks.replacerafterRequest.size > 0) {
                 for (const replacer of pluginHooks.replacerafterRequest) {
-                    da.result = await replacer(da.result, model);
+                    da.result = await invokeHook(replacer, pluginContext, da.result, model);
                 }
             }
 
@@ -909,7 +917,9 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
         }
 
         const d = providerFunction
-            ? await providerFunction(
+            ? await invokeHook(
+                  providerFunction,
+                  arg.pluginContext ?? capturePluginContext(arg.chatRef),
                   applyParameters(
                       {
                           prompt_chat: formated,

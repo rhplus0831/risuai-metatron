@@ -230,6 +230,59 @@ describe("replaceCharacterFields", () => {
     });
 });
 
+// Phase 4, slice 3: the render key (`reloadKeys`, never saved) is left out of the JSON check and of
+// the detached copy, so a character a plugin read back after a send (where the key is a number, or
+// was `NaN` before the send stopped producing it) round-trips; the check still refuses a root that
+// is not a plain object (a `Date`, a `Map`, a class instance, an object with an inherited id) before
+// anything changes (Astra challenge point 5).
+describe("checkCharacterInput and the render key", () => {
+    it("accepts a character whose reloadKeys is a number, NaN, or a list, keeps the mirror's key, and saves none", async () => {
+        const { sync, characterStore, record, character, db } = await boot();
+        (db().characters[0] as any).reloadKeys = 3;
+        for (const reloadKeys of [7, Number.NaN, ["x"], undefined]) {
+            expect(() => characterStore.checkCharacterInput({ chaId: "c", reloadKeys })).not.toThrow();
+        }
+        expect(characterStore.replaceCharacterFields({ chaId: "c", name: "round trip", reloadKeys: Number.NaN })).toBe(
+            true,
+        );
+        expect(character("c").name).toBe("round trip");
+        expect(character("c").reloadKeys).toBe(3);
+        const added = characterStore.addCharacter({ name: "with key", chats: [], reloadKeys: Number.NaN });
+        expect("reloadKeys" in character(added)).toBe(false);
+        expect(characterStore.replaceCharacterAt(1, { chaId: "r", name: "replacing", chats: [], reloadKeys: 9 })).toBe(
+            "r",
+        );
+        expect("reloadKeys" in character("r")).toBe(false);
+        await sync.flushResources();
+        expect(record("characters", "c")).toMatchObject({ name: "round trip" });
+        expect(record("characters", "c")).not.toHaveProperty("reloadKeys");
+        expect(record("characters", "r")).not.toHaveProperty("reloadKeys");
+    });
+
+    it("refuses a root that is not a plain object, or a non-JSON field next to the key, and changes nothing", async () => {
+        const { characterStore, refused, validation } = await boot();
+        class Character {
+            chaId = "c";
+            name = "instance";
+        }
+        for (const bad of [
+            new Date(0),
+            new Map([["chaId", "c"]]),
+            new Character(),
+            Object.create({ chaId: "c", name: "inherited id" }),
+            { chaId: "c", reloadKeys: 1, desc: () => 1 },
+            { chaId: "c", reloadKeys: 1, desc: 1n },
+        ]) {
+            await refused(() => characterStore.replaceCharacterFields(bad), validation.MutationValidationError);
+            await refused(() => characterStore.addCharacter(bad), validation.MutationValidationError);
+            await refused(() => characterStore.replaceCharacterAt(0, bad), validation.MutationValidationError);
+        }
+        // A null-prototype object is plain data.
+        const bare = Object.assign(Object.create(null), { chaId: "c", name: "bare" });
+        expect(characterStore.replaceCharacterFields(bare)).toBe(true);
+    });
+});
+
 describe("replaceCharacterAt", () => {
     it("refuses the same id, an index outside the list, a taken id, and a generating character", async () => {
         const { chat, characterStore, refused, validation, sync } = await boot();

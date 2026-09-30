@@ -65,6 +65,7 @@ import { getModelInfo, LLMFlags } from "../model/modellist";
 import { hypaMemoryV3 } from "./memory/hypav3";
 import { getModuleAssets, getModuleToggles } from "./modules";
 import { readImage } from "../globalApi.svelte";
+import { capturePluginContext, invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../plugins/pluginHooks";
 import type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
@@ -74,9 +75,15 @@ export type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
 /**
  * Calls the plugin output listeners in turn. `indices` gives the generated chat's character and chat
  * indices as they are now; it is asked again for each listener, since an earlier one may have
- * reordered or deleted chats or characters.
+ * reordered or deleted chats or characters. Each listener gets the send's plugin call context.
  */
-async function runChatOutputListeners(char: any, chat: any, indices: () => [number, number], messageIndex: number) {
+async function runChatOutputListeners(
+    char: any,
+    chat: any,
+    indices: () => [number, number],
+    messageIndex: number,
+    context: PluginCallContext | undefined,
+) {
     if (pluginHooks.chatOutput.size === 0) {
         return;
     }
@@ -86,7 +93,7 @@ async function runChatOutputListeners(char: any, chat: any, indices: () => [numb
     for (const listener of pluginHooks.chatOutput) {
         try {
             const [characterIndex, chatIndex] = indices();
-            await listener({
+            await invokeHook(listener, context, {
                 char: charSnapshot,
                 chat: chatSnapshot,
                 characterIndex,
@@ -119,6 +126,11 @@ type SendChatArg = {
     target?: ChatRef;
     /** A group send's speaker, by id (the recursive call for one member). */
     speakerChaId?: string;
+    /**
+     * The plugin call context this send's hooks get (a recursive send's, or a plugin hook's own when
+     * the hook sends); default: captured when the send starts, after the preset chain.
+     */
+    pluginContext?: PluginCallContext;
     /** The message a continue extends (default: the target chat's last message when the send starts). */
     continueMessageId?: string;
     chatAdditonalTokens?: number;
@@ -217,7 +229,8 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
     function bumpReloadKey() {
         const character = DBState.db.characters.find((entry) => entry?.chaId === chatTarget?.chaId);
         if (character) {
-            character.reloadKeys += 1;
+            // A character that was never re-rendered has no render key yet (`+= 1` would give NaN).
+            character.reloadKeys = (Number.isFinite(character.reloadKeys) ? character.reloadKeys : 0) + 1;
         }
     }
 
@@ -375,6 +388,9 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
         const startChat = nowChatroom.chats[nowChatroom.chatPage];
         chatTarget = startChat?.id ? { chaId: nowChatroom.chaId, chatId: startChat.id } : null;
     }
+    // The plugin hooks of this send act on its chat and on the preset selected now (after the
+    // preset chain), whatever the tab selects later; a recursive send passes the same context on.
+    const pluginContext = arg.pluginContext ?? capturePluginContext(chatTarget);
     const generationId = v4();
 
     let promptInfo: MessagePresetInfo = {};
@@ -440,6 +456,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
                 const r = await sendChat(order[i].index, {
                     target: chatTarget ?? undefined,
                     speakerChaId: order[i].id,
+                    pluginContext,
                     chatAdditonalTokens: caculatedChatTokens,
                     signal: abortSignal,
                     preview: arg.preview,
@@ -1066,6 +1083,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
                 "editprocess",
                 {},
                 chatTarget,
+                pluginContext,
             ),
         };
 
@@ -1107,6 +1125,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
                     chatRole: msg.role,
                 },
                 chatTarget,
+                pluginContext,
             )
         ).data;
         let name = "";
@@ -1845,6 +1864,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
             continue: arg.continue,
             chatId: generationId,
             chatRef: chatTarget,
+            pluginContext,
             imageResponse: DBState.db.outputImageModal,
             previewBody: arg.previewPrompt,
             escape: nowChatroom.type === "character" && nowChatroom.escapeOutput,
@@ -1959,6 +1979,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
                         msgIndex(),
                         {},
                         chatTarget,
+                        pluginContext,
                     );
                     writeText(outputMessageId, result2.data);
                     emoChanged = result2.emoChanged;
@@ -2023,6 +2044,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
                             msgIndex(),
                             {},
                             chatTarget,
+                            pluginContext,
                         );
                         writeText(outputMessageId, result2.data);
                         emoChanged = result2.emoChanged;
@@ -2063,6 +2085,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
                         msgIndex(),
                         {},
                         chatTarget,
+                        pluginContext,
                     );
                     writeText(outputMessageId, result2.data);
                     emoChanged = result2.emoChanged;
@@ -2106,7 +2129,13 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
             }
         }
         currentChat = chatNow() ?? currentChat;
-        await runChatOutputListeners(currentChar, currentChat, listenerIndices, indexOfMessage(outputMessageId));
+        await runChatOutputListeners(
+            currentChar,
+            currentChat,
+            listenerIndices,
+            indexOfMessage(outputMessageId),
+            pluginContext,
+        );
         if (DBState.db.ttsAutoSpeech) {
             await sayTTS(currentChar, result);
         }
@@ -2129,6 +2158,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
                 chatNow()?.message.length ?? 0,
                 {},
                 chatTarget,
+                pluginContext,
             );
             if (i === 0 && arg.continue) {
                 result2 = await processScriptFull(
@@ -2138,6 +2168,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
                     indexOfMessage(lastMessage?.chatId),
                     {},
                     chatTarget,
+                    pluginContext,
                 );
             }
             if (DBState.db.removeIncompleteResponse) {
@@ -2207,7 +2238,13 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
         }
         currentChat = chatNow() ?? currentChat;
         if (outputMessageId) {
-            await runChatOutputListeners(currentChar, currentChat, listenerIndices, indexOfMessage(outputMessageId));
+            await runChatOutputListeners(
+                currentChar,
+                currentChat,
+                listenerIndices,
+                indexOfMessage(outputMessageId),
+                pluginContext,
+            );
         }
     }
 
@@ -2230,6 +2267,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
         return await sendChat(chatProcessIndex, {
             target: chatTarget ?? undefined,
             speakerChaId: arg.speakerChaId,
+            pluginContext,
             continueMessageId: replyId,
             chatAdditonalTokens: arg.chatAdditonalTokens,
             continue: true,
@@ -2246,6 +2284,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
             {
                 formated: igpFormated,
                 bias: {},
+                pluginContext,
             },
             "emotion",
             abortSignal,
@@ -2284,6 +2323,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
         return await sendChat(chatProcessIndex, {
             target: chatTarget ?? undefined,
             speakerChaId: arg.speakerChaId,
+            pluginContext,
             signal: abortSignal,
         });
     }
@@ -2445,6 +2485,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
                     bias: emobias,
                     currentChar: currentChar,
                     maxTokens: 30,
+                    pluginContext,
                 },
                 "emotion",
                 abortSignal,

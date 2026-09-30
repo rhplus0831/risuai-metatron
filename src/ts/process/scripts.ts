@@ -21,6 +21,7 @@ import {
 import { getModuleAssets, getModuleRegexScripts } from "./modules";
 import { HypaProcesser } from "./memory/hypamemory";
 import { runLuaEditTrigger } from "./scriptings";
+import { capturePluginContext, invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../plugins/pluginHooks";
 import { runTrigger } from "./triggers";
 import { type ChatRef, currentChatRef, findChat, setMessageText } from "../storage/chatStore.svelte";
@@ -42,8 +43,9 @@ export async function processScript(
     mode: ScriptMode,
     cbsConditions: CbsConditions = {},
     chatRef?: ChatRef | null,
+    pluginContext?: PluginCallContext,
 ) {
-    return (await processScriptFull(char, data, mode, -1, cbsConditions, chatRef)).data;
+    return (await processScriptFull(char, data, mode, -1, cbsConditions, chatRef, pluginContext)).data;
 }
 
 export function exportRegex(s?: customscript[]) {
@@ -131,6 +133,7 @@ export async function processScriptFull(
     chatID = -1,
     cbsConditions: CbsConditions = {},
     chatRef?: ChatRef | null,
+    pluginContext: PluginCallContext | undefined = capturePluginContext(chatRef),
 ) {
     let db = getDatabase();
     let emoChanged = false;
@@ -162,7 +165,7 @@ export async function processScriptFull(
 
     if (pluginHooks[mode].size > 0) {
         for (const plugin of pluginHooks[mode]) {
-            const res = await plugin(data);
+            const res = await invokeHook(plugin, pluginContext, data);
             if (res !== null && res !== undefined) {
                 data = res;
             }

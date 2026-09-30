@@ -45,11 +45,18 @@ function indexOf(chaId: string): number {
  * Checks a character a contract hands in, without changing it: an object of JSON data whose
  * `type`, when present, is `"character"` or `"group"`, whose `chaId`, when present, is a string,
  * and whose `chats`, when present, is a list of chat objects with lists of message objects (what
- * the chat module needs to give them ids). For a caller's preflight of a whole list.
+ * the chat module needs to give them ids). For a caller's preflight of a whole list. The render key
+ * (`reloadKeys`) is not checked: it is never saved or taken from the input, and a character a plugin
+ * read back carries whatever the mirror had there.
  */
 export function checkCharacterInput(char: unknown, key = "character"): asserts char is Record<string, unknown> {
     requireObject(key, char);
-    requireJsonData(key, char);
+    // The copy that leaves out the render key would hide the input's own prototype: check it first.
+    const proto = Object.getPrototypeOf(char);
+    if (proto !== Object.prototype && proto !== null) {
+        throw new MutationValidationError(key, "expected a plain object");
+    }
+    requireJsonData(key, { ...char, reloadKeys: undefined });
     if (char.type !== undefined && char.type !== "character" && char.type !== "group") {
         throw new MutationValidationError(key, 'type must be "character" or "group"');
     }
@@ -72,7 +79,7 @@ export function checkCharacterInput(char: unknown, key = "character"): asserts c
 /** A checked, detached copy of `char` with its `chaId` (assigned on the copy when missing or empty). */
 function prepareCharacter(char: unknown): { copy: AnyCharacter; chaId: string } {
     checkCharacterInput(char);
-    const copy = detach(char) as unknown as AnyCharacter;
+    const copy = detach({ ...char, reloadKeys: undefined }) as unknown as AnyCharacter;
     if (typeof copy.chaId !== "string" || copy.chaId === "") {
         copy.chaId = v4();
     }

@@ -39,6 +39,14 @@ import {
     setPluginStorageItem,
 } from "src/ts/storage/pluginStorageStore.svelte";
 import { selectPersona } from "src/ts/storage/selection.svelte";
+import { forwardedPresetField, hasPreset, readPresetFieldOf } from "src/ts/storage/forwarding.svelte";
+import {
+    currentContext,
+    enterContext,
+    PluginTargetGoneError,
+    takeHandoff,
+    type PluginCallContext,
+} from "./pluginContext";
 import {
     appendMessage,
     applyChatResult,
@@ -712,12 +720,52 @@ const urlBlacklist = ["risuai.xyz", "risuai.net", "sionyw.com"];
 
 const authorizationHeaders = ["x-api-key", "authorization", "proxy-authorization"];
 
-const getChar = () => {
+/**
+ * The character and chat a hook's context names, found by id as they are now. Throws
+ * `PluginTargetGoneError` when either was deleted: the call is refused, never redirected.
+ */
+function contextTarget(context: PluginCallContext) {
+    const characters = DBState.db.characters ?? [];
+    const characterIndex = characters.findIndex((entry) => entry?.chaId === context.chatRef.chaId);
+    const character = characters[characterIndex];
+    if (!character) {
+        throw new PluginTargetGoneError("character");
+    }
+    const chatIndex = (character.chats ?? []).findIndex((chat) => chat?.id === context.chatRef.chatId);
+    if (chatIndex === -1) {
+        throw new PluginTargetGoneError("chat");
+    }
+    return { characterIndex, character, chatIndex, chat: character.chats[chatIndex] };
+}
+
+/**
+ * The hook's character with a context, else the selected one (a snapshot). A hook's character
+ * reports the hook's chat as its `chatPage`, so `chats[chatPage]` is the chat the hook runs for.
+ */
+const getChar = (context: PluginCallContext | undefined) => {
+    if (context) {
+        const { character, chatIndex } = contextTarget(context);
+        return { ...$state.snapshot(character), chatPage: chatIndex };
+    }
     return getCurrentCharacter({ snapshot: true });
 };
 
-const setChar = (char: any) => {
-    applyPluginCharacter(get(selectedCharID), char);
+/**
+ * Applies a character to the hook's character with a context, else to the selected one. Inside a
+ * hook, a `chatPage` naming the hook's chat is what `getChar` reported, not a change of the user's
+ * chat selection, so it is not applied.
+ */
+const setChar = (context: PluginCallContext | undefined, char: any) => {
+    if (!context) {
+        applyPluginCharacter(get(selectedCharID), char);
+        return;
+    }
+    const { characterIndex, chatIndex } = contextTarget(context);
+    if (char && typeof char === "object" && char.chatPage === chatIndex) {
+        const { chatPage: _reported, ...rest } = char;
+        char = rest;
+    }
+    applyPluginCharacter(characterIndex, char);
 };
 
 /** Runs a plugin write; a refused value (`MutationValidationError`) is warned about and changes nothing. */
@@ -906,7 +954,7 @@ function selectPersonaAt(index: unknown) {
  * `pluginCustomStorage`. `plugins` is the list to install: the full setter passes the plugins the
  * user confirmed (added or updated by name), the lite one the whole list (replaced).
  */
-function applyPluginKey(key: string, value: unknown, full: boolean) {
+function applyPluginKey(key: string, value: unknown, full: boolean, context: PluginCallContext | undefined) {
     switch (key) {
         case "characters":
             return applyPluginCharacters(value);
@@ -932,7 +980,7 @@ function applyPluginKey(key: string, value: unknown, full: boolean) {
             return selectPersonaAt(value);
     }
     if (allowedDbKeys.includes(key)) {
-        updateSettings({ [key]: value });
+        updateSettings({ [key]: value }, { presetId: context?.presetId });
     } else {
         setPluginCustomValue(key, value);
     }
@@ -941,20 +989,29 @@ function applyPluginKey(key: string, value: unknown, full: boolean) {
 /**
  * Both database setters: each key is applied on its own, so a refused value (warned about) keeps
  * that key's previous value and the other keys still apply. A preset that is gone
- * (`MutationTargetGoneError`) and unexpected errors reach the plugin.
+ * (`MutationTargetGoneError`) and unexpected errors reach the plugin. Inside a hook (`context`), a
+ * forwarded preset key goes to the hook's preset; when that preset is gone, nothing is applied
+ * (`PluginTargetGoneError`).
  */
-function applyPluginDatabase(newDb: Record<string, unknown>, full: boolean) {
+function applyPluginDatabase(newDb: Record<string, unknown>, full: boolean, context: PluginCallContext | undefined) {
+    if (
+        context &&
+        Object.keys(newDb).some((key) => allowedDbKeys.includes(key) && forwardedPresetField(key) !== undefined) &&
+        !hasPreset(DBState.db, context.presetId)
+    ) {
+        throw new PluginTargetGoneError("preset");
+    }
     for (const key of pluginKeyOrder(newDb)) {
-        warnRefused(`the database key ${key}`, () => applyPluginKey(key, newDb[key], full));
+        warnRefused(`the database key ${key}`, () => applyPluginKey(key, newDb[key], full, context));
     }
 }
 
 //Keys outside allowedDbKeys are stored at the top level of db.pluginCustomStorage
-const setPluginDatabaseLite = (newDb: any) => {
-    applyPluginDatabase(newDb, false);
+const setPluginDatabaseLite = (newDb: any, context: PluginCallContext | undefined) => {
+    applyPluginDatabase(newDb, false, context);
 };
 
-const setPluginDatabase = async (newDb: any) => {
+const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefined) => {
     if (Object.hasOwn(newDb, "plugins")) {
         console.warn(
             "[WARN] Plugin attempted to access plugin directly. this would be blocked in future versions. Instead, use the provided APIs to manage plugins. Attempting to handle plugin installation via plugin for new plugins in the provided database object.",
@@ -970,8 +1027,8 @@ const setPluginDatabase = async (newDb: any) => {
         // Only the plugins the user confirms are installed; the installed ones stay.
         newDb = { ...newDb, plugins: await handlePluginInstallViaPlugin(plugins) };
     }
-    // No await from here on: a forwarded preset field lands in the preset selected now.
-    applyPluginDatabase(newDb, true);
+    // No await from here on: a forwarded preset field lands in the hook's preset, else in the one selected now.
+    applyPluginDatabase(newDb, true, context);
 };
 
 const readAssetImage = (path: string) => {
@@ -990,6 +1047,34 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
     const safeLocalStorage = new SafeLocalStorage();
     // Captured now: a plugin with database access could rewrite its own script in the database.
     const identity: PluginIdentity = { name: plugin.name, script: plugin.script };
+    // The hooks this plugin registers, wrapped to take their call context (`pluginContext.ts`): a runner
+    // hands it over synchronously, and it stays on this plugin's stack until the hook settles. Keyed
+    // by the registered function, so a removal finds the wrapper it registered.
+    const hookWrappers = new WeakMap<Function, Function>();
+    // The owner of this instance's context stack: a reloaded instance of the plugin gets its own.
+    const contextOwner = {};
+    const withContext = <F extends Function>(hook: F): F => {
+        const cached = hookWrappers.get(hook);
+        if (cached) {
+            return cached as unknown as F;
+        }
+        const wrapped = (...args: unknown[]) => {
+            const context = takeHandoff();
+            if (!context) {
+                return hook(...args);
+            }
+            const exit = enterContext(contextOwner, context);
+            try {
+                return Promise.resolve(hook(...args)).finally(exit);
+            } catch (error) {
+                exit();
+                throw error;
+            }
+        };
+        hookWrappers.set(hook, wrapped);
+        return wrapped as unknown as F;
+    };
+    const registered = <F extends Function>(hook: F): F => (hookWrappers.get(hook) as unknown as F) ?? hook;
     return {
         //Older API names, kept for compatibility
         risuFetch: (url, options) => {
@@ -1031,8 +1116,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
             return fetchNative(url, options);
         },
-        getChar: getChar,
-        setChar: setChar,
+        getChar: () => getChar(currentContext(contextOwner)),
+        setChar: (char: any) => setChar(currentContext(contextOwner), char),
         addProvider: (
             name: string,
             func: (
@@ -1047,11 +1132,18 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             let provs = get(customProviderStore);
             provs.push(name);
             (pluginHooks.providers.set(name, async (arg, abortSignal) => {
-                await getPluginPermission(identity, "provider", "periodically");
-                //mode is overridden to v3, due to vulnerabilities using mode.
-                //Alternative to mode will be added in future
-                arg.mode = "v3";
-                return await func(arg, abortSignal);
+                // The request's call context is taken before the first await (the permission prompt).
+                const context = takeHandoff();
+                const exit = context ? enterContext(contextOwner, context) : undefined;
+                try {
+                    await getPluginPermission(identity, "provider", "periodically");
+                    //mode is overridden to v3, due to vulnerabilities using mode.
+                    //Alternative to mode will be added in future
+                    arg.mode = "v3";
+                    return await func(arg, abortSignal);
+                } finally {
+                    exit?.();
+                }
             }),
                 pluginHooks.providerOptions.set(name, options ?? {}));
             customProviderStore.set(provs);
@@ -1088,29 +1180,40 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             registerTTSPostprocessor(func);
             addPluginUnloadCallback(plugin.name, () => unregisterTTSPostprocessor(func));
         },
-        addRisuScriptHandler: addRisuScriptHandler,
-        removeRisuScriptHandler: removeRisuScriptHandler,
+        addRisuScriptHandler: (name: ScriptMode, func: EditFunction) => {
+            const handler = withContext(func);
+            addRisuScriptHandler(name, handler);
+            addPluginUnloadCallback(plugin.name, () => pluginHooks["edit" + name]?.delete(handler));
+        },
+        removeRisuScriptHandler: (name: ScriptMode, func: EditFunction) =>
+            removeRisuScriptHandler(name, registered(func)),
         addRisuReplacer: async (name: string, func: Function) => {
             //permission check for replacer
             const conf = await getPluginPermission(identity, "replacer", "periodically");
             if (!conf) {
                 return;
             }
-            addRisuReplacer(name, func as any);
+            // Removed when the plugin unloads: the registry is not reset on reload, and a replacer of an
+            // unloaded plugin would call into its terminated sandbox.
+            const replacer = withContext(func) as any;
+            addRisuReplacer(name, replacer);
+            addPluginUnloadCallback(plugin.name, () => pluginHooks["replacer" + name]?.delete(replacer));
         },
-        removeRisuReplacer: removeRisuReplacer,
+        removeRisuReplacer: (name: string, func: ReplacerFunction) => removeRisuReplacer(name, registered(func)),
         addRisuChatListener: async (mode: "output", func: Function) => {
             //permission check, lets use same as replacer
             const conf = await getPluginPermission(identity, "replacer", "periodically");
             if (!conf) {
                 return;
             }
-            addRisuChatListener(mode, func as any);
-            addPluginUnloadCallback(plugin.name, () => removeRisuChatListener(mode, func as any));
+            const listener = withContext(func) as any;
+            addRisuChatListener(mode, listener);
+            addPluginUnloadCallback(plugin.name, () => removeRisuChatListener(mode, listener));
         },
-        removeRisuChatListener: removeRisuChatListener,
-        setDatabaseLite: setPluginDatabaseLite,
-        setDatabase: setPluginDatabase,
+        removeRisuChatListener: (mode: string, func: ChatOutputListener) =>
+            removeRisuChatListener(mode, registered(func)),
+        setDatabaseLite: (newDb: any) => setPluginDatabaseLite(newDb, currentContext(contextOwner)),
+        setDatabase: (newDb: any) => setPluginDatabase(newDb, currentContext(contextOwner)),
         loadPlugins: loadPlugins,
         readImage: readAssetImage,
         readInlay: async (id: string) => {
@@ -1125,17 +1228,27 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         //Same functionality, but new implementation
         getDatabase: async (includeOnly: string[] | "all" = "all") => {
+            const context = currentContext(contextOwner);
             const conf = await getPluginPermission(identity, "db", "periodically");
             if (!conf) {
                 return null;
             }
             const db = DBState.db;
+            // Inside a hook, the forwarded preset keys come from the hook's preset (refused when it is
+            // gone), so a read-modify-write through setDatabase stays in one preset.
             let liteDB = {};
             for (const key of allowedDbKeys) {
                 if (includeOnly !== "all" && !includeOnly.includes(key)) {
                     continue;
                 }
-                (liteDB as any)[key] = $state.snapshot((db as any)[key]);
+                let value = (db as any)[key];
+                if (context && forwardedPresetField(key) !== undefined) {
+                    if (!hasPreset(db, context.presetId)) {
+                        throw new PluginTargetGoneError("preset");
+                    }
+                    value = readPresetFieldOf(db, context.presetId, key);
+                }
+                (liteDB as any)[key] = $state.snapshot(value);
             }
             return liteDB;
         },
@@ -1276,12 +1389,14 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 cbsConditions?: CbsConditions;
             },
         ) => {
+            const context = currentContext(contextOwner);
             const db = DBState.db;
-            const char = db.characters[get(selectedCharID)];
+            const target = context ? contextTarget(context) : undefined;
+            const char = target ? target.character : db.characters[get(selectedCharID)];
             if (!char) {
                 throw new Error("No character selected");
             }
-            const chat = char.chats?.[char.chatPage];
+            const chat = target ? target.chat : char.chats?.[char.chatPage];
             if (!chat) {
                 throw new Error("No active chat found");
             }
@@ -1296,6 +1411,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             };
             const parsed = risuChatParser(text ?? "", {
                 chara: char,
+                ...(context ? { chatRef: context.chatRef } : {}),
                 chatID,
                 role,
                 runVar: options?.runVar,
@@ -1308,7 +1424,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 return parsed;
             }
 
-            return (await processScriptFull(char, parsed, "editprocess", chatID, cbsConditions)).data;
+            return (
+                await processScriptFull(char, parsed, "editprocess", chatID, cbsConditions, context?.chatRef, context)
+            ).data;
         },
         setChatToIndex: (characterIndex: number, chatIndex: number, chat: any) => {
             const db = DBState.db;
@@ -1329,14 +1447,28 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
         },
         getCurrentCharacterIndex: () => {
-            return get(selectedCharID);
+            const context = currentContext(contextOwner);
+            return context ? contextTarget(context).characterIndex : get(selectedCharID);
         },
         getCurrentChatIndex: () => {
+            const context = currentContext(contextOwner);
+            if (context) {
+                return contextTarget(context).chatIndex;
+            }
             const db = DBState.db;
             const charId = get(selectedCharID);
             return db.characters[charId].chatPage;
         },
         getCurrentLorebookEntries: () => {
+            const context = currentContext(contextOwner);
+            if (context) {
+                const { character, chat } = contextTarget(context);
+                return $state.snapshot([
+                    ...(character.globalLore ?? []),
+                    ...(chat.localLore ?? []),
+                    ...getModuleLorebooks(context.chatRef),
+                ]);
+            }
             const charId = get(selectedCharID);
             const char = DBState.db.characters[charId];
             if (!char) {
@@ -1349,8 +1481,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             return $state.snapshot([...characterLore, ...chatLore, ...moduleLore]);
         },
         //New names for character APIs, to match API naming conventions
-        getCharacter: getChar,
-        setCharacter: setChar,
+        getCharacter: () => getChar(currentContext(contextOwner)),
+        setCharacter: (char: any) => setChar(currentContext(contextOwner), char),
 
         showContainer: (
             //more types may be added in future
@@ -1693,11 +1825,18 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             staticModel?: string;
             allowPlugins?: boolean;
         }) => {
+            // Inside a hook, the request is for the hook's chat (refused when it is gone), and its plugin
+            // hooks get the hook's context.
+            const context = currentContext(contextOwner);
+            if (context) {
+                contextTarget(context);
+            }
             return requestChatDataMain(
                 {
                     formated: options.messages,
                     bias: {},
                     staticModel: options.staticModel,
+                    ...(context ? { chatRef: context.chatRef, pluginContext: context } : {}),
 
                     // Calls into plugin-provided models are blocked by default to
                     // guard against accidental IPC loops between provider plugins.
@@ -1712,6 +1851,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             );
         },
         sendChat: async (message: string) => {
+            const context = currentContext(contextOwner);
             const conf = await getPluginPermission(identity, "sendChat");
             if (!conf) {
                 return false;
@@ -1730,13 +1870,14 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 throw new Error("Sending chat with plugin-based model is currently blocked");
             }
 
-            const charId = get(selectedCharID);
-            const char = DBState.db.characters[charId];
+            // Inside a hook, the send goes to the hook's chat, else to the selected one.
+            const target = context ? contextTarget(context) : undefined;
+            const char = target ? target.character : DBState.db.characters[get(selectedCharID)];
             if (!char) {
                 throw new Error("No character selected");
             }
 
-            const chat = char.chats[char.chatPage];
+            const chat = target ? target.chat : char.chats[char.chatPage];
             if (!chat) {
                 throw new Error("No active chat found");
             }
@@ -1749,7 +1890,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
 
             try {
-                await processSendChat(-1, {});
+                await processSendChat(-1, context ? { target: context.chatRef, pluginContext: context } : {});
             } finally {
                 // Plugin API path does not pass through the UI unlock logic,
                 // so release doingChat here on both success and failure.

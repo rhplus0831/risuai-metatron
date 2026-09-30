@@ -1,6 +1,6 @@
 # Slice: Plugin Call Context
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented 2026-09-30 (record below; the implementation plan's amendments apply).
 
 Phase: [Phase 4](../../phase-4-external-contracts.md), the captured-context boundary Phase 5
 asked Phase 4 for (`job-channel` and `post-generation-and-plugin-callbacks`: "scoping
@@ -145,3 +145,123 @@ Same-plugin overlap resolves to the innermost context (recorded; exact under Pha
 serialization). A plugin that calls a context-dependent function from a timer started inside a
 hook, after the hook settled, gets the tab's selection (as today). `bodyIntercepter`, tokenizer,
 and TTS hooks have no context (they have no chat today either).
+
+## Implementation record
+
+Implemented 2026-09-30 on `4237e85c`, by the amendments of
+[`implementation-plan.md`](implementation-plan.md) (slice 3).
+
+- **`src/ts/plugins/apiV3/pluginContext.ts`** (new):
+  - `PluginCallContext`, `PluginTargetGoneError`, and `capturePluginContext(chatRef)`. The
+    capture is untracked. It takes the resolved selected preset, and the chat's bound persona when
+    that persona exists, else the selected persona. There is none without a chat.
+  - `invokeHook(hook, context, ...args)` puts the context in a handoff slot, restored in `finally`;
+    `takeHandoff()` takes it.
+  - The stacks: `enterContext(owner, context)` returns a function that pops exactly that entry, and
+    `currentContext(owner)` gives the innermost. The owner is one object per loaded plugin
+    instance, not the plugin's name, so a reloaded instance never sees an old one's context.
+- **`src/ts/plugins/apiV3/v3.svelte.ts`**:
+  - Each API object wraps the hooks its plugin registers (script handlers, replacers, chat
+    listeners), in a `WeakMap` keyed by the registered function, so a removal finds its wrapper.
+    The wrapper takes the handoff on its first line, and keeps the context on the stack until the
+    hook settles or throws.
+  - The provider wrapper takes the handoff before its permission prompt (A17).
+  - Replacers and script handlers are removed when the plugin unloads, as chat listeners were.
+    Replacers survive a reload otherwise.
+  - The host functions read the context on their first line (F-a). Inside a hook, they resolve its
+    character and chat by id, and throw `PluginTargetGoneError` when either is gone:
+    - `getCharacter` reports the hook's chat as its `chatPage`, and `setCharacter` does not apply
+      that page back, so a round trip leaves the user's chat selection alone;
+    - `getCurrentCharacterIndex`, `getCurrentChatIndex`, and `getCurrentLorebookEntries`;
+    - `parseRisuChat`, with the hook's chat for the parser and the scripts;
+    - `sendChat`, which appends to the hook's chat and sends it with the hook's context;
+    - `runLLMModel`, which passes the chat and the context.
+  - Inside a hook, `getDatabase` reads the forwarded preset keys from the hook's preset (A20).
+  - Inside a hook, `setDatabase` and `setDatabaseLite` write them into the hook's preset. When that
+    preset is gone, they apply nothing and throw.
+- **`src/ts/plugins/apiV3/factory.ts`**: `terminate()` rejects the callbacks still pending, so a
+  runner awaiting an unloaded plugin's hook settles (it waited forever before).
+- **The runners** capture the context before their first await (A18):
+  - The send (`index.svelte.ts`) captures it right after `chatTarget`, after the preset chain, or
+    takes the one it is given (`SendChatArg.pluginContext`). It passes it to:
+    - the output listeners;
+    - every `processScript` and `processScriptFull` call of the send;
+    - the main, image-prompt, and emotion requests;
+    - the group, auto-continue, and resend recursions.
+  - `processScriptFull` (`scripts.ts`) takes a context, else captures one from its `chatRef` at
+    entry.
+  - `requestChatData` (`request.ts`) takes `arg.pluginContext`, else captures one from `chatRef`
+    at entry. It passes the context to both replacer loops and the plugin provider.
+- **`src/ts/storage/forwarding.svelte.ts`** (not in the allowed files): `readPresetFieldOf`, the
+  accessor's read of one preset by id.
+- **A fix to slice 2** (`characterStore.svelte.ts`, not in the allowed files): the character
+  checks leave out the render key `reloadKeys`, after a check of the root's prototype.
+  - `bumpReloadKey` gave the render key `NaN` on a character's first re-render, so it was `NaN`
+    after any send (`index.svelte.ts`; it now starts from 0).
+  - A plugin's `getCharacter` → `setCharacter` round trip, or a `setDatabase({ characters })`
+    list holding such a character, was therefore refused as not JSON data.
+  - The manual check below found it.
+
+Recorded behavior changes: those listed under Proposed decisions, with two corrections:
+
+- `runLLMModel` runs no request trigger (it never did). Inside a hook, it parses and calls a plugin
+  provider for the hook's chat.
+- A `sendChat` inside a hook sends the hook's chat, with the hook's context.
+
+Also recorded:
+
+- An unloaded plugin's pending hooks now reject instead of hanging.
+- Its replacers and script handlers are removed.
+
+Residuals, beyond those listed below:
+
+- The memory modules and image generation (`supaMemory`, `hypav2`, `hypav3`, `stableDiff`) make
+  requests without a context. Their replacers and provider calls act on the tab's selection, as
+  before.
+- A plugin can still register a hook in the moment between its unload and its termination (at
+  most one second).
+
+Checks:
+
+- `pnpm check`, `pnpm test` (88 files, 921 passed, 3 skipped), `pnpm format:check`, `pnpm build`,
+  and `pnpm test:e2e` (5 passed). No existing test was invalidated, so no test-adapter ran.
+- The manual check, recorded here: a real v3 plugin in its sandbox, against a fresh server.
+  - Setup: the plugin registers a provider that waits 5 seconds, and a `chatOutput` listener. A
+    send starts in Alpha's chat, and the tab switches to Beta and to another preset mid-send.
+  - The listener's `setCharacter` wrote Alpha, not Beta. Its index getters named Alpha's chat.
+    Its `setDatabaseLite({ temperature })` and `getDatabase` used the sending preset.
+  - Both held after a reload.
+  - A listener's `sendChat` is refused as before, because the send is still running. The slice's
+    manual check assumed it could send.
+
+## Tests
+
+The Fable reviewer (verdict: no problem) wrote:
+
+- `src/ts/plugins/apiV3/pluginContext.test.ts` (20 cases): the capture, a listener for a chat that
+  is not selected, attribution between two plugins, the innermost of two hooks, out-of-order and
+  failed settling, the settings inside a hook across a switch and the prompts, gone targets and a
+  gone preset, the script and request runners, `sendChat` inside a hook, and unload and reload.
+- `src/ts/plugins/apiV3/pluginContextSaved.test.ts` (4 cases, over the real server store): a
+  listener's `setCharacter` and a hook's preset write saved, and a mutation scope reporting a
+  conflict discard during a hook.
+- `src/ts/storage/tests/characterStore.test.ts` (+2): the render-key round trip, and non-plain
+  character inputs refused with nothing changed.
+
+## Astra challenge (2026-09-30) and decisions
+
+1. High: the send's script hooks captured the preset again. Adopted: the send's context goes
+   through every script call of the send.
+2. High: auxiliary requests had no context. Adopted for the send's image-prompt and emotion
+   requests; the memory and image modules are a recorded residual.
+3. High: a hook's `getCharacter().chatPage` named the selected chat. Adopted: it names the hook's
+   chat, and `setCharacter` does not apply it back.
+4. High: the unload lifecycle. Adopted: per-instance stacks, hooks removed at unload, and pending
+   callbacks rejected at termination. The late-registration moment is recorded.
+5. Medium: the render-key fix hid the root's prototype. Adopted.
+6. Medium: the gone-preset check caught custom keys with a preset field's name (`aiModel`).
+   Adopted: only `allowedDbKeys` keys count.
+7. Medium: `runLLMModel` did not refuse a gone target. Adopted.
+8. Medium: nested and recursive sends captured again. Adopted: they carry the context.
+
+A second challenge was not run (one per slice, as approved).
