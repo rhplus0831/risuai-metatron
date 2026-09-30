@@ -9,6 +9,7 @@ import { newPersonaId } from "../../shared/presets.ts";
 import { selectedPersona } from "./storage/forwarding.svelte";
 import { selectPersona } from "./storage/selection.svelte";
 import { DBState } from "./stores.svelte";
+import { addPersona } from "./storage/collectionStore.svelte";
 
 /**
  * Sets the selected persona's icon from a picked PNG. The persona is captured before the file dialog
@@ -116,9 +117,9 @@ export async function importUserPersona() {
         }
         const data: PersonaCard = JSON.parse(Buffer.from(decoded, "base64").toString("utf-8"));
         if (data.name && data.personaPrompt) {
-            // The image first: the collection can be replaced meanwhile, so the push reads the live list.
+            // The image first: the collection can be replaced meanwhile, so the add reads the live list.
             const icon = await saveImage(await reencodeImage(v.data));
-            DBState.db.personas.push({
+            addPersona({
                 name: data.name,
                 icon,
                 personaPrompt: data.personaPrompt,

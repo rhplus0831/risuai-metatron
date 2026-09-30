@@ -32,6 +32,8 @@ import {
 } from "./globalApi.svelte";
 import { compressImage, getImageType } from "./media";
 import { DBState, SettingsMenuIndex, selectedCharID, settingsOpen } from "./stores.svelte";
+import { addCharacter } from "./storage/characterStore.svelte";
+import { addModule, incrementStatic } from "./storage/collectionStore.svelte";
 import { hasher } from "./parser/parser.svelte";
 import { type CharacterCardV3, type LorebookEntry } from "@risuai/ccardlib";
 import { reencodeImage } from "./process/files/inlays";
@@ -78,7 +80,7 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
             return (db.characters.length - 1) as any;
         }
         if ((da.char_name || da.name) && (da.char_persona || da.description) && (da.char_greeting || da.first_mes)) {
-            DBState.db.characters.push(convertOffSpecCards(da));
+            addCharacter(convertOffSpecCards(da));
             alertNormal(language.importedCharacter);
             return;
         } else {
@@ -86,8 +88,7 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
             return;
         }
     }
-    let db = getDatabase();
-    db.statics.imports += 1;
+    incrementStatic("imports");
 
     if (f.name.endsWith("charx") || f.name.endsWith("jpg") || f.name.endsWith("jpeg")) {
         console.log("reading charx");
@@ -288,7 +289,7 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
     if (parsed.spec !== "chara_card_v2" && parsed.spec !== "chara_card_v3") {
         const charaData: OldTavernChar = JSON.parse(Buffer.from(readedChara, "base64").toString("utf-8"));
         const imgp = await saveAsset(img);
-        DBState.db.characters.push(convertOffSpecCards(charaData, imgp));
+        addCharacter(convertOffSpecCards(charaData, imgp));
         alertNormal(language.importedCharacter);
         return DBState.db.characters.length - 1;
     }
@@ -376,7 +377,7 @@ export async function characterURLImport() {
                 return false;
             }
         }
-        DBState.db.modules.push(importData);
+        addModule(importData);
         alertNormal(language.successImport);
         SettingsMenuIndex.set(14);
         settingsOpen.set(true);
@@ -412,7 +413,7 @@ export async function characterURLImport() {
         const module = new Uint8Array(await data.arrayBuffer());
         const md = await readModule(Buffer.from(module));
         md.id = v4();
-        DBState.db.modules.push(md);
+        addModule(md);
         alertNormal(language.successImport);
         SettingsMenuIndex.set(14);
         settingsOpen.set(true);
@@ -468,7 +469,7 @@ export async function characterURLImport() {
         if (name.endsWith("risum")) {
             const md = await readModule(Buffer.from(data));
             md.id = v4();
-            DBState.db.modules.push(md);
+            addModule(md);
             alertNormal(language.successImport);
             SettingsMenuIndex.set(14);
             settingsOpen.set(true);
@@ -622,8 +623,6 @@ async function importCharacterCardSpec<T extends boolean = false>(
 
     const data = card.data;
     let im = img ? await saveAsset(img) : undefined;
-    let db = DBState.db;
-
     const risuext = safeStructuredClone(data.extensions.risuai);
     let emotions: [string, string][] = [];
     let bias: [string, number][] = [];
@@ -930,7 +929,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
         return char as any;
     }
 
-    db.characters.push(char);
+    addCharacter(char);
     alertNormal(language.importedCharacter);
     return true as any;
 }

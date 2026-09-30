@@ -77,7 +77,13 @@ import {
     type Database,
 } from "../database.svelte";
 import { selection, selectPreset } from "../selection.svelte";
-import { normalizePromptTemplate, PRESET_KEEP_ON_SWITCH_FIELDS, presetTemplate } from "../../../../shared/presets.ts";
+import { getPresetSecret } from "../llmSecrets.svelte";
+import {
+    normalizePromptTemplate,
+    PRESET_DEFAULTS,
+    PRESET_KEEP_ON_SWITCH_FIELDS,
+    presetTemplate,
+} from "../../../../shared/presets.ts";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const fixtureDir = path.resolve(__dirname, "fixtures/phase3");
@@ -520,5 +526,63 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
         expect(Object.hasOwn(exported.data, "promptPreprocess")).toBe(true);
         expect(JSON.parse(text)).not.toHaveProperty("promptPreprocess");
         expect(JSON.parse(text)).not.toHaveProperty("id");
+    });
+});
+
+/**
+ * Phase 4, slice 7 (`imports-through-the-module.md`, A24): every `importPreset` path adds its preset
+ * through `addPreset` after `normalizePreset`, so a converted value the file lacks (the ST
+ * `presence_penalty` arithmetic gives `NaN`, which `addPreset`'s JSON check would refuse) gets the
+ * field's default, the preset lands under the fresh id `addPreset` returns, a `proxyKey` a JSON file
+ * carries is stored under that id only, and the selection stays where it was.
+ */
+describe("importPreset through addPreset (Phase 4 slice 7)", () => {
+    beforeEach(() => {
+        DBState.db = {} as Database;
+        selectPreset("");
+    });
+
+    it("an ST preset without presence_penalty gets the field's default, not NaN, and is selected nowhere", async () => {
+        bootWith();
+        const selected = selection.presetId;
+        const st = {
+            prompt_order: [{ order: [{ identifier: "main", enabled: true }] }],
+            prompts: [{ identifier: "main", content: "hello", role: "system" }],
+        };
+        await importPreset({ name: "st.json", data: new TextEncoder().encode(JSON.stringify(st)) });
+        expect(DBState.db.botPresets).toHaveLength(2);
+        const imported = DBState.db.botPresets[1];
+        expect(imported.id).toMatch(UUID_V4);
+        expect(imported.PresensePenalty).toBe(PRESET_DEFAULTS.PresensePenalty);
+        expect(Number.isFinite(imported.PresensePenalty)).toBe(true);
+        expect(imported.name).toBe("Imported ST Preset");
+        expect(selection.presetId).toBe(selected);
+        expect(DBState.db.botPresetsId).toBe(0);
+    });
+
+    it("an NAI preset with omitted optional parameters gets the NAI defaults", async () => {
+        bootWith();
+        const nai = { presetVersion: 3, name: "Sparse NAI", parameters: { temperature: 1.1, max_length: 150 } };
+        await importPreset({ name: "nai.json", data: new TextEncoder().encode(JSON.stringify(nai)) });
+        const imported = DBState.db.botPresets[1];
+        expect(imported.id).toMatch(UUID_V4);
+        expect(imported.name).toBe("Sparse NAI");
+        expect(imported.temperature).toBeCloseTo(110);
+        expect(imported.maxResponse).toBe(150);
+        // `repetition_penalty_presence * 100` is NaN without the parameter: the default lands instead.
+        expect(imported.PresensePenalty).toBe(PRESET_DEFAULTS.PresensePenalty);
+        expect(imported.NAISettings).toMatchObject({ cfg_scale: 1, mirostat_tau: 0, mirostat_lr: 1, starter: "" });
+    });
+
+    it("a JSON preset's proxyKey goes to the secret map under the returned id and not into the preset", async () => {
+        bootWith();
+        const file = { name: "With key", proxyKey: "pk-from-file", temperature: 12 };
+        await importPreset({ name: "keyed.json", data: new TextEncoder().encode(JSON.stringify(file)) });
+        const imported = DBState.db.botPresets[1] as unknown as Record<string, unknown>;
+        expect(imported.id).toMatch(UUID_V4);
+        expect(Object.hasOwn(imported, "proxyKey")).toBe(false);
+        expect(getPresetSecret(imported.id as string)).toEqual({ proxyKey: "pk-from-file" });
+        expect(getPresetSecret(DBState.db.botPresets[0].id)).toBeUndefined();
+        expect(DBState.db.botPresetsId).toBe(0);
     });
 });

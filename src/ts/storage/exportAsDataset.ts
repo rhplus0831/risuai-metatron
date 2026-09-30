@@ -4,7 +4,7 @@ import { alertNormal } from "../alert";
 import { language } from "src/lang";
 
 export async function exportAsDataset() {
-    const db = getDatabase();
+    const db = getDatabase({ snapshot: true });
 
     let dataset = [];
     for (const char of db.characters) {

@@ -22,6 +22,7 @@ import {
 import { v4 as uuidv4, v4 } from "uuid";
 import { getImageType } from "./media";
 import { DBState, OpenRealmStore, selectedCharID } from "./stores.svelte";
+import { findCharacter, updateCharacter } from "./storage/characterStore.svelte";
 import { AppendableBuffer, changeChatTo, checkCharOrder, downloadFile, getFileSrc } from "./globalApi.svelte";
 import { updateInlayScreen } from "./process/inlayScreen";
 import { parseMarkdownSafe } from "./parser/parser.svelte";
@@ -426,13 +427,21 @@ export async function exportChat(page: number) {
 }
 
 export async function importChat() {
+    // The character is the one selected when the import starts, captured by id before the file dialog.
+    const chaId = DBState.db.characters[get(selectedCharID)]?.chaId;
+    if (!chaId) {
+        return;
+    }
     const dat = await selectSingleFile(["json", "jsonl", "txt", "html"]);
     if (!dat) {
         return;
     }
     try {
-        const selectedID = get(selectedCharID);
-        const chaId = DBState.db.characters[selectedID].chaId;
+        const target = findCharacter(chaId);
+        if (!target) {
+            alertError(language.errors.importTargetGone);
+            return;
+        }
         /** Adds imported chats at the top of the list, in their order (new chat and message ids where needed). */
         const addChats = (chats: Chat[]) => {
             chats.forEach((chat, index) => {
@@ -458,7 +467,7 @@ export async function importChat() {
                     if (!isFirst) {
                         newChat.message.push({
                             role: presedLine.is_user ? "user" : "char",
-                            data: formatTavernChat(presedLine.mes, DBState.db.characters[selectedID].name),
+                            data: formatTavernChat(presedLine.mes, target.name),
                         });
                     }
                 }
@@ -471,26 +480,24 @@ export async function importChat() {
                 return;
             }
 
-            if (
-                DBState.db.characters[selectedID].chatFolders.filter((folder) => folder.id === newChat.folderId)
-                    .length === 0
-            ) {
+            if ((target.chatFolders ?? []).filter((folder) => folder.id === newChat.folderId).length === 0) {
                 newChat.folderId = null;
             }
 
             addChats([newChat]);
-            changeChatTo(0);
+            // Only while the importing character is still the one on screen.
+            if (DBState.db.characters[get(selectedCharID)]?.chaId === chaId) {
+                changeChatTo(0);
+            }
             alertNormal(language.successImport);
         } else if (dat.name.endsWith("json")) {
             const json = JSON.parse(Buffer.from(dat.data).toString("utf-8"));
             if ((json.type === "risuAllChats" || json.type === "risuChat") && json.ver === 2) {
                 const folders = json.folders || [];
                 const chats = Array.isArray(json.data) ? json.data : [json.data];
-                const selectedID = get(selectedCharID);
-                let db = getDatabase();
                 let folderIdMap = {};
                 folders.forEach((folder) => {
-                    if (db.characters[selectedID].chatFolders?.some((f) => f.id === folder.id)) {
+                    if (target.chatFolders?.some((f) => f.id === folder.id)) {
                         const newId = uuidv4();
                         folderIdMap[folder.id] = newId;
                         folder.id = newId;
@@ -498,10 +505,7 @@ export async function importChat() {
                         folderIdMap[folder.id] = folder.id;
                     }
                 });
-                if (db.characters[selectedID].chatFolders === undefined) {
-                    db.characters[selectedID].chatFolders = [];
-                }
-                db.characters[selectedID].chatFolders.push(...folders);
+                updateCharacter(chaId, { chatFolders: [...(target.chatFolders ?? []), ...folders] });
                 chats.forEach((chat) => {
                     if (chat.folderId && folderIdMap[chat.folderId]) {
                         chat.folderId = folderIdMap[chat.folderId];

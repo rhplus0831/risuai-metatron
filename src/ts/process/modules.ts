@@ -25,6 +25,7 @@ import { convertExternalLorebook } from "./lorebook.svelte";
 import { compressImage } from "../media";
 import { decodeRPack, encodeRPack } from "../rpack/rpack_js";
 import { DBState, HideIconStore, moduleBackgroundEmbedding, ReloadGUIPointer } from "../stores.svelte";
+import { addModule } from "../storage/collectionStore.svelte";
 import { get } from "svelte/store";
 import { convertCharacterToModule, convertModuleToCharacter } from "../interchangeability";
 import { exportCharacterCard, importCharacterProcess } from "../characterCards";
@@ -286,19 +287,19 @@ export async function importModule() {
                 return;
             }
             const module = convertCharacterToModule(char);
-            DBState.db.modules.push(module);
+            addModule(module);
+            alertNormal(language.successImport);
         } catch (error) {
             console.error(error);
             alertError(language.errors.noData);
         }
-        alertNormal(language.successImport);
         return;
     }
     if (f.name.endsWith(".risum")) {
         try {
             const buf = Buffer.from(fileData);
             const module = await readModule(buf);
-            DBState.db.modules.push(module);
+            addModule(module);
         } catch (error) {
             console.error(error);
             alertError(language.errors.noData);
@@ -320,7 +321,7 @@ export async function importModule() {
                     return false;
                 }
             }
-            DBState.db.modules.push(importData);
+            addModule(importData);
             return;
         }
         // importData.type === 'risu' in conflict with HypaV3 preset exports
@@ -333,7 +334,7 @@ export async function importModule() {
                 lorebook: lores,
                 id: v4(),
             };
-            DBState.db.modules.push(importModule);
+            addModule(importModule);
             return;
         }
         if (importData.entries) {
@@ -344,7 +345,7 @@ export async function importModule() {
                 lorebook: lores,
                 id: v4(),
             };
-            DBState.db.modules.push(importModule);
+            addModule(importModule);
             return;
         }
         if (importData.type === "regex" && importData.data) {
@@ -355,7 +356,7 @@ export async function importModule() {
                 regex: regexs,
                 id: v4(),
             };
-            DBState.db.modules.push(importModule);
+            addModule(importModule);
             return;
         }
     } catch (error) {

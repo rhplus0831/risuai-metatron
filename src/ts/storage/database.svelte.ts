@@ -267,6 +267,7 @@ import { encode as encodeMsgpack, decode as decodeMsgpack } from "msgpackr/index
 import * as fflate from "fflate";
 import { decodeRPack, encodeRPack } from "../rpack/rpack_js";
 import { DBState, selectedCharID } from "../stores.svelte";
+import { addPreset } from "./collectionStore.svelte";
 
 export async function downloadPreset(id: string, type: "json" | "risupreset" | "return" = "json") {
     saveCurrentPreset();
@@ -356,7 +357,6 @@ export async function importPreset(
     if (pre?.promptTemplate !== undefined) {
         pre.promptTemplate = normalizePromptTemplate(pre.promptTemplate);
     }
-    let db = DBState.db;
     if (pre.presetVersion && pre.presetVersion >= 3) {
         //NAI preset
         const pr = safeStructuredClone(prebuiltPresets.NAI);
@@ -377,7 +377,7 @@ export async function importPreset(
         pr.NAISettings.mirostat_lr = pre.parameters.mirostat_lr;
         pr.NAISettings.mirostat_tau = pre.parameters.mirostat_tau;
         pr.name = pre.name ?? "Imported";
-        db.botPresets.push(normalizePreset(pr, { id: newPresetId() }));
+        addPreset(normalizePreset(pr));
         return;
     }
 
@@ -481,18 +481,16 @@ export async function importPreset(
         }
         pr.promptTemplate = normalizePromptTemplate(pr.promptTemplate);
         pr.name = "Imported ST Preset";
-        db.botPresets.push(normalizePreset(pr, { id: newPresetId() }));
+        addPreset(normalizePreset(pr));
         return;
     }
     pre.name ??= "Imported";
-    if (!Array.isArray(db.botPresets)) {
-        db.botPresets = [];
-    }
-    // An imported preset always gets a fresh id, even when the file carries one. A `proxyKey` the
-    // file carries (a hand-written JSON; exports blank it) goes to the per-preset secret map.
-    const id = newPresetId();
+    // An imported preset always gets a fresh id, even when the file carries one (`addPreset`). A
+    // `proxyKey` the file carries (a hand-written JSON; exports blank it) goes to the per-preset secret map.
     const proxyKey = typeof pre.proxyKey === "string" ? pre.proxyKey : "";
-    db.botPresets.push(normalizePreset(pre, { id }));
+    // Normalized first, as before: a converted value the file lacks (a `NaN` from arithmetic on a
+    // missing parameter) becomes the field's default instead of refusing the import.
+    const id = addPreset(normalizePreset(pre));
     if (proxyKey !== "") {
         setPresetSecret(id, { proxyKey });
     }

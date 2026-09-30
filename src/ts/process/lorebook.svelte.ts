@@ -5,7 +5,7 @@ import { type Message, type loreBook } from "../storage/database.svelte";
 import { DBState } from "../stores.svelte";
 import { tokenize } from "../tokenizer";
 import { risuChatParser } from "../parser/parser.svelte";
-import { findCharacterbyId, findCharacterIndexbyId, pickHashRand, selectSingleFile } from "../util";
+import { findCharacterbyId, pickHashRand, selectSingleFile } from "../util";
 import { alertError, alertNormal } from "../alert";
 import { language } from "../../lang";
 import { downloadFile } from "../globalApi.svelte";
@@ -14,7 +14,7 @@ import { CCardLib } from "@risuai/ccardlib";
 import { v4 } from "uuid";
 import { type ChatRef, currentChatRef, findChat, setChatMeta } from "../storage/chatStore.svelte";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
-import { markCharactersDirty } from "../storage/resourceSync.svelte";
+import { findCharacter, updateCharacter } from "../storage/characterStore.svelte";
 
 /** Appends entries to the selected chat's local lore (through the chat module). */
 function appendLocalLore(entries: loreBook[]) {
@@ -724,11 +724,10 @@ export async function importLoreBook(mode: "global" | "local" | "sglobal") {
             lore.push(...convertExternalLorebook(entries));
         }
         if (mode === "global") {
-            const index = chaId === undefined ? -1 : findCharacterIndexbyId(chaId);
-            if (index !== -1) {
-                const character = DBState.db.characters[index];
-                character.globalLore = [...(character.globalLore ?? []), ...lore];
-                markCharactersDirty([chaId]);
+            // The character selected when the import started, by id; a character removed meanwhile gets nothing.
+            const character = chaId === undefined ? undefined : findCharacter(chaId);
+            if (character) {
+                updateCharacter(chaId, { globalLore: [...(character.globalLore ?? []), ...lore] });
             }
         } else if (chatTarget) {
             const chat = findChat(chatTarget);

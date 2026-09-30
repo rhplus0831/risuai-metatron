@@ -1,6 +1,6 @@
 # Slice: Imports Through The Module
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented (2026-10-01, on `5ad9f749`; record below).
 
 Phase: [Phase 4](../../phase-4-external-contracts.md), "Export, import" (card import in
 `characterCards.ts` and `importChat` in `characters.ts` create records through mutations;
@@ -96,3 +96,160 @@ allowlist). Lazy loading waits for Phase 6, so dataset export, chat export, the 
 getters, and the MCP read tools keep walking the eager mirror (the plan says so).
 `checkCharOrder` is still called directly by `downloadRisuHub` and the drop handlers after
 `addCharacter` already ran it (harmless: it is idempotent).
+
+## Implementation record
+
+Implemented 2026-10-01 on `5ad9f749`, by the amendments of
+[`implementation-plan.md`](implementation-plan.md) (slice 7).
+
+- **`characterCards.ts`**:
+  - The two off-spec pushes of `importCharacterProcess` and the push of `importCharacterCardSpec`
+    call `addCharacter`, which checks the card, gives its chats ids, and puts it into the order.
+    The index results are still read from the mirror afterwards.
+  - The `statics.imports` stamp is `incrementStatic("imports")`.
+  - The three module pushes of `characterURLImport` call `addModule`.
+  - `importCharacterCardSpec`'s unused `let db = DBState.db` is removed. `exportChar` and
+    `exportCharacterCard` are unchanged.
+- **`modules.ts`**: the six pushes of `importModule` call `addModule`. The CharX branch reports
+  success only after the add (challenge 1).
+- **`App.svelte`**: the drop handler's module push calls `addModule`.
+- **`persona.ts`**: `importUserPersona` keeps Phase 3's icon-first order, then calls
+  `addPersona`.
+- **`database.svelte.ts`** (A24): the three `botPresets` pushes of `importPreset` call
+  `addPreset(normalizePreset(...))`.
+  - The converted preset is normalized first, as the old push did. The ST conversion computes
+    `pre.presence_penalty * 0.7 * 100`, which is `NaN` for a file without that parameter; the
+    normalizer gives the field its default, where `addPreset`'s JSON check would refuse it (the
+    `presetIds.test.ts` ST case showed this).
+  - The generic path takes its id from `addPreset`, and the file's `proxyKey` still goes to the
+    per-preset secret map. The `botPresets` array guard is gone: presets are always a list since
+    Phase 3.
+- **`lorebook.svelte.ts`**: `importLoreBook("global")` writes
+  `updateCharacter(chaId, { globalLore: [...current, ...imported] })`. It reads the current list
+  through `findCharacter` by the id captured before the dialog. A character removed meanwhile gets
+  nothing, and its own mark goes. `"local"` and `"sglobal"` are unchanged.
+- **`characters.ts`**, `importChat` as a whole (A23):
+  - it captures `chaId` before the file dialog, then resolves it again by id afterwards, and stops
+    with an error when that character was deleted meanwhile (a new `language.errors.importTargetGone`,
+    challenge 2; `src/lang/en.ts` joins the files, and the other locales fall back to English);
+  - the Tavern name and the folders are read from that record;
+  - the folders are written with `updateCharacter(chaId, { chatFolders })`;
+  - `changeChatTo(0)` runs only while that character is still selected.
+- **`exportAsDataset.ts`**: `getDatabase({ snapshot: true })`.
+
+Recorded behavior changes:
+
+- A card that is not JSON data (a function, a non-finite number, a class instance) is refused by
+  `addCharacter`. The character list, its chats, and the order are then unchanged. The importer as
+  a whole is not transactional: the `statics.imports` stamp (taken before parsing) and an image
+  already saved stay (challenge 3). Before, such a card was pushed as is.
+- A CharX module import that `addModule` refuses reports the error only. Before, it also reported
+  success (challenge 1).
+- `importChat` writes the character selected when the dialog opened, even if the selection moved
+  while it was open. It reads that character's name and folders. Before, it read and wrote
+  whatever was selected when the file arrived (recorded as fixed).
+- `importLoreBook("global")` already used the captured id; it now writes through the character
+  module.
+
+No stopping condition was met.
+
+Exit checks:
+
+- The rooted pattern over the eight named functions (`importCharacterProcess`,
+  `importCharacterCardSpec`, `characterURLImport`, `importChat`, `importModule`,
+  `importUserPersona`, `importLoreBook`, `exportAsDataset`) and over `importPreset` answers nothing.
+- The hits left in those files are core-app functions on the closeout's allowlist:
+  - `createNewCharacter` and `createNewGroup`;
+  - the image and emotion helpers;
+  - `removeChar` and `restoreChar`;
+  - the lore editors' `addLorebook`.
+- `rg -n 'getDatabase\(\)' src/ts/storage/exportAsDataset.ts` answers nothing.
+
+The deliberately invalidated tests: none. The `presetIds.test.ts` failure above was fixed in source
+(the normalization order), not by changing the test, so no test adapter ran.
+
+Checks:
+
+- `pnpm check`, `pnpm format:check`, and `pnpm build` pass.
+- `pnpm test`: 93 files, 976 passed, 3 skipped.
+- `pnpm test:e2e`: 5 passed.
+
+Manual check (Playwright, scratchpad `checkP4Slice7.mjs`; the dialogs go through Playwright's
+file chooser). With Alpha selected:
+
+- A character with an image and a lore entry was exported to PNG (v2) and CharX (v3) through the
+  app's writer, then imported back. A hand-written v2 JSON card and an off-spec JSON card were
+  imported too. Each import added one character with its chat, lore, and image (PNG and CharX),
+  and the order grew to match.
+- `statics.imports` counted the PNG and CharX imports. The JSON paths return before the stamp, as
+  before.
+- A `jsonl` chat and a `risuChat` v2 chat with a folder imported into Alpha, with the folder
+  added and the chat in it.
+- A `risuModule` JSON imported with a fresh id.
+- A global lore import opened its dialog with Alpha selected, and the selection moved to Beta
+  before the file was chosen. The entry landed in Alpha, and Beta was unchanged.
+- Everything held after a reload.
+- The dataset export downloaded `dataset.json` with the characters' chats.
+- No page errors. The console's 502s are the Realm hub proxy, which has no network in the
+  sandbox.
+
+Found in passing, and left alone as pre-existing: an off-spec card with only `char_name` imports as
+"unknown name". The check accepts `char_name`, but `convertOffSpecCards` reads `name`.
+
+## Tests
+
+Written by the Fable review (verdict: no problem), over the real save adapter and server store.
+The fixtures are in `src/ts/storage/tests/importFixtures.ts`: a hand-built PNG (tEXt chunks), a
+CharX zip, V2 and V3 cards, and an object nested past the JSON limit.
+
+- **`src/ts/characterCardsImport.test.ts` (10).**
+  - JSON V2, off-spec JSON, PNG, and CharX (the real chunk reader and zip importer) each create a
+    character with a fresh id, a chat with an id, and an order entry, all on the server after one
+    cycle.
+  - `returnCharacter` adds nothing, and the stamp goes through `incrementStatic`.
+  - A refused card changes no character, chat, or order. Through PNG, the stamp and the saved image
+    stay (the narrowed boundary). `importCharacter` reports the refusal.
+- **`src/ts/charactersImportChat.test.ts` (7).** A jsonl chat and a v2 chat with folders import into
+  the character captured before the dialog, even after:
+  - the selection moved;
+  - the list was reordered;
+  - the record was replaced under the same id.
+
+  The name is substituted from the re-resolved record. A folder id collision is remapped. The other
+  character's chat selection is untouched. A deleted target answers `importTargetGone` and writes
+  nothing.
+
+- **`src/ts/process/modulesImport.test.ts` (8).** Every file kind: `.risum`, CharX (no character is
+  created), native module JSON (a fresh id, with the `lowLevelAccess` confirmation kept), native and
+  external lore, and regex. A refused CharX module reports the error only and inserts nothing.
+- **`src/ts/personaImport.test.ts` (3).** An imported persona gets an id and the saved icon, and the
+  selection is unchanged. With the collection replaced during the icon save, the persona lands in
+  the current list. A file without the chunk adds nothing.
+- **`src/ts/process/lorebookImport.test.ts` (3).**
+  - The global lore lands in the captured character when it is not selected, and only that record
+    is sent.
+  - A record replaced with newer lore during the dialog gets the entries appended to its current
+    list.
+  - A deleted target gets nothing and is not recreated.
+- **`src/ts/storage/tests/presetIds.test.ts` (+3).** An ST preset without `presence_penalty` gets
+  the field's default. An NAI preset with omitted parameters gets the NAI defaults. A JSON
+  `proxyKey` goes to the new preset's secret only.
+
+`pnpm test`: 98 files, 1010 passed, 3 skipped. `pnpm check` and `pnpm format:check` pass.
+
+## Astra challenge
+
+Astra (the open plan-review session) challenged the implementation. Report:
+`astra-p4-slice7-challenge.md` (scratchpad). It found no target-identity or persistence-routing
+defect, and it accepted the preset pre-normalization, the removed array guard, and the missing test
+adapter. Decisions:
+
+1. **Medium: a refused CharX module import reported an error and then success.** The success alert
+   followed the `try`. **Adopted:** it now follows the successful `addModule`.
+2. **Low: the new deleted-character error was a hard-coded English string** (STRUCTURE U2).
+   **Adopted:** `language.errors.importTargetGone` in `src/lang/en.ts`.
+3. **Low: "a malformed card changes nothing" overstated the refusal.** The stamp and a saved image
+   stay. **Adopted:** the behavior change is narrowed to the character list, its chats, and the
+   order; the importer stays non-transactional.
+
+Astra's testing advice goes to the Fable review with Opus's judgement.

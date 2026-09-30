@@ -18,6 +18,7 @@ export const languageEnglish = {
         unknownModel: "Error: Unknown model selected",
         httpError: "Error: error in request:",
         noData: "The file is invalid, or it's data is corrupted.",
+        importTargetGone: "The character was deleted before the chat could be imported.",
         onlyOneChat: "There must be least one chat",
         alreadyCharInGroup: "There is already a character with the same name in the group.",
         noUserIcon: "You must set your icon first.",

@@ -18,6 +18,7 @@
     } from "./ts/stores.svelte";
     import Sidebar from "./lib/SideBars/Sidebar.svelte";
     import { DBState } from "./ts/stores.svelte";
+    import { addModule } from "./ts/storage/collectionStore.svelte";
     import ChatScreen from "./lib/ChatScreens/ChatScreen.svelte";
     import AlertComp from "./lib/Others/AlertComp.svelte";
     import RealmPopUp from "./lib/UI/Realm/RealmPopUp.svelte";
@@ -100,7 +101,7 @@
         } else if (name.endsWith(".risum")) {
             const data = new Uint8Array(await file.arrayBuffer());
             const module = await readModule(Buffer.from(data));
-            DBState.db.modules.push(module);
+            addModule(module);
             alertNormal(language.successImport);
         } else {
             await importCharacterProcess({
