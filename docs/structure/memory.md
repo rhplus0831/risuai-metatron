@@ -26,7 +26,7 @@ Algorithms:
   - `regenerateSummary` is an empty stub.
 - `memory/hypav3.ts`: the current V3 implementation.
   - Entry: `hypaMemoryV3`. Dispatches to `hypaMemoryV3Main`, or to `hypaMemoryV3MainExp` when the active preset has `useExperimentalImpl`.
-  - Exports: `summarize`, `getCurrentHypaV3Preset`, `createHypaV3Preset`, `HypaV3Settings`, `SerializableHypaV3Data`, `SerializableSummary`.
+  - Exports: `summarize`, `getCurrentHypaV3Preset`, `createHypaV3Preset` (re-exported from `shared/hypaV3Presets.ts`; keeps a valid `id` or assigns one), `HypaV3Settings`, `SerializableHypaV3Data`, `SerializableSummary`.
   - Private: the processor subclass `HypaProcesserEx`.
 
 Embedding processors:

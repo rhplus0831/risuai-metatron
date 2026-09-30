@@ -69,8 +69,11 @@ additions are F-a to F-g.
   - `statics` becomes its own collection kind (13 collections). It is incremented on every send
     (`process/index.svelte.ts` `statics.messages += 1`), so keeping it in `ui` would dirty `ui`
     on every message (F-f).
-  - Recorded: from this slice, stored presets get normalizer defaults and lose `openAIKey`, so
-    the "missing field inherits" behavior ends here, not in slice 5 (F-d).
+  - Recorded: stored presets get normalizer defaults and lose `openAIKey`, so the "missing field
+    inherits" behavior ends before slice 5 (F-d). As implemented it ends in slice 2, where
+    `setDatabase` runs `normalizePresets` on every load.
+  - Shape validation for `normalizePreset` before the server uses it: a wrong-typed field passes
+    through today (slice 2 Astra challenge, point 3).
 - **Slice 4**
   - Assembly filters the stored root by `RESIDUAL_ROOT_KEYS`, and sections win for their own
     fields (A2).

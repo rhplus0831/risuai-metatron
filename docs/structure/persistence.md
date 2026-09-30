@@ -17,12 +17,13 @@
 ## Files
 
 - `shared/`: the persisted shapes, compiled by both the client (`tsconfig.json`) and the server (`server/tsconfig.json`, strict). `database.ts` (`Database`, `character`, `groupChat`, `Chat`, `Message`, `MessageGenerationInfo`, `loreBook`, `customscript`, `botPreset`, `RisuPersona`, ...), `resources.ts` (resource kinds, `SINGLETON_RESOURCE_ID`, `ROOT_EXCLUDED_KEYS`, `RootResource`, `InlayResource`, `PluginPermissionGrants`, `RESOURCE_EPOCH_HEADER`, the route wire types, `BackupArchiveManifest`), `chats.ts` (the chat wire contract: `ChatOp`, `MessageGeneration`, `ChatGroupResult`, `ChatRecord`, `ChatOrderRecord`, the chat conflicts, `CHAT_META_FORBIDDEN_KEYS`), `readonly.ts` (`DeepReadonly`), `triggers.ts`, `prompt.ts`, `memory.ts`, `modules.ts`, `plugins.ts`, `settings.ts`, `openai.ts`, and `llm.ts` (the `LLMFlags`/`LLMFormat`/`LLMTokenizer` constants). Each old module re-exports its types, so importers keep their paths.
+  - Phase 3 schema: `presets.ts` (the canonical preset schema: `PRESET_DEFAULTS`/`PRESET_FIELDS` with the fresh-boot defaults, `PRESET_ROOT_ALIASES`, `PERSONA_ROOT_ALIASES`, `PRESET_KEEP_ON_SWITCH_FIELDS`, `presetTemplate` (the `importPreset` base), `defaultAIN`, `defaultOoba`, `normalizePreset`, `normalizePresets`, `normalizePromptTemplate`, `plainClone`, `newPresetId`, `newPersonaId`), `sections.ts` (the field-to-resource map: `SECTION_FIELDS`, `COLLECTION_FIELDS`, `COLLECTION_SELECTION_FIELDS`, `FORWARDED_PRESET_KEYS`, `PERSONA_ROOT_KEYS`, `SELECTION_KEYS`, `RESIDUAL_ROOT_KEYS`, `DROPPED_FIELDS`; with the Phase 1 fields they partition `keyof Database`), `ids.ts` (`newId`, a v4 UUID from `crypto.getRandomValues`, which works outside a secure context; `isRecordId`), and the pure defaults the server normalizers reuse: `presetTemplates.ts` (`prebuiltPresets`, `prebuiltNAIpresets`, the default prompts), `hotkeys.ts`, `colorScheme.ts`, `translatorPresets.ts`, `hypaV3Presets.ts`, `chatLoadPages.ts`. The client modules they came from re-export them.
   - Rules: type declarations, `as const` objects, primitive constants, plain constant arrays, and small pure functions with no runtime dependencies (no enums, namespaces, parameter properties, runes, or DOM types); imports only between `shared/` files, relative with a `.ts` extension, `import type` for types. Node runs these files directly in the server, and the `Dockerfile` runtime stage copies the folder.
 - `src/ts/storage/database.svelte.ts`: DB helpers; re-exports the `shared/database.ts` types.
   - Normalization: `setDatabase` (defaults and migrations), `setDatabaseLite` (assign only).
   - Accessors: `getDatabase({snapshot?})`, `getCurrentCharacter`, `getCurrentChat` (read-only), `getCharacterByIndex`, `setCurrentCharacter` (resolves the selected character by `chaId`)/`setCharacterByIndex` (by index) (replace a character's own fields, keep the mirror's chats, and mark it for saving). There is no chat setter: chats change through `chatStore.svelte.ts`.
-  - Presets: `saveCurrentPreset`, `changeToPreset`, `setPreset`, `downloadPreset`, `importPreset`.
-  - Defaults: `presetTemplate`, `defaultAIN`, `defaultOoba`.
+  - Presets: `saveCurrentPreset` (writes a `normalizePreset` result that keeps the preset's id), `changeToPreset`, `setPreset`, `copyPreset` and `importPreset` (fresh ids on every path), `downloadPreset` (strips `id`).
+  - Re-exports `presetTemplate`, `defaultAIN`, `defaultOoba` from `shared/presets.ts`.
   - `appVer`.
 - `src/ts/storage/chatStore.svelte.ts`: the chat mutation module, the only writer of `character.chats` and `chatPage` (see Chats below).
   - Reads: `findChat(ref)` (read-only), `chatRef`, `currentChatRef`, `isMessageLocked`, `isChatGenerating` (both reactive: a lock lasts until its final write is acknowledged), `isCharacterGenerating`, `isStreamingMessage`/`streamingState` (the message the chat screen shows as streaming).
@@ -38,9 +39,9 @@
 - `src/ts/storage/browserLocalImport.ts` `importBrowserLocalData`: moves data older versions kept only in the browser to the server (see Flows); `sameLocalValue` is the Blob-aware equality it deletes by.
 - `src/ts/storage/autoStorage.ts` `AutoStorage`: lazy wrapper that always uses `NodeStorage`. The client never runs without the self-host server (see `app-shell.md`). Only the `assets` namespace remains.
 - `src/ts/storage/nodeStorage.ts` `NodeStorage`: the asset backend over `/api/read|write|list|remove`, with ES256 JWT auth; `authFetch` (any server route with a fresh `risu-auth`), `getNodeServerProxyAuth`, `digestPassword`. Setting the password on a fresh server also registers this browser's key; parallel requests share one auth check.
-- `src/ts/storage/defaultPrompts.ts`: default main/jailbreak prompts.
+- `src/ts/storage/defaultPrompts.ts`: re-exports the default prompts from `shared/presetTemplates.ts`.
 - `src/ts/storage/exportAsDataset.ts`: exports chats and lore as `dataset.json`, unredacted.
-- `src/ts/chatLoadPages.ts`: `normalizeChatLoadPages` (defaults: 30 initial pages, 15 additional).
+- `src/ts/chatLoadPages.ts`: re-exports `shared/chatLoadPages.ts` (`normalizeChatLoadPages`; defaults: 30 initial pages, 15 additional).
 
 ## Flows
 
@@ -54,7 +55,7 @@ Load (`bootstrap.ts:loadData`):
 
 1. `readKinds` for every kind and every chat in one request (one committed state plus the epoch).
 2. `seedResources` records each record's revision and JSON text before anything changes the data; `seedChats` records each chat's and chat order's revision; `seedInlays` fills the inlay cache.
-3. The `Database` is assembled: the `root` record (or `{}`), the four collections (an empty preset list gets `presetTemplate`), and the characters in store order (creation order). `assembleChats` puts each character's chats in its chat order (a chat missing from the order is appended, an order entry without a chat is skipped, both logged).
+3. The `Database` is assembled: the `root` record (or `{}`), the four collections (an empty preset list gets `normalizePresets([])`, one default preset with an id), and the characters in store order (creation order). `assembleChats` puts each character's chats in its chat order (a chat missing from the order is appended, an order entry without a chat is skipped, both logged).
 4. `setDatabase`, `checkNewFormat`, and `assignIds` (character ids only) normalize as before. `initializeChats` selects each character's remembered chat (`localStorage` preference) and gives a character without chats a new one.
 5. `saveDb()` starts the adapter, which marks every collection and character once so the normalization is saved (unchanged records compare equal and are not sent).
 6. `importBrowserLocalData`, `loadPluginPermissions`, then `loadPlugins`, then the UI flags.
@@ -139,7 +140,8 @@ Cold storage (removed):
 - Server data never becomes an outgoing write: the saved text is recorded from the server's own response, and a mirror reload records the text of the hydrated mirror (its own key order) before the watchers run, so a root another tab wrote with its keys in another order is not echoed back.
 - Every mutation carries the loaded epoch; after a restore every write is refused until the page reloads. `pluginStorage` is serialized straight from the proxy (not through `$state.snapshot`, which drops an own `__proto__` key) because plugins choose its keys.
 - Keep the logical asset key conventions (`assets/<name>`). They are on-disk names.
-- Preset fields must be added consistently to `botPreset`, `presetTemplate`, `saveCurrentPreset`, `setPreset`, and `importPreset`. Secret fields must also be scrubbed in `downloadPreset`.
+- A preset field must be added to `botPreset` and `PRESET_DEFAULTS` (`shared/presets.ts`, which `normalizePreset` and the partition in `shared/sections.ts` follow), and to `saveCurrentPreset` and `setPreset` while the root working copy exists. Secret fields must also be scrubbed in `downloadPreset`.
+- Every preset, persona, translator preset, and HypaV3 preset carries an `id`, assigned synchronously where the element is created (`normalizePreset`, `newPersonaId`, `createTranslatorPreset`, `createHypaV3Preset`); copies and imports get fresh ids, and the `.risup`, `.risutl`, and HypaV3 JSON exports carry none.
 - `exportAsDataset` does no redaction. The settings report in `SettingsExportButtons.svelte` does (it also drops `irisDialogue`, `googleSearchCredentials`, and `pluginCustomStorage`).
 
 ## Recipes

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import * as fflate from "fflate";
+import { decode as decodeMsgpack } from "msgpackr/index-no-eval";
 
 vi.mock("src/ts/util", () => ({
     encryptBuffer: async (data: Uint8Array) => data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
@@ -30,13 +32,19 @@ describe("normalizeTranslatorPresetState", () => {
 
         normalizeTranslatorPresetState(state);
 
-        expect(state.translatorPresets).toEqual([
-            {
-                name: "Default",
-                prompt: "Translate to {{slot}}.",
-                maxResponse: 321,
-            },
-        ]);
+        expect(state.translatorPresets).toHaveLength(1);
+        const [defaultPreset] = state.translatorPresets as [
+            { id: unknown; name: string; prompt: string; maxResponse: number },
+        ];
+        const { id, ...defaultPresetWithoutId } = defaultPreset;
+        expect(defaultPresetWithoutId).toEqual({
+            name: "Default",
+            prompt: "Translate to {{slot}}.",
+            maxResponse: 321,
+        });
+        // `TranslatorPreset.id` is required: the default preset gets a generated non-empty string id.
+        expect(typeof id).toBe("string");
+        expect((id as string).length).toBeGreaterThan(0);
         expect(state.translatorPresetId).toBe(0);
         expect(state.translatorPrompt).toBe("Translate to {{slot}}.");
         expect(state.translatorMaxResponse).toBe(321);
@@ -105,7 +113,25 @@ describe("translator preset file codec", () => {
         const encoded = await encodeTranslatorPresetFile(preset);
         const decoded = await decodeTranslatorPresetFile(encoded);
 
-        expect(decoded).toEqual(preset);
+        // The shared fields round-trip; the id does not, because the decoder always assigns a fresh one.
+        const { id: originalId, ...presetWithoutId } = preset;
+        const { id: decodedId, ...decodedWithoutId } = decoded;
+        expect(decodedWithoutId).toEqual(presetWithoutId);
+        expect(typeof decodedId).toBe("string");
+        expect(decodedId.length).toBeGreaterThan(0);
+        expect(decodedId).not.toBe(originalId);
+
+        // The `.risutl` payload carries no id (D5). The mocks make encryption and RPack identity
+        // transforms, so the container is just compressed msgpack and the inner preset plain msgpack.
+        const container = decodeMsgpack(fflate.decompressSync(encoded)) as { preset: Uint8Array };
+        const filePreset = decodeMsgpack(new Uint8Array(container.preset)) as Record<string, unknown>;
+        expect(filePreset).toEqual({
+            name: "My Preset",
+            prompt: "Translate into {{slot}}.",
+            maxResponse: 256,
+        });
+        expect(filePreset).not.toHaveProperty("id");
+
         expect(() => JSON.parse(new TextDecoder().decode(encoded))).toThrow();
         expect(getTranslatorPresetDownloadName("My/Translator:Preset")).toBe(
             "translator_preset_My_Translator_Preset.risutl",

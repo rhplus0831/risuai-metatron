@@ -1,0 +1,404 @@
+import type { AINsettings, botPreset, OobaSettings } from "./database.ts";
+import { isRecordId, newId } from "./ids.ts";
+import { LLMFormat } from "./llm.ts";
+import {
+    defaultAutoSuggestPrompt,
+    defaultJailbreak,
+    defaultMainPrompt,
+    prebuiltNAIpresets,
+} from "./presetTemplates.ts";
+import type { PromptItem } from "./prompt.ts";
+
+/**
+ * The canonical bot preset schema (Phase 3, Decision 3 of `docs/plan/PLAN.md`), used by the client
+ * (importers, the forwarding layer from slice 5) and the server `presets` normalizer (slice 3).
+ *
+ * `PRESET_DEFAULTS` lists every field a preset owns, keyed by its preset name, with the value a
+ * fresh boot shows for it: the `setDatabase` root default as captured in
+ * `src/ts/storage/tests/fixtures/phase3/boot-snapshot.json`, not `presetTemplate`'s value (they
+ * differ for `maxResponse` and the two textgen URLs). A field a fresh boot leaves unset takes the
+ * fallback `setPreset` (or else `saveCurrentPreset`) applies; `undefined` means neither has one and
+ * the field stays absent. `name` and `image` are preset-only. Not preset fields: `openAIKey` (one
+ * global secret), `forceReplaceUrl2` (no reader), `autoSuggestPrefix` and `autoSuggestClean`
+ * (`saveCurrentPreset` never wrote them, so they were global; they are `ui` fields).
+ */
+
+export const defaultAIN: AINsettings = {
+    top_p: 0.7,
+    rep_pen: 1.0625,
+    top_a: 0.08,
+    rep_pen_slope: 1.7,
+    rep_pen_range: 1024,
+    typical_p: 1.0,
+    badwords: "",
+    stoptokens: "",
+    top_k: 140,
+};
+
+export const defaultOoba: OobaSettings = {
+    max_new_tokens: 180,
+    do_sample: true,
+    temperature: 0.7,
+    top_p: 0.9,
+    typical_p: 1,
+    repetition_penalty: 1.15,
+    encoder_repetition_penalty: 1,
+    top_k: 20,
+    min_length: 0,
+    no_repeat_ngram_size: 0,
+    num_beams: 1,
+    penalty_alpha: 0,
+    length_penalty: 1,
+    early_stopping: false,
+    seed: -1,
+    add_bos_token: true,
+    truncation_length: 4096,
+    ban_eos_token: false,
+    skip_special_tokens: true,
+    top_a: 0,
+    tfs: 1,
+    epsilon_cutoff: 0,
+    eta_cutoff: 0,
+    formating: {
+        header: "Below is an instruction that describes a task. Write a response that appropriately completes the request.",
+        systemPrefix: "### Instruction:",
+        userPrefix: "### Input:",
+        assistantPrefix: "### Response:",
+        seperator: "",
+        useName: false,
+    },
+};
+
+const defaultFormatingOrder: botPreset["formatingOrder"] = [
+    "main",
+    "description",
+    "personaPrompt",
+    "chats",
+    "lastChat",
+    "jailbreak",
+    "lorebook",
+    "globalNote",
+    "authorNote",
+];
+
+/** A plain deep copy of JSON data. Never `structuredClone`: callers may hold Svelte proxies. */
+export function plainClone<T>(value: T): T {
+    return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T);
+}
+
+type PresetDefaults = { [K in Exclude<keyof botPreset, PresetOnlyExcluded>]-?: botPreset[K] | null | undefined };
+type PresetOnlyExcluded = "id" | "openAIKey" | "forceReplaceUrl2" | "autoSuggestPrefix" | "autoSuggestClean";
+
+export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
+    name: "New Preset",
+    apiType: "gemini-3-flash-preview",
+    localNetworkMode: false,
+    localNetworkTimeoutSec: 600,
+    mainPrompt: defaultMainPrompt,
+    jailbreak: defaultJailbreak,
+    globalNote: "",
+    temperature: 80,
+    maxContext: 4000,
+    maxResponse: 500,
+    frequencyPenalty: 70,
+    PresensePenalty: 70,
+    formatingOrder: defaultFormatingOrder,
+    aiModel: "gemini-3-flash-preview",
+    subModel: "gemini-3-flash-preview",
+    currentPluginProvider: "",
+    textgenWebUIStreamURL: "wss://localhost/api/",
+    textgenWebUIBlockingURL: "https://localhost/api/",
+    forceReplaceUrl: "",
+    promptPreprocess: undefined,
+    bias: [],
+    koboldURL: undefined,
+    proxyKey: "",
+    ooba: defaultOoba,
+    ainconfig: defaultAIN,
+    openrouterRequestModel: "openai/gpt-3.5-turbo",
+    proxyRequestModel: undefined,
+    NAISettings: { ...prebuiltNAIpresets, cfg_scale: 1, mirostat_tau: 0, mirostat_lr: 1 },
+    autoSuggestPrompt: defaultAutoSuggestPrompt,
+    promptTemplate: undefined,
+    NAIadventure: false,
+    NAIappendName: true,
+    localStopStrings: undefined,
+    customProxyRequestModel: "",
+    reverseProxyOobaArgs: { mode: "instruct" },
+    top_p: 1,
+    promptSettings: {
+        assistantPrefill: "",
+        postEndInnerFormat: "",
+        sendChatAsSystem: false,
+        sendName: false,
+        utilOverride: false,
+        customChainOfThought: false,
+        maxThoughtTagDepth: -1,
+    },
+    repetition_penalty: 1,
+    min_p: 0,
+    top_a: 0,
+    openrouterProvider: { order: [], only: [], ignore: [] },
+    useInstructPrompt: false,
+    customPromptTemplateToggle: "",
+    templateDefaultVariables: "",
+    moduleIntergration: "",
+    top_k: 0,
+    instructChatTemplate: "chatml",
+    JinjaTemplate: "",
+    jsonSchemaEnabled: false,
+    jsonSchema: "",
+    strictJsonSchema: true,
+    extractJson: "",
+    groupOtherBotRole: "user",
+    groupTemplate: "",
+    seperateParametersEnabled: false,
+    seperateParameters: { memory: {}, emotion: {}, translate: {}, otherAx: {}, overrides: {} },
+    customAPIFormat: LLMFormat.OpenAICompatible,
+    systemContentReplacement: "system: {{slot}}",
+    systemRoleReplacement: "user",
+    enableCustomFlags: false,
+    customFlags: [],
+    image: "",
+    regex: [],
+    reasonEffort: 0,
+    thinkingTokens: null,
+    thinkingType: "budget",
+    deepseekThinkingType: "off",
+    adaptiveThinkingEffort: "high",
+    deepseekReasoningEffort: "high",
+    outputImageModal: false,
+    seperateModelsForAxModels: false,
+    seperateModels: { memory: "", emotion: "", translate: "", otherAx: "" },
+    modelTools: [],
+    fallbackModels: { model: [], memory: [], emotion: [], translate: [], otherAx: [] },
+    fallbackWhenBlankResponse: false,
+    verbosity: 1,
+    dynamicOutput: null,
+};
+
+export type PresetField = keyof PresetDefaults;
+
+/** Every field a preset owns, by its preset name. */
+export const PRESET_FIELDS = Object.keys(PRESET_DEFAULTS) as readonly PresetField[];
+
+/** Root field names that differ from the preset field they mirror (root → preset). */
+export const PRESET_ROOT_ALIASES = {
+    NAIsettings: "NAISettings",
+    reasoningEffort: "reasonEffort",
+    presetRegex: "regex",
+} as const;
+
+/** Root persona field names and the `RisuPersona` field each mirrors (root → persona). */
+export const PERSONA_ROOT_ALIASES = {
+    username: "name",
+    userIcon: "icon",
+    userNote: "note",
+    personaPrompt: "personaPrompt",
+} as const;
+
+/**
+ * Preset fields that the three "keep on preset change" toggles keep across a switch. They stay root
+ * (`providers`) fields that `changeToPreset` copies, outside the forwarding layer, until the
+ * follow-up after `docs/plan/PLAN.md` decides their owner (Decision 3, deferred).
+ */
+export const PRESET_KEEP_ON_SWITCH_FIELDS = [
+    "seperateModels",
+    "seperateModelsForAxModels",
+    "fallbackModels",
+    "fallbackWhenBlankResponse",
+    "seperateParameters",
+] as const satisfies readonly PresetField[];
+
+/**
+ * The base `importPreset` spreads under an imported file, unchanged from before Phase 3 so old
+ * files import as they did. It is not the default of a new preset (that is `normalizePreset`).
+ */
+export const presetTemplate: Omit<botPreset, "id"> = {
+    name: "New Preset",
+    apiType: "gemini-3-flash-preview",
+    openAIKey: "",
+    localNetworkMode: false,
+    localNetworkTimeoutSec: 600,
+    mainPrompt: defaultMainPrompt,
+    jailbreak: defaultJailbreak,
+    globalNote: "",
+    temperature: 80,
+    maxContext: 4000,
+    maxResponse: 300,
+    frequencyPenalty: 70,
+    PresensePenalty: 70,
+    formatingOrder: defaultFormatingOrder,
+    aiModel: "gemini-3-flash-preview",
+    subModel: "gemini-3-flash-preview",
+    currentPluginProvider: "",
+    textgenWebUIStreamURL: "",
+    textgenWebUIBlockingURL: "",
+    forceReplaceUrl: "",
+    forceReplaceUrl2: "",
+    promptPreprocess: false,
+    proxyKey: "",
+    bias: [],
+    ooba: defaultOoba,
+    ainconfig: defaultAIN,
+    reverseProxyOobaArgs: {
+        mode: "instruct",
+    },
+    top_p: 1,
+    useInstructPrompt: false,
+    verbosity: 1,
+};
+
+/** A new preset id. */
+export const newPresetId = newId;
+
+/** A new persona id. */
+export const newPersonaId = newId;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizePromptRole(role: unknown): "user" | "bot" | "system" | null {
+    if (role === "user" || role === "bot" || role === "system") {
+        return role;
+    }
+    if (role === "assistant" || role === "char") {
+        return "bot";
+    }
+    return null;
+}
+
+function normalizeCacheRole(role: unknown): "user" | "assistant" | "system" | "all" {
+    if (role === "user" || role === "assistant" || role === "system" || role === "all") {
+        return role;
+    }
+    if (role === "bot" || role === "char") {
+        return "assistant";
+    }
+    return "all";
+}
+
+/** A copy of `template` with its prompt roles normalized, or `null` when it is not an array. */
+export function normalizePromptTemplate(template: PromptItem[] | null | undefined): PromptItem[] | null {
+    if (!Array.isArray(template)) {
+        return null;
+    }
+    const normalized = plainClone(template) as any[];
+    for (const item of normalized) {
+        if (!item || typeof item !== "object") {
+            continue;
+        }
+        switch (item.type) {
+            case "plain":
+            case "jailbreak":
+            case "cot": {
+                item.role = normalizePromptRole(item.role) ?? "system";
+                break;
+            }
+            case "persona":
+            case "description":
+            case "authornote":
+            case "memory": {
+                if (item.role2 !== undefined && item.role2 !== null) {
+                    item.role2 = normalizePromptRole(item.role2) ?? "system";
+                }
+                break;
+            }
+            case "cache": {
+                item.role = normalizeCacheRole(item.role);
+                break;
+            }
+        }
+    }
+    return normalized as PromptItem[];
+}
+
+const keepOnSwitchFields = new Set<string>(PRESET_KEEP_ON_SWITCH_FIELDS);
+
+/**
+ * A normalized copy of a preset: only the canonical fields, each missing one (absent or `undefined`)
+ * filled with its default, and the migrations `setDatabase` and `setPreset` applied to the root
+ * working copy before Phase 3. An explicit `null` is kept: `setPreset` passed some through as they
+ * are (`min_p`, `top_a`, `repetition_penalty`), and `saveCurrentPreset` writes `seperateModels: null`
+ * on purpose while `doNotChangeSeperateModels` is on. The keep-on-switch fields are never filled:
+ * they stay on the pre-Phase 3 path, where `setPreset` applies their fallback. The input is never
+ * mutated and must be plain data (pass `$state.snapshot` of a proxy). The id is `options.id` when
+ * given (a copy or an import passes a fresh one), else the input's valid id, else a new one.
+ */
+export function normalizePreset(input: unknown, options: { id?: string } = {}): botPreset {
+    const source = isPlainObject(input) ? input : {};
+    const preset: Record<string, unknown> = {
+        id: options.id ?? (isRecordId(source.id) ? source.id : newPresetId()),
+    };
+    for (const field of PRESET_FIELDS) {
+        const value = source[field];
+        if (value !== undefined) {
+            preset[field] = plainClone(value);
+            continue;
+        }
+        const fallback = PRESET_DEFAULTS[field];
+        if (fallback !== undefined && !keepOnSwitchFields.has(field)) {
+            preset[field] = plainClone(fallback);
+        }
+    }
+
+    if (isPlainObject(preset.NAISettings)) {
+        const nai = preset.NAISettings;
+        nai.starter ??= "";
+        nai.cfg_scale ??= 1;
+        nai.mirostat_tau ??= 0;
+        nai.mirostat_lr ??= 1;
+    }
+    if (isPlainObject(preset.promptSettings)) {
+        preset.promptSettings.maxThoughtTagDepth ??= -1;
+    }
+    if (Array.isArray(preset.formatingOrder) && !preset.formatingOrder.includes("personaPrompt")) {
+        const main = preset.formatingOrder.indexOf("main");
+        preset.formatingOrder.splice(main === -1 ? 0 : main, 0, "personaPrompt");
+    }
+    if (typeof preset.top_p !== "number") {
+        preset.top_p = 1;
+    }
+    if (typeof preset.localNetworkMode !== "boolean") {
+        preset.localNetworkMode = false;
+    }
+    if (typeof preset.localNetworkTimeoutSec !== "number" || Number.isNaN(preset.localNetworkTimeoutSec)) {
+        preset.localNetworkTimeoutSec = 600;
+    }
+    if (isPlainObject(preset.seperateParameters)) {
+        preset.seperateParameters.overrides ??= {};
+    }
+    if (isPlainObject(preset.fallbackModels)) {
+        const fallback = preset.fallbackModels;
+        for (const key of ["model", "memory", "emotion", "translate", "otherAx"]) {
+            fallback[key] = Array.isArray(fallback[key]) ? fallback[key].filter((model: unknown) => model !== "") : [];
+        }
+    }
+    if (typeof preset.openrouterProvider === "string") {
+        const oldProvider = preset.openrouterProvider;
+        preset.openrouterProvider = { order: oldProvider ? [oldProvider] : [], only: [], ignore: [] };
+    }
+    if (preset.promptTemplate !== undefined && preset.promptTemplate !== null) {
+        preset.promptTemplate = normalizePromptTemplate(preset.promptTemplate as PromptItem[]);
+    }
+    return preset as unknown as botPreset;
+}
+
+/**
+ * The normalized preset collection: every element normalized, a duplicate id re-keyed, and a
+ * non-array or empty input replaced by one default preset (so a selection always has a record).
+ */
+export function normalizePresets(input: unknown): botPreset[] {
+    const source = Array.isArray(input) ? input : [];
+    const seen = new Set<string>();
+    const presets = source.map((entry) => {
+        const preset = normalizePreset(entry);
+        if (seen.has(preset.id)) {
+            preset.id = newPresetId();
+        }
+        seen.add(preset.id);
+        return preset;
+    });
+    return presets.length > 0 ? presets : [normalizePreset({ name: "New Preset" })];
+}

@@ -1239,10 +1239,11 @@
                             const id = DBState.db.hypaV3PresetId;
                             const preset = presets[id];
                             const bytesExport = Buffer.from(
+                                // The export format has no id; an import assigns a fresh one.
                                 JSON.stringify({
                                     type: "risu",
                                     ver: 1,
-                                    data: preset,
+                                    data: { name: preset.name, settings: preset.settings },
                                 }),
                                 "utf-8",
                             );

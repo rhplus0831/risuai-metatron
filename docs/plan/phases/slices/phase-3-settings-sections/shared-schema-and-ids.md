@@ -1,6 +1,6 @@
 # Slice: Shared Schema, Taxonomy, And Client-Assigned Ids
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented 2026-09-30 (see "Implementation record" at the end).
 
 Phase: [Phase 3](../../phase-3-settings-sections.md), "Sections" (the taxonomy), "Field map",
 "Ids" (presets, personas, `translatorPresetId`, `hypaV3PresetId`), and the field lists of
@@ -144,3 +144,70 @@ client sends them (which is the intent). Until slice 5 the client still copies p
 the root, so a preset missing a field still inherits the previous preset's value on switch (the
 behavior change lands with slice 5). A plugin that hands `setDatabase` a preset-shaped object
 cannot: `botPresets` is not in `allowedDbKeys`.
+
+## Implementation record
+
+Implemented by Claude Opus on 2026-09-30, following `implementation-plan.md` (amendments A1, A2,
+A3, A6, A12, A18, F-f).
+
+- New shared modules: `sections.ts` (the partition; checked at runtime: 376 `Database` keys, each
+  in exactly one list; 69 forwarded preset keys; 77 residual root keys), `presets.ts`, `ids.ts`,
+  `hypaV3Presets.ts`, `translatorPresets.ts`, `colorScheme.ts`; moved with `git mv`:
+  `presetTemplates.ts` (was `src/ts/process/templates/templates.ts`, plus the default prompts of
+  `src/ts/storage/defaultPrompts.ts`), `hotkeys.ts` (was `src/ts/defaulthotkeys.ts`),
+  `chatLoadPages.ts`. The old client paths re-export them.
+- `PRESET_DEFAULTS` equals the boot snapshot for every field the snapshot has; fields a fresh
+  boot leaves unset take `setPreset`'s fallback (else `saveCurrentPreset`'s), and five with
+  neither (`promptPreprocess`, `koboldURL`, `proxyRequestModel`, `promptTemplate`,
+  `localStopStrings`) stay absent.
+- Ids at creation: `normalizePreset` at the new-preset button, `copyPreset`, every
+  `importPreset` path, `promptConvertion`, `assembleDatabase` (an empty list), and `setDatabase`
+  (`normalizePresets` replaces the per-preset migration loop and backstops ids of records saved
+  before); `newPersonaId` in `setDatabase`'s default, the create-from-scratch push, and both
+  conversions in `interchangeability.ts` (`importUserPersona` already assigned one); a
+  `withPersonaIds` pass in both plugin setters; `createTranslatorPreset` and `createHypaV3Preset`
+  keep a valid id or assign one; the `.risutl` decoder and the HypaV3 JSON importer assign fresh
+  ids.
+- Exports: `downloadPreset` deletes `id` and still blanks the credentials; the `.risutl` encoder
+  writes only `name`, `prompt`, `maxResponse`.
+
+Deviations from this file:
+
+- `newId` uses `crypto.getRandomValues`, not `crypto.randomUUID`: the latter needs a secure
+  context, and the self-host client may be served over plain HTTP on a LAN address (the
+  Assumption was false).
+- The runtime `RESOURCE_KIND` entries wait for slice 3 (A1); this slice adds only the payload
+  types (`SectionResource`, `LlmSecretsResource`, `CollectionResource`).
+- `statics` is a thirteenth collection (F-f), not a `ui` field.
+- `saveCurrentPreset` returns `normalizePreset(...)` with the current id (A12), so the text the
+  client saves is the canonical form the server normalizer will produce; `openAIKey`,
+  `forceReplaceUrl2`, and the auto-suggest fields leave preset objects now.
+- The HypaV3 JSON export writes `{ name, settings }` in this slice instead of slice 4, because
+  the id appears here.
+- `koboldURL: null` and a prompt item's `innerFormat: null` were removed from
+  `prebuiltPresets` (the strict server compiler rejects `null` for those optional strings;
+  readers treat both the same as absent).
+- `setPreset` takes `Omit<botPreset, "id">` (the welcome screen applies a template to the
+  working copy).
+- Null policy (after the Astra challenge): `normalizePreset` fills only absent or `undefined`
+  fields and keeps an explicit `null` (`setPreset` passed `min_p`, `top_a`, and
+  `repetition_penalty` through unchanged, and `saveCurrentPreset` writes `seperateModels: null`
+  while `doNotChangeSeperateModels` is on). The five keep-on-switch fields are never filled; they
+  stay on the pre-phase path, where `setPreset` applies their fallback.
+- Behavior-change timing: because `setDatabase` runs `normalizePresets` on every load (and on
+  every plugin `setDatabase` call, which now replaces `botPresets` with normalized copies that
+  keep their ids and values), a stored preset missing a field gets the default from this slice
+  on, so the "missing field inherits the previous preset's value" behavior ends here, not in
+  slice 3 (F-d) or slice 5. `normalizePreset` fills defaults but does not validate shapes (a
+  wrong-typed value passes through, as `setPreset` passed it before); slice 3 adds shape
+  validation before the server uses it (Astra challenge, point 3).
+
+Checks (after the null-policy fix): `pnpm check` (client and strict server), `pnpm format:check`,
+`server/src/tests/sharedImports.test.ts`; `pnpm test` failed only in `translator/presets.test.ts`
+(two cases that expected id-less presets and an id surviving a `.risutl` round trip, the contract
+this slice changes), which the Fable test-adapter adapted. Decoded round trip in the page: each
+fixture imported with `importPreset` and exported with `downloadPreset` decodes to the same preset
+apart from `id`, and the export has no `id`. Playwright on a fresh server: ids on the preset, persona, translator, and
+HypaV3 records, stable across a reload; the first boot saves once and a reload saves nothing;
+copy, switch, edit, export (no `id`, blank `openAIKey`), and imports of `custom.risup` and of a
+JSON preset that carries an existing id (both get fresh ids) behave as described.

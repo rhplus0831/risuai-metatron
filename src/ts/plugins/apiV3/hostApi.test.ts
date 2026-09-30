@@ -138,6 +138,34 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
         expect(dbMocks.setDatabase).toHaveBeenCalledWith(DBState.db);
     });
 
+    it("gives a plugin persona without an id one, keeps existing ids, and leaves non-object entries alone (Phase 3 slice 2)", async () => {
+        const api = await makeApi();
+        const personas = [
+            { name: "no id", icon: "", personaPrompt: "" },
+            { id: "keep", name: "kept", icon: "", personaPrompt: "" },
+            { id: "", name: "empty id", icon: "", personaPrompt: "" },
+            null,
+        ];
+
+        api.setDatabaseLite({ personas });
+        const lite = DBState.db.personas as any[];
+        expect(lite).toHaveLength(4);
+        expect(lite[0]).toEqual({ name: "no id", icon: "", personaPrompt: "", id: expect.any(String) });
+        expect(lite[0].id.length).toBeGreaterThan(0);
+        expect(lite[1]).toEqual(personas[1]);
+        expect(lite[2].id.length).toBeGreaterThan(0);
+        expect(lite[3]).toBeNull();
+        expect(new Set(lite.slice(0, 3).map((persona) => persona.id)).size).toBe(3);
+        // The plugin's own array is not mutated.
+        expect(personas[0]).toEqual({ name: "no id", icon: "", personaPrompt: "" });
+
+        await api.setDatabase({ personas: [{ name: "again", icon: "", personaPrompt: "" }] });
+        const full = DBState.db.personas as any[];
+        expect(full).toHaveLength(1);
+        expect(full[0].id.length).toBeGreaterThan(0);
+        expect(dbMocks.setDatabase).toHaveBeenCalledTimes(1);
+    });
+
     it("keeps the v3 _pluginStorage sub-object next to routed custom keys", async () => {
         DBState.db.pluginCustomStorage = { _pluginStorage: { k: 1 } };
         const api = await makeApi();

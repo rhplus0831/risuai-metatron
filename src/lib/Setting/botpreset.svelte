@@ -15,6 +15,7 @@
     } from "@lucide/svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import { prebuiltPresets } from "src/ts/process/templates/templates";
+    import { normalizePreset } from "../../../shared/presets.ts";
     import PromptDiffModal from "../Others/PromptDiffModal.svelte";
     import { RISU_PRESET_DRAG_TYPE } from "src/ts/dragTypes";
 
@@ -335,9 +336,7 @@
                 class="text-textcolor2 hover:text-green-500 cursor-pointer mr-1"
                 onclick={() => {
                     let botPresets = DBState.db.botPresets;
-                    let newPreset = safeStructuredClone(prebuiltPresets.OAI2);
-                    newPreset.name = `New Preset`;
-                    botPresets.push(newPreset);
+                    botPresets.push(normalizePreset({ ...prebuiltPresets.OAI2, name: `New Preset` }));
 
                     DBState.db.botPresets = botPresets;
                 }}

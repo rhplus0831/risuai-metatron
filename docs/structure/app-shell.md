@@ -24,7 +24,7 @@
 - `src/ts/hotkey.ts`:
   - `initHotkey`: keydown dispatch switch.
   - `hotkeyMatches`.
-- `src/ts/defaulthotkeys.ts`: `defaultHotkeys`; re-exports the `Hotkey` type declared in `shared/settings.ts`.
+- `src/ts/defaulthotkeys.ts`: re-exports `defaultHotkeys` (declared in `shared/hotkeys.ts`) and the `Hotkey` type declared in `shared/settings.ts`.
 - `src/ts/observer.svelte.ts`:
   - `startObserveDom`: idempotent. Adds one `document` `contextmenu` delegate (Copy/Download menu for `x-hl-lang` code blocks) and a `MutationObserver` on `document.body` that syncs BGM from `risu-ctrl="bgm___<volume|auto>___<src>"` markers.
   - BGM: one track at a time. When nothing is playing, it starts the first marker in document order (the newest message, since the chat body is column-reversed). A playing track keeps playing while its marker stays in the DOM, even if a newer marker appears, and replays on `ended`. It stops `BGM_STOP_GRACE_MS` (1 s) after its marker is gone.
@@ -118,7 +118,7 @@ All of these live in `src/ts/stores.svelte.ts`.
   1. Add or adjust the flag in `platform.ts`.
   2. Update every consumer.
   3. There is no browser-only runtime to keep working; do not reintroduce `isNodeServer` branches past `main.ts`.
-- Add a hotkey: `defaulthotkeys.ts`, `hotkey.ts:initHotkey`, `database.svelte.ts:setDatabase` (merge behavior).
+- Add a hotkey: `shared/hotkeys.ts` (`defaultHotkeys`), `hotkey.ts:initHotkey`, `database.svelte.ts:setDatabase` (merge behavior).
 
 ## Tests
 

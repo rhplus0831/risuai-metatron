@@ -42,7 +42,8 @@ export interface RisuPersona {
     name: string;
     icon: string;
     largePortrait?: boolean;
-    id?: string;
+    /** Assigned at creation (`newPersonaId`); chats bind to it (`Chat.bindedPersona`). */
+    id: string;
     note?: string;
     embeddedModule?: RisuModule;
 }
@@ -804,6 +805,8 @@ export interface groupChat {
 }
 
 export interface botPreset {
+    /** Assigned at creation (`normalizePreset`, `shared/presets.ts`); stripped from `.risup` exports. */
+    id: string;
     name?: string;
     apiType?: string;
     openAIKey?: string;
@@ -835,8 +838,6 @@ export interface botPreset {
     koboldURL?: string;
     NAISettings?: NAISettings;
     autoSuggestPrompt?: string;
-    autoSuggestPrefix?: string;
-    autoSuggestClean?: boolean;
     promptTemplate?: PromptItem[];
     NAIadventure?: boolean;
     NAIappendName?: boolean;

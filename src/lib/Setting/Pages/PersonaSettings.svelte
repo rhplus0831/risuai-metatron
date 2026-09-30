@@ -19,6 +19,7 @@
     import { sleep, sortableOptions } from "src/ts/util";
     import { DBState } from "src/ts/stores.svelte";
     import { v4 } from "uuid";
+    import { newPersonaId } from "../../../../shared/presets.ts";
 
     let stb: Sortable = null;
     let ele: HTMLDivElement = $state();
@@ -36,14 +37,7 @@
                 ele.querySelectorAll("[data-risu-idx]").forEach((e, i) => {
                     idx.push(parseInt(e.getAttribute("data-risu-idx")));
                 });
-                let newValue: {
-                    personaPrompt: string;
-                    name: string;
-                    icon: string;
-                    note?: string;
-                    largePortrait?: boolean;
-                    id?: string;
-                }[] = [];
+                let newValue: typeof DBState.db.personas = [];
                 idx.forEach((i) => {
                     newValue.push(DBState.db.personas[i]);
                 });
@@ -113,6 +107,7 @@
                     const sel = parseInt(await alertSelect([language.createfromScratch, language.importCharacter]));
                     if (sel === 0) {
                         DBState.db.personas.push({
+                            id: newPersonaId(),
                             name: "New Persona",
                             icon: "",
                             personaPrompt: "",

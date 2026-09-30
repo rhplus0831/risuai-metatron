@@ -81,6 +81,8 @@ export interface OobaChatCompletionRequestParams {
 }
 
 export interface TranslatorPreset {
+    /** Assigned at creation (`createTranslatorPreset`); never written into a `.risutl` file. */
+    id: string;
     name: string;
     prompt: string;
     maxResponse: number;

@@ -1,4 +1,6 @@
 import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
+import { isRecordId } from "../../../../shared/ids.ts";
+import { newPersonaId } from "../../../../shared/presets.ts";
 import {
     customProviderStore,
     pluginHooks,
@@ -862,6 +864,21 @@ const removeRisuChatListener = (mode: string, func: ChatOutputListener) => {
     }
 };
 
+/**
+ * A plugin may hand over personas without ids; each one gets an id so a chat can bind to it
+ * (`Chat.bindedPersona`). Existing ids are kept. Phase 4's `setPersonas` takes this over.
+ */
+function withPersonaIds(value: unknown) {
+    if (!Array.isArray(value)) {
+        return value;
+    }
+    return value.map((persona) =>
+        persona && typeof persona === "object" && !isRecordId(persona.id)
+            ? { ...persona, id: newPersonaId() }
+            : persona,
+    );
+}
+
 //Keys outside allowedDbKeys are stored at the top level of db.pluginCustomStorage
 const setPluginDatabaseLite = (newDb: any) => {
     const db = getDatabase();
@@ -870,7 +887,7 @@ const setPluginDatabaseLite = (newDb: any) => {
         if (key === "characters") {
             applyPluginCharacters(newDb[key]);
         } else if (allowedDbKeys.includes(key)) {
-            (db as any)[key] = newDb[key];
+            (db as any)[key] = key === "personas" ? withPersonaIds(newDb[key]) : newDb[key];
         } else {
             db.pluginCustomStorage[key] = newDb[key];
         }
@@ -895,7 +912,7 @@ const setPluginDatabase = async (newDb: any) => {
         if (key === "characters") {
             applyPluginCharacters(newDb[key]);
         } else if (allowedDbKeys.includes(key)) {
-            (db as any)[key] = newDb[key];
+            (db as any)[key] = key === "personas" ? withPersonaIds(newDb[key]) : newDb[key];
         } else {
             db.pluginCustomStorage[key] = newDb[key];
         }

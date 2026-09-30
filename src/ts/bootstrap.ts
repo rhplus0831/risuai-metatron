@@ -1,7 +1,8 @@
 import { checkNullish, sleep } from "./util";
 import { v4 as uuidv4 } from "uuid";
 import { get } from "svelte/store";
-import { setDatabase, defaultSdDataFunc, getDatabase, presetTemplate, type Database } from "./storage/database.svelte";
+import { setDatabase, defaultSdDataFunc, getDatabase, type Database } from "./storage/database.svelte";
+import { normalizePresets } from "../../shared/presets.ts";
 import { botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./alert";
@@ -130,7 +131,7 @@ function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
         db.botPresets = presets;
     }
     if (!Array.isArray(db.botPresets) || db.botPresets.length === 0) {
-        db.botPresets = [safeStructuredClone(presetTemplate)];
+        db.botPresets = normalizePresets([]);
         db.botPresetsId = 0;
     }
     const modules = single(RESOURCE_KIND.modules);

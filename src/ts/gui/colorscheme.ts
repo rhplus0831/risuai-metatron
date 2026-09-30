@@ -5,21 +5,11 @@ import { BufferToText, selectSingleFile } from "../util";
 import { alertError } from "../alert";
 import { CustomCSSStore, DBState, SafeModeStore } from "../stores.svelte";
 import type { ColorScheme } from "../../../shared/settings.ts";
+import { defaultColorScheme } from "../../../shared/colorScheme.ts";
 
 export type { ColorScheme } from "../../../shared/settings.ts";
 
-export const defaultColorScheme: ColorScheme = {
-    bgcolor: "#282a36",
-    darkbg: "#21222c",
-    borderc: "#6272a4",
-    selected: "#44475a",
-    draculared: "#ff5555",
-    textcolor: "#f8f8f2",
-    textcolor2: "#64748b",
-    darkBorderc: "#4b5563",
-    darkbutton: "#374151",
-    type: "dark",
-};
+export { defaultColorScheme };
 
 const colorShemes = {
     default: defaultColorScheme,

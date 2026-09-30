@@ -6,8 +6,17 @@ import { defaultAutoSuggestPrompt, defaultJailbreak, defaultMainPrompt } from ".
 import { alertNormal } from "../alert";
 import { prebuiltNAIpresets, prebuiltPresets } from "../process/templates/templates";
 import { defaultColorScheme } from "../gui/colorscheme";
-import type { PromptItem } from "../process/prompt";
-import { createHypaV3Preset } from "../process/memory/hypav3";
+import { createHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
+import {
+    defaultAIN,
+    defaultOoba,
+    newPersonaId,
+    newPresetId,
+    normalizePreset,
+    normalizePresets,
+    normalizePromptTemplate,
+    presetTemplate,
+} from "../../../shared/presets.ts";
 import { normalizeTranslatorPresetState } from "../translator/presets";
 import { safeStructuredClone } from "../polyfill";
 import { markCharacterDirtyAt } from "./resourceSync.svelte";
@@ -17,14 +26,12 @@ import {
     normalizeChatLoadPages,
 } from "../chatLoadPages";
 import type {
-    AINsettings,
     botPreset,
     Chat,
     character,
     Database,
     groupChat,
     Message,
-    OobaSettings,
     StreamingDisplayOptimizationMode,
 } from "../../../shared/database.ts";
 
@@ -33,6 +40,7 @@ export let appVer = "2026.8.250"; //<APP_VERSION_POINT>
 export let appSubVer = "";
 
 export type * from "../../../shared/database.ts";
+export { defaultAIN, defaultOoba, presetTemplate };
 export type { DeepReadonly } from "../../../shared/readonly.ts";
 
 export function setDatabase(data: Database) {
@@ -181,11 +189,9 @@ export function setDatabase(data: Database) {
     if (checkNullish(data.proxyKey)) {
         data.proxyKey = "";
     }
-    if (checkNullish(data.botPresets)) {
-        let defaultPreset = presetTemplate;
-        defaultPreset.name = "Default";
-        data.botPresets = [defaultPreset];
-    }
+    // Every preset gets an id and the canonical fields (ids are assigned at creation from Phase 3 on;
+    // this also backstops records saved before that). An empty list becomes one default preset.
+    data.botPresets = normalizePresets(data.botPresets);
     if (checkNullish(data.botPresetsId)) {
         data.botPresetsId = 0;
     }
@@ -394,6 +400,7 @@ export function setDatabase(data: Database) {
     data.personaPrompt ??= "";
     data.personas ??= [
         {
+            id: newPersonaId(),
             name: data.username,
             personaPrompt: "",
             icon: data.userIcon,
@@ -519,29 +526,6 @@ export function setDatabase(data: Database) {
             ignore: [],
         };
     }
-    if (data.botPresets) {
-        for (const preset of data.botPresets) {
-            if (Array.isArray(preset.promptTemplate)) {
-                preset.promptTemplate = normalizePromptTemplate(preset.promptTemplate);
-            }
-            preset.localNetworkMode ??= false;
-            preset.localNetworkTimeoutSec ??= 600;
-            if (typeof preset.localNetworkMode !== "boolean") {
-                preset.localNetworkMode = false;
-            }
-            if (typeof preset.localNetworkTimeoutSec !== "number" || Number.isNaN(preset.localNetworkTimeoutSec)) {
-                preset.localNetworkTimeoutSec = 600;
-            }
-            if (typeof preset.openrouterProvider === "string") {
-                const oldProvider = preset.openrouterProvider as unknown as string;
-                preset.openrouterProvider = {
-                    order: oldProvider ? [oldProvider] : [],
-                    only: [],
-                    ignore: [],
-                };
-            }
-        }
-    }
     data.openrouterProvider ??= {
         order: [],
         only: [],
@@ -628,7 +612,7 @@ export function setDatabase(data: Database) {
     ];
     if (data.hypaV3Presets.length > 0) {
         data.hypaV3Presets = data.hypaV3Presets.map((preset, i) =>
-            createHypaV3Preset(preset.name || `Preset ${i + 1}`, preset.settings || {}),
+            createHypaV3Preset(preset.name || `Preset ${i + 1}`, preset.settings || {}, preset.id),
         );
     }
     data.hypaV3PresetId ??= 0;
@@ -826,97 +810,6 @@ export function getCurrentChat() {
 
 export const saveImage = saveImageGlobal;
 
-export const defaultAIN: AINsettings = {
-    top_p: 0.7,
-    rep_pen: 1.0625,
-    top_a: 0.08,
-    rep_pen_slope: 1.7,
-    rep_pen_range: 1024,
-    typical_p: 1.0,
-    badwords: "",
-    stoptokens: "",
-    top_k: 140,
-};
-
-export const defaultOoba: OobaSettings = {
-    max_new_tokens: 180,
-    do_sample: true,
-    temperature: 0.7,
-    top_p: 0.9,
-    typical_p: 1,
-    repetition_penalty: 1.15,
-    encoder_repetition_penalty: 1,
-    top_k: 20,
-    min_length: 0,
-    no_repeat_ngram_size: 0,
-    num_beams: 1,
-    penalty_alpha: 0,
-    length_penalty: 1,
-    early_stopping: false,
-    seed: -1,
-    add_bos_token: true,
-    truncation_length: 4096,
-    ban_eos_token: false,
-    skip_special_tokens: true,
-    top_a: 0,
-    tfs: 1,
-    epsilon_cutoff: 0,
-    eta_cutoff: 0,
-    formating: {
-        header: "Below is an instruction that describes a task. Write a response that appropriately completes the request.",
-        systemPrefix: "### Instruction:",
-        userPrefix: "### Input:",
-        assistantPrefix: "### Response:",
-        seperator: "",
-        useName: false,
-    },
-};
-
-export const presetTemplate: botPreset = {
-    name: "New Preset",
-    apiType: "gemini-3-flash-preview",
-    openAIKey: "",
-    localNetworkMode: false,
-    localNetworkTimeoutSec: 600,
-    mainPrompt: defaultMainPrompt,
-    jailbreak: defaultJailbreak,
-    globalNote: "",
-    temperature: 80,
-    maxContext: 4000,
-    maxResponse: 300,
-    frequencyPenalty: 70,
-    PresensePenalty: 70,
-    formatingOrder: [
-        "main",
-        "description",
-        "personaPrompt",
-        "chats",
-        "lastChat",
-        "jailbreak",
-        "lorebook",
-        "globalNote",
-        "authorNote",
-    ],
-    aiModel: "gemini-3-flash-preview",
-    subModel: "gemini-3-flash-preview",
-    currentPluginProvider: "",
-    textgenWebUIStreamURL: "",
-    textgenWebUIBlockingURL: "",
-    forceReplaceUrl: "",
-    forceReplaceUrl2: "",
-    promptPreprocess: false,
-    proxyKey: "",
-    bias: [],
-    ooba: safeStructuredClone(defaultOoba),
-    ainconfig: safeStructuredClone(defaultAIN),
-    reverseProxyOobaArgs: {
-        mode: "instruct",
-    },
-    top_p: 1,
-    useInstructPrompt: false,
-    verbosity: 1,
-};
-
 const defaultSdData: [string, string][] = [
     ["always", "solo, 1girl"],
     ["negative", ""],
@@ -938,86 +831,90 @@ export function saveCurrentPreset() {
     if (db.botPresetsId === -1) {
         return;
     }
-    const savedPreset: botPreset = {
-        name: pres[db.botPresetsId].name,
-        apiType: db.apiType,
-        openAIKey: db.openAIKey,
-        localNetworkMode: db.localNetworkMode,
-        localNetworkTimeoutSec: db.localNetworkTimeoutSec,
-        mainPrompt: db.mainPrompt,
-        jailbreak: db.jailbreak,
-        globalNote: db.globalNote,
-        temperature: db.temperature,
-        maxContext: db.maxContext,
-        maxResponse: db.maxResponse,
-        frequencyPenalty: db.frequencyPenalty,
-        PresensePenalty: db.PresensePenalty,
-        formatingOrder: db.formatingOrder,
-        aiModel: db.aiModel,
-        subModel: db.subModel,
-        currentPluginProvider: db.currentPluginProvider,
-        textgenWebUIStreamURL: db.textgenWebUIStreamURL,
-        textgenWebUIBlockingURL: db.textgenWebUIBlockingURL,
-        forceReplaceUrl: db.forceReplaceUrl,
-        promptPreprocess: db.promptPreprocess,
-        bias: db.bias,
-        koboldURL: db.koboldURL,
-        proxyKey: db.proxyKey,
-        ooba: safeStructuredClone(db.ooba),
-        ainconfig: safeStructuredClone(db.ainconfig),
-        proxyRequestModel: db.proxyRequestModel,
-        openrouterRequestModel: db.openrouterRequestModel,
-        NAISettings: safeStructuredClone(db.NAIsettings),
-        promptTemplate: normalizePromptTemplate(db.promptTemplate) ?? null,
-        NAIadventure: db.NAIadventure ?? false,
-        NAIappendName: db.NAIappendName ?? false,
-        localStopStrings: db.localStopStrings,
-        autoSuggestPrompt: db.autoSuggestPrompt,
-        customProxyRequestModel: db.customProxyRequestModel,
-        reverseProxyOobaArgs: safeStructuredClone(db.reverseProxyOobaArgs) ?? null,
-        top_p: db.top_p ?? 1,
-        promptSettings: safeStructuredClone(db.promptSettings) ?? null,
-        repetition_penalty: db.repetition_penalty,
-        min_p: db.min_p,
-        top_a: db.top_a,
-        openrouterProvider: db.openrouterProvider,
-        useInstructPrompt: db.useInstructPrompt,
-        customPromptTemplateToggle: db.customPromptTemplateToggle ?? "",
-        templateDefaultVariables: db.templateDefaultVariables ?? "",
-        moduleIntergration: db.moduleIntergration ?? "",
-        top_k: db.top_k,
-        instructChatTemplate: db.instructChatTemplate,
-        JinjaTemplate: db.JinjaTemplate ?? "",
-        jsonSchemaEnabled: db.jsonSchemaEnabled ?? false,
-        jsonSchema: db.jsonSchema ?? "",
-        strictJsonSchema: db.strictJsonSchema ?? true,
-        extractJson: db.extractJson ?? "",
-        groupOtherBotRole: db.groupOtherBotRole ?? "user",
-        groupTemplate: db.groupTemplate ?? "",
-        seperateParametersEnabled: db.seperateParametersEnabled ?? false,
-        seperateParameters: safeStructuredClone(db.seperateParameters),
-        customAPIFormat: safeStructuredClone(db.customAPIFormat),
-        systemContentReplacement: db.systemContentReplacement,
-        systemRoleReplacement: db.systemRoleReplacement,
-        customFlags: safeStructuredClone(db.customFlags),
-        enableCustomFlags: db.enableCustomFlags,
-        regex: db.presetRegex,
-        image: pres?.[db.botPresetsId]?.image ?? "",
-        reasonEffort: db.reasoningEffort ?? 0,
-        thinkingTokens: db.thinkingTokens ?? null,
-        thinkingType: db.thinkingType ?? "budget",
-        deepseekThinkingType: db.deepseekThinkingType ?? "off",
-        adaptiveThinkingEffort: db.adaptiveThinkingEffort ?? "high",
-        deepseekReasoningEffort: db.deepseekReasoningEffort ?? "high",
-        outputImageModal: db.outputImageModal ?? false,
-        seperateModelsForAxModels: db.doNotChangeSeperateModels ? false : (db.seperateModelsForAxModels ?? false),
-        seperateModels: db.doNotChangeSeperateModels ? null : safeStructuredClone(db.seperateModels),
-        modelTools: safeStructuredClone(db.modelTools),
-        fallbackModels: safeStructuredClone(db.fallbackModels),
-        fallbackWhenBlankResponse: db.fallbackWhenBlankResponse ?? false,
-        verbosity: db.verbosity ?? 1,
-        dynamicOutput: db.dynamicOutput ?? null,
-    };
+    const current = pres?.[db.botPresetsId];
+    // Only the canonical preset fields, normalized, so the saved text is what the server keeps.
+    const savedPreset = normalizePreset(
+        {
+            name: current?.name,
+            apiType: db.apiType,
+            localNetworkMode: db.localNetworkMode,
+            localNetworkTimeoutSec: db.localNetworkTimeoutSec,
+            mainPrompt: db.mainPrompt,
+            jailbreak: db.jailbreak,
+            globalNote: db.globalNote,
+            temperature: db.temperature,
+            maxContext: db.maxContext,
+            maxResponse: db.maxResponse,
+            frequencyPenalty: db.frequencyPenalty,
+            PresensePenalty: db.PresensePenalty,
+            formatingOrder: db.formatingOrder,
+            aiModel: db.aiModel,
+            subModel: db.subModel,
+            currentPluginProvider: db.currentPluginProvider,
+            textgenWebUIStreamURL: db.textgenWebUIStreamURL,
+            textgenWebUIBlockingURL: db.textgenWebUIBlockingURL,
+            forceReplaceUrl: db.forceReplaceUrl,
+            promptPreprocess: db.promptPreprocess,
+            bias: db.bias,
+            koboldURL: db.koboldURL,
+            proxyKey: db.proxyKey,
+            ooba: safeStructuredClone(db.ooba),
+            ainconfig: safeStructuredClone(db.ainconfig),
+            proxyRequestModel: db.proxyRequestModel,
+            openrouterRequestModel: db.openrouterRequestModel,
+            NAISettings: safeStructuredClone(db.NAIsettings),
+            promptTemplate: normalizePromptTemplate(db.promptTemplate) ?? null,
+            NAIadventure: db.NAIadventure ?? false,
+            NAIappendName: db.NAIappendName ?? false,
+            localStopStrings: db.localStopStrings,
+            autoSuggestPrompt: db.autoSuggestPrompt,
+            customProxyRequestModel: db.customProxyRequestModel,
+            reverseProxyOobaArgs: safeStructuredClone(db.reverseProxyOobaArgs) ?? null,
+            top_p: db.top_p ?? 1,
+            promptSettings: safeStructuredClone(db.promptSettings) ?? null,
+            repetition_penalty: db.repetition_penalty,
+            min_p: db.min_p,
+            top_a: db.top_a,
+            openrouterProvider: db.openrouterProvider,
+            useInstructPrompt: db.useInstructPrompt,
+            customPromptTemplateToggle: db.customPromptTemplateToggle ?? "",
+            templateDefaultVariables: db.templateDefaultVariables ?? "",
+            moduleIntergration: db.moduleIntergration ?? "",
+            top_k: db.top_k,
+            instructChatTemplate: db.instructChatTemplate,
+            JinjaTemplate: db.JinjaTemplate ?? "",
+            jsonSchemaEnabled: db.jsonSchemaEnabled ?? false,
+            jsonSchema: db.jsonSchema ?? "",
+            strictJsonSchema: db.strictJsonSchema ?? true,
+            extractJson: db.extractJson ?? "",
+            groupOtherBotRole: db.groupOtherBotRole ?? "user",
+            groupTemplate: db.groupTemplate ?? "",
+            seperateParametersEnabled: db.seperateParametersEnabled ?? false,
+            seperateParameters: safeStructuredClone(db.seperateParameters),
+            customAPIFormat: safeStructuredClone(db.customAPIFormat),
+            systemContentReplacement: db.systemContentReplacement,
+            systemRoleReplacement: db.systemRoleReplacement,
+            customFlags: safeStructuredClone(db.customFlags),
+            enableCustomFlags: db.enableCustomFlags,
+            regex: db.presetRegex,
+            image: pres?.[db.botPresetsId]?.image ?? "",
+            reasonEffort: db.reasoningEffort ?? 0,
+            thinkingTokens: db.thinkingTokens ?? null,
+            thinkingType: db.thinkingType ?? "budget",
+            deepseekThinkingType: db.deepseekThinkingType ?? "off",
+            adaptiveThinkingEffort: db.adaptiveThinkingEffort ?? "high",
+            deepseekReasoningEffort: db.deepseekReasoningEffort ?? "high",
+            outputImageModal: db.outputImageModal ?? false,
+            seperateModelsForAxModels: db.doNotChangeSeperateModels ? false : (db.seperateModelsForAxModels ?? false),
+            seperateModels: db.doNotChangeSeperateModels ? null : safeStructuredClone(db.seperateModels),
+            modelTools: safeStructuredClone(db.modelTools),
+            fallbackModels: safeStructuredClone(db.fallbackModels),
+            fallbackWhenBlankResponse: db.fallbackWhenBlankResponse ?? false,
+            verbosity: db.verbosity ?? 1,
+            dynamicOutput: db.dynamicOutput ?? null,
+        } satisfies Omit<botPreset, "id">,
+        { id: current?.id ?? newPresetId() },
+    );
 
     if (!Array.isArray(pres)) {
         pres = [];
@@ -1035,9 +932,8 @@ export function copyPreset(id: number) {
     saveCurrentPreset();
     let db = DBState.db;
     let pres = db.botPresets;
-    const newPres = safeStructuredClone(pres[id]);
-    newPres.name += " Copy";
-    db.botPresets.push(newPres);
+    const source = $state.snapshot(pres[id]);
+    db.botPresets.push(normalizePreset({ ...source, name: `${source.name} Copy` }, { id: newPresetId() }));
 }
 
 export function changeToPreset(id = 0, savecurrent = true) {
@@ -1051,7 +947,7 @@ export function changeToPreset(id = 0, savecurrent = true) {
     setPreset(db, newPres);
 }
 
-export function setPreset(db: Database, newPres: botPreset) {
+export function setPreset(db: Database, newPres: Omit<botPreset, "id">) {
     db.apiType = newPres.apiType ?? db.apiType;
     db.localNetworkMode = newPres.localNetworkMode ?? db.localNetworkMode;
     db.localNetworkTimeoutSec = newPres.localNetworkTimeoutSec ?? db.localNetworkTimeoutSec;
@@ -1080,8 +976,6 @@ export function setPreset(db: Database, newPres: botPreset) {
     db.proxyRequestModel = newPres.proxyRequestModel ?? db.proxyRequestModel;
     db.NAIsettings = newPres.NAISettings ?? db.NAIsettings;
     db.autoSuggestPrompt = newPres.autoSuggestPrompt ?? db.autoSuggestPrompt;
-    db.autoSuggestPrefix = newPres.autoSuggestPrefix ?? db.autoSuggestPrefix;
-    db.autoSuggestClean = newPres.autoSuggestClean ?? db.autoSuggestClean;
     db.promptTemplate = normalizePromptTemplate(newPres.promptTemplate);
     db.NAIadventure = newPres.NAIadventure;
     db.NAIappendName = newPres.NAIappendName;
@@ -1183,7 +1077,8 @@ export async function downloadPreset(id: number, type: "json" | "risupreset" | "
     saveCurrentPreset();
     let db = getDatabase();
     let pres = safeStructuredClone(db.botPresets[id]);
-    console.log(pres);
+    // The `.risup` format carries no id (D5); the credentials are blanked as before.
+    delete pres.id;
     pres.openAIKey = "";
     pres.forceReplaceUrl = "";
     pres.forceReplaceUrl2 = "";
@@ -1276,7 +1171,7 @@ export async function importPreset(
         pr.NAISettings.mirostat_lr = pre.parameters.mirostat_lr;
         pr.NAISettings.mirostat_tau = pre.parameters.mirostat_tau;
         pr.name = pre.name ?? "Imported";
-        db.botPresets.push(pr);
+        db.botPresets.push(normalizePreset(pr, { id: newPresetId() }));
         return;
     }
 
@@ -1380,66 +1275,13 @@ export async function importPreset(
         }
         pr.promptTemplate = normalizePromptTemplate(pr.promptTemplate);
         pr.name = "Imported ST Preset";
-        db.botPresets.push(pr);
+        db.botPresets.push(normalizePreset(pr, { id: newPresetId() }));
         return;
     }
     pre.name ??= "Imported";
     if (!Array.isArray(db.botPresets)) {
         db.botPresets = [];
     }
-    db.botPresets.push(pre);
-}
-
-function normalizePromptRole(role: unknown): "user" | "bot" | "system" | null {
-    if (role === "user" || role === "bot" || role === "system") {
-        return role;
-    }
-    if (role === "assistant" || role === "char") {
-        return "bot";
-    }
-    return null;
-}
-
-function normalizeCacheRole(role: unknown): "user" | "assistant" | "system" | "all" {
-    if (role === "user" || role === "assistant" || role === "system" || role === "all") {
-        return role;
-    }
-    if (role === "bot" || role === "char") {
-        return "assistant";
-    }
-    return "all";
-}
-
-function normalizePromptTemplate(template: PromptItem[] | null | undefined): PromptItem[] | null {
-    if (!Array.isArray(template)) {
-        return null;
-    }
-    const normalized = safeStructuredClone(template) as any[];
-    for (const item of normalized) {
-        if (!item || typeof item !== "object") {
-            continue;
-        }
-        switch (item.type) {
-            case "plain":
-            case "jailbreak":
-            case "cot": {
-                item.role = normalizePromptRole(item.role) ?? "system";
-                break;
-            }
-            case "persona":
-            case "description":
-            case "authornote":
-            case "memory": {
-                if (item.role2 !== undefined && item.role2 !== null) {
-                    item.role2 = normalizePromptRole(item.role2) ?? "system";
-                }
-                break;
-            }
-            case "cache": {
-                item.role = normalizeCacheRole(item.role);
-                break;
-            }
-        }
-    }
-    return normalized as PromptItem[];
+    // An imported preset always gets a fresh id, even when the file carries one.
+    db.botPresets.push(normalizePreset(pre, { id: newPresetId() }));
 }

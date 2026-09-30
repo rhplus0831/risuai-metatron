@@ -42,7 +42,7 @@
   - `loadLoreBookV3Prompt` merges three sources: character `globalLore`, chat `localLore`, and `getModuleLorebooks()`.
   - Also `addLorebook`, `addLorebookFolder`, `importLoreBook`, `exportLoreBook`, `convertExternalLorebook`.
 - `templates/chatTemplate.ts`: `applyChatTemplate` (Hugging Face Jinja), `chatTemplates` (built-in Llama/Gemma/Mistral/...), `templateEffect`.
-- `templates/templates.ts`: `prebuiltPresets`, `prebuiltNAIpresets`.
+- `templates/templates.ts`: re-exports `prebuiltPresets` and `prebuiltNAIpresets` from `shared/presetTemplates.ts` (templates carry no id; a use goes through `normalizePreset`).
 - `templates/templateCheck.ts` `templateCheck`: prompt-template warnings.
 - `templates/jsonSchema.ts`: `convertInterfaceToSchema`, `getOpenAIJSONSchema`, `extractJSON`.
 - `stringlize.ts`: serializers for non-chat-completion backends and stop strings.
@@ -162,7 +162,7 @@ Not in `sendChat`:
 
   Lua edit triggers skip `editprocess`. Request triggers run inside `requestChatData`.
 
-- A new `PromptItem` type needs handling in both template switches in `sendChat`, plus `tokenizePreset`, `templateCheck`, import conversion, `PromptDataItem.svelte`, and `normalizePromptTemplate`.
+- A new `PromptItem` type needs handling in both template switches in `sendChat`, plus `tokenizePreset`, `templateCheck`, import conversion, `PromptDataItem.svelte`, and `normalizePromptTemplate` (`shared/presets.ts`).
 - `formatingOrder` is the legacy fallback. `postEverything` is auto-appended when missing.
 - Trimming happens in layers: the lore token budget, then memory or oldest-first dropping, then a final `removable`-only blanking. Custom Lua `editRequest` edits happen before the final recount.
 - Lore matching:
@@ -177,7 +177,7 @@ Not in `sendChat`:
 
 ## Recipes
 
-- Add a prompt card type: `shared/prompt.ts` (`PromptItem`), both `sendChat` switches, `tokenizePreset`, `templateCheck`, `PromptDataItem.svelte`, `normalizePromptTemplate`. Verify the prompt preview (DevTool), token counts, and a preset reload.
+- Add a prompt card type: `shared/prompt.ts` (`PromptItem`), both `sendChat` switches, `tokenizePreset`, `templateCheck`, `PromptDataItem.svelte`, `normalizePromptTemplate` (`shared/presets.ts`). Verify the prompt preview (DevTool), token counts, and a preset reload.
 - Change input processing: `DefaultChatScreen.sendMain`, plus `scripts.ts` or `triggers.ts` input handling. Verify character and group chats and slash-command fallthrough.
 - Add a response command or inlay: `inlayScreen.ts:runInlayScreen`, both the streaming and non-streaming branches in `sendChat`, and `files/inlays.ts` or the parser.
 - Change lore activation: `lorebook.svelte.ts` (search, decorators, budget) and the position mapping in `sendChat`.

@@ -10,13 +10,7 @@ import { chatCompletion, unloadEngine } from "../webllm";
 import { hypaV3ProgressStore } from "src/ts/stores.svelte";
 import { type ChatTokenizer } from "src/ts/tokenizer";
 import { inlayTokenRegex } from "src/ts/util/inlayTokens";
-import type {
-    HypaV3Preset,
-    HypaV3Settings,
-    HypaV3Data,
-    SerializableHypaV3Data,
-    Summary,
-} from "../../../../shared/memory.ts";
+import type { HypaV3Preset, HypaV3Data, SerializableHypaV3Data, Summary } from "../../../../shared/memory.ts";
 
 export type {
     HypaV3Preset,
@@ -24,6 +18,7 @@ export type {
     SerializableHypaV3Data,
     SerializableSummary,
 } from "../../../../shared/memory.ts";
+export { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 
 interface SummaryChunk {
     text: string;
@@ -1553,45 +1548,6 @@ export function getCurrentHypaV3Preset(): HypaV3Preset {
     }
 
     return preset;
-}
-
-export function createHypaV3Preset(name = "New Preset", existingSettings = {}): HypaV3Preset {
-    const settings: HypaV3Settings = {
-        summarizationModel: "subModel",
-        summarizationPrompt: "",
-        reSummarizationPrompt: "",
-        memoryTokensRatio: 0.2,
-        extraSummarizationRatio: 0,
-        maxChatsPerSummary: 6,
-        recentMemoryRatio: 0.4,
-        similarMemoryRatio: 0.4,
-        enableSimilarityCorrection: false,
-        preserveOrphanedMemory: false,
-        processRegexScript: false,
-        doNotSummarizeUserMessage: false,
-        summaryChunkSeparator: "\\n\\n",
-        // Experimental
-        useExperimentalImpl: false,
-        summarizationRequestsPerMinute: 20,
-        summarizationMaxConcurrent: 1,
-        embeddingRequestsPerMinute: 100,
-        embeddingMaxConcurrent: 1,
-        alwaysToggleOn: false,
-        queryChatCount: 3,
-    };
-
-    if (existingSettings && typeof existingSettings === "object" && !Array.isArray(existingSettings)) {
-        for (const [key, value] of Object.entries(existingSettings)) {
-            if (key in settings && typeof value === typeof settings[key]) {
-                settings[key] = value;
-            }
-        }
-    }
-
-    return {
-        name,
-        settings,
-    };
 }
 
 function simpleCC<T>(

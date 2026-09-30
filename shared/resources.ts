@@ -7,6 +7,13 @@ import type {
     ChatRecord,
 } from "./chats.ts";
 import type { Database } from "./database.ts";
+import type {
+    COLLECTION_FIELDS,
+    COLLECTION_SELECTION_FIELDS,
+    CollectionKind,
+    SECTION_FIELDS,
+    SectionKind,
+} from "./sections.ts";
 
 /**
  * The server resource kinds and their payloads (Phase 1 of `docs/plan/PLAN.md`). The client
@@ -131,3 +138,21 @@ export type BackupArchiveManifest = {
     /** Requested asset keys that were not found. */
     missing: string[];
 };
+
+/**
+ * Phase 3 payloads (the kinds are registered in slice 3). A section record holds its
+ * `SECTION_FIELDS` under their `Database` names; `llmSecrets` also holds the per-preset `proxyKey`
+ * map, keyed by preset id.
+ */
+export type SectionResource<K extends SectionKind> = Pick<Database, (typeof SECTION_FIELDS)[K][number]>;
+
+export type LlmSecretsResource = SectionResource<"llmSecrets"> & {
+    presets: Record<string, { proxyKey: string }>;
+};
+
+type SelectableCollection = keyof typeof COLLECTION_SELECTION_FIELDS;
+
+/** A collection record: the field's value as-is, or `{ items, selectedId }` for the two preset lists. */
+export type CollectionResource<K extends CollectionKind> = K extends SelectableCollection
+    ? { items: Database[(typeof COLLECTION_FIELDS)[K]]; selectedId: string }
+    : Database[(typeof COLLECTION_FIELDS)[K]];

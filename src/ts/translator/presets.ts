@@ -3,8 +3,14 @@ import * as fflate from "fflate";
 import { decryptBuffer, encryptBuffer } from "src/ts/util";
 import { decodeRPack, encodeRPack } from "src/ts/rpack/rpack_js.js";
 import type { TranslatorPreset } from "../../../shared/settings.ts";
+import {
+    createTranslatorPreset,
+    defaultTranslatorPrompt,
+    getNormalizedTranslatorPresetName,
+} from "../../../shared/translatorPresets.ts";
 
 export type { TranslatorPreset } from "../../../shared/settings.ts";
+export { createTranslatorPreset, defaultTranslatorPrompt };
 
 export interface TranslatorPresetStateLike {
     translatorPrompt?: string;
@@ -19,8 +25,6 @@ interface EncryptedTranslatorPresetFile {
     preset: Uint8Array | ArrayBuffer;
 }
 
-export const defaultTranslatorPrompt =
-    "You are a translator. translate the following html or text into {{slot}}. do not output anything other than the translation.";
 export const translatorPresetFileExtension = "risutl";
 export const translatorPresetImportExtensions = [translatorPresetFileExtension];
 const translatorPresetEncryptionKey = "risutl";
@@ -71,31 +75,9 @@ function getDefaultTranslatorPreset(state: TranslatorPresetStateLike): Translato
     });
 }
 
-function getNormalizedTranslatorPresetName(name: unknown, index: number): string {
-    if (typeof name === "string" && name.trim().length > 0) {
-        return name;
-    }
-
-    return `Preset ${index + 1}`;
-}
-
 function sanitizeFileNamePart(value: string): string {
     const sanitized = value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim();
     return sanitized.length > 0 ? sanitized : "preset";
-}
-
-export function createTranslatorPreset(
-    name = "New Preset",
-    existing: Partial<TranslatorPreset> = {},
-): TranslatorPreset {
-    return {
-        name,
-        prompt: typeof existing.prompt === "string" ? existing.prompt : "",
-        maxResponse:
-            typeof existing.maxResponse === "number" && Number.isFinite(existing.maxResponse)
-                ? existing.maxResponse
-                : 1000,
-    };
 }
 
 export function normalizeTranslatorPresetState<T extends TranslatorPresetStateLike>(state: T): T {
@@ -197,16 +179,23 @@ async function decodeEncryptedTranslatorPresetFile(data: Uint8Array): Promise<Tr
         throw new Error("Invalid translator preset file.");
     }
 
-    return createTranslatorPreset(
-        parsedPreset.name.trim().length > 0 ? parsedPreset.name : "Imported Preset",
-        parsedPreset,
-    );
+    // An imported preset always gets a fresh id, whatever the file carries.
+    return createTranslatorPreset(parsedPreset.name.trim().length > 0 ? parsedPreset.name : "Imported Preset", {
+        prompt: parsedPreset.prompt,
+        maxResponse: parsedPreset.maxResponse,
+    });
 }
 
 export async function encodeTranslatorPresetFile(preset: TranslatorPreset): Promise<Uint8Array> {
     const normalizedPreset = createTranslatorPreset(preset.name.trim().length > 0 ? preset.name : "Preset", preset);
+    // The `.risutl` format carries no id (D5): only the three shared fields are encoded.
+    const filePreset = {
+        name: normalizedPreset.name,
+        prompt: normalizedPreset.prompt,
+        maxResponse: normalizedPreset.maxResponse,
+    };
     const encryptedPreset = new Uint8Array(
-        await encryptBuffer(encodeMsgpack(normalizedPreset), translatorPresetEncryptionKey),
+        await encryptBuffer(encodeMsgpack(filePreset), translatorPresetEncryptionKey),
     );
     const payload: EncryptedTranslatorPresetFile = {
         translatorPresetVersion: 1,
