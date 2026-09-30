@@ -41,6 +41,7 @@ import { tokenize } from "../tokenizer";
 import { fetchNative, readImage } from "../globalApi.svelte";
 import { loadLoreBookV3Prompt } from "./lorebook.svelte";
 import { getPersonaPrompt, getUserName, getUserIcon } from "../util";
+import { findCharacter, updateCharacter } from "../storage/characterStore.svelte";
 let luaFactory: LuaFactory;
 let ScriptingSafeIds = new Set<string>();
 let ScriptingEditDisplayIds = new Set<string>();
@@ -61,6 +62,15 @@ interface BasicScriptingEngineState {
     contextRef?: ChatRef | null;
     setVar?: (key: string, value: string) => boolean | void;
     getVar?: (key: string) => string;
+    /**
+     * The character the run executes for (its `char` argument, else the selection at entry; in a
+     * group send, the speaking member): the character getters and setters address it by this id.
+     * Unset for a `simple` argument (a run without a writable character). Set on every run, since
+     * engines are reused.
+     */
+    characterId?: string;
+    /** The run's character argument as given, for the calls that take a whole character (`generateImage`). */
+    runCharacter?: character | groupChat | simpleCharacterArgument;
 }
 
 interface ScriptingEngineState extends BasicScriptingEngineState {
@@ -87,6 +97,8 @@ export async function runScripted(
     },
 ) {
     const char = arg.char ?? getCurrentCharacter();
+    // The run's character by id, captured before the first await (the argument object may change meanwhile).
+    const characterId = char && char.type !== "simple" ? char.chaId : undefined;
     const data = arg.data ?? "";
     const meta = arg.meta ?? {};
     const mode = arg.mode ?? "manual";
@@ -110,6 +122,8 @@ export async function runScripted(
         ScriptingEngineState.contextRef = contextRef;
         ScriptingEngineState.setVar = setVar;
         ScriptingEngineState.getVar = getVar;
+        ScriptingEngineState.characterId = characterId;
+        ScriptingEngineState.runCharacter = char;
         if (code !== ScriptingEngineState.code) {
             console.log("Creating new Lua engine for mode:", mode);
             ScriptingEngineState.engine?.global.close();
@@ -129,6 +143,11 @@ export async function runScripted(
                 return ref
                     ? getDatabase().characters.find((entry) => entry?.chaId === ref.chaId)
                     : getDatabase().characters[get(selectedCharID)];
+            };
+            /** The mirror record of the run's character (`characterId`), read at call time; none for a `simple` run. */
+            const runCharacter = () => {
+                const id = ScriptingEngineState.characterId;
+                return id ? findCharacter(id) : undefined;
             };
             const engineChat = (): DeepReadonly<Chat> =>
                 (ScriptingEngineState.chatRef ? findChat(ScriptingEngineState.chatRef) : undefined) ??
@@ -490,7 +509,8 @@ export async function runScripted(
                 if (!ScriptingLowLevelIds.has(id)) {
                     return;
                 }
-                const gen = await generateAIImage(value, char as character, negValue, "inlay");
+                const target = runCharacter() ?? ScriptingEngineState.runCharacter;
+                const gen = await generateAIImage(value, target as character, negValue, "inlay");
                 if (!gen) {
                     return "Error: Image generation failed";
                 }
@@ -760,71 +780,67 @@ export async function runScripted(
                 };
             });
 
+            // The character getters and setters address the run's character (`characterId`), never
+            // the tab's selection. A run without one reads "" and writes nothing.
             declareAPI("getName", (id: string) => {
-                const db = getDatabase();
-                const selectedChar = get(selectedCharID);
-                const char = db.characters[selectedChar];
-                return char.name;
+                const target = runCharacter();
+                return target ? target.name : "";
             });
 
             declareAPI("setName", (id: string, name: string) => {
                 if (!ScriptingSafeIds.has(id)) {
                     return;
                 }
-                const selectedChar = get(selectedCharID);
                 if (typeof name !== "string") {
                     throw "Invalid data type";
                 }
-                DBState.db.characters[selectedChar].name = name;
+                const target = runCharacter();
+                if (target) {
+                    updateCharacter(target.chaId, { name });
+                }
             });
 
             declareAPI("getDescription", (id: string) => {
                 if (!ScriptingSafeIds.has(id)) {
                     return;
                 }
-                const selectedChar = get(selectedCharID);
-                const char = DBState.db.characters[selectedChar];
-                if (char.type === "group") {
+                const target = runCharacter();
+                if (target?.type === "group") {
                     throw "Character is a group";
                 }
-                return char.desc;
+                return target ? target.desc : "";
             });
 
             declareAPI("setDescription", (id: string, desc: string) => {
                 if (!ScriptingSafeIds.has(id)) {
                     return;
                 }
-                const selectedChar = get(selectedCharID);
-                const char = DBState.db.characters[selectedChar];
-                if (typeof data !== "string") {
+                if (typeof desc !== "string") {
                     throw "Invalid data type";
                 }
-                if (char.type === "group") {
+                const target = runCharacter();
+                if (target?.type === "group") {
                     throw "Character is a group";
                 }
-                char.desc = desc;
-                DBState.db.characters[selectedChar] = char;
+                if (target) {
+                    updateCharacter(target.chaId, { desc });
+                }
             });
 
             declareAPI("getCharacterFirstMessage", (id: string) => {
-                const selectedChar = get(selectedCharID);
-                const char = DBState.db.characters[selectedChar];
-                return char.firstMessage;
+                const target = runCharacter();
+                return target ? target.firstMessage : "";
             });
 
             declareAPI("setCharacterFirstMessage", (id: string, data: string) => {
                 if (!ScriptingSafeIds.has(id)) {
                     return;
                 }
-                const db = getDatabase();
-                const selectedChar = get(selectedCharID);
-                const char = db.characters[selectedChar];
                 if (typeof data !== "string") {
                     return false;
                 }
-                char.firstMessage = data;
-                DBState.db.characters[selectedChar] = char;
-                return true;
+                const target = runCharacter();
+                return target ? updateCharacter(target.chaId, { firstMessage: data }) : false;
             });
 
             declareAPI("getPersonaName", (id: string) => {
@@ -846,23 +862,19 @@ export async function runScripted(
                 if (!ScriptingSafeIds.has(id)) {
                     return;
                 }
-                const db = getDatabase();
-                const selectedChar = get(selectedCharID);
-                const char = db.characters[selectedChar];
-                return char.backgroundHTML;
+                const target = runCharacter();
+                return target ? target.backgroundHTML : "";
             });
 
             declareAPI("setBackgroundEmbedding", (id: string, data: string) => {
                 if (!ScriptingSafeIds.has(id)) {
                     return;
                 }
-                const db = getDatabase();
-                const selectedChar = get(selectedCharID);
                 if (typeof data !== "string") {
                     return false;
                 }
-                DBState.db.characters[selectedChar].backgroundHTML = data;
-                return true;
+                const target = runCharacter();
+                return target ? updateCharacter(target.chaId, { backgroundHTML: data }) : false;
             });
 
             // Lore books
@@ -913,7 +925,7 @@ export async function runScripted(
                         return;
                     }
 
-                    if (char.type !== "character") {
+                    if (runCharacter()?.type !== "character") {
                         return;
                     }
 

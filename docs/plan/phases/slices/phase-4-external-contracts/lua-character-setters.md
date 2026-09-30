@@ -1,6 +1,6 @@
 # Slice: Lua Character Setters
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented (2026-10-01, on `ff74cf2e`; record below).
 
 Phase: [Phase 4](../../phase-4-external-contracts.md), "Lua and triggers" (the Lua half:
 `setName`, `setDescription`, `setCharacterFirstMessage`, `setBackgroundEmbedding`,
@@ -119,3 +119,120 @@ not, and both survive a reload; the same from a group member's script.
 The setters still run on the client until Phase 5's cutover; the Lua runtime, its guards, and
 the missing CPU limits are Phase 5's. A script run with a `simple` character argument (a
 module's Lua run without a character) cannot write a character (a defined `false`, recorded).
+
+## Implementation record
+
+Implemented 2026-10-01 on `ff74cf2e`, by the amendments of
+[`implementation-plan.md`](implementation-plan.md) (slice 5). Only `src/ts/process/scriptings.ts`
+changed.
+
+- **The run's character.** `runScripted` computes the id before its first await (challenge 1), and
+  the engine state gains `characterId`, assigned inside the mutex on every run:
+  - the run's `char.chaId`, where `char` is the argument, else the selection at entry
+    (`runScripted`'s default);
+  - unset for a `simple` argument (the rule goes by `type`);
+  - the `runCharacter` state keeps the argument itself, for `generateImage`.
+- **`runCharacter()`** (a closure over the engine state, read at call time, like
+  `getPersonaDescription`) returns `findCharacter(characterId)`. None of the `declareAPI` closures
+  captures the run's `char` any more (F-d); an engine reused by a later run reads that run's
+  character.
+- **The setters** write through `updateCharacter(chaId, { field })`: `setName` (`name`),
+  `setDescription` (`desc`), `setCharacterFirstMessage` (`firstMessage`), and
+  `setBackgroundEmbedding` (`backgroundHTML`).
+  - The guards and type checks stay, and the type check runs first. `setDescription` now tests
+    `desc`, not the run's `data` (the defect, fixed).
+  - The group refusal of `setDescription` and `getDescription` stays.
+  - Return shapes stay: `setName` and `setDescription` return nothing. The other two return
+    `updateCharacter`'s result, which is `false` when the character is gone or unresolved.
+- **The getters** (`getName`, `getDescription`, `getCharacterFirstMessage`,
+  `getBackgroundEmbedding`) read `runCharacter()`. They return `""` for an unresolved character,
+  and otherwise the field as it is, `nil` when missing (challenge 2). `getDescription` and
+  `getBackgroundEmbedding` keep their guards (`undefined` when refused).
+- **`generateImage`** passes the live record of the run's character, else the run's argument (a
+  `simple` run has no record; `generateAIImage` reads its `chaId`).
+- **`upsertLocalLoreBook`**'s type check reads `runCharacter()`.
+
+Recorded behavior changes:
+
+- A Lua script reads and writes its own character: the speaking member in a group send, and the
+  run's character when the selection moved while it ran. Before, it used whatever was selected.
+- A `simple` run (a translation or module run without a character) reads `""` and writes nothing
+  (F-e). Before, it wrote the selected character.
+- A reused engine no longer sees the first run's character in `generateImage` and
+  `upsertLocalLoreBook`.
+- A getter with no resolvable character returns `""`. Before, it threw on the missing record.
+
+No stopping condition was met.
+
+Exit checks:
+
+- The rooted pattern over `scriptings.ts` answers nothing.
+- `getDatabase()` answers `engineCharacter`, `getCharacterImageMain`, `getLoreBooksMain`,
+  `loadLoreBooksMain`, and both `getCharacterLastMessage` declarations.
+- `selectedCharID` answers the import, `engineCharacter`'s fallback, `getCharacterImageMain`, and
+  both `getCharacterLastMessage` declarations. `runScripted`'s default is `getCurrentCharacter()`.
+
+No existing test was invalidated: `scriptings.test.ts` exercises no character setter, so no test
+adapter ran and its mocks needed no change.
+
+Checks:
+
+- `pnpm check`, `pnpm format:check`, and `pnpm build` pass.
+- `pnpm test`: 91 files, 952 passed, 3 skipped.
+- `pnpm test:e2e`: 5 passed.
+
+Manual check (Playwright, scratchpad `checkP4Slice5.mjs`). A Lua button handler awaits
+`alertInput`, then calls all four setters, with `getName` inside `setName`. The selection moves
+while it waits:
+
+- **Alpha's button:** Beta was selected while the script waited. Alpha got the name, description,
+  first message, and background, and Beta was unchanged.
+- **Member's script, run on the group's chat:** the group was selected. Member got all four
+  writes, and the group was unchanged.
+- Both held after a reload, and there were no page errors.
+
+## Tests
+
+Written by the Fable review (verdict: no problem): `src/ts/process/scriptingsSetters.test.ts`, six
+tests on a real wasmoon engine over the real save adapter and server store. The harness points
+wasmoon's glue at its `file:` build, since the glue mis-detects happy-dom; `scriptings.ts` is
+untouched.
+
+- All four getters and setters through Lua on a character that is not selected: only that
+  character is sent, and the selected one is unchanged.
+- A member's script on the group's chat, with the group selected, writes the member, and its lore
+  lands in the group's chat. A group argument refuses the description getter and setter and the
+  lore type check, and `setName` still writes a group.
+- One reused engine across two real runs, a `simple` run with a real id, and a removed-record run,
+  including the image routing and the lore check.
+- The argument mutated while its run waits on the mutex, and an omitted `char` with the selection
+  moved mid-wait: the ids captured at entry hold.
+- A same-id replacement mid-wait is read and patched. A removal mid-wait gives `""` from the
+  getters, `false` from the boolean setters, and no write.
+- Invalid inputs and access keys; an array `data` with `setDescription` (the defect's
+  regression); `nil` for a missing field.
+
+The same file fails 6 of 6 against the pre-slice `scriptings.ts`. `pnpm test`: 92 files, 958
+passed, 3 skipped. `pnpm check` and `pnpm format:check` pass.
+
+## Astra challenge
+
+Astra (the open plan-review session) challenged the implementation. Report:
+`astra-p4-slice5-challenge.md` (scratchpad). Decisions:
+
+1. **Medium: `characterId` was read after the run's awaits.** The run kept the argument object and
+   read its `type` and `chaId` only inside the mutex, so a change to that object while the run
+   waited redirected the writes (Astra's probe wrote B for a run started for A). **Adopted** (the
+   recommended fix): `runScripted` computes the id before its first await and assigns it inside
+   the mutex.
+2. **Low: the getters defaulted a missing field to `""`.** `""` is truthy in Lua and `nil` is not.
+   **Adopted:** only an unresolved character reads `""`; an existing character's missing field is
+   returned as it is (`nil`), as before.
+
+Also noted by Astra and recorded here:
+
+- `generateImage`'s fallback to the run's argument also applies when the record was deleted
+  during the run. Generation then uses the retained argument and writes no character.
+- **For slice 6:** `runTrigger` clones its character, and a later native effect can write that
+  copy back over a Lua field edit. This predates the slice. The trigger slice converts those
+  effects and adds the mixed Lua and native-effect case.
