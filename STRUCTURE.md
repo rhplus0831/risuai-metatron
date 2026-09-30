@@ -66,21 +66,20 @@ Data and persistence (details: `docs/structure/persistence.md`)
 - D2. A new persisted field needs a type entry and a place in `shared/sections.ts`. A section or
   collection field gets its default and migration in its server normalizer
   (`server/src/data/normalize/`), never in `setDatabase`: the client's projection must equal the
-  server's normalized text. A residual `root` field (`RESIDUAL_ROOT_KEYS`) still gets its default
-  in `setDatabase`. The flat preset fields of `DBState.db` (`FORWARDED_ROOT_KEYS`) are accessors
-  that read and write the selected preset (`src/ts/storage/forwarding.svelte.ts`): never `delete`
-  one, and write them synchronously (a value copied back from an `$effect` can land after a preset
-  switch). `setDatabaseLite` installs the accessors and does not normalize. Chat and message fields
+  server's normalized text. The flat preset and persona fields of `DBState.db` and the selection
+  indexes (`FORWARDED_ROOT_KEYS`) are accessors that read and write the selected preset or persona,
+  or this client's selection (`src/ts/storage/forwarding.svelte.ts`): never `delete` one, and write
+  them synchronously (a value copied back from an `$effect` can land after a switch). `setDatabaseLite` installs the accessors and does not normalize. Chat and message fields
   are the exception: they are stored as the client sends them (the server normalizer in
   `server/src/data/chats.ts` fills only `name`, `note`, and `localLore`), so readers default a
   missing chat field where they read it.
 - D3. Never rename persisted keys, including misspelled ones: `seperateModels`,
   `seperateParameters`, `moduleIntergration`, `PresensePenalty`. Saved databases and shared files
   depend on them.
-- D4. The database lives in server resources (`root`, `presets`, `modules`, `plugins`,
-  `pluginStorage`, one `characters` record per `chaId` without its chats) and in chat records (one
+- D4. The database lives in server resources (the Phase 3 sections and collections, `presets`,
+  `modules`, `plugins`, `pluginStorage`, one `characters` record per `chaId` without its chats) and in chat records (one
   per chat, messages as rows, one chat order per character); the save adapter
-  (`src/ts/storage/resourceSync.svelte.ts`, started by `saveDb`) watches the root fields, the
+  (`src/ts/storage/resourceSync.svelte.ts`, started by `saveDb`) watches the sections, the
   collections, and only the selected character's own fields deeply, and sends the chat module's
   queued ops. If you mutate a non-selected character, call `markCharactersDirty([chaId])`, or that
   change is not saved. Additions and removals need nothing. Every write names the revision and epoch

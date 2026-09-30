@@ -277,11 +277,14 @@ describe("hypaV3Presets", () => {
 });
 
 describe("personas", () => {
-    it("materializes the fresh-boot persona, keeps an empty list empty, and backstops ids", () => {
+    it("materializes the fresh-boot persona, turns an empty list into it, fills the four fields, and backstops ids", () => {
         const materialized = normalizePersonas(undefined);
         expect(withoutIds(materialized)).toEqual(withoutIds(bootSnapshot.personas));
         expect(materialized[0].id).toMatch(UUID_V4);
-        expect(normalizePersonas([])).toEqual([]);
+        // Never empty (slice 6, `shared/personas.ts`): a selection always has a record.
+        const fromEmpty = normalizePersonas([]);
+        expect(withoutIds(fromEmpty)).toEqual(withoutIds(bootSnapshot.personas));
+        expect(fromEmpty[0].id).toMatch(UUID_V4);
 
         const module = { id: "m", name: "embedded", lorebook: [] };
         const out = normalizePersonas([
@@ -289,12 +292,23 @@ describe("personas", () => {
             { name: "b", id: "x", module },
             { name: "c", id: "x" },
             { name: "d", id: 5 },
-            { name: "e", id: "" },
+            { name: "e", id: "", note: 7 },
         ]);
         expect(out.map((persona) => persona.name)).toEqual(["a", "b", "c", "d", "e"]);
-        expect(out[0]).toEqual({ name: "a", icon: "i", extra: { deep: true }, id: expect.stringMatching(UUID_V4) });
-        expect(out[1]).toEqual({ name: "b", id: "x", module });
+        // A missing or wrong-typed `name`, `icon`, `personaPrompt`, or `note` gets its default, appended
+        // after the entry's own keys; the other keys are kept.
+        expect(out[0]).toEqual({
+            name: "a",
+            icon: "i",
+            extra: { deep: true },
+            personaPrompt: "",
+            note: "",
+            id: expect.stringMatching(UUID_V4),
+        });
+        expect(Object.keys(out[0])).toEqual(["name", "icon", "extra", "personaPrompt", "note", "id"]);
+        expect(out[1]).toEqual({ name: "b", id: "x", module, icon: "", personaPrompt: "", note: "" });
         expect((out[1] as unknown as Record<string, unknown>).module).not.toBe(module);
+        expect(out[4].note).toBe("");
         for (const index of [2, 3, 4]) {
             expect(out[index].id, `persona ${index}`).toMatch(UUID_V4);
         }

@@ -18,8 +18,12 @@ import {
 } from "./chatStore.ts";
 import type { ResourceKind, ResourceKindRegistry } from "./kinds.ts";
 
-/** Version of the table layout below, kept in `PRAGMA user_version`. Version 2 added the chat tables. */
-const SCHEMA_VERSION = 2;
+/**
+ * Version of the resource database, kept in `PRAGMA user_version`. Version 2 added the chat tables;
+ * version 3 (Phase 3) has the same tables and holds the settings sections and collections instead of
+ * a `root` record.
+ */
+const SCHEMA_VERSION = 3;
 const BUSY_TIMEOUT_MS = 5000;
 /** Deepest array/object nesting a stored value may have. */
 const MAX_JSON_DEPTH = 256;
@@ -974,7 +978,8 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 
 /**
  * Opens the connection settings and creates the schema and epoch on first use. Returns the epoch. A
- * version-1 database (Phase 1, characters with embedded chats) is refused: no migration is owed.
+ * version-1 database (Phase 1, characters with embedded chats) and a version-2 one (settings in a
+ * `root` record, before Phase 3) are refused: no migration is owed.
  */
 function initialize(db: DatabaseSync, file: string): string {
     db.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON;`);
@@ -1009,6 +1014,12 @@ function initialize(db: DatabaseSync, file: string): string {
             `${file} holds resource database version 1 (characters with their chats inside), which this ` +
                 "server no longer reads. It is disposable alpha data: move it away or delete it and restart " +
                 "to begin with an empty database.",
+        );
+    } else if (version === 2) {
+        throw new Error(
+            `${file} holds resource database version 2 (settings in one root record, before Phase 3), which ` +
+                "this server no longer reads. It is disposable alpha data: move it away or delete it and " +
+                "restart to begin with an empty database.",
         );
     } else if (version !== SCHEMA_VERSION) {
         throw new Error(`Unsupported resource database version ${version}`);

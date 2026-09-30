@@ -6,16 +6,7 @@ import { ResourceValidationError } from "../data/resourceStore.ts";
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const kind = (name: string) => kinds.get(name)!;
-const phase1Kinds = [
-    "root",
-    "presets",
-    "modules",
-    "plugins",
-    "pluginStorage",
-    "pluginPermissions",
-    "characters",
-    "inlays",
-];
+const phase1Kinds = ["presets", "modules", "plugins", "pluginStorage", "pluginPermissions", "characters", "inlays"];
 /** The Phase 3 sections and collections (slice 3): singletons the store materializes. */
 const phase3Kinds = [
     "providers",
@@ -48,10 +39,10 @@ const accepts = (name: string, id: string, input: unknown) => {
 };
 
 describe("createKindRegistry", () => {
-    it("holds the eight Phase 1 kinds, six of them singletons, and the 18 Phase 3 singletons; presets and Phase 3 materialize", () => {
+    it("holds the seven Phase 1 kinds (root is gone since slice 6), five of them singletons, and the 18 Phase 3 singletons; presets and Phase 3 materialize", () => {
         expect([...kinds.keys()]).toEqual([...phase1Kinds, ...phase3Kinds]);
+        expect(kinds.has("root")).toBe(false);
         expect([...kinds.values()].filter((k) => k.singleton).map((k) => k.name)).toEqual([
-            "root",
             "presets",
             "modules",
             "plugins",
@@ -85,7 +76,6 @@ describe("createKindRegistry", () => {
 
 describe("default normalizers", () => {
     it("return the input unchanged when the minimum shape holds, except presets, which get the canonical schema", () => {
-        accepts("root", "main", { username: "u", nested: { deep: [1] } });
         // `presets` (slice 3) returns `normalizePresets`' copy: every preset gets an id and the
         // canonical fields, and an empty list becomes one default preset.
         const presets = kind("presets").normalize([{ name: "p" }, {}], { id: "main" }) as botPreset[];
@@ -119,8 +109,8 @@ describe("default normalizers", () => {
         accepts("inlays", "i", { name: "n", ext: "", type: "signature", text: "{}" });
     });
 
-    it("refuse non-objects and root fields that have a resource of their own", () => {
-        for (const name of ["root", "pluginStorage", "pluginPermissions", "characters", "inlays"]) {
+    it("refuse non-objects", () => {
+        for (const name of ["pluginStorage", "pluginPermissions", "characters", "inlays"]) {
             for (const input of [null, 1, "x", [], undefined]) {
                 expect(() => kind(name).normalize(input, { id: "main" }), name).toThrow(ResourceValidationError);
             }
@@ -129,9 +119,6 @@ describe("default normalizers", () => {
             for (const input of [null, {}, "x", [1], [null], [[]]]) {
                 rejects(name, "main", input, `${name} must be an array of objects`);
             }
-        }
-        for (const key of ["characters", "botPresets", "modules", "plugins", "pluginCustomStorage"]) {
-            rejects("root", "main", { [key]: [] }, `root must not hold ${key}`);
         }
     });
 

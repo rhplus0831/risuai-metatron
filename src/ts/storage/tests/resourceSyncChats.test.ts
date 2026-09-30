@@ -54,10 +54,8 @@ const refJ = { chaId: "c", chatId: "j" };
 async function boot(prepare?: (server: StoreBackedServer) => void) {
     vi.resetModules();
     const fake = await StoreBackedServer.create();
-    // The store materialized the sections and collections when it opened; the residual root holds
-    // `RESIDUAL_ROOT_KEYS` only, as the client writes it (the preset fields and the selection
-    // indexes are forwarded since slice 5, never stored in root).
-    fake.set("root", "main", { username: "u", selectedPersona: 0 });
+    // The store materialized the sections and collections when it opened; there is no `root` record
+    // since slice 6, and the sample singleton edit of these tests is `ui.theme`.
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
@@ -155,7 +153,7 @@ describe("boot and mixed batches", () => {
     it("sends resource ops, chat groups, and reorders in one request, without touching the character revision", async () => {
         const { fake, sync, chat, db, mirrorIds } = await boot();
         const characterRevision = fake.record("characters", "c")!.revision;
-        db().username = "edited";
+        db().theme = "edited";
         chat.appendMessage(refK, m("d", "D"));
         chat.setChatMeta(refJ, { note: "j note" });
         chat.createChat("c", { id: "n", name: "N", message: [m("x", "X")] } as any, { index: 0 });
@@ -164,14 +162,14 @@ describe("boot and mixed batches", () => {
         expect(result.discarded).toEqual([]);
         expect(fake.batchCount()).toBe(1);
         const [body] = fake.batchBodies();
-        expect(body.ops.map((op: any) => op.kind)).toEqual(["root"]);
+        expect(body.ops.map((op: any) => op.kind)).toEqual(["ui"]);
         expect(body.chats.map((group: any) => [group.chatId, group.ops.map((op: any) => op.op)])).toEqual([
             ["n", ["create"]],
             ["k", ["append"]],
             ["j", ["meta"]],
         ]);
         expect(body.chatOrders).toHaveLength(1);
-        expect(fake.record("root", "main")!.data).toMatchObject({ username: "edited" });
+        expect(fake.record("ui", "main")!.data).toMatchObject({ theme: "edited" });
         expect(fake.texts("c", "k")).toEqual(["A", "B", "C", "D"]);
         expect(fake.texts("c", "n")).toEqual(["X"]);
         expect((fake.chat("c", "j")!.data as any).note).toBe("j note");
@@ -339,20 +337,20 @@ describe("request caps", () => {
 });
 
 describe("one chat's trouble does not block the rest", () => {
-    it("quarantines a chat whose data the server refuses and keeps saving the others and the root", async () => {
+    it("quarantines a chat whose data the server refuses and keeps saving the others and the ui section", async () => {
         // The per-chat quarantine relies on the server naming the group (`chats[i]...`) in every
         // validation error of a chat group, including one found while applying the group (a `meta`
         // patch whose merged result the normalizer refuses).
         const { fake, sync, chat, db } = await boot();
         chat.setChatMeta(refK, { fmIndex: "not a number" as any });
         chat.setChatMeta(refJ, { note: "fine" });
-        db().username = "root edit";
+        db().theme = "section edit";
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["chats/c/k"]);
         expect(alerts.error).toHaveBeenCalledTimes(1);
         expect(alerts.error.mock.calls[0][0]).toMatch(/chat k could not be saved: chats\[0\]\.ops\[0\]/);
         expect((fake.chat("c", "j")!.data as any).note).toBe("fine");
-        expect(fake.record("root", "main")!.data).toMatchObject({ username: "root edit" });
+        expect(fake.record("ui", "main")!.data).toMatchObject({ theme: "section edit" });
         expect((fake.chat("c", "k")!.data as any).fmIndex).toBeUndefined();
         expect(chat.hasChatWork()).toBe(false);
         chat.setChatMeta(refJ, { note: "still saving" });
@@ -375,9 +373,9 @@ describe("one chat's trouble does not block the rest", () => {
         chat.setMessageText(refK, "a", "streamed", { generationId: "g" });
         chat.removeMessages(refK, ["b", "c"]);
         chat.setChatMeta(refJ, { note: "j saved" });
-        db().username = "root saved";
+        db().theme = "section saved";
         await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
-        await vi.waitFor(() => expect(fake.record("root", "main")!.data).toMatchObject({ username: "root saved" }), {
+        await vi.waitFor(() => expect(fake.record("ui", "main")!.data).toMatchObject({ theme: "section saved" }), {
             timeout: 5000,
         });
         await vi.waitFor(() => expect((fake.chat("c", "j")!.data as any).note).toBe("j saved"), { timeout: 5000 });

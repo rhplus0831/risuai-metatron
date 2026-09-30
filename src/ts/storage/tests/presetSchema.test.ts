@@ -20,9 +20,7 @@ import {
     presetTemplate,
     type PresetField,
 } from "../../../../shared/presets.ts";
-import { ROOT_EXCLUDED_KEYS } from "../../../../shared/resources.ts";
 import {
-    CLIENT_SELECTION_KEYS,
     COLLECTION_FIELDS,
     COLLECTION_KIND,
     COLLECTION_SELECTION_FIELDS,
@@ -31,7 +29,6 @@ import {
     FORWARDED_ROOT_KEYS,
     PERSONA_ROOT_KEYS,
     PHASE1_FIELDS,
-    RESIDUAL_ROOT_KEYS,
     SECTION_FIELDS,
     SECTION_KIND,
     SELECTION_KEYS,
@@ -382,12 +379,12 @@ describe("ids", () => {
     });
 });
 
-// The partition (slice 2 "Proposed decisions", plan amendments A2 and A3; slice 5 split the root):
-// the five sections, the thirteen collections with their two selection fields, the forwarded root
-// keys (served by the client forwarding layer, never stored), the residual root, the dropped
-// fields, and the Phase 1 fields cover `keyof Database` exactly once. The type-level half below
-// is checked by `pnpm check`; the runtime half checks the counts derived from the lists and the
-// keys the pre-phase boot snapshot actually holds.
+// The partition (slice 2 "Proposed decisions", plan amendments A2 and A3; slices 5 and 6 forwarded
+// the whole root): the five sections, the thirteen collections with their two selection fields, the
+// forwarded root keys (served by the client forwarding layer, never stored), the dropped fields, and
+// the Phase 1 fields cover `keyof Database` exactly once. The type-level half below is checked by
+// `pnpm check`; the runtime half checks the counts derived from the lists and the keys the
+// pre-phase boot snapshot actually holds.
 
 type KeepOnSwitch = (typeof PRESET_KEEP_ON_SWITCH_FIELDS)[number];
 type PresetRootName<F extends PresetField> = F extends "NAISettings"
@@ -400,18 +397,17 @@ type PresetRootName<F extends PresetField> = F extends "NAISettings"
 type ForwardedPresetKey = {
     [F in PresetField]: F extends "name" | "image" | "proxyKey" | KeepOnSwitch ? never : PresetRootName<F>;
 }[PresetField];
-// `FORWARDED_ROOT_KEYS` and `RESIDUAL_ROOT_KEYS` are typed `keyof Database`, so their members are
-// spelled out here from the lists they are built from.
-type ForwardedRootKey = ForwardedPresetKey | "proxyKey" | (typeof CLIENT_SELECTION_KEYS)[number];
-type ResidualRootKey = keyof typeof PERSONA_ROOT_ALIASES | "selectedPersona";
+// `FORWARDED_ROOT_KEYS` is typed `keyof Database`, so its members are spelled out here from the
+// lists it is built from.
+type ForwardedRootKey =
+    ForwardedPresetKey | "proxyKey" | keyof typeof PERSONA_ROOT_ALIASES | (typeof SELECTION_KEYS)[number];
 type ListedKey =
     | (typeof SECTION_FIELDS)[SectionKind][number]
     | (typeof COLLECTION_FIELDS)[CollectionKind]
     | (typeof COLLECTION_SELECTION_FIELDS)[keyof typeof COLLECTION_SELECTION_FIELDS]
     | ForwardedRootKey
-    | ResidualRootKey
     | (typeof DROPPED_FIELDS)[number]
-    | (typeof ROOT_EXCLUDED_KEYS)[number];
+    | (typeof PHASE1_FIELDS)[number];
 type UnlistedDatabaseKey = Exclude<keyof Database, ListedKey>;
 type NotADatabaseKey = Exclude<ListedKey, keyof Database>;
 // Both resolve to `never` when the lists partition `keyof Database`; a new `Database` field that
@@ -428,7 +424,6 @@ describe("field-to-resource partition", () => {
         ["collections", collectionKeys],
         ["collection selections", selectionFields],
         ["forwarded root", FORWARDED_ROOT_KEYS],
-        ["residual root", RESIDUAL_ROOT_KEYS],
         ["dropped", DROPPED_FIELDS],
         ["phase 1", PHASE1_FIELDS],
     ];
@@ -458,7 +453,7 @@ describe("field-to-resource partition", () => {
         expect(unlisted).toEqual([]);
     });
 
-    it("derives the root lists from the preset schema: 69 forwarded keys, proxyKey, and 2 client selections are forwarded; 4 persona keys and selectedPersona remain", () => {
+    it("derives the forwarded list from the preset schema: 69 preset keys, proxyKey, 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
         const notForwarded = new Set<string>(["name", "image", "proxyKey", ...PRESET_KEEP_ON_SWITCH_FIELDS]);
         const expectedForwarded = PRESET_FIELDS.filter((field) => !notForwarded.has(field)).map(
             (field) => presetToRootName[field] ?? field,
@@ -483,11 +478,14 @@ describe("field-to-resource partition", () => {
             personaPrompt: "personaPrompt",
         });
         expect(SELECTION_KEYS).toEqual(["botPresetsId", "selectedPersona", "loreBookPage"]);
-        expect(CLIENT_SELECTION_KEYS).toEqual(["botPresetsId", "loreBookPage"]);
-        expect(FORWARDED_ROOT_KEYS).toEqual([...FORWARDED_PRESET_KEYS, "proxyKey", ...CLIENT_SELECTION_KEYS]);
-        expect(FORWARDED_ROOT_KEYS).toHaveLength(69 + 1 + 2);
-        expect(RESIDUAL_ROOT_KEYS).toEqual([...PERSONA_ROOT_KEYS, "selectedPersona"]);
-        expect(RESIDUAL_ROOT_KEYS).toHaveLength(4 + 1);
+        // Slice 6: the persona keys and all three selections are forwarded; no residual root is left.
+        expect(FORWARDED_ROOT_KEYS).toEqual([
+            ...FORWARDED_PRESET_KEYS,
+            "proxyKey",
+            ...PERSONA_ROOT_KEYS,
+            ...SELECTION_KEYS,
+        ]);
+        expect(FORWARDED_ROOT_KEYS).toHaveLength(69 + 1 + 4 + 3);
     });
 
     it("places the review corrections: keep-on-switch in providers, auto-suggest in ui, supaMemoryKey in llmSecrets, hypaMemoryKey dropped", () => {
@@ -518,7 +516,8 @@ describe("field-to-resource partition", () => {
             translatorPresets: "translatorPresetId",
             hypaV3Presets: "hypaV3PresetId",
         });
-        expect(PHASE1_FIELDS).toBe(ROOT_EXCLUDED_KEYS);
+        // Its own literal since slice 6 (`ROOT_EXCLUDED_KEYS` went with the `root` resource).
+        expect(PHASE1_FIELDS).toEqual(["characters", "botPresets", "modules", "plugins", "pluginCustomStorage"]);
     });
 });
 

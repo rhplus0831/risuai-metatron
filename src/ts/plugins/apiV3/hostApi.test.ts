@@ -138,7 +138,7 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
         expect(dbMocks.setDatabase).toHaveBeenCalledWith(DBState.db);
     });
 
-    it("gives a plugin persona without an id one, keeps existing ids, and leaves non-object entries alone (Phase 3 slice 2)", async () => {
+    it("keeps existing ids, gives a persona without an id one, and drops non-object entries (Phase 3 slice 6)", async () => {
         const api = await makeApi();
         const personas = [
             { name: "no id", icon: "", personaPrompt: "" },
@@ -147,17 +147,20 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
             null,
         ];
 
+        // Both setters apply the collection's contract (`shared/personas.ts`): a missing or empty id
+        // gets one, an existing id is kept, a non-object entry is dropped, and the four persona fields
+        // are filled as strings (`note` here).
         api.setDatabaseLite({ personas });
         const lite = DBState.db.personas as any[];
-        expect(lite).toHaveLength(4);
-        expect(lite[0]).toEqual({ name: "no id", icon: "", personaPrompt: "", id: expect.any(String) });
+        expect(lite).toHaveLength(3);
+        expect(lite[0]).toEqual({ name: "no id", icon: "", personaPrompt: "", note: "", id: expect.any(String) });
         expect(lite[0].id.length).toBeGreaterThan(0);
-        expect(lite[1]).toEqual(personas[1]);
+        expect(lite[1]).toEqual({ ...personas[1], note: "" });
         expect(lite[2].id.length).toBeGreaterThan(0);
-        expect(lite[3]).toBeNull();
-        expect(new Set(lite.slice(0, 3).map((persona) => persona.id)).size).toBe(3);
+        expect(new Set(lite.map((persona) => persona.id)).size).toBe(3);
         // The plugin's own array is not mutated.
         expect(personas[0]).toEqual({ name: "no id", icon: "", personaPrompt: "" });
+        expect(personas[3]).toBeNull();
 
         await api.setDatabase({ personas: [{ name: "again", icon: "", personaPrompt: "" }] });
         const full = DBState.db.personas as any[];

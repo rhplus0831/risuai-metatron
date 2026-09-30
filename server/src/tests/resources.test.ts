@@ -202,7 +202,7 @@ describe("resource routes", () => {
             },
         ];
         const s = await authedServer(kinds);
-        expect((await s.get("root", "main")).status).toBe(404 /* the default kinds are replaced */);
+        expect((await s.get("presets", "main")).status).toBe(404 /* the default kinds are replaced */);
 
         for (const data of [1, "   ", null]) {
             const res = await s.put("names", "n", { baseRevision: null, data });
@@ -425,8 +425,8 @@ describe("resource routes", () => {
 describe("default kinds over the routes", () => {
     it("accepts only the id main for a singleton kind and refuses to delete it", async () => {
         const s = await defaultServer();
-        for (const kind of ["root", "presets", "modules", "plugins", "pluginStorage", "pluginPermissions"]) {
-            const data = kind === "pluginPermissions" ? { grants: {}, lastGrantTime: {} } : kind === "root" ? {} : [];
+        for (const kind of ["presets", "modules", "plugins", "pluginStorage", "pluginPermissions"]) {
+            const data = kind === "pluginPermissions" ? { grants: {}, lastGrantTime: {} } : [];
             const payload = kind === "pluginStorage" ? {} : data;
             const other = await s.put(kind, "other", { baseRevision: null, data: payload });
             expect(other.status, kind).toBe(400);

@@ -7,31 +7,20 @@
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import { alertConfirm, alertSelect } from "src/ts/alert";
     import { getCharImage } from "src/ts/characters";
-    import {
-        changeUserPersona,
-        exportUserPersona,
-        importUserPersona,
-        saveUserPersona,
-        selectUserImg,
-    } from "src/ts/persona";
+    import { changeUserPersona, exportUserPersona, importUserPersona, selectUserImg } from "src/ts/persona";
+    import { selectedPersona } from "src/ts/storage/forwarding.svelte";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
     import { onDestroy, onMount } from "svelte";
     import { sleep, sortableOptions } from "src/ts/util";
     import { DBState } from "src/ts/stores.svelte";
-    import { v4 } from "uuid";
     import { newPersonaId } from "../../../../shared/presets.ts";
 
     let stb: Sortable = null;
     let ele: HTMLDivElement = $state();
     let sorted = $state(0);
-    let selectedId: string = null;
     const createStb = () => {
         stb = Sortable.create(ele, {
-            onStart: async () => {
-                DBState.db.personas[DBState.db.selectedPersona].id ??= v4();
-                selectedId = DBState.db.personas[DBState.db.selectedPersona].id;
-                saveUserPersona();
-            },
+            // The selection is by id, so a reorder leaves it on the same persona.
             onEnd: async () => {
                 let idx: number[] = [];
                 ele.querySelectorAll("[data-risu-idx]").forEach((e, i) => {
@@ -42,8 +31,6 @@
                     newValue.push(DBState.db.personas[i]);
                 });
                 DBState.db.personas = newValue;
-                const selectedPersona = DBState.db.personas.findIndex((e) => e.id === selectedId);
-                changeUserPersona(selectedPersona !== -1 ? selectedPersona : 0, "noSave");
                 try {
                     stb.destroy();
                 } catch (error) {}
@@ -77,7 +64,7 @@
             <button
                 data-risu-idx={i}
                 onclick={() => {
-                    changeUserPersona(i);
+                    changeUserPersona(persona.id);
                 }}
             >
                 {#if persona.icon === ""}
@@ -106,14 +93,15 @@
                 onClick={async () => {
                     const sel = parseInt(await alertSelect([language.createfromScratch, language.importCharacter]));
                     if (sel === 0) {
+                        const id = newPersonaId();
                         DBState.db.personas.push({
-                            id: newPersonaId(),
+                            id,
                             name: "New Persona",
                             icon: "",
                             personaPrompt: "",
                             note: "",
                         });
-                        changeUserPersona(DBState.db.personas.length - 1);
+                        changeUserPersona(id);
                     } else if (sel === 1) {
                         await importUserPersona();
                     }
@@ -182,16 +170,25 @@
                     if (DBState.db.personas.length === 1) {
                         return;
                     }
-                    const d = await alertConfirm(
-                        `${language.removeConfirm}${DBState.db.personas[DBState.db.selectedPersona].name}`,
-                    );
-                    if (d) {
-                        saveUserPersona();
-                        let personas = DBState.db.personas;
-                        personas.splice(DBState.db.selectedPersona, 1);
-                        DBState.db.personas = personas;
-                        changeUserPersona(0, "noSave");
+                    // The list can change while the dialog is open: act on this persona by id.
+                    const target = selectedPersona(DBState.db);
+                    if (!target) {
+                        return;
                     }
+                    const { id, name } = target;
+                    const d = await alertConfirm(`${language.removeConfirm}${name}`);
+                    if (!d) {
+                        return;
+                    }
+                    const personas = DBState.db.personas;
+                    const index = personas.findIndex((persona) => persona.id === id);
+                    if (index === -1 || personas.length === 1) {
+                        return;
+                    }
+                    if (selectedPersona(DBState.db)?.id === id) {
+                        changeUserPersona(personas.find((persona) => persona.id !== id).id);
+                    }
+                    personas.splice(index, 1);
                 }}>{language.remove}</Button
             >
             <Check bind:check={DBState.db.personas[DBState.db.selectedPersona].largePortrait}

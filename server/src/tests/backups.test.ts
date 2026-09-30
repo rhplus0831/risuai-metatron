@@ -152,7 +152,8 @@ describe("POST /api/backups/:id/restore", () => {
     it("replaces every resource with the snapshot under a new epoch, after a safety snapshot", async () => {
         const s = await defaultServer();
         const a = await s.create("characters", "a", character("a"));
-        await s.create("root", "main", { username: "before" });
+        // `pluginStorage`: a singleton the store does not materialize, so the test's own write is a create.
+        await s.create("pluginStorage", "main", { note: "before" });
         const snapshot = await s.context.snapshots.snapshotNow();
         await s.put("characters", "a", { baseRevision: a, data: character("a", { name: "changed" }) });
         await s.create("characters", "b", character("b"));
@@ -171,12 +172,12 @@ describe("POST /api/backups/:id/restore", () => {
             writtenRows(reader.readSnapshot(path.join(backupsDir(s), `${backups[0].id}.sqlite`)).rows).map(
                 (r) => `${r.kind}/${r.id}`,
             ),
-        ).toEqual(["characters/a", "root/main", "characters/b"]);
+        ).toEqual(["characters/a", "pluginStorage/main", "characters/b"]);
 
         const characters = (await (await s.list("characters")).json()) as { items: (Stored & { id: string })[] };
         expect(characters.items.map((c) => [c.id, c.data])).toEqual([["a", character("a")]]);
         expect(characters.items[0].revision.startsWith(`${epoch}:`)).toBe(true);
-        expect(await (await s.get("root", "main")).json()).toMatchObject({ data: { username: "before" } });
+        expect(await (await s.get("pluginStorage", "main")).json()).toMatchObject({ data: { note: "before" } });
 
         // Every mutation based on the old epoch is refused, including a create; the old tokens are stale.
         const oldEpochResponses = [
@@ -232,7 +233,7 @@ describe("POST /api/backups/:id/restore", () => {
         const badRow = "resources-20300101T000000000Z-00000002";
         const db = new DatabaseSync(path.join(backupsDir(s), `${badRow}.sqlite`));
         db.exec(`
-            PRAGMA user_version = 2;
+            PRAGMA user_version = 3;
             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
             CREATE TABLE resources (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, id TEXT NOT NULL,
                 revision INTEGER NOT NULL, schemaVersion INTEGER NOT NULL, data TEXT NOT NULL, UNIQUE (kind, id)) STRICT;
@@ -545,7 +546,7 @@ describe("POST /api/backups/import", () => {
     it("restores the resources and adds only the missing assets of an exported archive", async () => {
         const source = await defaultServer();
         await source.create("characters", "a", character("a"));
-        await source.create("root", "main", { username: "u" });
+        await source.create("pluginStorage", "main", { note: "u" });
         await writeAsset(source, "assets/shared.png", "SOURCE");
         await writeAsset(source, "assets/new.png", "NEW");
         const archive = await exportArchive(source);
@@ -562,11 +563,11 @@ describe("POST /api/backups/import", () => {
         expect(await target.readEpoch()).toBe(body.epoch);
         expect(await readAsset(target, "assets/shared.png")).toBe("TARGET");
         expect(await readAsset(target, "assets/new.png")).toBe("NEW");
-        const state = (await (await target.readKinds("characters,root")).json()) as {
+        const state = (await (await target.readKinds("characters,pluginStorage")).json()) as {
             kinds: Record<string, { id: string; data: unknown }[]>;
         };
         expect(state.kinds.characters.map((c) => [c.id, c.data])).toEqual([["a", character("a")]]);
-        expect(state.kinds.root.map((r) => r.data)).toEqual([{ username: "u" }]);
+        expect(state.kinds.pluginStorage.map((r) => r.data)).toEqual([{ note: "u" }]);
         // The safety snapshot holds the target's previous state; staging is gone; old-epoch writes are refused.
         const backups = await listBackups(target);
         expect(backups).toHaveLength(1);
@@ -1063,6 +1064,76 @@ describe("chats in snapshots and archives", () => {
             rmSync(rootDir, { recursive: true, force: true });
         }
     });
+
+    it("refuses a schema-version-2 database (a root record, before Phase 3) as an archive, as a snapshot, and at startup; a fresh store is version 3", async () => {
+        // Phase 3, slice 6: the `root` kind is gone, so a version-2 file (whose tables are those of
+        // version 3) is refused everywhere a database enters, without touching the live data.
+        const s = await defaultServer();
+        const revision = await s.create("characters", "a", character("a"));
+        const epoch = s.epoch;
+        const live = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"), { readOnly: true });
+        expect(live.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+        live.close();
+
+        const v2 = path.join(s.rootDir, "v2.sqlite");
+        const db = new DatabaseSync(v2);
+        db.exec(`
+            PRAGMA user_version = 2;
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+            CREATE TABLE resources (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, id TEXT NOT NULL,
+                revision INTEGER NOT NULL, schemaVersion INTEGER NOT NULL, data TEXT NOT NULL, UNIQUE (kind, id)) STRICT;
+            ${CHAT_TABLES_SQL}
+            INSERT INTO meta (key, value) VALUES ('epoch', 'e');
+            INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES ('root', 'main', 1, 1, '{"username":"u"}');`);
+        db.close();
+        const bytes = readFileSync(v2);
+
+        const refused = await importArchive(s, archiveOf(bytes, { "assets/x": "X" }));
+        expect(refused.status).toBe(400);
+        expect(await refused.json()).toEqual({ error: "Unsupported resource database version 2" });
+        expect(assetFiles(s)).toEqual([]);
+        expect(await s.readEpoch()).toBe(epoch);
+        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: character("a") });
+
+        const snapshot = "resources-20300101T000000000Z-00000004";
+        writeFileSync(path.join(backupsDir(s), `${snapshot}.sqlite`), bytes);
+        const before = await listBackups(s);
+        expect(before.map((b) => b.id)).toEqual([snapshot]);
+        const rejected = await restore(s, snapshot);
+        expect(rejected.status).toBe(400);
+        expect(await rejected.json()).toEqual({ error: "Unsupported resource database version 2" });
+        expect(await listBackups(s)).toEqual(before);
+        expect(await s.readEpoch()).toBe(epoch);
+        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: character("a") });
+        // The `root` kind is gone: nothing could restore such a record into the live store.
+        const noRoot = await s.readKinds("root");
+        expect(noRoot.status).toBe(400);
+        expect(await noRoot.json()).toEqual({ error: "Unknown resource kind: root" });
+        expect((await s.put("characters", "b", { baseRevision: null, data: character("b") })).status).toBe(200);
+
+        const rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-server-v2-"));
+        try {
+            mkdirSync(path.join(rootDir, "dist"));
+            writeFileSync(path.join(rootDir, "dist", "index.html"), TEST_INDEX_HTML);
+            mkdirSync(path.join(rootDir, "save", "data"), { recursive: true });
+            const file = path.join(rootDir, "save", "data", "resources.sqlite");
+            writeFileSync(file, bytes);
+            expect(() => createTestServer({ rootDir })).toThrow(
+                `${file} holds resource database version 2 (settings in one root record, before Phase 3), which ` +
+                    "this server no longer reads. It is disposable alpha data: move it away or delete it and " +
+                    "restart to begin with an empty database.",
+            );
+            // The file is left as it was: its version and its root record.
+            const untouched = new DatabaseSync(file, { readOnly: true });
+            expect(untouched.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+            expect(untouched.prepare("SELECT kind, id, data FROM resources").all()).toEqual([
+                { kind: "root", id: "main", data: '{"username":"u"}' },
+            ]);
+            untouched.close();
+        } finally {
+            rmSync(rootDir, { recursive: true, force: true });
+        }
+    });
 });
 
 describe("shutdown admission", () => {
@@ -1092,7 +1163,7 @@ describe("shutdown admission", () => {
         expect(assetFiles(s)).toEqual([]);
         // New resource requests, reads included, are refused too; the store stays open only for
         // the operations admitted before shutdown began.
-        const refused = await s.request("/api/resources/root", {}, epoch);
+        const refused = await s.request("/api/resources/ui", {}, epoch);
         expect(refused.status).toBe(503);
         expect(refused.headers.get("retry-after")).toBe("5");
         expect(refused.headers.get("connection")).toBe("close");

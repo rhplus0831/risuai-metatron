@@ -315,9 +315,9 @@ describe("snapshots", () => {
         }
         return file;
     }
-    /** The version-2 layout: `resources`, `meta`, and the chat tables. */
+    /** The version-3 layout: `resources`, `meta`, and the chat tables (the same tables as version 2). */
     const layout = `
-        PRAGMA user_version = 2;
+        PRAGMA user_version = 3;
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
         CREATE TABLE resources (
             seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, id TEXT NOT NULL,
@@ -367,13 +367,13 @@ describe("snapshots", () => {
             ],
             [
                 "version 1 (Phase 1, chats inside characters)",
-                craft(dir, "v1.sqlite", layout.replace("user_version = 2", "user_version = 1")),
+                craft(dir, "v1.sqlite", layout.replace("user_version = 3", "user_version = 1")),
                 new ResourceValidationError("Unsupported resource database version 1"),
             ],
             [
-                "other version",
-                craft(dir, "v3.sqlite", layout.replace("user_version = 2", "user_version = 3")),
-                new ResourceValidationError("Unsupported resource database version 3"),
+                "other version (2: settings in a root record, before Phase 3)",
+                craft(dir, "v2.sqlite", layout.replace("user_version = 3", "user_version = 2")),
+                new ResourceValidationError("Unsupported resource database version 2"),
             ],
             [
                 "view",

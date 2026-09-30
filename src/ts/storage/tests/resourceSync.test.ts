@@ -56,9 +56,8 @@ function character(chaId: string, name: string, extra: Record<string, unknown> =
 async function boot(options: { prepare?: (server: FakeResourceServer) => void; normalize?: (db: any) => void } = {}) {
     vi.resetModules();
     const fake = new FakeResourceServer();
-    // The residual root as the client writes it: `RESIDUAL_ROOT_KEYS` only, in that order (the
-    // preset fields and the selection indexes are forwarded since slice 5, never stored in root).
-    fake.set("root", "main", { username: "u", selectedPersona: 0 });
+    // No `root` record since slice 6: the sections and collections are the records the server
+    // materializes (`materialize` below); the sample singleton edit of these tests is `ui.theme`.
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
@@ -116,17 +115,17 @@ describe("seeding and no echo", () => {
     it("saves the load-time normalization once (the first compare pass) and then stays quiet", async () => {
         const { fake, sync, bootBatches } = await boot({
             normalize: (db) => {
-                // What `setDatabase` adds after seeding: a default of a residual root field (the
-                // persona working copy, until slice 6 forwards it).
-                db.userNote = "";
+                // What a load-time normalization changes after seeding: a section field and a
+                // character field (the server normalizes the sections, so this stands in for it).
+                db.theme = "normalized";
                 db.characters[1].bias = [];
             },
         });
-        expect(fake.data("root", "main").userNote).toBe("");
+        expect(fake.data("ui", "main").theme).toBe("normalized");
         expect(fake.data("characters", "b").bias).toEqual([]);
         expect(fake.data("characters", "a").bias).toBeUndefined();
         expect(bootBatches).toHaveLength(1);
-        expect(bootBatches[0].ops.map((op) => `${op.kind}/${op.id}`).sort()).toEqual(["characters/b", "root/main"]);
+        expect(bootBatches[0].ops.map((op) => `${op.kind}/${op.id}`).sort()).toEqual(["characters/b", "ui/main"]);
         await sync.flushResources();
         expect(fake.batchCount()).toBe(0);
     });
@@ -155,23 +154,23 @@ describe("seeding and no echo", () => {
 });
 
 describe("dirty generations", () => {
-    it("saves a root edit with the seeded revision and records the new one", async () => {
+    it("saves a section edit with the seeded revision and records the new one", async () => {
         const { fake, sync, db } = await boot();
-        const before = fake.get("root", "main")!.revision;
-        db().username = "edited";
+        const before = fake.get("ui", "main")!.revision;
+        db().theme = "edited";
         await sync.flushResources();
         const [batch] = fake.batchBodies();
         expect(batch.ops).toHaveLength(1);
-        expect(batch.ops[0]).toMatchObject({ kind: "root", id: "main", baseRevision: before });
+        expect(batch.ops[0]).toMatchObject({ kind: "ui", id: "main", baseRevision: before });
         expect(batch.ops[0].data).not.toHaveProperty("characters");
         expect(batch.ops[0].data).not.toHaveProperty("botPresets");
-        expect(fake.data("root", "main").username).toBe("edited");
-        const afterFirst = fake.get("root", "main")!.revision;
+        expect(fake.data("ui", "main").theme).toBe("edited");
+        const afterFirst = fake.get("ui", "main")!.revision;
         expect(afterFirst).not.toBe(before);
-        db().username = "edited again";
+        db().theme = "edited again";
         await sync.flushResources();
         expect(fake.batchBodies()[1].ops[0].baseRevision).toBe(afterFirst);
-        expect(fake.data("root", "main").username).toBe("edited again");
+        expect(fake.data("ui", "main").theme).toBe("edited again");
     });
 
     it("watches presets deeply, and only the selected character deeply", async () => {
@@ -193,34 +192,34 @@ describe("dirty generations", () => {
     it("keeps an edit made while its batch is in flight dirty and saves it in the next cycle", async () => {
         const { fake, sync, db } = await boot();
         fake.holdNextBatch = true;
-        db().username = "first";
+        db().theme = "first";
         const flushed = sync.flushResources();
         await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
-        db().username = "second";
+        db().theme = "second";
         await tick();
         fake.releaseBatch!();
         await flushed;
         // The flush covered "first"; "second" was made during the request and goes out on its own.
-        expect(fake.data("root", "main").username).toBe("first");
-        await vi.waitFor(() => expect(fake.data("root", "main").username).toBe("second"), { timeout: 3000 });
+        expect(fake.data("ui", "main").theme).toBe("first");
+        await vi.waitFor(() => expect(fake.data("ui", "main").theme).toBe("second"), { timeout: 3000 });
         expect(fake.batchCount()).toBe(2);
     });
 
     it("flush waits for an edit made before the call even when a later edit replaces its generation", async () => {
         const { fake, sync, db } = await boot();
         fake.holdNextBatch = true;
-        db().username = "barrier-A";
+        db().theme = "barrier-A";
         void sync.flushResources().catch(() => {});
         await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
-        db().username = "barrier-B";
+        db().theme = "barrier-B";
         await tick();
         const flushed = sync.flushResources();
-        db().username = "barrier-C";
+        db().theme = "barrier-C";
         await tick();
         fake.releaseBatch!();
         const result = await flushed;
         expect(result.discarded).toEqual([]);
-        expect(fake.data("root", "main").username).toBe("barrier-C");
+        expect(fake.data("ui", "main").theme).toBe("barrier-C");
     });
 });
 
@@ -240,7 +239,7 @@ describe("membership", () => {
     it("saves a character added while a batch is in flight without another edit", async () => {
         const { fake, sync, db } = await boot();
         fake.holdNextBatch = true;
-        db().username = "in flight";
+        db().theme = "in flight";
         void sync.flushResources().catch(() => {});
         await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
         db().characters.push(character("late", "Late"));
@@ -266,15 +265,15 @@ describe("conflicts", () => {
     it("reloads a record another tab changed, reports the discard, and shows the notice once", async () => {
         const { fake, sync, db, stores } = await boot();
         fake.set("characters", "a", character("a", "Alice from tab B"));
-        fake.set("root", "main", { ...fake.data<Record<string, unknown>>("root", "main")!, username: "remote user" });
+        fake.set("ui", "main", { ...fake.data<Record<string, unknown>>("ui", "main")!, theme: "remote user" });
         stores.selectedCharID.set(0);
         await tick();
         db().characters[0].name = "local edit";
-        db().username = "local user";
+        db().theme = "local user";
         const result = await sync.flushResources();
-        expect(result.discarded.sort()).toEqual(["characters/a", "root/main"]);
+        expect(result.discarded.sort()).toEqual(["characters/a", "ui/main"]);
         expect(db().characters[0].name).toBe("Alice from tab B");
-        expect(db().username).toBe("remote user");
+        expect(db().theme).toBe("remote user");
         expect(fake.data("characters", "a").name).toBe("Alice from tab B");
         expect(alerts.normal).toHaveBeenCalledTimes(1);
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
@@ -284,44 +283,44 @@ describe("conflicts", () => {
         expect(fake.batchCount()).toBe(before);
     });
 
-    it("does not echo a reloaded root whose keys the other tab wrote in another order", async () => {
+    it("does not echo a reloaded section record whose keys the other tab wrote in another order", async () => {
         const { fake, sync, db } = await boot();
-        const reversed = Object.fromEntries(Object.entries(fake.data("root", "main")).reverse());
-        reversed.username = "reordered";
-        fake.set("root", "main", reversed);
-        db().username = "stale";
+        const reversed = Object.fromEntries(Object.entries(fake.data("ui", "main")).reverse());
+        reversed.theme = "reordered";
+        fake.set("ui", "main", reversed);
+        db().theme = "stale";
         const result = await sync.flushResources();
-        expect(result.discarded).toEqual(["root/main"]);
-        expect(db().username).toBe("reordered");
-        const rootBatches = fake.batchBodies().filter((batch) => batch.ops.some((op) => op.kind === "root"));
-        expect(rootBatches).toHaveLength(1);
+        expect(result.discarded).toEqual(["ui/main"]);
+        expect(db().theme).toBe("reordered");
+        const uiBatches = fake.batchBodies().filter((batch) => batch.ops.some((op) => op.kind === "ui"));
+        expect(uiBatches).toHaveLength(1);
         await sync.flushResources();
-        expect(fake.batchBodies().filter((batch) => batch.ops.some((op) => op.kind === "root"))).toHaveLength(1);
+        expect(fake.batchBodies().filter((batch) => batch.ops.some((op) => op.kind === "ui"))).toHaveLength(1);
     });
 
     it("sends the non-conflicting operations of a rejected batch in the next cycle", async () => {
         const { fake, sync, db } = await boot();
-        fake.set("root", "main", { ...fake.data<Record<string, unknown>>("root", "main")!, username: "remote" });
-        db().username = "local";
+        fake.set("ui", "main", { ...fake.data<Record<string, unknown>>("ui", "main")!, theme: "remote" });
+        db().theme = "local";
         db().modules.push({ name: "new module" });
         await sync.flushResources();
         expect(fake.data("modules", "main")).toEqual([{ name: "new module" }]);
-        expect(db().username).toBe("remote");
+        expect(db().theme).toBe("remote");
     });
 
     it("treats a 409 after a lost response as committed when the server holds what was sent", async () => {
         const { fake, sync, db } = await boot();
         fake.dropNextBatchResponse = true;
-        db().username = "committed but unacknowledged";
+        db().theme = "committed but unacknowledged";
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
-        expect(fake.data("root", "main").username).toBe("committed but unacknowledged");
+        expect(fake.data("ui", "main").theme).toBe("committed but unacknowledged");
         const result = await sync.flushResources();
         expect(result.discarded).toEqual([]);
-        expect(db().username).toBe("committed but unacknowledged");
+        expect(db().theme).toBe("committed but unacknowledged");
         expect(alerts.normal).not.toHaveBeenCalled();
-        db().username = "next";
+        db().theme = "next";
         await sync.flushResources();
-        expect(fake.data("root", "main").username).toBe("next");
+        expect(fake.data("ui", "main").theme).toBe("next");
     });
 
     it("removes a character deleted elsewhere and moves the selection home", async () => {
@@ -359,17 +358,17 @@ describe("generation deferral", () => {
         generating = "a";
         fake.set("characters", "a", character("a", "remote name"));
         db().characters[0].name = "local name";
-        db().username = "saved anyway";
+        db().theme = "saved anyway";
         await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
         expect(db().characters[0].name).toBe("local name");
         expect(seen).toEqual([]);
-        // The batch was atomic, so the root edit was rejected with it; the loop saves it on its own,
+        // The batch was atomic, so the section edit was rejected with it; the loop saves it on its own,
         // and later cycles neither write nor delete the deferred character. Every flush is refused
         // while the deferred character still has a pending edit.
-        await vi.waitFor(() => expect(fake.data("root", "main").username).toBe("saved anyway"), { timeout: 3000 });
-        db().username = "another";
+        await vi.waitFor(() => expect(fake.data("ui", "main").theme).toBe("saved anyway"), { timeout: 3000 });
+        db().theme = "another";
         await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
-        await vi.waitFor(() => expect(fake.data("root", "main").username).toBe("another"), { timeout: 3000 });
+        await vi.waitFor(() => expect(fake.data("ui", "main").theme).toBe("another"), { timeout: 3000 });
         expect(fake.data("characters", "a").name).toBe("remote name");
 
         generating = null;
@@ -418,22 +417,22 @@ describe("restore (412) and errors", () => {
     it("halts, alerts, and reloads on a 412 from a batch", async () => {
         const { fake, sync, db } = await boot();
         fake.restore("epoch-2");
-        db().username = "after restore";
+        db().theme = "after restore";
         await expect(sync.flushResources()).rejects.toThrow();
         expect(alerts.normalWait).toHaveBeenCalledWith("restored");
         await vi.waitFor(() => expect((location as any).reload).toHaveBeenCalled());
-        expect(fake.data("root", "main").username).toBe("u");
+        expect(fake.data("ui", "main").theme).toBe("");
         await expect(sync.flushResources()).rejects.toThrow(/restored/);
     });
 
     it("halts when a conflict read answers with another epoch", async () => {
         const { fake, sync, db } = await boot();
-        fake.set("root", "main", { ...fake.data<Record<string, unknown>>("root", "main")!, username: "remote" });
+        fake.set("ui", "main", { ...fake.data<Record<string, unknown>>("ui", "main")!, theme: "remote" });
         fake.readEpoch = "epoch-from-a-restore";
-        db().username = "local";
+        db().theme = "local";
         await expect(sync.flushResources()).rejects.toThrow();
         expect(alerts.normalWait).toHaveBeenCalledWith("restored");
-        expect(db().username).toBe("local");
+        expect(db().theme).toBe("local");
     });
 
     it("halts when any other resource request hits a 412 (the transport listener)", async () => {
@@ -443,7 +442,7 @@ describe("restore (412) and errors", () => {
             client.putResource("inlays", "x", { name: "x", ext: "json", type: "signature" }, null),
         ).rejects.toBeInstanceOf(client.ResourceEpochMismatchError);
         expect(alerts.normalWait).toHaveBeenCalledWith("restored");
-        db().username = "never saved";
+        db().theme = "never saved";
         await expect(sync.flushResources()).rejects.toThrow(/restored/);
         expect(fake.batchCount()).toBe(0);
     });
@@ -451,7 +450,7 @@ describe("restore (412) and errors", () => {
     it("quarantines a record the server refuses as too large, keeps saving the rest, and retries it once it changes", async () => {
         const { fake, sync, db } = await boot();
         fake.maxBodyBytes = 200;
-        db().username = "x".repeat(300);
+        db().theme = "x".repeat(300);
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 413 });
         expect(alerts.error).toHaveBeenCalledTimes(1);
         await vi.advanceTimersByTimeAsync(1200);
@@ -473,9 +472,9 @@ describe("restore (412) and errors", () => {
         ).toEqual(["presets"]);
         expect(fake.batchCount()).toBe(2);
         fake.maxBodyBytes = Infinity;
-        db().username = "small again";
+        db().theme = "small again";
         await sync.flushResources();
-        expect(fake.data("root", "main").username).toBe("small again");
+        expect(fake.data("ui", "main").theme).toBe("small again");
         expect(alerts.error).toHaveBeenCalledTimes(1);
     });
 
@@ -483,17 +482,17 @@ describe("restore (412) and errors", () => {
         const { fake, sync, db } = await boot();
         fake.failNext = {
             status: 400,
-            body: { error: "ops[0]: root main: username must be a string" },
+            body: { error: "ops[0]: ui main: theme must be a string" },
             times: 1,
             match: (path) => path === "/api/resources/batch",
         };
-        db().username = "refused";
+        db().theme = "refused";
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 400 });
         expect(alerts.error).toHaveBeenCalledTimes(1);
         // Not resent while unchanged, even though the server would now accept it.
         await vi.advanceTimersByTimeAsync(3000);
         expect(fake.batchCount()).toBe(1);
-        expect(fake.data("root", "main").username).toBe("u");
+        expect(fake.data("ui", "main").theme).toBe("");
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 400 });
         expect(alerts.error).toHaveBeenCalledTimes(1);
         // Another record saves on its own, without the refused one.
@@ -507,20 +506,20 @@ describe("restore (412) and errors", () => {
                 .ops.map((op) => op.kind),
         ).toEqual(["presets"]);
         // A change to the refused record retries it.
-        db().username = "repaired";
+        db().theme = "repaired";
         await sync.flushResources();
-        expect(fake.data("root", "main").username).toBe("repaired");
+        expect(fake.data("ui", "main").theme).toBe("repaired");
         expect(alerts.error).toHaveBeenCalledTimes(1);
     });
 
     it("keeps everything dirty through a retryable failure and saves once the server answers", async () => {
         const { fake, sync, db } = await boot();
         fake.failNext = { status: 503, times: 1 };
-        db().username = "retry me";
+        db().theme = "retry me";
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 503 });
         expect(alerts.error).not.toHaveBeenCalled();
         await sync.flushResources();
-        expect(fake.data("root", "main").username).toBe("retry me");
+        expect(fake.data("ui", "main").theme).toBe("retry me");
     });
 });
 

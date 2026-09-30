@@ -42,9 +42,8 @@ type Bootstrap = typeof import("../../bootstrap");
 async function boot() {
     vi.resetModules();
     const fake = new FakeResourceServer();
-    // The residual root as the client writes it (`RESIDUAL_ROOT_KEYS` only); the sections and
-    // collections are the records the server materializes.
-    fake.set("root", "main", { username: "u", botPresetsId: 0 });
+    // No `root` record since slice 6: the sections and collections are the records the server
+    // materializes; the sample edit is `ui.theme`.
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
@@ -92,7 +91,7 @@ describe("page lifecycle", () => {
     it("saves at once when the page is hidden, and warns before unload only while work is unsaved", async () => {
         const { fake, db } = await boot();
         expect(warns()).toBe(false);
-        db().username = "hidden";
+        db().theme = "hidden";
         await tick();
         expect(warns()).toBe(true);
         expect(fake.batchCount()).toBe(0);
@@ -108,7 +107,7 @@ describe("page lifecycle", () => {
             delete (document as any).visibilityState;
         }
         expect(fake.batchCount()).toBe(1);
-        expect(fake.data("root", "main").username).toBe("hidden");
+        expect(fake.data("ui", "main").theme).toBe("hidden");
         expect(warns()).toBe(false);
     });
 });

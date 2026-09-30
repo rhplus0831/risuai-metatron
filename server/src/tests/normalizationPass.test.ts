@@ -288,15 +288,17 @@ describe("the pass at startup", () => {
 });
 
 describe("the pass inside replaceAll", () => {
-    const rootKind = defaults.get("root")!;
+    // `pluginStorage` stands in for the pre-Phase 3 `root` (removed in slice 6): a Phase 1 singleton the
+    // store does not materialize, whose normalizer keeps the input unchanged.
+    const pluginStorage = defaults.get("pluginStorage")!;
     const characters = defaults.get("characters")!;
-    /** A pre-slice-3 store: only `root` and `characters` exist, nothing is materialized. */
-    const phase1 = createKindRegistry([rootKind, characters]);
+    /** A pre-slice-3 store: only `pluginStorage` and `characters` exist, nothing is materialized. */
+    const phase1 = createKindRegistry([pluginStorage, characters]);
 
-    it("materializes the kinds a snapshot lacks, with the new epoch, and does not fill them from root", async () => {
+    it("materializes the kinds a snapshot lacks, with the new epoch, and does not fill them from another record", async () => {
         const dir = tempDir();
         const old = open(path.join(dir, "old.sqlite"), phase1);
-        old.put(rootKind, "main", { zoomsize: 150, username: "u" }, null);
+        old.put(pluginStorage, "main", { zoomsize: 150, username: "u" }, null);
         old.put(characters, "c", { chaId: "c", name: "C" }, null);
         const snapshotFile = path.join(dir, "old-backup.sqlite");
         await old.backupTo(snapshotFile);
@@ -304,17 +306,17 @@ describe("the pass inside replaceAll", () => {
         const store = open(path.join(dir, "resources.sqlite"));
         const before = observe(store);
         const snapshot = store.readSnapshot(snapshotFile);
-        expect(snapshot.rows.map((row) => `${row.kind}/${row.id}`)).toEqual(["root/main", "characters/c"]);
+        expect(snapshot.rows.map((row) => `${row.kind}/${row.id}`)).toEqual(["pluginStorage/main", "characters/c"]);
         const epoch = store.replaceAll(snapshot);
         expect(epoch).not.toBe(before.epoch);
 
         const after = observe(store);
         expect(after.epoch).toBe(epoch);
         // A restored row keeps its revision counter under a fresh incarnation (`seq`) and the new epoch.
-        expect(after.kinds.root).toEqual([
+        expect(after.kinds.pluginStorage).toEqual([
             { id: "main", revision: expect.any(String), data: { zoomsize: 150, username: "u" } },
         ]);
-        expect(parseToken(after.kinds.root[0].revision)).toMatchObject({ epoch, revision: 1 });
+        expect(parseToken(after.kinds.pluginStorage[0].revision)).toMatchObject({ epoch, revision: 1 });
         expect(after.kinds.characters).toEqual([
             { id: "c", revision: expect.any(String), data: { chaId: "c", name: "C" } },
         ]);
@@ -327,7 +329,7 @@ describe("the pass inside replaceAll", () => {
                 JSON.stringify(record.data),
             );
         }
-        // The section starts from the defaults; the old root value is not carried over (recorded behavior).
+        // The section starts from the defaults; the value another record holds is not carried over.
         expect(after.kinds.ui[0].data).toMatchObject({ zoomsize: 100 });
         expect(after.kinds.presets[0].data).toEqual([expect.objectContaining({ name: "New Preset" })]);
         // The ids materialization generated are the ones every later restart sees.
@@ -379,7 +381,7 @@ describe("the pass inside replaceAll", () => {
     it("rolls the whole restore back when the pass fails: data, epoch, and write count stay, and the store keeps working", async () => {
         const dir = tempDir();
         const old = open(path.join(dir, "old.sqlite"), phase1);
-        old.put(rootKind, "main", { zoomsize: 150 }, null);
+        old.put(pluginStorage, "main", { zoomsize: 150 }, null);
         const snapshotFile = path.join(dir, "old-backup.sqlite");
         await old.backupTo(snapshotFile);
 
@@ -401,7 +403,7 @@ describe("the pass inside replaceAll", () => {
         const store = open(path.join(dir, "resources.sqlite"), kinds);
         opened = true;
         const all = [...kinds.values()];
-        store.put(rootKind, "main", { zoomsize: 90 }, null);
+        store.put(pluginStorage, "main", { zoomsize: 90 }, null);
         const before = observe(store, all);
         const writes = store.writeCount();
 
@@ -411,9 +413,9 @@ describe("the pass inside replaceAll", () => {
         expect(store.writeCount()).toBe(writes);
         expect(observe(store, all)).toEqual(before);
         // No transaction is left open: an ordinary write commits, and the file agrees.
-        const written = store.put(rootKind, "main", { zoomsize: 95 }, before.kinds.root[0].revision);
-        expect(written.revision).toBe(before.kinds.root[0].revision.replace(/:1$/, ":2"));
-        expect(rawRows(path.join(dir, "resources.sqlite")).find((row) => row.kind === "root")!.data).toBe(
+        const written = store.put(pluginStorage, "main", { zoomsize: 95 }, before.kinds.pluginStorage[0].revision);
+        expect(written.revision).toBe(before.kinds.pluginStorage[0].revision.replace(/:1$/, ":2"));
+        expect(rawRows(path.join(dir, "resources.sqlite")).find((row) => row.kind === "pluginStorage")!.data).toBe(
             '{"zoomsize":95}',
         );
     });

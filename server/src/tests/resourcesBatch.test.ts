@@ -38,8 +38,9 @@ describe("POST /api/resources/batch", () => {
         const s = await defaultServer();
         // `presets/main` is materialized (slice 3), so the batch writes over it with its current revision.
         const presets = ((await (await s.get("presets", "main")).json()) as { revision: string }).revision;
+        // `pluginStorage`: a singleton the store does not materialize, so the batch creates it.
         const created = await s.batch([
-            create("root", "main", { username: "u" }),
+            create("pluginStorage", "main", { note: "u" }),
             { kind: "presets", id: "main", baseRevision: presets, data: [{ name: "p" }] },
             create("characters", "b", character("b")),
             create("characters", "a", character("a")),
@@ -49,7 +50,7 @@ describe("POST /api/resources/batch", () => {
         const result = (await created.json()) as BatchResult;
         expect(result.epoch).toBe(s.epoch);
         expect(result.results.map((r) => `${r.kind}/${r.id}`)).toEqual([
-            "root/main",
+            "pluginStorage/main",
             "presets/main",
             "characters/b",
             "characters/a",
@@ -66,7 +67,12 @@ describe("POST /api/resources/batch", () => {
             { kind: "characters", id: "a", baseRevision: tokens["characters/a"], data: character("a", { name: "A" }) },
             { kind: "characters", id: "b", baseRevision: tokens["characters/b"], delete: true },
             create("characters", "c", character("c")),
-            { kind: "root", id: "main", baseRevision: tokens["root/main"], data: { username: "v" } },
+            {
+                kind: "pluginStorage",
+                id: "main",
+                baseRevision: tokens["pluginStorage/main"],
+                data: { note: "v" },
+            },
         ]);
         expect(mixed.status).toBe(200);
         const second = (await mixed.json()) as BatchResult;
@@ -74,11 +80,11 @@ describe("POST /api/resources/batch", () => {
             { kind: "characters", id: "a", revision: tokens["characters/a"].replace(/:1$/, ":2") },
             { kind: "characters", id: "b", revision: null },
             { kind: "characters", id: "c", revision: expect.stringMatching(/:1$/) },
-            { kind: "root", id: "main", revision: tokens["root/main"].replace(/:1$/, ":2") },
+            { kind: "pluginStorage", id: "main", revision: tokens["pluginStorage/main"].replace(/:1$/, ":2") },
         ]);
-        const state = (await (await s.readKinds("root,characters,presets")).json()) as ReadKinds;
-        expect(state.kinds.root).toEqual([
-            { id: "main", revision: second.results[3].revision, data: { username: "v" } },
+        const state = (await (await s.readKinds("pluginStorage,characters,presets")).json()) as ReadKinds;
+        expect(state.kinds.pluginStorage).toEqual([
+            { id: "main", revision: second.results[3].revision, data: { note: "v" } },
         ]);
         expect(state.kinds.characters.map((c) => [c.id, c.data])).toEqual([
             ["a", character("a", { name: "A" })],
@@ -155,7 +161,7 @@ describe("POST /api/resources/batch", () => {
                 [{ kind: "characters", id: "x", baseRevision: null, delete: true }],
                 "ops[0]: a deletion is { delete: true } with a string baseRevision",
             ],
-            ["singleton id", [create("root", "other", {})], "ops[0]: root has only the record main"],
+            ["singleton id", [create("pluginStorage", "other", {})], "ops[0]: pluginStorage has only the record main"],
             [
                 "singleton delete",
                 [{ kind: "presets", id: "main", baseRevision: "t", delete: true }],
@@ -166,11 +172,7 @@ describe("POST /api/resources/batch", () => {
                 [create("characters", "x", { chaId: "y" })],
                 "ops[0]: character.chaId must equal the resource id",
             ],
-            [
-                "root excluded key",
-                [create("root", "main", { characters: [] })],
-                "ops[0]: root must not hold characters",
-            ],
+            ["singleton normalizer", [create("pluginStorage", "main", [])], "ops[0]: pluginStorage must be an object"],
             [
                 "later op",
                 [create("characters", "ok", character("ok")), create("characters", "bad", { chaId: "bad", chats: [] })],
@@ -197,11 +199,11 @@ describe("POST /api/resources/batch", () => {
             expect(res.status, label).toBe(400);
             expect(await res.json(), label).toEqual({ error });
         }
-        // Nothing was applied: no root or character record, and `presets/main` is still the materialized
-        // default preset at its first revision (slice 3).
-        const state = (await (await s.readKinds("root,characters,presets")).json()) as ReadKinds;
+        // Nothing was applied: no pluginStorage or character record, and `presets/main` is still the
+        // materialized default preset at its first revision (slice 3).
+        const state = (await (await s.readKinds("pluginStorage,characters,presets")).json()) as ReadKinds;
         expect(state.epoch).toBe(s.epoch);
-        expect(state.kinds.root).toEqual([]);
+        expect(state.kinds.pluginStorage).toEqual([]);
         expect(state.kinds.characters).toEqual([]);
         expect(state.kinds.presets).toMatchObject([
             { id: "main", revision: expect.stringMatching(/:1$/), data: [{ name: "New Preset" }] },
@@ -223,19 +225,21 @@ describe("multi-kind and ref reads", () => {
         const s = await defaultServer();
         await s.create("characters", "b", character("b"));
         await s.create("characters", "a", character("a"));
-        const res = await s.readKinds("characters,root,,characters,");
+        const res = await s.readKinds("characters,pluginStorage,,characters,");
         expect(res.status).toBe(200);
         const body = (await res.json()) as ReadKinds;
-        expect(Object.keys(body.kinds)).toEqual(["characters", "root"]);
+        expect(Object.keys(body.kinds)).toEqual(["characters", "pluginStorage"]);
         expect(body.epoch).toBe(s.epoch);
         expect(body.kinds.characters.map((c) => c.id)).toEqual(["b", "a"]);
-        expect(body.kinds.root).toEqual([]);
+        expect(body.kinds.pluginStorage).toEqual([]);
 
         for (const [query, error] of [
             ["", "kinds query parameter required"],
             [",", "kinds query parameter required"],
             ["characters,nope", "Unknown resource kind: nope"],
-            ["Root", "Unknown resource kind: Root"],
+            ["Characters", "Unknown resource kind: Characters"],
+            // The `root` kind is gone (slice 6): a read of it is refused like any unknown kind.
+            ["root", "Unknown resource kind: root"],
             ["batch", "Unknown resource kind: batch"],
         ]) {
             const bad = await s.readKinds(query);
@@ -248,11 +252,11 @@ describe("multi-kind and ref reads", () => {
     it("reads named records in one call, with null revision and data for a missing one", async () => {
         const s = await defaultServer();
         const a = await s.create("characters", "a", character("a"));
-        const root = await s.create("root", "main", { username: "u" });
+        const storage = await s.create("pluginStorage", "main", { note: "u" });
         const res = await s.readRefs([
             { kind: "characters", id: "a" },
             { kind: "characters", id: "gone" },
-            { kind: "root", id: "main" },
+            { kind: "pluginStorage", id: "main" },
             { kind: "characters", id: "a" },
         ]);
         expect(res.status).toBe(200);
@@ -261,7 +265,7 @@ describe("multi-kind and ref reads", () => {
             items: [
                 { kind: "characters", id: "a", revision: a, data: character("a") },
                 { kind: "characters", id: "gone", revision: null, data: null },
-                { kind: "root", id: "main", revision: root, data: { username: "u" } },
+                { kind: "pluginStorage", id: "main", revision: storage, data: { note: "u" } },
                 { kind: "characters", id: "a", revision: a, data: character("a") },
             ],
             chats: [],
@@ -286,7 +290,11 @@ describe("multi-kind and ref reads", () => {
                 "refs[1] must name a known kind and a valid id",
             ],
             ["not an object", { refs: ["characters/a"] }, "refs[0] must name a known kind and a valid id"],
-            ["singleton id", { refs: [{ kind: "root", id: "other" }] }, "root has only the record main"],
+            [
+                "singleton id",
+                { refs: [{ kind: "pluginStorage", id: "other" }] },
+                "pluginStorage has only the record main",
+            ],
         ] as [string, unknown, string][]) {
             const bad = await s.json("/api/resources/read", body);
             expect(bad.status, label).toBe(400);

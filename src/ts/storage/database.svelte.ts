@@ -14,6 +14,7 @@ import {
     plainClone,
     presetTemplate,
 } from "../../../shared/presets.ts";
+import { normalizePersonas } from "../../../shared/personas.ts";
 import { safeStructuredClone } from "../polyfill";
 import { markCharacterDirtyAt } from "./resourceSync.svelte";
 import { installForwarding, reconcileSelection, selectedPreset, selectedPresetForWrite } from "./forwarding.svelte";
@@ -31,11 +32,10 @@ export type { DeepReadonly } from "../../../shared/readonly.ts";
 
 /**
  * Installs `data` as `DBState.db` after the client-side defaults that remain: the Phase 1
- * collection guards, the removed-feature deletions, and the residual `root` fields
- * (`RESIDUAL_ROOT_KEYS`: the persona working copy and `selectedPersona`, until slice 6 of Phase 3
- * forwards them). The sections, the small collections, and the presets arrive normalized by the
- * server (`server/src/data/normalize/`), which owns their defaults; the preset fields of the old
- * working copy are forwarded to the selected preset (`forwarding.svelte.ts`).
+ * collection guards, the removed-feature deletions, and the preset and persona backstops (the
+ * shared normalizers the server also runs). The sections, the small collections, and the presets
+ * arrive normalized by the server (`server/src/data/normalize/`), which owns their defaults; the
+ * flat preset and persona fields and the selection indexes are forwarded (`forwarding.svelte.ts`).
  */
 export function setDatabase(data: Database) {
     // Risu Account was removed; drop the login token older saves still carry.
@@ -50,15 +50,6 @@ export function setDatabase(data: Database) {
     if (checkNullish(data.characters)) {
         data.characters = [];
     }
-    if (checkNullish(data.username)) {
-        data.username = "User";
-    }
-    if (checkNullish(data.userIcon)) {
-        data.userIcon = "";
-    }
-    if (checkNullish(data.userNote)) {
-        data.userNote = "";
-    }
     if (checkNullish(data.plugins)) {
         data.plugins = [];
     }
@@ -66,8 +57,8 @@ export function setDatabase(data: Database) {
     // the server normalizes too). An empty list becomes one default preset. A plain copy goes in:
     // the shared normalizer never receives a proxy.
     data.botPresets = normalizePresets(plainClone(data.botPresets));
-    data.selectedPersona ??= 0;
-    data.personaPrompt ??= "";
+    // The same contract as the server's: never empty, the four persona fields strings, unique ids.
+    data.personas = normalizePersonas(plainClone(data.personas));
     data.modules ??= [];
 
     changeLanguage(data.language);

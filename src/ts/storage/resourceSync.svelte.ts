@@ -14,7 +14,6 @@ import {
     COLLECTION_KIND,
     COLLECTION_SELECTION_FIELDS,
     type CollectionKind,
-    RESIDUAL_ROOT_KEYS,
     SECTION_FIELDS,
     SECTION_KIND,
     type SectionKind,
@@ -76,14 +75,14 @@ import {
 
 /**
  * The write adapter of PLAN invariant 2: `DBState.db` stays the live model, and this module writes
- * it back to the server resources per collection: the residual `root` (`RESIDUAL_ROOT_KEYS`), the
+ * it back to the server resources per collection: the
  * Phase 3 sections and collections (`shared/sections.ts`; `llmSecrets` also carries
  * `llmSecretPresets`), `presets`, `modules`, `plugins`, `pluginStorage`, and one `characters`
  * record per `chaId`. Chats are not part of a
  * character record (Phase 2): the chat module (`chatStore.svelte.ts`) queues explicit chat
  * operations, and each cycle sends them in the same batch, after the resource ops.
  *
- * - Watchers mark collections dirty (the selected character, the root fields, and so on); writers
+ * - Watchers mark collections dirty (the selected character, each section, and so on); writers
  *   that change a character while it is not selected call `markCharactersDirty`.
  * - A cycle serializes each dirty collection and skips it when the text equals what the server
  *   holds (`persisted`), so hydration and no-op re-renders never become writes. Character membership
@@ -99,7 +98,7 @@ import {
  */
 
 type Phase1Collection = "presets" | "modules" | "plugins" | "pluginStorage";
-type Collection = "root" | Phase1Collection | SectionKind | CollectionKind;
+type Collection = Phase1Collection | SectionKind | CollectionKind;
 
 const COLLECTION_FIELDS = {
     presets: "botPresets",
@@ -111,7 +110,6 @@ const COLLECTION_FIELDS = {
 const SECTIONS: readonly SectionKind[] = Object.values(SECTION_KIND);
 const SETTINGS_COLLECTIONS: readonly CollectionKind[] = Object.values(COLLECTION_KIND);
 const COLLECTIONS: readonly Collection[] = [
-    "root",
     "presets",
     "modules",
     "plugins",
@@ -331,13 +329,6 @@ function schedule(delay = DEBOUNCE_MS) {
 function projectCollection(collection: Collection): string | undefined {
     const db = DBState.db;
     const fields = db as unknown as Record<string, unknown>;
-    if (collection === "root") {
-        const root: Record<string, unknown> = {};
-        for (const key of RESIDUAL_ROOT_KEYS) {
-            root[key] = $state.snapshot(fields[key]);
-        }
-        return JSON.stringify(root);
-    }
     if (isSection(collection)) {
         const record: Record<string, unknown> = {};
         for (const field of SECTION_FIELDS[collection]) {
@@ -1115,12 +1106,6 @@ function applyToMirror(kind: string, id: string, data: unknown) {
         return;
     }
     switch (kind) {
-        case RESOURCE_KIND.root: {
-            if (data !== null) {
-                replaceFields(RESIDUAL_ROOT_KEYS, data as Record<string, unknown>);
-            }
-            return;
-        }
         case RESOURCE_KIND.presets:
         case RESOURCE_KIND.modules:
         case RESOURCE_KIND.plugins:
@@ -1354,9 +1339,9 @@ export function startResourceSync() {
             $state.snapshot(DBState.db.pluginCustomStorage);
             markKey(collectionKey("pluginStorage"));
         });
-        // The residual root, each section, and each settings collection: the projection reads exactly
-        // the fields the record holds, so an edit marks only its own record.
-        for (const collection of ["root", ...SECTIONS, ...SETTINGS_COLLECTIONS] as const) {
+        // Each section and each settings collection: the projection reads exactly the fields the record
+        // holds, so an edit marks only its own record.
+        for (const collection of [...SECTIONS, ...SETTINGS_COLLECTIONS] as const) {
             $effect(() => {
                 projectCollection(collection);
                 markKey(collectionKey(collection));

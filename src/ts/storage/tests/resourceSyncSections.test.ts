@@ -3,15 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import { newPersonaId } from "../../../../shared/presets.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
-import { COLLECTION_KIND, RESIDUAL_ROOT_KEYS, SECTION_FIELDS, SECTION_KIND } from "../../../../shared/sections.ts";
+import { COLLECTION_KIND, PERSONA_ROOT_KEYS, SECTION_FIELDS, SECTION_KIND } from "../../../../shared/sections.ts";
 import { createTranslatorPreset } from "../../../../shared/translatorPresets.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
 import { materialize, serverNormalizer } from "./serverKinds";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // Phase 3, slice 4 (`docs/plan/phases/slices/phase-3-settings-sections/client-section-mirrors.md`):
-// the client mirrors of the five sections, the thirteen settings collections, and the residual
-// `root`. Every boot here runs the real `loadData` sequence for the data: `readKinds`, `seedResources`,
+// the client mirrors of the five sections and the thirteen settings collections (the residual `root`
+// went in slice 6). Every boot here runs the real `loadData` sequence for the data: `readKinds`, `seedResources`,
 // `assembleDatabase`, the real `setDatabase`, then the adapter's boot compare pass. The convergence
 // rule of the implementation plan (A12) is the central contract: for every kind,
 // `normalize(project(assemble(normalized)))` equals `normalized` as text, so an unchanged record is
@@ -98,15 +98,11 @@ async function boot<S extends Server>(fake: S) {
 }
 
 /**
- * A fake with every materialized kind and the Phase 1 records a normal store holds. The default root
- * holds one residual key; `setDatabase` fills the other `RESIDUAL_ROOT_KEYS` and the boot pass
- * writes them once (the preset fields and the selection indexes are forwarded since slice 5).
+ * A fake with every materialized kind and the Phase 1 records a normal store holds. There is no
+ * `root` record (slice 6): the preset and persona fields and the selection indexes are forwarded.
  */
-async function fakeStore(root: Record<string, unknown> | null = { username: "u" }) {
+async function fakeStore() {
     const fake = new FakeResourceServer();
-    if (root) {
-        fake.set("root", "main", root);
-    }
     // As the server stores a preset list: normalized, so `setDatabase`'s `normalizePresets` is a no-op.
     fake.set("presets", "main", (await serverNormalizer("presets"))([{ id: "preset-1", name: "p1" }]));
     fake.set("modules", "main", []);
@@ -218,13 +214,13 @@ afterEach(() => {
 });
 
 describe("fixed point and no echo (the convergence rule) on the real server store", () => {
-    it("writes only root, modules, and plugins on a first boot from a fresh store, and nothing on the next", async () => {
+    it("writes only modules and plugins on a first boot from a fresh store, and nothing on the next", async () => {
         const store = await StoreBackedServer.create();
         try {
             const first = await boot(store);
             // The server materialized every section, collection, and `presets`; the client's
-            // defaults create the residual root and the two Phase 1 lists `setDatabase` fills.
-            expect(opKinds(first.bootBatches).sort()).toEqual(["modules", "plugins", "root"]);
+            // defaults create only the two Phase 1 lists `setDatabase` fills (no `root` since slice 6).
+            expect(opKinds(first.bootBatches).sort()).toEqual(["modules", "plugins"]);
             expect(first.bootBatches.flatMap((batch) => batch.ops).every((op) => op.baseRevision === null)).toBe(true);
             for (const kind of [...Object.values(SECTION_KIND), ...Object.values(COLLECTION_KIND), "presets"]) {
                 expect(store.record(kind, "main"), kind).not.toBeNull();
@@ -245,7 +241,7 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
                 store.set(kind, "main", data);
             }
             const { bootBatches, db, secrets, sync } = await boot(store);
-            expect(opKinds(bootBatches).sort()).toEqual(["modules", "plugins", "root"]);
+            expect(opKinds(bootBatches).sort()).toEqual(["modules", "plugins"]);
             // The mirror shows the stored values, own `__proto__` keys included.
             expect(db().loreBookToken).toBe(1234);
             expect(db().zoomsize).toBe(111);
@@ -265,6 +261,57 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             expect(secrets.getPresetSecret("preset-1")).toEqual({ proxyKey: "p1" });
             await sync.flushResources();
             expect(store.batchCount()).toBe(0);
+        } finally {
+            store.close();
+        }
+    });
+
+    it("writes nothing on a boot from a store whose personas hold appended defaults, unknown fields, an own __proto__ key, and a repaired duplicate id", async () => {
+        // Slice 6: `normalizePersonas` (`shared/personas.ts`) runs on the server (at `set`) and in
+        // `setDatabase`; the persona fixed point is what keeps an idle boot write-free.
+        const store = await StoreBackedServer.create();
+        try {
+            store.set("personas", "main", [
+                json('{"id":"persona-1","name":"A","extra":{"deep":true},"__proto__":{"polluted":true}}'),
+                { id: "persona-1", name: "dup", icon: "i", personaPrompt: "p", note: "n", embeddedModule: { id: "m" } },
+                { name: "no id", note: 5 },
+            ]);
+            const stored = store.record("personas", "main")!.data as Record<string, any>[];
+            const storedText = JSON.stringify(stored);
+            expect(stored.map((persona) => persona.name)).toEqual(["A", "dup", "no id"]);
+            expect(Object.keys(stored[0])).toEqual([
+                "id",
+                "name",
+                "extra",
+                "__proto__",
+                "icon",
+                "personaPrompt",
+                "note",
+            ]);
+            expect(stored[1].id).not.toBe("persona-1");
+            expect(new Set(stored.map((persona) => persona.id)).size).toBe(3);
+            expect(stored[2]).toMatchObject({ name: "no id", note: "", icon: "", personaPrompt: "" });
+            expect(Object.hasOwn(Object.prototype, "polluted")).toBe(false);
+
+            const first = await boot(store);
+            expect(opKinds(first.bootBatches).sort()).toEqual(["modules", "plugins"]);
+            expect(first.db().personas.map((persona: any) => persona.id)).toEqual(stored.map((persona) => persona.id));
+            expect(first.db().personas[0].extra).toEqual({ deep: true });
+            expect(Object.hasOwn(plain(first.db().personas[0]), "__proto__")).toBe(true);
+            expect(first.db().personas[1].embeddedModule).toEqual({ id: "m" });
+            expect(first.db().username).toBe("A");
+            expect(first.db().userNote).toBe("");
+            await first.sync.flushResources();
+            expect(store.batchCount()).toBe(0);
+            expect(JSON.stringify(store.record("personas", "main")!.data)).toBe(storedText);
+
+            // The repaired ids are stable: the next boot sees the same ones and writes nothing.
+            const second = await boot(store);
+            expect(second.bootBatches).toEqual([]);
+            expect(second.db().personas.map((persona: any) => persona.id)).toEqual(stored.map((persona) => persona.id));
+            await second.sync.flushResources();
+            expect(store.batchCount()).toBe(0);
+            expect(JSON.stringify(store.record("personas", "main")!.data)).toBe(storedText);
         } finally {
             store.close();
         }
@@ -309,15 +356,17 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             db.statics.messages += 1;
             db.globalscript.push({ comment: "s2", type: "editoutput", in: "c", out: "d", flag: "" });
             db.customSidebarItems.push({ name: "item 2" });
+            // Forwarded fields (slices 5 and 6): the edits go to the selected (first) persona and
+            // preset records; nothing is written under a root.
             db.username = "u2";
-            // A forwarded field: the edit goes to the selected (first) preset, not to root.
             db.temperature = 42;
             db.botPresets[0].name = "P2";
             await first.sync.flushResources();
             const written = opKinds(store.batchBodies());
-            for (const kind of [...Object.values(SECTION_KIND), ...Object.values(COLLECTION_KIND), "presets", "root"]) {
+            for (const kind of [...Object.values(SECTION_KIND), ...Object.values(COLLECTION_KIND), "presets"]) {
                 expect(written, kind).toContain(kind);
             }
+            expect(written).not.toContain("root");
             // The store holds the edits, normalized by the server (its idempotence is proven by the
             // server tests; here the client's text was already canonical for the rebuilt items).
             const translator = store.record("translatorPresets", "main")!.data;
@@ -329,9 +378,8 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             expect(store.record("statics", "main")!.data).toEqual({ messages: 4, imports: 0 });
             expect(Object.hasOwn(store.record("llmSecrets", "main")!.data.presets, "__proto__")).toBe(true);
             expect(store.record("llmSecrets", "main")!.data.presets.__proto__).toEqual({ proxyKey: "proto2" });
-            expect(store.record("root", "main")!.data.username).toBe("u2");
-            expect(store.record("root", "main")!.data).not.toHaveProperty("temperature");
-            expect(store.record("root", "main")!.data).not.toHaveProperty("zoomsize");
+            expect(store.record("personas", "main")!.data[0].name).toBe("u2");
+            expect(store.record("personas", "main")!.data[0]).not.toHaveProperty("username");
             expect(store.record("presets", "main")!.data[0]).toMatchObject({ name: "P2", temperature: 42 });
 
             const second = await boot(store);
@@ -352,8 +400,8 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
 });
 
 describe("assembleDatabase", () => {
-    it("takes the residual keys from root, every section field, the collections unpacked, and the secret map", async () => {
-        const fake = await fakeStore({ username: "u", botPresetsId: 1, zoomsize: 5, language: "ko", formatversion: 5 });
+    it("takes every section field, the collections unpacked, and the secret map, and assembles no forwarded field", async () => {
+        const fake = await fakeStore();
         fake.set("llmSecrets", "main", {
             ...fake.data<Record<string, unknown>>("llmSecrets", "main")!,
             presets: json('{"p":{"proxyKey":"x"},"__proto__":{"proxyKey":"y"}}'),
@@ -362,14 +410,14 @@ describe("assembleDatabase", () => {
         const { client, bootstrap, secrets } = await fresh(fake);
         const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
         const db = bootstrap.assembleDatabase(snapshot) as any;
-        // Root keys outside `RESIDUAL_ROOT_KEYS` are ignored (`botPresetsId` is a per-client
-        // selection since slice 5, served by the forwarding layer, not assembled); a section wins
-        // for its own field.
-        expect(db.username).toBe("u");
+        // The forwarded fields (the preset and persona working copies, the selection indexes) are
+        // served by the forwarding layer, not assembled; a section's own fields come from its record.
+        expect(db).not.toHaveProperty("username");
+        expect(db).not.toHaveProperty("selectedPersona");
         expect(db).not.toHaveProperty("botPresetsId");
+        expect(db).not.toHaveProperty("temperature");
         expect(db.zoomsize).toBe(100);
         expect(db.language).toBe("en");
-        expect(db).not.toHaveProperty("formatversion");
         for (const [section, fields] of Object.entries(SECTION_FIELDS)) {
             const record = fake.data<Record<string, unknown>>(section, "main")!;
             for (const field of fields) {
@@ -401,7 +449,7 @@ describe("assembleDatabase", () => {
     });
 
     it("leaves the optional Phase 1 collections absent when the server has no record, and defaults nothing else", async () => {
-        const fake = await fakeStore(null);
+        const fake = await fakeStore();
         fake.delete("modules", "main");
         fake.delete("plugins", "main");
         fake.delete("pluginStorage", "main");
@@ -425,64 +473,50 @@ describe("assembleDatabase", () => {
     });
 });
 
-describe("the residual root", () => {
-    it("projects exactly RESIDUAL_ROOT_KEYS, in that order, and never a section or forwarded field", async () => {
+// Slice 6 removed the residual `root` (the cases here replaced "the residual root": its projection
+// and its filtering of a pre-slice root no longer exist). No root record is written or read; the
+// fields it held are forwarded to their records.
+describe("no root record", () => {
+    it("writes no root: the persona fields land in the selected persona, the preset fields in the selected preset, a section field in its section", async () => {
         const { fake, sync, db } = await boot(await fakeStore());
+        db().username = "renamed";
         db().personaPrompt = "prompt";
         db().userNote = "note";
         db().zoomsize = 5;
-        // Forwarded fields (slice 5): the edits go to the selected preset, never to root.
         db().temperature = 42;
         db().promptTemplate = [];
         await sync.flushResources();
-        const root = fake
-            .batchBodies()
-            .flatMap((batch) => batch.ops)
-            .find((op) => op.kind === "root")!;
-        expect(root).toBeDefined();
-        const keys = Object.keys(root.data);
-        expect(keys).toEqual(RESIDUAL_ROOT_KEYS.filter((key) => keys.includes(key)));
-        expect(keys).toContain("personaPrompt");
-        expect(keys).toContain("userNote");
-        expect(keys).toContain("username");
-        for (const field of Object.values(SECTION_FIELDS).flat()) {
-            expect(root.data, field).not.toHaveProperty(field);
+        const ops = fake.batchBodies().flatMap((batch) => batch.ops);
+        expect(ops.map((op) => op.kind).sort()).toEqual(["personas", "presets", "ui"]);
+        expect(fake.get("root", "main")).toBeNull();
+        const persona = fake.data("personas", "main")[0];
+        expect(persona).toMatchObject({ name: "renamed", personaPrompt: "prompt", note: "note" });
+        // The persona record holds the persona keys, never the root names (`personaPrompt` is both).
+        for (const field of PERSONA_ROOT_KEYS.filter((key) => key !== "personaPrompt")) {
+            expect(persona, field).not.toHaveProperty(field);
         }
-        expect(root.data).not.toHaveProperty("temperature");
-        expect(root.data).not.toHaveProperty("promptTemplate");
-        expect(root.data).not.toHaveProperty("botPresetsId");
-        expect(root.data).not.toHaveProperty("botPresets");
-        expect(root.data).not.toHaveProperty("characters");
+        expect(fake.data("ui", "main").zoomsize).toBe(5);
         expect(fake.data("presets", "main")[0]).toMatchObject({ temperature: 42, promptTemplate: [] });
+        expect(db().selectedPersona).toBe(0);
     });
 
-    it("ignores the extra keys of a root from before the slice and writes the filtered root once", async () => {
-        // A root from before slice 5 still carries the preset working copy and the selection index.
-        const fake = await fakeStore({
-            username: "u",
-            botPresetsId: 0,
-            temperature: 80,
-            zoomsize: 5,
-            language: "ko",
-            formatversion: 5,
-        });
+    it("neither reads a stale root record nor writes it back: its keys never reach the mirror and it stays untouched", async () => {
+        const fake = await fakeStore();
+        // A root from before slice 6 (a real store with one is refused at startup; the fake keeps it).
+        const stale = { username: "old", selectedPersona: 1, temperature: 33, zoomsize: 5, formatversion: 5 };
+        const revision = fake.set("root", "main", stale);
         const { bootBatches, sync, db } = await boot(fake);
+        expect(bootBatches).toEqual([]);
+        // The materialized persona and the `ui` record, not the stale root, serve the mirror.
+        expect(db().username).toBe("User");
         expect(db().zoomsize).toBe(100);
-        expect(db().language).toBe("en");
+        expect(db().temperature).toBe(80 /* the preset default, not a root value */);
         expect(db()).not.toHaveProperty("formatversion");
-        expect(db().botPresetsId).toBe(0);
-        expect(opKinds(bootBatches)).toEqual(["root"]);
-        const stored = fake.data<Record<string, unknown>>("root", "main")!;
-        expect(stored).not.toHaveProperty("zoomsize");
-        expect(stored).not.toHaveProperty("language");
-        expect(stored).not.toHaveProperty("formatversion");
-        expect(stored).not.toHaveProperty("botPresetsId");
-        expect(stored).not.toHaveProperty("temperature");
-        expect(stored.username).toBe("u");
-        // `setDatabase` fills the other residual keys, so the written root is the whole residual list.
-        expect(Object.keys(stored)).toEqual([...RESIDUAL_ROOT_KEYS]);
+        db().username = "edited";
+        db().zoomsize = 50;
         await sync.flushResources();
-        expect(fake.batchCount()).toBe(0);
+        expect(opKinds(fake.batchBodies()).sort()).toEqual(["personas", "ui"]);
+        expect(fake.get("root", "main")).toEqual({ revision, data: stale });
     });
 });
 
@@ -510,7 +544,8 @@ describe("watchers", () => {
             ["customModels", () => db().customModels.push({ id: "m", internalId: "i" })],
             ["enabledModules", () => db().enabledModules.push("mod")],
             ["statics", () => (db().statics.messages += 1)],
-            ["root", () => (db().username = "renamed user")],
+            // A forwarded persona field (slice 6) is an edit of the selected persona record.
+            ["personas", () => (db().username = "renamed user")],
             // A forwarded preset field (slice 5) is an edit of the selected preset record.
             ["presets", () => (db().temperature = 42)],
             ["presets", () => (db().botPresets[0].name = "P")],

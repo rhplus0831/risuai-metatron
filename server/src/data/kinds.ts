@@ -1,4 +1,4 @@
-import { RESOURCE_KIND, ROOT_EXCLUDED_KEYS } from "../../../shared/resources.ts";
+import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { isAssetStorageKey } from "../routes/storage.ts";
 import {
     normalizeAuthRefreshes,
@@ -104,20 +104,6 @@ const inlayTypes = new Set(["image", "video", "audio", "signature"]);
  * the client before.
  */
 export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
-    {
-        name: RESOURCE_KIND.root,
-        schemaVersion: 1,
-        singleton: true,
-        normalize(input) {
-            const root = requireObject(input, "root");
-            for (const key of ROOT_EXCLUDED_KEYS) {
-                if (Object.hasOwn(root, key)) {
-                    throw new ResourceValidationError(`root must not hold ${key}`);
-                }
-            }
-            return root;
-        },
-    },
     {
         name: RESOURCE_KIND.presets,
         schemaVersion: 1,

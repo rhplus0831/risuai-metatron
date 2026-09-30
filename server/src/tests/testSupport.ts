@@ -63,7 +63,8 @@ export type ResourceTestClient = Awaited<ReturnType<typeof createResourceTestCli
 export async function createResourceTestClient(
     options: Omit<TestServerOptions, "password"> & { epochKind?: string } = {},
 ) {
-    const { epochKind = "root", ...serverOptions } = options;
+    // Any registered kind's list answers the epoch; `ui` is a section every default store holds.
+    const { epochKind = "ui", ...serverOptions } = options;
     const s = createTestServer({ password: "pw", ...serverOptions });
     const signer = await createSigner();
     await s.app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));

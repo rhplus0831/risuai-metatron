@@ -1,48 +1,41 @@
-import { getDatabase, saveImage, setDatabase } from "./storage/database.svelte";
+import { getDatabase, saveImage } from "./storage/database.svelte";
 import { selectSingleFile, sleep } from "./util";
 import { alertError, alertNormal, alertStore } from "./alert";
 import { AppendableBuffer, downloadFile, readImage } from "./globalApi.svelte";
 import { language } from "src/lang";
 import { reencodeImage } from "./process/files/inlays";
 import { PngChunk } from "./pngChunk";
-import { v4 } from "uuid";
+import { newPersonaId } from "../../shared/presets.ts";
+import { selectedPersona } from "./storage/forwarding.svelte";
+import { selectPersona } from "./storage/selection.svelte";
 import { DBState } from "./stores.svelte";
 
+/**
+ * Sets the selected persona's icon from a picked PNG. The persona is captured before the file dialog
+ * (the selection can change meanwhile) and keeps its id, so chats bound to it stay bound; the
+ * icon is dropped if the persona was deleted meanwhile.
+ */
 export async function selectUserImg() {
+    const personaId = selectedPersona(DBState.db)?.id;
     const selected = await selectSingleFile(["png"]);
-    if (!selected) {
+    if (!selected || !personaId) {
         return;
     }
-    const img = selected.data;
-    const imgp = await saveImage(img);
-    DBState.db.userIcon = imgp;
-    DBState.db.personas[DBState.db.selectedPersona] = {
-        ...DBState.db.personas[DBState.db.selectedPersona],
-        name: DBState.db.username,
-        icon: DBState.db.userIcon,
-        personaPrompt: DBState.db.personaPrompt,
-        note: DBState.db.userNote,
-        id: v4(),
-    };
-}
-
-export function saveUserPersona() {
-    DBState.db.personas[DBState.db.selectedPersona].name = DBState.db.username;
-    DBState.db.personas[DBState.db.selectedPersona].icon = DBState.db.userIcon;
-    DBState.db.personas[DBState.db.selectedPersona].personaPrompt = DBState.db.personaPrompt;
-    DBState.db.personas[DBState.db.selectedPersona].note = DBState.db.userNote;
-}
-
-export function changeUserPersona(id: number, save: "save" | "noSave" = "save") {
-    if (save === "save") {
-        saveUserPersona();
+    const icon = await saveImage(selected.data);
+    const persona = DBState.db.personas.find((entry) => entry.id === personaId);
+    if (persona) {
+        persona.icon = icon;
     }
-    const pr = DBState.db.personas[id];
-    DBState.db.personaPrompt = pr.personaPrompt;
-    DBState.db.username = pr.name;
-    DBState.db.userIcon = pr.icon;
-    DBState.db.userNote = pr.note;
-    DBState.db.selectedPersona = id;
+}
+
+/**
+ * Selects persona `id` for this client. The persona fields are forwarded to the selected persona,
+ * so nothing is copied.
+ */
+export function changeUserPersona(id: string) {
+    if (DBState.db.personas.some((persona) => persona.id === id)) {
+        selectPersona(id);
+    }
 }
 
 interface PersonaCard {
@@ -123,12 +116,14 @@ export async function importUserPersona() {
         }
         const data: PersonaCard = JSON.parse(Buffer.from(decoded, "base64").toString("utf-8"));
         if (data.name && data.personaPrompt) {
+            // The image first: the collection can be replaced meanwhile, so the push reads the live list.
+            const icon = await saveImage(await reencodeImage(v.data));
             DBState.db.personas.push({
                 name: data.name,
-                icon: await saveImage(await reencodeImage(v.data)),
+                icon,
                 personaPrompt: data.personaPrompt,
-                note: data.note,
-                id: v4(),
+                note: typeof data.note === "string" ? data.note : "",
+                id: newPersonaId(),
             });
             alertNormal(language.successImport);
         } else {

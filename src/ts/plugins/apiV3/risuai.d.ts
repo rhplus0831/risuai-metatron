@@ -1493,6 +1493,9 @@ interface RisuaiPluginAPI {
 
     /**
      * Sets the database (lightweight save)
+     * `selectedPersona` is an index into `personas` (applied after `personas` when both are given)
+     * and changes only this client's selection; `personas` is normalized (never empty, every entry
+     * with an id and string name, icon, personaPrompt, and note).
      * @param db - DatabaseSubset object to save
      */
     setDatabaseLite(db: DatabaseSubset): Promise<void>;

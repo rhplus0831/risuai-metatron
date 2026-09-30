@@ -6,7 +6,6 @@ import {
     COLLECTION_FIELDS,
     COLLECTION_KIND,
     COLLECTION_SELECTION_FIELDS,
-    RESIDUAL_ROOT_KEYS,
     SECTION_FIELDS,
     SECTION_KIND,
 } from "../../shared/sections.ts";
@@ -128,12 +127,12 @@ export async function loadData() {
 }
 
 /**
- * Builds the in-memory `Database` from the server resources: the residual `root` fields
- * (`RESIDUAL_ROOT_KEYS` only; a stored root from before Phase 3 holds more, which is ignored; the
- * preset fields and the selection indexes are forwarded, see `forwarding.svelte.ts`), the
- * five sections (their `SECTION_FIELDS`), the collections (`translatorPresets` and `hypaV3Presets`
- * unpack `{ items, selectedId }` into their two fields), the Phase 1 collections, and the characters
- * in creation order, each with its chats in their server order. The server creates and normalizes
+ * Builds the in-memory `Database` from the server resources: the five sections (their
+ * `SECTION_FIELDS`), the collections (`translatorPresets` and `hypaV3Presets` unpack
+ * `{ items, selectedId }` into their two fields), the Phase 1 collections, and the characters in
+ * creation order, each with its chats in their server order. The flat preset and persona fields
+ * and the selection indexes are not assembled: the forwarding layer serves them
+ * (`forwarding.svelte.ts`). The server creates and normalizes
  * every section and collection, so a missing one is an error, not a default. The `llmSecrets`
  * record's `presets` map goes to `llmSecretPresets`, not into `Database`.
  */
@@ -148,12 +147,6 @@ export function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
         return data;
     };
     const db: Record<string, unknown> = {};
-    const root = single(RESOURCE_KIND.root) ?? {};
-    for (const key of RESIDUAL_ROOT_KEYS) {
-        if (Object.hasOwn(root, key)) {
-            db[key] = root[key];
-        }
-    }
     for (const section of Object.values(SECTION_KIND)) {
         const record = required(section);
         for (const field of SECTION_FIELDS[section]) {

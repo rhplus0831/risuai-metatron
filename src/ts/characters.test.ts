@@ -58,9 +58,7 @@ function character(chaId: string, name: string, extra: Record<string, unknown> =
 async function boot() {
     vi.resetModules();
     const fake = new FakeResourceServer();
-    // The residual root as the client writes it (`RESIDUAL_ROOT_KEYS` only); the character order is
-    // a collection record of its own.
-    fake.set("root", "main", { username: "u", botPresetsId: 0 });
+    // No `root` record since slice 6; the character order is a collection record of its own.
     fake.set("characterOrder", "main", ["a", "b"]);
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);

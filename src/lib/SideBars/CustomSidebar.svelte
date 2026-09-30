@@ -10,7 +10,6 @@
     import { get } from "svelte/store";
     import SettingRenderer from "../Setting/SettingRenderer.svelte";
     import { checkPersonaBinded, getUserName } from "src/ts/util";
-    import { v4 } from "uuid";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     let configPage: "list" | "add" | "addSettingsSubmenu" = $state("list");
     let search = $state("");
@@ -63,9 +62,6 @@
                     }}
                     onclick={(e) => {
                         e.stopPropagation();
-                        if (!DBState.db.personas[DBState.db.selectedPersona].id) {
-                            DBState.db.personas[DBState.db.selectedPersona].id = v4();
-                        }
                         if (checkPersonaBinded()) {
                             setCurrentChatMeta({ bindedPersona: "" });
                         } else {

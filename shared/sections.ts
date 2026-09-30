@@ -1,23 +1,21 @@
 import type { Database } from "./database.ts";
 import { PRESET_FIELDS, PRESET_KEEP_ON_SWITCH_FIELDS, PRESET_ROOT_ALIASES, PERSONA_ROOT_ALIASES } from "./presets.ts";
-import { ROOT_EXCLUDED_KEYS } from "./resources.ts";
 
 /**
  * The field-to-resource map of Phase 3 (`docs/plan/phases/phase-3-settings-sections.md`): which
  * resource owns each top-level `Database` field. `DBState.db` keeps every field flat under its old
  * name (D3); these lists say where each one is stored. Together with the Phase 1 collections
- * (`ROOT_EXCLUDED_KEYS`) they partition `keyof Database`:
+ * (`PHASE1_FIELDS`) they partition `keyof Database`:
  *
  * - `SECTION_FIELDS`: five singleton section resources.
  * - `COLLECTION_FIELDS`: small collection resources, each holding one field (two for the preset
  *   collections that carry their selection).
- * - `FORWARDED_ROOT_KEYS`: not stored as root fields. The client forwards them
- *   (`src/ts/storage/forwarding.svelte.ts`): the preset fields to the selected preset,
- *   `proxyKey` to that preset's `llmSecrets.presets` entry, and the two client selection indexes
- *   to the per-client selection store. The keep-on-switch preset fields are `providers` fields and
- *   the two auto-suggest fields are `ui` fields; neither is forwarded.
- * - `RESIDUAL_ROOT_KEYS`: what `root` still holds until slice 6 forwards it: the persona working
- *   copy and `selectedPersona`.
+ * - `FORWARDED_ROOT_KEYS`: the fields of the removed `root` resource (the working copies before
+ *   Phase 3), not stored under their own names. The client forwards them
+ *   (`src/ts/storage/forwarding.svelte.ts`): the preset fields to the selected preset, `proxyKey`
+ *   to that preset's `llmSecrets.presets` entry, the persona fields to the selected persona, and the
+ *   three selection indexes to the per-client selection store. The keep-on-switch preset fields are
+ *   `providers` fields and the two auto-suggest fields are `ui` fields; neither is forwarded.
  * - `DROPPED_FIELDS`: no longer persisted (no reader, write-only, migrated, or legacy mirrors).
  */
 
@@ -368,31 +366,23 @@ export const FORWARDED_PRESET_KEYS = PRESET_FIELDS.filter((field) => !notForward
 /** Root fields that mirror the selected persona (`PERSONA_ROOT_ALIASES`). */
 export const PERSONA_ROOT_KEYS = Object.keys(PERSONA_ROOT_ALIASES) as (keyof typeof PERSONA_ROOT_ALIASES)[];
 
-/** Per-client selection, not shared data; leaves the persisted schema in slices 5 and 6. */
+/**
+ * The per-client selection indexes, served by the selection store
+ * (`src/ts/storage/selection.svelte.ts`) and never persisted in a resource.
+ */
 export const SELECTION_KEYS = [
     "botPresetsId",
     "selectedPersona",
     "loreBookPage",
 ] as const satisfies readonly (keyof Database)[];
 
-/**
- * The selection indexes the per-client selection store serves (`src/ts/storage/selection.svelte.ts`),
- * never persisted in a resource. `selectedPersona` joins them in slice 6.
- */
-export const CLIENT_SELECTION_KEYS = [
-    "botPresetsId",
-    "loreBookPage",
-] as const satisfies readonly (typeof SELECTION_KEYS)[number][];
-
-/** Root fields the client forwarding layer serves instead of `root`. */
+/** The fields the client forwarding layer serves (the old `root` working copies and selections). */
 export const FORWARDED_ROOT_KEYS: readonly (keyof Database)[] = [
     ...FORWARDED_PRESET_KEYS,
     "proxyKey",
-    ...CLIENT_SELECTION_KEYS,
+    ...PERSONA_ROOT_KEYS,
+    ...SELECTION_KEYS,
 ];
-
-/** What the residual `root` resource holds until slice 6 empties it. */
-export const RESIDUAL_ROOT_KEYS: readonly (keyof Database)[] = [...PERSONA_ROOT_KEYS, "selectedPersona"];
 
 /** Fields no longer persisted; the assembly never produces them. */
 export const DROPPED_FIELDS = [
@@ -420,4 +410,10 @@ export const DROPPED_FIELDS = [
 ] as const satisfies readonly (keyof Database)[];
 
 /** The Phase 1 collection fields (`presets`, `modules`, `plugins`, `pluginStorage`, `characters`). */
-export const PHASE1_FIELDS = ROOT_EXCLUDED_KEYS;
+export const PHASE1_FIELDS = [
+    "characters",
+    "botPresets",
+    "modules",
+    "plugins",
+    "pluginCustomStorage",
+] as const satisfies readonly (keyof Database)[];

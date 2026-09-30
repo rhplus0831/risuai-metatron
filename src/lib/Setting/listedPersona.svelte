@@ -25,7 +25,7 @@
         {#each DBState.db.personas as persona, i}
             <button
                 onclick={() => {
-                    changeUserPersona(i);
+                    changeUserPersona(persona.id);
                     close();
                 }}
                 class="flex items-center text-textcolor border-t-1 border-solid border-0 border-darkborderc p-2 cursor-pointer"

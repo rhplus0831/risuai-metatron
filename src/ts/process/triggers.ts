@@ -1094,12 +1094,10 @@ export async function runTrigger(
                     break;
                 }
                 case "v2GetPersonaDesc": {
-                    const db = getDatabase();
-                    const currentPersonaPrompt = db.personaPrompt ?? "";
-                    const savedPersonaPrompt = db.personas[db.selectedPersona]?.personaPrompt ?? "";
+                    // The selected persona's prompt (the forwarded field).
                     setVar(
                         risuChatParser(effect.outputVar, { chara: char, chatRef: contextRef }),
-                        currentPersonaPrompt || savedPersonaPrompt,
+                        getDatabase().personaPrompt,
                     );
                     break;
                 }
@@ -1108,10 +1106,7 @@ export async function runTrigger(
                         effect.valueType === "value"
                             ? risuChatParser(effect.value, { chara: char, chatRef: contextRef })
                             : getVar(risuChatParser(effect.value, { chara: char, chatRef: contextRef }));
-                    if (DBState.db.personas[DBState.db.selectedPersona]) {
-                        DBState.db.personas[DBState.db.selectedPersona].personaPrompt = value;
-                        DBState.db.personaPrompt = value;
-                    }
+                    DBState.db.personaPrompt = value;
                     break;
                 }
                 case "v2GetReplaceGlobalNote": {

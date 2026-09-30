@@ -1,6 +1,6 @@
 import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
-import { isRecordId } from "../../../../shared/ids.ts";
-import { newPersonaId } from "../../../../shared/presets.ts";
+import { normalizePersonas } from "../../../../shared/personas.ts";
+import { plainClone } from "../../../../shared/presets.ts";
 import { COLLECTION_FIELDS, COLLECTION_SELECTION_FIELDS, SECTION_FIELDS } from "../../../../shared/sections.ts";
 import {
     customProviderStore,
@@ -867,18 +867,23 @@ const removeRisuChatListener = (mode: string, func: ChatOutputListener) => {
 };
 
 /**
- * A plugin may hand over personas without ids; each one gets an id so a chat can bind to it
- * (`Chat.bindedPersona`). Existing ids are kept. Phase 4's `setPersonas` takes this over.
+ * A plugin's `personas` gets the collection's contract (`shared/personas.ts`, which the server and
+ * `setDatabase` apply too): never empty, the four persona fields strings, and unique ids, so a chat
+ * can bind to each one (`Chat.bindedPersona`) and the selection by id resolves. Existing ids are
+ * kept. Phase 4's `setPersonas` takes this over.
  */
-function withPersonaIds(value: unknown) {
-    if (!Array.isArray(value)) {
-        return value;
-    }
-    return value.map((persona) =>
-        persona && typeof persona === "object" && !isRecordId(persona.id)
-            ? { ...persona, id: newPersonaId() }
-            : persona,
-    );
+function normalizedPluginPersonas(value: unknown) {
+    return normalizePersonas(plainClone(value));
+}
+
+/**
+ * The keys of a plugin's database object in the order they are applied: `selectedPersona` last, so
+ * its index is resolved against the persona list the same call sets, whatever the object's key
+ * order (it selects on this client only).
+ */
+function pluginKeyOrder(newDb: Record<string, unknown>): string[] {
+    const keys = Object.keys(newDb).filter((key) => key !== "selectedPersona");
+    return Object.hasOwn(newDb, "selectedPersona") ? [...keys, "selectedPersona"] : keys;
 }
 
 /**
@@ -898,14 +903,18 @@ function assignPluginField(db: Database, key: string, value: unknown) {
         console.warn(`[WARN] A plugin tried to clear ${key}; this setting cannot be cleared, so it was kept.`);
         return;
     }
-    (db as any)[key] = key === "personas" ? withPersonaIds(value) : value;
+    if (key === "personas" && !Array.isArray(value)) {
+        console.warn("[WARN] A plugin tried to set personas to a non-list; the personas were kept.");
+        return;
+    }
+    (db as any)[key] = key === "personas" ? normalizedPluginPersonas(value) : value;
 }
 
 //Keys outside allowedDbKeys are stored at the top level of db.pluginCustomStorage
 const setPluginDatabaseLite = (newDb: any) => {
     const db = getDatabase();
     db.pluginCustomStorage ??= {};
-    for (const key of Object.keys(newDb)) {
+    for (const key of pluginKeyOrder(newDb)) {
         if (key === "characters") {
             applyPluginCharacters(newDb[key]);
         } else if (allowedDbKeys.includes(key)) {
@@ -930,7 +939,7 @@ const setPluginDatabase = async (newDb: any) => {
     // No await from here on: a forwarded preset field lands in the preset selected now.
     const db = getDatabase();
     db.pluginCustomStorage ??= {};
-    for (const key of Object.keys(newDb)) {
+    for (const key of pluginKeyOrder(newDb)) {
         if (key === "characters") {
             applyPluginCharacters(newDb[key]);
         } else if (allowedDbKeys.includes(key)) {

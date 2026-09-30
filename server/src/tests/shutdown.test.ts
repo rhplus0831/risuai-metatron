@@ -70,7 +70,7 @@ async function startMain() {
     expect(login.status).toBe(200);
     const headers = async () => ({ "risu-auth": await signer.jwt() });
     const epoch = (
-        (await (await fetch(`${base}/api/resources/root`, { headers: await headers() })).json()) as {
+        (await (await fetch(`${base}/api/resources/ui`, { headers: await headers() })).json()) as {
             epoch: string;
         }
     ).epoch;

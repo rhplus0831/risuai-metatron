@@ -1,23 +1,28 @@
 import { untrack } from "svelte";
-import type { botPreset, Database } from "../../../shared/database.ts";
+import type { botPreset, Database, RisuPersona } from "../../../shared/database.ts";
 import {
     PRESET_DEFAULTS,
     PRESET_FIELD_KINDS,
     PRESET_NULLABLE_FIELDS,
+    PERSONA_ROOT_ALIASES,
     PRESET_ROOT_ALIASES,
     plainClone,
     type PresetField,
 } from "../../../shared/presets.ts";
 import { FORWARDED_PRESET_KEYS } from "../../../shared/sections.ts";
 import { deletePresetSecret, getPresetSecret, setPresetSecret } from "./llmSecrets.svelte";
-import { selectLoreBookPage, selectPreset, selection } from "./selection.svelte";
+import { PERSONA_DEFAULTS } from "../../../shared/personas.ts";
+import { selectLoreBookPage, selectPersona, selectPreset, selection } from "./selection.svelte";
 
 /**
  * The forwarding layer (Phase 3, `PLAN.md` Decision 3). `DBState.db` keeps the old flat preset
  * fields (`db.temperature`, `db.NAIsettings`, ...), but they are no longer root copies: each is an
  * accessor on the database object that reads and writes the selected preset (`selection.presetId`)
- * in `db.botPresets`. `db.proxyKey` reads and writes that preset's entry of `llmSecretPresets`, and
- * `db.botPresetsId` and `db.loreBookPage` read and write the per-client selection. `FORWARDED_ROOT_KEYS`
+ * in `db.botPresets`. `db.proxyKey` reads and writes that preset's entry of `llmSecretPresets`; the
+ * four persona fields (`db.username`, `db.userIcon`, `db.userNote`, `db.personaPrompt`,
+ * `PERSONA_ROOT_ALIASES`) read and write the selected persona (`selection.personaId`) in
+ * `db.personas`; and `db.botPresetsId`, `db.selectedPersona`, and `db.loreBookPage` read and write
+ * the per-client selection. `FORWARDED_ROOT_KEYS`
  * (`shared/sections.ts`) lists them all. The spike (`docs/plan/phases/slices/phase-3-settings-sections/spike-forwarding-layer.md`)
  * proved the mechanism over the installed Svelte proxy.
  *
@@ -44,8 +49,9 @@ import { selectLoreBookPage, selectPreset, selection } from "./selection.svelte"
  * - Never `delete` a forwarded key: the proxy then shadows it for good (spike, "Proxy behavior").
  */
 
-type Db = Record<string, unknown> & { botPresets?: botPreset[]; loreBook?: unknown[] };
+type Db = Record<string, unknown> & { botPresets?: botPreset[]; personas?: RisuPersona[]; loreBook?: unknown[] };
 type PresetRecord = Record<string, unknown> & { id: string };
+type PersonaRecord = Record<string, unknown> & { id: string };
 
 const nullableFields = new Set<PresetField>(PRESET_NULLABLE_FIELDS);
 
@@ -84,6 +90,32 @@ function presetForWrite(db: Db): PresetRecord | undefined {
  */
 export function selectedPresetForWrite(db: Database): botPreset | undefined {
     return presetForWrite(db as unknown as Db) as unknown as botPreset | undefined;
+}
+
+function personaList(db: Db): PersonaRecord[] {
+    return Array.isArray(db.personas) ? (db.personas as unknown as PersonaRecord[]) : [];
+}
+
+function findPersona(db: Db, id: string): PersonaRecord | undefined {
+    return personaList(db).find((persona) => persona?.id === id);
+}
+
+/** The selected persona: the one `selection.personaId` names, else the first, which becomes the selection. */
+function resolvePersona(db: Db): PersonaRecord | undefined {
+    const record = findPersona(db, selection.personaId);
+    if (record !== undefined) {
+        return record;
+    }
+    const first = personaList(db)[0];
+    if (first === undefined || typeof first?.id !== "string") {
+        return undefined;
+    }
+    untrack(() => selectPersona(first.id));
+    return first;
+}
+
+function personaForWrite(db: Db): PersonaRecord | undefined {
+    return untrack(() => findPersona(db, selection.personaId));
 }
 
 function readPresetField(db: Db, field: PresetField): unknown {
@@ -179,6 +211,41 @@ export function installForwarding<T extends object>(raw: T): T {
             }
         },
     );
+    for (const [rootKey, field] of Object.entries(PERSONA_ROOT_ALIASES)) {
+        defineForwarded(
+            raw,
+            rootKey,
+            (db) => {
+                const value = resolvePersona(db)?.[field];
+                return typeof value === "string" ? value : PERSONA_DEFAULTS[field];
+            },
+            (db, value) => {
+                const record = personaForWrite(db);
+                if (record !== undefined) {
+                    record[field] = value;
+                }
+            },
+        );
+    }
+    defineForwarded(
+        raw,
+        "selectedPersona",
+        (db) => {
+            const record = resolvePersona(db);
+            return record === undefined
+                ? 0
+                : Math.max(
+                      0,
+                      personaList(db).findIndex((persona) => persona?.id === record.id),
+                  );
+        },
+        (db, value) => {
+            const record = untrack(() => (typeof value === "number" ? personaList(db)[value] : undefined));
+            if (record !== undefined) {
+                untrack(() => selectPersona(record.id));
+            }
+        },
+    );
     defineForwarded(
         raw,
         "loreBookPage",
@@ -206,6 +273,7 @@ export function installForwarding<T extends object>(raw: T): T {
 export function reconcileSelection(db: Database) {
     untrack(() => {
         resolvePreset(db as unknown as Db);
+        resolvePersona(db as unknown as Db);
         void db.loreBookPage;
     });
 }
@@ -213,4 +281,14 @@ export function reconcileSelection(db: Database) {
 /** The selected preset of `DBState.db`-shaped `db` (the proxy), resolved as the accessors do. */
 export function selectedPreset(db: Database): botPreset | undefined {
     return resolvePreset(db as unknown as Db) as unknown as botPreset | undefined;
+}
+
+/** The selected persona of `db` (the proxy), resolved as the accessors do. */
+export function selectedPersona(db: Database): RisuPersona | undefined {
+    return resolvePersona(db as unknown as Db) as unknown as RisuPersona | undefined;
+}
+
+/** The persona a write to the selected persona goes to, without the read fallback. */
+export function selectedPersonaForWrite(db: Database): RisuPersona | undefined {
+    return personaForWrite(db as unknown as Db) as unknown as RisuPersona | undefined;
 }

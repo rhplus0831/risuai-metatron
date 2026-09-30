@@ -392,14 +392,6 @@
                                                                     language.doYouWantToBindCurrentPersona,
                                                                 );
                                                                 if (confirm) {
-                                                                    if (
-                                                                        !DBState.db.personas[DBState.db.selectedPersona]
-                                                                            .id
-                                                                    ) {
-                                                                        DBState.db.personas[
-                                                                            DBState.db.selectedPersona
-                                                                        ].id = v4();
-                                                                    }
                                                                     setChatMeta(
                                                                         { chaId: chara.chaId, chatId: chat.id },
                                                                         {
@@ -568,9 +560,6 @@
                                                         language.doYouWantToBindCurrentPersona,
                                                     );
                                                     if (confirm) {
-                                                        if (!DBState.db.personas[DBState.db.selectedPersona].id) {
-                                                            DBState.db.personas[DBState.db.selectedPersona].id = v4();
-                                                        }
                                                         setChatMeta(
                                                             { chaId: chara.chaId, chatId: chat.id },
                                                             {

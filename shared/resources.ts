@@ -20,7 +20,6 @@ import type {
  * assembles `Database` from them and writes them back per collection.
  */
 export const RESOURCE_KIND = {
-    root: "root",
     presets: "presets",
     modules: "modules",
     plugins: "plugins",
@@ -54,11 +53,6 @@ export type ResourceKindName = (typeof RESOURCE_KIND)[keyof typeof RESOURCE_KIND
 
 /** The only id a singleton kind (every kind except `characters` and `inlays`) accepts. */
 export const SINGLETON_RESOURCE_ID = "main";
-
-/** `Database` fields that have a resource of their own; `root` holds every other field. */
-export const ROOT_EXCLUDED_KEYS = ["characters", "botPresets", "modules", "plugins", "pluginCustomStorage"] as const;
-
-export type RootResource = Omit<Database, (typeof ROOT_EXCLUDED_KEYS)[number]>;
 
 /**
  * An inlay's metadata. Media bytes live in the `assets` storage namespace under `asset`; a signature

@@ -48,7 +48,7 @@
   - Effective sets: `getModules`, then `getModuleLorebooks`, `getModuleAssets`, `getModuleTriggers`, `getModuleRegexScripts`, `getModuleToggles`, `getModuleMcps`.
   - `applyModule`, `moduleUpdate`, `refreshModules`.
 - `interchangeability.ts`: `convertModuleToCharacter`, `convertCharacterToModule`, persona↔character, persona↔module (an embedded module ID is normalized to `$embedded`).
-- `persona.ts`: `saveUserPersona`, `changeUserPersona`, `selectUserImg`. `exportUserPersona`/`importUserPersona` use a PNG `persona` tEXt chunk.
+- `persona.ts`: `changeUserPersona(id)` (selects the persona for this client; the persona fields are forwarded, so nothing is copied), `selectUserImg` (captures the selected persona before the file dialog and sets its icon, keeping its id, so bound chats stay bound). `exportUserPersona`/`importUserPersona` use a PNG `persona` tEXt chunk.
 - UI:
   - `CharConfig.svelte`: the main editor, binding `DBState.db.characters[$selectedCharID]`. Tabs cover identity, greetings, images, emotions, assets, lore, regex, triggers, TTS, export, and delete.
   - Lorebook:
