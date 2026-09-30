@@ -209,6 +209,7 @@ Process memory, inside the `createServerContext` closure:
 
 ## Invariants
 
+- Phase 4 (external contracts) changed no route, kind, table, or normalizer: the client mutation modules write the same records through the same batch route.
 - Storage routes never use a raw path. `decodeKeyHeader` requires even-length hex and valid UTF-8 (verified by an exact byte round trip), then `resolveStorageKey` requires a namespace from `STORAGE_NAMESPACES` (only `assets`) and encodes the whole rest of the key, `/` included, into one file name. Only these folders are reachable; `save/server/` and `save/.tmp/` are not.
 - Unsupported keys: malformed hex/UTF-8 is 400 `Invaild Path` on every route. A well-formed key with no storage location (other namespace, empty or too-long name) reads as missing (empty 200, no disk access), because the client reads whatever paths an old database stored; `write` and `remove` reject it with 400.
 - `/api/list` returns only regular files whose names are canonical `encodeFileName` output, so every listed key reads back the same file. Other entries (subfolders, symlinks, noncanonical file names) are ignored.

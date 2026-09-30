@@ -47,7 +47,8 @@
 
 ## Invariants
 
-- The archive format (version 2, `manifest.json` first) is defined by the server; the client only streams it and reads the manifest. Archives made before Phase 1 are not restorable.
+- The archive format (version 2, `manifest.json` first) is defined by the server; the client only streams it and reads the manifest. Archives made before Phase 1 are not restorable, and neither is an archive or snapshot whose resource database has another schema version than the server's (3 since Phase 3): the server refuses it with a message, and no migration is owed.
+- Export, change, and restore are covered end to end on a version-3 store (Phase 4 closeout): an archive import undoes changes made after the export (a plugin `setCharacter`, an MCP tool), and restoring the safety snapshot the import took brings them back.
 - A backup restore replaces every resource and only adds assets that do not exist yet; the app reloads afterwards because every revision the tab held is void (new epoch).
 - Private backups carry everything, including `googleSearchCredentials`, the Iris dialogue, plugin storage, and the plugin permission grants.
 - `getLocalNetworkRequestOptions` must stay paired with `isLocalNetworkUrl`. Browsers reject the local route.

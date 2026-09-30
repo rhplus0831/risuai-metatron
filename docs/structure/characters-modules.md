@@ -75,7 +75,8 @@ Import (`importCharacterProcess`):
   1. `CharXImporter` reads `card.json`, the optional `module.risum` (its triggers, regex, and lore are merged in), and the assets.
   2. `await done()`.
 - V3 asset URIs: `__asset:<id>`, `embeded://path`, `ccdefault:`, `data:`.
-- The result is a new `character` with a fresh `chaId`, pushed to `DBState.db.characters`.
+- The result is a new `character` with a fresh `chaId`, added through the character module's `addCharacter` (`storage/characterStore.svelte.ts`): the card is checked as JSON data (a refused card leaves the character list, its chats, and the order unchanged; the importer is not transactional, so the `statics.imports` stamp and a saved image stay), its chats get ids, and it joins the character order. Module, persona, and preset imports likewise go through `addModule`, `addPersona`, and `addPreset` (after `normalizePreset`), and the global lore import through `updateCharacter` by the id captured before the file dialog.
+- `importChat` captures the selected character's id before the file dialog, resolves it again afterwards (a deleted one stops with `importTargetGone`), reads its name and folders from that record, writes the folders with `updateCharacter`, and switches to the imported chat only while that character is still selected.
 
 Export (`exportChar`, groups are not exportable):
 
@@ -126,6 +127,7 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - Keep `character.modules`, `chat.modules`, `enabledModules`, and `moduleIntergration` (which matches namespaces) distinct.
 - `LoreBookList` must rebuild its Svelte arrays after SortableJS DOM moves. `characterFormatUpdate` and `updateLorebooks` are the lore migration points.
 - `chaId` and chat IDs must be unique. `bootstrap.ts:assignIds` repairs duplicate character ids; chat and message ids are assigned by the chat module (`createChat`, `appendMessage`) and kept unique by the server.
+- An import path adds a character only through `addCharacter` (and modules, personas, and presets through the collection module). The core-app creators (`createNewCharacter`, `createNewGroup`, the editors) still push into the mirror until Phase 6.
 - A character's chats are created through the chat module once it is in the mirror: `importChat` calls `createChat` (a copy gets a fresh chat id and keeps its message ids), and `characterFormatUpdate` on a live character calls `ensureChat` and moves `postHistoryInstructions` into the chat note with `setChatMeta`. A character that is not yet added (a new card, an import) carries its initial chats directly; the save loop creates them with it.
 
 ## Recipes
@@ -138,9 +140,14 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 
 ## Tests
 
-- None cover cards, PNG, CharX, `.risum`, personas, or the editors.
+- `src/ts/characterCardsImport.test.ts`: JSON V2, off-spec JSON, PNG, and CharX imports over the real store (fixtures in `storage/tests/importFixtures.ts`), the stamp, and a refused card.
+- `src/ts/charactersImportChat.test.ts`: `importChat`'s target captured before the dialog (the selection moved, a reorder, a same-id replacement, a deletion), name substitution, and folder remapping.
+- `src/ts/process/modulesImport.test.ts`: `importModule` for `.risum`, CharX, module JSON, lore, and regex files, and a refused CharX module.
+- `src/ts/personaImport.test.ts` and `src/ts/process/lorebookImport.test.ts`: the persona import's id and icon order, and the global lore import by the captured id.
+- Not tested: the editors, card export round trips.
 - Adjacent: `mcp/risuaccess/tests/modules.test.ts`.
 
 ## Known Hazards
 
 - There is no dedicated "duplicate character" API. Copies come from module→character conversion or re-import.
+- An off-spec card with only `char_name` imports as "unknown name": the check accepts `char_name`, but `convertOffSpecCards` reads `name` (pre-existing).

@@ -758,6 +758,14 @@ await Risuai.setDatabaseLite(db);
 
 `getDatabase()` returns `null` if the user has not granted database access consent.
 
+How `setDatabase`/`setDatabaseLite` apply what you hand back:
+
+- Each key is applied on its own. A key whose value is not valid is refused with a console warning (`[Plugin] Refused ...; the previous value was kept`) and keeps its old value; the other keys still apply. Invalid means, for example, data that is not plain JSON, a value of the wrong kind for a preset setting (a string for `temperature`), or `null` for a setting that cannot be cleared.
+- `characters`: characters you changed are updated, new ones are added at the end, and characters you left out are removed (not while one is generating a reply). The list order you hand back does not reorder the characters; use `characterOrder` for the sidebar order.
+- `plugins`: `setDatabase` asks the user to confirm each plugin that is new or changed and installs the confirmed ones; plugins you left out stay installed. `setDatabaseLite` replaces the installed list without asking.
+- `characterOrder` and `selectedPersona` are applied after the other keys, whatever order they have in your object.
+- The preset settings (`temperature`, `maxContext`, `maxResponse`, `frequencyPenalty`, `PresensePenalty`, `seperateModels`, ...) belong to the selected preset. Inside a hook they belong to the preset that was selected when the hook's run started (see Character Operations).
+
 **Allowed database keys:**
 
 - `characters`
@@ -806,6 +814,10 @@ await Risuai.setCharacter(character);
 
 - `Risuai.getChar()` : Use `Risuai.getCharacter()`
 - `Risuai.setChar()` : Use `Risuai.setCharacter()`
+
+**Inside a hook** (a chat output listener, a script handler, a text replacer, or a custom provider), "the current character" means the character and chat the hook runs for, not whatever the user has selected now. A reply can take a while, and the user may switch character or preset meanwhile; your listener still edits the chat that produced the reply. This applies to `getCharacter`/`setCharacter`, `getCurrentCharacterIndex`, `getCurrentChatIndex`, `getCurrentLorebookEntries`, `parseRisuChat`, `sendChat`, `runLLMModel`, and the preset settings of `getDatabase`/`setDatabase`. Inside a hook, `getCharacter()` reports the hook's chat as its `chatPage`, and handing it back to `setCharacter` does not move the user's chat selection. If the character or chat a call needs was deleted meanwhile, the call rejects with a `PluginTargetGoneError` instead of acting on something else; a deleted preset rejects only the preset settings of `getDatabase`/`setDatabase`. `runLLMModel` uses the hook's chat for its prompt parsing and for the provider hooks it triggers, not a frozen copy of the model settings. Body interceptors and TTS hooks are not called with a chat, so there these functions use the tab's selection.
+
+Outside a hook (your own buttons, timers, and startup code), these functions use what is selected in the tab, with one exception: the host tells hooks apart per loaded plugin, not per call. While one of your hooks is still running, your own timers and UI callbacks see that hook's chat and preset too, and two of your hooks running at once both see the one that started last. Keep hook work inside the hook's own `await` chain. When your plugin is unloaded, its hooks still waiting for an answer reject with "The plugin was unloaded".
 
 ### Character & Chat by Index
 

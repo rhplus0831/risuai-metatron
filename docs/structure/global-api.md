@@ -41,7 +41,7 @@
 - Chat and UI:
   - `changeChatTo` (selects a chat of the selected character by index through the chat module's `selectChat`; per tab), `createChatCopyName`.
   - `chatFoldedState`, `chatFoldedStateMessageIndex`, `foldChatToMessage`.
-  - `checkCharOrder`.
+  - `checkCharOrder`: re-exported from `storage/characterOrder.ts` since Phase 4 (the character module calls it without importing this file); the plugin-visible export is unchanged.
   - `toggleFullscreen`.
 - Misc:
   - `getVersionString`.

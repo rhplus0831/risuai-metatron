@@ -62,7 +62,11 @@ Data and persistence (details: `docs/structure/persistence.md`)
   (`src/ts/storage/chatStore.svelte.ts`) writes them, and every chat change goes through its
   functions (`appendMessage`, `setMessageText`, `setChatMeta`, `applyChatResult`, ...), addressed by
   chat id and message id (`Message.chatId`), never by index after an await. Svelte `bind:` on a
-  chat field bypasses the type check: bind a getter/setter pair or a synced editing copy.
+  chat field bypasses the type check: bind a getter/setter pair or a synced editing copy. Beside
+  it, the mutation modules own the other records for the external contracts (plugins, MCP, Lua,
+  triggers, imports): `characterStore.svelte.ts` (characters by `chaId`), `collectionStore.svelte.ts`
+  (settings sections, collections, presets, modules, plugins), and `pluginStorageStore.svelte.ts`.
+  A contract never assigns into `DBState.db`; the core-app UI still does until Phase 6.
 - D2. A new persisted field needs a type entry and a place in `shared/sections.ts`. A section or
   collection field gets its default and migration in its server normalizer
   (`server/src/data/normalize/`), never in `setDatabase`: the client's projection must equal the
@@ -81,8 +85,10 @@ Data and persistence (details: `docs/structure/persistence.md`)
   per chat, messages as rows, one chat order per character); the save adapter
   (`src/ts/storage/resourceSync.svelte.ts`, started by `saveDb`) watches the sections, the
   collections, and only the selected character's own fields deeply, and sends the chat module's
-  queued ops. If you mutate a non-selected character, call `markCharactersDirty([chaId])`, or that
-  change is not saved. Additions and removals need nothing. Every write names the revision and epoch
+  queued ops. `pluginStorage` has no watcher: at run time it is written only through its module,
+  which marks it (the boot assembly installs it before the start-up mark). If you mutate a non-selected character outside the character module (which marks what it
+  writes), call `markCharactersDirty([chaId])`, or that change is not saved. Additions and removals
+  need nothing. Every write names the revision and epoch
   it was based on; a stale one reloads that record, except chat ops that address one message by id
   (and per-field chat metadata), which still apply to an older chat revision while that message
   exists. Message ids are assigned optimistically by the client; the server keeps them, renames a

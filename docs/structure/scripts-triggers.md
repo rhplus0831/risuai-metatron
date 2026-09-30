@@ -76,6 +76,7 @@ Where each hook runs:
 5. Filter by event type (`start|manual|output|input|display|request`).
 6. Skip any trigger with non-empty legacy `conditions` (trigger v1 was removed; these are not evaluated).
 7. Run the effects in order. Legacy v1 effect types have no case and are ignored.
+8. The character effects (`v2SetCharacterDesc`, `v2SetReplaceGlobalNote`, and the six lorebook writers) edit the working copy and write the one field they change to the trigger's character (the copy's `chaId`: the send's character, in a group send the speaking member) through `updateCharacter`, never the selected character and never the whole copy, so other fields edited while the trigger ran are kept. `v2SetPersonaDesc` writes the persona selected at effect time through `updatePersona` (a missing selection warns and writes nothing). Display and request runs make no character or persona write (their lore effects still edit the live `globalLore` in place until Phase 5).
 
 v2 layout:
 
@@ -87,6 +88,7 @@ Lua:
 - The wasmoon factory loads lazily and mounts `/lua/json.lua` (up to 3 retries).
 - Read context: the Lua `cbs`, persona, global-variable, and lore APIs (`getLoreBooks`, `loadLoreBooks`) read the run's chat (`contextRef`: a trigger's chat, or the live chat). In a trigger's working copy, `cbs` and `loadLoreBooks` still read the live chat, as trigger CBS always has, while the message getters and `getLoreBooks`' local lore read the copy; `loadLoreBooks` records its keep/don't-activate-after-match flags on the live chat.
 - Chat functions (`setChat`, `setChatRole`, `cutChat`, `removeChat`, `addChat`, `insertChat`, `setFullChat`, `upsertLocalLoreBook`) and chat variables: inside `runTrigger` they use the trigger's working copy and its variable accessors; elsewhere (edit hooks, buttons) they use the chat the run was given (`runScripted`'s `chatRef`; default: the chat selected when the run started), looked up again on every call (a replacement or reload installs a new object), and write through the chat module, resolving an index to a message id when called. A write the module refuses (the message is being generated) is skipped with a warning.
+- Character functions (`getName`/`setName`, `getDescription`/`setDescription`, `getCharacterFirstMessage`/`setCharacterFirstMessage`, `getBackgroundEmbedding`/`setBackgroundEmbedding`): they address the run's character, the id `runScripted` captures before its first await from its `char` argument (else the selection at entry; in a group send the speaking member, while the chat functions keep the group's chat). A `simple` argument (a module or translation run) has no writable character: the getters read `""` and the setters write nothing (`setCharacterFirstMessage` and `setBackgroundEmbedding` return `false`). The setters write through `updateCharacter`; an existing character's missing field reads as `nil`. The engine state holds the id per run, so a reused engine reads the current run's character, and `generateImage` and `upsertLocalLoreBook`'s type check read it too.
 - Each call gets a UUID access key registered in `ScriptingSafeIds`, `ScriptingEditDisplayIds`, and `ScriptingLowLevelIds` as appropriate. It is removed afterwards.
 
 ## State
@@ -116,6 +118,7 @@ Lua:
 - Display and request modes silently skip effects missing from `displayAllowList`/`requestAllowList`. The editor's `checkSupported` mirrors those lists. Keep them in sync.
 - Low-level effects are gated twice: filtered in the UI and checked at runtime via `trigger.lowLevelAccess`. Lua edit hooks always run with `lowLevelAccess:false`.
 - Normal `runTrigger` returns a new `chat`. The caller must persist it.
+- A trigger effect or Lua function that changes a character writes one field of the run's character through `updateCharacter`; never `setCurrentCharacter`, the selected index, or the whole working copy.
 - v2 block edits must preserve paired `v2EndIndent` entries and indentation.
 - Lua `request` restrictions: HTTPS only, URL at most 120 characters, 5 requests per minute, some Risu endpoints blocked, and it requires low-level access. There is no CPU or memory limit.
 
@@ -136,10 +139,14 @@ Lua:
 ## Tests
 
 - `src/ts/process/scriptings.test.ts`: Lua stop-signal semantics.
+- `src/ts/process/scriptingsSetters.test.ts`: the four Lua character getters and setters on a real wasmoon engine over the real store: a character that is not selected, a group member on the group's chat, engine reuse across runs and a `simple` run, the entry-time id, removal and replacement mid-run, `nil` for a missing field.
+- `src/ts/process/triggers.test.ts`: the eight character effects and `v2SetPersonaDesc` over the real store: the trigger's character (a group member), one-field patches, a suspended trigger with the selection moved, deletion and refusal, the activation index guard, Lua and native effects in one trigger, and no mutation call from display and request runs.
 - `src/ts/translator/edittransRegex.test.ts`: the `edittrans` path only.
-- Not tested: `processScriptFull` ordering and cache, `runTrigger`, v2 editing, Lua permissions.
+- Not tested: `processScriptFull` ordering and cache, v2 editing, Lua permissions.
 
 ## Known Hazards
 
 - `GlobalRegex.svelte` ignores the return value of `importRegex()`.
 - `triggercode` effects have no runtime case. Only `triggerlua` executes.
+- The deprecated `v2ModifyLorebook`, `v2SetLorebookActivation`, and their reads address lore entries as arrays (`entry[0]`, `entry[2]`), but entries are objects: the first never matches, the second adds a junk `"2"` key (pre-existing; a separate task).
+- After a Lua setter writes the live character inside a trigger, the native getters (`v2GetCharacterDesc`, ...) still read the working copy taken at run start, so a native set fed from them can restore the old value (Phase 5's `trigger-runtime`).

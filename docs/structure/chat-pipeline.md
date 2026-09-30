@@ -150,6 +150,7 @@ Not in `sendChat`:
 
 - `chatId` is the identity used to relocate a reply after triggers and inlays run, and the address of every message write. Never address a message by index after an await; resolve the id again.
 - Triggers run on a copy (`runTrigger` clones the chat; a display or request run copies only the chat and its message list and replaces messages instead of editing them). The caller captures a baseline before and applies the returned chat with `applyChatResult`. Lua outside triggers (edit hooks, buttons) writes the live chat through the module, resolving an index to an id when called.
+- The send captures its plugin call context (`capturePluginContext(chatTarget)`: the chat, the selected preset, the effective persona) right after it resolves `chatTarget`, or takes the one it was given (`SendChatArg.pluginContext`, for a plugin's `sendChat` inside a hook), and passes it to every `processScript`/`processScriptFull` call, to the main, image-prompt, and emotion `requestChatData` calls, to `runChatOutputListeners` (which calls each listener through `invokeHook`), and to the group, auto-continue, and resend recursions. A plugin hook then acts on the sending chat and preset even after the user switched character or preset mid-send (`plugins-mcp.md`). A new hook call site passes the context too.
 - The reply being generated is locked: only writes carrying its generation id change it. Other writers (UI, triggers, commands) skip it or get an error from the module.
 - Script modes are distinct:
 

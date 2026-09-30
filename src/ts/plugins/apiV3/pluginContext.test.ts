@@ -24,6 +24,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //   the custom storage;
 // - the runners: a script handler and the replacers and provider of a request get the context the
 //   send passes (a preset selected later is not recaptured), else one captured at entry;
+// - the forwarding host functions: `parseRisuChat` parses with the hook's character and chat and,
+//   with `processRegex`, its script path runs with the hook's context; `runLLMModel` sends the
+//   request for the hook's chat with the hook's context (a plugin model blocked unless allowed);
+//   `getCurrentLorebookEntries` answers the hook's character, chat, and module lore. Another plugin
+//   instance observes the forwarded context, since the calling plugin's own hooks would see it
+//   ambiently either way;
 // - `sendChat` inside a hook appends to the hook's chat and sends that chat with the context; its
 //   busy refusal is unchanged;
 // - unload: a reload removes the old instance's script handlers, replacers, and listeners, the old
@@ -154,6 +160,8 @@ import { selection, selectPersona, selectPreset } from "src/ts/storage/selection
 import { doingChat } from "src/ts/process/index.svelte";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
 import { processScriptFull } from "src/ts/process/scripts";
+import { getModuleLorebooks } from "src/ts/process/modules";
+import { risuChatParser } from "src/ts/parser/parser.svelte";
 import { clearPluginHooks, pluginHooks } from "../pluginHooks";
 import { capturePluginContext, invokeHook, PluginTargetGoneError, type PluginCallContext } from "./pluginContext";
 import { executePluginV3, getV3PluginInstance, loadV3Plugins } from "./v3.svelte";
@@ -686,6 +694,155 @@ describe("the runners", () => {
         );
         expect(captured).toMatchObject({ type: "success", result: "reply!" });
         expect(seen).toEqual(["before 0/1", "provider 0/1 20 again", "after 0/1"]);
+    });
+});
+
+describe("the host functions that forward the hook's target", () => {
+    it("parseRisuChat parses with the hook's character and chat, and with processRegex its script handlers run with the hook's context", async () => {
+        const api = await makeApi();
+        const other = await makeApi();
+        const seen: string[] = [];
+        // Another plugin's `process` handler: it sees the context only if `parseRisuChat` passed it on.
+        other.addRisuScriptHandler("process", async (data: string) => {
+            const { temperature } = await other.getDatabase(["temperature"]);
+            seen.push(`process ${where(other).join("/")} ${temperature} ${data}`);
+            return `${data}+`;
+        });
+        const results: string[] = [];
+        const listener = await listenerOf(api, async () => {
+            results.push(await api.parseRisuChat("plain", { messageIndex: 0, role: "char" }));
+            results.push(await api.parseRisuChat("scripted", { processRegex: true }));
+        });
+        const context = capturePluginContext(refB1);
+        selectedCharID.set(0);
+        chatStore.selectChat("b", 2);
+        selectPreset("b");
+        vi.mocked(risuChatParser).mockClear();
+
+        await invokeHook(listener, context, listenerArg);
+
+        expect(results).toEqual(["plain", "scripted+"]);
+        expect(seen).toEqual(["process 1/1 10 scripted"]);
+        const parses = vi.mocked(risuChatParser).mock.calls;
+        expect(parses.length).toBeGreaterThanOrEqual(3);
+        // The plain parse: the hook's character and chat, the message index and role as given.
+        expect(parses[0][0]).toBe("plain");
+        expect((parses[0][1] as any).chara.chaId).toBe("b");
+        expect(parses[0][1]).toMatchObject({
+            chatRef: refB1,
+            chatID: 0,
+            role: "char",
+            cbsConditions: { chatRole: "char" },
+        });
+        // The script path: the parse before the handlers, and the one `processScriptFull` does after them.
+        expect(parses[1][0]).toBe("scripted");
+        expect((parses[1][1] as any).chara.chaId).toBe("b");
+        expect(parses[1][1]).toMatchObject({ chatRef: refB1, chatID: -1 });
+        expect(parses[2][0]).toBe("scripted+");
+        expect(parses[2][1]).toMatchObject({ chatRef: refB1 });
+        // No parse of this hook fell back to the selected chat.
+        expect(parses.every((call) => (call[1] as any)?.chatRef?.chatId === "b1")).toBe(true);
+        expect(where(other)).toEqual([0, 0]);
+        expect(where(api)).toEqual([0, 0]);
+
+        // Outside a hook the same call parses the selected character without a chat ref.
+        vi.mocked(risuChatParser).mockClear();
+        expect(await api.parseRisuChat("outside")).toBe("outside");
+        expect((vi.mocked(risuChatParser).mock.calls[0][1] as any).chara.chaId).toBe("a");
+        expect(vi.mocked(risuChatParser).mock.calls[0][1]).not.toHaveProperty("chatRef");
+    });
+
+    it("runLLMModel requests for the hook's chat with the hook's context, and blocks a plugin model unless allowed", async () => {
+        const api = await makeApi();
+        const provider = await makeApi();
+        const seen: string[] = [];
+        // Another plugin's provider: it sees the hook's chat and preset only if the request carried them.
+        provider.addProvider("target", async (arg: any) => {
+            const { temperature } = await provider.getDatabase(["temperature"]);
+            seen.push(`provider ${where(provider).join("/")} ${temperature} ${arg.prompt_chat[0].content}`);
+            return { success: true, content: "reply" };
+        });
+        preset("a").aiModel = "pluginmodel:::target";
+        preset("b").aiModel = "pluginmodel:::target";
+        const results: unknown[] = [];
+        const listener = await listenerOf(api, async () => {
+            results.push(await api.runLLMModel({ mode: "model", messages: [{ role: "user", content: "blocked" }] }));
+            results.push(
+                await api.runLLMModel({
+                    mode: "model",
+                    messages: [{ role: "user", content: "allowed" }],
+                    allowPlugins: true,
+                }),
+            );
+        });
+        const context = capturePluginContext(refB1);
+        selectedCharID.set(0);
+        selectPreset("b");
+
+        await invokeHook(listener, context, listenerArg);
+
+        expect(results[0]).toMatchObject({ type: "fail", result: "Plugin calls are blocked by the caller." });
+        expect(results[1]).toMatchObject({ type: "success", result: "reply" });
+        // The provider ran once, for the hook's chat, reading the hook's preset (not the selected one).
+        expect(seen).toEqual(["provider 1/1 10 allowed"]);
+        const calls = vi.mocked(requestChatDataMain).mock.calls;
+        expect(calls).toHaveLength(2);
+        expect(calls[0][0]).toMatchObject({ chatRef: refB1, pluginContext: context, blockPlugins: true });
+        expect(calls[0][1]).toBe("model");
+        expect(calls[1][0]).toMatchObject({ chatRef: refB1, pluginContext: context, blockPlugins: false });
+        expect(calls[1][0].formated).toEqual([{ role: "user", content: "allowed" }]);
+        expect(where(provider)).toEqual([0, 0]);
+
+        // Outside a hook: no chat ref or context is attached, and the provider sees the selection.
+        seen.length = 0;
+        const outside = await api.runLLMModel({
+            mode: "model",
+            messages: [{ role: "user", content: "outside" }],
+            allowPlugins: true,
+        });
+        expect(outside).toMatchObject({ type: "success", result: "reply" });
+        expect(seen).toEqual(["provider 0/0 20 outside"]);
+        expect(calls[2][0]).not.toHaveProperty("chatRef");
+        expect(calls[2][0]).not.toHaveProperty("pluginContext");
+    });
+
+    it("getCurrentLorebookEntries answers the hook's character, chat, and module lore, not the selection's", async () => {
+        const api = await makeApi();
+        characterOf("a").globalLore = [{ comment: "a global" }];
+        characterOf("b").globalLore = [{ comment: "b global" }];
+        chatStore.setChatMeta({ chaId: "a", chatId: "a0" }, { localLore: [{ comment: "a0 local" }] });
+        chatStore.setChatMeta(refB1, { localLore: [{ comment: "b1 local" }] });
+        chatStore.setChatMeta({ chaId: "b", chatId: "b2" }, { localLore: [{ comment: "b2 local" }] });
+        vi.mocked(getModuleLorebooks).mockImplementation(
+            (ref?: { chaId: string; chatId: string }) =>
+                (ref
+                    ? [{ comment: `module for ${ref.chaId}/${ref.chatId}` }]
+                    : [{ comment: "module for the selection" }]) as any,
+        );
+        try {
+            const seen: unknown[] = [];
+            const listener = await listenerOf(api, async () => {
+                seen.push(api.getCurrentLorebookEntries());
+            });
+            const context = capturePluginContext(refB1);
+            selectedCharID.set(0);
+            chatStore.selectChat("b", 2);
+
+            await invokeHook(listener, context, listenerArg);
+
+            expect(seen).toEqual([[{ comment: "b global" }, { comment: "b1 local" }, { comment: "module for b/b1" }]]);
+            expect(getModuleLorebooks).toHaveBeenLastCalledWith(refB1);
+
+            // Outside the hook: the selected character's lore, its selected chat, and the selection's modules.
+            expect(api.getCurrentLorebookEntries()).toEqual([
+                { comment: "a global" },
+                { comment: "a0 local" },
+                { comment: "module for the selection" },
+            ]);
+            expect(getModuleLorebooks).toHaveBeenLastCalledWith();
+        } finally {
+            vi.mocked(getModuleLorebooks).mockImplementation(() => []);
+        }
     });
 });
 
