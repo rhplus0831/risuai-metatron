@@ -8,6 +8,7 @@ import {
     openPresetList,
     OpenRealmStore,
     PlaygroundStore,
+    popUpEditorStore,
     QuickSettings,
     SafeModeStore,
     selectedCharID,
@@ -378,12 +379,14 @@ function focusQuery(query: string) {
 }
 
 function changeToPreset(num: number) {
-    if (!doingAlert()) {
+    // The popup editor writes its draft back to the field it was opened on when it closes; with a
+    // forwarded preset field that is the selected preset, so the selection must not change meanwhile.
+    if (!doingAlert() && !popUpEditorStore.open) {
         let db = getDatabase();
         let pres = db.botPresets;
         if (pres.length > num) {
             alertToast(`Changed to Preset: ${pres[num].name}`);
-            changeToPreset2(num);
+            changeToPreset2(pres[num].id);
         }
     }
 }

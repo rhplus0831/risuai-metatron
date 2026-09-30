@@ -13,13 +13,6 @@ import {
 import { chatFormatSettingsItems } from "./chatFormatSettingsData";
 import { displaySettingsItems } from "./displaySettingsData.svelte";
 
-/**
- * Sentinel value representing an uninitialized local state in wrapper components.
- * Used instead of `undefined` so that a legitimate `undefined` DB value
- * can still be written back without being silently ignored.
- */
-export const UNINITIALIZED = Symbol("uninitialized");
-
 export function getLabel(item: SettingItem): string {
     if (item.labelKey && (language as any)[item.labelKey]) {
         return (language as any)[item.labelKey];
@@ -61,6 +54,18 @@ export function setSettingValue(item: SettingItem, newValue: any, ctx: SettingCo
 
     if (item.onChange) {
         item.onChange(newValue, ctx);
+    }
+}
+
+/**
+ * The write of a settings wrapper's function binding: the user's edit goes through
+ * `setSettingValue` synchronously, in the same task as the input, so a forwarded field lands in the
+ * preset selected at that moment (Phase 3: a copy written back from an `$effect` could land after a
+ * switch). A write of the value already there is skipped, so `onChange` fires once per edit.
+ */
+export function updateSettingValue(item: SettingItem, newValue: any, ctx: SettingContext): void {
+    if (newValue !== getSettingValue(item, ctx)) {
+        setSettingValue(item, newValue, ctx);
     }
 }
 

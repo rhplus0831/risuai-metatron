@@ -14,17 +14,21 @@ import {
     PRESET_DEFAULTS,
     PRESET_FIELDS,
     PRESET_KEEP_ON_SWITCH_FIELDS,
+    PRESET_NULLABLE_FIELDS,
     PRESET_ROOT_ALIASES,
+    defaultOoba,
     presetTemplate,
     type PresetField,
 } from "../../../../shared/presets.ts";
 import { ROOT_EXCLUDED_KEYS } from "../../../../shared/resources.ts";
 import {
+    CLIENT_SELECTION_KEYS,
     COLLECTION_FIELDS,
     COLLECTION_KIND,
     COLLECTION_SELECTION_FIELDS,
     DROPPED_FIELDS,
     FORWARDED_PRESET_KEYS,
+    FORWARDED_ROOT_KEYS,
     PERSONA_ROOT_KEYS,
     PHASE1_FIELDS,
     RESIDUAL_ROOT_KEYS,
@@ -378,8 +382,9 @@ describe("ids", () => {
     });
 });
 
-// The partition (slice 2 "Proposed decisions", plan amendments A2 and A3): the five sections,
-// the thirteen collections with their two selection fields, the residual root, the dropped
+// The partition (slice 2 "Proposed decisions", plan amendments A2 and A3; slice 5 split the root):
+// the five sections, the thirteen collections with their two selection fields, the forwarded root
+// keys (served by the client forwarding layer, never stored), the residual root, the dropped
 // fields, and the Phase 1 fields cover `keyof Database` exactly once. The type-level half below
 // is checked by `pnpm check`; the runtime half checks the counts derived from the lists and the
 // keys the pre-phase boot snapshot actually holds.
@@ -392,17 +397,19 @@ type PresetRootName<F extends PresetField> = F extends "NAISettings"
       : F extends "regex"
         ? "presetRegex"
         : F;
-type ForwardedRootKey = {
+type ForwardedPresetKey = {
     [F in PresetField]: F extends "name" | "image" | "proxyKey" | KeepOnSwitch ? never : PresetRootName<F>;
 }[PresetField];
+// `FORWARDED_ROOT_KEYS` and `RESIDUAL_ROOT_KEYS` are typed `keyof Database`, so their members are
+// spelled out here from the lists they are built from.
+type ForwardedRootKey = ForwardedPresetKey | "proxyKey" | (typeof CLIENT_SELECTION_KEYS)[number];
+type ResidualRootKey = keyof typeof PERSONA_ROOT_ALIASES | "selectedPersona";
 type ListedKey =
     | (typeof SECTION_FIELDS)[SectionKind][number]
     | (typeof COLLECTION_FIELDS)[CollectionKind]
     | (typeof COLLECTION_SELECTION_FIELDS)[keyof typeof COLLECTION_SELECTION_FIELDS]
     | ForwardedRootKey
-    | "proxyKey"
-    | keyof typeof PERSONA_ROOT_ALIASES
-    | (typeof SELECTION_KEYS)[number]
+    | ResidualRootKey
     | (typeof DROPPED_FIELDS)[number]
     | (typeof ROOT_EXCLUDED_KEYS)[number];
 type UnlistedDatabaseKey = Exclude<keyof Database, ListedKey>;
@@ -420,6 +427,7 @@ describe("field-to-resource partition", () => {
         ["sections", sectionKeys],
         ["collections", collectionKeys],
         ["collection selections", selectionFields],
+        ["forwarded root", FORWARDED_ROOT_KEYS],
         ["residual root", RESIDUAL_ROOT_KEYS],
         ["dropped", DROPPED_FIELDS],
         ["phase 1", PHASE1_FIELDS],
@@ -450,7 +458,7 @@ describe("field-to-resource partition", () => {
         expect(unlisted).toEqual([]);
     });
 
-    it("derives the residual root from the preset schema: 69 forwarded keys, proxyKey, 4 persona keys, 3 selections", () => {
+    it("derives the root lists from the preset schema: 69 forwarded keys, proxyKey, and 2 client selections are forwarded; 4 persona keys and selectedPersona remain", () => {
         const notForwarded = new Set<string>(["name", "image", "proxyKey", ...PRESET_KEEP_ON_SWITCH_FIELDS]);
         const expectedForwarded = PRESET_FIELDS.filter((field) => !notForwarded.has(field)).map(
             (field) => presetToRootName[field] ?? field,
@@ -475,13 +483,11 @@ describe("field-to-resource partition", () => {
             personaPrompt: "personaPrompt",
         });
         expect(SELECTION_KEYS).toEqual(["botPresetsId", "selectedPersona", "loreBookPage"]);
-        expect(RESIDUAL_ROOT_KEYS).toEqual([
-            ...FORWARDED_PRESET_KEYS,
-            "proxyKey",
-            ...PERSONA_ROOT_KEYS,
-            ...SELECTION_KEYS,
-        ]);
-        expect(RESIDUAL_ROOT_KEYS).toHaveLength(69 + 1 + 4 + 3);
+        expect(CLIENT_SELECTION_KEYS).toEqual(["botPresetsId", "loreBookPage"]);
+        expect(FORWARDED_ROOT_KEYS).toEqual([...FORWARDED_PRESET_KEYS, "proxyKey", ...CLIENT_SELECTION_KEYS]);
+        expect(FORWARDED_ROOT_KEYS).toHaveLength(69 + 1 + 2);
+        expect(RESIDUAL_ROOT_KEYS).toEqual([...PERSONA_ROOT_KEYS, "selectedPersona"]);
+        expect(RESIDUAL_ROOT_KEYS).toHaveLength(4 + 1);
     });
 
     it("places the review corrections: keep-on-switch in providers, auto-suggest in ui, supaMemoryKey in llmSecrets, hypaMemoryKey dropped", () => {
@@ -513,5 +519,95 @@ describe("field-to-resource partition", () => {
             hypaV3Presets: "hypaV3PresetId",
         });
         expect(PHASE1_FIELDS).toBe(ROOT_EXCLUDED_KEYS);
+    });
+});
+
+// Slice 5 (`forwarding-presets-and-selection.md`, "Missing and null values"): `normalizePreset` keeps an
+// explicit `null` only where it is a value the readers handle (`PRESET_NULLABLE_FIELDS`) or in a
+// keep-on-switch field (`saveCurrentPreset` writes `seperateModels: null` on purpose); any other
+// `null` gets the default, as `setPreset` gave the root working copy before Phase 3. The server
+// `presets` normalizer runs the same function, so a cleared number comes back as its default after
+// a reload. This replaces slice 2's rule, which kept every `null` (Astra challenge point 4).
+describe("null canonicalization", () => {
+    it("lists the nullable fields as preset fields outside the keep-on-switch set", () => {
+        expect(PRESET_NULLABLE_FIELDS).toEqual([
+            "promptTemplate",
+            "NAIadventure",
+            "NAIappendName",
+            "localStopStrings",
+            "repetition_penalty",
+            "min_p",
+            "top_a",
+            "openrouterProvider",
+            "thinkingTokens",
+            "dynamicOutput",
+        ]);
+        for (const field of PRESET_NULLABLE_FIELDS) {
+            expect(PRESET_FIELDS, field).toContain(field);
+            expect(PRESET_KEEP_ON_SWITCH_FIELDS as readonly string[], field).not.toContain(field);
+        }
+    });
+
+    it("keeps a null in a nullable or keep-on-switch field and gives any other null its default", () => {
+        const preset = normalizePreset({
+            id: "nulls",
+            // Nullable: kept.
+            promptTemplate: null,
+            min_p: null,
+            repetition_penalty: null,
+            top_a: null,
+            thinkingTokens: null,
+            openrouterProvider: null,
+            dynamicOutput: null,
+            NAIadventure: null,
+            // Keep-on-switch: kept.
+            seperateModels: null,
+            fallbackModels: null,
+            // Anything else: the default, scalars and containers alike.
+            maxResponse: null,
+            temperature: null,
+            mainPrompt: null,
+            ooba: null,
+            promptSettings: null,
+            formatingOrder: null,
+            systemContentReplacement: null,
+            JinjaTemplate: null,
+            NAISettings: null,
+        }) as unknown as Record<string, unknown>;
+        for (const field of ["promptTemplate", "min_p", "repetition_penalty", "top_a", "thinkingTokens"]) {
+            expect(preset[field], field).toBeNull();
+        }
+        expect(preset.openrouterProvider).toBeNull();
+        expect(preset.dynamicOutput).toBeNull();
+        expect(preset.NAIadventure).toBeNull();
+        expect(preset.seperateModels).toBeNull();
+        expect(preset.fallbackModels).toBeNull();
+
+        expect(preset.maxResponse).toBe(PRESET_DEFAULTS.maxResponse);
+        expect(preset.temperature).toBe(PRESET_DEFAULTS.temperature);
+        expect(preset.mainPrompt).toBe(PRESET_DEFAULTS.mainPrompt);
+        expect(preset.ooba).toEqual(defaultOoba);
+        expect(preset.promptSettings).toEqual(PRESET_DEFAULTS.promptSettings);
+        expect(preset.formatingOrder).toEqual(PRESET_DEFAULTS.formatingOrder);
+        expect(preset.systemContentReplacement).toBe("system: {{slot}}");
+        expect(preset.JinjaTemplate).toBe("");
+        expect(preset.NAISettings).toEqual(PRESET_DEFAULTS.NAISettings);
+        // A fresh copy of the default, never the shared default object.
+        expect(preset.ooba).not.toBe(defaultOoba);
+        expect(preset.promptSettings).not.toBe(PRESET_DEFAULTS.promptSettings);
+    });
+
+    it("is what the server presets normalizer stores, and a fixed point of itself", async () => {
+        // Loaded at run time through a computed specifier, like `storeBackedServer.ts`: the client
+        // `tsconfig.json` must not type-check the strict server sources.
+        const { normalizePresetCollection } = (await import(
+            /* @vite-ignore */ `${"../../../../server/src/data/normalize/"}presets.ts`
+        )) as { normalizePresetCollection: (input: unknown) => Record<string, unknown>[] };
+        const stored = normalizePresetCollection([{ id: "nulls", maxResponse: null, ooba: null, min_p: null }]);
+        expect(stored).toHaveLength(1);
+        expect(stored[0].maxResponse).toBe(PRESET_DEFAULTS.maxResponse);
+        expect(stored[0].ooba).toEqual(defaultOoba);
+        expect(stored[0].min_p).toBeNull();
+        expect(normalizePresets(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
     });
 });

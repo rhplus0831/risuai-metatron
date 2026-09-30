@@ -11,10 +11,13 @@ import { ROOT_EXCLUDED_KEYS } from "./resources.ts";
  * - `SECTION_FIELDS`: five singleton section resources.
  * - `COLLECTION_FIELDS`: small collection resources, each holding one field (two for the preset
  *   collections that carry their selection).
- * - `RESIDUAL_ROOT_KEYS`: what `root` still holds until slices 5 and 6 forward it: the preset
- *   working copy (`FORWARDED_PRESET_KEYS` and `proxyKey`), the persona working copy, and the three
- *   selection indexes. The keep-on-switch preset fields are `providers` fields, the two
- *   auto-suggest fields `ui` fields; neither is part of the working copy.
+ * - `FORWARDED_ROOT_KEYS`: not stored as root fields. The client forwards them
+ *   (`src/ts/storage/forwarding.svelte.ts`): the preset fields to the selected preset,
+ *   `proxyKey` to that preset's `llmSecrets.presets` entry, and the two client selection indexes
+ *   to the per-client selection store. The keep-on-switch preset fields are `providers` fields and
+ *   the two auto-suggest fields are `ui` fields; neither is forwarded.
+ * - `RESIDUAL_ROOT_KEYS`: what `root` still holds until slice 6 forwards it: the persona working
+ *   copy and `selectedPersona`.
  * - `DROPPED_FIELDS`: no longer persisted (no reader, write-only, migrated, or legacy mirrors).
  */
 
@@ -372,13 +375,24 @@ export const SELECTION_KEYS = [
     "loreBookPage",
 ] as const satisfies readonly (keyof Database)[];
 
-/** What the residual `root` resource holds until the forwarding slices empty it. */
-export const RESIDUAL_ROOT_KEYS: readonly (keyof Database)[] = [
+/**
+ * The selection indexes the per-client selection store serves (`src/ts/storage/selection.svelte.ts`),
+ * never persisted in a resource. `selectedPersona` joins them in slice 6.
+ */
+export const CLIENT_SELECTION_KEYS = [
+    "botPresetsId",
+    "loreBookPage",
+] as const satisfies readonly (typeof SELECTION_KEYS)[number][];
+
+/** Root fields the client forwarding layer serves instead of `root`. */
+export const FORWARDED_ROOT_KEYS: readonly (keyof Database)[] = [
     ...FORWARDED_PRESET_KEYS,
     "proxyKey",
-    ...PERSONA_ROOT_KEYS,
-    ...SELECTION_KEYS,
+    ...CLIENT_SELECTION_KEYS,
 ];
+
+/** What the residual `root` resource holds until slice 6 empties it. */
+export const RESIDUAL_ROOT_KEYS: readonly (keyof Database)[] = [...PERSONA_ROOT_KEYS, "selectedPersona"];
 
 /** Fields no longer persisted; the assembly never produces them. */
 export const DROPPED_FIELDS = [

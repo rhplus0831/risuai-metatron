@@ -56,8 +56,9 @@ function character(chaId: string, name: string, extra: Record<string, unknown> =
 async function boot(options: { prepare?: (server: FakeResourceServer) => void; normalize?: (db: any) => void } = {}) {
     vi.resetModules();
     const fake = new FakeResourceServer();
-    // The residual root as the client writes it: `RESIDUAL_ROOT_KEYS` only, in that order.
-    fake.set("root", "main", { username: "u", botPresetsId: 0 });
+    // The residual root as the client writes it: `RESIDUAL_ROOT_KEYS` only, in that order (the
+    // preset fields and the selection indexes are forwarded since slice 5, never stored in root).
+    fake.set("root", "main", { username: "u", selectedPersona: 0 });
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
@@ -115,13 +116,13 @@ describe("seeding and no echo", () => {
     it("saves the load-time normalization once (the first compare pass) and then stays quiet", async () => {
         const { fake, sync, bootBatches } = await boot({
             normalize: (db) => {
-                // What `setDatabase` adds after seeding: a default of the preset working copy, which
-                // stays in the residual root until slice 5.
-                db.temperature = 80;
+                // What `setDatabase` adds after seeding: a default of a residual root field (the
+                // persona working copy, until slice 6 forwards it).
+                db.userNote = "";
                 db.characters[1].bias = [];
             },
         });
-        expect(fake.data("root", "main").temperature).toBe(80);
+        expect(fake.data("root", "main").userNote).toBe("");
         expect(fake.data("characters", "b").bias).toEqual([]);
         expect(fake.data("characters", "a").bias).toBeUndefined();
         expect(bootBatches).toHaveLength(1);

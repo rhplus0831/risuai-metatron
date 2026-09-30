@@ -11,6 +11,7 @@ import {
     SECTION_KIND,
 } from "../../shared/sections.ts";
 import { replacePresetSecrets } from "./storage/llmSecrets.svelte";
+import { loadSelection } from "./storage/selection.svelte";
 import { botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./alert";
@@ -55,6 +56,8 @@ export async function loadData() {
             seedResources(snapshot);
             seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
             seedInlays(snapshot.kinds[RESOURCE_KIND.inlays] ?? []);
+            // This client's preset and lorebook page; the forwarding layer checks the ids.
+            loadSelection();
             setDatabase(assembleDatabase(snapshot));
 
             LoadingStatusState.text = "Checking Service Worker...";
@@ -126,7 +129,8 @@ export async function loadData() {
 
 /**
  * Builds the in-memory `Database` from the server resources: the residual `root` fields
- * (`RESIDUAL_ROOT_KEYS` only; a stored root from before Phase 3 holds more, which is ignored), the
+ * (`RESIDUAL_ROOT_KEYS` only; a stored root from before Phase 3 holds more, which is ignored; the
+ * preset fields and the selection indexes are forwarded, see `forwarding.svelte.ts`), the
  * five sections (their `SECTION_FIELDS`), the collections (`translatorPresets` and `hypaV3Presets`
  * unpack `{ items, selectedId }` into their two fields), the Phase 1 collections, and the characters
  * in creation order, each with its chats in their server order. The server creates and normalizes

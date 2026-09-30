@@ -343,14 +343,14 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
         const randomSelect = Math.floor(Math.random() * names.length);
         const ele = names[randomSelect];
 
-        const findId = DBState.db.botPresets.findIndex((v) => {
+        const found = DBState.db.botPresets.find((v) => {
             return v.name === ele;
         });
 
-        if (findId === -1) {
+        if (!found) {
             alertToast(`Cannot find preset: ${ele}`);
         } else {
-            changeToPreset(findId, true);
+            changeToPreset(found.id, true);
         }
     }
 

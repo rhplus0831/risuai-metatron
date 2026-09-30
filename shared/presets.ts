@@ -234,6 +234,24 @@ export const PRESET_KEEP_ON_SWITCH_FIELDS = [
 ] as const satisfies readonly PresetField[];
 
 /**
+ * Preset fields whose explicit `null` is a value the readers handle (`promptTemplate` null means no
+ * template, `thinkingTokens` null no budget): `setPreset` copied it to the root as it was before
+ * Phase 3. `normalizePreset` keeps it, and the forwarding layer serves it.
+ */
+export const PRESET_NULLABLE_FIELDS = [
+    "promptTemplate",
+    "NAIadventure",
+    "NAIappendName",
+    "localStopStrings",
+    "repetition_penalty",
+    "min_p",
+    "top_a",
+    "openrouterProvider",
+    "thinkingTokens",
+    "dynamicOutput",
+] as const satisfies readonly PresetField[];
+
+/**
  * The base `importPreset` spreads under an imported file, unchanged from before Phase 3 so old
  * files import as they did. It is not the default of a new preset (that is `normalizePreset`).
  */
@@ -334,6 +352,7 @@ export function normalizePromptTemplate(template: PromptItem[] | null | undefine
 }
 
 const keepOnSwitchFields = new Set<string>(PRESET_KEEP_ON_SWITCH_FIELDS);
+const nullableFields = new Set<string>(PRESET_NULLABLE_FIELDS);
 
 /** The provider object that replaced the old single-provider string; runs before the kind check. */
 function migrateOpenrouterProvider(value: unknown): unknown {
@@ -363,9 +382,12 @@ export function migrateKeepOnSwitchFields(record: Record<string, unknown>): void
  * with its default, and the migrations `setDatabase` and `setPreset` applied to the root working
  * copy before Phase 3. Nested values are not checked beyond those migrations. The server `presets`
  * normalizer runs this, so a stored preset always has the containers the client reads through
- * (`NAISettings.cfg_scale`, `ooba.formating`). An explicit `null` is kept: `setPreset` passed some through as they
- * are (`min_p`, `top_a`, `repetition_penalty`), and `saveCurrentPreset` writes `seperateModels: null`
- * on purpose while `doNotChangeSeperateModels` is on. The keep-on-switch fields are never filled:
+ * (`NAISettings.cfg_scale`, `ooba.formating`). An explicit `null` is kept only where it is a
+ * value (`PRESET_NULLABLE_FIELDS`: `setPreset` passed it through as it was, such as `min_p`) and in
+ * the keep-on-switch fields (`saveCurrentPreset` writes `seperateModels: null` on purpose while
+ * `doNotChangeSeperateModels` is on); any other `null` gets the default, as `setPreset` gave the
+ * root copy (a number field cleared in the UI comes back as its default after a reload, as the
+ * working copy's did before Phase 3). The keep-on-switch fields are never filled:
  * they stay on the pre-Phase 3 path, where `setPreset` applies their fallback. The input is never
  * mutated and must be plain data (pass `$state.snapshot` of a proxy). The id is `options.id` when
  * given (a copy or an import passes a fresh one), else the input's valid id, else a new one.
@@ -377,7 +399,8 @@ export function normalizePreset(input: unknown, options: { id?: string } = {}): 
     };
     for (const field of PRESET_FIELDS) {
         const value = field === "openrouterProvider" ? migrateOpenrouterProvider(source[field]) : source[field];
-        if (value === null || (value !== undefined && valueKindOf(value) === PRESET_FIELD_KINDS[field])) {
+        const keepsNull = nullableFields.has(field) || keepOnSwitchFields.has(field);
+        if ((value === null && keepsNull) || (value != null && valueKindOf(value) === PRESET_FIELD_KINDS[field])) {
             preset[field] = plainClone(value);
             continue;
         }

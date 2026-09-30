@@ -1,6 +1,6 @@
 <script lang="ts">
     import type { SettingItem, SettingContext } from "src/ts/setting/types";
-    import { UNINITIALIZED, getLabel, getSettingValue, setSettingValue } from "src/ts/setting/utils";
+    import { getLabel, getSettingValue, setSettingValue, updateSettingValue } from "src/ts/setting/utils";
     import { untrack } from "svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
@@ -14,38 +14,22 @@
 
     let { item, ctx }: Props = $props();
 
-    let localValue: any = $state(untrack(() => getSettingValue(item, ctx)));
-
-    // Sync: DB → local (one-way read)
-    $effect(() => {
-        localValue = getSettingValue(item, ctx);
-    });
-
-    // Write-back: local → DB (guarded — only fires on actual user changes)
-    $effect(() => {
-        const val = localValue;
-        if (val === UNINITIALIZED) return;
-        untrack(() => {
-            if (val !== getSettingValue(item, ctx)) {
-                setSettingValue(item, val, ctx);
-            }
-        });
-    });
-
     // Process options to support labelKey translation and conditional rendering
     let processedOptions = $derived(
         (item.options?.selectOptions ?? []).filter((opt) => !opt.condition || opt.condition(ctx)),
     );
 
-    // Reset value if current selection becomes hidden
+    // Reset value if current selection becomes hidden. The value is read untracked, so this runs
+    // when the visible options change, never on a switch of the selected preset.
     $effect(() => {
-        const currentValue = untrack(() => localValue);
+        const currentValue = untrack(() => getSettingValue(item, ctx));
         if (
             processedOptions.length > 0 &&
             currentValue !== undefined &&
             !processedOptions.some((o) => o.value === currentValue)
         ) {
-            localValue = processedOptions[processedOptions.length - 1].value;
+            const fallback = processedOptions[processedOptions.length - 1].value;
+            untrack(() => setSettingValue(item, fallback, ctx));
         }
     });
 </script>
@@ -54,7 +38,7 @@
     {getLabel(item)}
     {#if item.helpKey}<Help key={item.helpKey as any} />{/if}
 </span>
-<SelectInput bind:value={localValue}>
+<SelectInput bind:value={() => getSettingValue(item, ctx), (v) => updateSettingValue(item, v, ctx)}>
     {#each processedOptions as opt}
         <OptionInput value={opt.value}>
             {opt.labelKey ? (language as any)[opt.labelKey] : opt.label}

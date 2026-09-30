@@ -921,16 +921,16 @@ const setPluginDatabaseLite = (newDb: any) => {
 };
 
 const setPluginDatabase = async (newDb: any) => {
+    if (Object.hasOwn(newDb, "plugins")) {
+        console.warn(
+            "[WARN] Plugin attempted to access plugin directly. this would be blocked in future versions. Instead, use the provided APIs to manage plugins. Attempting to handle plugin installation via plugin for new plugins in the provided database object.",
+        );
+        newDb.plugins = await handlePluginInstallViaPlugin(newDb.plugins);
+    }
+    // No await from here on: a forwarded preset field lands in the preset selected now.
     const db = getDatabase();
     db.pluginCustomStorage ??= {};
     for (const key of Object.keys(newDb)) {
-        if (key === "plugins") {
-            console.warn(
-                "[WARN] Plugin attempted to access plugin directly. this would be blocked in future versions. Instead, use the provided APIs to manage plugins. Attempting to handle plugin installation via plugin for new plugins in the provided database object.",
-            );
-            newDb[key] = await handlePluginInstallViaPlugin(newDb.plugins);
-        }
-
         if (key === "characters") {
             applyPluginCharacters(newDb[key]);
         } else if (allowedDbKeys.includes(key)) {

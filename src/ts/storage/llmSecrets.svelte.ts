@@ -2,8 +2,9 @@
  * The client state of the `llmSecrets` record's `presets` map: each preset's `proxyKey`, by preset
  * id. It is not a `Database` field (the flat credential fields of the record mirror into
  * `DBState.db` like any section). The save adapter assembles it at boot, saves it with the
- * `llmSecrets` record, and replaces it on a conflict reload. Nothing reads it before the `proxyKey`
- * accessor of the forwarding layer (Phase 3, slice 5).
+ * `llmSecrets` record, and replaces it on a conflict reload. The forwarding layer serves
+ * `db.proxyKey` from the selected preset's entry (`forwarding.svelte.ts`); copying, deleting, and
+ * importing a preset copy, delete, and fill entries (`database.svelte.ts`, `botpreset.svelte`).
  */
 export type PresetSecret = { proxyKey: string };
 

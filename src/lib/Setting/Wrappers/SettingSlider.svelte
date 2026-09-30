@@ -1,7 +1,6 @@
 <script lang="ts">
     import type { SettingItem, SettingContext } from "src/ts/setting/types";
-    import { UNINITIALIZED, getLabel, getSettingValue, setSettingValue } from "src/ts/setting/utils";
-    import { untrack } from "svelte";
+    import { getLabel, getSettingValue, updateSettingValue } from "src/ts/setting/utils";
     import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
     import Help from "src/lib/Others/Help.svelte";
 
@@ -12,26 +11,10 @@
 
     let { item, ctx }: Props = $props();
 
-    let localValue: any = $state(untrack(() => getSettingValue(item, ctx)));
-
-    // Sync: DB → local (one-way read)
-    $effect(() => {
-        localValue = getSettingValue(item, ctx);
-    });
-
-    // Write-back: local → DB (guarded)
-    $effect(() => {
-        const val = localValue;
-        if (val === UNINITIALIZED) return;
-        untrack(() => {
-            if (val !== getSettingValue(item, ctx)) {
-                setSettingValue(item, val, ctx);
-            }
-        });
-    });
-
     let customText = $derived(
-        typeof item.options?.customText === "function" ? item.options.customText(localValue) : item.options?.customText,
+        typeof item.options?.customText === "function"
+            ? item.options.customText(getSettingValue(item, ctx))
+            : item.options?.customText,
     );
 </script>
 
@@ -48,5 +31,5 @@
     multiple={item.options?.multiple}
     disableable={item.options?.disableable}
     {customText}
-    bind:value={localValue}
+    bind:value={() => getSettingValue(item, ctx), (v) => updateSettingValue(item, v, ctx)}
 />

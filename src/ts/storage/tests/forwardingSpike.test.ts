@@ -382,8 +382,12 @@ describe("proof 3: the plugin setters land forwarded keys in the selected record
     });
 });
 
-describe("proof 4: a deferred wrapper write misroutes or loses an edit made in the same flush as a switch", () => {
-    it("current pattern (`localValue` + two effects, the real SettingNumber.svelte): the edit does not land in `a`", () => {
+describe("proof 4: a wrapper write made in the same flush as a switch must land in the record selected at the time", () => {
+    it("the real SettingNumber.svelte (a function binding since slice 5): 91 lands in `a`, `b` is unchanged, onChange fires once", () => {
+        // The spike's proof 4 showed that the old wrapper (`localValue` + two effects) lost this
+        // edit: the DB-to-local effect ran first and overwrote `localValue` with b's value, so the
+        // guarded write-back had nothing to write. Slice 5 rewrote the wrapper to the replacement
+        // pattern below; this is the regression test for the real wrapper.
         const item = numberItem();
         const { target } = render(SettingNumber, { item, ctx: ctx() });
         const element = target.querySelector<HTMLInputElement>("input")!;
@@ -393,15 +397,11 @@ describe("proof 4: a deferred wrapper write misroutes or loses an edit made in t
         switchTo("b");
         flushSync();
 
-        const landedInA = preset("a")!.temperature === 91;
-        const bUntouched = preset("b")!.temperature === 50;
-        expect(landedInA && bUntouched, "the deferred pattern must lose or misroute the edit").toBe(false);
-        // Observed with Svelte 5.57.1: the DB-to-local effect runs first and overwrites `localValue`
-        // with b's value, so the guarded write-back finds nothing to write. The edit is lost.
-        expect(preset("a")!.temperature).toBe(80);
+        expect(preset("a")!.temperature).toBe(91);
         expect(preset("b")!.temperature).toBe(50);
         expect(element.value).toBe("50");
-        expect(item.onChange).not.toHaveBeenCalled();
+        expect(item.onChange).toHaveBeenCalledTimes(1);
+        expect(item.onChange).toHaveBeenCalledWith(91, expect.anything());
     });
 
     it("replacement pattern (function binding, synchronous setSettingValue): 91 lands in `a`, `b` is unchanged, onChange fires once", () => {

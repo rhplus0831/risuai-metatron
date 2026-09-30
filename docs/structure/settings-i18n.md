@@ -31,7 +31,7 @@ Declarative settings (`src/ts/setting/`):
   - `SettingType`.
   - `SettingCategory`: unused.
 - `settingRegistry.ts` `settingRegistry`: maps each `SettingType` to a wrapper component (`check`, `text`, `number`, `textarea`, `slider`, `select`, `segmented`, `color`, `header`, `button`, `accordion`, `custom`).
-- `utils.ts`: `getSettingValue`, `setSettingValue`, `checkCondition`, `getLabel`, `getFullSettingsData` (search and custom sidebar), `UNINITIALIZED`.
+- `utils.ts`: `getSettingValue`, `setSettingValue`, `checkCondition`, `getLabel`, `getFullSettingsData` (search and custom sidebar), `updateSettingValue` (the wrappers' write: skips an unchanged value, so `onChange` fires once per edit).
 - `customComponents.ts` `customComponents`: maps component IDs to components for `type:'custom'`.
 - Data arrays:
   - `accessibilitySettingsData.ts`
@@ -44,7 +44,7 @@ Declarative settings (`src/ts/setting/`):
 Components (`src/lib/Setting/`):
 
 - `SettingRenderer.svelte`: derives the context, filters by `checkCondition`, and renders `settingRegistry[item.type]` keyed by `item.id`.
-- `Wrappers/Setting*.svelte`: local state synced with the DB through guarded effects (`UNINITIALIZED` plus `untrack`).
+- `Wrappers/Setting*.svelte`: a function binding (`bind:value={() => getSettingValue(...), (v) => updateSettingValue(...)}`), so an edit is written synchronously, into the preset selected at that moment. No local copy and no write-back effect.
 - `Settings.svelte`: navigation. `SettingsMenuIndex` selects the page.
 
 Pages, by kind:
@@ -74,7 +74,7 @@ Languages (`src/lang/`):
 
 - `setDatabase` → `changeLanguage(db.language)`.
 - `Settings.svelte` → page → `SettingRenderer` → wrapper → `setSettingValue` → `DBState.db` → autosave.
-- Preset switch: `changeToPreset(i)` → `saveCurrentPreset` (unless disabled) → set `botPresetsId` → `setPreset`. Also triggered from `hotkey.ts` and `presetChain` in `sendChat`.
+- Preset switch: `changeToPreset(id)` → `saveCurrentPreset` (the five keep-on-switch fields into the old preset, unless disabled) → `selectPreset(id)` → `setPreset` (the new preset's five fields into `providers`). Also triggered from `hotkey.ts` (index 1-9 mapped to the id) and `presetChain` in `sendChat` (name mapped to the id). Every other preset field is forwarded, so the switch copies nothing else.
 - Language change (`languageSettingsData` `onChange`):
   1. Optionally download a translation.
   2. `changeLanguage`.
@@ -95,11 +95,11 @@ Languages (`src/lang/`):
 
 ## Invariants
 
-- A new setting needs: a `Database` field, a `setDatabase` default, a `SettingItem` in the right data array (or handwritten UI), and an `en.ts` key.
+- A new setting needs: a `Database` field, its place and default (`persistence.md`, "Add a persisted setting"), a `SettingItem` in the right data array (or handwritten UI), and an `en.ts` key.
 - Keep `item.id` values unique and stable. User custom sidebars reference them.
 - Value precedence: `getValue`, then `bindPath`, then `bindKey`. `setSettingValue` creates missing path objects.
 - `SettingSelect`/`SettingSegmented` reset a value whose option becomes hidden. `SettingSegmented` supports only `bindKey`.
-- A preset-owned field must be added to `botPreset` and `PRESET_DEFAULTS` in `shared/presets.ts` (the canonical list `normalizePreset` uses), to `saveCurrentPreset` and `setPreset` while the root working copy exists, and scrubbed in `downloadPreset` if it is secret.
+- A preset-owned field must be added to `botPreset` and `PRESET_DEFAULTS` in `shared/presets.ts` (the canonical list `normalizePreset` uses), and scrubbed in `downloadPreset` if it is secret. The forwarding layer serves it as a flat field of the selected preset.
 - Preserve misspelled keys: `PresensePenalty`, `seperateParameters`, `seperateModels`, `JinjaTemplate`.
 - Prompt edits must keep the `PromptItem` discriminated shape and reassign arrays after splicing. `normalizePromptTemplate` (`shared/presets.ts`) handles imports.
 - `select` option `labelKey` has no fallback label. Missing locale keys fall back to English only because `changeLanguage` merges.

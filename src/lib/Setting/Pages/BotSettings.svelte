@@ -1059,7 +1059,12 @@
         <button
             class="mt-2 text-textcolor2 hover:text-textcolor focus-within:text-textcolor"
             onclick={async () => {
+                // The selection can change while the file dialog is open: the image goes to this preset.
+                const presetId = DBState.db.botPresets[DBState.db.botPresetsId]?.id;
                 const sel = await selectSingleFile(["png", "jpg", "jpeg", "webp"]);
+                if (!sel) {
+                    return;
+                }
                 const canvas = document.createElement("canvas");
                 const ctx = canvas.getContext("2d");
                 const img = new Image();
@@ -1071,7 +1076,10 @@
                 canvas.height = 48;
                 ctx.drawImage(img, 0, 0, 48, 48);
                 const data = canvas.toDataURL("image/jpeg", 0.7);
-                DBState.db.botPresets[DBState.db.botPresetsId].image = data; //Since its small (max 2304 pixels), its okay to store it directly
+                const target = DBState.db.botPresets.find((preset) => preset.id === presetId);
+                if (target) {
+                    target.image = data; //Since its small (max 2304 pixels), its okay to store it directly
+                }
             }}
         >
             <UploadIcon />

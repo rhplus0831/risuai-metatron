@@ -55,8 +55,9 @@ async function boot(prepare?: (server: StoreBackedServer) => void) {
     vi.resetModules();
     const fake = await StoreBackedServer.create();
     // The store materialized the sections and collections when it opened; the residual root holds
-    // `RESIDUAL_ROOT_KEYS` only, as the client writes it.
-    fake.set("root", "main", { username: "u", botPresetsId: 0 });
+    // `RESIDUAL_ROOT_KEYS` only, as the client writes it (the preset fields and the selection
+    // indexes are forwarded since slice 5, never stored in root).
+    fake.set("root", "main", { username: "u", selectedPersona: 0 });
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);

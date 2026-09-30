@@ -3,6 +3,8 @@
     import { language } from "../../lang";
     import { changeToPreset, copyPreset, downloadPreset, importPreset } from "../../ts/storage/database.svelte";
     import { DBState } from "src/ts/stores.svelte";
+    import { deletePresetSecret } from "src/ts/storage/llmSecrets.svelte";
+    import { selectedPreset } from "src/ts/storage/forwarding.svelte";
     import {
         CopyIcon,
         Share2Icon,
@@ -51,15 +53,7 @@
         const adjustedToIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
         botPresets.splice(adjustedToIndex, 0, movedItem);
 
-        const currentId = DBState.db.botPresetsId;
-        if (currentId === fromIndex) {
-            DBState.db.botPresetsId = adjustedToIndex;
-        } else if (fromIndex < currentId && adjustedToIndex >= currentId) {
-            DBState.db.botPresetsId = currentId - 1;
-        } else if (fromIndex > currentId && adjustedToIndex <= currentId) {
-            DBState.db.botPresetsId = currentId + 1;
-        }
-
+        // The selection is by id, so a reorder leaves it on the same preset.
         DBState.db.botPresets = botPresets;
     }
 
@@ -152,7 +146,7 @@
             <button
                 onclick={() => {
                     if (!editMode) {
-                        changeToPreset(i);
+                        changeToPreset(preset.id);
                         close();
                     }
                 }}
@@ -248,7 +242,7 @@
                         tabindex="0"
                         onclick={(e) => {
                             e.stopPropagation();
-                            copyPreset(i);
+                            copyPreset(preset.id);
                         }}
                         onkeydown={(e) => {
                             if (e.key === "Enter" && e.currentTarget instanceof HTMLElement) {
@@ -264,7 +258,7 @@
                         tabindex="0"
                         onclick={async (e) => {
                             e.stopPropagation();
-                            downloadPreset(i, "risupreset");
+                            downloadPreset(preset.id, "risupreset");
                         }}
                         onkeydown={(e) => {
                             if (e.key === "Enter" && e.currentTarget instanceof HTMLElement) {
@@ -284,14 +278,27 @@
                                 alertError(language.errors.onlyOneChat);
                                 return;
                             }
-                            const d = await alertConfirm(`${language.removeConfirm}${preset.name}`);
-                            if (d) {
-                                changeToPreset(0);
-                                let botPresets = DBState.db.botPresets;
-                                botPresets.splice(i, 1);
-                                DBState.db.botPresets = botPresets;
-                                changeToPreset(0, false);
+                            // The list can change while the dialog is open: act on this preset by id.
+                            const { id, name } = preset;
+                            const d = await alertConfirm(`${language.removeConfirm}${name}`);
+                            if (!d) {
+                                return;
                             }
+                            const botPresets = DBState.db.botPresets;
+                            const index = botPresets.findIndex((entry) => entry.id === id);
+                            if (index === -1) {
+                                return;
+                            }
+                            if (botPresets.length === 1) {
+                                alertError(language.errors.onlyOneChat);
+                                return;
+                            }
+                            if (selectedPreset(DBState.db)?.id === id) {
+                                const next = botPresets.find((entry) => entry.id !== id);
+                                changeToPreset(next.id, false);
+                            }
+                            botPresets.splice(index, 1);
+                            deletePresetSecret(id);
                         }}
                         onkeydown={(e) => {
                             if (e.key === "Enter" && e.currentTarget instanceof HTMLElement) {

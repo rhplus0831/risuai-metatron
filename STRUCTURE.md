@@ -67,7 +67,10 @@ Data and persistence (details: `docs/structure/persistence.md`)
   collection field gets its default and migration in its server normalizer
   (`server/src/data/normalize/`), never in `setDatabase`: the client's projection must equal the
   server's normalized text. A residual `root` field (`RESIDUAL_ROOT_KEYS`) still gets its default
-  in `setDatabase`. `setDatabaseLite` only assigns and does not normalize. Chat and message fields
+  in `setDatabase`. The flat preset fields of `DBState.db` (`FORWARDED_ROOT_KEYS`) are accessors
+  that read and write the selected preset (`src/ts/storage/forwarding.svelte.ts`): never `delete`
+  one, and write them synchronously (a value copied back from an `$effect` can land after a preset
+  switch). `setDatabaseLite` installs the accessors and does not normalize. Chat and message fields
   are the exception: they are stored as the client sends them (the server normalizer in
   `server/src/data/chats.ts` fills only `name`, `note`, and `localLore`), so readers default a
   missing chat field where they read it.
