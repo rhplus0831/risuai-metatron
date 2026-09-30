@@ -67,7 +67,7 @@ export function requireJsonData(key: string, value: unknown, allowUndefined = fa
     if (!isJsonData(value, allowUndefined)) {
         throw new MutationValidationError(
             key,
-            "the value is not JSON data (a function, BigInt, non-finite number, cycle, or class instance)",
+            `the value is not JSON data (a function, BigInt, non-finite number, cycle, class instance, or nesting deeper than ${MAX_JSON_DEPTH} levels)`,
         );
     }
 }

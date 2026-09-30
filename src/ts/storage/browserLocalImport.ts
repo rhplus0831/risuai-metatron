@@ -8,7 +8,12 @@ import {
     loadPluginPermissions,
     recordPermissionGrants,
 } from "../plugins/apiV3/permissionStore";
-import { isJsonValue, SAFE_LOCAL_PLUGIN_STORAGE_KEY, setSafeLocalPluginValue } from "../plugins/pluginSafeClass";
+import { isJsonValue } from "../plugins/pluginSafeClass";
+import {
+    hasSafeLocalPluginValue,
+    SAFE_LOCAL_PLUGIN_STORAGE_KEY,
+    setSafeLocalPluginValue,
+} from "./pluginStorageStore.svelte";
 import {
     getInlayMetadata,
     repairInlayMedia,
@@ -146,9 +151,7 @@ async function importSafeLocalPluginStorage() {
             console.warn(`[Import] Plugin storage value ${key} is not JSON; it stays in this browser.`);
             continue;
         }
-        const target = DBState.db.pluginCustomStorage?.[SAFE_LOCAL_PLUGIN_STORAGE_KEY] as
-            Record<string, unknown> | undefined;
-        if (!target || !Object.hasOwn(target, key)) {
+        if (!hasSafeLocalPluginValue(key)) {
             setSafeLocalPluginValue(key, JSON.parse(JSON.stringify(value)));
         }
         moved.push([localKey, key, value]);

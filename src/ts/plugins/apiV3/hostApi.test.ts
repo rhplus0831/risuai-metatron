@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // The v3 host API used to borrow its `setDatabase`/`setDatabaseLite` and
 // `safeLocalStorage` implementations from the removed API 2.1 layer. They now
 // live in `v3.svelte.ts`. These tests pin the contracts the move must keep:
-// - `setDatabaseLite`/`setDatabase` copy `allowedDbKeys` onto the live database
-//   and route every other key to the top level of `pluginCustomStorage`,
-//   without touching the v3 `_pluginStorage` sub-object. The removed `pluginV2`
-//   key is no longer an allowed key, so it lands in custom storage too.
-// - `setDatabaseLite` only assigns; `setDatabase` goes through the normalizing
-//   `setDatabase`.
+// - `setDatabaseLite`/`setDatabase` route each `allowedDbKeys` key to the
+//   mutation that owns it on the live database (a forwarded key such as
+//   `temperature` into the selected preset) and every other key to the top
+//   level of `pluginCustomStorage`, without touching the v3 `_pluginStorage`
+//   sub-object. The removed `pluginV2` key is no longer an allowed key, so it
+//   lands in custom storage too.
+// - neither setter calls the whole-database normalizer `setDatabase` of
+//   `database.svelte` (Phase 4: each routed value is checked by its owner).
 // - the `_*SafeLocalStorage` aliases work when called detached, which is how
 //   the sandbox RPC (`CALL_ROOT` does `fn(...args)`) invokes them. `key` and
 //   `clear` used to be exported unbound and threw on `this`.
@@ -19,7 +21,6 @@ const { captured, dbMocks } = vi.hoisted(() => ({
     captured: { api: null as CapturedApi | null },
     dbMocks: {
         setDatabase: vi.fn(),
-        setDatabaseLite: vi.fn(),
     },
 }));
 
@@ -37,16 +38,13 @@ vi.mock("./factory", () => ({
 }));
 
 vi.mock("src/ts/storage/database.svelte", async () => {
-    // The live database, as in the app (a plugin's character list is reconciled on `DBState.db`);
+    // The live database, as in the app (the mutations the setters route to write `DBState.db`);
     // resolved here because the factory runs before this file's own imports are initialized.
+    // The whole-database normalizer `setDatabase` is a spy only to assert it is no longer called.
     const stores = await vi.importActual<typeof import("src/ts/stores.svelte")>("src/ts/stores.svelte");
     return {
         getDatabase: () => stores.DBState.db,
-        setCharacterByIndex: (index: number, char: any) => {
-            stores.DBState.db.characters[index] = char;
-        },
         setDatabase: dbMocks.setDatabase,
-        setDatabaseLite: dbMocks.setDatabaseLite,
         getCurrentCharacter: vi.fn(),
         getCurrentChat: vi.fn(),
         setCurrentChat: vi.fn(),
@@ -82,7 +80,21 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
 }));
 
 import { DBState } from "src/ts/stores.svelte";
+import { installForwarding } from "src/ts/storage/forwarding.svelte";
+import { selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { executePluginV3 } from "./v3.svelte";
+
+/**
+ * A live database with the forwarding accessors installed, as `setDatabaseLite` installs them in
+ * the app: a forwarded key such as `temperature` reads and writes the selected preset (`preset`,
+ * selected here), and `selectedPersona` reads this client's persona selection.
+ */
+function forwardedDatabase(fields: Record<string, unknown>) {
+    selectPreset("preset");
+    return installForwarding({ botPresets: [{ id: "preset", name: "P", temperature: 0 }], ...fields }) as any;
+}
+
+const selectedPresetOf = (db: any) => db.botPresets.find((preset: { id: string }) => preset.id === "preset");
 
 async function makeApi(): Promise<CapturedApi> {
     captured.api = null;
@@ -97,9 +109,8 @@ async function makeApi(): Promise<CapturedApi> {
 
 describe("v3 setDatabase / setDatabaseLite routing", () => {
     beforeEach(() => {
-        DBState.db = { characters: [], temperature: 0, pluginCustomStorage: undefined } as any;
+        DBState.db = forwardedDatabase({ characters: [], pluginCustomStorage: undefined });
         dbMocks.setDatabase.mockClear();
-        dbMocks.setDatabaseLite.mockClear();
     });
 
     it("setDatabaseLite assigns allowed keys and routes the rest into pluginCustomStorage", async () => {
@@ -127,15 +138,15 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
         expect(dbMocks.setDatabase).not.toHaveBeenCalled();
     });
 
-    it("setDatabase routes the same way and then saves through the normalizing setDatabase", async () => {
+    it("setDatabase routes the same way, a forwarded key into the selected preset, without the normalizing setDatabase", async () => {
         const api = await makeApi();
 
         await api.setDatabase({ temperature: 80, custom: "v" });
 
+        expect(selectedPresetOf(DBState.db).temperature).toBe(80);
         expect(DBState.db.temperature).toBe(80);
         expect(DBState.db.pluginCustomStorage).toEqual({ custom: "v" });
-        expect(dbMocks.setDatabase).toHaveBeenCalledTimes(1);
-        expect(dbMocks.setDatabase).toHaveBeenCalledWith(DBState.db);
+        expect(dbMocks.setDatabase).not.toHaveBeenCalled();
     });
 
     it("keeps existing ids, gives a persona without an id one, and drops non-object entries (Phase 3 slice 6)", async () => {
@@ -166,7 +177,7 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
         const full = DBState.db.personas as any[];
         expect(full).toHaveLength(1);
         expect(full[0].id.length).toBeGreaterThan(0);
-        expect(dbMocks.setDatabase).toHaveBeenCalledTimes(1);
+        expect(dbMocks.setDatabase).not.toHaveBeenCalled();
     });
 
     it("keeps the v3 _pluginStorage sub-object next to routed custom keys", async () => {
@@ -182,18 +193,18 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
 });
 
 // Phase 3, slice 4 (Astra challenge point 3): the sections, the collections, and the two selection
-// ids are normalized by the server, and the client applies no default to them any more, so the full
-// setter's `setDatabase` no longer repairs a `null` or `undefined` a plugin writes there. Both
-// setters refuse such a write and keep the value. A residual root key (defaulted by `setDatabase`)
-// and a malformed non-null value still go through: the server repairs the latter on write.
+// ids are normalized by the server, and the client applies no default to them any more, so no
+// setter repairs a `null` or `undefined` a plugin writes there. Both setters refuse such a write
+// (through the owning mutation, with a warning) and keep the value. A forwarded preset field is
+// checked the same way by `updateSettings` (a `null` is refused where the field has no `null`
+// value); a malformed non-null section value still goes through: the server repairs it on write.
 describe("v3 setDatabase / setDatabaseLite against server-normalized fields", () => {
     const personas = [{ id: "p", name: "P", icon: "", personaPrompt: "", note: "", largePortrait: false }];
 
     beforeEach(() => {
-        DBState.db = {
+        selectPersona("p");
+        DBState.db = forwardedDatabase({
             characters: [],
-            temperature: 0,
-            selectedPersona: 0,
             askRemoval: true,
             theme: "",
             personas,
@@ -203,9 +214,8 @@ describe("v3 setDatabase / setDatabaseLite against server-normalized fields", ()
             customCSS: "",
             characterOrder: ["c"],
             pluginCustomStorage: undefined,
-        } as any;
+        });
         dbMocks.setDatabase.mockClear();
-        dbMocks.setDatabaseLite.mockClear();
         vi.spyOn(console, "warn").mockImplementation(() => {});
     });
 
@@ -228,19 +238,36 @@ describe("v3 setDatabase / setDatabaseLite against server-normalized fields", ()
         expect(DBState.db.characterOrder).toEqual(["c"]);
         expect(DBState.db.personas).toEqual(personas);
         expect(DBState.db.askRemoval).toBe(true);
-        expect(dbMocks.setDatabase).toHaveBeenCalledTimes(1);
-        // Nothing lands in the custom storage either: the key is known, only its value is refused.
-        expect(DBState.db.pluginCustomStorage).toEqual({});
+        expect(dbMocks.setDatabase).not.toHaveBeenCalled();
+        // Nothing lands in the custom storage either: the key is known, only its value is refused
+        // (and the setters no longer create an empty dictionary when no custom key is sent).
+        expect(DBState.db.pluginCustomStorage).toBeUndefined();
     });
 
-    it("still assigns null to a residual root key, which the full setter's setDatabase defaults", async () => {
+    it("refuses null in a non-nullable forwarded preset field and an index that names no persona, and warns", async () => {
         const api = await makeApi();
+        // A second persona, selected, so an unchanged selection is told apart from the fallback to the first.
+        DBState.db.personas = [...personas, { ...personas[0], id: "q", name: "Q" }];
+        selectPersona("q");
+        expect(DBState.db.selectedPersona).toBe(1);
+
         api.setDatabaseLite({ temperature: null, selectedPersona: undefined });
-        expect(DBState.db.temperature).toBeNull();
-        expect(DBState.db.selectedPersona).toBeUndefined();
-        expect(console.warn).not.toHaveBeenCalled();
+        expect(selectedPresetOf(DBState.db).temperature).toBe(0);
+        expect(DBState.db.temperature).toBe(0);
+        expect(DBState.db.selectedPersona).toBe(1);
+        expect(selection.personaId).toBe("q");
+        expect(console.warn).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(console.warn).mock.calls[0][0]).toMatch(
+            /^\[Plugin\] Refused the database key temperature; the previous value was kept: /,
+        );
+        expect(vi.mocked(console.warn).mock.calls[1][0]).toMatch(
+            /^\[Plugin\] Refused the database key selectedPersona; the previous value was kept: /,
+        );
+
         await api.setDatabase({ temperature: null });
-        expect(dbMocks.setDatabase).toHaveBeenCalledWith(DBState.db);
+        expect(selectedPresetOf(DBState.db).temperature).toBe(0);
+        expect(console.warn).toHaveBeenCalledTimes(3);
+        expect(dbMocks.setDatabase).not.toHaveBeenCalled();
     });
 
     it("accepts a non-null value of a server-normalized field as-is (the server repairs a malformed one on write)", async () => {

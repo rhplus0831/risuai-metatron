@@ -565,8 +565,12 @@ describe("batch sizing", () => {
 
 describe("plugin storage keys", () => {
     it("saves an own `__proto__` key of the plugin storage", async () => {
-        const { fake, sync, db } = await boot();
-        db().pluginCustomStorage._safeLocalPluginStorage = { ordinary: 1, ["__proto__"]: { probe: "value" } };
+        const { fake, sync } = await boot();
+        // `pluginStorage` has no watcher (Phase 4): the write goes through the store module, which
+        // marks the record. Imported after `boot` so it shares that module graph.
+        const store: typeof import("../pluginStorageStore.svelte") = await import("../pluginStorageStore.svelte");
+        store.setSafeLocalPluginValue("ordinary", 1);
+        store.setSafeLocalPluginValue("__proto__", { probe: "value" });
         await sync.flushResources();
         const saved = fake.data("pluginStorage", "main")._safeLocalPluginStorage;
         expect(Object.hasOwn(saved, "__proto__")).toBe(true);

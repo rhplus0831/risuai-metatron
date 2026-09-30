@@ -6,6 +6,7 @@ import { alertError } from "../alert";
 import { CustomCSSStore, DBState, SafeModeStore } from "../stores.svelte";
 import type { ColorScheme } from "../../../shared/settings.ts";
 import { defaultColorScheme } from "../../../shared/colorScheme.ts";
+import { updateSettings } from "../storage/collectionStore.svelte";
 
 export type { ColorScheme } from "../../../shared/settings.ts";
 
@@ -215,20 +216,16 @@ export const colorSchemeList = Object.keys(colorShemes) as (keyof typeof colorSh
 
 export function changeColorScheme(colorScheme: string) {
     try {
-        if (colorScheme === "custom") {
-            DBState.db.colorScheme = safeStructuredClone(DBState.db.customColorScheme ?? defaultColorScheme);
-        } else {
-            DBState.db.colorScheme = safeStructuredClone(colorShemes[colorScheme]);
-        }
-        DBState.db.colorSchemeName = colorScheme;
+        const scheme =
+            colorScheme === "custom" ? (DBState.db.customColorScheme ?? defaultColorScheme) : colorShemes[colorScheme];
+        updateSettings({ colorScheme: scheme, colorSchemeName: colorScheme });
         updateColorScheme();
     } catch (error) {}
 }
 
 export function updateCustomColorScheme() {
     try {
-        DBState.db.colorScheme = safeStructuredClone(DBState.db.customColorScheme ?? defaultColorScheme);
-        DBState.db.colorSchemeName = "custom";
+        updateSettings({ colorScheme: DBState.db.customColorScheme ?? defaultColorScheme, colorSchemeName: "custom" });
         updateColorScheme();
     } catch (error) {}
 }

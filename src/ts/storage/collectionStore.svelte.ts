@@ -276,12 +276,17 @@ export function setCharacterOrder(order: unknown) {
     DBState.db.characterOrder = detach(order) as Database["characterOrder"];
 }
 
-function checkedPlugin(key: string, plugin: unknown): RisuPlugin {
+/** Checks a plugin a contract hands in, without changing it: an object of JSON data with a name. For a caller's preflight of a list. */
+export function checkPluginInput(plugin: unknown, key = "plugin"): asserts plugin is Record<string, unknown> {
     requireObject(key, plugin);
     requireJsonData(key, plugin);
     if (typeof plugin.name !== "string" || plugin.name === "") {
         throw new MutationValidationError(key, "a plugin needs a name");
     }
+}
+
+function checkedPlugin(key: string, plugin: unknown): RisuPlugin {
+    checkPluginInput(plugin, key);
     return detach(plugin) as unknown as RisuPlugin;
 }
 

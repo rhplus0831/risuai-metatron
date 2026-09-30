@@ -90,7 +90,9 @@ describe("importPlugin API version gate", () => {
             version: "3.0",
             enabled: true,
         });
-        expect(mocks.setDatabaseLite).toHaveBeenCalledWith(mocks.db);
+        // The plugin lands in `DBState.db.plugins` (`mocks.db`) through `upsertPlugin`; the
+        // database is no longer re-installed through `setDatabaseLite`.
+        expect(mocks.setDatabaseLite).not.toHaveBeenCalled();
         expect(mocks.loadV3Plugins).toHaveBeenCalledTimes(1);
     });
 });

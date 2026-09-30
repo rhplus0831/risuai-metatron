@@ -1,5 +1,6 @@
 import { language } from "../../lang";
-import { getDatabase, setDatabaseLite } from "../storage/database.svelte";
+import { getDatabase } from "../storage/database.svelte";
+import { upsertPlugin } from "../storage/collectionStore.svelte";
 import { alertConfirm, alertError } from "../alert";
 import { selectSingleFile } from "../util";
 import { DBState, hotReloading } from "../stores.svelte";
@@ -338,9 +339,7 @@ export async function importPlugin(
             enabled: true,
         };
 
-        db.plugins ??= [];
-
-        const oldPluginIndex = db.plugins.findIndex((p: RisuPlugin) => p.name === pluginData.name);
+        const oldPluginIndex = (db.plugins ?? []).findIndex((p: RisuPlugin) => p.name === pluginData.name);
 
         if (originalPluginName && originalPluginName !== pluginData.name) {
             showError(
@@ -356,10 +355,9 @@ export async function importPlugin(
             }
         }
 
-        if (oldPluginIndex !== -1) {
-            db.plugins[oldPluginIndex] = pluginData;
-        } else if (!isUpdate || argu.isHotReload) {
-            db.plugins.push(pluginData);
+        // Replaces the installed plugin with this name, or installs it.
+        if (oldPluginIndex !== -1 || !isUpdate || argu.isHotReload) {
+            upsertPlugin(pluginData);
         }
 
         if (argu.isHotReload && !hotReloading.includes(pluginData.name)) {
@@ -367,7 +365,6 @@ export async function importPlugin(
         }
 
         console.log(`Imported plugin: ${pluginData.name} (API v3.0)`);
-        setDatabaseLite(db);
 
         loadPlugins();
     } catch (error) {

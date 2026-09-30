@@ -1,7 +1,10 @@
-import { DBState } from "../stores.svelte";
-
-/** Where `SafeLocalPluginStorage` keeps its values inside `pluginCustomStorage` (saved with it). */
-export const SAFE_LOCAL_PLUGIN_STORAGE_KEY = "_safeLocalPluginStorage";
+import {
+    clearSafeLocalPluginStorage,
+    getSafeLocalPluginValue,
+    removeSafeLocalPluginValue,
+    safeLocalPluginKeys,
+    setSafeLocalPluginValue,
+} from "../storage/pluginStorageStore.svelte";
 
 const MAX_JSON_DEPTH = 256;
 
@@ -75,44 +78,15 @@ export class SafeLocalStorage {
 
 /**
  * The plugin API's `getLocalPluginStorage()`: shared by every plugin and saved on the server inside
- * `pluginCustomStorage` (it was browser-local before Phase 1). Values must be plain JSON data; any
- * other value throws a `TypeError` and changes nothing. Reads return copies.
+ * `pluginCustomStorage` (it was browser-local before Phase 1) through the plugin storage mutations
+ * (`pluginStorageStore.svelte.ts`). Values must be plain JSON data; any other value throws a
+ * `TypeError` and changes nothing. Any string is a valid key. Reads return copies.
  */
-/** The shared `_safeLocalPluginStorage` dictionary inside `pluginCustomStorage`, created on demand. */
-function safeLocalPluginValues(create: true): Record<string, unknown>;
-function safeLocalPluginValues(create: false): Record<string, unknown> | undefined;
-function safeLocalPluginValues(create: boolean): Record<string, unknown> | undefined {
-    if (create) {
-        DBState.db.pluginCustomStorage ??= {};
-        DBState.db.pluginCustomStorage[SAFE_LOCAL_PLUGIN_STORAGE_KEY] ??= {};
-    }
-    return DBState.db.pluginCustomStorage?.[SAFE_LOCAL_PLUGIN_STORAGE_KEY] as Record<string, unknown> | undefined;
-}
-
-/**
- * Stores a JSON value under a plugin-chosen key. Any string is a valid key: `__proto__` gets an own
- * property through a rebuilt dictionary, since assigning it would change the prototype instead
- * (and Svelte's proxy cannot define it in place).
- */
-export function setSafeLocalPluginValue(key: string, value: unknown) {
-    const values = safeLocalPluginValues(true);
-    if (key === "__proto__") {
-        DBState.db.pluginCustomStorage[SAFE_LOCAL_PLUGIN_STORAGE_KEY] = { ...values, ["__proto__"]: value };
-        return;
-    }
-    values[key] = value;
-}
-
 export class SafeLocalPluginStorage {
     __classType = "REMOTE_REQUIRED" as const;
 
     async getItem<T>(key: string): Promise<T | null> {
-        const values = safeLocalPluginValues(false);
-        const name = String(key);
-        if (!values || !Object.hasOwn(values, name)) {
-            return null;
-        }
-        return JSON.parse(JSON.stringify(values[name])) as T;
+        return getSafeLocalPluginValue(String(key)) as T | null;
     }
     async setItem<T>(key: string, value: T): Promise<void> {
         if (value === undefined) {
@@ -126,17 +100,13 @@ export class SafeLocalPluginStorage {
         setSafeLocalPluginValue(String(key), JSON.parse(JSON.stringify(value)));
     }
     async removeItem(key: string): Promise<void> {
-        const values = safeLocalPluginValues(false);
-        if (values) {
-            delete values[String(key)];
-        }
+        removeSafeLocalPluginValue(String(key));
     }
     async keys(): Promise<string[]> {
-        return Object.keys(safeLocalPluginValues(false) ?? {});
+        return safeLocalPluginKeys();
     }
     async clear(): Promise<void> {
-        DBState.db.pluginCustomStorage ??= {};
-        DBState.db.pluginCustomStorage[SAFE_LOCAL_PLUGIN_STORAGE_KEY] = {};
+        clearSafeLocalPluginStorage();
     }
 }
 

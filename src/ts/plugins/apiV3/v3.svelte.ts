@@ -1,7 +1,4 @@
 import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
-import { normalizePersonas } from "../../../../shared/personas.ts";
-import { plainClone } from "../../../../shared/presets.ts";
-import { COLLECTION_FIELDS, COLLECTION_SELECTION_FIELDS, SECTION_FIELDS } from "../../../../shared/sections.ts";
 import {
     customProviderStore,
     pluginHooks,
@@ -12,20 +9,41 @@ import {
     type ReplacerFunction,
 } from "../pluginHooks";
 import { SandboxHost } from "./factory";
+import { getCurrentCharacter, getDatabase } from "src/ts/storage/database.svelte";
 import {
-    getCurrentCharacter,
-    getDatabase,
-    setCharacterByIndex,
-    setDatabase,
-    setDatabaseLite,
-    type Database,
-} from "src/ts/storage/database.svelte";
+    addCharacter,
+    checkCharacterInput,
+    removeCharacter,
+    replaceCharacterAt,
+    replaceCharacterFields,
+} from "src/ts/storage/characterStore.svelte";
+import {
+    checkPluginInput,
+    setCharacterOrder,
+    setEnabledModules,
+    setModules,
+    setPersonas,
+    setPluginArgument,
+    setPlugins,
+    updateSettings,
+    upsertPlugin,
+} from "src/ts/storage/collectionStore.svelte";
+import { MutationValidationError, requireArray } from "src/ts/storage/mutationValidation";
+import {
+    clearPluginStorage,
+    getPluginStorageValue,
+    pluginStorageKeys,
+    removePluginStorageItem,
+    replacePluginCustomStorage,
+    setPluginCustomValue,
+    setPluginStorageItem,
+} from "src/ts/storage/pluginStorageStore.svelte";
+import { selectPersona } from "src/ts/storage/selection.svelte";
 import {
     appendMessage,
     applyChatResult,
     captureChatBaseline,
     isCharacterGenerating,
-    normalizeNewCharacter,
     reconcileCharacterChats,
     selectChat,
 } from "src/ts/storage/chatStore.svelte";
@@ -54,7 +72,6 @@ import { getInlayAsset } from "src/ts/process/files/inlays";
 import { getLLMCache, searchLLMCache } from "src/ts/translator/translator";
 import { hasher, risuChatParser, type CbsConditions } from "src/ts/parser/parser.svelte";
 import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./permissionStore";
-import { markCharacterDirtyAt, markCharactersDirty } from "src/ts/storage/resourceSync.svelte";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat, doingChat } from "src/ts/process/index.svelte";
 import { processScriptFull } from "src/ts/process/scripts";
@@ -703,99 +720,96 @@ const setChar = (char: any) => {
     applyPluginCharacter(get(selectedCharID), char);
 };
 
+/** Runs a plugin write; a refused value (`MutationValidationError`) is warned about and changes nothing. */
+function warnRefused(what: string, write: () => void) {
+    try {
+        write();
+    } catch (error) {
+        if (!(error instanceof MutationValidationError)) {
+            throw error;
+        }
+        console.warn(`[Plugin] Refused ${what}; the previous value was kept: ${error.message}`);
+    }
+}
+
 /**
- * Applies a whole character a plugin hands back (last writer wins): its own fields replace the
- * character's, and its chats are reconciled by id through the chat module (changed chats diffed,
- * new ones created, missing ones deleted, the order and a given `chatPage` followed). A character
- * with another `chaId` replaces the one at the index, unless that `chaId` is already another
- * character's (skipped with a console warning, like the list setter's duplicate refusal).
+ * Applies a whole character a plugin hands back (last writer wins). The same `chaId` as the
+ * character at `index`: its own fields replace the character's (`replaceCharacterFields`), and its
+ * chats are reconciled by id through the chat module (changed chats diffed, new ones created,
+ * missing ones deleted, the order and a given `chatPage` followed). Another `chaId` (or none):
+ * the character replaces the one at the index (`replaceCharacterAt`), unless that one is generating
+ * a reply or the `chaId` is already another character's. A refusal is warned about.
  */
-/** Gives a character a plugin hands in without a `chaId` one, so its chats are addressable at once. */
-function assignMissingChaId(char: any) {
-    if (char && typeof char === "object" && (typeof char.chaId !== "string" || char.chaId === "")) {
-        char.chaId = v4();
-    }
-}
-
 function applyPluginCharacter(index: number, char: any) {
-    const current = DBState.db.characters[index];
-    if (!current || !char || typeof char !== "object" || char.chaId !== current.chaId) {
-        if (current && isCharacterGenerating(current.chaId)) {
-            console.warn("[Plugin] Kept a character that is generating a reply; the replacement was skipped");
+    warnRefused("a character", () => {
+        const current = DBState.db.characters?.[index];
+        if (!current || !char || typeof char !== "object" || char.chaId !== current.chaId) {
+            // The two ordinary skips keep the warnings plugins have seen.
+            if (current && isCharacterGenerating(current.chaId)) {
+                console.warn("[Plugin] Kept a character that is generating a reply; the replacement was skipped");
+                return;
+            }
+            const chaId = char && typeof char === "object" ? char.chaId : undefined;
+            if (
+                typeof chaId === "string" &&
+                DBState.db.characters.some((other, i) => i !== index && other?.chaId === chaId)
+            ) {
+                console.warn("[Plugin] Skipped a character whose chaId another character already has");
+                return;
+            }
+            replaceCharacterAt(index, char);
             return;
         }
-        assignMissingChaId(char);
-        const chaId = char && typeof char === "object" ? char.chaId : undefined;
-        if (chaId && DBState.db.characters.some((other, i) => i !== index && other?.chaId === chaId)) {
-            console.warn("[Plugin] Skipped a character whose chaId another character already has");
-            return;
+        replaceCharacterFields(char);
+        const { chats, chatPage } = char;
+        if (Array.isArray(chats)) {
+            reconcileCharacterChats(current.chaId, chats, typeof chatPage === "number" ? chatPage : undefined);
+        } else if (typeof chatPage === "number") {
+            selectChat(current.chaId, chatPage);
         }
-        DBState.db.characters[index] = char;
-        markCharacterDirtyAt(index);
-        if (typeof chaId === "string") {
-            normalizeNewCharacter(chaId);
-        }
-        return;
-    }
-    const { chats, chatPage, ...fields } = char;
-    setCharacterByIndex(index, { ...fields, chats: current.chats, chatPage: current.chatPage });
-    if (Array.isArray(chats)) {
-        reconcileCharacterChats(current.chaId, chats, typeof chatPage === "number" ? chatPage : undefined);
-    } else if (typeof chatPage === "number") {
-        selectChat(current.chaId, chatPage);
-    }
+    });
 }
 
 /**
- * Applies a whole character list a plugin hands back: characters matched by `chaId` go through
- * `applyPluginCharacter`, new ones are added (their chats are saved with them), missing ones removed,
- * except a character that is generating a reply: it stays where it was (with a console warning).
+ * Applies a whole character list a plugin hands back. The list is checked first and refused as a
+ * whole (nothing changes) when an entry is malformed, or when two entries share a `chaId` or are one
+ * object (they would become two characters sharing one set of chats). Then characters matched by
+ * `chaId` go through `applyPluginCharacter`, new ones are appended (`addCharacter`, their chats
+ * saved with them), and missing ones removed (`removeCharacter`), except a character that is
+ * generating a reply: it stays (with a console warning). The mirror keeps its order.
  */
 function applyPluginCharacters(incoming: unknown) {
-    if (!Array.isArray(incoming)) {
-        return;
-    }
-    // Missing ids are assigned first, so one object listed twice counts as a duplicate too.
-    incoming.forEach(assignMissingChaId);
-    // Two entries with one id would become two characters sharing one set of chats (and the save
-    // loop would give one a new id): refuse the whole list before anything changes.
-    const ids = incoming.map((char: any) => char?.chaId).filter((id) => typeof id === "string" && id !== "");
-    if (new Set(ids).size !== ids.length) {
-        console.warn(
-            "[Plugin] Refused a character list with duplicate chaId values; the character list was not changed",
-        );
-        return;
-    }
-    const before = [...DBState.db.characters];
-    const added: string[] = [];
-    const next = incoming.map((char: any) => {
-        const index = DBState.db.characters.findIndex((entry) => entry?.chaId === char?.chaId);
-        if (index === -1) {
-            if (typeof char?.chaId === "string") {
-                added.push(char.chaId);
-            }
-            return char;
-        }
-        applyPluginCharacter(index, char);
-        return DBState.db.characters[index];
+    requireArray("characters", incoming);
+    const entries = Array.from(incoming, (char, i) => {
+        checkCharacterInput(char, `characters[${i}]`);
+        return char;
     });
-    before.forEach((character, index) => {
-        if (
-            character &&
-            isCharacterGenerating(character.chaId) &&
-            !next.some((entry) => entry?.chaId === character.chaId)
-        ) {
-            console.warn("[Plugin] Kept a character that is generating a reply; its removal was skipped");
-            next.splice(
-                Math.min(index, next.length),
-                0,
-                DBState.db.characters.find((entry) => entry?.chaId === character.chaId),
+    const ids = entries.map((char) => char.chaId).filter((id): id is string => typeof id === "string" && id !== "");
+    if (new Set(ids).size !== ids.length || new Set(entries).size !== entries.length) {
+        throw new MutationValidationError("characters", "duplicate chaId values (or one object listed twice)");
+    }
+    const kept = new Set(ids);
+    const existing = (DBState.db.characters ?? []).map((character) => character?.chaId);
+    for (const char of entries) {
+        if (typeof char.chaId === "string" && existing.includes(char.chaId)) {
+            applyPluginCharacter(
+                DBState.db.characters.findIndex((entry) => entry?.chaId === char.chaId),
+                char,
             );
+        } else {
+            addCharacter(char);
         }
-    });
-    DBState.db.characters = next;
-    // New characters' chats get their ids now, so they can be sent in and edited at once.
-    added.forEach(normalizeNewCharacter);
+    }
+    for (const chaId of existing) {
+        if (typeof chaId !== "string" || kept.has(chaId)) {
+            continue;
+        }
+        if (isCharacterGenerating(chaId)) {
+            console.warn("[Plugin] Kept a character that is generating a reply; its removal was skipped");
+            continue;
+        }
+        removeCharacter(chaId);
+    }
 }
 
 const getArg = (arg: string) => {
@@ -809,13 +823,8 @@ const getArg = (arg: string) => {
 };
 
 const setArg = (arg: string, value: string | number) => {
-    const db = getDatabase();
     const [name, realArg] = arg.split("::");
-    for (const plugin of db.plugins) {
-        if (plugin.name === name) {
-            plugin.realArg[realArg] = value;
-        }
-    }
+    warnRefused(`the argument ${arg}`, () => setPluginArgument(name, realArg, value));
 };
 
 const addRisuScriptHandler = (name: ScriptMode, func: EditFunction) => {
@@ -866,67 +875,83 @@ const removeRisuChatListener = (mode: string, func: ChatOutputListener) => {
     }
 };
 
-/**
- * A plugin's `personas` gets the collection's contract (`shared/personas.ts`, which the server and
- * `setDatabase` apply too): never empty, the four persona fields strings, and unique ids, so a chat
- * can bind to each one (`Chat.bindedPersona`) and the selection by id resolves. Existing ids are
- * kept. Phase 4's `setPersonas` takes this over.
- */
-function normalizedPluginPersonas(value: unknown) {
-    return normalizePersonas(plainClone(value));
-}
+/** Keys applied after the others, in this order, because they refer to what the others set. */
+const lateKeys = ["characterOrder", "selectedPersona"];
 
 /**
- * The keys of a plugin's database object in the order they are applied: `selectedPersona` last, so
- * its index is resolved against the persona list the same call sets, whatever the object's key
- * order (it selects on this client only).
+ * The keys of a plugin's database object in the order they are applied, whatever the object's key
+ * order: `characterOrder` after `characters` (each added or removed character repairs the order, which
+ * would drop the ids of characters the same call adds later), and `selectedPersona` last, so its index
+ * is resolved against the persona list the same call sets (it selects on this client only).
  */
 function pluginKeyOrder(newDb: Record<string, unknown>): string[] {
-    const keys = Object.keys(newDb).filter((key) => key !== "selectedPersona");
-    return Object.hasOwn(newDb, "selectedPersona") ? [...keys, "selectedPersona"] : keys;
+    const keys = Object.keys(newDb).filter((key) => !lateKeys.includes(key));
+    return [...keys, ...lateKeys.filter((key) => Object.hasOwn(newDb, key))];
+}
+
+/** Selects the persona at an index of the persona list, on this client only. */
+function selectPersonaAt(index: unknown) {
+    const persona = typeof index === "number" ? DBState.db.personas?.[index] : undefined;
+    if (typeof persona?.id !== "string") {
+        throw new MutationValidationError("selectedPersona", "no persona at this index");
+    }
+    selectPersona(persona.id);
 }
 
 /**
- * Fields the server normalizes (the Phase 3 sections and collections, and the two selections that
- * travel with collections). The client applies no default to them, so a plugin's `null` or
- * `undefined` there would leave the live mirror without the value every reader expects (the full
- * setter's `setDatabase` used to put the default back). Such a write is refused, and the value kept.
+ * Applies one key of a plugin's database object through the mutation that owns it: the collections
+ * (`characters`, `personas`, `modules`, `enabledModules`, `characterOrder`, `plugins`,
+ * `pluginCustomStorage`), the persona selection, the settings keys of `allowedDbKeys` (a section
+ * field, or a forwarded field of the selected preset), and any other key into the top level of
+ * `pluginCustomStorage`. `plugins` is the list to install: the full setter passes the plugins the
+ * user confirmed (added or updated by name), the lite one the whole list (replaced).
  */
-const serverNormalizedFields = new Set<string>([
-    ...Object.values(SECTION_FIELDS).flat(),
-    ...Object.values(COLLECTION_FIELDS),
-    ...Object.values(COLLECTION_SELECTION_FIELDS),
-]);
+function applyPluginKey(key: string, value: unknown, full: boolean) {
+    switch (key) {
+        case "characters":
+            return applyPluginCharacters(value);
+        case "personas":
+            return setPersonas(value);
+        case "modules":
+            return setModules(value);
+        case "enabledModules":
+            return setEnabledModules(value);
+        case "characterOrder":
+            return setCharacterOrder(value);
+        case "plugins":
+            if (full) {
+                for (const plugin of value as RisuPlugin[]) {
+                    upsertPlugin(plugin);
+                }
+                return;
+            }
+            return setPlugins(value);
+        case "pluginCustomStorage":
+            return replacePluginCustomStorage(value);
+        case "selectedPersona":
+            return selectPersonaAt(value);
+    }
+    if (allowedDbKeys.includes(key)) {
+        updateSettings({ [key]: value });
+    } else {
+        setPluginCustomValue(key, value);
+    }
+}
 
-function assignPluginField(db: Database, key: string, value: unknown) {
-    if ((value === null || value === undefined) && serverNormalizedFields.has(key)) {
-        console.warn(`[WARN] A plugin tried to clear ${key}; this setting cannot be cleared, so it was kept.`);
-        return;
+/**
+ * Both database setters: each key is applied on its own, so a refused value (warned about) keeps
+ * that key's previous value and the other keys still apply. A preset that is gone
+ * (`MutationTargetGoneError`) and unexpected errors reach the plugin.
+ */
+function applyPluginDatabase(newDb: Record<string, unknown>, full: boolean) {
+    for (const key of pluginKeyOrder(newDb)) {
+        warnRefused(`the database key ${key}`, () => applyPluginKey(key, newDb[key], full));
     }
-    if (key === "personas" && !Array.isArray(value)) {
-        console.warn("[WARN] A plugin tried to set personas to a non-list; the personas were kept.");
-        return;
-    }
-    (db as any)[key] = key === "personas" ? normalizedPluginPersonas(value) : value;
 }
 
 //Keys outside allowedDbKeys are stored at the top level of db.pluginCustomStorage
 const setPluginDatabaseLite = (newDb: any) => {
-    const db = getDatabase();
-    db.pluginCustomStorage ??= {};
-    for (const key of pluginKeyOrder(newDb)) {
-        if (key === "characters") {
-            applyPluginCharacters(newDb[key]);
-        } else if (allowedDbKeys.includes(key)) {
-            assignPluginField(db, key, newDb[key]);
-        } else {
-            db.pluginCustomStorage[key] = newDb[key];
-        }
-    }
-    DBState.db = db;
-    if (Object.hasOwn(newDb, "characters")) {
-        markCharactersDirty("all");
-    }
+    applyPluginDatabase(newDb, false);
 };
 
 const setPluginDatabase = async (newDb: any) => {
@@ -934,24 +959,19 @@ const setPluginDatabase = async (newDb: any) => {
         console.warn(
             "[WARN] Plugin attempted to access plugin directly. this would be blocked in future versions. Instead, use the provided APIs to manage plugins. Attempting to handle plugin installation via plugin for new plugins in the provided database object.",
         );
-        newDb.plugins = await handlePluginInstallViaPlugin(newDb.plugins);
+        let plugins: RisuPlugin[] = [];
+        warnRefused("the database key plugins", () => {
+            requireArray("plugins", newDb.plugins);
+            plugins = Array.from(newDb.plugins, (plugin, i) => {
+                checkPluginInput(plugin, `plugins[${i}]`);
+                return plugin as unknown as RisuPlugin;
+            });
+        });
+        // Only the plugins the user confirms are installed; the installed ones stay.
+        newDb = { ...newDb, plugins: await handlePluginInstallViaPlugin(plugins) };
     }
     // No await from here on: a forwarded preset field lands in the preset selected now.
-    const db = getDatabase();
-    db.pluginCustomStorage ??= {};
-    for (const key of pluginKeyOrder(newDb)) {
-        if (key === "characters") {
-            applyPluginCharacters(newDb[key]);
-        } else if (allowedDbKeys.includes(key)) {
-            assignPluginField(db, key, newDb[key]);
-        } else {
-            db.pluginCustomStorage[key] = newDb[key];
-        }
-    }
-    setDatabase(db);
-    if (Object.hasOwn(newDb, "characters")) {
-        markCharactersDirty("all");
-    }
+    applyPluginDatabase(newDb, true);
 };
 
 const readAssetImage = (path: string) => {
@@ -1147,10 +1167,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             if (scheme.type !== "light" && scheme.type !== "dark") {
                 throw new Error('Invalid color scheme type: must be "light" or "dark"');
             }
-            const db = DBState.db;
-            db.colorSchemeName = "custom";
-            db.customColorScheme = scheme;
-            db.colorScheme = scheme;
+            updateSettings({ colorSchemeName: "custom", customColorScheme: scheme, colorScheme: scheme });
             updateColorScheme();
         },
         getColorScheme: () => {
@@ -1166,8 +1183,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             if (!["standard", "highcontrast"].includes(name)) {
                 throw new Error(`Invalid text theme: ${name}`);
             }
-            const db = DBState.db;
-            db.textTheme = name;
+            updateSettings({ textTheme: name });
             updateTextThemeAndCSS();
         },
         setCustomTextTheme: (theme: {
@@ -1191,9 +1207,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                     throw new Error(`Invalid text theme: missing or invalid '${key}'`);
                 }
             }
-            const db = DBState.db;
-            db.textTheme = "custom";
-            db.customTextTheme = theme;
+            updateSettings({ textTheme: "custom", customTextTheme: theme });
             updateTextThemeAndCSS();
         },
         getTextTheme: () => {
@@ -1219,12 +1233,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
         },
         setArgument: async (key: string, value: string) => {
-            const db = getDatabase();
-            for (const p of db.plugins) {
-                if (p.name === plugin.name) {
-                    p.realArg[key] = value;
-                }
-            }
+            warnRefused(`the argument ${key}`, () => setPluginArgument(plugin.name, key, value));
         },
         getCharacterFromIndex: (index: number) => {
             const db = DBState.db;
@@ -1623,40 +1632,27 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         //v3 pluginStorage lives under its own key in db.pluginCustomStorage,
         //apart from the custom properties setDatabase/setDatabaseLite store at its top level
         _getPluginStorage: async (key: string) => {
-            const db = getDatabase();
-            return $state.snapshot(db.pluginCustomStorage?._pluginStorage?.[key]) ?? null;
+            return getPluginStorageValue(String(key));
         },
         _setPluginStorage: async (key: string, value: any) => {
             //JSON round trip rejects values the save file cannot hold, e.g. BigInt
             const json = JSON.stringify(value);
-            const db = getDatabase();
-            db.pluginCustomStorage ??= {};
-            db.pluginCustomStorage._pluginStorage ??= {};
-            db.pluginCustomStorage._pluginStorage[key] = json === undefined ? null : JSON.parse(json);
+            setPluginStorageItem(String(key), json === undefined ? null : JSON.parse(json));
         },
         _removePluginStorage: async (key: string) => {
-            const db = getDatabase();
-            if (db.pluginCustomStorage?._pluginStorage) {
-                delete db.pluginCustomStorage._pluginStorage[key];
-            }
+            removePluginStorageItem(String(key));
         },
         _clearPluginStorage: async () => {
-            const db = getDatabase();
-            db.pluginCustomStorage ??= {};
-            db.pluginCustomStorage._pluginStorage = {};
+            clearPluginStorage();
         },
         _keyPluginStorage: async (index: number) => {
-            const db = getDatabase();
-            const keys = Object.keys(db.pluginCustomStorage?._pluginStorage ?? {});
-            return keys[index] ?? null;
+            return pluginStorageKeys()[index] ?? null;
         },
         _keysPluginStorage: async () => {
-            const db = getDatabase();
-            return Object.keys(db.pluginCustomStorage?._pluginStorage ?? {});
+            return pluginStorageKeys();
         },
         _lengthPluginStorage: async () => {
-            const db = getDatabase();
-            return Object.keys(db.pluginCustomStorage?._pluginStorage ?? {}).length;
+            return pluginStorageKeys().length;
         },
         _getSafeLocalStorage: (key: string) => safeLocalStorage.getItem(key),
         _setSafeLocalStorage: (key: string, value: string) => safeLocalStorage.setItem(key, value),

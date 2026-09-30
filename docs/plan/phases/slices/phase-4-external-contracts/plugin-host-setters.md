@@ -1,6 +1,6 @@
 # Slice: Plugin Host Setters
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented 2026-09-30 (record below; the implementation plan's amendments apply).
 
 Phase: [Phase 4](../../phase-4-external-contracts.md), "Plugin API v3" (all of it: `setDatabase`
 and `setDatabaseLite` per collection, `setChar`, `setCharacterToIndex`, `setChatToIndex`,
@@ -188,3 +188,114 @@ setters still accept malformed entries beyond the validation of slice 1 (Phase 2
 limit). A plugin that read `pluginCustomStorage` through `getDatabase` keeps seeing the whole
 object (unchanged). Every later `pluginCustomStorage` writer must call the store module: the
 collection has no watcher after this slice.
+
+## Implementation record
+
+Implemented 2026-09-30 on `8526502b`, by the amendments of
+[`implementation-plan.md`](implementation-plan.md) (slice 2).
+
+- **`src/ts/plugins/apiV3/v3.svelte.ts`**:
+  - `applyPluginKey` routes each key of `setDatabase` and `setDatabaseLite` to its owner, as the
+    routing table above has it:
+    - `characters` → `applyPluginCharacters`;
+    - `personas` → `setPersonas`, `modules` → `setModules`, `enabledModules` →
+      `setEnabledModules`, `characterOrder` → `setCharacterOrder`;
+    - `plugins`: the full setter `upsertPlugin`s each confirmed plugin, the lite one calls
+      `setPlugins`;
+    - `pluginCustomStorage` → `replacePluginCustomStorage`;
+    - `selectedPersona` → the persona at that index, by id;
+    - the fifteen settings keys → one `updateSettings({ [key]: value })` each;
+    - any other key → `setPluginCustomValue`.
+  - `applyPluginDatabase` applies the keys one by one inside `warnRefused`. That catches only
+    `MutationValidationError`, warns, and keeps the previous value; `MutationTargetGoneError` and
+    unexpected errors reach the plugin.
+  - `pluginKeyOrder` applies `characterOrder` and then `selectedPersona` after every other key
+    (Astra challenge point 1).
+  - Gone: `assignPluginField`, `normalizedPluginPersonas`, the whole-database normalizer
+    `setDatabase(db)`, `DBState.db = db`, `markCharactersDirty("all")`, and the empty
+    `pluginCustomStorage` created on every call.
+  - The full setter checks `plugins` (a list of plugins with names) before the install prompt,
+    and passes the plugin's object on unchanged.
+  - `applyPluginCharacters` checks the whole list first (`checkCharacterInput` per entry). It
+    refuses duplicate ids and one object listed twice. Then it updates matched characters, appends
+    new ones (`addCharacter`), and removes omitted ones (`removeCharacter`), except one that is
+    generating.
+  - `applyPluginCharacter`: a same-id character goes through `replaceCharacterFields` and the
+    chat module. Another id goes through `replaceCharacterAt`, after the two old checks that keep
+    their warnings.
+  - `setArg` and `setArgument` → `setPluginArgument`.
+  - `setColorScheme`, `changeTextTheme`, and `setCustomTextTheme` → `updateSettings`.
+  - The seven `_*PluginStorage` functions → `pluginStorageStore`, the four reads included.
+- **`src/ts/storage/collectionStore.svelte.ts`** (not in the allowed files): exports
+  `checkPluginInput` for the full setter's check.
+- **`src/ts/storage/pluginStorageStore.svelte.ts`** (slice 1's module; Astra challenge point 2):
+  a dictionary a plugin replaced with a list reads as the list's entries, and becomes that
+  dictionary before a write.
+- **`src/ts/storage/mutationValidation.ts`**: the JSON refusal names the 256-level depth limit
+  (Astra challenge point 3).
+- **`src/ts/plugins/pluginSafeClass.ts`**: `SafeLocalPluginStorage` delegates to the store module.
+  Its `TypeError` for non-JSON and `undefined` stored as `null` stay.
+- **`src/ts/storage/browserLocalImport.ts`**: imports the helper from the store module, and uses
+  `hasSafeLocalPluginValue`.
+- **`src/ts/gui/colorscheme.ts`**: `changeColorScheme` and `updateCustomColorScheme` call
+  `updateSettings`.
+- **`src/ts/plugins/plugins.svelte.ts`**: `importPlugin` writes through `upsertPlugin`; its
+  `setDatabaseLite(db)` is gone.
+- **`src/ts/storage/resourceSync.svelte.ts`**: the `pluginCustomStorage` watcher is deleted.
+  Every writer outside the store module is either the boot assembly (`bootstrap.ts`), the
+  `_coldplugin` deletion (at boot and restore, covered by the boot marks), or the adapter itself.
+
+Recorded behavior changes, beyond those the routing table records:
+
+- A refusal that was silent before now warns: `characters` that is not a list, a `selectedPersona`
+  naming no persona, a plugin argument that is neither a string nor a finite number, and a
+  non-JSON custom key.
+- A malformed preset-field value (`temperature: null`) is refused.
+- v3 `pluginStorage` refuses JSON nested deeper than 256 levels.
+- An unknown color scheme name changes nothing.
+- A persisted `characterOrder` that omits a character the same call adds gets that character at
+  the next order repair (the boot one included), as before.
+
+Checks:
+
+- `pnpm check`, `pnpm test` (86 files, 895 passed, 3 skipped), `pnpm format:check`,
+  `pnpm build`, and `pnpm test:e2e` (5 passed).
+- The exit greps answer what the Validation paragraph expects: the rooted pattern answers only
+  `colorscheme.ts:259` and `:294`.
+- A Playwright script drove a real v3 plugin in its sandbox, over RPC, against a fresh server.
+  Every write survived a reload, and every refusal warned and changed nothing. The folder order
+  held with a character added in the same call. Clearing both storages saved.
+
+Observation, outside this slice: after a minimal character (`{ name, chats: [] }`) is added, the
+first idle reload writes it back once, with the defaults `bootstrap.ts` `checkNewFormat` fills and
+the server's character kind does not. The same happens through slice 1's `addCharacter` alone.
+
+## Tests
+
+- A Fable test-adapter changed the tests this slice invalidates on purpose.
+  - `hostApi.test.ts`: the normalizer assertions; the "residual root key" case, now a refusal; a
+    fixture with presets.
+  - `plugins.test.ts`: `importPlugin` no longer calls `setDatabaseLite`.
+  - `resourceSync.test.ts`: the own `__proto__` case writes through the store.
+  - Harness changes in `pluginSafeClass.test.ts` and `pluginStorage.test.ts`.
+- The Fable reviewer (verdict: no problem) wrote two files:
+  - `src/ts/plugins/apiV3/hostApiRouting.test.ts` (44 cases): the routing of every
+    `allowedDbKeys` key through both setters; refusals between valid keys; the whole-list checks;
+    the order keys; plugin installs; list-valued storage dictionaries; arguments and themes.
+  - `src/ts/plugins/apiV3/v3SavedWrites.test.ts` (9 cases, over `storeBackedServer.ts`): every
+    plugin storage write saved without the watcher; no echo after a conflict reload; the
+    arguments, the color scheme, a preset key, and the order saved.
+
+## Astra challenge (2026-09-30) and decisions
+
+1. Medium: a `characterOrder` sent before `characters` lost the ids the same call adds, because
+   each `addCharacter` repairs the order. Adopted: the order key is applied after the others.
+2. Medium: a reserved storage dictionary a plugin replaced with a list became unreadable and was
+   emptied on the next write. Adopted: it reads as the list's entries and becomes that dictionary
+   before a write.
+3. Low: v3 `pluginStorage` refuses JSON nested deeper than 256 levels, which its JSON round trip
+   accepted. Adopted with changes: the limit stays, recorded above, and the refusal names it.
+4. The first-reload character write-back is inherited (not this slice's). It is tracked
+   separately.
+5. The four deviations (`checkPluginInput`, the storage reads, the new warnings, the kept checks)
+   were judged justified.

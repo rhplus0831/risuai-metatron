@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // `SafeLocalPluginStorage` (the plugin API's `getLocalPluginStorage()`) over
-// `pluginCustomStorage._safeLocalPluginStorage`, with the documented JSON-only contract, against
-// the real `DBState` proxy so key handling is what plugins see.
+// `pluginCustomStorage._safeLocalPluginStorage` through the plugin storage mutations
+// (`pluginStorageStore.svelte.ts`), with the documented JSON-only contract, against the real
+// `DBState` proxy so key handling is what plugins see.
 
 vi.mock("../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -14,12 +15,8 @@ vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string)
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 
 import { DBState } from "../stores.svelte";
-import {
-    isJsonValue,
-    SAFE_LOCAL_PLUGIN_STORAGE_KEY,
-    SafeLocalPluginStorage,
-    setSafeLocalPluginValue,
-} from "./pluginSafeClass";
+import { SAFE_LOCAL_PLUGIN_STORAGE_KEY, setSafeLocalPluginValue } from "../storage/pluginStorageStore.svelte";
+import { isJsonValue, SafeLocalPluginStorage } from "./pluginSafeClass";
 
 const stored = () => (DBState.db.pluginCustomStorage as any)?.[SAFE_LOCAL_PLUGIN_STORAGE_KEY];
 

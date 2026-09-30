@@ -25,18 +25,30 @@ function storage(): Dictionary {
     return DBState.db.pluginCustomStorage;
 }
 
+/**
+ * The dictionary `name` inside `pluginCustomStorage`. A plugin can replace it with any JSON value
+ * through `setDatabase` (`setPluginCustomValue`): a list is read as the dictionary of its own entries
+ * (its indexes), and turned into that dictionary, entries kept, before a write; any other value is
+ * no dictionary and is replaced by an empty one on a write.
+ */
 function dictionary(name: string, create: true): Dictionary;
 function dictionary(name: string, create: false): Dictionary | undefined;
 function dictionary(name: string, create: boolean): Dictionary | undefined {
     if (create) {
         const root = storage();
         const current = root[name];
-        if (typeof current !== "object" || current === null || Array.isArray(current)) {
+        if (Array.isArray(current)) {
+            root[name] = Object.fromEntries(Object.entries(current));
+        } else if (typeof current !== "object" || current === null) {
             root[name] = {};
         }
     }
     const value = DBState.db.pluginCustomStorage?.[name];
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Dictionary) : undefined;
+    if (Array.isArray(value)) {
+        // Only the create path installs a dictionary; a read sees the list's entries, not its `length`.
+        return Object.fromEntries(Object.entries(value));
+    }
+    return typeof value === "object" && value !== null ? (value as Dictionary) : undefined;
 }
 
 /** Sets `key` of the dictionary `name` inside `pluginCustomStorage` (created on demand). */
@@ -51,7 +63,7 @@ function setEntry(name: string, key: string, value: unknown) {
 function removeEntry(name: string, key: string) {
     const values = dictionary(name, false);
     if (values && Object.hasOwn(values, key)) {
-        delete values[key];
+        delete dictionary(name, true)[key];
         markPluginStorageDirty();
     }
 }

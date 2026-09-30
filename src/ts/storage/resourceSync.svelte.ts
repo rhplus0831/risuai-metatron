@@ -1363,10 +1363,6 @@ export function startResourceSync() {
             $state.snapshot(DBState.db.plugins);
             markKey(collectionKey("plugins"));
         });
-        $effect(() => {
-            $state.snapshot(DBState.db.pluginCustomStorage);
-            markKey(collectionKey("pluginStorage"));
-        });
         // Each section and each settings collection: the projection reads exactly the fields the record
         // holds, so an edit marks only its own record.
         for (const collection of [...SECTIONS, ...SETTINGS_COLLECTIONS] as const) {
