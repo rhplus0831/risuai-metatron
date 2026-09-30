@@ -155,8 +155,6 @@
 
                 DBState.db.didFirstSetup = true;
             }, 1000);
-
-            DBState.db.claudeCachingExperimental = true;
         }
     });
 </script>

@@ -3,20 +3,15 @@ import * as fflate from "fflate";
 import { decryptBuffer, encryptBuffer } from "src/ts/util";
 import { decodeRPack, encodeRPack } from "src/ts/rpack/rpack_js.js";
 import type { TranslatorPreset } from "../../../shared/settings.ts";
-import {
-    createTranslatorPreset,
-    defaultTranslatorPrompt,
-    getNormalizedTranslatorPresetName,
-} from "../../../shared/translatorPresets.ts";
+import { createTranslatorPreset, defaultTranslatorPrompt } from "../../../shared/translatorPresets.ts";
 
 export type { TranslatorPreset } from "../../../shared/settings.ts";
 export { createTranslatorPreset, defaultTranslatorPrompt };
 
+/** The part of `Database` the selection reads: the list and the selected preset's id. */
 export interface TranslatorPresetStateLike {
-    translatorPrompt?: string;
-    translatorMaxResponse?: number;
     translatorPresets?: unknown[];
-    translatorPresetId?: number;
+    translatorPresetId?: string;
 }
 
 interface EncryptedTranslatorPresetFile {
@@ -68,75 +63,25 @@ function isEncryptedTranslatorPresetFile(value: unknown): value is EncryptedTran
     );
 }
 
-function getDefaultTranslatorPreset(state: TranslatorPresetStateLike): TranslatorPreset {
-    return createTranslatorPreset("Default", {
-        prompt: state.translatorPrompt ?? "",
-        maxResponse: state.translatorMaxResponse ?? 1000,
-    });
-}
-
 function sanitizeFileNamePart(value: string): string {
     const sanitized = value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim();
     return sanitized.length > 0 ? sanitized : "preset";
 }
 
-export function normalizeTranslatorPresetState<T extends TranslatorPresetStateLike>(state: T): T {
-    const defaultPreset = getDefaultTranslatorPreset(state);
-    const sourcePresets =
-        Array.isArray(state.translatorPresets) && state.translatorPresets.length > 0
-            ? state.translatorPresets
-            : [defaultPreset];
-
-    state.translatorPresets = sourcePresets.map((preset, index) => {
-        const normalizedPreset = isRecord(preset) ? preset : {};
-        return createTranslatorPreset(
-            getNormalizedTranslatorPresetName(normalizedPreset.name, index),
-            normalizedPreset,
-        );
-    });
-
-    const requestedId =
-        typeof state.translatorPresetId === "number" && Number.isInteger(state.translatorPresetId)
-            ? state.translatorPresetId
-            : 0;
-
-    state.translatorPresetId = Math.min(Math.max(requestedId, 0), Math.max(state.translatorPresets.length - 1, 0));
-
-    return syncCurrentTranslatorPresetToLegacyFields(state);
-}
-
-export function syncCurrentTranslatorPresetToLegacyFields<T extends TranslatorPresetStateLike>(state: T): T {
-    const preset = state.translatorPresets?.[state.translatorPresetId ?? 0];
-
-    if (!isTranslatorPresetValue(preset)) {
-        return normalizeTranslatorPresetState(state);
-    }
-
-    state.translatorPrompt = preset.prompt;
-    state.translatorMaxResponse = preset.maxResponse;
-
-    return state;
-}
-
-export function getCurrentTranslatorPresetFromState<T extends TranslatorPresetStateLike>(state: T): TranslatorPreset {
-    const presetId =
-        typeof state.translatorPresetId === "number" && Number.isInteger(state.translatorPresetId)
-            ? state.translatorPresetId
-            : -1;
-    const preset = Array.isArray(state.translatorPresets) ? state.translatorPresets[presetId] : undefined;
-
-    if (!isTranslatorPresetValue(preset)) {
-        const normalizedState = normalizeTranslatorPresetState(state);
-        const normalizedPreset = normalizedState.translatorPresets?.[normalizedState.translatorPresetId ?? 0];
-        return isTranslatorPresetValue(normalizedPreset)
-            ? normalizedPreset
-            : getDefaultTranslatorPreset(normalizedState);
-    }
-
-    state.translatorPrompt = preset.prompt;
-    state.translatorMaxResponse = preset.maxResponse;
-
-    return preset;
+/**
+ * The selected translator preset: the one whose id is `translatorPresetId`, else the first, else a
+ * default (the server keeps the list nonempty and the id valid, so the fallbacks cover only another
+ * client's deletion until the next reload). It never writes the state.
+ */
+export function getCurrentTranslatorPresetFromState(state: TranslatorPresetStateLike): TranslatorPreset {
+    const presets = Array.isArray(state.translatorPresets)
+        ? state.translatorPresets.filter(isTranslatorPresetValue)
+        : [];
+    return (
+        presets.find((preset) => preset.id === state.translatorPresetId) ??
+        presets[0] ??
+        createTranslatorPreset("Default")
+    );
 }
 
 async function decodeEncryptedTranslatorPresetFile(data: Uint8Array): Promise<TranslatorPreset> {

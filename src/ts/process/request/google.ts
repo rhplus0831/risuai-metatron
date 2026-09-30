@@ -1,6 +1,6 @@
 import { fetchNative, textifyReadableStream } from "src/ts/globalApi.svelte";
 import { LLMFlags, LLMFormat, type LLMModel } from "src/ts/model/modellist";
-import { getDatabase, setDatabase } from "src/ts/storage/database.svelte";
+import { getDatabase } from "src/ts/storage/database.svelte";
 import { base64url, simplifySchema } from "src/ts/util";
 import { v4 } from "uuid";
 import { saveInlayedSignature, setInlayAsset, writeInlayImage, type InlaySignature } from "../files/inlays";
@@ -510,10 +510,10 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
             throw new Error("No google access token in the response");
         }
 
+        // The `llmSecrets` watcher saves the two fields.
         const db2 = getDatabase();
         db2.vertexAccessToken = token;
         db2.vertexAccessTokenExpires = Date.now() + 3500 * 1000;
-        setDatabase(db2);
         return token;
     }
 

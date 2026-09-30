@@ -33,7 +33,7 @@ export function initHotkey() {
 
         const database = getDatabase();
 
-        const hotKeys = database?.hotkeys ?? defaultHotkeys;
+        const hotKeys = activeHotkeys(database?.hotkeys ?? defaultHotkeys, database);
 
         let hotkeyRan = false;
         for (const hotkey of hotKeys) {
@@ -328,6 +328,19 @@ async function quickMenu() {
     if (sel === 1) {
         openPersonaList.set(!get(openPersonaList));
     }
+}
+
+/**
+ * The hotkeys in effect: `scrollToActiveChar` only while its feature is on. The stored list always
+ * holds it (the server merges the built-in hotkeys back in), so the filter lives with the readers.
+ */
+export function activeHotkeys<T extends { action: string }>(
+    hotkeys: T[],
+    db: { enableScrollToActiveChar?: boolean } | undefined,
+): T[] {
+    return db?.enableScrollToActiveChar === false
+        ? hotkeys.filter((hotkey) => hotkey.action !== "scrollToActiveChar")
+        : hotkeys;
 }
 
 export function hotkeyMatches(hotkey: (typeof DBState.db.hotkeys)[number], ev: KeyboardEvent): boolean {

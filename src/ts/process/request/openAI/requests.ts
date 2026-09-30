@@ -349,7 +349,6 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
         }
     }
 
-    db.cipherChat = false;
     let body: {
         [key: string]: any;
     } = {

@@ -1,7 +1,9 @@
 import { tick } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { materialize } from "./serverKinds";
 
 // The save adapter (`resourceSync.svelte.ts`) against an in-memory stand-in for the resource routes.
 // Each test boots a fresh module graph (the adapter keeps its transport state at module level) and
@@ -40,6 +42,7 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
 type Stores = typeof import("../../stores.svelte");
+type Bootstrap = typeof import("../../bootstrap");
 
 /** A character record as the server stores it: its own fields, no chats (they are resources of their own). */
 function character(chaId: string, name: string, extra: Record<string, unknown> = {}) {
@@ -53,31 +56,26 @@ function character(chaId: string, name: string, extra: Record<string, unknown> =
 async function boot(options: { prepare?: (server: FakeResourceServer) => void; normalize?: (db: any) => void } = {}) {
     vi.resetModules();
     const fake = new FakeResourceServer();
-    fake.set("root", "main", { username: "u", formatversion: 5, language: "en" });
+    // The residual root as the client writes it: `RESIDUAL_ROOT_KEYS` only, in that order.
+    fake.set("root", "main", { username: "u", botPresetsId: 0 });
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
     fake.set("pluginStorage", "main", {});
     fake.set("characters", "a", character("a", "Alice"));
     fake.set("characters", "b", character("b", "Bob"));
+    await materialize(fake);
     options.prepare?.(fake);
     server.current = fake;
 
     const stores: Stores = await import("../../stores.svelte");
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
+    const bootstrap: Bootstrap = await import("../../bootstrap");
 
-    const snapshot = await client.readKinds(["root", "presets", "modules", "plugins", "pluginStorage", "characters"]);
+    const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    const single = (kind: string) => snapshot.kinds[kind]?.[0]?.data as any;
-    stores.DBState.db = {
-        ...single("root"),
-        botPresets: single("presets"),
-        modules: single("modules"),
-        plugins: single("plugins"),
-        pluginCustomStorage: single("pluginStorage"),
-        characters: snapshot.kinds.characters.map((record) => record.data),
-    } as any;
+    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
     stores.selectedCharID.set(-1);
     options.normalize?.(stores.DBState.db);
     fake.requests.length = 0;
@@ -117,12 +115,13 @@ describe("seeding and no echo", () => {
     it("saves the load-time normalization once (the first compare pass) and then stays quiet", async () => {
         const { fake, sync, bootBatches } = await boot({
             normalize: (db) => {
-                // What `setDatabase` adds after seeding.
-                db.newDefault = true;
+                // What `setDatabase` adds after seeding: a default of the preset working copy, which
+                // stays in the residual root until slice 5.
+                db.temperature = 80;
                 db.characters[1].bias = [];
             },
         });
-        expect(fake.data("root", "main").newDefault).toBe(true);
+        expect(fake.data("root", "main").temperature).toBe(80);
         expect(fake.data("characters", "b").bias).toEqual([]);
         expect(fake.data("characters", "a").bias).toBeUndefined();
         expect(bootBatches).toHaveLength(1);

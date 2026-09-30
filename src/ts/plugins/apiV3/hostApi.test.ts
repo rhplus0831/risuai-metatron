@@ -178,6 +178,80 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
     });
 });
 
+// Phase 3, slice 4 (Astra challenge point 3): the sections, the collections, and the two selection
+// ids are normalized by the server, and the client applies no default to them any more, so the full
+// setter's `setDatabase` no longer repairs a `null` or `undefined` a plugin writes there. Both
+// setters refuse such a write and keep the value. A residual root key (defaulted by `setDatabase`)
+// and a malformed non-null value still go through: the server repairs the latter on write.
+describe("v3 setDatabase / setDatabaseLite against server-normalized fields", () => {
+    const personas = [{ id: "p", name: "P", icon: "", personaPrompt: "", note: "", largePortrait: false }];
+
+    beforeEach(() => {
+        DBState.db = {
+            characters: [],
+            temperature: 0,
+            selectedPersona: 0,
+            askRemoval: true,
+            theme: "",
+            personas,
+            // Not `enabledModules`: the module-update effect of `stores.svelte.ts` tracks it, and a
+            // non-empty list would move `process/modules.ts`'s cache off the empty key the other
+            // fixtures of this file (which have no `modules`) rely on.
+            customCSS: "",
+            characterOrder: ["c"],
+            pluginCustomStorage: undefined,
+        } as any;
+        dbMocks.setDatabase.mockClear();
+        dbMocks.setDatabaseLite.mockClear();
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("keeps a section, collection, or selection field when a plugin writes null or undefined, and warns", async () => {
+        const api = await makeApi();
+
+        api.setDatabaseLite({ askRemoval: null, personas: undefined, customCSS: null, theme: undefined });
+        expect(DBState.db.askRemoval).toBe(true);
+        expect(DBState.db.personas).toEqual(personas);
+        expect(DBState.db.customCSS).toBe("");
+        expect(DBState.db.theme).toBe("");
+        expect(console.warn).toHaveBeenCalledTimes(4);
+        expect(vi.mocked(console.warn).mock.calls[0][0]).toContain("askRemoval");
+
+        await api.setDatabase({ characterOrder: null, personas: null, askRemoval: undefined });
+        expect(DBState.db.characterOrder).toEqual(["c"]);
+        expect(DBState.db.personas).toEqual(personas);
+        expect(DBState.db.askRemoval).toBe(true);
+        expect(dbMocks.setDatabase).toHaveBeenCalledTimes(1);
+        // Nothing lands in the custom storage either: the key is known, only its value is refused.
+        expect(DBState.db.pluginCustomStorage).toEqual({});
+    });
+
+    it("still assigns null to a residual root key, which the full setter's setDatabase defaults", async () => {
+        const api = await makeApi();
+        api.setDatabaseLite({ temperature: null, selectedPersona: undefined });
+        expect(DBState.db.temperature).toBeNull();
+        expect(DBState.db.selectedPersona).toBeUndefined();
+        expect(console.warn).not.toHaveBeenCalled();
+        await api.setDatabase({ temperature: null });
+        expect(dbMocks.setDatabase).toHaveBeenCalledWith(DBState.db);
+    });
+
+    it("accepts a non-null value of a server-normalized field as-is (the server repairs a malformed one on write)", async () => {
+        const api = await makeApi();
+        api.setDatabaseLite({ askRemoval: "yes", customCSS: ".x {}", theme: "dark" });
+        expect(DBState.db.askRemoval).toBe("yes");
+        expect(DBState.db.customCSS).toBe(".x {}");
+        expect(DBState.db.theme).toBe("dark");
+        expect(console.warn).not.toHaveBeenCalled();
+        await api.setDatabase({ askRemoval: false });
+        expect(DBState.db.askRemoval).toBe(false);
+    });
+});
+
 describe("v3 safeLocalStorage aliases", () => {
     beforeEach(() => {
         localStorage.clear();

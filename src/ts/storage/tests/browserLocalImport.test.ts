@@ -1,7 +1,8 @@
 import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { InlayResource } from "../../../../shared/resources.ts";
+import { type InlayResource, RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { materialize } from "./serverKinds";
 
 // The boot-time move of browser-local data to the server (`importBrowserLocalData`): write, verify,
 // delete; keep the local entry on any failure or when it changed meanwhile; the server wins when it
@@ -130,25 +131,20 @@ let sync: typeof import("../resourceSync.svelte");
 let client: typeof import("../resourceClient");
 let importer: typeof import("../browserLocalImport");
 let permissions: typeof import("../../plugins/apiV3/permissionStore");
+let bootstrap: typeof import("../../bootstrap");
 
 async function boot() {
     vi.resetModules();
+    await materialize(fake);
     stores = await import("../../stores.svelte");
     client = await import("../resourceClient");
     sync = await import("../resourceSync.svelte");
     importer = await import("../browserLocalImport");
     permissions = await import("../../plugins/apiV3/permissionStore");
-    const snapshot = await client.readKinds(["root", "presets", "modules", "plugins", "pluginStorage", "characters"]);
+    bootstrap = await import("../../bootstrap");
+    const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    const single = (kind: string) => snapshot.kinds[kind]?.[0]?.data as any;
-    stores.DBState.db = {
-        ...single("root"),
-        botPresets: single("presets"),
-        modules: single("modules"),
-        plugins: single("plugins"),
-        pluginCustomStorage: single("pluginStorage"),
-        characters: [],
-    } as any;
+    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
     stores.selectedCharID.set(-1);
     sync.startResourceSync();
     await tick();
@@ -315,26 +311,27 @@ describe("permissions", () => {
 });
 
 describe("Iris dialogue and Google credentials", () => {
-    it("moves a valid dialogue and credentials into the root record and deletes them locally", async () => {
+    it("moves a valid dialogue into the ui record and credentials into the secrets record, and deletes them locally", async () => {
         table(IRIS).set("current_dialogue", [{ speaker: "Iris", text: "hi", tip: "t" }]);
         table(GOOGLE).set("google-search-creds", { apiKey: "k", searchEngineId: "e" });
         await importer.importBrowserLocalData();
-        const root = fake.data("root", "main");
-        expect(root.irisDialogue).toEqual([{ speaker: "Iris", text: "hi", tip: "t" }]);
-        expect(root.googleSearchCredentials).toEqual({ apiKey: "k", searchEngineId: "e" });
+        expect(fake.data("ui", "main").irisDialogue).toEqual([{ speaker: "Iris", text: "hi", tip: "t" }]);
+        expect(fake.data("secrets", "main").googleSearchCredentials).toEqual({ apiKey: "k", searchEngineId: "e" });
         expect(table(IRIS).size).toBe(0);
         expect(table(GOOGLE).size).toBe(0);
     });
 
     it("keeps invalid shapes local and lets an existing server value win", async () => {
-        fake.set("root", "main", { username: "u", irisDialogue: [{ speaker: "server", text: "kept" }] });
+        fake.set("ui", "main", {
+            ...fake.data<Record<string, unknown>>("ui", "main")!,
+            irisDialogue: [{ speaker: "server", text: "kept" }],
+        });
         await boot();
         table(IRIS).set("current_dialogue", [{ speaker: "browser", text: "lost" }]);
         table(GOOGLE).set("google-search-creds", { apiKey: 1 });
         await importer.importBrowserLocalData();
-        const root = fake.data("root", "main");
-        expect(root.irisDialogue).toEqual([{ speaker: "server", text: "kept" }]);
-        expect(root.googleSearchCredentials).toBeUndefined();
+        expect(fake.data("ui", "main").irisDialogue).toEqual([{ speaker: "server", text: "kept" }]);
+        expect(fake.data("secrets", "main").googleSearchCredentials).toBeUndefined();
         expect(table(IRIS).size).toBe(0);
         expect(table(GOOGLE).get("google-search-creds")).toEqual({ apiKey: 1 });
     });
@@ -346,7 +343,7 @@ describe("the run as a whole", () => {
         table(GOOGLE).set("google-search-creds", { apiKey: "k", searchEngineId: "e" });
         fake.failNext = { status: 500, times: 1, match: (path) => path.includes("/api/resources/inlays/") };
         await importer.importBrowserLocalData();
-        expect(fake.data("root", "main").googleSearchCredentials).toEqual({ apiKey: "k", searchEngineId: "e" });
+        expect(fake.data("secrets", "main").googleSearchCredentials).toEqual({ apiKey: "k", searchEngineId: "e" });
         expect(table(INLAY).has("broken")).toBe(true);
         expect(localStorage.getItem("risuauth")).toBeNull();
         expect(forage.has("dropped:risuSaveCache")).toBe(true);

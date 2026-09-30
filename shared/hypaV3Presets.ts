@@ -47,3 +47,15 @@ export function createHypaV3Preset(name = "New Preset", existingSettings = {}, i
         settings,
     };
 }
+
+/**
+ * The selected HypaV3 preset: the one whose id is `hypaV3PresetId`, else the first (the server keeps
+ * the list nonempty and the id valid; the fallback covers another client's deletion until reload).
+ */
+export function selectedHypaV3Preset(state: {
+    hypaV3Presets?: HypaV3Preset[];
+    hypaV3PresetId?: string;
+}): HypaV3Preset | undefined {
+    const presets = state.hypaV3Presets ?? [];
+    return presets.find((preset) => preset.id === state.hypaV3PresetId) ?? presets[0];
+}

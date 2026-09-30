@@ -81,7 +81,7 @@ Embedding routing:
   - Algorithm flags: `hypaMemory`, `hypav2`, `hypaV3`, `hanuraiEnable`, `hanuraiSplit`, `hanuraiTokens`, `memoryAlgorithmType` (unused).
   - Models and keys: `hypaModel`, `supaModelType`, `supaMemoryKey`, `voyageApiKey`.
   - Sizing: `hypaChunkSize`, `hypaAllocatedTokens`, `hypaCustomSettings`.
-  - Presets: `hypaV3Presets`, `hypaV3PresetId`. The legacy `hypaV3Settings` seeds the first preset.
+  - Presets: `hypaV3Presets`, `hypaV3PresetId` (the selected preset's id; `selectedHypaV3Preset` in `shared/hypaV3Presets.ts` resolves it, falling back to the first). Both travel in the `hypaV3Presets` record as `{ items, selectedId }`.
 - Per-chat fields: `supaMemoryData`, `hypaV2Data`, `hypaV3Data`, `lastMemory`.
 - Stores: `hypaV3ModalOpen`, `hypaV3ProgressStore`.
 
@@ -114,6 +114,7 @@ Embedding routing:
 
 ## Tests
 
+- `src/ts/process/memory/hypaV3Presets.test.ts`: `selectedHypaV3Preset` (by id, the first-preset fallback, no state write, undefined for an empty list).
 - None cover the algorithms, processors, rate limiter, or modal.
 - `scriptings.test.ts` only mocks `HypaProcesser`.
 

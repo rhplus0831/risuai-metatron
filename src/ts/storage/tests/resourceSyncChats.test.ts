@@ -1,7 +1,7 @@
 import { tick } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RESOURCE_EPOCH_HEADER } from "../../../../shared/resources.ts";
+import { RESOURCE_EPOCH_HEADER, RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The save adapter (`resourceSync.svelte.ts`) together with the chat module (`chatStore.svelte.ts`)
@@ -39,8 +39,9 @@ type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
 type Stores = typeof import("../../stores.svelte");
 type ChatModule = typeof import("../chatStore.svelte");
+type Bootstrap = typeof import("../../bootstrap");
 
-const KINDS = ["root", "presets", "modules", "plugins", "pluginStorage", "characters"];
+const KINDS = Object.values(RESOURCE_KIND);
 const m = (id: string | undefined, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
 const refK = { chaId: "c", chatId: "k" };
 const refJ = { chaId: "c", chatId: "j" };
@@ -53,7 +54,9 @@ const refJ = { chaId: "c", chatId: "j" };
 async function boot(prepare?: (server: StoreBackedServer) => void) {
     vi.resetModules();
     const fake = await StoreBackedServer.create();
-    fake.set("root", "main", { username: "u", formatversion: 5, language: "en" });
+    // The store materialized the sections and collections when it opened; the residual root holds
+    // `RESIDUAL_ROOT_KEYS` only, as the client writes it.
+    fake.set("root", "main", { username: "u", botPresetsId: 0 });
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
@@ -93,20 +96,13 @@ async function boot(prepare?: (server: StoreBackedServer) => void) {
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const chat: ChatModule = await import("../chatStore.svelte");
+    const bootstrap: Bootstrap = await import("../../bootstrap");
 
     const snapshot = await client.readKinds(KINDS, { chats: true });
     sync.seedResources(snapshot);
     chat.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    const single = (kind: string) => snapshot.kinds[kind]?.[0]?.data as any;
-    stores.DBState.db = {
-        ...single("root"),
-        botPresets: single("presets"),
-        modules: single("modules"),
-        plugins: single("plugins"),
-        pluginCustomStorage: single("pluginStorage"),
-        characters: snapshot.kinds.characters.map((record) => record.data),
-    } as any;
-    chat.assembleChats(stores.DBState.db.characters as any, snapshot.chats ?? [], snapshot.chatOrders ?? []);
+    // `assembleDatabase` also assembles the chats into the characters.
+    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
     stores.selectedCharID.set(-1);
     chat.initializeChats();
     fake.requests.length = 0;

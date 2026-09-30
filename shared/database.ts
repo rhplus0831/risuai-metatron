@@ -234,7 +234,8 @@ export interface Database {
     translatorPrompt: string;
     translatorMaxResponse: number;
     translatorPresets: TranslatorPreset[];
-    translatorPresetId: number;
+    /** The selected `translatorPresets` entry, by id (travels in the `translatorPresets` record). */
+    translatorPresetId: string;
     top_p: number;
     google: {
         accessToken: string;
@@ -372,7 +373,8 @@ export interface Database {
     hypaV3: boolean;
     hypaV3Settings: HypaV3Settings; // legacy
     hypaV3Presets: HypaV3Preset[];
-    hypaV3PresetId: number;
+    /** The selected `hypaV3Presets` entry, by id (travels in the `hypaV3Presets` record). */
+    hypaV3PresetId: string;
     realmDirectOpen: boolean;
     OaiCompAPIKeys: { [key: string]: string };
     inlayErrorResponse: boolean;

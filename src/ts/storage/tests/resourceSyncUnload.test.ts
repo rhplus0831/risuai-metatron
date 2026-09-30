@@ -1,6 +1,8 @@
 import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { materialize } from "./serverKinds";
 
 // The save adapter's page lifecycle handlers: a hidden page saves at once, and `beforeunload` asks
 // for the browser's warning only while work is unsaved. Its own file, so the window listeners come
@@ -35,33 +37,30 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
 type Stores = typeof import("../../stores.svelte");
+type Bootstrap = typeof import("../../bootstrap");
 
 async function boot() {
     vi.resetModules();
     const fake = new FakeResourceServer();
-    fake.set("root", "main", { username: "u", formatversion: 5, language: "en" });
+    // The residual root as the client writes it (`RESIDUAL_ROOT_KEYS` only); the sections and
+    // collections are the records the server materializes.
+    fake.set("root", "main", { username: "u", botPresetsId: 0 });
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
     fake.set("pluginStorage", "main", {});
     fake.set("characters", "a", { chaId: "a", name: "Alice", type: "character" });
+    await materialize(fake);
     server.current = fake;
 
     const stores: Stores = await import("../../stores.svelte");
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
+    const bootstrap: Bootstrap = await import("../../bootstrap");
 
-    const snapshot = await client.readKinds(["root", "presets", "modules", "plugins", "pluginStorage", "characters"]);
+    const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    const single = (kind: string) => snapshot.kinds[kind]?.[0]?.data as any;
-    stores.DBState.db = {
-        ...single("root"),
-        botPresets: single("presets"),
-        modules: single("modules"),
-        plugins: single("plugins"),
-        pluginCustomStorage: single("pluginStorage"),
-        characters: snapshot.kinds.characters.map((record) => record.data),
-    } as any;
+    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
     stores.selectedCharID.set(-1);
     fake.requests.length = 0;
     sync.startResourceSync();

@@ -18,61 +18,14 @@ import {
     encodeTranslatorPresetFile,
     getCurrentTranslatorPresetFromState,
     getTranslatorPresetDownloadName,
-    normalizeTranslatorPresetState,
     translatorPresetImportExtensions,
     type TranslatorPresetStateLike,
 } from "./presets";
 
-describe("normalizeTranslatorPresetState", () => {
-    it("creates a default preset from legacy translator settings", () => {
-        const state: TranslatorPresetStateLike = {
-            translatorPrompt: "Translate to {{slot}}.",
-            translatorMaxResponse: 321,
-        };
-
-        normalizeTranslatorPresetState(state);
-
-        expect(state.translatorPresets).toHaveLength(1);
-        const [defaultPreset] = state.translatorPresets as [
-            { id: unknown; name: string; prompt: string; maxResponse: number },
-        ];
-        const { id, ...defaultPresetWithoutId } = defaultPreset;
-        expect(defaultPresetWithoutId).toEqual({
-            name: "Default",
-            prompt: "Translate to {{slot}}.",
-            maxResponse: 321,
-        });
-        // `TranslatorPreset.id` is required: the default preset gets a generated non-empty string id.
-        expect(typeof id).toBe("string");
-        expect((id as string).length).toBeGreaterThan(0);
-        expect(state.translatorPresetId).toBe(0);
-        expect(state.translatorPrompt).toBe("Translate to {{slot}}.");
-        expect(state.translatorMaxResponse).toBe(321);
-    });
-
-    it("clamps invalid preset ids and syncs legacy fields from the selected preset", () => {
-        const state: TranslatorPresetStateLike = {
-            translatorPrompt: "legacy",
-            translatorMaxResponse: 1000,
-            translatorPresets: [
-                createTranslatorPreset("Fast", {
-                    prompt: "Fast preset",
-                    maxResponse: 128,
-                }),
-            ],
-            translatorPresetId: 99,
-        };
-
-        normalizeTranslatorPresetState(state);
-
-        expect(state.translatorPresetId).toBe(0);
-        expect(state.translatorPrompt).toBe("Fast preset");
-        expect(state.translatorMaxResponse).toBe(128);
-    });
-});
-
+// The list's defaults and the id's validity are the server `translatorPresets` normalizer's job
+// (`server/src/tests/normalizeCollections.test.ts`); the client only selects.
 describe("getCurrentTranslatorPresetFromState", () => {
-    it("reuses a valid selected preset without renormalizing the preset array", () => {
+    it("selects the preset by id, falls back to the first one, and never writes the state", () => {
         const presets = [
             createTranslatorPreset("Default", {
                 prompt: "Default prompt",
@@ -84,18 +37,21 @@ describe("getCurrentTranslatorPresetFromState", () => {
             }),
         ];
         const state: TranslatorPresetStateLike = {
-            translatorPrompt: "legacy prompt",
-            translatorMaxResponse: 1000,
             translatorPresets: presets,
-            translatorPresetId: 1,
+            translatorPresetId: presets[1].id,
         };
 
         const preset = getCurrentTranslatorPresetFromState(state);
 
         expect(preset).toBe(presets[1]);
         expect(state.translatorPresets).toBe(presets);
-        expect(state.translatorPrompt).toBe("Detailed prompt");
-        expect(state.translatorMaxResponse).toBe(256);
+        expect(state).toEqual({ translatorPresets: presets, translatorPresetId: presets[1].id });
+
+        // An id no preset has (another client deleted it) or no id at all: the first preset.
+        const stale: TranslatorPresetStateLike = { translatorPresets: presets, translatorPresetId: "gone" };
+        expect(getCurrentTranslatorPresetFromState(stale)).toBe(presets[0]);
+        expect(stale).toEqual({ translatorPresets: presets, translatorPresetId: "gone" });
+        expect(getCurrentTranslatorPresetFromState({ translatorPresets: presets })).toBe(presets[0]);
     });
 });
 

@@ -1,6 +1,6 @@
 # Slice: Client Section Mirrors And The Residual Root
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented (2026-09-30); see Implementation record.
 
 Phase: [Phase 3](../../phase-3-settings-sections.md), "Client mirror", "Collections still in
 root" (the client side), "Server normalizers" (the client `setDatabase` shrinks), "Ids" for
@@ -139,3 +139,151 @@ could.
 - `presets/main` is materialized by the server (slice 3). `modules`, `plugins`, and
   `pluginStorage` are not; the assembly keeps its client defaults for them unless this slice
   materializes them too.
+
+## Implementation record
+
+Implemented by Claude Opus on 2026-09-30, following `implementation-plan.md` (amendments A2, A4,
+A5, F-a, A12).
+
+- Assembly (`bootstrap.ts`, `assembleDatabase`, now exported, F-a): the `RESIDUAL_ROOT_KEYS` of
+  the stored `root` (a root from before holds more; that is ignored, A2), every field of each
+  section, each collection (`{ items, selectedId }` unpacked into the two fields), the
+  `llmSecrets` `presets` map into `llmSecretPresets`, `presets`, then the optional Phase 1
+  collections and the characters. A missing section, settings collection, or `presets` record
+  throws: the server creates them (slice 3). `modules`, `plugins`, and `pluginStorage` stay
+  optional, as before.
+- `setDatabase` keeps only the removed-feature deletions, the Phase 1 guards, and the defaults
+  and migrations of the residual keys (the preset working copy with `normalizePresets`, the
+  persona fields, `botPresetsId`, `selectedPersona`, `loreBookPage`; A4). The statements were
+  filtered by the owner of the field they assign (`shared/sections.ts`), then reviewed by hand:
+  the `loreBook` default, `normalizeTranslatorPresetState`, the `largeChatPerformanceMode`
+  deletion, and the `ollamaCloudModel` copy went with their sections. `checkNewFormat` keeps
+  only its character and module steps; the persona id step, the `formatversion` branches, the
+  `characterOrder` default, and the `mainPrompt` migrations are gone (no migration owed).
+- Save adapter (`resourceSync.svelte.ts`): `COLLECTIONS` adds the 5 sections and 13 collections;
+  one debounce loop with a dirty key per record (open question 1). The residual root projects
+  `RESIDUAL_ROOT_KEYS` in list order through `$state.snapshot`. A section projects its
+  `SECTION_FIELDS` in order, and a settings collection its value or `{ items, selectedId }`.
+  Both are serialized straight from the proxy with `JSON.stringify` (the `pluginStorage` model),
+  so an own `__proto__` key survives (slice 3's Astra point 4). Each record has its own watcher,
+  which reads through the projection, so an edit marks only its record. `applyToMirror`
+  replaces a section's fields in place (deleting absent ones), replaces a collection, and
+  replaces `llmSecretPresets`.
+- `llmSecrets.svelte.ts` (new): `llmSecretPresets` with `getPresetSecret`, `setPresetSecret`,
+  `deletePresetSecret`, `copyPresetSecret`, and `replacePresetSecrets` (built with
+  `Object.fromEntries`).
+- Selection by id: `shared/database.ts` makes `translatorPresetId` and `hypaV3PresetId` strings
+  (A5). `getCurrentTranslatorPresetFromState` finds by id, falls back to the first preset, and no
+  longer writes the state (it wrote the two legacy fields). `normalizeTranslatorPresetState` and
+  `syncCurrentTranslatorPresetToLegacyFields` are gone. `selectedHypaV3Preset` in
+  `shared/hypaV3Presets.ts` serves `getCurrentHypaV3Preset`, the `stores.svelte.ts` toggle
+  effect, and `OtherBotSettings.svelte`. Both settings pages select, rename, delete, export, and
+  import by id; the HypaV3 JSON export already wrote `{ name, settings }` (slice 2).
+- Other readers: the Vertex token refresh stops calling `setDatabase`. The browser-local import
+  checks `irisDialogue` in `ui` and `googleSearchCredentials` in `secrets`. The
+  `scrollToActiveChar` filter moves from `setDatabase` to `activeHotkeys` (`hotkey.ts`, used by
+  the dispatch and `HotkeySettings.svelte`). The writes of two dropped fields go:
+  `db.cipherChat = false` (`openAI/requests.ts`) and `claudeCachingExperimental = true`
+  (`WelcomeRisu.svelte`). No dropped field has a reader left.
+
+Deviations from this file:
+
+- Allowed files added: `shared/hypaV3Presets.ts` (`selectedHypaV3Preset`),
+  `src/lib/Setting/Pages/HotkeySettings.svelte` (the hotkey filter's second reader),
+  `src/ts/process/request/openAI/requests.ts`, and `src/lib/Others/WelcomeRisu.svelte` (the
+  dropped-field writers).
+- Section projections use `JSON.stringify` of the live proxy, not `$state.snapshot` per field
+  (the `__proto__` requirement above).
+- `DROPPED_FIELDS` stay declared in `Database`; slice 7 records the list. The assembly never
+  produces them.
+
+Behavior change, as recorded in slice 3: a store from before this slice starts with the section
+and collection defaults. Its old `root` values are not carried over, and the first boot writes
+the filtered `root` once.
+
+Checks:
+
+- `pnpm check` and `pnpm test`: the only failures are the expected invalidations, listed below.
+- `pnpm build` passes.
+- `pnpm format:check` is clean.
+
+Expected invalidations, with their causes:
+
+- `resourceSync.test.ts` (the no-echo boot and the load-time normalization) and
+  `resourceSyncChats.test.ts` (every boot): the fixtures seed a `root` holding the section
+  fields and build `DBState.db` by hand, without the section records.
+- `characters.test.ts`: `characterOrder` is read from `root` and now lives in its own
+  collection.
+- `browserLocalImport.test.ts`: the two fields are expected in `root`, and the run test depends
+  on that.
+- `translator/presets.test.ts`: the removed legacy functions and the numeric id. It also fails
+  `pnpm check`.
+
+Playwright (`playwright-core` scripts, system Chrome, fresh server):
+
+- First boot: the only batch creates `root`, `modules`, and `plugins`. The defaults show:
+  `zoomsize` 100, `loreBookToken` 8000, 24 hotkeys, one persona, `maxResponse` 500. Both
+  selections resolve by id.
+- An idle reload writes nothing.
+- Edits persist across a reload:
+  - One edit per section plus several collections (`globalChatVariables`, `enabledModules`, a
+    second translator preset selected, a second lorebook, `statics.messages`) and a residual
+    `temperature` are saved in one batch.
+  - Every value survives, including a `llmSecretPresets` entry.
+- Two contexts: `ui` edited in one and `providers` in the other gives no conflict. Two `ui` edits
+  give the second client a 409; it reloads `ui`, loses its own edit, keeps the first client's,
+  and shows the reload notice.
+- Every settings page opens without an error except page 13 (the prompt template editor, opened
+  directly without a `promptTemplate`). That error, and a write while browsing, happen on the
+  slice 3 commit too: there the write goes to `root`, and here to `providers`.
+
+After the Astra challenge (same session):
+
+1. The `presets` projection used `$state.snapshot`, which drops an own `__proto__` key inside a
+   preset (`seperateParameters.overrides`), so an unchanged preset would be written without it.
+   Adopted: `presets` is serialized straight from the proxy, like `pluginStorage`, and its watcher
+   reads through the projection.
+2. `setPresetSecret` could not create an own `__proto__` entry through the proxy. Adopted: that
+   one id rebuilds the map with `Object.fromEntries` (the `setSafeLocalPluginValue` model).
+3. Plugin setters (regression): the full setter's `setDatabase` no longer puts back a default
+   after a plugin writes `null` or `undefined` to a server-normalized field. `personas: null`
+   then breaks readers, and `askRemoval: null` disables a confirmation locally. Adopted: both
+   plugin setters (`v3.svelte.ts`, `assignPluginField`) refuse `null` and `undefined` for
+   section, collection, and selection fields, keep the value, and warn. A malformed non-null
+   value still reaches the server, which repairs it. The mirror then differs until the next
+   reload, as with any write the server normalizes further. `v3.svelte.ts` joins the allowed
+   files.
+4. The rename and delete dialogs held the preset object and list across the `await`, so a
+   conflict reload meanwhile made them edit a detached copy. Adopted in both settings pages: they
+   capture the id and name, then resolve by id afterwards and recheck the one-preset minimum.
+   Delete moves the selection only when it pointed at the deleted preset.
+5. Not fixed, recorded: a `ui` conflict reload assigns the fields but does not rerun the
+   presentation functions (language, theme, CSS, animation speed, sizes). The same held for
+   `root` before. Also, "an idle boot writes nothing" excludes two intended boot mutations:
+   `checkCharOrder`, which repairs `characterOrder` against the characters, and `WelcomeRisu`
+   onboarding, which writes the browser language.
+6. Docs: `STRUCTURE.md` D2 and the `persistence.md` "Add a persisted setting" recipe now put a
+   section field's default in its server normalizer. The browser-local import flow and
+   `global-api.md` name the `ui` and `secrets` records.
+
+Tests: the Fable test-adapter adapted the five invalidated files and refused none. The
+`resourceSync` no-echo test now boots from the materialized records through `assembleDatabase`
+and still proves that an idle boot writes nothing. The two `normalizeTranslatorPresetState` tests
+were removed with the function, whose job moved to the server normalizer (covered in
+`normalizeCollections.test.ts`). `resourceSyncUnload.test.ts` still passes on the old fixture
+shape and was left unchanged. After the fixes, all checks pass:
+
+- `pnpm check`
+- `pnpm test` (66 files, 693 passed, 3 skipped)
+- `pnpm format:check`
+- The Playwright script, which gave the same results as above.
+
+Review-step tests (Claude Fable, the slice 4 review): `src/ts/storage/tests/resourceSyncSections.test.ts`
+(the convergence rule on the real server store for every kind, `assembleDatabase`, the residual
+root projection, one watcher per record, the conflict reloads), `src/ts/storage/tests/llmSecrets.test.ts`,
+`src/ts/process/memory/hypaV3Presets.test.ts`, the plugin-setter cases in
+`src/ts/plugins/apiV3/hostApi.test.ts`, the dialog-during-conflict cases in
+`src/lib/Setting/Pages/Language/TranslatorPresetSettings.test.ts`, and `e2e/idleReload.spec.ts`
+(`pnpm test:e2e`). The duplicated `materialize` helper of the adapted tests moved to
+`src/ts/storage/tests/serverKinds.ts`, and `resourceSyncUnload.test.ts` boots from the materialized
+records like the others.

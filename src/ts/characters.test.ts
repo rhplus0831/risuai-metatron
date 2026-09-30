@@ -1,6 +1,8 @@
 import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { RESOURCE_KIND } from "../../shared/resources.ts";
 import { FakeResourceServer } from "./storage/tests/fakeResourceServer";
+import { materialize } from "./storage/tests/serverKinds";
 
 // `removeChar` (trash) and `restoreChar` against the save adapter: both write `trashTime` on a
 // character that is usually not the selected one (the catalog opens from the home screen), so the
@@ -47,6 +49,7 @@ type Sync = typeof import("./storage/resourceSync.svelte");
 type Client = typeof import("./storage/resourceClient");
 type Stores = typeof import("./stores.svelte");
 type Characters = typeof import("./characters");
+type Bootstrap = typeof import("./bootstrap");
 
 function character(chaId: string, name: string, extra: Record<string, unknown> = {}) {
     return { chaId, name, type: "character", chats: [], chatPage: 0, ...extra };
@@ -55,31 +58,28 @@ function character(chaId: string, name: string, extra: Record<string, unknown> =
 async function boot() {
     vi.resetModules();
     const fake = new FakeResourceServer();
-    fake.set("root", "main", { username: "u", formatversion: 5, language: "en", characterOrder: ["a", "b"] });
+    // The residual root as the client writes it (`RESIDUAL_ROOT_KEYS` only); the character order is
+    // a collection record of its own.
+    fake.set("root", "main", { username: "u", botPresetsId: 0 });
+    fake.set("characterOrder", "main", ["a", "b"]);
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
     fake.set("pluginStorage", "main", {});
     fake.set("characters", "a", character("a", "Alice"));
     fake.set("characters", "b", character("b", "Bob"));
+    await materialize(fake);
     server.current = fake;
 
     const stores: Stores = await import("./stores.svelte");
     const client: Client = await import("./storage/resourceClient");
     const sync: Sync = await import("./storage/resourceSync.svelte");
     const characters: Characters = await import("./characters");
+    const bootstrap: Bootstrap = await import("./bootstrap");
 
-    const snapshot = await client.readKinds(["root", "presets", "modules", "plugins", "pluginStorage", "characters"]);
+    const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    const single = (kind: string) => snapshot.kinds[kind]?.[0]?.data as any;
-    stores.DBState.db = {
-        ...single("root"),
-        botPresets: single("presets"),
-        modules: single("modules"),
-        plugins: single("plugins"),
-        pluginCustomStorage: single("pluginStorage"),
-        characters: snapshot.kinds.characters.map((record) => record.data),
-    } as any;
+    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
     stores.selectedCharID.set(-1);
     fake.requests.length = 0;
     sync.startResourceSync();
@@ -109,7 +109,7 @@ describe("trash and restore", () => {
         expect(db().characters[1].trashTime).toEqual(expect.any(Number));
         await sync.flushResources();
         expect(fake.data("characters", "b").trashTime).toEqual(expect.any(Number));
-        expect(fake.data("root", "main").characterOrder).toEqual(["a"]);
+        expect(fake.data("characterOrder", "main")).toEqual(["a"]);
     });
 
     it("saves a restore from the trash, so the character is not deleted by a later boot", async () => {
@@ -122,6 +122,6 @@ describe("trash and restore", () => {
         expect(db().characters[1].trashTime).toBeUndefined();
         await sync.flushResources();
         expect(fake.data("characters", "b").trashTime).toBeUndefined();
-        expect(fake.data("root", "main").characterOrder).toEqual(["a", "b"]);
+        expect(fake.data("characterOrder", "main")).toEqual(["a", "b"]);
     });
 });

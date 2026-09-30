@@ -1,6 +1,7 @@
 import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
 import { isRecordId } from "../../../../shared/ids.ts";
 import { newPersonaId } from "../../../../shared/presets.ts";
+import { COLLECTION_FIELDS, COLLECTION_SELECTION_FIELDS, SECTION_FIELDS } from "../../../../shared/sections.ts";
 import {
     customProviderStore,
     pluginHooks,
@@ -17,6 +18,7 @@ import {
     setCharacterByIndex,
     setDatabase,
     setDatabaseLite,
+    type Database,
 } from "src/ts/storage/database.svelte";
 import {
     appendMessage,
@@ -879,6 +881,26 @@ function withPersonaIds(value: unknown) {
     );
 }
 
+/**
+ * Fields the server normalizes (the Phase 3 sections and collections, and the two selections that
+ * travel with collections). The client applies no default to them, so a plugin's `null` or
+ * `undefined` there would leave the live mirror without the value every reader expects (the full
+ * setter's `setDatabase` used to put the default back). Such a write is refused, and the value kept.
+ */
+const serverNormalizedFields = new Set<string>([
+    ...Object.values(SECTION_FIELDS).flat(),
+    ...Object.values(COLLECTION_FIELDS),
+    ...Object.values(COLLECTION_SELECTION_FIELDS),
+]);
+
+function assignPluginField(db: Database, key: string, value: unknown) {
+    if ((value === null || value === undefined) && serverNormalizedFields.has(key)) {
+        console.warn(`[WARN] A plugin tried to clear ${key}; this setting cannot be cleared, so it was kept.`);
+        return;
+    }
+    (db as any)[key] = key === "personas" ? withPersonaIds(value) : value;
+}
+
 //Keys outside allowedDbKeys are stored at the top level of db.pluginCustomStorage
 const setPluginDatabaseLite = (newDb: any) => {
     const db = getDatabase();
@@ -887,7 +909,7 @@ const setPluginDatabaseLite = (newDb: any) => {
         if (key === "characters") {
             applyPluginCharacters(newDb[key]);
         } else if (allowedDbKeys.includes(key)) {
-            (db as any)[key] = key === "personas" ? withPersonaIds(newDb[key]) : newDb[key];
+            assignPluginField(db, key, newDb[key]);
         } else {
             db.pluginCustomStorage[key] = newDb[key];
         }
@@ -912,7 +934,7 @@ const setPluginDatabase = async (newDb: any) => {
         if (key === "characters") {
             applyPluginCharacters(newDb[key]);
         } else if (allowedDbKeys.includes(key)) {
-            (db as any)[key] = key === "personas" ? withPersonaIds(newDb[key]) : newDb[key];
+            assignPluginField(db, key, newDb[key]);
         } else {
             db.pluginCustomStorage[key] = newDb[key];
         }

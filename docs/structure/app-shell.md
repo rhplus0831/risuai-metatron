@@ -14,7 +14,8 @@
 - `src/App.svelte`: the "router" (ordered `{#if}` chain), plus drag/drop import, overlays (alerts, popups, modals), and keep-alive audio.
 - `src/ts/bootstrap.ts`:
   - `loadData`: the server resources are read and assembled into the DB, then migrations, theme, `saveDb` (the save adapter), the browser-local import, plugins, `loadedStore = true`, then services.
-  - `checkNewFormat`: legacy data repair.
+  - `assembleDatabase`: builds the DB from the resource records (see `persistence.md`, Load).
+  - `checkNewFormat`: legacy character and module repair.
   - `registerSw`: service worker.
 - `src/ts/stores.svelte.ts`: all global UI stores plus the `DBState` rune (see State).
 - `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `isMobile`, `isIOS()`, `getRisuEnvironmentLabel` (`node` or `node(dev)`), `getDetailedOSLabel`, `isInStandaloneMode` (unused).
@@ -24,6 +25,7 @@
 - `src/ts/hotkey.ts`:
   - `initHotkey`: keydown dispatch switch.
   - `hotkeyMatches`.
+  - `activeHotkeys`: the stored hotkeys without `scrollToActiveChar` while `enableScrollToActiveChar` is off (the dispatch and `HotkeySettings.svelte` read through it).
 - `src/ts/defaulthotkeys.ts`: re-exports `defaultHotkeys` (declared in `shared/hotkeys.ts`) and the `Hotkey` type declared in `shared/settings.ts`.
 - `src/ts/observer.svelte.ts`:
   - `startObserveDom`: idempotent. Adds one `document` `contextmenu` delegate (Copy/Download menu for `x-hl-lang` code blocks) and a `MutationObserver` on `document.body` that syncs BGM from `risu-ctrl="bgm___<volume|auto>___<src>"` markers.
@@ -118,7 +120,7 @@ All of these live in `src/ts/stores.svelte.ts`.
   1. Add or adjust the flag in `platform.ts`.
   2. Update every consumer.
   3. There is no browser-only runtime to keep working; do not reintroduce `isNodeServer` branches past `main.ts`.
-- Add a hotkey: `shared/hotkeys.ts` (`defaultHotkeys`), `hotkey.ts:initHotkey`, `database.svelte.ts:setDatabase` (merge behavior).
+- Add a hotkey: `shared/hotkeys.ts` (`defaultHotkeys`), `hotkey.ts:initHotkey`; the server `hotkeys` normalizer (`server/src/data/normalize/collections.ts`) merges a new built-in hotkey into stored lists by `action`. A hotkey gated by a setting is filtered by the readers (`activeHotkeys`), not removed from the list.
 
 ## Tests
 

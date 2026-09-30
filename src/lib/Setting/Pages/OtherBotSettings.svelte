@@ -20,12 +20,15 @@
     import { PlusIcon, PencilIcon, TrashIcon, DownloadIcon, HardDriveUploadIcon } from "@lucide/svelte";
     import { alertError, alertInput, alertConfirm, alertNormal } from "src/ts/alert";
     import { createHypaV3Preset } from "src/ts/process/memory/hypav3";
+    import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 
     let submenu = $state(DBState.db.useLegacyGUI ? -1 : 0);
 
-    // HypaV3
+    // HypaV3: the selected preset, by id (`hypaV3PresetId`); the first one when that id is gone.
+    const currentHypaV3 = $derived(selectedHypaV3Preset(DBState.db));
+
     $effect(() => {
-        const settings = DBState.db.hypaV3Presets?.[DBState.db.hypaV3PresetId]?.settings;
+        const settings = currentHypaV3?.settings;
         const currentValue = settings?.similarMemoryRatio;
 
         if (!currentValue) return;
@@ -42,7 +45,7 @@
     });
 
     $effect(() => {
-        const settings = DBState.db.hypaV3Presets?.[DBState.db.hypaV3PresetId]?.settings;
+        const settings = currentHypaV3?.settings;
         const currentValue = settings?.recentMemoryRatio;
 
         if (!currentValue) return;
@@ -1154,10 +1157,15 @@
             <span class="text-textcolor">Preset</span>
             <select
                 class={"border border-darkborderc focus:border-borderc rounded-md shadow-xs text-textcolor bg-transparent focus:ring-borderc focus:ring-2 focus:outline-hidden transition-colors duration-200 text-md px-4 py-2 mb-1"}
-                bind:value={DBState.db.hypaV3PresetId}
+                bind:value={
+                    () => currentHypaV3?.id,
+                    (value) => {
+                        DBState.db.hypaV3PresetId = value;
+                    }
+                }
             >
-                {#each DBState.db.hypaV3Presets as preset, i}
-                    <option class="bg-darkbg appearance-none" value={i}>{preset.name}</option>
+                {#each DBState.db.hypaV3Presets as preset (preset.id)}
+                    <option class="bg-darkbg appearance-none" value={preset.id}>{preset.name}</option>
                 {/each}
             </select>
 
@@ -1166,11 +1174,8 @@
                     class="mr-2 text-textcolor2 hover:text-green-500 cursor-pointer"
                     onclick={() => {
                         const newPreset = createHypaV3Preset();
-                        const presets = DBState.db.hypaV3Presets;
-
-                        presets.push(newPreset);
-                        DBState.db.hypaV3Presets = presets;
-                        DBState.db.hypaV3PresetId = DBState.db.hypaV3Presets.length - 1;
+                        DBState.db.hypaV3Presets.push(newPreset);
+                        DBState.db.hypaV3PresetId = newPreset.id;
                     }}
                 >
                     <PlusIcon size={24} />
@@ -1186,14 +1191,17 @@
                             return;
                         }
 
-                        const id = DBState.db.hypaV3PresetId;
-                        const preset = presets[id];
-                        const newName = await alertInput(`Enter new name for ${preset.name}`, [], preset.name);
+                        if (!currentHypaV3) return;
+                        // The dialog awaits; a conflict reload may replace the list, so resolve by id after.
+                        const { id, name } = currentHypaV3;
+                        const newName = await alertInput(`Enter new name for ${name}`, [], name);
 
                         if (!newName || newName.trim().length === 0) return;
 
-                        preset.name = newName;
-                        DBState.db.hypaV3Presets = presets;
+                        const preset = DBState.db.hypaV3Presets.find((entry) => entry.id === id);
+                        if (preset) {
+                            preset.name = newName;
+                        }
                     }}
                 >
                     <PencilIcon size={24} />
@@ -1202,22 +1210,25 @@
                 <button
                     class="mr-2 text-textcolor2 hover:text-green-500 cursor-pointer"
                     onclick={async (e) => {
-                        const presets = DBState.db.hypaV3Presets;
-
-                        if (presets.length <= 1) {
+                        if (DBState.db.hypaV3Presets.length <= 1) {
                             alertError("There must be least one preset.");
                             return;
                         }
 
-                        const id = DBState.db.hypaV3PresetId;
-                        const preset = presets[id];
-                        const confirmed = await alertConfirm(`${language.removeConfirm}${preset.name}`);
+                        if (!currentHypaV3) return;
+                        const { id, name } = currentHypaV3;
+                        const confirmed = await alertConfirm(`${language.removeConfirm}${name}`);
 
                         if (!confirmed) return;
 
-                        DBState.db.hypaV3PresetId = 0;
-                        presets.splice(id, 1);
-                        DBState.db.hypaV3Presets = presets;
+                        // Resolved again after the dialog: a conflict reload may have replaced the list.
+                        const presets = DBState.db.hypaV3Presets;
+                        const index = presets.findIndex((entry) => entry.id === id);
+                        if (index === -1 || presets.length <= 1) return;
+                        presets.splice(index, 1);
+                        if (DBState.db.hypaV3PresetId === id) {
+                            DBState.db.hypaV3PresetId = presets[0].id;
+                        }
                     }}
                 >
                     <TrashIcon size={24} />
@@ -1236,8 +1247,8 @@
                                 return;
                             }
 
-                            const id = DBState.db.hypaV3PresetId;
-                            const preset = presets[id];
+                            const preset = currentHypaV3;
+                            if (!preset) return;
                             const bytesExport = Buffer.from(
                                 // The export format has no id; an import assigns a fresh one.
                                 JSON.stringify({
@@ -1274,11 +1285,8 @@
                                 objImport.data.name || "Imported Preset",
                                 objImport.data.settings || {},
                             );
-                            const presets = DBState.db.hypaV3Presets;
-
-                            presets.push(newPreset);
-                            DBState.db.hypaV3Presets = presets;
-                            DBState.db.hypaV3PresetId = DBState.db.hypaV3Presets.length - 1;
+                            DBState.db.hypaV3Presets.push(newPreset);
+                            DBState.db.hypaV3PresetId = newPreset.id;
 
                             alertNormal(language.successImport);
                         } catch (error) {
@@ -1290,8 +1298,8 @@
                 </button>
             </div>
 
-            {#if DBState.db.hypaV3Presets?.[DBState.db.hypaV3PresetId]?.settings}
-                {@const settings = DBState.db.hypaV3Presets[DBState.db.hypaV3PresetId].settings}
+            {#if currentHypaV3?.settings}
+                {@const settings = currentHypaV3.settings}
 
                 <span class="text-textcolor">{language.SuperMemory} {language.model}</span>
                 <SelectInput className="mb-4" bind:value={settings.summarizationModel}>

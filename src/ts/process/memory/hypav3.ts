@@ -19,6 +19,7 @@ export type {
     SerializableSummary,
 } from "../../../../shared/memory.ts";
 export { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 
 interface SummaryChunk {
     text: string;
@@ -1540,8 +1541,7 @@ export async function summarize(oaiMessages: OpenAIChat[], isResummarize: boolea
 }
 
 export function getCurrentHypaV3Preset(): HypaV3Preset {
-    const db = getDatabase();
-    const preset = db.hypaV3Presets?.[db.hypaV3PresetId];
+    const preset = selectedHypaV3Preset(getDatabase());
 
     if (!preset) {
         throw new Error("Preset not found. Please select a valid preset.");

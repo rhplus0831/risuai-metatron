@@ -5,12 +5,22 @@ import {
     isChatConflict,
     isChatOrderConflict,
     RESOURCE_KIND,
-    ROOT_EXCLUDED_KEYS,
     type ResourceBatchResult,
     type ResourceReadKindsResult,
     SINGLETON_RESOURCE_ID,
 } from "../../../shared/resources.ts";
+import {
+    COLLECTION_FIELDS as SETTINGS_COLLECTION_FIELDS,
+    COLLECTION_KIND,
+    COLLECTION_SELECTION_FIELDS,
+    type CollectionKind,
+    RESIDUAL_ROOT_KEYS,
+    SECTION_FIELDS,
+    SECTION_KIND,
+    type SectionKind,
+} from "../../../shared/sections.ts";
 import { language } from "src/lang";
+import { llmSecretPresets, replacePresetSecrets } from "./llmSecrets.svelte";
 import { alertError, alertNormal, alertNormalWait } from "../alert";
 import { DBState, selectedCharID } from "../stores.svelte";
 import type { character, Database, groupChat } from "./database.svelte";
@@ -65,9 +75,11 @@ import {
 } from "./resourceClient";
 
 /**
- * The write adapter of PLAN invariant 2 for Phase 1: `DBState.db` stays the live model, and this
- * module writes it back to the server resources per collection (`root`, `presets`, `modules`,
- * `plugins`, `pluginStorage`, one `characters` record per `chaId`). Chats are not part of a
+ * The write adapter of PLAN invariant 2: `DBState.db` stays the live model, and this module writes
+ * it back to the server resources per collection: the residual `root` (`RESIDUAL_ROOT_KEYS`), the
+ * Phase 3 sections and collections (`shared/sections.ts`; `llmSecrets` also carries
+ * `llmSecretPresets`), `presets`, `modules`, `plugins`, `pluginStorage`, and one `characters`
+ * record per `chaId`. Chats are not part of a
  * character record (Phase 2): the chat module (`chatStore.svelte.ts`) queues explicit chat
  * operations, and each cycle sends them in the same batch, after the resource ops.
  *
@@ -86,16 +98,34 @@ import {
  * Transport state here is plain (no runes); only `saving` is reactive.
  */
 
-type Collection = "root" | "presets" | "modules" | "plugins" | "pluginStorage";
+type Phase1Collection = "presets" | "modules" | "plugins" | "pluginStorage";
+type Collection = "root" | Phase1Collection | SectionKind | CollectionKind;
 
 const COLLECTION_FIELDS = {
     presets: "botPresets",
     modules: "modules",
     plugins: "plugins",
     pluginStorage: "pluginCustomStorage",
-} as const satisfies Record<Exclude<Collection, "root">, keyof Database>;
+} as const satisfies Record<Phase1Collection, keyof Database>;
 
-const COLLECTIONS: readonly Collection[] = ["root", "presets", "modules", "plugins", "pluginStorage"];
+const SECTIONS: readonly SectionKind[] = Object.values(SECTION_KIND);
+const SETTINGS_COLLECTIONS: readonly CollectionKind[] = Object.values(COLLECTION_KIND);
+const COLLECTIONS: readonly Collection[] = [
+    "root",
+    "presets",
+    "modules",
+    "plugins",
+    "pluginStorage",
+    ...SECTIONS,
+    ...SETTINGS_COLLECTIONS,
+];
+const isSection = (collection: string): collection is SectionKind => SECTIONS.includes(collection as SectionKind);
+const isSettingsCollection = (collection: string): collection is CollectionKind =>
+    SETTINGS_COLLECTIONS.includes(collection as CollectionKind);
+const selectionField = (collection: CollectionKind) =>
+    Object.hasOwn(COLLECTION_SELECTION_FIELDS, collection)
+        ? COLLECTION_SELECTION_FIELDS[collection as keyof typeof COLLECTION_SELECTION_FIELDS]
+        : null;
 const DEBOUNCE_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 /** Largest batch body the server accepts (its global body limit is 100 MiB), in UTF-8 bytes. */
@@ -106,8 +136,6 @@ const BATCH_FRAME_BYTES = 38;
 
 /** Character fields that are client-only: chats (saved on their own), the selection, a render key. */
 const CHARACTER_LOCAL_KEYS = new Set(["chats", "chatPage", "reloadKeys"]);
-
-const excludedRootKeys = new Set<string>(ROOT_EXCLUDED_KEYS);
 
 export const saving = $state({ state: false });
 
@@ -292,21 +320,47 @@ function schedule(delay = DEBOUNCE_MS) {
     }, deadline - now);
 }
 
+/**
+ * A collection's text as the server stores it. Sections and the settings collections serialize the
+ * live values straight from the proxy (like `pluginStorage`): `$state.snapshot` would drop an own
+ * `__proto__` key of a user-keyed map (`llmSecrets.presets`, `globalChatVariables`,
+ * `OaiCompAPIKeys`), and the text must equal the server's normalized text on an idle boot. The
+ * fields go in `SECTION_FIELDS` order and an `undefined` one is left out, as the normalizer does.
+ * Reading every field deeply, it also serves as the watchers' dependency read.
+ */
 function projectCollection(collection: Collection): string | undefined {
     const db = DBState.db;
+    const fields = db as unknown as Record<string, unknown>;
     if (collection === "root") {
         const root: Record<string, unknown> = {};
-        for (const key in db) {
-            if (!excludedRootKeys.has(key)) {
-                root[key] = $state.snapshot((db as unknown as Record<string, unknown>)[key]);
-            }
+        for (const key of RESIDUAL_ROOT_KEYS) {
+            root[key] = $state.snapshot(fields[key]);
         }
         return JSON.stringify(root);
     }
-    if (collection === "pluginStorage") {
-        // Plugins choose these keys. Serialized straight from the proxy: `$state.snapshot` assigns
-        // `copy[key] = ...`, which would drop an own `__proto__` key.
-        return JSON.stringify(db.pluginCustomStorage);
+    if (isSection(collection)) {
+        const record: Record<string, unknown> = {};
+        for (const field of SECTION_FIELDS[collection]) {
+            record[field] = fields[field];
+        }
+        if (collection === SECTION_KIND.llmSecrets) {
+            record.presets = llmSecretPresets.value;
+        }
+        return JSON.stringify(record);
+    }
+    if (isSettingsCollection(collection)) {
+        const value = fields[SETTINGS_COLLECTION_FIELDS[collection]];
+        const selection = selectionField(collection);
+        if (selection) {
+            return JSON.stringify({ items: value, selectedId: fields[selection] });
+        }
+        return JSON.stringify(value);
+    }
+    if (collection === "pluginStorage" || collection === "presets") {
+        // User-chosen keys (plugin storage, a preset's `seperateParameters.overrides`). Serialized
+        // straight from the proxy: `$state.snapshot` assigns `copy[key] = ...`, which would drop an
+        // own `__proto__` key.
+        return JSON.stringify(db[COLLECTION_FIELDS[collection]]);
     }
     return JSON.stringify($state.snapshot(db[COLLECTION_FIELDS[collection]]));
 }
@@ -1017,22 +1071,53 @@ export function releaseDeferredCharacters() {
     }
 }
 
+/** Assigns `fields` of `DBState.db` from `next` in place; a field `next` lacks is deleted. */
+function replaceFields(fields: readonly string[], next: Record<string, unknown>) {
+    const db = DBState.db as unknown as Record<string, unknown>;
+    for (const field of fields) {
+        if (Object.hasOwn(next, field)) {
+            db[field] = next[field];
+        } else if (Object.hasOwn(db, field)) {
+            delete db[field];
+        }
+    }
+}
+
+/** Puts a section or settings collection record into `DBState.db` (and `llmSecretPresets`). */
+function applySettingsRecord(kind: SectionKind | CollectionKind, data: unknown) {
+    if (data === null) {
+        // Singletons: the server never deletes them.
+        return;
+    }
+    if (isSection(kind)) {
+        replaceFields(SECTION_FIELDS[kind], data as Record<string, unknown>);
+        if (kind === SECTION_KIND.llmSecrets) {
+            replacePresetSecrets((data as { presets?: unknown }).presets);
+        }
+        return;
+    }
+    const db = DBState.db as unknown as Record<string, unknown>;
+    const selection = selectionField(kind);
+    if (selection) {
+        const record = data as { items: unknown; selectedId: unknown };
+        db[SETTINGS_COLLECTION_FIELDS[kind]] = record.items;
+        db[selection] = record.selectedId;
+    } else {
+        db[SETTINGS_COLLECTION_FIELDS[kind]] = data;
+    }
+}
+
 /** Puts a server record into `DBState.db` in place (data null: the record is gone). */
 function applyToMirror(kind: string, id: string, data: unknown) {
     const db = DBState.db as unknown as Record<string, unknown>;
+    if (isSection(kind) || isSettingsCollection(kind)) {
+        applySettingsRecord(kind, data);
+        return;
+    }
     switch (kind) {
         case RESOURCE_KIND.root: {
-            if (data === null) {
-                return;
-            }
-            const next = data as Record<string, unknown>;
-            for (const key of Object.keys(db)) {
-                if (!excludedRootKeys.has(key) && !Object.hasOwn(next, key)) {
-                    delete db[key];
-                }
-            }
-            for (const [key, value] of Object.entries(next)) {
-                db[key] = value;
+            if (data !== null) {
+                replaceFields(RESIDUAL_ROOT_KEYS, data as Record<string, unknown>);
             }
             return;
         }
@@ -1254,7 +1339,7 @@ export function startResourceSync() {
         });
 
         $effect(() => {
-            $state.snapshot(DBState.db.botPresets);
+            projectCollection("presets");
             markKey(collectionKey("presets"));
         });
         $effect(() => {
@@ -1269,14 +1354,14 @@ export function startResourceSync() {
             $state.snapshot(DBState.db.pluginCustomStorage);
             markKey(collectionKey("pluginStorage"));
         });
-        $effect(() => {
-            for (const key in DBState.db) {
-                if (!excludedRootKeys.has(key)) {
-                    $state.snapshot((DBState.db as unknown as Record<string, unknown>)[key]);
-                }
-            }
-            markKey(collectionKey("root"));
-        });
+        // The residual root, each section, and each settings collection: the projection reads exactly
+        // the fields the record holds, so an edit marks only its own record.
+        for (const collection of ["root", ...SECTIONS, ...SETTINGS_COLLECTIONS] as const) {
+            $effect(() => {
+                projectCollection(collection);
+                markKey(collectionKey(collection));
+            });
+        }
         // Membership: an added, removed, or re-keyed character wakes the loop even when it is not selected.
         $effect(() => {
             for (const character of DBState.db.characters ?? []) {

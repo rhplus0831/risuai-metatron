@@ -5,6 +5,7 @@ import type { alertData } from "./alert";
 import { moduleUpdate } from "./process/modules";
 import { resetScriptCache } from "./process/scripts";
 import type { hubType } from "./characterCards";
+import { selectedHypaV3Preset } from "../../shared/hypaV3Presets.ts";
 
 function updateSize() {
     SizeStore.set({
@@ -170,7 +171,7 @@ $effect.root(() => {
         selIdState.selId = v;
 
         if (DBState?.db?.characters?.[selIdState.selId]) {
-            if (DBState.db.hypaV3 && DBState.db.hypaV3Presets?.[DBState.db.hypaV3PresetId]?.settings?.alwaysToggleOn) {
+            if (DBState.db.hypaV3 && selectedHypaV3Preset(DBState.db)?.settings?.alwaysToggleOn) {
                 DBState.db.characters[selIdState.selId].supaMemory = true;
             }
         }

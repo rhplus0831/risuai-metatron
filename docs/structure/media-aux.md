@@ -53,7 +53,7 @@ Translation:
   - `applyEdittransRegex`: collects `presetRegex`, then module scripts, then character scripts, keeping `type === 'edittrans'`.
   - Also `translateVox`, `isExpTranslator`.
 - `translator/bergamotTranslator.ts` `bergamotTranslate`: local Mozilla models, cached in IndexedDB `firefox-translations-models`.
-- `translator/presets.ts`: `TranslatorPreset {id, name, prompt, maxResponse}` (declared in `shared/settings.ts`; `createTranslatorPreset` and `defaultTranslatorPrompt` live in `shared/translatorPresets.ts` and are re-exported; the `.risutl` codec writes no id and an import gets a fresh one), `normalizeTranslatorPresetState`, `syncCurrentTranslatorPresetToLegacyFields`, and the `.risutl` codec (`encodeTranslatorPresetFile`/`decodeTranslatorPresetFile`: encrypted msgpack, `translatorPresetVersion: 1`, `type: 'translator-preset'`).
+- `translator/presets.ts`: `TranslatorPreset {id, name, prompt, maxResponse}` (declared in `shared/settings.ts`; `createTranslatorPreset` and `defaultTranslatorPrompt` live in `shared/translatorPresets.ts` and are re-exported; the `.risutl` codec writes no id and an import gets a fresh one), `getCurrentTranslatorPresetFromState` (the preset whose id is `translatorPresetId`, else the first; it never writes the state), and the `.risutl` codec (`encodeTranslatorPresetFile`/`decodeTranslatorPresetFile`: encrypted msgpack, `translatorPresetVersion: 1`, `type: 'translator-preset'`).
 
 Media:
 
@@ -78,7 +78,7 @@ The playground chat uses the special `§playground` character.
 Settings:
 
 - `AuxModelSelectors.svelte`: `seperateModelsForAxModels`, `doNotChangeSeperateModels`, and `seperateModels.{memory,translate,emotion,otherAx}`.
-- `TranslatorPresetSettings.svelte`: `translatorPresets`, `translatorPresetId`.
+- `TranslatorPresetSettings.svelte`: `translatorPresets`, `translatorPresetId` (the selected preset's id).
 
 ## Flows
 
@@ -105,7 +105,7 @@ Settings:
 - DB keys and URLs: `elevenLabKey`, `voicevoxUrl`, `NAIApiKey`, `huggingfaceKey`, `fishSpeechKey`, ...
 - Image generation: `db.sdProvider` plus per-backend settings.
 - `CharEmotion`: `{[chaId]: [img, img, ts][]}` (not persisted).
-- Translator DB fields: `translatorType`, `translator`, `translatorInputLanguage`, `translatorPrompt`/`translatorMaxResponse` (legacy, kept in sync with the selected preset), `translatorPresets`, `translatorPresetId`, `autoTranslate`, `htmlTranslation`, `combineTranslation`, ...
+- Translator DB fields: `translatorType`, `translator`, `translatorInputLanguage`, `translatorPresets`, `translatorPresetId` (an id; both travel in the `translatorPresets` record as `{ items, selectedId }`), `autoTranslate`, `htmlTranslation`, `combineTranslation`, ...
 
 ## Coupling
 
@@ -135,6 +135,7 @@ Settings:
 
 - `src/ts/process/ttsHooks.test.ts`.
 - `src/ts/translator/presets.test.ts`, `src/ts/translator/edittransRegex.test.ts`.
+- `src/lib/Setting/Pages/Language/TranslatorPresetSettings.test.ts` (mounted under happy-dom): selection by id with the first-preset fallback, and the rename and delete dialogs while a conflict reload replaces the list meanwhile (the survivor is edited, a vanished target is left alone, the selection moves only when it pointed at the deleted preset, a list reduced to one preset is kept).
 - `src/ts/media/tests/imageType.test.ts`, `src/ts/media/compressImage/tests/compressImage.test.ts`.
 - Not tested: `sayTTS` providers, `stableDiff` backends, translator routing, HTML translation, Bergamot, the playground.
 

@@ -1,10 +1,6 @@
 import localforage from "localforage";
-import {
-    type InlayResource,
-    RESOURCE_KIND,
-    type RootResource,
-    SINGLETON_RESOURCE_ID,
-} from "../../../shared/resources.ts";
+import type { Database } from "../../../shared/database.ts";
+import { type InlayResource, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import { DBState } from "../stores.svelte";
 import {
     hasPermissionGrant,
@@ -99,8 +95,15 @@ async function removeIfUnchanged(legacy: LocalForage, key: string, imported: unk
     }
 }
 
-async function readServerRoot(): Promise<Partial<RootResource> | null> {
-    return (await getResource<Partial<RootResource>>(RESOURCE_KIND.root, SINGLETON_RESOURCE_ID))?.data ?? null;
+/** The section record that holds each imported field (`SECTION_FIELDS`). */
+const importedFieldSection = {
+    irisDialogue: RESOURCE_KIND.ui,
+    googleSearchCredentials: RESOURCE_KIND.secrets,
+} as const;
+
+async function readServerField<K extends keyof typeof importedFieldSection>(field: K): Promise<unknown> {
+    const record = await getResource<Partial<Database>>(importedFieldSection[field], SINGLETON_RESOURCE_ID);
+    return record?.data?.[field];
 }
 
 async function importInlays() {
@@ -194,11 +197,11 @@ async function importPermissions() {
     }
 }
 
-async function importRootField<K extends "irisDialogue" | "googleSearchCredentials">(
+async function importSectionField<K extends keyof typeof importedFieldSection>(
     field: K,
     legacy: LocalForage,
     legacyKey: string,
-    accept: (value: unknown) => value is NonNullable<RootResource[K]>,
+    accept: (value: unknown) => value is NonNullable<Database[K]>,
 ) {
     const value = await legacy.getItem(legacyKey);
     if (value === null) {
@@ -211,13 +214,12 @@ async function importRootField<K extends "irisDialogue" | "googleSearchCredentia
         DBState.db[field] = JSON.parse(JSON.stringify(value));
         await flushResources();
     }
-    const server = await readServerRoot();
-    if (server?.[field] !== undefined) {
+    if ((await readServerField(field)) !== undefined) {
         await removeIfUnchanged(legacy, legacyKey, value);
     }
 }
 
-function isDialogue(value: unknown): value is NonNullable<RootResource["irisDialogue"]> {
+function isDialogue(value: unknown): value is NonNullable<Database["irisDialogue"]> {
     return (
         Array.isArray(value) &&
         value.every(
@@ -227,7 +229,7 @@ function isDialogue(value: unknown): value is NonNullable<RootResource["irisDial
     );
 }
 
-function isGoogleCredentials(value: unknown): value is NonNullable<RootResource["googleSearchCredentials"]> {
+function isGoogleCredentials(value: unknown): value is NonNullable<Database["googleSearchCredentials"]> {
     return (
         !!value &&
         typeof value === "object" &&
@@ -245,7 +247,7 @@ export async function importBrowserLocalData() {
         [
             "Iris dialogue",
             () =>
-                importRootField(
+                importSectionField(
                     "irisDialogue",
                     store("iris_dialogues", "iris_dialogues"),
                     "current_dialogue",
@@ -255,7 +257,7 @@ export async function importBrowserLocalData() {
         [
             "Google search credentials",
             () =>
-                importRootField(
+                importSectionField(
                     "googleSearchCredentials",
                     store("google-search-credentials", "credentials"),
                     "google-search-creds",

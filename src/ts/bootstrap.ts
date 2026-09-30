@@ -1,13 +1,20 @@
-import { checkNullish, sleep } from "./util";
+import { sleep } from "./util";
 import { v4 as uuidv4 } from "uuid";
 import { get } from "svelte/store";
-import { setDatabase, defaultSdDataFunc, getDatabase, type Database } from "./storage/database.svelte";
-import { normalizePresets } from "../../shared/presets.ts";
+import { setDatabase, getDatabase, type Database } from "./storage/database.svelte";
+import {
+    COLLECTION_FIELDS,
+    COLLECTION_KIND,
+    COLLECTION_SELECTION_FIELDS,
+    RESIDUAL_ROOT_KEYS,
+    SECTION_FIELDS,
+    SECTION_KIND,
+} from "../../shared/sections.ts";
+import { replacePresetSecrets } from "./storage/llmSecrets.svelte";
 import { botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./alert";
 import { characterURLImport } from "./characterCards";
-import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
 import { language } from "src/lang";
@@ -118,22 +125,50 @@ export async function loadData() {
 }
 
 /**
- * Builds the in-memory `Database` from the server resources: `root` holds every field except the
- * collections that have a resource of their own; characters come in creation order, each with its
- * chats in their server order. Missing records are left for `setDatabase` to default.
+ * Builds the in-memory `Database` from the server resources: the residual `root` fields
+ * (`RESIDUAL_ROOT_KEYS` only; a stored root from before Phase 3 holds more, which is ignored), the
+ * five sections (their `SECTION_FIELDS`), the collections (`translatorPresets` and `hypaV3Presets`
+ * unpack `{ items, selectedId }` into their two fields), the Phase 1 collections, and the characters
+ * in creation order, each with its chats in their server order. The server creates and normalizes
+ * every section and collection, so a missing one is an error, not a default. The `llmSecrets`
+ * record's `presets` map goes to `llmSecretPresets`, not into `Database`.
  */
-function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
+export function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
     const single = (kind: string) =>
         snapshot.kinds[kind]?.find((record) => record.id === SINGLETON_RESOURCE_ID)?.data as any;
-    const db = { ...(single(RESOURCE_KIND.root) ?? {}) } as Database;
-    const presets = single(RESOURCE_KIND.presets);
-    if (presets !== undefined) {
-        db.botPresets = presets;
+    const required = (kind: string) => {
+        const data = single(kind);
+        if (data === undefined) {
+            throw new Error(`The server returned no ${kind} record`);
+        }
+        return data;
+    };
+    const db: Record<string, unknown> = {};
+    const root = single(RESOURCE_KIND.root) ?? {};
+    for (const key of RESIDUAL_ROOT_KEYS) {
+        if (Object.hasOwn(root, key)) {
+            db[key] = root[key];
+        }
     }
-    if (!Array.isArray(db.botPresets) || db.botPresets.length === 0) {
-        db.botPresets = normalizePresets([]);
-        db.botPresetsId = 0;
+    for (const section of Object.values(SECTION_KIND)) {
+        const record = required(section);
+        for (const field of SECTION_FIELDS[section]) {
+            if (Object.hasOwn(record, field)) {
+                db[field] = record[field];
+            }
+        }
     }
+    replacePresetSecrets(required(RESOURCE_KIND.llmSecrets).presets);
+    for (const kind of Object.values(COLLECTION_KIND)) {
+        const record = required(kind);
+        if (Object.hasOwn(COLLECTION_SELECTION_FIELDS, kind)) {
+            db[COLLECTION_FIELDS[kind]] = record.items;
+            db[COLLECTION_SELECTION_FIELDS[kind as keyof typeof COLLECTION_SELECTION_FIELDS]] = record.selectedId;
+        } else {
+            db[COLLECTION_FIELDS[kind]] = record;
+        }
+    }
+    db.botPresets = required(RESOURCE_KIND.presets);
     const modules = single(RESOURCE_KIND.modules);
     if (modules !== undefined) {
         db.modules = modules;
@@ -146,9 +181,10 @@ function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
     if (pluginStorage !== undefined) {
         db.pluginCustomStorage = pluginStorage;
     }
-    db.characters = (snapshot.kinds[RESOURCE_KIND.characters] ?? []).map((record) => record.data as any);
-    assembleChats(db.characters, snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    return db;
+    const characters = (snapshot.kinds[RESOURCE_KIND.characters] ?? []).map((record) => record.data as any);
+    db.characters = characters;
+    assembleChats(characters, snapshot.chats ?? [], snapshot.chatOrders ?? []);
+    return db as unknown as Database;
 }
 
 /**
@@ -295,7 +331,6 @@ async function checkNewFormat(): Promise<void> {
                                 lorebookValue: JSON.stringify(v.lorebook).substring(0, 500), // First 500 chars only
                                 isArray: Array.isArray(v.lorebook),
                                 keys: v.lorebook ? Object.keys(v.lorebook).join(", ") : "N/A",
-                                formatVersion: db.formatversion || "Unknown",
                             };
 
                             // Show the diagnostic info and allow user to copy or send
@@ -330,77 +365,6 @@ async function checkNewFormat(): Promise<void> {
         return v !== null && v !== undefined;
     });
 
-    db.personas = (db.personas ?? [])
-        .map((v) => {
-            v.id ??= uuidv4();
-            return v;
-        })
-        .filter((v) => {
-            return v !== null && v !== undefined;
-        });
-
-    if (!db.formatversion) {
-        function checkClean(data: string) {
-            if (data.startsWith("assets") || data.length < 3) {
-                return data;
-            } else {
-                const d = "assets/" + data.replace(/\\/g, "/").split("assets/")[1];
-                if (!d) {
-                    return data;
-                }
-                return d;
-            }
-        }
-
-        db.customBackground = checkClean(db.customBackground);
-        db.userIcon = checkClean(db.userIcon);
-
-        for (let i = 0; i < db.characters.length; i++) {
-            if (db.characters[i].image) {
-                db.characters[i].image = checkClean(db.characters[i].image);
-            }
-            if (db.characters[i].emotionImages) {
-                for (let i2 = 0; i2 < db.characters[i].emotionImages.length; i2++) {
-                    if (db.characters[i].emotionImages[i2] && db.characters[i].emotionImages[i2].length >= 2) {
-                        db.characters[i].emotionImages[i2][1] = checkClean(db.characters[i].emotionImages[i2][1]);
-                    }
-                }
-            }
-        }
-
-        db.formatversion = 2;
-    }
-    if (db.formatversion < 3) {
-        for (let i = 0; i < db.characters.length; i++) {
-            let cha = db.characters[i];
-            if (cha.type === "character") {
-                if (checkNullish(cha.sdData)) {
-                    cha.sdData = defaultSdDataFunc();
-                }
-            }
-        }
-
-        db.formatversion = 3;
-    }
-    if (db.formatversion < 4) {
-        //migration removed due to issues
-        db.formatversion = 4;
-    }
-    if (db.formatversion < 5) {
-        if (db.loreBookToken < 8000) {
-            db.loreBookToken = 8000;
-        }
-        db.formatversion = 5;
-    }
-    if (!db.characterOrder) {
-        db.characterOrder = [];
-    }
-    if (db.mainPrompt === oldMainPrompt) {
-        db.mainPrompt = defaultMainPrompt;
-    }
-    if (db.mainPrompt === oldJailbreak) {
-        db.mainPrompt = defaultJailbreak;
-    }
     for (let i = 0; i < db.characters.length; i++) {
         const trashTime = db.characters[i].trashTime;
         const targetTrashTime = trashTime ? trashTime + 1000 * 60 * 60 * 24 * 3 : 0;

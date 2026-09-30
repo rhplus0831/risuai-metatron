@@ -91,7 +91,7 @@ Other files:
 - `src/ts/network/localNetwork.ts`: `isLocalNetworkHost`, `isLocalNetworkUrl`. Accepts private/loopback/link-local IPs, `.local`, and bare single-label hosts.
 - `src/ts/network/proxyJobWs.ts`: the `ProxyJobWsEvent` union (`job_accepted|upstream_headers|chunk|error|done|ping`), plus `parseProxyJobWsEvent`, `decodeProxyJobWsChunk`, `formatProxyStreamErrorMessage`.
 - `src/ts/dragTypes.ts`: `RISU_*_DRAG_TYPE` custom MIME types. They keep in-app drags from being treated as file imports.
-- `src/ts/iris.ts` `getIrisSystemPrompt`, and `IrisModal.svelte`: a visual-novel-style assistant. It calls `requestChatData(..., 'otherAx')` and persists the dialogue in the root field `irisDialogue` (saved on the server; older browser copies are imported at boot).
+- `src/ts/iris.ts` `getIrisSystemPrompt`, and `IrisModal.svelte`: a visual-novel-style assistant. It calls `requestChatData(..., 'otherAx')` and persists the dialogue in `irisDialogue` (a `ui` field) (saved on the server; older browser copies are imported at boot).
 
 ## Flows
 
