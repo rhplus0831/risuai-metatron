@@ -1,6 +1,10 @@
 import { language } from "src/lang";
 import { alertConfirm } from "src/ts/alert";
+import { findModule, setModuleEnabled, updateModule } from "src/ts/storage/collectionStore.svelte";
+import { MutationValidationError } from "src/ts/storage/mutationValidation";
 import { DBState } from "src/ts/stores.svelte";
+import type { RisuModule } from "../../../../../shared/modules.ts";
+import type { DeepReadonly } from "../../../../../shared/readonly.ts";
 import { pickHashRand } from "src/ts/util";
 import { type MCPTool, MCPToolHandler, type RPCToolCallContent } from "../mcplib";
 
@@ -11,9 +15,79 @@ const moduleNotFound = (id: string): RPCToolCallContent[] => [
     },
 ];
 
+/** The fields `risu-set-module-info` sets, with the types its schema declares. */
+const infoFieldTypes: Record<string, "string" | "boolean"> = {
+    name: "string",
+    description: "string",
+    enabled: "boolean",
+    lowLevelAccess: "boolean",
+    backgroundEmbedding: "string",
+    customModuleToggle: "string",
+};
+
+/** Writes a patch to a module a write tool resolved: the error answer, or `null` once written (a refused value changes nothing). */
+function moduleWriteError(id: string, patch: Record<string, unknown>): RPCToolCallContent[] | null {
+    try {
+        return updateModule(id, patch) ? null : moduleNotFound(id);
+    } catch (error) {
+        if (error instanceof MutationValidationError) {
+            return [
+                {
+                    type: "text",
+                    text: `Error: ${error.message}`,
+                },
+            ];
+        }
+        throw error;
+    }
+}
+
+function patchModule(id: string, patch: Record<string, unknown>, done: string): RPCToolCallContent[] {
+    return (
+        moduleWriteError(id, patch) ?? [
+            {
+                type: "text",
+                text: done,
+            },
+        ]
+    );
+}
+
 export class ModuleHandler extends MCPToolHandler {
     private promptAccess(tool: string, action: string) {
         return alertConfirm(language.mcpAccessPrompt.replace("{{tool}}", tool).replace("{{action}}", action));
+    }
+
+    /**
+     * Runs a write tool's `write` on the module with `id`: found, confirmed by the user, then found
+     * again by the same id and checked again (MCP modules are not writable). `write` is synchronous
+     * and runs right after that lookup, so it builds its patch from the module as it is now: a
+     * module replaced while the prompt was open is patched as it is now, and a removed one answers
+     * "not found".
+     */
+    private async writeConfirmed(
+        id: string,
+        tool: string,
+        action: (name: string) => string,
+        write: (module: DeepReadonly<RisuModule>) => RPCToolCallContent[],
+    ): Promise<RPCToolCallContent[]> {
+        const module = findModule(id);
+        if (!module || module.mcp) {
+            return moduleNotFound(id);
+        }
+        if (!(await this.promptAccess(tool, action(module.name)))) {
+            return [
+                {
+                    type: "text",
+                    text: "Access denied by user.",
+                },
+            ];
+        }
+        const current = findModule(id);
+        if (!current || current.mcp) {
+            return moduleNotFound(id);
+        }
+        return write(current);
     }
 
     getTools(): MCPTool[] {
@@ -376,7 +450,7 @@ export class ModuleHandler extends MCPToolHandler {
     }
 
     async getModuleInfo(id: string, fields?: string[]): Promise<RPCToolCallContent[]> {
-        const module = DBState.db.modules.find((m) => m.id === id);
+        const module = findModule(id);
 
         if (!module || module.mcp) {
             return moduleNotFound(id);
@@ -420,61 +494,54 @@ export class ModuleHandler extends MCPToolHandler {
     }
 
     async setModuleInfo(id: string, data: any): Promise<RPCToolCallContent[]> {
-        const module = DBState.db.modules.find((m) => m.id === id);
-        if (!module || module.mcp) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Module with ID ${id} not found.`,
-                },
-            ];
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-set-module-info",
+            (name) => `modify module (${name}) information`,
+            (module) => {
+                const patch: Record<string, unknown> = {};
+                let enabled: boolean | undefined;
+                for (const [key, value] of Object.entries(data)) {
+                    if (!Object.hasOwn(infoFieldTypes, key)) continue;
 
-        if (!(await this.promptAccess("risu-set-module-info", `modify module (${module.name}) information`))) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
-
-        const allowedFields = [
-            "name",
-            "description",
-            "enabled",
-            "lowLevelAccess",
-            "backgroundEmbedding",
-            "customModuleToggle",
-        ];
-
-        for (const [key, value] of Object.entries(data)) {
-            if (!allowedFields.includes(key)) continue;
-
-            if (key === "enabled") {
-                const enabledModules = new Set(DBState.db.enabledModules || []);
-                if (value) {
-                    enabledModules.add(id);
-                } else {
-                    enabledModules.delete(id);
+                    // The tool schema's types, checked before anything is written.
+                    if (typeof value !== infoFieldTypes[key]) {
+                        return [
+                            {
+                                type: "text",
+                                text: `Error: Field ${key} must be a ${infoFieldTypes[key]}.`,
+                            },
+                        ];
+                    }
+                    if (key === "enabled") {
+                        enabled = value as boolean;
+                    } else {
+                        patch[key] = value;
+                    }
                 }
-                DBState.db.enabledModules = Array.from(enabledModules);
-            } else {
-                // @ts-ignore
-                module[key] = value;
-            }
-        }
 
-        return [
-            {
-                type: "text",
-                text: `Successfully updated module ${module.name || id}`,
+                // The patch is checked and written before the enabled list changes: a refused value changes nothing.
+                const error = moduleWriteError(id, patch);
+                if (error) {
+                    return error;
+                }
+                if (enabled !== undefined) {
+                    setModuleEnabled(id, enabled);
+                }
+
+                const name = typeof patch.name === "string" ? patch.name : module.name;
+                return [
+                    {
+                        type: "text",
+                        text: `Successfully updated module ${name || id}`,
+                    },
+                ];
             },
-        ];
+        );
     }
 
     async listModuleLorebooks(id: string, count: number = 100, offset: number = 0): Promise<RPCToolCallContent[]> {
-        const module = DBState.db.modules.find((m) => m.id === id);
+        const module = findModule(id);
         if (!module || module.mcp) {
             return moduleNotFound(id);
         }
@@ -501,7 +568,7 @@ export class ModuleHandler extends MCPToolHandler {
     }
 
     async getModuleLorebook(id: string, names: string[]): Promise<RPCToolCallContent[]> {
-        const module = DBState.db.modules.find((m) => m.id === id);
+        const module = findModule(id);
         if (!module || module.mcp) {
             return moduleNotFound(id);
         }
@@ -543,130 +610,94 @@ export class ModuleHandler extends MCPToolHandler {
         newName?: string,
         alwaysActive?: boolean,
     ): Promise<RPCToolCallContent[]> {
-        const module = DBState.db.modules.find((m) => m.id === id);
-        if (!module || module.mcp) {
-            return moduleNotFound(id);
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-set-module-lorebook",
+            (moduleName) => `add/modify module (${moduleName}) lorebook (${name})`,
+            (module) => {
+                const lorebook = module.lorebook ?? [];
+                const index = lorebook.findIndex((l) => {
+                    const displayName = l.comment || "Unnamed " + pickHashRand(5515, l.content);
+                    return displayName === name;
+                });
 
-        if (
-            !(await this.promptAccess(
-                "risu-set-module-lorebook",
-                `add/modify module (${module.name}) lorebook (${name})`,
-            ))
-        ) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
+                if (index === -1) {
+                    const newEntry = {
+                        key: alwaysActive ? "" : keys?.join(",") || "",
+                        content: content || "",
+                        comment: newName || name,
+                        alwaysActive: alwaysActive || false,
+                        secondkey: "",
+                        selective: false,
+                        insertorder: 100,
+                        mode: "normal" as const,
+                    };
+                    return patchModule(
+                        id,
+                        { lorebook: [...lorebook, newEntry] },
+                        `Successfully added lorebook entry "${newName || name}" to module ${module.name}`,
+                    );
+                }
 
-        if (!module.lorebook) {
-            module.lorebook = [];
-        }
+                const entry = { ...lorebook[index] };
 
-        const index = module.lorebook.findIndex((l) => {
-            const displayName = l.comment || "Unnamed " + pickHashRand(5515, l.content);
-            return displayName === name;
-        });
+                if (content !== undefined) {
+                    entry.content = content;
+                }
+                if (keys !== undefined) {
+                    entry.key = alwaysActive ? "" : keys.join(",");
+                }
+                if (newName !== undefined) {
+                    entry.comment = newName;
+                }
+                if (alwaysActive !== undefined) {
+                    entry.alwaysActive = alwaysActive;
+                    if (alwaysActive) {
+                        entry.key = "";
+                    }
+                }
 
-        if (index === -1) {
-            const newEntry = {
-                key: alwaysActive ? "" : keys?.join(",") || "",
-                content: content || "",
-                comment: newName || name,
-                alwaysActive: alwaysActive || false,
-                secondkey: "",
-                selective: false,
-                insertorder: 100,
-                mode: "normal" as const,
-            };
-            module.lorebook.push(newEntry);
-            return [
-                {
-                    type: "text",
-                    text: `Successfully added lorebook entry "${newName || name}" to module ${module.name}`,
-                },
-            ];
-        }
-
-        const entry = module.lorebook[index];
-
-        if (content !== undefined) {
-            entry.content = content;
-        }
-        if (keys !== undefined) {
-            entry.key = alwaysActive ? "" : keys.join(",");
-        }
-        if (newName !== undefined) {
-            entry.comment = newName;
-        }
-        if (alwaysActive !== undefined) {
-            entry.alwaysActive = alwaysActive;
-            if (alwaysActive) {
-                entry.key = "";
-            }
-        }
-
-        return [
-            {
-                type: "text",
-                text: `Successfully updated lorebook entry "${name}" in module ${module.name}`,
+                return patchModule(
+                    id,
+                    { lorebook: lorebook.map((other, i) => (i === index ? entry : other)) },
+                    `Successfully updated lorebook entry "${name}" in module ${module.name}`,
+                );
             },
-        ];
+        );
     }
 
     async deleteModuleLorebook(id: string, name: string): Promise<RPCToolCallContent[]> {
-        const module = DBState.db.modules.find((m) => m.id === id);
-        if (!module || module.mcp) {
-            return moduleNotFound(id);
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-delete-module-lorebook",
+            (moduleName) => `delete module (${moduleName}) lorebook (${name})`,
+            (module) => {
+                const lorebook = module.lorebook ?? [];
+                const index = lorebook.findIndex((l) => {
+                    const displayName = l.comment || "Unnamed " + pickHashRand(5515, l.content);
+                    return displayName === name;
+                });
 
-        if (
-            !(await this.promptAccess(
-                "risu-delete-module-lorebook",
-                `delete module (${module.name}) lorebook (${name})`,
-            ))
-        ) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
+                if (index === -1) {
+                    return [
+                        {
+                            type: "text",
+                            text: `Error: Lorebook entry with name "${name}" not found.`,
+                        },
+                    ];
+                }
 
-        if (!module.lorebook) {
-            module.lorebook = [];
-        }
-
-        const index = module.lorebook.findIndex((l) => {
-            const displayName = l.comment || "Unnamed " + pickHashRand(5515, l.content);
-            return displayName === name;
-        });
-
-        if (index === -1) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Lorebook entry with name "${name}" not found.`,
-                },
-            ];
-        }
-
-        module.lorebook.splice(index, 1);
-
-        return [
-            {
-                type: "text",
-                text: `Successfully deleted lorebook entry "${name}" from module ${module.name}`,
+                return patchModule(
+                    id,
+                    { lorebook: lorebook.filter((_, i) => i !== index) },
+                    `Successfully deleted lorebook entry "${name}" from module ${module.name}`,
+                );
             },
-        ];
+        );
     }
 
     async getModuleRegexScripts(id: string): Promise<RPCToolCallContent[]> {
-        const module = DBState.db.modules.find((m) => m.id === id);
+        const module = findModule(id);
 
         if (!module || module.mcp) {
             return moduleNotFound(id);
@@ -701,119 +732,83 @@ export class ModuleHandler extends MCPToolHandler {
         flag?: string,
         ableFlag?: boolean,
     ): Promise<RPCToolCallContent[]> {
-        const module = DBState.db.modules.find((m) => m.id === id);
-        if (!module || module.mcp) {
-            return moduleNotFound(id);
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-set-module-regex-script",
+            (moduleName) => `add/modify module (${moduleName}) regex script (${name})`,
+            (module) => {
+                const regex = module.regex ?? [];
+                const index = regex.findIndex((r) => {
+                    const displayName = r.comment || "Unnamed " + pickHashRand(5515, r.in + r.out);
+                    return displayName === name;
+                });
 
-        if (
-            !(await this.promptAccess(
-                "risu-set-module-regex-script",
-                `add/modify module (${module.name}) regex script (${name})`,
-            ))
-        ) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
+                if (index === -1) {
+                    const newScript = {
+                        comment: newName || name,
+                        in: regexIn || "",
+                        out: regexOut || "",
+                        type: type || "editdisplay",
+                        flag: flag || "",
+                        ableFlag: ableFlag !== undefined ? ableFlag : true,
+                    };
+                    return patchModule(
+                        id,
+                        { regex: [...regex, newScript] },
+                        `Successfully added regex script "${newName || name}" to module ${module.name}`,
+                    );
+                }
 
-        if (!module.regex) {
-            module.regex = [];
-        }
+                const script = { ...regex[index] };
 
-        const index = module.regex.findIndex((r) => {
-            const displayName = r.comment || "Unnamed " + pickHashRand(5515, r.in + r.out);
-            return displayName === name;
-        });
+                if (newName !== undefined) script.comment = newName;
+                if (regexIn !== undefined) script.in = regexIn;
+                if (regexOut !== undefined) script.out = regexOut;
+                if (type !== undefined) script.type = type;
+                if (flag !== undefined) script.flag = flag;
+                if (ableFlag !== undefined) script.ableFlag = ableFlag;
 
-        if (index === -1) {
-            const newScript = {
-                comment: newName || name,
-                in: regexIn || "",
-                out: regexOut || "",
-                type: type || "editdisplay",
-                flag: flag || "",
-                ableFlag: ableFlag !== undefined ? ableFlag : true,
-            };
-            module.regex.push(newScript);
-            return [
-                {
-                    type: "text",
-                    text: `Successfully added regex script "${newName || name}" to module ${module.name}`,
-                },
-            ];
-        }
-
-        const script = module.regex[index];
-
-        if (newName !== undefined) script.comment = newName;
-        if (regexIn !== undefined) script.in = regexIn;
-        if (regexOut !== undefined) script.out = regexOut;
-        if (type !== undefined) script.type = type;
-        if (flag !== undefined) script.flag = flag;
-        if (ableFlag !== undefined) script.ableFlag = ableFlag;
-
-        return [
-            {
-                type: "text",
-                text: `Successfully updated regex script "${name}" in module ${module.name}`,
+                return patchModule(
+                    id,
+                    { regex: regex.map((other, i) => (i === index ? script : other)) },
+                    `Successfully updated regex script "${name}" in module ${module.name}`,
+                );
             },
-        ];
+        );
     }
 
     async deleteModuleRegexScript(id: string, name: string): Promise<RPCToolCallContent[]> {
-        const module = DBState.db.modules.find((m) => m.id === id);
-        if (!module || module.mcp) {
-            return moduleNotFound(id);
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-delete-module-regex-script",
+            (moduleName) => `delete module (${moduleName}) regex script (${name})`,
+            (module) => {
+                const regex = module.regex ?? [];
+                const index = regex.findIndex((r) => {
+                    const displayName = r.comment || "Unnamed " + pickHashRand(5515, r.in + r.out);
+                    return displayName === name;
+                });
 
-        if (
-            !(await this.promptAccess(
-                "risu-delete-module-regex-script",
-                `delete module (${module.name}) regex script (${name})`,
-            ))
-        ) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
+                if (index === -1) {
+                    return [
+                        {
+                            type: "text",
+                            text: `Error: Regex script with name "${name}" not found.`,
+                        },
+                    ];
+                }
 
-        if (!module.regex) {
-            module.regex = [];
-        }
-
-        const index = module.regex.findIndex((r) => {
-            const displayName = r.comment || "Unnamed " + pickHashRand(5515, r.in + r.out);
-            return displayName === name;
-        });
-
-        if (index === -1) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Regex script with name "${name}" not found.`,
-                },
-            ];
-        }
-
-        module.regex.splice(index, 1);
-
-        return [
-            {
-                type: "text",
-                text: `Successfully deleted regex script "${name}" from module ${module.name}`,
+                return patchModule(
+                    id,
+                    { regex: regex.filter((_, i) => i !== index) },
+                    `Successfully deleted regex script "${name}" from module ${module.name}`,
+                );
             },
-        ];
+        );
     }
 
     async getModuleLuaScript(id: string): Promise<RPCToolCallContent[]> {
-        const module = DBState.db.modules.find((m) => m.id === id);
+        const module = findModule(id);
         if (!module || module.mcp) {
             return moduleNotFound(id);
         }
@@ -837,37 +832,31 @@ export class ModuleHandler extends MCPToolHandler {
     }
 
     async setModuleLuaScript(id: string, code: string): Promise<RPCToolCallContent[]> {
-        const module = DBState.db.modules.find((m) => m.id === id);
-        if (!module || module.mcp) {
-            return moduleNotFound(id);
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-set-module-lua-script",
+            (name) => `modify module (${name}) lua script`,
+            (module) => {
+                const firstTrigger = module.trigger?.[0];
+                if (firstTrigger?.effect?.[0]?.type === "triggerlua") {
+                    const trigger = {
+                        ...firstTrigger,
+                        effect: firstTrigger.effect.map((effect, i) => (i === 0 ? { ...effect, code } : effect)),
+                    };
+                    return patchModule(
+                        id,
+                        { trigger: module.trigger.map((other, i) => (i === 0 ? trigger : other)) },
+                        `Successfully updated Lua script for module ${module.name}`,
+                    );
+                }
 
-        if (!(await this.promptAccess("risu-set-module-lua-script", `modify module (${module.name}) lua script`))) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
-
-        const firstTrigger = module.trigger?.[0];
-        if (firstTrigger?.effect?.[0]?.type === "triggerlua") {
-            // @ts-ignore
-            firstTrigger.effect[0].code = code;
-            return [
-                {
-                    type: "text",
-                    text: `Successfully updated Lua script for module ${module.name}`,
-                },
-            ];
-        }
-
-        return [
-            {
-                type: "text",
-                text: "Error: User must first change the trigger type to Lua manually.",
+                return [
+                    {
+                        type: "text",
+                        text: "Error: User must first change the trigger type to Lua manually.",
+                    },
+                ];
             },
-        ];
+        );
     }
 }

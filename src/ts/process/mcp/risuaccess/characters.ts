@@ -1,15 +1,95 @@
 import { language } from "src/lang";
-import { markCharactersDirty } from "src/ts/storage/resourceSync.svelte";
 import { alertConfirm } from "src/ts/alert";
-import { type character, type groupChat, type loreBook } from "src/ts/storage/database.svelte";
+import { findCharacter, updateCharacter } from "src/ts/storage/characterStore.svelte";
+import { type character, type loreBook } from "src/ts/storage/database.svelte";
+import { MutationValidationError } from "src/ts/storage/mutationValidation";
 import { DBState } from "src/ts/stores.svelte";
+import type { DeepReadonly } from "../../../../../shared/readonly.ts";
 import { pickHashRand } from "src/ts/util";
 import { type MCPTool, MCPToolHandler, type RPCToolCallContent } from "../mcplib";
 import { getCharacter } from "./utils";
 
+const characterNotFound = (id: string): RPCToolCallContent[] => [
+    {
+        type: "text",
+        text: `Error: Character with ID ${id} not found.`,
+    },
+];
+
+const notACharacter = (): RPCToolCallContent[] => [
+    {
+        type: "text",
+        text: `Error: The id pointed to a group chat, not a character.`,
+    },
+];
+
+/** Writes a patch to a character the write tool resolved; a refused value changes nothing and answers an error. */
+function patchCharacter(chaId: string, patch: Record<string, unknown>, done: string): RPCToolCallContent[] {
+    try {
+        if (!updateCharacter(chaId, patch)) {
+            return characterNotFound(chaId);
+        }
+    } catch (error) {
+        if (error instanceof MutationValidationError) {
+            return [
+                {
+                    type: "text",
+                    text: `Error: ${error.message}`,
+                },
+            ];
+        }
+        throw error;
+    }
+    return [
+        {
+            type: "text",
+            text: done,
+        },
+    ];
+}
+
 export class CharacterHandler extends MCPToolHandler {
     private promptAccess(tool: string, action: string) {
         return alertConfirm(language.mcpAccessPrompt.replace("{{tool}}", tool).replace("{{action}}", action));
+    }
+
+    /**
+     * Runs a write tool's `write` on the character it names: resolved by id or name, confirmed by
+     * the user, then resolved again by its `chaId` and checked again. `write` is synchronous and
+     * runs right after that lookup, so it builds its patch from the record as it is now: a
+     * character replaced while the prompt was open is patched as it is now, and a removed one
+     * answers "not found".
+     */
+    private async writeConfirmed(
+        id: string,
+        tool: string,
+        action: (name: string) => string,
+        write: (char: DeepReadonly<character>) => RPCToolCallContent[],
+    ): Promise<RPCToolCallContent[]> {
+        const char = getCharacter(id);
+        if (!char) {
+            return characterNotFound(id);
+        }
+        if (char.type === "group") {
+            return notACharacter();
+        }
+        const chaId = char.chaId;
+        if (!(await this.promptAccess(tool, action(char.name)))) {
+            return [
+                {
+                    type: "text",
+                    text: "Access denied by user.",
+                },
+            ];
+        }
+        const current = findCharacter(chaId);
+        if (!current) {
+            return characterNotFound(id);
+        }
+        if (current.type === "group") {
+            return notACharacter();
+        }
+        return write(current);
     }
 
     getTools(): MCPTool[] {
@@ -347,19 +427,6 @@ export class CharacterHandler extends MCPToolHandler {
     }
 
     async handle(toolName: string, args: any): Promise<RPCToolCallContent[] | null> {
-        const result = await this.dispatch(toolName, args);
-        // These tools may change a character that is not selected; the save adapter only watches
-        // the selected one.
-        if (/^risu-(set|delete)-/.test(toolName)) {
-            const id = getCharacter(args?.id)?.chaId;
-            if (id) {
-                markCharactersDirty([id]);
-            }
-        }
-        return result;
-    }
-
-    private async dispatch(toolName: string, args: any): Promise<RPCToolCallContent[] | null> {
         switch (toolName) {
             case "risu-get-character-info":
                 return await this.getCharacterInfo(args.id, args.fields);
@@ -410,7 +477,7 @@ export class CharacterHandler extends MCPToolHandler {
     }
 
     async getCharacterInfo(id: string, fields: string[]): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
+        const char = getCharacter(id);
         if (!char) {
             return [
                 {
@@ -463,7 +530,7 @@ export class CharacterHandler extends MCPToolHandler {
     }
 
     async getCharacterLorebooks(id: string, count: number = 100, offset: number = 0): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
+        const char = getCharacter(id);
         if (!char) {
             return [
                 {
@@ -485,7 +552,7 @@ export class CharacterHandler extends MCPToolHandler {
         if (count < 1) count = 1;
         if (offset < 0) offset = 0;
 
-        const lorebook = char.globalLore.slice(offset, offset + count);
+        const lorebook = (char.globalLore ?? []).slice(offset, offset + count);
         const organized = lorebook.map((entry) => {
             return {
                 alwaysActive: entry.alwaysActive,
@@ -503,7 +570,7 @@ export class CharacterHandler extends MCPToolHandler {
     }
 
     async getCharacterLorebook(id: string, entryNames: string[]): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
+        const char = getCharacter(id);
         if (!char) {
             return [
                 {
@@ -521,7 +588,7 @@ export class CharacterHandler extends MCPToolHandler {
             ];
         }
 
-        const entries = char.globalLore.filter((entry) => {
+        const entries = (char.globalLore ?? []).filter((entry) => {
             const displayName = entry.comment || "Unnamed " + pickHashRand(5515, entry.content);
             return entryNames.includes(displayName);
         });
@@ -551,63 +618,40 @@ export class CharacterHandler extends MCPToolHandler {
     }
 
     async setCharacterInfo(id: string, data: any): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
-        if (!char) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Character with ID ${id} not found.`,
-                },
-            ];
-        }
-        if (char.type === "group") {
-            return [
-                {
-                    type: "text",
-                    text: `Error: The id pointed to a group chat, not a character.`,
-                },
-            ];
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-set-character-info",
+            (name) => `modify character (${name}) information`,
+            (char) => {
+                const fieldRemap = {
+                    name: "name",
+                    greeting: "firstMessage",
+                    description: "desc",
+                    replaceGlobalNote: "replaceGlobalNote",
+                    alternateGreetings: "alternateGreetings",
+                    backgroundEmbedding: "backgroundHTML",
+                } as const;
 
-        if (!(await this.promptAccess("risu-set-character-info", `modify character (${char.name}) information`))) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
+                // Every field is checked before any is written: one refused field changes nothing. Only the
+                // map's own keys count (not `constructor`, `toString`, or a parsed `__proto__`).
+                const patch: Record<string, unknown> = {};
+                for (const [field, value] of Object.entries(data)) {
+                    if (Object.hasOwn(fieldRemap, field)) {
+                        patch[fieldRemap[field as keyof typeof fieldRemap]] = value;
+                    } else {
+                        return [
+                            {
+                                type: "text",
+                                text: `Error: Field ${field} does not exist on character ${char.chaId} or it isn't allowed to be modified.`,
+                            },
+                        ];
+                    }
+                }
 
-        const fieldRemap = {
-            name: "name",
-            greeting: "firstMessage",
-            description: "desc",
-            replaceGlobalNote: "replaceGlobalNote",
-            alternateGreetings: "alternateGreetings",
-            backgroundEmbedding: "backgroundHTML",
-        } as const;
-
-        for (const [field, value] of Object.entries(data)) {
-            if (fieldRemap[field as keyof typeof fieldRemap]) {
-                const realField = fieldRemap[field as keyof typeof fieldRemap];
-                // @ts-ignore
-                char[realField] = value;
-            } else {
-                return [
-                    {
-                        type: "text",
-                        text: `Error: Field ${field} does not exist on character ${char.chaId} or it isn't allowed to be modified.`,
-                    },
-                ];
-            }
-        }
-
-        return [
-            {
-                type: "text",
-                text: `Successfully updated character ${char.name || char.chaId}`,
+                const name = typeof patch.name === "string" ? patch.name : char.name;
+                return patchCharacter(char.chaId, patch, `Successfully updated character ${name || char.chaId}`);
             },
-        ];
+        );
     }
 
     async setCharacterLorebook(
@@ -618,146 +662,92 @@ export class CharacterHandler extends MCPToolHandler {
         newName?: string,
         alwaysActive?: boolean,
     ): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
-        if (!char) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Character with ID ${id} not found.`,
-                },
-            ];
-        }
-        if (char.type === "group") {
-            return [
-                {
-                    type: "text",
-                    text: `Error: The id pointed to a group chat, not a character.`,
-                },
-            ];
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-set-character-lorebook",
+            (charName) => `add/modify character (${charName}) global lorebook (${name})`,
+            (char) => {
+                const lorebook = char.globalLore ?? [];
+                const entryIndex = lorebook.findIndex((entry) => {
+                    const displayName = entry.comment || "Unnamed " + pickHashRand(5515, entry.content);
+                    return displayName === name;
+                });
+                if (entryIndex === -1) {
+                    const newEntry: loreBook = {
+                        key: alwaysActive ? "" : keys?.join(",") || "",
+                        content: content || "",
+                        comment: newName || name,
+                        alwaysActive: alwaysActive || false,
+                        secondkey: "",
+                        selective: false,
+                        insertorder: 100,
+                        mode: "normal",
+                    };
+                    return patchCharacter(
+                        char.chaId,
+                        { globalLore: [...lorebook, newEntry] },
+                        `Successfully added lorebook entry "${newName || name}" to character ${char.name || char.chaId}`,
+                    );
+                }
 
-        if (
-            !(await this.promptAccess(
-                "risu-set-character-lorebook",
-                `add/modify character (${char.name}) global lorebook (${name})`,
-            ))
-        ) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
+                const entry = { ...lorebook[entryIndex] };
 
-        const entryIndex = char.globalLore.findIndex((entry) => {
-            const displayName = entry.comment || "Unnamed " + pickHashRand(5515, entry.content);
-            return displayName === name;
-        });
-        if (entryIndex === -1) {
-            const newEntry: loreBook = {
-                key: alwaysActive ? "" : keys?.join(",") || "",
-                content: content || "",
-                comment: newName || name,
-                alwaysActive: alwaysActive || false,
-                secondkey: "",
-                selective: false,
-                insertorder: 100,
-                mode: "normal",
-            };
-            char.globalLore.push(newEntry);
-            return [
-                {
-                    type: "text",
-                    text: `Successfully added lorebook entry "${newName || name}" to character ${char.name || char.chaId}`,
-                },
-            ];
-        }
+                if (content !== undefined) {
+                    entry.content = content;
+                }
+                if (keys !== undefined) {
+                    entry.key = alwaysActive ? "" : keys.join(",");
+                }
+                if (newName !== undefined) {
+                    entry.comment = newName;
+                }
+                if (alwaysActive !== undefined) {
+                    entry.alwaysActive = alwaysActive;
+                    if (alwaysActive) {
+                        entry.key = "";
+                    }
+                }
 
-        const entry = char.globalLore[entryIndex];
-
-        if (content !== undefined) {
-            entry.content = content;
-        }
-        if (keys !== undefined) {
-            entry.key = alwaysActive ? "" : keys.join(",");
-        }
-        if (newName !== undefined) {
-            entry.comment = newName;
-        }
-        if (alwaysActive !== undefined) {
-            entry.alwaysActive = alwaysActive;
-            if (alwaysActive) {
-                entry.key = "";
-            }
-        }
-
-        return [
-            {
-                type: "text",
-                text: `Successfully updated lorebook entry "${name}" for character ${char.name || char.chaId}`,
+                return patchCharacter(
+                    char.chaId,
+                    { globalLore: lorebook.map((other, i) => (i === entryIndex ? entry : other)) },
+                    `Successfully updated lorebook entry "${name}" for character ${char.name || char.chaId}`,
+                );
             },
-        ];
+        );
     }
 
     async deleteCharacterLorebook(id: string, name: string): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
-        if (!char) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Character with ID ${id} not found.`,
-                },
-            ];
-        }
-        if (char.type === "group") {
-            return [
-                {
-                    type: "text",
-                    text: `Error: The id pointed to a group chat, not a character.`,
-                },
-            ];
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-delete-character-lorebook",
+            (charName) => `delete character (${charName}) global lorebook (${name})`,
+            (char) => {
+                const lorebook = char.globalLore ?? [];
+                const entryIndex = lorebook.findIndex((entry) => {
+                    const displayName = entry.comment || "Unnamed " + pickHashRand(5515, entry.content);
+                    return displayName === name;
+                });
+                if (entryIndex === -1) {
+                    return [
+                        {
+                            type: "text",
+                            text: `Error: Lorebook entry with name "${name}" not found.`,
+                        },
+                    ];
+                }
 
-        if (
-            !(await this.promptAccess(
-                "risu-delete-character-lorebook",
-                `delete character (${char.name}) global lorebook (${name})`,
-            ))
-        ) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
-
-        const entryIndex = char.globalLore.findIndex((entry) => {
-            const displayName = entry.comment || "Unnamed " + pickHashRand(5515, entry.content);
-            return displayName === name;
-        });
-        if (entryIndex === -1) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Lorebook entry with name "${name}" not found.`,
-                },
-            ];
-        }
-
-        char.globalLore.splice(entryIndex, 1);
-
-        return [
-            {
-                type: "text",
-                text: `Successfully deleted lorebook entry "${name}" from character ${char.name || char.chaId}`,
+                return patchCharacter(
+                    char.chaId,
+                    { globalLore: lorebook.filter((_, i) => i !== entryIndex) },
+                    `Successfully deleted lorebook entry "${name}" from character ${char.name || char.chaId}`,
+                );
             },
-        ];
+        );
     }
 
     async getCharacterRegexScripts(id: string): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
+        const char = getCharacter(id);
         if (!char) {
             return [
                 {
@@ -804,144 +794,82 @@ export class CharacterHandler extends MCPToolHandler {
         flag?: string,
         ableFlag?: boolean,
     ): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
-        if (!char) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Character with ID ${id} not found.`,
-                },
-            ];
-        }
-        if (char.type === "group") {
-            return [
-                {
-                    type: "text",
-                    text: `Error: The id pointed to a group chat, not a character.`,
-                },
-            ];
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-set-character-regex-scripts",
+            (charName) => `add/modify character (${charName}) regex script (${name})`,
+            (char) => {
+                const scripts = char.customscript ?? [];
+                const scriptIndex = scripts.findIndex((script) => {
+                    const displayName = script.comment || "Unnamed " + pickHashRand(5515, script.in + script.out);
+                    return displayName === name;
+                });
+                if (scriptIndex === -1) {
+                    const newScript = {
+                        comment: newName || name,
+                        in: regexIn || "",
+                        out: regexOut || "",
+                        type: type || "editdisplay",
+                        flag: flag || "",
+                        ableFlag: ableFlag !== undefined ? ableFlag : true,
+                    };
 
-        if (
-            !(await this.promptAccess(
-                "risu-set-character-regex-scripts",
-                `add/modify character (${char.name}) regex script (${name})`,
-            ))
-        ) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
+                    return patchCharacter(
+                        char.chaId,
+                        { customscript: [...scripts, newScript] },
+                        `Successfully added regex script "${newName || name}" to character ${char.name || char.chaId}`,
+                    );
+                }
 
-        if (!char.customscript) {
-            char.customscript = [];
-        }
+                const script = { ...scripts[scriptIndex] };
 
-        const scriptIndex = char.customscript.findIndex((script) => {
-            const displayName = script.comment || "Unnamed " + pickHashRand(5515, script.in + script.out);
-            return displayName === name;
-        });
-        if (scriptIndex === -1) {
-            const newScript = {
-                comment: newName || name,
-                in: regexIn || "",
-                out: regexOut || "",
-                type: type || "editdisplay",
-                flag: flag || "",
-                ableFlag: ableFlag !== undefined ? ableFlag : true,
-            };
+                if (newName !== undefined) script.comment = newName;
+                if (regexIn !== undefined) script.in = regexIn;
+                if (regexOut !== undefined) script.out = regexOut;
+                if (type !== undefined) script.type = type;
+                if (flag !== undefined) script.flag = flag;
+                if (ableFlag !== undefined) script.ableFlag = ableFlag;
 
-            char.customscript.push(newScript);
-            return [
-                {
-                    type: "text",
-                    text: `Successfully added regex script "${newName || name}" to character ${char.name || char.chaId}`,
-                },
-            ];
-        }
-
-        const script = char.customscript[scriptIndex];
-
-        if (newName !== undefined) script.comment = newName;
-        if (regexIn !== undefined) script.in = regexIn;
-        if (regexOut !== undefined) script.out = regexOut;
-        if (type !== undefined) script.type = type;
-        if (flag !== undefined) script.flag = flag;
-        if (ableFlag !== undefined) script.ableFlag = ableFlag;
-
-        return [
-            {
-                type: "text",
-                text: `Successfully updated regex script "${name}" for character ${char.name || char.chaId}`,
+                return patchCharacter(
+                    char.chaId,
+                    { customscript: scripts.map((other, i) => (i === scriptIndex ? script : other)) },
+                    `Successfully updated regex script "${name}" for character ${char.name || char.chaId}`,
+                );
             },
-        ];
+        );
     }
 
     async deleteCharacterRegexScripts(id: string, name: string): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
-        if (!char) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Character with ID ${id} not found.`,
-                },
-            ];
-        }
-        if (char.type === "group") {
-            return [
-                {
-                    type: "text",
-                    text: `Error: The id pointed to a group chat, not a character.`,
-                },
-            ];
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-delete-character-regex-scripts",
+            (charName) => `delete character (${charName}) regex script (${name})`,
+            (char) => {
+                const scripts = char.customscript ?? [];
+                const scriptIndex = scripts.findIndex((script) => {
+                    const displayName = script.comment || "Unnamed " + pickHashRand(5515, script.in + script.out);
+                    return displayName === name;
+                });
+                if (scriptIndex === -1) {
+                    return [
+                        {
+                            type: "text",
+                            text: `Error: Regex script with name "${name}" not found.`,
+                        },
+                    ];
+                }
 
-        if (
-            !(await this.promptAccess(
-                "risu-delete-character-regex-scripts",
-                `delete character (${char.name}) regex script (${name})`,
-            ))
-        ) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
-
-        if (!char.customscript) {
-            char.customscript = [];
-        }
-
-        const scriptIndex = char.customscript.findIndex((script) => {
-            const displayName = script.comment || "Unnamed " + pickHashRand(5515, script.in + script.out);
-            return displayName === name;
-        });
-        if (scriptIndex === -1) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Regex script with name "${name}" not found.`,
-                },
-            ];
-        }
-
-        char.customscript.splice(scriptIndex, 1);
-
-        return [
-            {
-                type: "text",
-                text: `Successfully deleted regex script "${name}" from character ${char.name || char.chaId}`,
+                return patchCharacter(
+                    char.chaId,
+                    { customscript: scripts.filter((_, i) => i !== scriptIndex) },
+                    `Successfully deleted regex script "${name}" from character ${char.name || char.chaId}`,
+                );
             },
-        ];
+        );
     }
 
     async getCharacterAdditionalAssets(id: string): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
+        const char = getCharacter(id);
         if (!char) {
             return [
                 {
@@ -974,67 +902,36 @@ export class CharacterHandler extends MCPToolHandler {
     }
 
     async deleteCharacterAdditionalAssets(id: string, assetName: string): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
-        if (!char) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Character with ID ${id} not found.`,
-                },
-            ];
-        }
-        if (char.type === "group") {
-            return [
-                {
-                    type: "text",
-                    text: `Error: The id pointed to a group chat, not a character.`,
-                },
-            ];
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-delete-character-additional-assets",
+            (charName) => `delete character (${charName}) additional asset (${assetName})`,
+            (char) => {
+                const assets = char.additionalAssets ?? [];
+                const assetIndex = assets.findIndex((asset) => {
+                    const displayName = asset[0] || "Unnamed " + pickHashRand(5515, asset[1] + asset[2]);
+                    return displayName === assetName;
+                });
+                if (assetIndex === -1) {
+                    return [
+                        {
+                            type: "text",
+                            text: `Error: Additional asset with name "${assetName}" not found.`,
+                        },
+                    ];
+                }
 
-        if (
-            !(await this.promptAccess(
-                "risu-delete-character-additional-assets",
-                `delete character (${char.name}) additional asset (${assetName})`,
-            ))
-        ) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
-
-        if (!char.additionalAssets) {
-            char.additionalAssets = [];
-        }
-
-        const assetIndex = char.additionalAssets.findIndex((asset) => {
-            const displayName = asset[0] || "Unnamed " + pickHashRand(5515, asset[1] + asset[2]);
-            return displayName === assetName;
-        });
-        if (assetIndex === -1) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Additional asset with name "${assetName}" not found.`,
-                },
-            ];
-        }
-
-        char.additionalAssets.splice(assetIndex, 1);
-
-        return [
-            {
-                type: "text",
-                text: `Successfully deleted additional asset "${assetName}" from character ${char.name || char.chaId}`,
+                return patchCharacter(
+                    char.chaId,
+                    { additionalAssets: assets.filter((_, i) => i !== assetIndex) },
+                    `Successfully deleted additional asset "${assetName}" from character ${char.name || char.chaId}`,
+                );
             },
-        ];
+        );
     }
 
     async getCharacterLuaScript(id: string): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
+        const char = getCharacter(id);
         if (!char) {
             return [
                 {
@@ -1071,50 +968,32 @@ export class CharacterHandler extends MCPToolHandler {
     }
 
     async setCharacterLuaScript(id: string, code: string): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
-        if (!char) {
-            return [
-                {
-                    type: "text",
-                    text: `Error: Character with ID ${id} not found.`,
-                },
-            ];
-        }
-        if (char.type === "group") {
-            return [
-                {
-                    type: "text",
-                    text: `Error: The id pointed to a group chat, not a character.`,
-                },
-            ];
-        }
+        return await this.writeConfirmed(
+            id,
+            "risu-set-character-lua-script",
+            (name) => `modify character (${name}) lua script`,
+            (char) => {
+                const firstTrigger = char.triggerscript?.[0];
+                if (firstTrigger?.effect?.[0]?.type === "triggerlua") {
+                    const trigger = {
+                        ...firstTrigger,
+                        effect: firstTrigger.effect.map((effect, i) => (i === 0 ? { ...effect, code } : effect)),
+                    };
+                    return patchCharacter(
+                        char.chaId,
+                        { triggerscript: char.triggerscript.map((other, i) => (i === 0 ? trigger : other)) },
+                        `Successfully updated Lua script for character ${char.name || char.chaId}`,
+                    );
+                }
 
-        if (!(await this.promptAccess("risu-set-character-lua-script", `modify character (${char.name}) lua script`))) {
-            return [
-                {
-                    type: "text",
-                    text: "Access denied by user.",
-                },
-            ];
-        }
-
-        const firstTrigger = char.triggerscript?.[0];
-        if (firstTrigger?.effect?.[0]?.type === "triggerlua") {
-            firstTrigger.effect[0].code = code;
-            return [
-                {
-                    type: "text",
-                    text: `Successfully updated Lua script for character ${char.name || char.chaId}`,
-                },
-            ];
-        }
-
-        return [
-            {
-                type: "text",
-                text: "Error: User must first change the first trigger type to Lua manually.",
+                return [
+                    {
+                        type: "text",
+                        text: "Error: User must first change the first trigger type to Lua manually.",
+                    },
+                ];
             },
-        ];
+        );
     }
 
     async listCharacters(count: number = 100, offset: number = 0): Promise<RPCToolCallContent[]> {

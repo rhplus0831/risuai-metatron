@@ -1,6 +1,6 @@
 # Slice: MCP RisuAccess Writers
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented (2026-09-30, on `0d7c1cd6`; record below).
 
 Phase: [Phase 4](../../phase-4-external-contracts.md), "MCP RisuAccess" (the set and delete tools
 use mutations; `getCharacter` returns no live object; the read tools are unchanged), plus the
@@ -138,3 +138,147 @@ The read tools still walk the eagerly loaded mirror (lazy loading is Phase 6, as
 `risu-list-characters` and `risu-get-chat-history` read `chatPage` (the per-tab selection), so
 another tab's selection is not what the tool sees; unchanged and expected. Iris runs these tools
 in the client until Phase 5's `mcp-on-server`.
+
+## Implementation record
+
+Implemented 2026-09-30 on `0d7c1cd6`, by the amendments of
+[`implementation-plan.md`](implementation-plan.md) (slice 4).
+
+- **`risuaccess/utils.ts`**: `getCharacter` returns the mirror record typed
+  `DeepReadonly<character | groupChat> | undefined`. The name fallback and the empty-id selection
+  stay.
+- **`risuaccess/characters.ts`**:
+  - `writeConfirmed(id, tool, action, write)` resolves the character, refuses a group, asks for
+    consent, then resolves it again by the captured `chaId` through `findCharacter` and checks
+    it again. It then runs `write`, which is synchronous, on that record, so no await falls
+    between the last lookup and the write (Astra challenge 1). A character removed while the
+    prompt was open answers "not found".
+  - Each write tool's `write` builds the one list or field set it changes from that record, then
+    calls `updateCharacter(chaId, patch)` through `patchCharacter`. That helper answers a
+    `MutationValidationError` as an `Error:` text, and a character gone by then as "not found".
+    - `risu-set-character-info`: the remapped fields in one patch. An unknown field is answered
+      before anything is written, so one bad field changes nothing (it wrote the fields before it
+      before). Only the remap's own keys are fields: `constructor`, `toString`, or a parsed
+      `__proto__` is an unknown field (challenge 2; they passed the lookup before).
+    - The lorebook, regex, and asset tools patch `globalLore`, `customscript`, or
+      `additionalAssets`. A character without `globalLore` reads as an empty lorebook
+      (challenge 4; the lore tools threw on it).
+    - The Lua tool patches `triggerscript`, with `effect[0].code` replaced in a copy.
+  - The post-dispatch `markCharactersDirty` in `handle` is gone: `updateCharacter` marks, and
+    only when it wrote. The `@ts-ignore` is gone.
+- **`risuaccess/chats.ts`**: the read-only annotation (a read; unchanged otherwise).
+- **`risuaccess/modules.ts`**:
+  - Every handler reads through `findModule(id)`.
+  - `writeConfirmed(id, tool, action, write)` finds the module, refuses an MCP module, asks for
+    consent, finds it again by the same id (never by name), checks it again, and runs the
+    synchronous `write` on it.
+  - The lorebook, regex, and Lua tools patch `lorebook`, `regex`, or `trigger` through
+    `updateModule`.
+  - `risu-set-module-info` checks each field against the type its schema declares (challenge 3),
+    writes the other fields through `updateModule`, then calls `setModuleEnabled` for `enabled`,
+    so a refused value changes neither. Unknown keys are still skipped, as before.
+  - The `@ts-ignore` is gone.
+- **`mcp.ts`**: `registerRefresh` calls `addAuthRefresh`; `importMCPModule` calls `addModule`; the
+  unused `getDatabase()` binding in `initializeMCPs` is removed.
+- **`googlesearchclient.ts`**: the credential prompt writes through
+  `updateSettings({ googleSearchCredentials })` (a `secrets` field).
+
+Recorded behavior changes:
+
+- A refused `risu-set-character-info` field changes nothing. Before, the fields ahead of it were
+  written.
+- A write tool builds its patch from the record as it is after consent.
+- `risu-set-module-info` refuses a value of the wrong type. `enabled: "false"` enabled the module
+  before (a truthiness test); `name: 5` was stored.
+- A denied or failed character tool no longer marks the character dirty.
+
+No stopping condition was met: every tool's write is one field patch, and `pnpm check` needed no
+cast for the read-only records.
+
+Exit checks:
+
+- `rg -n 'markCharactersDirty|@ts-ignore' src/ts/process/mcp/risuaccess` answers nothing.
+- `rg -n 'getDatabase\(\)' src/ts/process/mcp` answers nothing.
+- The rooted pattern over `src/ts/process/mcp` answers only the fixtures in
+  `risuaccess/tests/modules.test.ts` (test files are excluded).
+
+No existing test was invalidated: `modules.test.ts`'s harness covers `findModule` unchanged, so no
+test adapter ran.
+
+Checks:
+
+- `pnpm check`, `pnpm format:check`, and `pnpm build` pass.
+- `pnpm test`: 88 files, 921 passed, 3 skipped.
+- `pnpm test:e2e`: 5 passed.
+- After the challenge fixes: `pnpm check` and the MCP tests again, then the gates in full (see
+  Tests).
+
+Manual check (Playwright, scratchpad `checkP4Slice4.mjs`). The client's `callTool` stands in for
+Iris, which calls the same entry. With Alpha selected:
+
+- On Beta:
+  - the lorebook, info, regex, and Lua tools landed;
+  - a call with an unknown field and a refused consent each changed nothing;
+  - the read tool returned the new entry.
+- After the challenge fixes: `{ name, constructor }` and a module's `enabled: "false"` were
+  refused and changed nothing.
+- Gamma, removed while the consent prompt was open, answered "not found", and nothing was
+  recreated.
+- The module lorebook, info (with `enabled`), regex, and Lua tools landed.
+- Everything held after a reload, and there were no page errors.
+- Not driven: `importMCPModule` and `registerRefresh` (they need a live MCP server and an OAuth
+  flow), and the Google credential prompt.
+
+## Tests
+
+Written by the Fable review (verdict: no problem), over the real save adapter and server store,
+with consent mocked by a queue that can hold a prompt open:
+
+- `risuaccess/tests/characters.test.ts` (14):
+  - every character write tool on a character that is not selected, landing by id and sent in the
+    next cycle;
+  - a denial, a missing entry, a refused patch, a group id, and an unknown id each write nothing;
+  - mixed valid and invalid info fields (`constructor`, `toString`, a parsed `__proto__`, `id`)
+    write nothing;
+  - the consent gap: a replacement, a change to a group, a removal, and a rename or selection
+    change while the prompt is open, and Astra's microtask probe;
+  - an absent `globalLore` and a missing Lua trigger;
+  - the read outputs.
+- `risuaccess/tests/moduleWriters.test.ts` (11):
+  - every module write tool;
+  - an MCP module is refused, including one that became an MCP module while the prompt was open;
+  - the nested Lua copy keeps the rest of the trigger;
+  - info with `enabled`, and the wrong-type policy (`enabled: "false"`, `1`, or `null`, and
+    `name: 5`, each refused with nothing written);
+  - absent lists, and caller data detached.
+- `mcp/tests/mcpWriters.test.ts` (6):
+  - `importMCPModule` adds a module with an id, and an invalid URL adds nothing;
+  - the registered refresh token is stored in `authRefreshes` under the server's URL and found
+    again;
+  - the Google credential prompt: stored credentials ask nothing, trimmed inputs reach
+    `secrets`, and cancelled or blank inputs write nothing.
+
+`pnpm test`: 91 files, 952 passed, 3 skipped. `pnpm check` and `pnpm format:check` pass.
+
+Found in passing and left for a separate task: `importMCPModule` throws a `TypeError` on a
+cancelled URL prompt (present before this slice).
+
+## Astra challenge
+
+Astra (the open plan-review session) challenged the implementation. Report:
+`astra-p4-slice4-challenge.md` (scratchpad). Decisions:
+
+1. **High: an await between the helper's last lookup and the write.** The helper returned the
+   record through a promise, and the caller's `await` let a replacement land before the patch was
+   built. Astra's probe overwrote a fresh lore list and wrote into a module that had become an MCP
+   module. **Adopted** (the recommended fix): the helper runs a synchronous `write` callback on the
+   record right after its final check.
+2. **Medium: inherited names passed the character field lookup.** **Adopted**: `Object.hasOwn`.
+3. **Low: `setModuleInfo` took `enabled` by truthiness and checked no field types.** **Adopted**:
+   each field is checked against its schema type before any write (a recorded behavior change).
+   `setCharacterInfo`'s field types are left as they were: not raised, and the character fields
+   keep their stored-anything behavior until the server's character kind checks them.
+4. **Low: the lore tools assumed `globalLore` exists.** **Adopted**: a local `?? []` fallback in
+   the reads and writes. Nothing is initialized by a read.
+
+Astra's testing advice goes to the Fable review with Opus's judgement.

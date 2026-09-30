@@ -3,6 +3,7 @@ import type { MCPTool, RPCToolCallContent } from "./mcplib";
 import { fetchNative } from "../../globalApi.svelte";
 import { alertInput } from "../../alert";
 import { DBState } from "../../stores.svelte";
+import { updateSettings } from "../../storage/collectionStore.svelte";
 
 interface WebSearchArgs {
     query: string;
@@ -80,7 +81,7 @@ export class GoogleSearchClient extends MCPClientLike {
             searchEngineId: searchEngineId.trim(),
         };
 
-        DBState.db.googleSearchCredentials = credentials;
+        updateSettings({ googleSearchCredentials: credentials });
     }
 
     async getToolList(): Promise<MCPTool[]> {

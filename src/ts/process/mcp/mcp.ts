@@ -1,4 +1,4 @@
-import { getDatabase } from "src/ts/storage/database.svelte";
+import { addAuthRefresh, addModule } from "src/ts/storage/collectionStore.svelte";
 import { MCPClient, type JsonRPC, type MCPTool, type RPCToolCallContent } from "./mcplib";
 import { DBState } from "src/ts/stores.svelte";
 import { getModuleMcps } from "../modules";
@@ -17,7 +17,6 @@ export const callOnlyMCPs: Record<string, MCPClient | MCPClientLike> = {};
 const callOnlyMCPUrls = ["internal:risuai"];
 
 export async function initializeMCPs(additionalMCPs?: string[]) {
-    const db = getDatabase();
     const mcpUrls = getModuleMcps();
     if (additionalMCPs && additionalMCPs.length > 0) {
         for (const mcp of additionalMCPs) {
@@ -100,7 +99,7 @@ export async function initializeMCPs(additionalMCPs?: string[]) {
             }
 
             const registerRefresh: typeof MCPClient.prototype.registerRefreshToken = (arg) => {
-                DBState.db.authRefreshes.push({
+                addAuthRefresh({
                     url: mcp,
                     ...arg,
                 });
@@ -228,8 +227,7 @@ export async function importMCPModule() {
             alertError("MCP module not found or invalid URL");
             return;
         }
-        const db = getDatabase();
-        db.modules.push({
+        addModule({
             name: meta.serverInfo.name,
             description: "MCP from " + x,
             mcp: {

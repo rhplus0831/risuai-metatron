@@ -1,6 +1,5 @@
 import { type MCPTool, MCPToolHandler, type RPCToolCallContent } from "../mcplib";
 import { getCharacter } from "./utils";
-import { type character, type groupChat } from "src/ts/storage/database.svelte";
 
 export class ChatHandler extends MCPToolHandler {
     getTools(): MCPTool[] {
@@ -41,7 +40,7 @@ export class ChatHandler extends MCPToolHandler {
     }
 
     async getChatHistory(id: string, count: number = 20, offset: number = 0): Promise<RPCToolCallContent[]> {
-        const char: character | groupChat = getCharacter(id);
+        const char = getCharacter(id);
         if (!char) {
             return [
                 {
