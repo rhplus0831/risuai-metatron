@@ -1,6 +1,6 @@
 # Slice: Character And Collection Mutations
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented 2026-09-30 (record below; the implementation plan's amendments apply).
 
 Phase: [Phase 4](../../phase-4-external-contracts.md), the Objective ("re-point everything
 outside the core app ... at the mutation API"): this slice is the mutation API the other seven
@@ -209,3 +209,159 @@ No indivisible grouping is added (the alpha scope; Astra P11). The drift check, 
 one, misses a change made in the same tick as a marked write. The UI editors, the core-app
 creators, and the helpers listed in the closeout's allowlist keep writing the mirror directly
 until Phase 6.
+
+## Implementation record
+
+Implemented 2026-09-30 on `40ba9c0d`, by the amendments of
+[`implementation-plan.md`](implementation-plan.md) (slice 1).
+
+- **`src/ts/storage/mutationValidation.ts`** (new; not in the allowed files above, a shared
+  helper the three modules use): `MutationValidationError`, `MutationTargetGoneError`,
+  `isJsonData` (plain JSON data; `undefined` accepted inside objects and arrays, where JSON drops
+  it, and at the top level by flag), `requireJsonData`, `requireObject`, `requireArray`, `detach`
+  (a JSON copy; an own `__proto__` survives), and `detachPatch` (checks and detaches a whole
+  field patch before the first write; `__proto__` refused).
+- **`src/ts/storage/characterOrder.ts`** (new): `checkCharOrder` moved; `globalApi.svelte.ts`
+  re-exports it. One change: a folder without a member list counts as empty (it threw before).
+- **`src/ts/storage/characterStore.svelte.ts`** (new):
+  - `findCharacter` returns the mirror record typed `DeepReadonly`.
+  - `checkCharacterInput` is a non-mutating check for a caller's list preflight. It checks the
+    object, the JSON data, `type` when present, `chaId` when present, and the chats (a list of
+    objects with message lists of objects, what `normalizeNewCharacter` needs).
+  - `addCharacter` checks the input, then works on a detached copy, which gets the id when it is
+    missing. A duplicate id is refused. After the push it runs `normalizeNewCharacter` and
+    `checkCharOrder`.
+  - `updateCharacter(chaId, patch)` refuses `chats`, `chatPage`, `reloadKeys`, `chaId`, and
+    `type`; `undefined` removes a field; it returns `false` when the character is missing, and
+    marks.
+  - `replaceCharacterFields(char)` takes its target from `char.chaId`, which must be present (it
+    replaces the slice's `(chaId, char)`). It keeps the mirror's chat fields.
+  - `replaceCharacterAt(index, char)` takes an existing index or the length. It refuses a
+    same-id character (that case is `replaceCharacterFields` plus `reconcileCharacterChats`), a
+    generating one, and a duplicate id.
+  - `removeCharacter` keeps the selection on its character.
+  - `writeCharacterFieldsAt` is the legacy body of the two core-app wrappers in
+    `database.svelte.ts`, which keep their behavior.
+- **`src/ts/storage/collectionStore.svelte.ts`** (new):
+  - `updateSettings(patch, { presetId? })`, with the plan's key set and value rules. Every value
+    is checked and detached before the first write.
+  - `incrementStatic`.
+  - `setPersonas`, `addPersona`, and `updatePersona`. `updatePersona` throws
+    `MutationTargetGoneError` for a missing persona and refuses `id`.
+  - `findModule`, `setModules`, `addModule`, `updateModule`, and `removeModule`. A missing module
+    id is assigned; duplicate module ids are not refused (imports push duplicates today);
+    `removeModule` leaves `enabledModules` alone.
+  - `setEnabledModules` and `setModuleEnabled`.
+  - `setCharacterOrder`: stricter than the server. A folder needs a list of member ids.
+  - `setPlugins`, `upsertPlugin` (by name), and `setPluginArgument` (every plugin with that name,
+    as `setArg` does; `__proto__` through a rebuilt dictionary).
+  - `addAuthRefresh`: its five fields are strings or absent, as the server requires.
+  - `addPreset`: `normalizePreset` under a fresh id.
+  - The lists are checked position by position, so a sparse list is refused.
+- **`src/ts/storage/pluginStorageStore.svelte.ts`** (new):
+  - The v3 `_pluginStorage` and the `_safeLocalPluginStorage` functions (get, has, keys, set,
+    remove, clear). Each write calls `markPluginStorageDirty`, and `__proto__` goes through a
+    rebuilt dictionary.
+  - `setPluginCustomValue` accepts any key, including the two dictionary names, as today;
+    `undefined` removes the key.
+  - `replacePluginCustomStorage`.
+  - The watcher stays until slice 2.
+- **`src/ts/storage/forwarding.svelte.ts`**: `forwardedPresetField`, `hasPreset`, and
+  `writePresetField(db, presetId, rootKey, value)`.
+- **`src/ts/storage/resourceSync.svelte.ts`**: `markPluginStorageDirty`, `MutationScope`,
+  `beginMutationScope()`, and `flushResources({ scope })`.
+- **Not done:** the character drift check (dropped by the plan, A13). No caller outside the
+  storage layer uses the modules yet, apart from the wrappers.
+
+Checks: `pnpm check` 0 errors; `pnpm test` 80 files, 800 passed, 3 skipped (no existing test
+invalidated); `pnpm format:check`; `pnpm build`; `pnpm test:e2e` 5 passed. A Playwright script
+against a fresh server (`checkP4Slice1.mjs`, scratchpad):
+
+- **Saved across a reload:** every mutation above, with every value there after the reload and
+  no batch sent by the idle reload.
+- **Refused with nothing changed:**
+  - a `chats` patch, a function value, a duplicate id;
+  - a string temperature, a `null` theme, `proxyKey`;
+  - a mixed patch with one bad key (the good key unapplied);
+  - an unknown `presetId`;
+  - after the challenge fixes: malformed chats and messages, a same-id and an out-of-range
+    `replaceCharacterAt`, sparse module, plugin, and enabled-module lists, an array or empty
+    folder in the order, and an OAuth entry with a number.
+- **Kept:** an own `__proto__` survives `replaceCharacterFields`; removing an earlier character
+  keeps the selection on the selected one, and removing the selected one selects none.
+- **Core-app wrapper path:** open a character, edit it, reload; the edit is saved.
+
+## Astra challenge (2026-09-30) and decisions
+
+Eleven points; all adopted.
+
+1. Malformed chats or messages threw after the character was installed. `checkCharacterInput`
+   now checks the chat structure first.
+2. A same-id `replaceCharacterAt` bypassed the chat module. It is refused.
+3. Out-of-range or fractional indexes. They are refused (the length appends).
+4. Sparse lists passed and would have been refused by the server. They are now checked position
+   by position.
+5. Folders in the order: arrays and folders without members broke `checkCharOrder`.
+   `setCharacterOrder` requires a member list, and the repair tolerates a legacy folder without
+   one.
+6. OAuth fields that are not strings. They are refused.
+7. Reserved custom keys were refused, an unapproved change. They are accepted again.
+8. Prototype-named fields: `ownFields` lost `__proto__`, and `in PERSONA_DEFAULTS` matched
+   `constructor`. The fix uses `Object.fromEntries` and `Object.hasOwn`, `detachPatch` refuses
+   `__proto__`, and the plugin argument goes through a rebuilt dictionary.
+9. Removal shifted the selection. It now follows the adapter's remote-deletion rule.
+10. Detaching inside the commit loop. Everything is detached before the first write.
+11. Reads initialized `characters`. Reads no longer write.
+
+The qualifications were adopted too:
+
+- `replaceCharacterFields` requires the id.
+- Ids are assigned on the detached copy; slice 2's preflight detects one object listed twice by
+  identity.
+- `checkCharacterInput` is exported for slice 2.
+- `writeCharacterFieldsAt` is marked legacy only.
+
+Astra's testing advice goes to the Fable reviewer.
+
+## Fable review, round 1 (2026-09-30): problem, fixed on the owner's go-ahead
+
+The reviewer found the unresolved half of Astra's point 8. A patch or storage key named like an
+`Object.prototype` member (`constructor`, `toString`, `hasOwnProperty`, `valueOf`) was silently
+dropped, and the function still reported success. Svelte's `$state` proxy accepts an assignment
+to an inherited name without storing it; the first fix covered only `__proto__`. Affected:
+`updateCharacter`, `updatePersona`, `updateModule`, `setPluginArgument`, and the plugin-storage
+writes. The plugin-storage half was pre-existing in `v3.svelte.ts` and `pluginSafeClass.ts`.
+
+The fix, chosen by the owner: `writeEntries` in `mutationValidation.ts`. When every key can be
+assigned in place, it is. Otherwise the object is rebuilt with own properties and installed where
+the old one was: the character record (its chats kept), the persona or module in its list,
+`realArg`, the storage dictionary, or `pluginCustomStorage`. The earlier `__proto__`-only branches
+are replaced by it. The Playwright script now checks that each such key lands and survives a
+reload.
+
+## Fable review, round 2 (2026-09-30): no problem
+
+`writeEntries` was verified with its edges: an already-own inherited-name key takes the in-place
+path, an existing own `__proto__` survives a rebuild, and nested values keep their identity (a
+character's chats stay addressable). Every caller installs the rebuilt object where the old one
+was. Two pre-existing adapter rules were noted and pinned by the tests, not changed:
+
+- a character's or a plugin `realArg`'s own `__proto__` stays in the mirror but is dropped from
+  the server text by the `$state.snapshot` projection; only `pluginStorage` is serialized from
+  the proxy;
+- `replaceCharacterAt` leaves the order to the next `checkCharOrder`.
+
+The tests, 42 over the real server store (`storeBackedServer.ts`), share the harness
+`src/ts/storage/tests/mutationStoresHarness.ts`:
+
+- `characterStore.test.ts` (17): the character functions, their refusals leaving the mirror and
+  the server unchanged, inherited-name keys, and `checkCharOrder` directly;
+- `collectionStore.test.ts` (16): `updateSettings`' targets, rules, and refusals, plus statics,
+  presets, personas, modules, the order, plugins, and OAuth entries;
+- `pluginStorageStore.test.ts` (5);
+- `mutationScope.test.ts` (4): a discard before and during the flush, an unrelated one, one before
+  the scope, the chat sequence.
+
+The reviewer agreed with Opus's "not necessary" list. Gates on the final tree: `pnpm check` 0
+errors; `pnpm test` 84 files, 842 passed, 3 skipped; `pnpm format:check`; `pnpm test:e2e` 5 passed.
+The `docs/structure/` test inventories are updated at the closeout (slice 8 owns every guide edit).

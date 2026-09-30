@@ -292,3 +292,31 @@ export function selectedPersona(db: Database): RisuPersona | undefined {
 export function selectedPersonaForWrite(db: Database): RisuPersona | undefined {
     return personaForWrite(db as unknown as Db) as unknown as RisuPersona | undefined;
 }
+
+const forwardedPresetKeys = new Set<string>(FORWARDED_PRESET_KEYS);
+
+/** The preset field a forwarded root key mirrors (`PRESET_ROOT_ALIASES`), or `undefined` for a key that is not forwarded. */
+export function forwardedPresetField(rootKey: string): PresetField | undefined {
+    return forwardedPresetKeys.has(rootKey) ? ((presetFieldOf[rootKey] ?? rootKey) as PresetField) : undefined;
+}
+
+/** Whether a preset with `id` exists in `db` (untracked). */
+export function hasPreset(db: Database, id: string): boolean {
+    return untrack(() => findPreset(db as unknown as Db, id)) !== undefined;
+}
+
+/**
+ * Writes a forwarded preset field (by its root name, `FORWARDED_PRESET_KEYS`) into the preset with
+ * `presetId`, whatever is selected: the mutation form of the accessor, for a caller that captured
+ * its preset (`collectionStore`'s `updateSettings`). Returns `false`, writing nothing, when no preset
+ * has that id or the key is not forwarded; never redirects.
+ */
+export function writePresetField(db: Database, presetId: string, rootKey: string, value: unknown): boolean {
+    const field = forwardedPresetField(rootKey);
+    const record = untrack(() => findPreset(db as unknown as Db, presetId));
+    if (field === undefined || record === undefined) {
+        return false;
+    }
+    record[field] = value;
+    return true;
+}

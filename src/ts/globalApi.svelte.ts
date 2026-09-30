@@ -573,69 +573,8 @@ export function getBasename(data: string) {
     return lasts;
 }
 
-/**
- * Checks and updates the character order in the database.
- * Ensures that all characters are properly ordered and removes any invalid entries.
- */
-export function checkCharOrder() {
-    DBState.db.characterOrder = DBState.db.characterOrder ?? [];
-    const ordered = new Set<string>();
-    for (let i = 0; i < DBState.db.characterOrder.length; i++) {
-        const folder = DBState.db.characterOrder[i];
-        if (typeof folder !== "string" && folder) {
-            for (const f of folder.data) {
-                ordered.add(f);
-            }
-        }
-        if (typeof folder === "string") {
-            ordered.add(folder);
-        }
-    }
-
-    const charIdSet = new Set<string>();
-
-    for (let i = 0; i < DBState.db.characters.length; i++) {
-        const char = DBState.db.characters[i];
-        const charId = char.chaId;
-        if (!char.trashTime) {
-            charIdSet.add(charId);
-        }
-        if (!ordered.has(charId)) {
-            if (charId !== "§playground" && !char.trashTime) {
-                DBState.db.characterOrder.push(charId);
-            }
-        }
-    }
-
-    for (let i = 0; i < DBState.db.characterOrder.length; i++) {
-        const data = DBState.db.characterOrder[i];
-        if (typeof data !== "string") {
-            if (!data) {
-                DBState.db.characterOrder.splice(i, 1);
-                i--;
-                continue;
-            }
-            if (data.data.length === 0) {
-                DBState.db.characterOrder.splice(i, 1);
-                i--;
-                continue;
-            }
-            for (let i2 = 0; i2 < data.data.length; i2++) {
-                const data2 = data.data[i2];
-                if (!charIdSet.has(data2)) {
-                    data.data.splice(i2, 1);
-                    i2--;
-                }
-            }
-            DBState.db.characterOrder[i] = data;
-        } else {
-            if (!charIdSet.has(data)) {
-                DBState.db.characterOrder.splice(i, 1);
-                i--;
-            }
-        }
-    }
-}
+/** The `characterOrder` mutation; it lives in the storage layer (`storage/characterOrder.ts`). */
+export { checkCharOrder } from "./storage/characterOrder";
 
 /**
  * Retrieves the request log as a formatted string.

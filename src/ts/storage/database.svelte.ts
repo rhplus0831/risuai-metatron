@@ -18,6 +18,7 @@ import {
 import { normalizePersonas } from "../../../shared/personas.ts";
 import { safeStructuredClone } from "../polyfill";
 import { markCharacterDirtyAt } from "./resourceSync.svelte";
+import { writeCharacterFieldsAt } from "./characterStore.svelte";
 import { installForwarding, reconcileSelection, selectedPreset, selectedPresetForWrite } from "./forwarding.svelte";
 import { copyPresetSecret, setPresetSecret } from "./llmSecrets.svelte";
 import { selectPreset } from "./selection.svelte";
@@ -110,7 +111,7 @@ export function setCurrentCharacter(char: character | groupChat) {
     if (index === -1) {
         return;
     }
-    replaceCharacterFields(index, char);
+    writeCharacterFieldsAt(index, char);
     // It may no longer be the selected character, which alone the save adapter watches.
     markCharacterDirtyAt(index);
 }
@@ -129,25 +130,8 @@ export function setCharacterByIndex(index: number, char: character | groupChat) 
     if (!DBState.db.characters) {
         DBState.db.characters = [];
     }
-    replaceCharacterFields(index, char);
+    writeCharacterFieldsAt(index, char);
     markCharacterDirtyAt(index);
-}
-
-function replaceCharacterFields(index: number, char: character | groupChat) {
-    const current = DBState.db.characters[index];
-    if (current === char) {
-        return;
-    }
-    if (!current) {
-        DBState.db.characters[index] = char;
-        return;
-    }
-    DBState.db.characters[index] = {
-        ...char,
-        chats: current.chats,
-        chatPage: current.chatPage,
-        reloadKeys: current.reloadKeys,
-    } as character | groupChat;
 }
 
 export function getCurrentChat() {

@@ -275,6 +275,14 @@ export function markCharactersDirty(ids: readonly string[] | "all") {
     }
 }
 
+/**
+ * Marks the `pluginStorage` record for the next compare-and-save: its writers go through
+ * `pluginStorageStore.svelte.ts`, which calls this after every write.
+ */
+export function markPluginStorageDirty() {
+    markKey(collectionKey("pluginStorage"));
+}
+
 /** `markCharactersDirty` for the character at an index of `DBState.db.characters`. */
 export function markCharacterDirtyAt(index: number) {
     const id = DBState.db.characters?.[index]?.chaId;
@@ -1150,11 +1158,31 @@ function applyToMirror(kind: string, id: string, data: unknown) {
 }
 
 /**
- * Saves everything that was changed before this call. Resolves once it is on the server, with the
- * keys whose local edits a conflict replaced meanwhile; rejects when saving fails or when a
- * character that must be saved is still being generated.
+ * Where a mutation scope began: the resource and chat discard sequences at that moment. See
+ * `beginMutationScope`.
  */
-export async function flushResources(): Promise<{ discarded: string[] }> {
+export interface MutationScope {
+    readonly resource: number;
+    readonly chat: number;
+}
+
+/**
+ * Starts a mutation scope: `flushResources({ scope })` then reports every key a conflict discarded
+ * since this call, including one discarded before the flush began. A caller that must know a
+ * callback's writes persisted begins a scope before the callback and flushes with it after; a
+ * non-empty `discarded` list fails the callback. The check is a time window, not an attribution: a
+ * discard of an unrelated write in the window counts too (a conservative failure).
+ */
+export function beginMutationScope(): MutationScope {
+    return { resource: discardSequence, chat: chatDiscardSequence() };
+}
+
+/**
+ * Saves everything that was changed before this call. Resolves once it is on the server, with the
+ * keys whose local edits a conflict replaced since the call (with `scope`, since the scope began);
+ * rejects when saving fails or when a character that must be saved is still being generated.
+ */
+export async function flushResources(options: { scope?: MutationScope } = {}): Promise<{ discarded: string[] }> {
     await tick();
     const refused = quarantineReason();
     if (refused) {
@@ -1171,8 +1199,8 @@ export async function flushResources(): Promise<{ discarded: string[] }> {
     }
     const chatObligations = captureChatObligations();
     const membershipTarget = membershipGeneration;
-    const firstDiscard = discardSequence + 1;
-    const firstChatDiscard = chatDiscardSequence();
+    const firstDiscard = (options.scope?.resource ?? discardSequence) + 1;
+    const firstChatDiscard = options.scope?.chat ?? chatDiscardSequence();
     const unsettled = () =>
         [...obligations].filter(([key, marked]) => (acked.get(key) ?? 0) < marked).map(([key]) => key);
     const hydrating = new Set(hydrate);
