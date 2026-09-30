@@ -119,6 +119,12 @@ function archiveOf(
 }
 const reader = createResourceStore({ file: ":memory:", kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS) });
 afterAll(() => reader.close());
+/**
+ * The kinds the store materializes (slice 3): their `main` rows exist in every store from the start,
+ * so the row checks below look only at the rows the tests wrote.
+ */
+const materialized = new Set(DEFAULT_RESOURCE_KINDS.filter((k) => k.materialize).map((k) => k.name));
+const writtenRows = <T extends { kind: string }>(rows: readonly T[]) => rows.filter((r) => !materialized.has(r.kind));
 
 function defer() {
     let resolve!: () => void;
@@ -162,9 +168,9 @@ describe("POST /api/backups/:id/restore", () => {
         expect(backups[1]).toEqual(snapshot);
         // The safety snapshot holds the state from just before the restore.
         expect(
-            reader
-                .readSnapshot(path.join(backupsDir(s), `${backups[0].id}.sqlite`))
-                .rows.map((r) => `${r.kind}/${r.id}`),
+            writtenRows(reader.readSnapshot(path.join(backupsDir(s), `${backups[0].id}.sqlite`)).rows).map(
+                (r) => `${r.kind}/${r.id}`,
+            ),
         ).toEqual(["characters/a", "root/main", "characters/b"]);
 
         const characters = (await (await s.list("characters")).json()) as { items: (Stored & { id: string })[] };
@@ -410,7 +416,7 @@ describe("POST /api/backups/export", () => {
         expect(records.slice(2).map((r) => r.data.toString("utf-8"))).toEqual(["WEBP-A", "PNG-B", "KO"]);
         const extracted = path.join(s.rootDir, "extracted.sqlite");
         writeFileSync(extracted, records[1].data);
-        expect(reader.readSnapshot(extracted).rows.map((r) => r.id)).toEqual(["a"]);
+        expect(writtenRows(reader.readSnapshot(extracted).rows).map((r) => r.id)).toEqual(["a"]);
         expect(readdirSync(tmpDir(s))).toEqual([]);
         // An export is not a retained snapshot.
         expect(await listBackups(s)).toEqual([]);
@@ -565,7 +571,9 @@ describe("POST /api/backups/import", () => {
         const backups = await listBackups(target);
         expect(backups).toHaveLength(1);
         expect(
-            reader.readSnapshot(path.join(backupsDir(target), `${backups[0].id}.sqlite`)).rows.map((r) => r.id),
+            writtenRows(reader.readSnapshot(path.join(backupsDir(target), `${backups[0].id}.sqlite`)).rows).map(
+                (r) => r.id,
+            ),
         ).toEqual(["z"]);
         expect(readdirSync(tmpDir(target))).toEqual([]);
         expect(

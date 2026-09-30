@@ -36,9 +36,11 @@ const create = (kind: string, id: string, data: unknown) => ({ kind, id, baseRev
 describe("POST /api/resources/batch", () => {
     it("applies writes and deletions of several kinds as one unit and answers the new tokens in operation order", async () => {
         const s = await defaultServer();
+        // `presets/main` is materialized (slice 3), so the batch writes over it with its current revision.
+        const presets = ((await (await s.get("presets", "main")).json()) as { revision: string }).revision;
         const created = await s.batch([
             create("root", "main", { username: "u" }),
-            create("presets", "main", [{ name: "p" }]),
+            { kind: "presets", id: "main", baseRevision: presets, data: [{ name: "p" }] },
             create("characters", "b", character("b")),
             create("characters", "a", character("a")),
             create("inlays", "assets/x.png", { name: "x", ext: "png", type: "image", asset: "assets/inlay_x.png" }),
@@ -54,10 +56,11 @@ describe("POST /api/resources/batch", () => {
             "inlays/assets/x.png",
         ]);
         for (const r of result.results) {
-            expect(r.revision, r.id).toMatch(/^[0-9a-f-]{36}:\d+:1$/);
+            expect(r.revision, r.id).toMatch(r.kind === "presets" ? /^[0-9a-f-]{36}:\d+:2$/ : /^[0-9a-f-]{36}:\d+:1$/);
             expect(r, r.id).not.toHaveProperty("data");
         }
         const tokens = Object.fromEntries(result.results.map((r) => [`${r.kind}/${r.id}`, r.revision!]));
+        expect(tokens["presets/main"]).toBe(presets.replace(/:1$/, ":2"));
 
         const mixed = await s.batch([
             { kind: "characters", id: "a", baseRevision: tokens["characters/a"], data: character("a", { name: "A" }) },
@@ -81,7 +84,10 @@ describe("POST /api/resources/batch", () => {
             ["a", character("a", { name: "A" })],
             ["c", character("c")],
         ]);
-        expect(state.kinds.presets).toHaveLength(1);
+        // The batch's write, not the materialized default, is what is stored.
+        expect(state.kinds.presets).toMatchObject([
+            { id: "main", revision: tokens["presets/main"], data: [{ name: "p" }] },
+        ]);
     });
 
     it("lists every stale operation in one 409 and applies nothing", async () => {
@@ -191,10 +197,15 @@ describe("POST /api/resources/batch", () => {
             expect(res.status, label).toBe(400);
             expect(await res.json(), label).toEqual({ error });
         }
-        expect(await (await s.readKinds("root,characters,presets")).json()).toEqual({
-            epoch: s.epoch,
-            kinds: { root: [], characters: [], presets: [] },
-        });
+        // Nothing was applied: no root or character record, and `presets/main` is still the materialized
+        // default preset at its first revision (slice 3).
+        const state = (await (await s.readKinds("root,characters,presets")).json()) as ReadKinds;
+        expect(state.epoch).toBe(s.epoch);
+        expect(state.kinds.root).toEqual([]);
+        expect(state.kinds.characters).toEqual([]);
+        expect(state.kinds.presets).toMatchObject([
+            { id: "main", revision: expect.stringMatching(/:1$/), data: [{ name: "New Preset" }] },
+        ]);
     });
 
     it("takes 5,000 operations in one batch", async () => {

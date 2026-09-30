@@ -18,6 +18,12 @@ import {
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const characters = kinds.get("characters")!;
+/**
+ * The kinds the store materializes (slice 3): their `main` rows exist in every store from the start
+ * (they take the first seqs), so the row checks below look only at the rows the tests wrote.
+ */
+const materialized = new Set(DEFAULT_RESOURCE_KINDS.filter((k) => k.materialize).map((k) => k.name));
+const writtenRows = <T extends { kind: string }>(rows: readonly T[]) => rows.filter((r) => !materialized.has(r.kind));
 
 const stores: ResourceStore[] = [];
 const dirs: string[] = [];
@@ -127,7 +133,8 @@ describe("creating characters and chats", () => {
                 group("k9", null, [{ op: "create", chat: {} as never, index: 99 }]),
             ],
         });
-        expect(result.results).toEqual([{ kind: "characters", id: "c", revision: expect.stringMatching(/:1:1$/) }]);
+        // Revision 1 of a new incarnation; the seq comes after the materialized rows.
+        expect(result.results).toEqual([{ kind: "characters", id: "c", revision: expect.stringMatching(/:\d+:1$/) }]);
         expect(result.chats).toHaveLength(3);
         const [k1, k0, k9] = result.chats;
         expect(k1).toMatchObject({ characterId: "c", id: "k1", revision: expect.stringMatching(/:1:2$/) });
@@ -1162,7 +1169,7 @@ describe("snapshots", () => {
         populate(store);
         const file = await snapshotOf(dir, store);
         const validated = store.readSnapshot(file);
-        expect(validated.rows.map((r) => `${r.kind}/${r.id}`)).toEqual(["characters/c", "characters/d"]);
+        expect(writtenRows(validated.rows).map((r) => `${r.kind}/${r.id}`)).toEqual(["characters/c", "characters/d"]);
         expect(validated.chats.map((c) => [c.seq, c.characterId, c.id, c.revision, c.schemaVersion])).toEqual([
             // k: the create, then two fence ops, then four more (`populate`).
             [1, "c", "k", 7, 1],

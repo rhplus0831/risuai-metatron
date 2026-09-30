@@ -158,6 +158,9 @@ export function isValidResourceId(id: unknown): id is string {
  * is the record's incarnation (a deleted and recreated record gets a new one), and `revision` counts
  * writes. A write must name the current token and fails with `ResourceConflictError` otherwise.
  *
+ * Opening the store runs the normalization pass (`normalizeStoredRecords`), so every stored record is
+ * its kind's normalized form and every `materialize` singleton exists before the first read.
+ *
  * All methods except `backupTo` are synchronous; one server process owns the file. Every method takes
  * a kind object from `kinds` and rejects any other, so a write always runs that kind's normalizer.
  * Kinds that need rows of their own (chat messages) get their own tables behind this interface later.
@@ -191,10 +194,72 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES (?, ?, ?, ?, ?)",
     );
     const setEpoch = db.prepare("UPDATE meta SET value = ? WHERE key = 'epoch'");
+    const rewrite = db.prepare("UPDATE resources SET revision = ?, schemaVersion = ?, data = ? WHERE seq = ?");
+    const selectKindForPass = db.prepare(
+        "SELECT id, seq, revision, schemaVersion, data FROM resources WHERE kind = ? ORDER BY seq",
+    );
+
+    /**
+     * The normalization pass, inside the caller's transaction: every stored record of every
+     * registered kind is normalized again and rewritten, with its revision counter advanced, when
+     * the normalized text or the stored schema version differs (a record stored before its kind
+     * gained a default, a migration, or a new version); every missing `materialize` singleton is
+     * created. A record of a newer schema version than its kind stops the pass. Reads never normalize, so this
+     * is how a new default reaches stored data, once, before any client reads it. Returns the
+     * number of records written. A stored record its normalizer rejects stops the pass.
+     */
+    function normalizeStoredRecords(): number {
+        let written = 0;
+        for (const kind of kinds.values()) {
+            const rows = selectKindForPass.all(kind.name) as {
+                id: string;
+                seq: number;
+                revision: number;
+                schemaVersion: number;
+                data: string;
+            }[];
+            for (const row of rows) {
+                let text: string;
+                try {
+                    if (row.schemaVersion > kind.schemaVersion) {
+                        // Written by a newer server; rewriting it here would downgrade it silently.
+                        throw new Error(`schema version ${row.schemaVersion} is newer than ${kind.schemaVersion}`);
+                    }
+                    text = serialize(normalizeInput(kind, JSON.parse(row.data), row.id)).text;
+                } catch (error) {
+                    const reason = error instanceof Error ? error.message : String(error);
+                    throw new Error(`Stored ${kind.name} record ${row.id} fails its normalizer: ${reason}`, {
+                        cause: error,
+                    });
+                }
+                if (text !== row.data || row.schemaVersion !== kind.schemaVersion) {
+                    rewrite.run(nextRevision(row.revision, 1), kind.schemaVersion, text, row.seq);
+                    written += 1;
+                }
+            }
+            if (kind.materialize && rows.length === 0) {
+                const { text } = serialize(normalizeInput(kind, undefined, SINGLETON_RESOURCE_ID));
+                insert.run(kind.name, SINGLETON_RESOURCE_ID, kind.schemaVersion, text);
+                written += 1;
+            }
+        }
+        return written;
+    }
 
     let closed = false;
     /** Committed writes since the store opened; the snapshot scheduler compares it. */
     let writeCount = 0;
+    try {
+        db.exec("BEGIN IMMEDIATE");
+        writeCount = normalizeStoredRecords();
+        db.exec("COMMIT");
+    } catch (error) {
+        if (db.isTransaction) {
+            db.exec("ROLLBACK");
+        }
+        db.close();
+        throw error;
+    }
     /** Set while `transaction` runs; the first conflict inside it makes the whole unit roll back. */
     let transactionState: { conflict: ResourceConflictError | null; writes: number } | null = null;
     /**
@@ -414,7 +479,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
             assertWritable();
             assertKind(kind);
             assertId(kind, id);
-            const { text, stored } = serialize(kind.normalize(input, { id }));
+            const { text, stored } = serialize(normalizeInput(kind, input, id));
             return atomically(() => {
                 let seq: number;
                 let revision: number;
@@ -508,7 +573,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                         }
                         return { operation, text: null };
                     }
-                    return { operation, text: serialize(kind.normalize(operation.data, { id })).text };
+                    return { operation, text: serialize(normalizeInput(kind, operation.data, id)).text };
                 } catch (error) {
                     if (error instanceof ResourceValidationError) {
                         throw new ResourceValidationError(`ops[${index}]: ${error.message}`);
@@ -723,7 +788,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                     }
                     let text: string;
                     try {
-                        text = serialize(kind.normalize(parsed, { id: row.id })).text;
+                        text = serialize(normalizeInput(kind, parsed, row.id)).text;
                     } catch (error) {
                         if (error instanceof ResourceValidationError) {
                             throw new ResourceValidationError(`${where}: ${error.message}`);
@@ -748,7 +813,8 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         },
 
         /**
-         * Replaces every record with the rows of a validated snapshot and gives the database a new
+         * Replaces every record with the rows of a validated snapshot, runs the normalization pass
+         * (creating the `materialize` singletons the snapshot lacks), and gives the database a new
          * epoch, in one transaction; every token issued before is stale afterwards. Returns the epoch.
          * Revision counters are restored as stored (the new epoch already makes every old token
          * stale; `nextRevision` keeps a counter a crafted snapshot placed at the limit from
@@ -766,6 +832,9 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                     insertRestored.run(row.kind, row.id, row.revision, row.schemaVersion, row.text);
                 }
                 chatTables.replaceAll(snapshot);
+                // The rows are normalized already (`readSnapshot`); this materializes the kinds the
+                // snapshot predates. A failure rolls the whole restore back.
+                normalizeStoredRecords();
                 setEpoch.run(nextEpoch);
                 db.exec("COMMIT");
                 committed = true;
@@ -826,6 +895,16 @@ function assertSnapshotLayout(source: DatabaseSync) {
     if (typeof epoch?.value !== "string") {
         throw new ResourceValidationError("Not a resource database");
     }
+}
+
+/**
+ * Runs the kind's normalizer on the stored form of `input` (`serialize`), so input the store would
+ * refuse as output is refused before normalizing: the Phase 3 normalizers copy through JSON
+ * (`plainClone`), which would turn an `Infinity` from `JSON.parse("1e400")` into `null` where
+ * `serialize` could no longer see it. `undefined` (a record being materialized) passes as is.
+ */
+function normalizeInput(kind: ResourceKind, input: unknown, id: string): unknown {
+    return kind.normalize(input === undefined ? undefined : serialize(input).stored, { id });
 }
 
 /**

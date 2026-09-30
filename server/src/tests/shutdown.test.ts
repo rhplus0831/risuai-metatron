@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
+import { DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
     buildArchive,
     createResourceTestClient,
@@ -121,7 +122,10 @@ describe("main.ts graceful shutdown", () => {
         expect(readdirSync(path.join(server.savePath, ".tmp"))).toEqual([]);
         const live = new DatabaseSync(path.join(server.savePath, "data", "resources.sqlite"), { readOnly: true });
         try {
-            expect(live.prepare("SELECT id FROM resources").all()).toEqual([{ id: "c1" }]);
+            // The materialized singletons (slice 3) are in every store; the imported character is the only other row.
+            const materialized = new Set(DEFAULT_RESOURCE_KINDS.filter((k) => k.materialize).map((k) => k.name));
+            const rows = live.prepare("SELECT kind, id FROM resources").all() as { kind: string; id: string }[];
+            expect(rows.filter((r) => !materialized.has(r.kind))).toEqual([{ kind: "characters", id: "c1" }]);
         } finally {
             live.close();
         }

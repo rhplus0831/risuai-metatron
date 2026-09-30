@@ -104,3 +104,13 @@ version-3 snapshot round trip in `server/src/tests/`.
 Every database created before this slice is refused (no migration owed; the phase file records
 it). Selection is per tab. `getModules` still does not resolve a bound persona's `$embedded`
 module (pre-existing: `getModuleByIds` filters `db.modules` only); not touched here.
+
+## Requirement from slice 3 (Astra challenge)
+
+The server `personas` normalizer (`server/src/data/normalize/personas.ts`) accepts `[]` (the
+plugin setters can write it) and entries with only an id. Once the root persona defaults go,
+"fall back to the first persona" cannot resolve either. Before the forwarding layer depends on
+it, decide the contract: recommended, a nonempty collection whose entries carry `name`,
+`personaPrompt`, `icon`, and `note` strings (extra data such as `embeddedModule` kept), applied
+alike by the client and the server so the fixed point holds; or an explicit empty-persona state
+that every forwarding reader and writer handles.

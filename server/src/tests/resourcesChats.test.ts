@@ -87,7 +87,8 @@ describe("POST /api/resources/batch with chats", () => {
         expect(r.status).toBe(200);
         expect(r.body).toEqual({
             epoch: s.epoch,
-            results: [{ kind: "characters", id: "c", revision: expect.stringMatching(/:1:1$/) }],
+            // Revision 1 of a new incarnation; the seq comes after the materialized singleton rows.
+            results: [{ kind: "characters", id: "c", revision: expect.stringMatching(/:\d+:1$/) }],
             chats: [
                 {
                     characterId: "c",

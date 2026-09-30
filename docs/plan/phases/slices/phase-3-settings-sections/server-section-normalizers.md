@@ -1,6 +1,6 @@
 # Slice: Server Sections, Collections, And Their Normalizers
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented (2026-09-30); see Implementation record.
 
 Phase: [Phase 3](../../phase-3-settings-sections.md), "Sections", "Collections still in root",
 "Server normalizers", and the server side of "Secrets" (both `secrets` and `llmSecrets`);
@@ -135,3 +135,140 @@ slice 2 (no ids) get backstop ids only at the next server start; two such client
 different ids between a write and the restart (unreachable once every client runs slice 2, which
 lands before this slice is deployed). The element ids of `customSidebarItems`, `folder`, and
 `customModels` are validated as strings but not de-duplicated.
+
+## Implementation record
+
+Implemented by Claude Opus on 2026-09-30, following `implementation-plan.md` (the slice 3
+amendments: `materialize`, the store-owned pass, `clientReadable`, `statics`, shape validation).
+
+- Kinds: `RESOURCE_KIND` gains the 5 sections and 13 collections (spelled out, with a
+  `satisfies` against `SECTION_KIND` and `COLLECTION_KIND`, because `shared/sections.ts` imports
+  `shared/resources.ts` and a value import back would be a cycle). `DEFAULT_RESOURCE_KINDS`
+  registers them as singletons with `materialize: true`; `llmSecrets` also has
+  `clientReadable: true`. `createKindRegistry` refuses `materialize` on a non-singleton.
+- Normalizers (`server/src/data/normalize/`): `normalizeSection` builds every field of
+  `SECTION_FIELDS[section]` in order: the value when its JSON kind (`shared/valueKinds.ts`)
+  matches the field's, the default otherwise (missing, `null`, or the wrong kind), and no other
+  key. Each section's `SectionSpec` was generated from the boot snapshot (the kind and value of
+  every field the snapshot has) and from the declared `Database` type (the kind of the 85 fields
+  a fresh boot leaves unset, which stay absent). The type makes a missing or extra field a
+  compile error, and it checks each default against the field's type. `colorScheme` and
+  `customColorScheme` use `defaultColorScheme`, and `ollamaRequestFormat` uses `LLMFormat.Ollama`.
+- Migrations ported from `setDatabase`: the keep-on-switch containers in `providers`
+  (`migrateKeepOnSwitchFields`, shared with `normalizePreset`), `hypaCustomSettings` rebuilt to
+  three strings (`secrets`), `google.accessToken`/`projectId` (`llmSecrets`), the NAI v4 fields
+  (`memoryTranslateMedia`), and in `ui` the custom color scheme taken from `colorScheme` when
+  `colorSchemeName` is `custom`, the two quote colors, and `normalizeChatLoadPages`.
+- Not ported: the `antiClaudeOverload` migration (a dropped field), the `largeChatPerformanceMode`
+  rename (that key is never in a section record), the `ollamaCloudModel` copy, and
+  `enableRisuaiProTools ??= plugins.length > 0` (both are fresh-boot constants now). The
+  `enableScrollToActiveChar` hotkey filter moves to the client in slice 4 (`hotkey.ts`).
+- Collections: containers are checked, and a record or element of the wrong shape is a 400. So
+  are `characterOrder` entries other than ids and folders, and `enabledModules` entries other
+  than strings. `authRefreshes` entry fields must be strings or absent: an MCP public client has
+  no `clientSecret`, so "every field a string" would refuse real writes. `customModels` entries
+  need string `id` and `internalId`. `statics` counters default to 0. `hotkeys` appends each
+  built-in hotkey whose `action` is missing. `personas` gets an id backstop (a repeated id is
+  re-keyed); `undefined` becomes the fresh-boot persona, and an empty list stays empty (the
+  client never holds one without a persona, so there is nothing to invent). `translatorPresets`
+  and `hypaV3Presets` rebuild each item with `createTranslatorPreset`/`createHypaV3Preset`
+  (valid ids kept, repeats re-keyed). An empty list gets one default item, as
+  `normalizeTranslatorPresetState` did (the HypaV3 UI refuses to delete the last preset), and
+  `selectedId` falls back to the first item.
+- `presets`: `normalizePresets` behind the Phase 1 array-of-objects check, and materialized (after the Astra challenge, point 3): a fresh store and a restored snapshot without it get one default preset, so slice 4's assembly never needs the client fallback. The client runs the
+  same function in `setDatabase`, so its text is already the fixed point.
+- Shape validation (the Astra challenge of slice 2, point 3): `normalizePreset` replaces a value
+  of the wrong JSON kind with the default, or leaves it absent when there is no default or the
+  field is keep-on-switch. The kinds are `PRESET_FIELD_KINDS`, taken from the default, or from
+  `kindsWithoutDefault` for the seven fields without one; an unresolved kind throws on load.
+  `null` stays accepted everywhere (the slice 2 null policy). The `openrouterProvider`
+  string-to-object migration now runs before the kind check. Before that fix the check had
+  replaced a legacy string with the default, which `presetSchema.test.ts` caught.
+- The pass (`normalizeStoredRecords` in `resourceStore.ts`) runs when the store opens and inside
+  `replaceAll`'s transaction, before the epoch changes. It re-normalizes every record of every
+  registered kind and rewrites the ones whose text changed, with the revision counter advanced
+  and the same `seq`. It then inserts each missing `materialize` singleton as
+  `normalize(undefined)`. The store counts the rewrites in `writeCount`. There is no `app.ts`
+  change (amendment).
+
+Deviations from this file:
+
+- Allowed files: `shared/presets.ts` (shape validation, `migrateKeepOnSwitchFields`) and the new
+  `shared/valueKinds.ts` were added. `server/src/app.ts` is unchanged. `util/playwright/stack.mjs`
+  gains `restartServer()` (a tool, for the restart check).
+- Rejection vs repair: a section's field of the wrong kind is repaired (the default), but a
+  record that is not the right container, or a collection element of the wrong shape, is
+  rejected with a 400 on write. `normalize(undefined)` is reachable only from materialization,
+  because the batch route requires `data`.
+- The pass stops the start when a stored record fails its normalizer. The error names the kind
+  and id, and the transaction rolls back. The alternative, leaving the record as it is, would let
+  a later restore refuse the snapshot instead.
+- The pass reads every record of every kind, including `characters`, so start time grows with the
+  resource data (chats are excluded, being in their own tables).
+- Numeric strings in `chatLoadInitialPages`/`chatLoadAdditionalPages` now get the default. The
+  kind check runs before `normalizeChatLoadPages`, which used to parse them. No writer stores a
+  string there (`NumberInput` binds a number).
+
+After the Astra challenge (same session as the plan review):
+
+1. HypaV3 settings copy (blocking): `createHypaV3Preset` used `key in target`, which matches
+   `__proto__`, so a stored `settings.__proto__` swapped the copy's prototype and made the
+   normalizer non-idempotent. Adopted: own keys only (`Object.hasOwn`); `shared/hypaV3Presets.ts`
+   joins the allowed files.
+2. Non-finite numbers (blocking): `plainClone` turned a nested `1e400` (`Infinity` after
+   `JSON.parse`) into `null` before `serialize` could refuse it. Adopted: the store runs every
+   normalizer (`put`, `applyChanges`, `readSnapshot`, the pass) on `serialize(input).stored`
+   (`normalizeInput`), so the input gets the same refusals as the output, with the same messages.
+3. `presets/main` not materialized: adopted in this slice (above). `modules`, `plugins`, and
+   `pluginStorage` stay client-created; slice 4 decides whether its assembly needs them from the
+   server.
+4. `$state.snapshot` drops own `__proto__` keys that `llmSecrets.presets` and
+   `globalChatVariables` accept: a slice 4 requirement, recorded in
+   `client-section-mirrors.md`.
+5. The persona collection accepts `[]` and id-only entries: a slice 6 requirement, recorded in
+   `forwarding-personas.md`. The Implementation note above ("the client never holds one without a
+   persona") is too strong: the plugin setters accept `personas: []`.
+6. Schema versions (adopted): the pass also rewrites a record whose stored `schemaVersion`
+   differs from its kind's, and stops the start on a newer one instead of downgrading it.
+
+Rechecked after the fixes: `pnpm check`; the Astra reproductions (`1e400` in `providers` and
+`globalChatVariables` is a 400; the `__proto__` HypaV3 case is idempotent with a plain
+prototype); the Playwright script (first boot writes only `root`, `modules`, `plugins`; idle
+reload writes nothing; a restart changes nothing). Materializing `presets` invalidates four
+more tests: the registry expectation in `kinds.test.ts`, the `presets/main` creates in
+`resources.test.ts` and `resourcesBatch.test.ts` (two cases).
+
+Behavior until slice 4: the client still reads and writes these fields through `root`. The
+section and collection records are created from the fresh-boot defaults and are not filled from
+an existing `root` (no migration is owed). So when slice 4 switches the client to them, a store
+created before slice 4 shows default settings; its old `root` values are not carried over.
+
+Checks: `pnpm check` (client and strict server), `pnpm format:check`, and `pnpm test`. The test
+run failed only in the expected invalidations: `kinds.test.ts` (the kind count, and `presets: []`
+no longer unchanged), `backups.test.ts` (three row-id lists now include the materialized rows),
+`chatStore.test.ts` and `resourcesChats.test.ts` (a character's `seq` is no longer 1),
+`shutdown.test.ts` (the row list). A script check (`node`, over `DEFAULT_RESOURCE_KINDS`):
+
+- Every section's `normalize(undefined)`, and the boot snapshot normalized, equals the snapshot's
+  values for that section's fields, in order.
+- Every collection's `normalize(undefined)` equals the snapshot's collection apart from ids, and
+  `selectedId` is the first item.
+- Every kind is idempotent on its materialized value and on the snapshot-derived input.
+
+Playwright (`playwright-core` script, one fresh context):
+
+- First boot: the 18 records exist at revision 1, and the only batch is the client's `root`,
+  `presets`, `modules`, `plugins` creation.
+- An idle reload sends no batch.
+- `restartServer()` over the same `save/` leaves the epoch, every revision, and every record's
+  data unchanged: the pass rewrites nothing, including the client-written `presets`.
+- A `root` edit (`zoomsize`) is saved in one `root` batch and survives a reload.
+- No page errors.
+
+Reviews: the Fable test-adapter adapted the 13 invalidated tests in `kinds`, `backups`,
+`chatStore`, `resourcesChats`, `shutdown`, `resources`, and `resourcesBatch`, and refused none.
+The Fable reviewer found no problem and confirmed each adaptation is an expected invalidation. It
+also added `server/src/tests/normalizeSections.test.ts`, `normalizeCollections.test.ts`, and
+`normalizationPass.test.ts` (44 tests), which cover the plan's and Astra's slice 3 testing
+advice. Final checks: `pnpm check`, `pnpm format:check`, and `pnpm test` (66 files, 695 passed,
+3 skipped).

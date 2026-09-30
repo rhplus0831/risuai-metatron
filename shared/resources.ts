@@ -28,7 +28,27 @@ export const RESOURCE_KIND = {
     pluginPermissions: "pluginPermissions",
     characters: "characters",
     inlays: "inlays",
-} as const;
+    // Phase 3 sections (`SECTION_KIND`) and collections (`COLLECTION_KIND`), spelled out here because
+    // `shared/sections.ts` imports this module; the `satisfies` below keeps the two in step.
+    providers: "providers",
+    secrets: "secrets",
+    llmSecrets: "llmSecrets",
+    ui: "ui",
+    memoryTranslateMedia: "memoryTranslateMedia",
+    loreBook: "loreBook",
+    globalscript: "globalscript",
+    hotkeys: "hotkeys",
+    customSidebarItems: "customSidebarItems",
+    characterOrder: "characterOrder",
+    authRefreshes: "authRefreshes",
+    globalChatVariables: "globalChatVariables",
+    personas: "personas",
+    translatorPresets: "translatorPresets",
+    hypaV3Presets: "hypaV3Presets",
+    customModels: "customModels",
+    enabledModules: "enabledModules",
+    statics: "statics",
+} as const satisfies { readonly [K in SectionKind | CollectionKind]: K } & Record<string, string>;
 
 export type ResourceKindName = (typeof RESOURCE_KIND)[keyof typeof RESOURCE_KIND];
 
@@ -140,7 +160,7 @@ export type BackupArchiveManifest = {
 };
 
 /**
- * Phase 3 payloads (the kinds are registered in slice 3). A section record holds its
+ * Phase 3 payloads. A section record holds its
  * `SECTION_FIELDS` under their `Database` names; `llmSecrets` also holds the per-preset `proxyKey`
  * map, keyed by preset id.
  */

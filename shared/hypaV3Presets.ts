@@ -34,7 +34,8 @@ export function createHypaV3Preset(name = "New Preset", existingSettings = {}, i
     if (existingSettings && typeof existingSettings === "object" && !Array.isArray(existingSettings)) {
         const target = settings as unknown as Record<string, unknown>;
         for (const [key, value] of Object.entries(existingSettings)) {
-            if (key in target && typeof value === typeof target[key]) {
+            // Own keys only: `in` also matches `__proto__`, whose assignment would swap the prototype.
+            if (Object.hasOwn(target, key) && typeof value === typeof target[key]) {
                 target[key] = value;
             }
         }

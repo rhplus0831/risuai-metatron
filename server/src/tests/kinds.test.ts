@@ -1,10 +1,43 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import type { botPreset } from "../../../shared/database.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import { ResourceValidationError } from "../data/resourceStore.ts";
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const kind = (name: string) => kinds.get(name)!;
+const phase1Kinds = [
+    "root",
+    "presets",
+    "modules",
+    "plugins",
+    "pluginStorage",
+    "pluginPermissions",
+    "characters",
+    "inlays",
+];
+/** The Phase 3 sections and collections (slice 3): singletons the store materializes. */
+const phase3Kinds = [
+    "providers",
+    "secrets",
+    "llmSecrets",
+    "ui",
+    "memoryTranslateMedia",
+    "loreBook",
+    "globalscript",
+    "hotkeys",
+    "customSidebarItems",
+    "characterOrder",
+    "authRefreshes",
+    "globalChatVariables",
+    "personas",
+    "translatorPresets",
+    "hypaV3Presets",
+    "customModels",
+    "enabledModules",
+    "statics",
+];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const rejects = (name: string, id: string, input: unknown, message: string) => {
     expect(() => kind(name).normalize(input, { id }), `${name}: ${JSON.stringify(input)}`).toThrow(
         new ResourceValidationError(message),
@@ -15,17 +48,8 @@ const accepts = (name: string, id: string, input: unknown) => {
 };
 
 describe("createKindRegistry", () => {
-    it("holds the eight default kinds, six of them singletons", () => {
-        expect([...kinds.keys()]).toEqual([
-            "root",
-            "presets",
-            "modules",
-            "plugins",
-            "pluginStorage",
-            "pluginPermissions",
-            "characters",
-            "inlays",
-        ]);
+    it("holds the eight Phase 1 kinds, six of them singletons, and the 18 Phase 3 singletons; presets and Phase 3 materialize", () => {
+        expect([...kinds.keys()]).toEqual([...phase1Kinds, ...phase3Kinds]);
         expect([...kinds.values()].filter((k) => k.singleton).map((k) => k.name)).toEqual([
             "root",
             "presets",
@@ -33,7 +57,15 @@ describe("createKindRegistry", () => {
             "plugins",
             "pluginStorage",
             "pluginPermissions",
+            ...phase3Kinds,
         ]);
+        // `presets` materializes too (one default preset), so a selection always has a record.
+        expect([...kinds.values()].filter((k) => k.materialize).map((k) => k.name)).toEqual([
+            "presets",
+            ...phase3Kinds,
+        ]);
+        // Phase 5 makes the credential kinds write-only; until then the client may still read `llmSecrets`.
+        expect([...kinds.values()].filter((k) => k.clientReadable).map((k) => k.name)).toEqual(["llmSecrets"]);
     });
 
     it("rejects invalid, reserved, and duplicate names and invalid schema versions", () => {
@@ -52,10 +84,19 @@ describe("createKindRegistry", () => {
 });
 
 describe("default normalizers", () => {
-    it("return the input unchanged when the minimum shape holds", () => {
+    it("return the input unchanged when the minimum shape holds, except presets, which get the canonical schema", () => {
         accepts("root", "main", { username: "u", nested: { deep: [1] } });
-        accepts("presets", "main", []);
-        accepts("presets", "main", [{ name: "p" }, {}]);
+        // `presets` (slice 3) returns `normalizePresets`' copy: every preset gets an id and the
+        // canonical fields, and an empty list becomes one default preset.
+        const presets = kind("presets").normalize([{ name: "p" }, {}], { id: "main" }) as botPreset[];
+        expect(presets.map((p) => p.name)).toEqual(["p", "New Preset"]);
+        for (const preset of presets) {
+            expect(preset.id).toMatch(UUID);
+            expect(preset).toMatchObject({ temperature: 80, maxContext: 4000, formatingOrder: expect.any(Array) });
+        }
+        expect(kind("presets").normalize([], { id: "main" })).toMatchObject([
+            { id: expect.stringMatching(UUID), name: "New Preset", temperature: 80 },
+        ]);
         accepts("modules", "main", [{ id: "m" }]);
         accepts("plugins", "main", [{ name: "p" }]);
         accepts("pluginStorage", "main", {});

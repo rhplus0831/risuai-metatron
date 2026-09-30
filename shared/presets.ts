@@ -8,6 +8,7 @@ import {
     prebuiltNAIpresets,
 } from "./presetTemplates.ts";
 import type { PromptItem } from "./prompt.ts";
+import { isPlainObject, type ValueKind, valueKindOf } from "./valueKinds.ts";
 
 /**
  * The canonical bot preset schema (Phase 3, Decision 3 of `docs/plan/PLAN.md`), used by the client
@@ -182,6 +183,28 @@ export type PresetField = keyof PresetDefaults;
 /** Every field a preset owns, by its preset name. */
 export const PRESET_FIELDS = Object.keys(PRESET_DEFAULTS) as readonly PresetField[];
 
+/** Kinds of the fields whose default does not show one (no default, or a `null` default). */
+const kindsWithoutDefault: Partial<Record<PresetField, ValueKind>> = {
+    promptPreprocess: "boolean",
+    koboldURL: "string",
+    proxyRequestModel: "string",
+    promptTemplate: "array",
+    localStopStrings: "array",
+    thinkingTokens: "number",
+    dynamicOutput: "object",
+};
+
+/** The JSON kind each preset field's value must have: the declared one, else its default's. */
+export const PRESET_FIELD_KINDS: Readonly<Record<PresetField, ValueKind>> = Object.fromEntries(
+    PRESET_FIELDS.map((field) => {
+        const kind = kindsWithoutDefault[field] ?? valueKindOf(PRESET_DEFAULTS[field]);
+        if (kind === null) {
+            throw new Error(`Preset field ${field} has no kind`);
+        }
+        return [field, kind];
+    }),
+) as Record<PresetField, ValueKind>;
+
 /** Root field names that differ from the preset field they mirror (root → preset). */
 export const PRESET_ROOT_ALIASES = {
     NAIsettings: "NAISettings",
@@ -255,10 +278,6 @@ export const newPresetId = newId;
 /** A new persona id. */
 export const newPersonaId = newId;
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function normalizePromptRole(role: unknown): "user" | "bot" | "system" | null {
     if (role === "user" || role === "bot" || role === "system") {
         return role;
@@ -316,10 +335,35 @@ export function normalizePromptTemplate(template: PromptItem[] | null | undefine
 
 const keepOnSwitchFields = new Set<string>(PRESET_KEEP_ON_SWITCH_FIELDS);
 
+/** The provider object that replaced the old single-provider string; runs before the kind check. */
+function migrateOpenrouterProvider(value: unknown): unknown {
+    return typeof value === "string" ? { order: value ? [value] : [], only: [], ignore: [] } : value;
+}
+
+/**
+ * The `setDatabase` migrations of two keep-on-switch containers, in place: `seperateParameters`
+ * gets its `overrides` map and every `fallbackModels` list becomes an array without empty entries.
+ * Shared by `normalizePreset` and the server `providers` normalizer, which holds the root copies.
+ */
+export function migrateKeepOnSwitchFields(record: Record<string, unknown>): void {
+    if (isPlainObject(record.seperateParameters)) {
+        record.seperateParameters.overrides ??= {};
+    }
+    if (isPlainObject(record.fallbackModels)) {
+        const fallback = record.fallbackModels;
+        for (const key of ["model", "memory", "emotion", "translate", "otherAx"]) {
+            fallback[key] = Array.isArray(fallback[key]) ? fallback[key].filter((model: unknown) => model !== "") : [];
+        }
+    }
+}
+
 /**
  * A normalized copy of a preset: only the canonical fields, each missing one (absent or `undefined`)
- * filled with its default, and the migrations `setDatabase` and `setPreset` applied to the root
- * working copy before Phase 3. An explicit `null` is kept: `setPreset` passed some through as they
+ * or one of the wrong JSON kind (`PRESET_FIELD_KINDS`; a number where an object belongs) filled
+ * with its default, and the migrations `setDatabase` and `setPreset` applied to the root working
+ * copy before Phase 3. Nested values are not checked beyond those migrations. The server `presets`
+ * normalizer runs this, so a stored preset always has the containers the client reads through
+ * (`NAISettings.cfg_scale`, `ooba.formating`). An explicit `null` is kept: `setPreset` passed some through as they
  * are (`min_p`, `top_a`, `repetition_penalty`), and `saveCurrentPreset` writes `seperateModels: null`
  * on purpose while `doNotChangeSeperateModels` is on. The keep-on-switch fields are never filled:
  * they stay on the pre-Phase 3 path, where `setPreset` applies their fallback. The input is never
@@ -332,8 +376,8 @@ export function normalizePreset(input: unknown, options: { id?: string } = {}): 
         id: options.id ?? (isRecordId(source.id) ? source.id : newPresetId()),
     };
     for (const field of PRESET_FIELDS) {
-        const value = source[field];
-        if (value !== undefined) {
+        const value = field === "openrouterProvider" ? migrateOpenrouterProvider(source[field]) : source[field];
+        if (value === null || (value !== undefined && valueKindOf(value) === PRESET_FIELD_KINDS[field])) {
             preset[field] = plainClone(value);
             continue;
         }
@@ -366,19 +410,7 @@ export function normalizePreset(input: unknown, options: { id?: string } = {}): 
     if (typeof preset.localNetworkTimeoutSec !== "number" || Number.isNaN(preset.localNetworkTimeoutSec)) {
         preset.localNetworkTimeoutSec = 600;
     }
-    if (isPlainObject(preset.seperateParameters)) {
-        preset.seperateParameters.overrides ??= {};
-    }
-    if (isPlainObject(preset.fallbackModels)) {
-        const fallback = preset.fallbackModels;
-        for (const key of ["model", "memory", "emotion", "translate", "otherAx"]) {
-            fallback[key] = Array.isArray(fallback[key]) ? fallback[key].filter((model: unknown) => model !== "") : [];
-        }
-    }
-    if (typeof preset.openrouterProvider === "string") {
-        const oldProvider = preset.openrouterProvider;
-        preset.openrouterProvider = { order: oldProvider ? [oldProvider] : [], only: [], ignore: [] };
-    }
+    migrateKeepOnSwitchFields(preset);
     if (preset.promptTemplate !== undefined && preset.promptTemplate !== null) {
         preset.promptTemplate = normalizePromptTemplate(preset.promptTemplate as PromptItem[]);
     }

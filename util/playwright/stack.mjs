@@ -57,19 +57,25 @@ function stop(child) {
 }
 
 /**
+ * `restartServer` stops the server (SIGTERM, so it shuts down gracefully) and starts it again over
+ * the same `save/`, leaving the dev server running: for checks of what a server start does to
+ * stored data.
+ *
  * @param {{ serverPort?: number, vitePort?: number, log?: (text: string) => void }} [options]
- * @returns {Promise<{ baseURL: string, serverURL: string, workDir: string, stop: () => Promise<void> }>}
+ * @returns {Promise<{ baseURL: string, serverURL: string, workDir: string, restartServer: () => Promise<void>, stop: () => Promise<void> }>}
  */
 export async function startStack({ serverPort = 6101, vitePort = 5201, log } = {}) {
     const workDir = await mkdtemp(path.join(os.tmpdir(), "risu-playwright-"));
     const serverURL = `http://localhost:${serverPort}`;
     const baseURL = `http://localhost:${vitePort}`;
-    const server = run(
-        process.execPath,
-        [path.join(repoRoot, "server/src/main.ts")],
-        { cwd: workDir, env: { ...process.env, PORT: String(serverPort) } },
-        log,
-    );
+    const startServer = () =>
+        run(
+            process.execPath,
+            [path.join(repoRoot, "server/src/main.ts")],
+            { cwd: workDir, env: { ...process.env, PORT: String(serverPort) } },
+            log,
+        );
+    let server = startServer();
     let vite;
     try {
         await waitForHttp(`${serverURL}/api/test_auth`, server, 30_000);
@@ -90,6 +96,11 @@ export async function startStack({ serverPort = 6101, vitePort = 5201, log } = {
         baseURL,
         serverURL,
         workDir,
+        async restartServer() {
+            await stop(server);
+            server = startServer();
+            await waitForHttp(`${serverURL}/api/test_auth`, server, 30_000);
+        },
         async stop() {
             await stop(vite);
             await stop(server);

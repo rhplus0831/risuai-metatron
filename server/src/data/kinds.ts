@@ -1,17 +1,45 @@
 import { RESOURCE_KIND, ROOT_EXCLUDED_KEYS } from "../../../shared/resources.ts";
 import { isAssetStorageKey } from "../routes/storage.ts";
+import {
+    normalizeAuthRefreshes,
+    normalizeCharacterOrder,
+    normalizeCustomModels,
+    normalizeCustomSidebarItems,
+    normalizeEnabledModules,
+    normalizeGlobalChatVariables,
+    normalizeGlobalscript,
+    normalizeHotkeys,
+    normalizeHypaV3Presets,
+    normalizeLoreBook,
+    normalizeStatics,
+    normalizeTranslatorPresets,
+} from "./normalize/collections.ts";
+import { normalizeLlmSecrets } from "./normalize/llmSecrets.ts";
+import { normalizeMemoryTranslateMedia } from "./normalize/memoryTranslateMedia.ts";
+import { normalizePersonas } from "./normalize/personas.ts";
+import { normalizePresetCollection } from "./normalize/presets.ts";
+import { normalizeProviders } from "./normalize/providers.ts";
+import { normalizeSecrets } from "./normalize/secrets.ts";
+import { requireArrayOfObjects, requireObject } from "./normalize/shared.ts";
+import { normalizeUi } from "./normalize/ui.ts";
 import { ResourceValidationError } from "./resourceStore.ts";
 
 /**
  * A resource kind: its name, the schema version stored with each record, and a pure normalizer that
- * runs on every write. `normalize` returns the value to persist, or throws `ResourceValidationError`
- * to reject the write with a 400. A singleton kind has exactly one record, `SINGLETON_RESOURCE_ID`,
- * which cannot be deleted.
+ * runs on every write and in the store's startup pass. `normalize` returns the value to persist, or
+ * throws `ResourceValidationError` to reject the write with a 400; it must be idempotent (normalizing
+ * its own output returns the same JSON), or the startup pass rewrites the record on every start. A
+ * singleton kind has exactly one record, `SINGLETON_RESOURCE_ID`, which cannot be deleted. A
+ * `materialize` kind is a singleton the store creates as `normalize(undefined)` whenever it is missing
+ * (at startup and after a restore), so a client always finds it. `clientReadable` marks a credential
+ * kind the client may still read (Phase 5 makes `llmSecrets` write-only).
  */
 export interface ResourceKind<T = unknown> {
     readonly name: string;
     readonly schemaVersion: number;
     readonly singleton?: boolean;
+    readonly materialize?: true;
+    readonly clientReadable?: true;
     normalize(input: unknown, context: { id: string }): T;
 }
 
@@ -34,6 +62,9 @@ export function createKindRegistry(kinds: readonly ResourceKind[]): ResourceKind
         if (!Number.isSafeInteger(kind.schemaVersion) || kind.schemaVersion < 1) {
             throw new Error(`Invalid schema version for resource kind ${kind.name}`);
         }
+        if (kind.materialize && !kind.singleton) {
+            throw new Error(`Resource kind ${kind.name} materializes but is not a singleton`);
+        }
         if (registry.has(kind.name)) {
             throw new Error(`Duplicate resource kind: ${kind.name}`);
         }
@@ -42,35 +73,35 @@ export function createKindRegistry(kinds: readonly ResourceKind[]): ResourceKind
     return registry;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function requireObject(value: unknown, what: string): Record<string, unknown> {
-    if (!isPlainObject(value)) {
-        throw new ResourceValidationError(`${what} must be an object`);
-    }
-    return value;
-}
-
-function requireArrayOfObjects(value: unknown, what: string): unknown[] {
-    if (!Array.isArray(value) || !value.every(isPlainObject)) {
-        throw new ResourceValidationError(`${what} must be an array of objects`);
-    }
-    return value;
-}
-
 function requireOptionalNumber(record: Record<string, unknown>, key: string, what: string) {
     if (Object.hasOwn(record, key) && record[key] !== undefined && typeof record[key] !== "number") {
         throw new ResourceValidationError(`${what}.${key} must be a number`);
     }
 }
 
+/** A Phase 3 settings kind: a singleton the store materializes, normalized by `normalize`. */
+function settingsKind(
+    name: string,
+    normalize: (input: unknown) => unknown,
+    extra: { clientReadable?: true } = {},
+): ResourceKind {
+    return {
+        name,
+        schemaVersion: 1,
+        singleton: true,
+        materialize: true,
+        ...extra,
+        normalize: (input) => normalize(input),
+    };
+}
+
 const inlayTypes = new Set(["image", "video", "audio", "signature"]);
 
 /**
- * Minimum shapes only: Phase 1 keeps defaults and migrations on the client (`setDatabase`), so these
- * normalizers check what the client needs to assemble `Database` and return the input unchanged.
+ * The Phase 1 kinds check minimum shapes and return the input unchanged, except `presets`, which
+ * gets the canonical preset schema. The Phase 3 sections and collections
+ * (`server/src/data/normalize/`) apply their defaults and migrations, which `setDatabase` applied on
+ * the client before.
  */
 export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
     {
@@ -91,7 +122,9 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
         name: RESOURCE_KIND.presets,
         schemaVersion: 1,
         singleton: true,
-        normalize: (input) => requireArrayOfObjects(input, "presets"),
+        // Created by the server like the Phase 3 kinds, so a selection always has a preset.
+        materialize: true,
+        normalize: (input) => normalizePresetCollection(input),
     },
     {
         name: RESOURCE_KIND.modules,
@@ -168,4 +201,22 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
             return inlay;
         },
     },
+    settingsKind(RESOURCE_KIND.providers, normalizeProviders),
+    settingsKind(RESOURCE_KIND.secrets, normalizeSecrets),
+    settingsKind(RESOURCE_KIND.llmSecrets, normalizeLlmSecrets, { clientReadable: true }),
+    settingsKind(RESOURCE_KIND.ui, normalizeUi),
+    settingsKind(RESOURCE_KIND.memoryTranslateMedia, normalizeMemoryTranslateMedia),
+    settingsKind(RESOURCE_KIND.loreBook, normalizeLoreBook),
+    settingsKind(RESOURCE_KIND.globalscript, normalizeGlobalscript),
+    settingsKind(RESOURCE_KIND.hotkeys, normalizeHotkeys),
+    settingsKind(RESOURCE_KIND.customSidebarItems, normalizeCustomSidebarItems),
+    settingsKind(RESOURCE_KIND.characterOrder, normalizeCharacterOrder),
+    settingsKind(RESOURCE_KIND.authRefreshes, normalizeAuthRefreshes),
+    settingsKind(RESOURCE_KIND.globalChatVariables, normalizeGlobalChatVariables),
+    settingsKind(RESOURCE_KIND.personas, normalizePersonas),
+    settingsKind(RESOURCE_KIND.translatorPresets, normalizeTranslatorPresets),
+    settingsKind(RESOURCE_KIND.hypaV3Presets, normalizeHypaV3Presets),
+    settingsKind(RESOURCE_KIND.customModels, normalizeCustomModels),
+    settingsKind(RESOURCE_KIND.enabledModules, normalizeEnabledModules),
+    settingsKind(RESOURCE_KIND.statics, normalizeStatics),
 ];

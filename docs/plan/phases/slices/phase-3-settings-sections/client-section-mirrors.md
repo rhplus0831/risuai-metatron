@@ -125,3 +125,17 @@ and 6. A settings interaction that touches two sections produces two dirty secti
 (atomic on the server). The old `hypaV3Settings` and translator legacy fields are gone from the
 mirror; a plugin that read them through `getDatabase` (they are not in `allowedDbKeys`) never
 could.
+
+## Requirements from slice 3 (Astra challenge)
+
+- Own `__proto__` keys: `llmSecrets.presets` (built with `Object.fromEntries`) and
+  `globalChatVariables` accept an own `__proto__` key, but `$state.snapshot` drops it (Astra ran
+  the installed Svelte on both). A projection through `$state.snapshot` would then differ from the
+  normalized text, and an idle boot would write the map without that key. The projection and the
+  mirror hydration for these maps must preserve own keys (the `pluginStorage` serialization
+  exception is the model); audit the other user-keyed maps (`OaiCompAPIKeys`,
+  `seperateParameters.overrides`) the same way, and test hydration, projection, reload, and
+  no-echo with such a key.
+- `presets/main` is materialized by the server (slice 3). `modules`, `plugins`, and
+  `pluginStorage` are not; the assembly keeps its client defaults for them unless this slice
+  materializes them too.
