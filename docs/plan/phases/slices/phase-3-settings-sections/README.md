@@ -9,6 +9,10 @@ phase-file records, the open questions, and the boundaries later phases depend o
 [`planning-notes.md`](planning-notes.md). At phase start each slice's Assumptions are re-verified; a
 false one re-plans that slice.
 
+The execution plan, with the amendments from the pre-implementation plan review (GPT-6-Astra,
+then Claude Fable), is [`implementation-plan.md`](implementation-plan.md); where it and a slice
+disagree, it wins until the slice is updated with its implementation.
+
 Execution order (arrows are dependencies; slices on one line may run in parallel):
 
 0. **Step 0, fixtures** (part of slice 1, done first, before any other slice starts): the
