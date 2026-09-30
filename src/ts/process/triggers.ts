@@ -1,18 +1,14 @@
 import { parseChatML } from "../parser/chatML";
 import { risuChatParser } from "../parser/parser.svelte";
-import {
-    getCurrentCharacter,
-    getDatabase,
-    setCurrentCharacter,
-    setDatabase,
-    type Chat,
-    type character,
-} from "../storage/database.svelte";
+import { getCurrentCharacter, getDatabase, setDatabase, type Chat, type character } from "../storage/database.svelte";
 import { type ChatRef, setChatMeta } from "../storage/chatStore.svelte";
+import { updateCharacter } from "../storage/characterStore.svelte";
+import { updatePersona } from "../storage/collectionStore.svelte";
+import { selectedPersonaForWrite } from "../storage/forwarding.svelte";
 import { tokenize } from "../tokenizer";
 import { getModuleTriggers } from "./modules";
 import { get } from "svelte/store";
-import { ReloadChatPointer, ReloadGUIPointer, selectedCharID, CurrentTriggerIdStore, DBState } from "../stores.svelte";
+import { ReloadChatPointer, ReloadGUIPointer, CurrentTriggerIdStore, DBState } from "../stores.svelte";
 import { processMultiCommand } from "./command";
 import { parseKeyValue, sleep } from "../util";
 import { alertInput, alertNormal, alertSelect } from "../alert";
@@ -145,6 +141,21 @@ export async function runTrigger(
             setChatMeta(chatTarget, patch);
         } catch (error) {
             console.warn("[Trigger] The chat is gone; a variable change was not saved", error);
+        }
+    };
+    // The character effects write the trigger's character (the copy's `chaId`: the send's character,
+    // in a group send the speaking member), one field at a time, and never in display and request
+    // runs. Only the changed field is written, so other edits to that character meanwhile are kept.
+    const writeCharacter = (patch: Partial<character>) => {
+        if (arg.displayMode) {
+            return;
+        }
+        try {
+            if (!updateCharacter(char.chaId, patch)) {
+                console.warn("[Trigger] The character is gone; a character change was not saved");
+            }
+        } catch (error) {
+            console.warn("[Trigger] A character change was refused", error);
         }
     };
     let additonalSysPrompt: additonalSysPrompt = arg.additonalSysPrompt ?? {
@@ -869,10 +880,7 @@ export async function runTrigger(
                         char.globalLore[index][1] = value;
                     }
 
-                    const db = getDatabase();
-                    const selectedCharId = get(selectedCharID);
-                    db.characters[selectedCharId].globalLore = char.globalLore;
-                    setCurrentCharacter(db.characters[selectedCharId]);
+                    writeCharacter({ globalLore: char.globalLore });
                     break;
                 }
                 case "v2GetLorebook": {
@@ -918,12 +926,13 @@ export async function runTrigger(
                             ? Number(risuChatParser(effect.index, { chara: char, chatRef: contextRef }))
                             : Number(getVar(risuChatParser(effect.index, { chara: char, chatRef: contextRef })));
                     let value = effect.value;
+                    if (!Number.isInteger(index) || index < 0 || !char.globalLore[index]) {
+                        console.warn("[Trigger] No lorebook entry at this index; the activation was not changed");
+                        break;
+                    }
                     char.globalLore[index][2] = value;
 
-                    const selectedCharId = get(selectedCharID);
-                    const db = getDatabase();
-                    db.characters[selectedCharId].globalLore = char.globalLore;
-                    setCurrentCharacter(char);
+                    writeCharacter({ globalLore: char.globalLore });
 
                     break;
                 }
@@ -1087,10 +1096,7 @@ export async function runTrigger(
                             ? risuChatParser(effect.value, { chara: char, chatRef: contextRef })
                             : getVar(risuChatParser(effect.value, { chara: char, chatRef: contextRef }));
                     char.desc = value;
-                    const selectedCharId = get(selectedCharID);
-                    const db = getDatabase();
-                    (db.characters[selectedCharId] as character).desc = value;
-                    setCurrentCharacter(char);
+                    writeCharacter({ desc: value });
                     break;
                 }
                 case "v2GetPersonaDesc": {
@@ -1106,7 +1112,20 @@ export async function runTrigger(
                         effect.valueType === "value"
                             ? risuChatParser(effect.value, { chara: char, chatRef: contextRef })
                             : getVar(risuChatParser(effect.value, { chara: char, chatRef: contextRef }));
-                    DBState.db.personaPrompt = value;
+                    // The selected persona (Phase 5 uses the run's effective persona). Never in display runs.
+                    if (arg.displayMode) {
+                        break;
+                    }
+                    const persona = selectedPersonaForWrite(DBState.db);
+                    if (!persona) {
+                        console.warn("[Trigger] No persona is selected; the persona description was not saved");
+                        break;
+                    }
+                    try {
+                        updatePersona(persona.id, { personaPrompt: value });
+                    } catch (error) {
+                        console.warn("[Trigger] The persona description was not saved", error);
+                    }
                     break;
                 }
                 case "v2GetReplaceGlobalNote": {
@@ -1122,10 +1141,7 @@ export async function runTrigger(
                             ? risuChatParser(effect.value, { chara: char, chatRef: contextRef })
                             : getVar(risuChatParser(effect.value, { chara: char, chatRef: contextRef }));
                     char.replaceGlobalNote = value;
-                    const selectedCharId = get(selectedCharID);
-                    const db = getDatabase();
-                    (db.characters[selectedCharId] as character).replaceGlobalNote = value;
-                    setCurrentCharacter(char);
+                    writeCharacter({ replaceGlobalNote: value });
                     break;
                 }
                 case "v2MakeArrayVar": {
@@ -1647,10 +1663,7 @@ export async function runTrigger(
                         selective: false,
                     });
 
-                    const selectedCharId = get(selectedCharID);
-                    const db = getDatabase();
-                    db.characters[selectedCharId].globalLore = char.globalLore;
-                    setCurrentCharacter(char);
+                    writeCharacter({ globalLore: char.globalLore });
                     break;
                 }
                 case "v2ModifyLorebookByIndex": {
@@ -1702,10 +1715,7 @@ export async function runTrigger(
                         char.globalLore[index].insertorder = insertOrderNum;
                     }
 
-                    const selectedCharId = get(selectedCharID);
-                    const db = getDatabase();
-                    db.characters[selectedCharId].globalLore = char.globalLore;
-                    setCurrentCharacter(char);
+                    writeCharacter({ globalLore: char.globalLore });
                     break;
                 }
                 case "v2DeleteLorebookByIndex": {
@@ -1726,10 +1736,7 @@ export async function runTrigger(
 
                     char.globalLore.splice(index, 1);
 
-                    const selectedCharId = get(selectedCharID);
-                    const db = getDatabase();
-                    db.characters[selectedCharId].globalLore = char.globalLore;
-                    setCurrentCharacter(char);
+                    writeCharacter({ globalLore: char.globalLore });
                     break;
                 }
                 case "v2GetLorebookCountNew": {
@@ -1758,10 +1765,7 @@ export async function runTrigger(
 
                     char.globalLore[index].alwaysActive = effect.value;
 
-                    const selectedCharId = get(selectedCharID);
-                    const db = getDatabase();
-                    db.characters[selectedCharId].globalLore = char.globalLore;
-                    setCurrentCharacter(char);
+                    writeCharacter({ globalLore: char.globalLore });
                     break;
                 }
                 case "v2RegexTest": {

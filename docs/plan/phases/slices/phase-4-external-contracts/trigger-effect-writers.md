@@ -1,6 +1,6 @@
 # Slice: Trigger Effect Writers
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented (2026-10-01, on `5b177560`; record below).
 
 Phase: [Phase 4](../../phase-4-external-contracts.md), "Lua and triggers" (the trigger half:
 `v2SetVar`, `v2SetAuthorNote`, `v2SetCharacterDesc`, `v2SetPersonaDesc`, the lorebook effects,
@@ -136,3 +136,126 @@ applied. The clone is still taken at run start, so a lore list edited by the use
 trigger is overwritten by the trigger's list (one field, not the whole character; unchanged
 from today's semantics for that field). `v2SetPersonaDesc` writes the selected persona; the
 effective persona is Phase 5's.
+
+## Implementation record
+
+Implemented 2026-10-01 on `5b177560`, by the amendments of
+[`implementation-plan.md`](implementation-plan.md) (slice 6). Only `src/ts/process/triggers.ts`
+changed.
+
+- **`writeCharacter(patch)`** (in `runTrigger`) calls `updateCharacter(char.chaId, patch)`: the
+  trigger's character (the working copy keeps its `chaId`; in a group send, the speaking member).
+  - It does nothing in display and request runs (F-b), like `writeChatMeta`.
+  - A character that is gone, or a refused patch, is warned about and skipped, never thrown inside
+    the effect switch.
+- **The eight character effects** keep editing the working copy and then write one field through
+  it:
+  - `globalLore`: `v2ModifyLorebook`, `v2SetLorebookActivation`, `v2CreateLorebook`,
+    `v2ModifyLorebookByIndex`, `v2DeleteLorebookByIndex`, `v2SetLorebookAlwaysActive`;
+  - `desc`: `v2SetCharacterDesc`;
+  - `replaceGlobalNote`: `v2SetReplaceGlobalNote`.
+  - The selected-index writes through `getDatabase()` and the whole-copy `setCurrentCharacter`
+    calls are gone. `v2ModifyLorebook` now writes the trigger's character, not the selected one.
+- **`v2SetPersonaDesc`** (F-c): `updatePersona(selectedPersonaForWrite(DBState.db).id,
+{ personaPrompt })`. It warns and skips when no persona is selected or the write is refused, and
+  writes nothing in display and request runs. It stays the selected persona (the effective persona
+  is Phase 5's).
+- `v2SetLorebookActivation` skips, with a warning, an index that names no entry (a non-integer,
+  negative, or out-of-range index threw and aborted the trigger; challenge 2).
+- The `setCurrentCharacter` and `selectedCharID` imports are removed. Nothing on the chat side
+  changed.
+
+Recorded behavior changes:
+
+- A trigger's character effect lands on the trigger's character only. The selected character is
+  untouched when it differs. Before, the selected record got the field and the trigger's record
+  got the whole copy.
+- In a group send, the lore and description effects land on the speaking member, not the group.
+- Only the changed field is written. Other fields of that character edited while the trigger ran
+  are kept, including a Lua script's edit through slice 5's setters earlier in the same trigger
+  (Astra's slice 5 note).
+- Display and request runs make no character or persona mutation call. Their lore effects still
+  edit the live `globalLore` in place until Phase 5 isolates those runs (F-b, recorded).
+- `v2SetPersonaDesc` in a display or request run no longer writes. Before, the forwarded write ran
+  in every mode that reached it.
+
+No stopping condition was met.
+
+Exit checks:
+
+- The rooted pattern over `triggers.ts` answers nothing.
+- `getDatabase()` answers `templateDefaultVariables` and `v2GetPersonaDesc`.
+- `setCurrentCharacter|selectedCharID` answers nothing.
+
+No existing test was invalidated, so no test adapter ran; `triggers.test.ts` does not exist yet.
+
+Checks:
+
+- `pnpm check`, `pnpm format:check`, and `pnpm build` pass.
+- `pnpm test`: 92 files, 958 passed, 3 skipped.
+- `pnpm test:e2e`: 5 passed.
+
+Manual check (Playwright, scratchpad `checkP4Slice6.mjs`). Alpha and a group member each carry an
+output trigger that creates a lore entry and sets the description. A plugin provider answers after
+3 s, and the selection moves to Beta a second into the send.
+
+- **Alpha's send:** Alpha got the entry and the description, and Beta was unchanged.
+- **The group's send:** the member got the entry and the description, and neither the group nor
+  Beta changed.
+- Both held after a reload, and there were no page errors.
+
+## Tests
+
+Written by the Fable review (verdict: no problem): `src/ts/process/triggers.test.ts`, 18 tests
+over the real save adapter and server store, with real wasmoon for the Lua case.
+
+- All eight character effects on object-shaped lore. Each writes a one-key patch to the trigger's
+  character (a member's copy on the group's chat, with the group selected). Unrelated fields, the
+  group, the other member, and the selection are left alone, and only that character's record is
+  sent. The two deprecated effects are pinned as they behave today (see the Astra challenge,
+  point 1).
+- Invalid activation indices (`-1`, `0.5`, a non-number, unset, out of range, empty list) are
+  warned about and skipped, and the later effects are written.
+- A Lua `setDescription`, then a native lore creation and a global-note write: all three land.
+  The stale native getter (challenge 3) is characterized.
+- A trigger suspended on an input:
+  - selection moves and a rename meanwhile are kept;
+  - a character deleted meanwhile warns, writes nothing, and is not recreated;
+  - a refused write warns and the next effect is written.
+- `v2SetPersonaDesc`:
+  - it writes the persona selected at effect time, not the chat's bound persona, and the
+    forwarded field reads it back;
+  - a missing selection or a refusal warns and writes nothing.
+- Display and request runs, and an `output` run with `displayMode`, make no mutation call and send
+  nothing.
+
+The file fails 17 of 18 against the pre-slice `triggers.ts`; the passing one is the allowlist
+case, which predates the slice. `pnpm test`: 93 files, 976 passed, 3 skipped. `pnpm check` and
+`pnpm format:check` pass.
+
+## Astra challenge
+
+Astra (the open plan-review session) challenged the implementation. Report:
+`astra-p4-slice6-challenge.md` (scratchpad). It found no new defect in the diff. It confirmed that
+the slice 5 case is fixed: a native lore patch holds only `globalLore`, so it cannot overwrite a Lua
+edit of another field. Decisions:
+
+1. **Medium, pre-existing: two deprecated lore effects use an array entry shape.**
+   `v2ModifyLorebook` matches `entry[0]` and writes `entry[1]`, so it never matches an object entry
+   and writes the list unchanged. `v2SetLorebookActivation` writes `entry[2]`, adding a junk field
+   instead of `alwaysActive`. Their paired reads share the shape. **Rejected for this slice:** it
+   predates Phase 4, the slice changes where the writes go and not what the effects do, and the
+   repair changes deprecated effect semantics, which is an owner decision. Recorded, and raised as a
+   separate task (repair them as aliases over the object schema, or retire them). Until then, "six
+   lore writers" means six routed writes, not six working effects.
+2. **Medium, pre-existing: `v2SetLorebookActivation` threw on a bad index** before the guarded
+   write, aborting the rest of the trigger. **Adopted:** an integer index naming an existing entry
+   is required, and anything else is warned about and skipped.
+3. **Low: native getters read the working copy after a Lua write.** A Lua setter writes the live
+   record, while `v2GetCharacterDesc` reads the copy taken at run start. So Lua `setDescription`
+   followed by a native get returns the old value, and a native set fed from it restores that value.
+   **Recorded, not fixed:** it follows the retained working-copy design. The fix, Lua returning its
+   character changes into the working copy (preferred) or native getters reading the live record,
+   belongs to Phase 5's `trigger-runtime`.
+
+Astra's testing advice goes to the Fable review with Opus's judgement.
