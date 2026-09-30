@@ -3,7 +3,7 @@
 Date: 2026-09-28
 
 Status: decisions confirmed on 2026-09-28. Phase 0 done on 2026-09-29, Phases 1 and 2 implemented
-on 2026-09-29, Phase 3 on 2026-09-30 (see their phase files). Phase 4 is next.
+on 2026-09-29, Phase 3 on 2026-09-30 (see their phase files). Phase 4 is in progress.
 
 ## Goal
 
