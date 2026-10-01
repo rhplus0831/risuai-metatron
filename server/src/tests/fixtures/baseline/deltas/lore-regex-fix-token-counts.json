@@ -1,0 +1,126 @@
+{
+  "delta": "The lore regex key fix (slice 4 `lore-templates-and-tokens`, implementation plan owner answer 10): the per-family token counts of the `lore` prompt",
+  "before": "../token-counts.json (captured at efad2b76, the browser path before the fix)",
+  "fixed": "shared/lore/activation.ts, `searchMatch`, the `arg.regex` branch (the client's `loadLoreBookV3Prompt` wraps it)",
+  "after": "The counts re-captured on the fixed tree (`node util/playwright/capturePhase5Baseline.mjs`, 2026-10-01); `routing` and the other four prompts came out identical to the capture.",
+  "unchanged": ["routing", "prompts.plain", "prompts.group", "prompts.presetChain", "prompts.jinja"],
+  "prompts": {
+    "lore": {
+      "change": "Every family's `perMessage` gains the counts of the two regex entries (`Regex entry with empty flags.`, `Regex entry with the i flag.`) at indexes 12 and 13, and its `total` grows by their sum; the other 31 counts are unchanged.",
+      "why": "`lore-regex-fix-prompts.json` adds those two system messages to the `lore` prompt at index 12 (the regex fix activates them). The capture counts each message's `content` with the family's own tokenizer (`encodeWithTokenizer`, or `encode` routed to `o200k_base`), so each inserted count is the family's token count of that message's text and the total is the sum. The server's tokenizers reproduce the browser's ids (`fixtures/tokens/browser-ids.json`, slice 1), so `tokens.test.ts` recounts the two messages per family and checks them against `inserted`.",
+      "insertAt": 12,
+      "inserted": [
+        {
+          "role": "system",
+          "content": "Regex entry with empty flags."
+        },
+        {
+          "role": "system",
+          "content": "Regex entry with the i flag."
+        }
+      ],
+      "families": {
+        "cl100k_base": {
+          "inserted": [6, 7],
+          "perMessage": [
+            14, 17, 28, 16, 17, 17, 12, 4, 4, 5, 5, 8, 6, 7, 14, 4, 7, 6, 13, 5, 9, 5, 7, 5, 4, 3, 8, 6, 4, 4, 39, 6, 6
+          ],
+          "total": 315
+        },
+        "mistral": {
+          "inserted": [7, 8],
+          "perMessage": [
+            16, 17, 32, 17, 17, 17, 14, 4, 6, 5, 6, 10, 7, 8, 14, 4, 8, 6, 13, 6, 9, 6, 7, 5, 5, 3, 9, 7, 4, 4, 43, 6, 6
+          ],
+          "total": 341
+        },
+        "novelai": {
+          "inserted": [7, 8],
+          "perMessage": [
+            15, 19, 32, 20, 18, 19, 14, 4, 5, 5, 6, 10, 7, 8, 14, 4, 8, 6, 13, 6, 9, 5, 7, 5, 6, 3, 9, 7, 4, 4, 43, 6, 6
+          ],
+          "total": 347
+        },
+        "claude": {
+          "inserted": [6, 7],
+          "perMessage": [
+            14, 16, 27, 15, 16, 16, 14, 4, 5, 5, 6, 8, 6, 7, 14, 4, 8, 6, 13, 5, 9, 5, 7, 5, 4, 3, 8, 6, 4, 4, 39, 6, 6
+          ],
+          "total": 315
+        },
+        "llama": {
+          "inserted": [6, 7],
+          "perMessage": [
+            16, 17, 32, 17, 17, 17, 14, 4, 7, 5, 6, 10, 6, 7, 14, 4, 8, 6, 14, 6, 10, 7, 7, 5, 5, 3, 9, 8, 4, 4, 43, 6,
+            6
+          ],
+          "total": 344
+        },
+        "llama3": {
+          "inserted": [6, 7],
+          "perMessage": [
+            14, 17, 28, 16, 17, 17, 12, 4, 4, 5, 5, 8, 6, 7, 14, 4, 7, 6, 13, 5, 9, 5, 7, 5, 4, 3, 8, 6, 4, 4, 39, 6, 6
+          ],
+          "total": 315
+        },
+        "novellist": {
+          "inserted": [13, 13],
+          "perMessage": [
+            25, 33, 52, 31, 30, 33, 22, 9, 8, 11, 10, 17, 13, 13, 24, 9, 12, 9, 20, 11, 14, 10, 10, 10, 9, 3, 13, 11, 5,
+            8, 73, 8, 10
+          ],
+          "total": 576
+        },
+        "gemma": {
+          "inserted": [6, 7],
+          "perMessage": [
+            14, 17, 28, 16, 17, 17, 12, 4, 4, 5, 5, 8, 6, 7, 14, 4, 7, 6, 13, 5, 9, 5, 7, 5, 4, 3, 8, 6, 4, 4, 39, 6, 6
+          ],
+          "total": 315
+        },
+        "cohere": {
+          "inserted": [6, 7],
+          "perMessage": [
+            14, 16, 27, 15, 15, 16, 13, 4, 5, 5, 6, 8, 6, 7, 14, 4, 8, 6, 13, 5, 9, 5, 7, 5, 4, 3, 8, 6, 3, 4, 39, 6, 6
+          ],
+          "total": 312
+        },
+        "DeepSeek": {
+          "inserted": [6, 7],
+          "perMessage": [
+            14, 16, 27, 15, 16, 16, 14, 4, 4, 5, 6, 9, 6, 7, 14, 4, 8, 6, 13, 5, 9, 5, 7, 5, 4, 3, 8, 6, 4, 4, 39, 6, 6
+          ],
+          "total": 315
+        },
+        "DeepSeekV4": {
+          "inserted": [6, 7],
+          "perMessage": [
+            14, 16, 27, 15, 16, 16, 14, 4, 4, 5, 6, 9, 6, 7, 14, 4, 8, 6, 13, 5, 9, 5, 7, 5, 4, 3, 8, 6, 4, 4, 39, 6, 6
+          ],
+          "total": 315
+        },
+        "GLM4": {
+          "inserted": [6, 7],
+          "perMessage": [
+            14, 17, 28, 16, 17, 17, 12, 4, 4, 5, 5, 8, 6, 7, 14, 4, 7, 6, 13, 5, 9, 5, 7, 5, 4, 3, 8, 6, 4, 4, 39, 6, 6
+          ],
+          "total": 315
+        },
+        "GLM5": {
+          "inserted": [6, 7],
+          "perMessage": [
+            14, 17, 28, 16, 17, 17, 12, 4, 4, 5, 5, 8, 6, 7, 14, 4, 7, 6, 13, 5, 9, 5, 7, 5, 4, 3, 8, 6, 4, 4, 39, 6, 6
+          ],
+          "total": 315
+        },
+        "o200k_base": {
+          "inserted": [6, 7],
+          "perMessage": [
+            14, 16, 27, 15, 16, 16, 11, 4, 4, 5, 5, 8, 6, 7, 14, 4, 7, 6, 13, 5, 9, 5, 7, 5, 4, 3, 8, 6, 4, 4, 39, 6, 6
+          ],
+          "total": 309
+        }
+      }
+    }
+  }
+}

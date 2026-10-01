@@ -4,14 +4,16 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { bootMutations } from "../storage/tests/mutationStoresHarness";
 
 // Phase 5 baseline capture (`server/src/tests/fixtures/baseline/README.md`, "Defects pinned here"):
-// the lore regex key defect of `loadLoreBookV3Prompt` (`searchMatch`, the `arg.regex` branch),
-// pinned against the client code over the real store, scenario by scenario against the browser
-// capture `lore-regex.json` (the same lore, the same messages, the same `actives` and `matchLog`).
-// Today the key `/dragon/i` is rewritten to `/dragon` (the leading slash stays in the pattern) and
-// stored back into `arg.keys[0]`, so it matches only a literal `/dragon`, a key with empty flags
-// matches nothing, and a second scanned message makes the rewritten key's "flags" the pattern text,
-// which throws and ends the search. FLIP THIS FILE in slice 4 (`lore-templates-and-tokens`), which
-// fixes the parse (the last `/` separates the pattern from the flags, empty flags allowed).
+// the lore regex key defect of `loadLoreBookV3Prompt` (now `shared/lore/activation.ts`
+// `searchMatch`, the `arg.regex` branch), pinned against the client code over the real store,
+// scenario by scenario. The browser capture `lore-regex.json` is the "before" evidence (the key
+// `/dragon/i` was rewritten to `/dragon` and stored back into `arg.keys[0]`, so it matched only a
+// literal `/dragon`, a key with empty flags matched nothing, and a second scanned message made the
+// rewritten key's "flags" the pattern text, which threw and ended the search). Slice 4
+// (`lore-templates-and-tokens`) fixed the parse (the last `/` separates the pattern from the flags,
+// empty flags allowed, no rewrite); the reviewed expected delta `deltas/lore-regex-fix.json` holds
+// the scenarios the fix changes, each with its reason, and this file pins the fixed behavior: the
+// delta where it has an entry, the capture everywhere else.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -60,10 +62,13 @@ type Captured = {
     matchLog: { prompt: string; source: string; activated: string }[];
 };
 
+type Delta = Pick<Captured, "actives" | "matchLog"> & { change: string; why: string };
+
 const fixtureDir = resolve(process.cwd(), "server/src/tests/fixtures/baseline");
 let scenarios: Scenario[] = [];
 let regexCharacter: { chaId: string; chats: { id: string; message: { data: string; role: string }[] }[] };
 let captured: Record<string, Captured> = {};
+let deltas: Record<string, Delta> = {};
 
 async function boot() {
     vi.resetModules();
@@ -81,6 +86,7 @@ beforeAll(async () => {
     scenarios = scenario.loreRegex.scenarios;
     regexCharacter = scenario.characters.find((c: { chaId: string }) => c.chaId === scenario.loreRegex.chaId);
     captured = JSON.parse(await readFile(resolve(fixtureDir, "lore-regex.json"), "utf8"));
+    deltas = JSON.parse(await readFile(resolve(fixtureDir, "deltas/lore-regex-fix.json"), "utf8")).scenarios;
     await import("../stores.svelte");
     await import("../storage/database.svelte");
     await import("./lorebook.svelte");
@@ -105,7 +111,7 @@ afterEach(() => {
     server.current?.close();
 });
 
-describe("Phase 5 baseline: lore regex keys (flip in slice 4)", () => {
+describe("Phase 5 baseline: lore regex keys (fixed in slice 4)", () => {
     it("the capture covers the expected scenarios", () => {
         expect(scenarios.map((s) => s.name)).toEqual([
             "i-flag-plain-text",
@@ -130,6 +136,21 @@ describe("Phase 5 baseline: lore regex keys (flip in slice 4)", () => {
     });
 
     it("the client reproduces every captured scenario over the real store", async () => {
+        // The delta names only captured scenarios and changes each one it names: the i-flag key and
+        // the empty-flags key now match plain `dragon`, and a second scanned message is tested with
+        // the unrewritten key. Everything else stays as the browser captured it.
+        expect(Object.keys(deltas)).toEqual([
+            "i-flag-plain-text",
+            "empty-flags-plain-text",
+            "i-flag-two-messages-match-second",
+        ]);
+        for (const [name, delta] of Object.entries(deltas)) {
+            expect(captured[name]).toBeDefined();
+            expect({ actives: delta.actives, matchLog: delta.matchLog }).not.toEqual({
+                actives: captured[name].actives,
+                matchLog: captured[name].matchLog,
+            });
+        }
         const { characterStore, stores, lorebook, db } = await boot();
         const chaId = characterStore.addCharacter({
             ...regexCharacter,
@@ -150,10 +171,11 @@ describe("Phase 5 baseline: lore regex keys (flip in slice 4)", () => {
                 })),
                 matchLog: result.matchLog,
             };
+            const expected = deltas[scenario.name] ?? captured[scenario.name];
             expect({ name: scenario.name, ...got }).toEqual({
                 name: scenario.name,
-                actives: captured[scenario.name].actives,
-                matchLog: captured[scenario.name].matchLog,
+                actives: expected.actives,
+                matchLog: expected.matchLog,
             });
         }
     });

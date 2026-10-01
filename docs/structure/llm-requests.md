@@ -17,7 +17,7 @@
   - `src/ts/process/models/{nai,local,modelString}.ts`
   - `src/ts/process/webllm.ts`
   - `src/ts/horde/getModels.ts`
-  - `src/ts/tokenizer.ts`
+  - `src/ts/tokenizer.ts`, `shared/tokenizerChoice.ts`, `shared/prompt/chatTokens.ts`
   - `src/lib/UI/{ModelList,ModelGrid,OpenrouterProviderList,NanoGPTDashboard,NanoGPTProviderPicker}.svelte`
   - `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte`
 - Not here:
@@ -63,9 +63,11 @@
 - `process/models/nai.ts`: NovelAI serialization and `NovelAIBadWordIds`.
 - `process/models/modelString.ts`: display labels.
 - `process/webllm.ts`: MLC WebLLM engine, used by Hypa summarization.
-- `tokenizer.ts`: tokenizer selection and counting.
-  - `encode`: LRU cache of 1500 entries keyed by text, model, and tokenizer.
-  - `encodeWithTokenizer`, `tokenizerList`, `ChatTokenizer`, `tokenizeAccurate`, `strongBan`.
+- `shared/tokenizerChoice.ts` `selectTokenizer({ aiModel, customTokenizer, pluginTokenizer, modelTokenizer, googleClaudeTokenizing })`: which tokenizer family counts a model's text (`openrouter`/`reverse_proxy` by `customTokenizer`, a legacy plugin `custom` model by its declared tokenizer, else the catalogue family; `Llama3`, `Local`, and `Unknown` count with `cl100k_base`), shared by the client's `encode` and the server counter (`server/src/prompt/tokens.ts`), so the two route alike.
+- `shared/prompt/chatTokens.ts` `ChatTokenCounter`: a prompt's token arithmetic (message text plus `chatAdditionalTokens`, the name, thoughts, and the image tile formula) over an injected encoder.
+- `tokenizer.ts`: tokenizer loading and counting on the client.
+  - `encode`: `selectTokenizer`, then the family's loader; LRU cache of 1500 entries keyed by text, model, and tokenizer.
+  - `encodeWithTokenizer`, `tokenizerList`, `ChatTokenizer` (`ChatTokenCounter` with `encode`), `tokenizeAccurate`, `strongBan`.
   - Loaders for tiktoken, Claude, Llama/Llama3, Mistral, NovelAI, NovelList, Gemma, Cohere, DeepSeek, and GLM. Tokenizer files come from `public/token/`.
 - `CustomModelsSettings.svelte`: edits `db.customModels` entries `{id:'xcustom:::uuid', internalId, url, format, tokenizer, key, name, params, flags}`.
 

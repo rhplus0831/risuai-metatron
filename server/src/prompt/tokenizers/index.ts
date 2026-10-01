@@ -1,3 +1,4 @@
+import type { TokenizerFamily } from "../../../../shared/tokenizerChoice.ts";
 import { loadGemmaTokenizer } from "./gemma.ts";
 import { loadTiktoken } from "./tiktoken.ts";
 import { loadWebTokenizer } from "./webTokenizers.ts";
@@ -44,9 +45,10 @@ const LOADERS = {
     DeepSeekV4: json("deepseek/v4/tokenizer.json"),
     GLM4: json("glm4/tokenizer.json"),
     GLM5: json("glm5/tokenizer.json"),
-} satisfies Record<string, Loader>;
+} satisfies Record<TokenizerFamily, Loader>;
 
-export type TokenizerFamily = keyof typeof LOADERS;
+// The families are the shared routing's (`shared/tokenizerChoice.ts`), no more and no fewer.
+export type { TokenizerFamily };
 export const TOKENIZER_FAMILIES = Object.keys(LOADERS) as TokenizerFamily[];
 
 export type Tokenizers = ReturnType<typeof createTokenizers>;

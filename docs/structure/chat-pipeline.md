@@ -16,8 +16,8 @@
 - Paths:
   - `src/ts/process/index.svelte.ts`
   - `src/ts/process/{prompt,stringlize,group,exampleMessages,prereroll,command,infunctions,inlayScreen}.ts`
-  - `src/ts/process/lorebook.svelte.ts`
-  - `src/ts/process/templates/*`
+  - `src/ts/process/lorebook.svelte.ts`, `shared/lore/activation.ts`
+  - `src/ts/process/templates/*`, `shared/prompt/{chatTemplate,templateCheck}.ts`
   - `src/ts/process/files/{inlays,multisend}.ts`
   - `src/ts/process/dynamicutils/pdf.ts`
   - `src/ts/process/embedding/addinfo.ts`
@@ -25,6 +25,7 @@
 - Not here:
   - Memory algorithms → `memory.md`.
   - `requestChatData` internals → `llm-requests.md`.
+  - Token counting (`shared/tokenizerChoice.ts`, `shared/prompt/chatTokens.ts`) → `llm-requests.md`.
   - Regex and trigger internals → `scripts-triggers.md`.
   - Rendering → `cbs-rendering.md`.
   - TTS and image generation → `media-aux.md`.
@@ -38,12 +39,13 @@
   - Types: `PromptItem` (discriminated union), `PromptSettings`, `PromptRole`.
   - `tokenizePreset`.
   - Legacy import: `detectPromptJSONType`, `stChatConvert`, `promptConvertion`.
-- `lorebook.svelte.ts`: lore activation and the lorebook codecs.
-  - `loadLoreBookV3Prompt` merges three sources: character `globalLore`, chat `localLore`, and `getModuleLorebooks()`.
+- `shared/lore/activation.ts` `activateLore(input, host)`: lore activation, shared with the server (Phase 5). It merges three sources: character `globalLore`, chat `localLore`, and the module lore the caller resolved; matches keys, regex keys (`/pattern/flags`: the last `/` ends the pattern, empty flags allowed), and decorators over the scanned messages; recurses; applies the token budget and `@@inject_lore`; and returns `{ actives, matchLog }`. `LoreHost` supplies the clone, the speaker names, the chat variables (the keep and don't-activate-after-match flags), CBS, the token count, and the regex test (on the server, the script worker's).
+- `lorebook.svelte.ts`: the client wrapper of lore activation and the lorebook codecs.
+  - `loadLoreBookV3Prompt(chatRef?)` runs `activateLore` for the chat with `getModuleLorebooks(ref)`, `loreBookDepth`, `loreBookToken`, and `getUserName(ref)` (the bound persona's name), and the client host.
   - Also `addLorebook`, `addLorebookFolder`, `importLoreBook`, `exportLoreBook`, `convertExternalLorebook`.
-- `templates/chatTemplate.ts`: `applyChatTemplate` (Hugging Face Jinja), `chatTemplates` (built-in Llama/Gemma/Mistral/...), `templateEffect`.
+- `shared/prompt/chatTemplate.ts`: `renderChatTemplate(messages, { type, jinjaTemplate, characterName, userName })` (Hugging Face Jinja), `chatTemplates` (built-in Llama/Gemma/Mistral/...), `templateEffect`. `templates/chatTemplate.ts` re-exports `chatTemplates` and `templateEffect` (not `renderChatTemplate`), and its `applyChatTemplate(messages, { type?, custom? })` supplies the selected preset's `instructChatTemplate`/`JinjaTemplate`, the selected character, and the user's name.
 - `templates/templates.ts`: re-exports `prebuiltPresets` and `prebuiltNAIpresets` from `shared/presetTemplates.ts` (templates carry no id; a use goes through `normalizePreset`).
-- `templates/templateCheck.ts` `templateCheck`: prompt-template warnings.
+- `shared/prompt/templateCheck.ts` `templateCheck({ promptTemplate })`: prompt-template warnings (`templates/templateCheck.ts` re-exports it).
 - `templates/jsonSchema.ts`: `convertInterfaceToSchema`, `getOpenAIJSONSchema`, `extractJSON`.
 - `stringlize.ts`: serializers for non-chat-completion backends and stop strings.
   - `stringlizeChat`, `stringlizeAINChat`, `unstringlizeChat`, `getStopStrings`.

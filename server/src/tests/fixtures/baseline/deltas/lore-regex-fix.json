@@ -1,0 +1,47 @@
+{
+  "delta": "The lore regex key fix (slice 4 `lore-templates-and-tokens`, implementation plan owner answer 10)",
+  "before": "../lore-regex.json (captured at efad2b76, the browser path before the fix)",
+  "fixed": "shared/lore/activation.ts, `searchMatch`, the `arg.regex` branch (the client's `loadLoreBookV3Prompt` wraps it)",
+  "semantics": [
+    "A key `/pattern/flags` splits at its last `/`: the pattern is between the first and the last slash, the flags follow the last slash. Before, `split('/').pop()` took the flags and the key was rewritten to `'/' + pattern` (the leading slash stayed in the pattern), so `/dragon/i` matched only a literal `/dragon`.",
+    "Empty flags are allowed: `/dragon/` is the pattern `dragon` with no flags. Before, the empty flags string was falsy and the key was skipped, so it never matched.",
+    "No key is rewritten in place. Before, the rewritten key landed in `arg.keys[0]`, so the second scanned message was tested with `/dragon`, whose 'flags' were then the pattern text; `new RegExp('', 'dragon')` threw and the search ended with no match.",
+    "`matchLog.activated` is the key as written (the key is no longer rewritten; it was the original string before the fix too). The `prompt` and `source` rows are built as before: a user message under the scanned user name, a character message under `msg.name`, the speaker, or the character's name."
+  ],
+  "unchanged": [
+    "i-flag-slash-in-text: `Take the /dragon path.` contains `dragon`, so `/dragon/i` matches it after the fix as the literal `/dragon` did before; same active, same log row.",
+    "i-flag-two-messages-match-first: the match is in the first scanned message, before the rewrite could break the second scan; same active, same log row.",
+    "two-keys-second-matches: `/cat/i` does not match, `/dragon/i` matches `Take the /dragon path.` after the fix as the literal `/dragon` did before; same active, same log row.",
+    "plain-key-control: a plain key is not a regex key; untouched by the fix."
+  ],
+  "scenarios": {
+    "i-flag-plain-text": {
+      "change": "`/dragon/i` now activates `regex-i` on `A dragon appears.`; before, nothing activated.",
+      "why": "The pattern is `dragon` with the flag `i` (split at the last `/`), and `dragon` is in the text. Before, the key was rewritten to `/dragon`, which the text does not contain.",
+      "actives": [{ "source": "regex-i", "prompt": "i flag", "pos": "", "depth": 0, "role": "system" }],
+      "matchLog": [
+        { "prompt": "\u0001{{User}}:A dragon appears.\u0001", "source": "message 0 by user", "activated": "/dragon/i" }
+      ]
+    },
+    "empty-flags-plain-text": {
+      "change": "`/dragon/` now activates `regex-empty` on `A dragon appears.`; before, nothing activated.",
+      "why": "Empty flags are allowed: the pattern is `dragon` with no flags, and `dragon` is in the text. Before, the empty flags string was falsy and the key was never tested.",
+      "actives": [{ "source": "regex-empty", "prompt": "empty flags", "pos": "", "depth": 0, "role": "system" }],
+      "matchLog": [
+        { "prompt": "\u0001{{User}}:A dragon appears.\u0001", "source": "message 0 by user", "activated": "/dragon/" }
+      ]
+    },
+    "i-flag-two-messages-match-second": {
+      "change": "`/dragon/i` now activates `regex-i` from the second scanned message (`Take the /dragon path.`, by the character); before, nothing activated.",
+      "why": "`Hello there.` (message 0) does not match, and the key is no longer rewritten after that test, so message 1 is tested with the same `/dragon/i` and matches. Before, message 1 was tested with the rewritten `/dragon`, whose 'flags' were `dragon`, which threw and ended the search. The log row is the character message's: `{{Regex}}` is the character's name (no `msg.name`, no speaker), `message 1 by char` is its index and role.",
+      "actives": [{ "source": "regex-i", "prompt": "i flag", "pos": "", "depth": 0, "role": "system" }],
+      "matchLog": [
+        {
+          "prompt": "\u0001{{Regex}}:Take the /dragon path.\u0001",
+          "source": "message 1 by char",
+          "activated": "/dragon/i"
+        }
+      ]
+    }
+  }
+}

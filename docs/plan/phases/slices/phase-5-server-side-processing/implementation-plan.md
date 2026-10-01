@@ -158,7 +158,18 @@ step 0 ─→ 1 → 2 [A] → baseline capture → 3 → 4 → 5 → 6 → 7a �
   with recorded provider bodies, and it is reported in 7a's slice report. A failure is a review
   problem and stops anyway.
 - **Stop B** follows the `llmSecrets` flip. Provider calls go through the server, and the
-  credential fields are masked in the settings UI.
+  credential fields are masked in the settings UI. Items carried to it for owner decisions:
+  - the baseline capture's suspected defects (`server/src/tests/fixtures/baseline/README.md`):
+    client Lua fetching `glue.wasm` from `unpkg.com` at run time, group chats wrapping the user's
+    messages as "Unknown Character's Message" and a group's `useCharacterLore` leaving out
+    member lore, `DefaultChatScreen.svelte` throwing when a group is selected, and unpadded
+    `{{date}}`/`{{time}}`;
+  - lore regex keys containing a comma (`/a{1,2}/`): keys still split on every comma before the
+    `/pattern/flags` parse, and a malformed key ends its query (`lore-templates-and-tokens.md`).
+  - inherited lore behaviors the slice 4 review pinned (`lore-templates-and-tokens.md`, "Tests"):
+    the keep and don't-activate "seen" flags are function-wide, so after one keep entry every
+    later active also writes `__internal_ka_`; a bound persona's embedded module resolves only if
+    a module with its id is in `db.modules`.
 - **Stop C** follows prompt assembly: the first server send behind the flag.
 - **Stop D** is the parity gate before the cutover. Every slice is in, the flag-on matrix
   passes, and both golden tests are green.

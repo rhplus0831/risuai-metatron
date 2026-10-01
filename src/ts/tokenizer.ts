@@ -16,6 +16,8 @@ import { getModelInfo, LLMTokenizer, type LLMModel } from "./model/modellist";
 import { pluginHooks } from "./plugins/pluginHooks";
 import type { GemmaTokenizer } from "@huggingface/transformers";
 import { LRUMap } from "mnemonist";
+import { selectTokenizer, type TokenizerFamily } from "../../shared/tokenizerChoice.ts";
+import { ChatTokenCounter } from "../../shared/prompt/chatTokens.ts";
 
 const MAX_CACHE_SIZE = 1500;
 
@@ -110,140 +112,44 @@ export async function encode(data: string): Promise<number[] | Uint32Array | Int
 
     let result: number[] | Uint32Array | Int32Array;
 
-    if (db.aiModel === "openrouter" || db.aiModel === "reverse_proxy") {
-        switch (db.customTokenizer) {
-            case "mistral":
-                result = await tokenizeWebTokenizers(data, "mistral");
-                break;
-            case "llama":
-                result = await tokenizeWebTokenizers(data, "llama");
-                break;
-            case "novelai":
-                result = await tokenizeWebTokenizers(data, "novelai");
-                break;
-            case "claude":
-                result = await tokenizeWebTokenizers(data, "claude");
-                break;
-            case "novellist":
-                result = await tokenizeWebTokenizers(data, "novellist");
-                break;
-            case "llama3":
-                result = await tokenizeWebTokenizers(data, "llama");
-                break;
-            case "gemma":
-                result = await gemmaTokenize(data);
-                break;
-            case "cohere":
-                result = await tokenizeWebTokenizers(data, "cohere");
-                break;
-            case "deepseek":
-                result = await tokenizeWebTokenizers(data, "DeepSeek");
-                break;
-            case "deepseek-v4":
-                result = await tokenizeWebTokenizers(data, "DeepSeekV4");
-                break;
-            case "glm4":
-                result = await tokenizeWebTokenizers(data, "GLM4");
-                break;
-            case "glm5":
-                result = await tokenizeWebTokenizers(data, "GLM5");
-                break;
-            default:
-                result = await tikJS(data, "o200k_base");
-                break;
-        }
-    } else if (db.aiModel === "custom" && pluginTokenizer) {
-        switch (pluginTokenizer) {
-            case "mistral":
-                result = await tokenizeWebTokenizers(data, "mistral");
-                break;
-            case "llama":
-                result = await tokenizeWebTokenizers(data, "llama");
-                break;
-            case "novelai":
-                result = await tokenizeWebTokenizers(data, "novelai");
-                break;
-            case "claude":
-                result = await tokenizeWebTokenizers(data, "claude");
-                break;
-            case "novellist":
-                result = await tokenizeWebTokenizers(data, "novellist");
-                break;
-            case "llama3":
-                result = await tokenizeWebTokenizers(data, "llama");
-                break;
-            case "gemma":
-                result = await gemmaTokenize(data);
-                break;
-            case "cohere":
-                result = await tokenizeWebTokenizers(data, "cohere");
-                break;
-            case "deepseek":
-                result = await tokenizeWebTokenizers(data, "DeepSeek");
-                break;
-            case "deepseek-v4":
-                result = await tokenizeWebTokenizers(data, "DeepSeekV4");
-                break;
-            case "glm4":
-                result = await tokenizeWebTokenizers(data, "GLM4");
-                break;
-            case "glm5":
-                result = await tokenizeWebTokenizers(data, "GLM5");
-                break;
-            case "o200k_base":
-                result = await tikJS(data, "o200k_base");
-                break;
-            case "cl100k_base":
-                result = await tikJS(data, "cl100k_base");
-                break;
-            case "custom":
-                result = (await pluginHooks.providerOptions.get(db.currentPluginProvider)?.tokenizerFunc?.(data)) ?? [
-                    0,
-                ];
-                break;
-            default:
-                result = await tikJS(data, "o200k_base");
-                break;
-        }
-    }
-
-    // Fallback
-    if (result === undefined) {
-        if (modelInfo.tokenizer === LLMTokenizer.NovelList) {
-            result = await tokenizeWebTokenizers(data, "novellist");
-        } else if (modelInfo.tokenizer === LLMTokenizer.Claude) {
-            result = await tokenizeWebTokenizers(data, "claude");
-        } else if (modelInfo.tokenizer === LLMTokenizer.NovelAI) {
-            result = await tokenizeWebTokenizers(data, "novelai");
-        } else if (modelInfo.tokenizer === LLMTokenizer.Mistral) {
-            result = await tokenizeWebTokenizers(data, "mistral");
-        } else if (modelInfo.tokenizer === LLMTokenizer.Llama) {
-            result = await tokenizeWebTokenizers(data, "llama");
-        } else if (modelInfo.tokenizer === LLMTokenizer.tiktokenO200Base) {
-            result = await tikJS(data, "o200k_base");
-        } else if (modelInfo.tokenizer === LLMTokenizer.GoogleCloud && db.googleClaudeTokenizing) {
+    // The routing is shared with the server counter (`shared/tokenizerChoice.ts`).
+    const choice = selectTokenizer({
+        aiModel: db.aiModel,
+        customTokenizer: db.customTokenizer,
+        pluginTokenizer,
+        modelTokenizer: modelInfo.tokenizer,
+        googleClaudeTokenizing: db.googleClaudeTokenizing,
+    });
+    switch (choice.kind) {
+        case "googleCloud":
             result = await tokenizeGoogleCloud(data);
-        } else if (modelInfo.tokenizer === LLMTokenizer.Gemma || modelInfo.tokenizer === LLMTokenizer.GoogleCloud) {
-            result = await gemmaTokenize(data);
-        } else if (modelInfo.tokenizer === LLMTokenizer.DeepSeek) {
-            result = await tokenizeWebTokenizers(data, "DeepSeek");
-        } else if (modelInfo.tokenizer === LLMTokenizer.DeepSeekV4) {
-            result = await tokenizeWebTokenizers(data, "DeepSeekV4");
-        } else if (modelInfo.tokenizer === LLMTokenizer.GLM4) {
-            result = await tokenizeWebTokenizers(data, "GLM4");
-        } else if (modelInfo.tokenizer === LLMTokenizer.GLM5) {
-            result = await tokenizeWebTokenizers(data, "GLM5");
-        } else if (modelInfo.tokenizer === LLMTokenizer.Cohere) {
-            result = await tokenizeWebTokenizers(data, "cohere");
-        } else {
-            result = await tikJS(data);
-        }
+            break;
+        case "pluginFunction":
+            result = (await pluginHooks.providerOptions.get(db.currentPluginProvider)?.tokenizerFunc?.(data)) ?? [0];
+            break;
+        case "family":
+            result = await encodeFamily(data, choice.family);
+            break;
     }
     if (db.useTokenizerCaching) {
         encodeCache.set(cacheKey, result);
     }
 
     return result;
+}
+
+async function encodeFamily(data: string, family: TokenizerFamily): Promise<number[] | Uint32Array | Int32Array> {
+    switch (family) {
+        case "cl100k_base":
+        case "o200k_base":
+            return await tikJS(data, family);
+        case "gemma":
+            return await gemmaTokenize(data);
+        case "gemmaSentencePiece":
+            return await tokenizeWebTokenizers(data, "gemma");
+        default:
+            return await tokenizeWebTokenizers(data, family);
+    }
 }
 
 type tokenizerType =
@@ -457,79 +363,14 @@ export async function tokenizeAccurate(data: string, consistantChar?: boolean) {
     return encoded.length;
 }
 
-export class ChatTokenizer {
-    private chatAdditionalTokens: number;
-    private useName: "name" | "noName";
-
+/** The shared token arithmetic (`shared/prompt/chatTokens.ts`) with the client's encoder. */
+export class ChatTokenizer extends ChatTokenCounter {
     constructor(chatAdditionalTokens: number, useName: "name" | "noName") {
-        this.chatAdditionalTokens = chatAdditionalTokens;
-        this.useName = useName;
-    }
-    async tokenizeChat(
-        data: OpenAIChat,
-        args: {
-            countThoughts?: boolean;
-        } = {},
-    ) {
-        let encoded = (await encode(data.content)).length + this.chatAdditionalTokens;
-        if (data.name && this.useName === "name") {
-            encoded += (await encode(data.name)).length + 1;
-        }
-        if (data.multimodals && data.multimodals.length > 0) {
-            for (const multimodal of data.multimodals) {
-                encoded += await this.tokenizeMultiModal(multimodal);
-            }
-        }
-        if (data.thoughts && data.thoughts.length > 0 && args.countThoughts) {
-            for (const thought of data.thoughts) {
-                encoded += (await encode(thought)).length + 1;
-            }
-        }
-        return encoded;
-    }
-    async tokenizeChats(data: OpenAIChat[]) {
-        let encoded = 0;
-        for (const chat of data) {
-            encoded += await this.tokenizeChat(chat);
-        }
-        return encoded;
-    }
-
-    tokenizeMultiModal(data: MultiModal) {
-        const db = getDatabase();
-        if (!supportsInlayImage()) {
-            return this.chatAdditionalTokens;
-        }
-        if (db.gptVisionQuality === "low") {
-            return 87;
-        }
-
-        let encoded = this.chatAdditionalTokens;
-        let height = data.height ?? 0;
-        let width = data.width ?? 0;
-
-        if (height === width) {
-            if (height > 768) {
-                height = 768;
-                width = 768;
-            }
-        } else if (height > width) {
-            if (width > 768) {
-                width = 768;
-                height = height * (768 / width);
-            }
-        } else {
-            if (height > 768) {
-                height = 768;
-                width = width * (768 / height);
-            }
-        }
-
-        const chunkSize = Math.ceil(width / 512) * Math.ceil(height / 512);
-        encoded += chunkSize * 2;
-        encoded += 85;
-
-        return encoded;
+        super(chatAdditionalTokens, useName, {
+            encode,
+            supportsInlayImage,
+            gptVisionQuality: () => getDatabase().gptVisionQuality,
+        });
     }
 }
 

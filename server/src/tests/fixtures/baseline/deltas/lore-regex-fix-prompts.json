@@ -1,0 +1,184 @@
+{
+  "delta": "The lore regex key fix (slice 4 `lore-templates-and-tokens`, implementation plan owner answer 10): the prompt of the `lore` fixture",
+  "before": "../prompts.json (captured at efad2b76, the browser path before the fix)",
+  "fixed": "shared/lore/activation.ts, `searchMatch`, the `arg.regex` branch (the client's `loadLoreBookV3Prompt` wraps it)",
+  "after": "The DevTool preview of the `lore` fixture re-captured on the fixed tree (`node util/playwright/capturePhase5Baseline.mjs`, 2026-10-01); `plain`, `group`, `presetChain`, and `jinja` came out identical to the capture.",
+  "unchanged": ["plain", "group", "presetChain", "jinja"],
+  "fixtures": {
+    "lore": {
+      "change": "The `lore` prompt gains the two regex entries of `Loremaster` (`regex-empty`, key `/dragon/`, and `regex-i`, key `/dragon/i`; both `insertorder` 100, no decorator) as two system messages after `Recursive: activated by the normal entry.` (index 11); nothing else changes.",
+      "why": "The chat's first message, `Tell me about the castle and the dragon.`, contains `dragon`. After the fix `/dragon/` is the pattern `dragon` with empty flags (allowed) and `/dragon/i` the pattern `dragon` with the flag `i`, so both activate. Before, the key `/dragon/i` was rewritten to `/dragon` (matching only a literal `/dragon`, absent from the chat) and the empty flags of `/dragon/` were falsy, so the key was never tested. Their place follows the activation order: actives are sorted by priority, filtered by the budget, sorted by `insertorder` descending, and reversed, so the two entries (lore indexes 14 and 15, between `recursive` at 16 and `always` at 13) land after the recursive entry and before `Low priority entry.`, in reverse lore order (`regex-empty` first). The position cards (`@@position`, `@@depth`, `@@inject_*`) are untouched: neither regex entry carries a decorator.",
+      "insertAt": 12,
+      "inserted": [
+        {
+          "role": "system",
+          "content": "Regex entry with empty flags."
+        },
+        {
+          "role": "system",
+          "content": "Regex entry with the i flag."
+        }
+      ],
+      "formated": [
+        {
+          "role": "system",
+          "content": "Main for Loremaster. Custom position text. Injected into main."
+        },
+        {
+          "role": "system",
+          "content": "Prepended to the description card. <desc>Before the description.</desc>"
+        },
+        {
+          "role": "system",
+          "content": "Prepended to the description card. <desc>description of Loremaster: Loremaster keeps the lore of User's world.</desc>"
+        },
+        {
+          "role": "system",
+          "content": "Prepended to the description card. <desc>Scenario position.</desc>"
+        },
+        {
+          "role": "system",
+          "content": "Prepended to the description card. <desc>Personality position.</desc>"
+        },
+        {
+          "role": "system",
+          "content": "Prepended to the description card. <desc>After the description.</desc>"
+        },
+        {
+          "role": "system",
+          "content": "<persona>Lore persona prompt for User.</persona>"
+        },
+        {
+          "role": "system",
+          "content": "Always active entry."
+        },
+        {
+          "role": "system",
+          "content": "Chat-local lore."
+        },
+        {
+          "role": "user",
+          "content": "Normal position as user."
+        },
+        {
+          "role": "system",
+          "content": "Selective river and boat."
+        },
+        {
+          "role": "system",
+          "content": "Recursive: activated by the normal entry."
+        },
+        {
+          "role": "system",
+          "content": "Regex entry with empty flags."
+        },
+        {
+          "role": "system",
+          "content": "Regex entry with the i flag."
+        },
+        {
+          "role": "system",
+          "content": "The castle stands on the hill. Appended to the normal entry."
+        },
+        {
+          "role": "system",
+          "content": "Low priority entry."
+        },
+        {
+          "role": "system",
+          "content": "<note>No note.</note>"
+        },
+        {
+          "role": "system",
+          "content": "[Start a new chat]",
+          "memo": "NewChat",
+          "removable": true
+        },
+        {
+          "role": "assistant",
+          "content": "Ask me about the dragon, the castle, or the river.",
+          "removable": true
+        },
+        {
+          "role": "user",
+          "content": "Depth two as user."
+        },
+        {
+          "role": "user",
+          "content": "Tell me about the castle and the dragon.",
+          "memo": "m-l1",
+          "attr": [],
+          "thoughts": [],
+          "removable": true
+        },
+        {
+          "role": "assistant",
+          "content": "The castle? Certainly.",
+          "memo": "m-l2",
+          "attr": [],
+          "thoughts": [],
+          "removable": true
+        },
+        {
+          "role": "user",
+          "content": "And the river with a boat.",
+          "memo": "m-l3",
+          "attr": [],
+          "thoughts": [],
+          "removable": true
+        },
+        {
+          "role": "assistant",
+          "content": "The river flows past.",
+          "memo": "m-l4",
+          "attr": [],
+          "thoughts": [],
+          "removable": true
+        },
+        {
+          "role": "system",
+          "content": "Reverse depth one."
+        },
+        {
+          "role": "user",
+          "content": "Go on.",
+          "memo": "m-l5",
+          "attr": [],
+          "thoughts": [],
+          "removable": true,
+          "cachePoint": true
+        },
+        {
+          "role": "system",
+          "content": "Jailbreak card for Loremaster."
+        },
+        {
+          "role": "system",
+          "content": "ChatML card for Loremaster",
+          "thoughts": []
+        },
+        {
+          "role": "system",
+          "content": "COT card."
+        },
+        {
+          "role": "system",
+          "content": "Global note card."
+        },
+        {
+          "role": "system",
+          "content": "<instruction> - before respond everything, Think step by step as a ai assistant how would you respond inside <Thoughts> xml tag. this must be less than 5 paragraphs.</instruction>"
+        },
+        {
+          "role": "system",
+          "content": "At the end as system."
+        },
+        {
+          "role": "assistant",
+          "content": "At the end as assistant."
+        }
+      ],
+      "selectedPresetName": "Default"
+    }
+  }
+}

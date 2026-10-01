@@ -25,6 +25,20 @@ Contract changes) are separate reviewed expected-delta files, as the implementat
 | `igp.json`          | A real send with `igpPrompt` set, through a mock plugin provider: the provider calls (`mode`, `max_tokens`, `prompt_chat`) and the chat's messages afterwards.                                                                                                                                                                                                                                                                                                                                                                                                                  | slice 11: the `igp` defect                                             |
 | `provenance.json`   | The commit, versions, page errors, blocked and locally served requests, and the preset ids of the run (the only file that differs between two captures).                                                                                                                                                                                                                                                                                                                                                                                                                        |                                                                        |
 
+## Expected deltas (`deltas/`)
+
+The capture files above stay as captured. An approved behavior change (a defect fix, a Safety
+Contract change) gets a reviewed expected-delta file here, which names the scenarios it changes,
+the value after the change, and why the change produces it; a test takes the delta where it has an
+entry and the capture everywhere else. The re-capture (`node util/playwright/capturePhase5Baseline.mjs`)
+does not write this folder.
+
+| File                               | What it holds                                                                                                                                                                                                                                                                                                                                                                   | Consumer                                                                                                                                          |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lore-regex-fix.json`              | The lore regex key fix of slice 4 (owner answer 10): the three `lore-regex.json` scenarios whose `actives` and `matchLog` change (`i-flag-plain-text`, `empty-flags-plain-text`, `i-flag-two-messages-match-second`), each with the reason the fixed parse (split at the last `/`, empty flags allowed, no rewrite in place) produces it, and why the other four do not change. | `src/ts/process/lorebookRegexBaseline.test.ts` (the client), `lore.test.ts` (the server)                                                          |
+| `lore-regex-fix-prompts.json`      | The same fix in `prompts.json`: the `lore` fixture's `formated` after the fix (`Loremaster`'s two regex entries, `/dragon/` and `/dragon/i`, as system messages at indexes 12 and 13), with the reason they activate and why they land there; the other four prompts are unchanged.                                                                                             | `lore.test.ts` (the activation that produces the two entries, and the delta's consistency with the capture); slice 9's prompt golden test         |
+| `lore-regex-fix-token-counts.json` | The same fix in `token-counts.json`: per family, the `lore` prompt's `perMessage` with the two entries' counts at indexes 12 and 13 and the grown `total`; `routing` and the other prompts are unchanged.                                                                                                                                                                       | `tokens.test.ts` (recounts the two messages per family with the server's tokenizers against `inserted`, and checks the delta against the capture) |
+
 ## The fixture characters (`scenario.json`)
 
 - **`plain`** (`Aria`, `chat-aria-1`): the legacy `formatingOrder` path (no prompt template), model
@@ -95,7 +109,8 @@ Contract changes) are separate reviewed expected-delta files, as the implementat
   scanned with the rewritten key, whose "flags" are now the pattern text, which throws and ends the
   search (`i-flag-two-messages-match-second` matches nothing although the second message contains
   `/dragon`). `prompts.json` (`lore`) shows the two regex entries absent from the prompt. Fixed in
-  slice 4. The client-side pin is `src/ts/process/lorebookRegexBaseline.test.ts`.
+  slice 4: the expected delta is `deltas/lore-regex-fix.json`, and the client-side pin
+  `src/ts/process/lorebookRegexBaseline.test.ts` now asserts the fixed behavior through it.
 - **`decodeToolCall`** (`src/ts/process/mcp/mcp.ts`) and **the MCP OAuth refresh**
   (`src/ts/process/mcp/mcplib.ts`, `oauthLogin`) are pure client functions, so they are pinned as
   Vitest tests against the client code instead of browser fixtures:
