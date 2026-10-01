@@ -222,3 +222,11 @@ Written by the Fable reviewer (verdict: no problem):
 Astra's testing advice, as Fable judged it: items 1 to 4 necessary and done; item 5 covered by the
 child-process tests (resident set and throughput are not asserted); item 6 belongs to the baseline
 capture and slice 4.
+
+## Stop A: in the image (2026-10-01)
+
+The image built from `70083414` (`docker build`, Node 24.21.0, x64) has no `public/`, so the
+payloads resolve from `dist/token/`. `node server/src/prompt/tokenizers/loadAll.ts /app` exits 0:
+all fifteen families load (6 to 793 ms each; GLM4 and GLM5 are the slowest), and the smoke counts
+of every family match the local run exactly. The process ends at 655 MB resident with every
+family loaded.

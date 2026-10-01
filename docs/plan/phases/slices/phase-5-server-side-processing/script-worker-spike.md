@@ -418,3 +418,36 @@ Written by the Fable reviewer after the second fix round (verdict: no problem):
 
 Fable judged the testing advice necessary and covered it, except public-internet cases (the local
 TLS server covers the transport deterministically).
+
+## Stop A: in the image (2026-10-01)
+
+The image built from `70083414` (Node 24.21.0, x64) runs `node server/src/scripts/smoke.ts /app`
+with exit 0, 41 of 41 checks passing, with the timings of the local run (`json.lua` resolves from
+`dist/lua/`).
+
+Memory with six workers (a standalone pool process in the container; resident set and the
+container's `memory.current`):
+
+| State                                                       | Resident | cgroup |
+| ----------------------------------------------------------- | -------- | ------ |
+| Process start, no worker                                    | 86 MB    | 36 MB  |
+| Six warm idle workers                                       | 248 MB   | 200 MB |
+| Six runs computing 2 s each (small heap)                    | 276 MB   | 228 MB |
+| Six runs at 56 MiB of Lua heap each                         | 632 MB   | 586 MB |
+| Six runs over the 64 MiB cap (each `not enough memory`)     | 661 MB   | 615 MB |
+| Default pool after six heavy runs, then the idle retirement | 333 MB   | 283 MB |
+
+A worker costs about 27 MB idle. A worker's wasm memory keeps its high-water mark (wasm memory
+never shrinks), so a worker that once ran a heavy script holds about 64 MiB more until it exits.
+The four workers above `size` exit after 30 s idle, which returns their memory; the two that stay
+keep their high-water marks. The worst case measured, six workers at the Lua cap, is about
+615 MB. A worker's JS heap is capped separately (256 MiB old generation), and only a runaway in
+the worker's own JS (a host result or regex result) reaches it.
+
+Decisions at Stop A (user, 2026-10-01), all as recommended:
+
+1. The hardening and the script-visible changes listed under "Recorded behavior changes" are
+   accepted for the server runtime (`lua-bindings-and-buttons` carries them).
+2. The elastic pool (2 to 6 workers) is accepted.
+3. The wasm memory a resident worker keeps is accepted as is (at most about 64 MiB per resident
+   worker); no recycling by memory threshold.
