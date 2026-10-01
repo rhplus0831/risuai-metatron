@@ -11,6 +11,7 @@
   - partial edit of rendered messages,
   - CBS editor highlighting and autocomplete.
 - Paths:
+  - `shared/cbs/{registry,evaluator,types,calc}.ts` (the runtime both the client and the server run)
   - `src/ts/cbs.ts`
   - `src/ts/parser/{parser.svelte,chatVar.svelte,chatML,partialEdit}.ts`
   - `src/ts/parser/tests/*`
@@ -26,18 +27,20 @@
 
 ## Files
 
-- `cbs.ts`: the CBS function catalogue.
-  - `registerCBS(arg: CBSRegisterArg)` enumerates every built-in function (name, callback, aliases, description, `internalOnly`/`doc_only`) into a callback supplied by the consumer.
-  - Types: `CBSRegisterArg` (injected runtime helpers), `matcherArg` (per-call context), `RegisterCallback`.
+- `shared/cbs/registry.ts`: the CBS function catalogue (Phase 5 moved it from `cbs.ts`, which re-exports it).
+  - `registerCBS(arg: CBSRegisterArg)` enumerates every built-in function (name, callback, aliases, description, `internalOnly`/`doc_only`) into a callback supplied by the consumer. Every host read goes through `CBSRegisterArg`, including `getTriggerId` (`trigger_id`), `getViewport` (`screenwidth`/`screenheight`), and `getBrowserLanguage` (`metadata::browserlang`).
+  - `contextChar`/`contextChat`: the parse's `chatRef` character and chat, or the selected ones.
   - `defaultCBSRegisterArg` is a placeholder adapter for docs and scaffolding.
-- `parser/parser.svelte.ts`: the runtime evaluator and renderer.
-  - `risuChatParser(text, matcherArg)`: the parse/eval loop. Call depth is capped at 20.
-  - `matcher`/`initMatcher`: the parser-local `matcherMap`, filled from `registerCBS`.
+- `shared/cbs/types.ts`: `CBSRegisterArg` (injected runtime helpers), `matcherArg` (per-call context), `RegisterCallback`, `CbsConditions`.
+- `shared/cbs/evaluator.ts` `createCbsEvaluator(host: CbsHost)`: the parse/eval loop (`risuChatParser(text, arg)`, call depth capped at 20), the block matchers, and its own function map, filled from `registerCBS` on first use. `CbsHost` is `CBSRegisterArg` without the parts the evaluator supplies itself (`registerFunction`, `risuChatParser`, `makeArray`, `parseArray`, `parseDict`, `dateTimeFormat`), plus `findCharacterById` (a group's last speaker). Also `risuEscape`/`risuUnescape`.
+- `shared/cbs/calc.ts` `calcString(text, { getChatVar, getGlobalChatVar })`: the `{{? ...}}` and trigger calculator (`$name` a chat variable, `@name` a global). `process/infunctions.ts` binds it to the selected chat's variables.
+- `parser/parser.svelte.ts`: the client host of the evaluator, and the renderer.
+  - `risuChatParser(text, arg)`: the shared evaluator with the client host (the live database, the selected character, `CurrentTriggerIdStore`, `window`, `navigator`, `findCharacterbyId`).
   - `ParseMarkdown`, `renderMarkdown`/`renderHighlightableMarkdown` (markdown-it + KaTeX + highlight.js), `trimMarkdown` (DOMPurify plus scoped-style restore), `parseMarkdownSafe`.
   - Assets: `parseAdditionalAssets`, `assetRegex`, `resetAssetsCache`.
-  - Also `postTranslationParse`, `applyMarkdownToNode`, `risuEscape`/`risuUnescape`, `addMetadataToElement`, `hasher`, `CbsConditions`.
+  - Also `postTranslationParse`, `applyMarkdownToNode`, `addMetadataToElement`, `hasher`, and the re-exported `risuEscape`/`risuUnescape` and `CbsConditions`.
 - `parser/chatVar.svelte.ts`: variable accessors.
-  - Chat variables: `getChatVar`/`setChatVar`, stored in `Chat.scriptstate` as `$name`. A parse given `chatRef` (`risuChatParser(text, { chatRef })`, set by the send pipeline, triggers, and Lua) reads and writes that chat's variables and messages (`getChatVarOf`/`setChatVarOf`, `contextChar`/`contextChat` in `cbs.ts`); without it, the selected character's selected chat.
+  - Chat variables: `getChatVar`/`setChatVar`, stored in `Chat.scriptstate` as `$name`. A parse given `chatRef` (`risuChatParser(text, { chatRef })`, set by the send pipeline, triggers, and Lua) reads and writes that chat's variables and messages (`getChatVarOf`/`setChatVarOf`, `contextChar`/`contextChat` in `shared/cbs/registry.ts`); without it, the selected character's selected chat.
   - Globals: `getGlobalChatVar`/`setGlobalChatVar` (`db.globalChatVariables`, or chat-local overrides when `useLocallySetGlobalVariables`), plus `getGLChatVar`/`setGLChatVar` and `isLocallyHandledGlobalChatVar`.
 - `parser/chatML.ts` `parseChatML`: a lightweight `<|im_start|>` splitter that extracts `<Thoughts>` and CBS-parses each part. Used by `sendChat` `chatML` cards, the translator, and memory.
 - `parser/partialEdit.ts`: maps rendered text back to markdown ranges.
@@ -94,7 +97,7 @@ Display:
 
 - `parser.svelte.ts` imports `processScriptFull` from `process/scripts.ts`, and `scripts.ts` imports `risuChatParser`. This is a deliberate import cycle, so keep the imports lazy-safe.
 - `chatVar.svelte.ts` is used by scripts, triggers, the lorebook, `infunctions.ts`, `mcp/graphmem.ts`, and `Toggles.svelte`.
-- `cbs.ts` consumers: `parser.svelte.ts`, `PlaygroundDocs.svelte` (live docs from `description`), and `cbsMonaco.ts`.
+- `registerCBS` consumers: the evaluator (`shared/cbs/evaluator.ts`), and through `cbs.ts` `PlaygroundDocs.svelte` (live docs from `description`) and `cbsMonaco.ts`.
 
 ## Invariants
 
@@ -111,7 +114,7 @@ Display:
 ## Recipes
 
 - Add a CBS function:
-  1. Add an entry in `cbs.ts:registerCBS`: name, callback, aliases, precise `description`. Use only injected helpers.
+  1. Add an entry in `shared/cbs/registry.ts:registerCBS`: name, callback, aliases, precise `description`. Use only injected helpers (a new host read is a new `CBSRegisterArg` field, wired in `parser.svelte.ts` and on the server). The file is strict-checked by the server `tsc`.
   2. Add it to the matching list in `gui/highlight.ts` (`normalCBS`, `normalCBSwithParams`, `displayRelatedCBS`, or `nestedCBS`).
   3. Add a test under `src/ts/parser/tests/cbs/` using the `cbs` helper from `lib.ts`.
   4. Confirm it appears in Playground → CBS docs.
@@ -124,7 +127,9 @@ Display:
 - `chatVar.svelte.test.ts`.
 - `chatML.test.ts`: has skipped and FIXME cases.
 - `trimMarkdownStyle.test.ts`: covers sanitizer and XSS regressions.
-- Not tested: most of `cbs.ts`, asset/inlay rendering, `partialEdit`, `highlight.ts`.
+- `server/src/tests/cbs.test.ts` (node; host `server/src/tests/cbsHost.ts`): the shared evaluator from a Node host against the browser-path baseline (`fixtures/baseline/markdown.json`: the `Mark` chat's `editprocess` and pre-pass texts, the random message by shape) and the host-parity cases of `fixtures/cbs-parity.json`; independent evaluators; a throwing host callback leaves the literal.
+- `src/ts/parser/tests/cbs/hostParity.test.ts`: the same `cbs-parity.json` cases through the client wrapper (the selection, `CurrentTriggerIdStore`, `window`, `navigator`, the chat variables): recursive `#func`/`call`, the call-stack limit, the second `time` registration, the fixed clock in UTC, group speakers, `chatRef` versus the selection (messages, variables, the bound persona, local globals), the calculator (bound to the selection), `#when` operators, Unicode and XOR, the viewport, language, and trigger callbacks.
+- Not tested: most of `shared/cbs/registry.ts`, asset/inlay rendering, `partialEdit`, `highlight.ts`.
 
 ## Known Hazards
 

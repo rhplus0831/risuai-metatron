@@ -27,7 +27,7 @@
 
 ## Files
 
-- `model/types.ts`: the catalogue types and `LLMProvider`. `LLMFlags`, `LLMFormat`, and `LLMTokenizer` are declared in `shared/llm.ts` (persisted numeric codes) and re-exported here.
+- `model/types.ts`: the catalogue types. `LLMFlags`, `LLMFormat`, `LLMTokenizer`, and `LLMProvider` (persisted numeric codes) and the `LLMModel` and `LLMParameter` types are declared in `shared/llm.ts` and re-exported here (`LLMParameter` also from `request/shared.ts`).
   - Numeric enums `LLMFlags`, `LLMProvider`, `LLMFormat`, `LLMTokenizer`.
   - `LLMModel`: `id`, `name`, `internalID`, `provider`, `format`, `flags[]`, `parameters`, `tokenizer`, `endpoint`, `keyIdentifier`.
   - `ProviderNames`, and parameter presets such as `OpenAIParameters`/`ClaudeParameters`.

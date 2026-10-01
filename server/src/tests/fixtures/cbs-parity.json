@@ -1,0 +1,340 @@
+{
+  "readme": [
+    "The CBS host-parity cases of Phase 5 slice 3: the same strings evaluated by the client wrapper",
+    "(src/ts/parser/tests/cbs/hostParity.test.ts, happy-dom, risuChatParser with the live-database host)",
+    "and by the shared evaluator under plain Node (server/src/tests/cbs.test.ts, createNodeCbsHost).",
+    "The expected values are hand-derived from the registry and evaluator code and pin the legacy",
+    "quirks explicitly (named `quirk` in the case name); both runtimes must answer them. A case's",
+    "`arg` is the parse argument: `charaId` resolves to the character of that `chaId`, `chara` is a",
+    "name string. `triggerId` is the manual trigger in progress. Time is the fixed `fixedTime` in UTC."
+  ],
+  "fixedTime": "2026-10-01T12:00:00.000Z",
+  "viewport": { "width": 1280, "height": 720 },
+  "browserLanguage": "en-US",
+  "selectedCharID": 0,
+  "database": {
+    "username": "User",
+    "language": "en",
+    "aiModel": "reverse_proxy",
+    "maxContext": 4000,
+    "selectedPersona": 0,
+    "personaPrompt": "",
+    "personas": [
+      { "id": "persona-user", "name": "User", "personaPrompt": "", "icon": "", "note": "", "largePortrait": false },
+      {
+        "id": "persona-mina",
+        "name": "Mina",
+        "personaPrompt": "Mina asks precise questions.",
+        "icon": "",
+        "note": "",
+        "largePortrait": false
+      }
+    ],
+    "globalChatVariables": { "bonus": "5", "toggle_dark": "1" },
+    "templateDefaultVariables": "tmpl=T",
+    "enabledModules": [],
+    "modules": [],
+    "characters": [
+      {
+        "type": "character",
+        "chaId": "char-sel",
+        "name": "Sel",
+        "firstMessage": "Sel greets.",
+        "alternateGreetings": [],
+        "defaultVariables": "dflt=D",
+        "chatPage": 0,
+        "customscript": [],
+        "emotionImages": [],
+        "chats": [
+          {
+            "id": "chat-sel-1",
+            "name": "S1",
+            "note": "",
+            "localLore": [],
+            "fmIndex": -1,
+            "scriptstate": { "$hp": "7", "$mood": "calm" },
+            "message": [
+              { "chatId": "m-s1", "role": "user", "data": "first user line" },
+              { "chatId": "m-s2", "role": "char", "data": "Sel answers {{user}}." }
+            ]
+          },
+          {
+            "id": "chat-sel-2",
+            "name": "S2",
+            "note": "",
+            "localLore": [],
+            "fmIndex": -1,
+            "scriptstate": { "$hp": "1" },
+            "message": [{ "chatId": "m-s3", "role": "char", "data": "second chat line" }]
+          }
+        ]
+      },
+      {
+        "type": "character",
+        "chaId": "char-other",
+        "name": "Other",
+        "firstMessage": "Other greets.",
+        "alternateGreetings": ["Alt greeting"],
+        "defaultVariables": "",
+        "chatPage": 0,
+        "customscript": [],
+        "emotionImages": [],
+        "chats": [
+          {
+            "id": "chat-other-1",
+            "name": "O1",
+            "note": "",
+            "localLore": [],
+            "fmIndex": 0,
+            "bindedPersona": "persona-mina",
+            "scriptstate": { "$hp": "99" },
+            "GLGlobalVariables": { "bonus": "50" },
+            "message": [{ "chatId": "m-o1", "role": "char", "data": "Other's last line" }]
+          }
+        ]
+      },
+      {
+        "type": "character",
+        "chaId": "char-bram",
+        "name": "Bram",
+        "nickname": "Brambles",
+        "firstMessage": "Bram's greeting.",
+        "alternateGreetings": [],
+        "defaultVariables": "",
+        "chatPage": 0,
+        "customscript": [],
+        "emotionImages": [],
+        "chats": [{ "id": "chat-bram-1", "name": "B1", "note": "", "localLore": [], "fmIndex": -1, "message": [] }]
+      },
+      {
+        "type": "character",
+        "chaId": "char-cora",
+        "name": "Cora",
+        "firstMessage": "Cora's greeting.",
+        "alternateGreetings": [],
+        "defaultVariables": "",
+        "chatPage": 0,
+        "customscript": [],
+        "emotionImages": [],
+        "chats": [{ "id": "chat-cora-1", "name": "C1", "note": "", "localLore": [], "fmIndex": -1, "message": [] }]
+      },
+      {
+        "type": "group",
+        "chaId": "group-council",
+        "name": "Council",
+        "firstMessage": "",
+        "characters": ["char-bram", "char-cora"],
+        "characterTalks": [1, 1],
+        "characterActive": [true, true],
+        "orderByOrder": true,
+        "autoMode": false,
+        "useCharacterLore": true,
+        "firstMsgIndex": -1,
+        "globalLore": [],
+        "emotionImages": [],
+        "customscript": [],
+        "chatPage": 0,
+        "chats": [
+          {
+            "id": "chat-council-1",
+            "name": "G1",
+            "note": "",
+            "localLore": [],
+            "fmIndex": -1,
+            "message": [
+              { "chatId": "m-g1", "role": "user", "data": "hi" },
+              { "chatId": "m-g2", "role": "char", "data": "Bram here.", "saying": "char-bram" }
+            ]
+          },
+          {
+            "id": "chat-council-2",
+            "name": "G2",
+            "note": "",
+            "localLore": [],
+            "fmIndex": -1,
+            "message": [{ "chatId": "m-g3", "role": "char", "data": "nobody", "saying": "ghost" }]
+          },
+          { "id": "chat-council-3", "name": "G3", "note": "", "localLore": [], "fmIndex": -1, "message": [] }
+        ]
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "recursive function through #func and call",
+      "input": "[{{#func count n}}{{#when::{{arg::1}}::>::0}}{{arg::1}} {{call::count::{{? {{arg::1}}-1}}}}{{/when}}{{/func}}{{call::count::3}}]",
+      "expected": "[3 2 1 ]"
+    },
+    {
+      "name": "quirk: a function calling itself without end hits the call-stack limit",
+      "input": "{{#func loop}}{{call::loop}}{{/func}}{{call::loop}}",
+      "expected": "ERROR: Call stack limit reached"
+    },
+    {
+      "name": "quirk: the second time registration wins (a format argument is honored)",
+      "input": "{{time::YYYY}}",
+      "expected": "2026"
+    },
+    {
+      "name": "date and time without arguments are unpadded",
+      "input": "{{date}} {{time}}",
+      "expected": "2026-10-1 12:0:0"
+    },
+    {
+      "name": "date formats with the en month and weekday names",
+      "input": "{{date::dddd, MMMM DD HH:mm A}}",
+      "expected": "Thursday, October 01 12:00 PM"
+    },
+    {
+      "name": "quirk: a timestamp argument is divided by 1000 and then read as milliseconds",
+      "input": "{{date::YYYY-MM-DD HH:mm::1767225600000}}",
+      "expected": "1970-01-21 10:53"
+    },
+    { "name": "unixtime at the fixed time", "input": "{{unixtime}}", "expected": "1790856000" },
+    {
+      "name": "group chat: the last speaker is the character",
+      "input": "{{char}}",
+      "arg": { "charaId": "group-council", "chatRef": { "chaId": "group-council", "chatId": "chat-council-1" } },
+      "expected": "Bram"
+    },
+    {
+      "name": "quirk: group chat with an unknown speaker answers the group name",
+      "input": "{{char}}",
+      "arg": { "charaId": "group-council", "chatRef": { "chaId": "group-council", "chatId": "chat-council-2" } },
+      "expected": "Council"
+    },
+    {
+      "name": "group chat without messages answers bot",
+      "input": "{{char}}",
+      "arg": { "charaId": "group-council", "chatRef": { "chaId": "group-council", "chatId": "chat-council-3" } },
+      "expected": "bot"
+    },
+    {
+      "name": "quirk: a group chara without a chatRef answers the selected character",
+      "input": "{{char}}",
+      "arg": { "charaId": "group-council" },
+      "expected": "Sel"
+    },
+    {
+      "name": "a chara name string is used when the context is a group",
+      "input": "{{char}}",
+      "arg": { "chara": "Narrator", "chatRef": { "chaId": "group-council", "chatId": "chat-council-3" } },
+      "expected": "Narrator"
+    },
+    {
+      "name": "quirk: lastmessage returns the stored text without parsing it",
+      "input": "{{lastmessage}}",
+      "expected": "Sel answers {{user}}."
+    },
+    {
+      "name": "lastmessage of an explicit chatRef",
+      "input": "{{lastmessage}}",
+      "arg": { "chatRef": { "chaId": "char-other", "chatId": "chat-other-1" } },
+      "expected": "Other's last line"
+    },
+    {
+      "name": "chat variables of the selection, of another character, and of a non-selected chat",
+      "input": "{{getvar::hp}}",
+      "expected": "7"
+    },
+    {
+      "name": "chat variable of an explicit chatRef",
+      "input": "{{getvar::hp}}",
+      "arg": { "chatRef": { "chaId": "char-other", "chatId": "chat-other-1" } },
+      "expected": "99"
+    },
+    {
+      "name": "chat variable of the selected character's other chat",
+      "input": "{{getvar::hp}}",
+      "arg": { "chatRef": { "chaId": "char-sel", "chatId": "chat-sel-2" } },
+      "expected": "1"
+    },
+    {
+      "name": "chat variable defaults: the character's, the template's, then null",
+      "input": "{{getvar::dflt}} {{getvar::tmpl}} {{getvar::nope}}",
+      "expected": "D T null"
+    },
+    { "name": "user without a bound persona", "input": "{{user}}", "expected": "User" },
+    {
+      "name": "user of a chatRef whose chat binds a persona",
+      "input": "{{user}} / {{persona}}",
+      "arg": { "chatRef": { "chaId": "char-other", "chatId": "chat-other-1" } },
+      "expected": "Mina / Mina asks precise questions."
+    },
+    { "name": "global variable", "input": "{{getglobalvar::bonus}}", "expected": "5" },
+    {
+      "name": "global variable overridden by the chatRef chat's local copy",
+      "input": "{{getglobalvar::bonus}}",
+      "arg": { "chatRef": { "chaId": "char-other", "chatId": "chat-other-1" } },
+      "expected": "50"
+    },
+    {
+      "name": "history with roles and the first-message index of a chatRef",
+      "input": "{{history::role}} {{firstmsgindex}}",
+      "arg": { "chatRef": { "chaId": "char-other", "chatId": "chat-other-1" } },
+      "expected": "[\"char: Other's last line\"] 0"
+    },
+    {
+      "name": "calculator reads chat and global variables",
+      "input": "{{? $hp * 2 + @bonus}}",
+      "expected": "19"
+    },
+    {
+      "name": "quirk: the calculator reads the selected chat's variables even with a chatRef",
+      "input": "{{? $hp + 1}} {{calc::$hp + 1}}",
+      "arg": { "chatRef": { "chaId": "char-other", "chatId": "chat-other-1" } },
+      "expected": "8 8"
+    },
+    {
+      "name": "calculator operators",
+      "input": "{{? (1+2)*3}} {{? 2^3 - 1}} {{? 1 < 2 && 3 >= 3}} {{? !0}} {{? $nope + 1}}",
+      "expected": "9 7 1 1 1"
+    },
+    {
+      "name": "#when with a variable comparison and a toggle",
+      "input": "{{#when::mood::vis::calm}}yes{{:else}}no{{/when}}{{#when::toggle::dark}}+dark{{/when}}",
+      "expected": "yes+dark"
+    },
+    {
+      "name": "#when with a variable comparison against a chatRef without the variable",
+      "input": "{{#when::mood::vis::calm}}yes{{:else}}no{{/when}}",
+      "arg": { "chatRef": { "chaId": "char-other", "chatId": "chat-other-1" } },
+      "expected": "no"
+    },
+    {
+      "name": "xor round trip keeps multi-byte text",
+      "input": "{{xordecrypt::{{xor::hello 한글 🌍}}}}",
+      "expected": "hello 한글 🌍"
+    },
+    { "name": "xor of ascii", "input": "{{xor::hi}}", "expected": "l5Y=" },
+    {
+      "name": "unicode code points",
+      "input": "{{unicodeencode::한}} {{unicodedecode::54620}} {{u::41}} {{unicodeencode::ab::1}}",
+      "expected": "54620 한 A 98"
+    },
+    { "name": "viewport through the host", "input": "{{screenwidth}}x{{screenheight}}", "expected": "1280x720" },
+    {
+      "name": "browser language and the ui language",
+      "input": "{{metadata::browserlanguage}} {{metadata::language}} {{metadata::node}}",
+      "expected": "en-US en 1"
+    },
+    { "name": "trigger id without a manual trigger", "input": "{{trigger_id}}", "expected": "null" },
+    {
+      "name": "trigger id of the manual trigger in progress",
+      "input": "{{trigger_id}}/{{triggerid}}",
+      "triggerId": "btn-7",
+      "expected": "btn-7/btn-7"
+    },
+    {
+      "name": "an unknown function stays literal and a nested call resolves inside out",
+      "input": "{{nosuch::x}} {{upper::{{getvar::mood}}}}",
+      "expected": "{{nosuch::x}} CALM"
+    },
+    {
+      "name": "consistent character mode",
+      "input": "{{char}} {{user}}",
+      "arg": { "consistantChar": true },
+      "expected": "botname username"
+    }
+  ]
+}

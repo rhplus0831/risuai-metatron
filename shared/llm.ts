@@ -79,3 +79,58 @@ export const LLMTokenizer = {
     GLM5: 16,
 } as const;
 export type LLMTokenizer = (typeof LLMTokenizer)[keyof typeof LLMTokenizer];
+
+/** The request parameters a model accepts. */
+export type LLMParameter =
+    | "temperature"
+    | "top_k"
+    | "repetition_penalty"
+    | "min_p"
+    | "top_a"
+    | "top_p"
+    | "frequency_penalty"
+    | "presence_penalty"
+    | "reasoning_effort"
+    | "reasoning_effort_min_medium"
+    | "reasoning_effort_none"
+    | "reasoning_effort_xhigh"
+    | "thinking_tokens"
+    | "verbosity";
+
+export const LLMProvider = {
+    OpenAI: 0,
+    Anthropic: 1,
+    GoogleCloud: 2,
+    VertexAI: 3,
+    AsIs: 4,
+    Mistral: 5,
+    NovelList: 6,
+    Cohere: 7,
+    NovelAI: 8,
+    WebLLM: 9,
+    Horde: 10,
+    AWS: 11,
+    DeepSeek: 12,
+    DeepInfra: 13,
+    Echo: 14,
+    NanoGPT: 15,
+    Ollama: 16,
+} as const;
+export type LLMProvider = (typeof LLMProvider)[keyof typeof LLMProvider];
+
+/** A catalogue entry (the catalogue itself is still the client's `modellist.ts`). */
+export interface LLMModel {
+    id: string;
+    name: string;
+    shortName?: string;
+    fullName?: string;
+    internalID?: string;
+    provider: LLMProvider;
+    flags: LLMFlags[];
+    format: LLMFormat;
+    parameters: LLMParameter[];
+    tokenizer: LLMTokenizer;
+    recommended?: boolean;
+    keyIdentifier?: string;
+    endpoint?: string;
+}

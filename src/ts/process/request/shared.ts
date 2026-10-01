@@ -1,21 +1,9 @@
 import { getDatabase } from "src/ts/storage/database.svelte";
 import { parseAdditionalParamJsonValue } from "./additionalParams";
 
-export type LLMParameter =
-    | "temperature"
-    | "top_k"
-    | "repetition_penalty"
-    | "min_p"
-    | "top_a"
-    | "top_p"
-    | "frequency_penalty"
-    | "presence_penalty"
-    | "reasoning_effort"
-    | "reasoning_effort_min_medium"
-    | "reasoning_effort_none"
-    | "reasoning_effort_xhigh"
-    | "thinking_tokens"
-    | "verbosity";
+import type { LLMParameter } from "../../../../shared/llm.ts";
+
+export type { LLMParameter };
 
 export type ModelModeExtended = "model" | "submodel" | "memory" | "emotion" | "otherAx" | "translate";
 

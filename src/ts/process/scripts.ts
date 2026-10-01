@@ -25,17 +25,15 @@ import { capturePluginContext, invokeHook, type PluginCallContext } from "../plu
 import { pluginHooks } from "../plugins/pluginHooks";
 import { runTrigger } from "./triggers";
 import { type ChatRef, currentChatRef, findChat, setMessageText } from "../storage/chatStore.svelte";
+import {
+    createScriptCache,
+    regexScriptCacheKey,
+    runRegexScripts,
+    type RegexScriptEffect,
+    type RegexScriptMode,
+} from "../../../shared/scripts/regex.ts";
 
-const dreg = /{{data}}/g;
-const randomness = /\|\|\|/g;
-
-export type ScriptMode = "editinput" | "editoutput" | "editprocess" | "editdisplay";
-
-type pScript = {
-    script: customscript;
-    order: number;
-    actions: string[];
-};
+export type ScriptMode = RegexScriptMode;
 
 export async function processScript(
     char: character | groupChat,
@@ -88,42 +86,10 @@ export async function importRegex(o?: customscript[]): Promise<customscript[]> {
 }
 
 let bestMatchCache = new Map<string, string>();
-let processScriptCache = new Map<string, string>();
-
-function generateScriptCacheKey(
-    scripts: customscript[],
-    data: string,
-    mode: ScriptMode,
-    chatID = -1,
-    cbsConditions: CbsConditions = {},
-    chatRef?: ChatRef | null,
-) {
-    // Dynamic (`<cbs>`) inputs are expanded for the same chat the scripts then run for, and that chat
-    // is part of the key (`chatID` indexes it).
-    let hash = data + "|||" + mode + "|||" + (chatRef ? `${chatRef.chaId}/${chatRef.chatId}` : "") + "|||";
-    for (const script of scripts) {
-        if (script.type !== mode) {
-            continue;
-        }
-        hash += `${script.flag?.includes("<cbs>") ? risuChatParser(script.in, { chatID: chatID, cbsConditions, chatRef }) : script.in}|||${script.out}${chatID}|||${script.flag ?? ""}|||${script.ableFlag ? 1 : 0}`;
-    }
-    return hash;
-}
-
-function cacheScript(hash: string, result: string) {
-    processScriptCache.set(hash, result);
-
-    if (processScriptCache.size > 1000) {
-        processScriptCache.delete(processScriptCache.keys().next().value);
-    }
-}
-
-function getScriptCache(hash: string) {
-    return processScriptCache.get(hash);
-}
+const processScriptCache = createScriptCache();
 
 export function resetScriptCache() {
-    processScriptCache = new Map();
+    processScriptCache.reset();
 }
 
 export async function processScriptFull(
@@ -174,231 +140,84 @@ export async function processScriptFull(
 
     data = risuChatParser(data, { chatID: chatID, cbsConditions, chatRef });
     const scripts = (db.presetRegex ?? []).concat(char.customscript).concat(getModuleRegexScripts(chatRef));
-    const hash = generateScriptCacheKey(scripts, data, mode, chatID, cbsConditions, chatRef);
-    const cached = getScriptCache(hash);
+    // Dynamic (`<cbs>`) inputs are expanded for the same chat the scripts then run for, and that chat
+    // is part of the key (`chatID` indexes it).
+    const parse = (text: string) => risuChatParser(text, { chatID: chatID, cbsConditions, chatRef });
+    const hash = regexScriptCacheKey(
+        scripts,
+        data,
+        mode,
+        chatID,
+        chatRef ? `${chatRef.chaId}/${chatRef.chatId}` : "",
+        parse,
+    );
+    const cached = processScriptCache.get(hash);
     if (cached) {
         return { data: cached, emoChanged: false };
     }
 
     if (scripts.length === 0) {
-        cacheScript(hash, data);
+        processScriptCache.set(hash, data);
         return { data, emoChanged };
     }
-    function executeScript(pscript: pScript) {
-        const script = pscript.script;
 
-        if (script.in === "") {
-            return;
-        }
-
-        if (script.type === mode) {
-            let outScript2 = script.out.replaceAll("$n", "\n");
-            let outScript = outScript2.replace(dreg, "$&");
-            let flag = "g";
-            if (script.ableFlag) {
-                flag = script.flag || "g";
+    function applyScriptEffect(effect: RegexScriptEffect) {
+        if (effect.kind === "emotion") {
+            let charemotions = get(CharEmotion);
+            let tempEmotion = charemotions[char.chaId];
+            if (!tempEmotion) {
+                tempEmotion = [];
             }
-            if (
-                outScript.startsWith("@@move_top") ||
-                outScript.startsWith("@@move_bottom") ||
-                pscript.actions.includes("move_top") ||
-                pscript.actions.includes("move_bottom")
-            ) {
-                flag = flag.replace("g", ""); //temperary fix
+            if (tempEmotion.length > 4) {
+                tempEmotion.splice(0, 1);
             }
-            if (outScript.endsWith(">") && !pscript.actions.includes("no_end_nl")) {
-                outScript += "\n";
-            }
-            //remove unsupported flag
-            flag = flag.trim().replace(/[^dgimsuvy]/g, "");
-
-            //remove repeated flags
-            flag = flag
-                .split("")
-                .filter((v, i, a) => a.indexOf(v) === i)
-                .join("");
-
-            if (flag.length === 0) {
-                flag = "u";
-            }
-
-            let input = script.in;
-            if (pscript.actions.includes("cbs")) {
-                input = risuChatParser(input, { chatID: chatID, cbsConditions, chatRef });
-            }
-
-            const reg = new RegExp(input, flag);
-            if (outScript.startsWith("@@") || pscript.actions.length > 0) {
-                if (reg.test(data)) {
-                    if (outScript.startsWith("@@emo ")) {
-                        const emoName = script.out.substring(6).trim();
-                        let charemotions = get(CharEmotion);
-                        let tempEmotion = charemotions[char.chaId];
-                        if (!tempEmotion) {
-                            tempEmotion = [];
-                        }
-                        if (tempEmotion.length > 4) {
-                            tempEmotion.splice(0, 1);
-                        }
-                        if (char.type !== "simple") {
-                            for (const emo of char.emotionImages) {
-                                if (emo[0] === emoName) {
-                                    const emos: [string, string, number] = [emo[0], emo[1], Date.now()];
-                                    tempEmotion.push(emos);
-                                    charemotions[char.chaId] = tempEmotion;
-                                    CharEmotion.set(charemotions);
-                                    emoChanged = true;
-                                    break;
-                                }
-                            }
-                        }
-                    } else if (
-                        (outScript.startsWith("@@inject") || pscript.actions.includes("inject")) &&
-                        chatID !== -1
-                    ) {
-                        if (injectTarget && injectMessageId) {
-                            try {
-                                setMessageText(injectTarget, injectMessageId, data);
-                            } catch (error) {
-                                // The message is being generated (its own stream sets its text).
-                                console.warn("[Script] @@inject skipped a message being generated", error);
-                            }
-                        }
-                        data = data.replace(reg, "");
-                    } else if (
-                        outScript.startsWith("@@move_top") ||
-                        outScript.startsWith("@@move_bottom") ||
-                        pscript.actions.includes("move_top") ||
-                        pscript.actions.includes("move_bottom")
-                    ) {
-                        const isGlobal = flag.includes("g");
-                        const matchAll = isGlobal ? data.matchAll(reg) : [data.match(reg)];
-                        data = data.replace(reg, "");
-                        for (const matched of matchAll) {
-                            if (matched) {
-                                const inData = matched[0];
-                                let out = outScript
-                                    .replace("@@move_top ", "")
-                                    .replace("@@move_bottom ", "")
-                                    .replace(/(?<!\$)\$[0-9]+/g, (v) => {
-                                        const index = parseInt(v.substring(1));
-                                        if (index < matched.length) {
-                                            return matched[index];
-                                        }
-                                        return v;
-                                    })
-                                    .replace(/\$\&/g, inData)
-                                    .replace(/(?<!\$)\$<([^>]+)>/g, (v) => {
-                                        const groupName = parseInt(v.substring(2, v.length - 1));
-                                        if (matched.groups && matched.groups[groupName]) {
-                                            return matched.groups[groupName];
-                                        }
-                                        return v;
-                                    });
-                                if (outScript.startsWith("@@move_top") || pscript.actions.includes("move_top")) {
-                                    data = out + "\n" + data;
-                                } else {
-                                    data = data + "\n" + out;
-                                }
-                            }
-                        }
-                    } else {
-                        data = risuChatParser(data.replace(reg, outScript), { chatID: chatID, cbsConditions, chatRef });
-                    }
-                } else {
-                    if (
-                        (outScript.startsWith("@@repeat_back") || pscript.actions.includes("repeat_back")) &&
-                        chatID !== -1
-                    ) {
-                        const v = outScript.split(" ", 2)[1];
-                        // The chat `chatID` indexes: the caller's (`chatRef`), or the selected one.
-                        const selchar = chatRef
-                            ? db.characters.find((entry) => entry?.chaId === chatRef.chaId)
-                            : db.characters[get(selectedCharID)];
-                        const chat = chatRef ? findChat(chatRef) : selchar.chats[selchar.chatPage];
-                        let lastChat =
-                            chat.fmIndex === -1 ? selchar.firstMessage : selchar.alternateGreetings[chat.fmIndex];
-                        let pointer = chatID - 1;
-                        while (pointer >= 0) {
-                            if (chat.message[pointer].role === chat.message[chatID].role) {
-                                lastChat = chat.message[pointer].data;
-                                break;
-                            }
-                            pointer--;
-                        }
-
-                        const r = lastChat.match(reg);
-                        if (!v) {
-                            data = data + r[0];
-                        } else if (r[0]) {
-                            switch (v) {
-                                case "end":
-                                    data = data + r[0];
-                                    break;
-                                case "start":
-                                    data = r[0] + data;
-                                    break;
-                                case "end_nl":
-                                    data = data + "\n" + r[0];
-                                    break;
-                                case "start_nl":
-                                    data = r[0] + "\n" + data;
-                                    break;
-                            }
-                        }
+            if (char.type !== "simple") {
+                for (const emo of char.emotionImages) {
+                    if (emo[0] === effect.name) {
+                        const emos: [string, string, number] = [emo[0], emo[1], Date.now()];
+                        tempEmotion.push(emos);
+                        charemotions[char.chaId] = tempEmotion;
+                        CharEmotion.set(charemotions);
+                        emoChanged = true;
+                        break;
                     }
                 }
-            } else {
-                data = risuChatParser(data.replace(reg, outScript), { chatID: chatID, cbsConditions, chatRef });
+            }
+        } else if (injectTarget && injectMessageId) {
+            try {
+                setMessageText(injectTarget, injectMessageId, effect.text);
+            } catch (error) {
+                // The message is being generated (its own stream sets its text).
+                console.warn("[Script] @@inject skipped a message being generated", error);
             }
         }
     }
 
-    let parsedScripts: pScript[] = [];
-    let orderChanged = false;
-    for (const script of scripts) {
-        if (script.ableFlag && script.flag?.includes("<")) {
-            const rregex = /<(.+?)>/g;
-            const scriptData = safeStructuredClone(script);
-            let order = 0;
-            const actions: string[] = [];
-            scriptData.flag = scriptData.flag?.replace(rregex, (v: string, p1: string) => {
-                const meta = p1.split(",").map((v) => v.trim());
-                for (const m of meta) {
-                    if (m.startsWith("order ")) {
-                        order = parseInt(m.substring(6));
-                        orderChanged = true;
-                    } else {
-                        actions.push(m);
-                    }
+    const result = runRegexScripts(data, scripts, {
+        mode,
+        chatID,
+        parse,
+        repeatBackSource: () => {
+            // The chat `chatID` indexes: the caller's (`chatRef`), or the selected one.
+            const selchar = chatRef
+                ? db.characters.find((entry) => entry?.chaId === chatRef.chaId)
+                : db.characters[get(selectedCharID)];
+            const chat = chatRef ? findChat(chatRef) : selchar.chats[selchar.chatPage];
+            let lastChat = chat.fmIndex === -1 ? selchar.firstMessage : selchar.alternateGreetings[chat.fmIndex];
+            let pointer = chatID - 1;
+            while (pointer >= 0) {
+                if (chat.message[pointer].role === chat.message[chatID].role) {
+                    lastChat = chat.message[pointer].data;
+                    break;
                 }
-
-                return "";
-            });
-            parsedScripts.push({
-                script: scriptData,
-                order,
-                actions,
-            });
-            continue;
-        }
-        parsedScripts.push({
-            script,
-            order: 0,
-            actions: [],
-        });
-    }
-
-    if (orderChanged) {
-        parsedScripts.sort((a, b) => b.order - a.order); //sort by order
-    }
-    for (const script of parsedScripts) {
-        try {
-            executeScript(script);
-        } catch (error) {
-            console.error(error);
-        }
-    }
+                pointer--;
+            }
+            return lastChat;
+        },
+        // Applied where the script matched, as before: later scripts' CBS reads the write.
+        applyEffect: applyScriptEffect,
+    });
+    data = result.data;
 
     if (
         db.dynamicAssets &&
@@ -411,7 +230,7 @@ export async function processScriptFull(
             mode === "editinput" ||
             mode === "editprocess"
         ) {
-            cacheScript(hash, data);
+            processScriptCache.set(hash, data);
             return { data, emoChanged };
         }
         const assetNames = char.additionalAssets.map((v) => v[0]);
@@ -446,7 +265,7 @@ export async function processScriptFull(
         }
     }
 
-    cacheScript(hash, data);
+    processScriptCache.set(hash, data);
 
     return { data, emoChanged };
 }

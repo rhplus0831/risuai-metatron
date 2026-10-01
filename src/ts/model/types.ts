@@ -1,44 +1,8 @@
-import type { LLMParameter } from "../process/request/shared";
-import { LLMFlags, LLMFormat, LLMTokenizer } from "../../../shared/llm.ts";
+import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "../../../shared/llm.ts";
+import type { LLMParameter } from "../../../shared/llm.ts";
 
-export { LLMFlags, LLMFormat, LLMTokenizer };
-
-export const LLMProvider = {
-    OpenAI: 0,
-    Anthropic: 1,
-    GoogleCloud: 2,
-    VertexAI: 3,
-    AsIs: 4,
-    Mistral: 5,
-    NovelList: 6,
-    Cohere: 7,
-    NovelAI: 8,
-    WebLLM: 9,
-    Horde: 10,
-    AWS: 11,
-    DeepSeek: 12,
-    DeepInfra: 13,
-    Echo: 14,
-    NanoGPT: 15,
-    Ollama: 16,
-} as const;
-export type LLMProvider = (typeof LLMProvider)[keyof typeof LLMProvider];
-
-export interface LLMModel {
-    id: string;
-    name: string;
-    shortName?: string;
-    fullName?: string;
-    internalID?: string;
-    provider: LLMProvider;
-    flags: LLMFlags[];
-    format: LLMFormat;
-    parameters: LLMParameter[];
-    tokenizer: LLMTokenizer;
-    recommended?: boolean;
-    keyIdentifier?: string;
-    endpoint?: string;
-}
+export { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer };
+export type { LLMModel };
 
 export const ProviderNames = new Map<LLMProvider, string>([
     [LLMProvider.OpenAI, "OpenAI"],

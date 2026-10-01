@@ -19,11 +19,14 @@
 
 ## Files
 
-- `scripts.ts`: regex script execution.
-  - `ScriptMode` = `editinput|editoutput|editprocess|editdisplay`.
-  - `processScriptFull(char, data, mode, chatID, cbsConditions)` returns `{data, emoChanged}`. `processScript` returns only `.data`.
+- `shared/scripts/regex.ts`: the regex engine both the client and the server run (Phase 5).
+  - `runRegexScripts(data, scripts, { mode, chatID, parse, repeatBackSource, applyEffect? })` returns `{ data, effects }`: flags, `<order n>` and the other `<...>` actions, the `@@` directives, and the script loop (a script that throws is skipped). It writes nothing itself: `@@emo` and `@@inject` go to `applyEffect` where their script matched, inside that script's `try` (so a later script's CBS reads the write, and a throwing sink skips the rest of that script only), and are also returned as the ordered `effects` (`{ kind: "emotion", name }`, `{ kind: "inject", text }`). `parse` is the run's CBS; `repeatBackSource` answers `@@repeat_back`'s previous message.
+  - `regexScriptCacheKey` and `createScriptCache` (the final output, 1,000 entries).
+- `scripts.ts`: the client orchestration around the engine.
+  - `ScriptMode` = `editinput|editoutput|editprocess|editdisplay` (`RegexScriptMode`).
+  - `processScriptFull(char, data, mode, chatID, cbsConditions, chatRef, pluginContext)` returns `{data, emoChanged}`. `processScript` returns only `.data`.
   - `exportRegex`/`importRegex`, `resetScriptCache`.
-  - Internal: `executeScript`, `processScriptCache`, `bestMatchCache`.
+  - Internal: `processScriptCache`, `bestMatchCache` (dynamic assets), and the effect applier (`CharEmotion`, `setMessageText`).
 - `triggers.ts`: the trigger runtime. The trigger model (`triggerscript`, `triggerEffect`, the `triggerV2*` effect types) is declared in `shared/triggers.ts` and re-exported here.
   - Types: `triggerscript`, `triggerEffect` = `triggerCode | triggerEffectV2`.
   - `triggerscript.conditions` is `unknown[]`, kept for shared-format compatibility with upstream readers. Newly created triggers write `[]`; imported arrays are preserved, and `runTrigger` skips triggers with non-empty conditions.
@@ -63,7 +66,7 @@ Where each hook runs:
 4. CBS.
 5. Collect the scripts: `db.presetRegex ++ char.customscript ++ getModuleRegexScripts()`.
 6. Cache lookup.
-7. Run each script whose `type === mode`, in declaration order, or by descending `<order n>` if any script is ordered.
+7. `runRegexScripts`: each script whose `type === mode`, in declaration order, or by descending `<order n>` if any script is ordered. Its `applyEffect` is the wrapper's applier, called where the script matched: `@@emo` to `CharEmotion` (`emoChanged`), `@@inject` to the message at `chatID` (resolved to a message id before the awaits; a locked message is skipped with a warning).
 8. Dynamic asset replacement.
 9. Cache write.
 
@@ -125,7 +128,7 @@ Lua:
 ## Recipes
 
 - Add a regex mode: extend `ScriptMode`, wire its caller, add the UI option in `RegexData.svelte`, and update `translator.ts:applyEdittransRegex` if the mode is translation-only.
-- Add a regex flag: add it to the UI in `RegexData.svelte`, parse the `<...>` metadata in `processScriptFull`, implement it in `executeScript`, and add the translator equivalent if needed.
+- Add a regex flag: add it to the UI in `RegexData.svelte`, parse the `<...>` metadata in `parseScripts` and implement it in `executeScript` (both in `shared/scripts/regex.ts`, strict-checked by the server `tsc`), and add the translator equivalent if needed.
 - Add a v2 effect:
   1. Add the type and union member in `shared/triggers.ts`.
   2. Update `effectCategories`, `checkSupported`, and `makeDefaultEditType` in `TriggerV2List.svelte`.
@@ -142,7 +145,9 @@ Lua:
 - `src/ts/process/scriptingsSetters.test.ts`: the four Lua character getters and setters on a real wasmoon engine over the real store: a character that is not selected, a group member on the group's chat, engine reuse across runs and a `simple` run, the entry-time id, removal and replacement mid-run, `nil` for a missing field.
 - `src/ts/process/triggers.test.ts`: the eight character effects and `v2SetPersonaDesc` over the real store: the trigger's character (a group member), one-field patches, a suspended trigger with the selection moved, deletion and refusal, the activation index guard, Lua and native effects in one trigger, and no mutation call from display and request runs.
 - `src/ts/translator/edittransRegex.test.ts`: the `edittrans` path only.
-- Not tested: `processScriptFull` ordering and cache, v2 editing, Lua permissions.
+- `server/src/tests/regex.test.ts` (node): the shared engine: mode filter and `<order n>`, skipped scripts (empty or malformed pattern), flag cleanup, `<cbs>` patterns, `@@move_top`/`@@move_bottom`, the effects in script order and `applyEffect` at the match (a later script's `{{lastmessage}}` reads the write; a throwing sink skips the rest of that script only), `@@repeat_back` (positions, the null-match skip, a throwing source), and the cache key and eviction. The legacy quirks are pinned by name (`{{data}}` stays literal; an `@@inject` without a message index or a `@@repeat_back` whose text already matches write the directive text).
+- `src/ts/process/scripts.test.ts`: the client wrapper over the real evaluator and chat module: `@@inject` then `{{lastmessage}}` and a `<cbs>` pattern reading the injected text, the cache (a `<cbs>` key expanded before the run; a hit applies no effect), a missing target, a locked message (rejected write), interleaved `@@emo`/`@@inject` order, a failing effect skipping its script only, and `@@repeat_back` through the client's lookup.
+- Not tested: v2 editing, Lua permissions.
 
 ## Known Hazards
 
