@@ -1,4 +1,4 @@
-import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, ClaudeParameters, type LLMModel } from "../types";
+import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, ClaudeParameters, type LLMModel } from "../types.ts";
 
 export const AnthropicModels: LLMModel[] = [
     // Claude 4.8 (No Date)

@@ -248,10 +248,14 @@ export type QuestionResult =
  */
 export type CallbackFailure = "hook" | "barrier" | "protocol";
 
+/** Why the server refused a callback: the job's hook list lacks it, or a nesting or queue rule. */
+export type CallbackRefusal = "unregistered" | "nesting" | "queue";
+
 export type CallbackResult =
     | { outcome: "answered"; value: unknown }
     | { outcome: "failed"; failure: CallbackFailure; error: string; discarded?: string[] }
-    | { outcome: "timedOut" | "disconnected" | "aborted" | "refused"; error?: string };
+    | { outcome: "refused"; refusal?: CallbackRefusal; error?: string }
+    | { outcome: "timedOut" | "disconnected" | "aborted"; error?: string };
 
 /** The owner's answer to a question or callback (client to server). */
 export type ChannelAnswer =

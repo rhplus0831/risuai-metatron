@@ -1,12 +1,9 @@
 import { untrack } from "svelte";
 import type { botPreset, Database, RisuPersona } from "../../../shared/database.ts";
 import {
-    PRESET_DEFAULTS,
-    PRESET_FIELD_KINDS,
-    PRESET_NULLABLE_FIELDS,
     PERSONA_ROOT_ALIASES,
     PRESET_ROOT_ALIASES,
-    plainClone,
+    presetFieldValue,
     type PresetField,
 } from "../../../shared/presets.ts";
 import { FORWARDED_PRESET_KEYS } from "../../../shared/sections.ts";
@@ -52,8 +49,6 @@ import { selectLoreBookPage, selectPersona, selectPreset, selection } from "./se
 type Db = Record<string, unknown> & { botPresets?: botPreset[]; personas?: RisuPersona[]; loreBook?: unknown[] };
 type PresetRecord = Record<string, unknown> & { id: string };
 type PersonaRecord = Record<string, unknown> & { id: string };
-
-const nullableFields = new Set<PresetField>(PRESET_NULLABLE_FIELDS);
 
 const presetFieldOf: Record<string, string> = PRESET_ROOT_ALIASES;
 
@@ -120,22 +115,6 @@ function personaForWrite(db: Db): PersonaRecord | undefined {
 
 function readPresetField(db: Db, field: PresetField): unknown {
     return presetFieldValue(resolvePreset(db), field);
-}
-
-function presetFieldValue(record: PresetRecord | undefined, field: PresetField): unknown {
-    const fallback = PRESET_DEFAULTS[field];
-    if (record === undefined) {
-        return plainClone(fallback);
-    }
-    const value = record[field];
-    if (value === undefined) {
-        return plainClone(fallback);
-    }
-    const container = PRESET_FIELD_KINDS[field] === "object" || PRESET_FIELD_KINDS[field] === "array";
-    if (value === null && container && !nullableFields.has(field)) {
-        return plainClone(fallback);
-    }
-    return value;
 }
 
 function isInstalled(target: object, key: string): boolean {

@@ -1,3 +1,4 @@
+import { setChannelCallSource } from "./channelCallSource";
 import { get } from "svelte/store";
 import type {
     CallbackFailure,
@@ -123,6 +124,8 @@ export function currentChannelCall(): { jobId: string; callbackId: string; targe
     const top = outstanding[outstanding.length - 1];
     return top ? { jobId: top.jobId, callbackId: top.id, targets: top.targets } : null;
 }
+
+setChannelCallSource(currentChannelCall);
 
 function answer(jobId: string, message: ChannelAnswer) {
     const entry = requests.get(message.id);

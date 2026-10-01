@@ -2564,7 +2564,7 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
                 }
             }
 
-            await stableDiff(currentChar, msgStr);
+            await stableDiff(currentChar, msgStr, { chatRef: chatTarget, pluginContext });
         }
     }
 

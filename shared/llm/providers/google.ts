@@ -1,4 +1,4 @@
-import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "../types";
+import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "../types.ts";
 
 export const GoogleModels: LLMModel[] = [
     // ===== Gemini 3.5/3.6/3.7/3.8 Series (2026) =====

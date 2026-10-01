@@ -4,7 +4,10 @@ import { getDatabase } from "src/ts/storage/database.svelte";
 import { LLMFlags } from "src/ts/model/modellist";
 import { addFetchLog, fetchNative, globalFetch, textifyReadableStream } from "src/ts/globalApi.svelte";
 import { simplifySchema } from "src/ts/util";
-import { NANOGPT_RESPONSES_ENDPOINT, NANOGPT_SUBSCRIPTION_RESPONSES_ENDPOINT } from "src/ts/model/providers/nanogpt";
+import {
+    NANOGPT_RESPONSES_ENDPOINT,
+    NANOGPT_SUBSCRIPTION_RESPONSES_ENDPOINT,
+} from "../../../../../shared/llm/providers/nanogpt.ts";
 
 import { extractJSON, getOpenAIJSONSchema } from "../../templates/jsonSchema";
 import { callTool, decodeToolCall, encodeToolCall } from "../../mcp/mcp";

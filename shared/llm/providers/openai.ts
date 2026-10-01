@@ -9,7 +9,7 @@ import {
     GPT5XHighParameters,
     GPT5ProParameters,
     type LLMModel,
-} from "../types";
+} from "../types.ts";
 
 export const OpenAIModels: LLMModel[] = [
     // GPT-5.5 (April 2026)

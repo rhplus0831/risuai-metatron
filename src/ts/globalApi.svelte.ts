@@ -348,6 +348,14 @@ export function addFetchLog(arg: {
 }
 
 /**
+ * Adds an entry the server built (`POST /api/llm/request`'s `log` events: the server's fetches, in
+ * the shape `addFetchLog` builds, with the credentials redacted).
+ */
+export function appendFetchLog(entry: fetchLog) {
+    fetchLog.unshift(entry);
+}
+
+/**
  * Performs a global fetch request.
  *
  * @param {string} url - The URL to fetch.

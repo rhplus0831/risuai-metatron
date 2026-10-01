@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isModelDescriptor } from "../../../shared/llm/validate.ts";
 import {
     type CallbackName,
     type CallbackPayloads,
@@ -71,6 +72,8 @@ type Request = {
     delivered: boolean;
     settled: boolean;
     timer: ReturnType<typeof setTimeout> | null;
+    /** Called once when it settles (an aux request running inside this callback ends with it). */
+    onSettled: Set<() => void>;
     resolve: (result: QuestionResult | CallbackResult) => void;
 };
 
@@ -129,22 +132,10 @@ export function parseGenerationHooks(raw: unknown): GenerationHooks | string {
     };
 }
 
-/** A provider entry: a name and the `LLMModel` fields the server reads (`shared/llm.ts`). */
+/** A provider entry: a name and the `LLMModel` fields the server reads (`isModelDescriptor`). */
 function isProviderEntry(entry: unknown): boolean {
-    if (!isPlainObject(entry) || typeof entry.name !== "string" || entry.name === "" || !isPlainObject(entry.model)) {
-        return false;
-    }
-    const model = entry.model;
-    const strings = ["id", "name", "internalID"] as const;
     return (
-        strings.every((field) => typeof model[field] === "string") &&
-        typeof model.provider === "number" &&
-        typeof model.format === "number" &&
-        typeof model.tokenizer === "number" &&
-        Array.isArray(model.flags) &&
-        model.flags.every((flag) => typeof flag === "number") &&
-        Array.isArray(model.parameters) &&
-        model.parameters.every((parameter) => typeof parameter === "string")
+        isPlainObject(entry) && typeof entry.name === "string" && entry.name !== "" && isModelDescriptor(entry.model)
     );
 }
 
@@ -254,6 +245,14 @@ export function createChannelHub(options: { now?: () => number } = {}) {
             }
         }
         request.resolve(result);
+        for (const listener of request.onSettled) {
+            try {
+                listener();
+            } catch (error) {
+                console.error("[Channel]", error);
+            }
+        }
+        request.onSettled.clear();
         pump(request.channel.transport.clientId);
     }
 
@@ -331,6 +330,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 if (!top || top.id !== parentId || top.kind !== "callback" || lane.stack.length >= MAX_DEPTH) {
                     resolve({
                         outcome: "refused",
+                        refusal: "nesting",
                         error: "A callback may run only inside the outstanding one, one level deep",
                     });
                     pump(transport.clientId);
@@ -338,7 +338,11 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 }
                 parent = top;
             } else if (lane.queue.length >= MAX_QUEUED_PER_CLIENT) {
-                resolve({ outcome: "refused", error: "Too many requests are queued for this client" });
+                resolve({
+                    outcome: "refused",
+                    refusal: "queue",
+                    error: "Too many requests are queued for this client",
+                });
                 return;
             }
             const id = randomUUID();
@@ -355,6 +359,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 delivered: false,
                 settled: false,
                 timer: null,
+                onSettled: new Set(),
                 resolve,
             };
             channel.requests.add(request);
@@ -410,6 +415,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                     if (!hasHook(transport.hooks, name, payload)) {
                         return Promise.resolve({
                             outcome: "refused",
+                            refusal: "unregistered",
                             error: `The client did not register ${name} for this job`,
                         });
                     }
@@ -472,6 +478,22 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                             console.error("[Channel]", error);
                         }
                     }
+                },
+
+                /**
+                 * `onSettled` runs once when the outstanding callback `id` of this job settles (an aux
+                 * request from inside it, `POST /api/llm/request`, ends with it). Returns the
+                 * unsubscribe, or `null` when no such callback is outstanding.
+                 */
+                watchCallback(id: string, onSettled: () => void): (() => void) | null {
+                    const request = [...state.requests].find(
+                        (entry) => entry.id === id && entry.kind === "callback" && entry.dispatched && !entry.settled,
+                    );
+                    if (!request || expireIfDue(request)) {
+                        return null;
+                    }
+                    request.onSettled.add(onSettled);
+                    return () => request.onSettled.delete(onSettled);
                 },
 
                 /** The job ends: every request of it is settled `aborted`. Idempotent. */

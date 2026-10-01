@@ -873,6 +873,26 @@ export function createGenerationJobs(options: {
         create,
 
         /** The owner's view of its job, or null for an unknown job or another client's. */
+        /**
+         * The job callback an aux request runs inside (`POST /api/llm/request` with `channelCall`),
+         * when the job is `clientId`'s, has not ended, and that callback is outstanding: its channel
+         * and an unwatch for `onSettled`, which runs once when the callback settles. Else `null`.
+         */
+        parentCallback(
+            jobId: string,
+            clientId: string | undefined,
+            callbackId: string,
+            onSettled: () => void,
+        ): { channel: JobChannel; unwatch: () => void; endJob: () => void } | null {
+            const job = ownJob(jobId, clientId);
+            if (!job || job.ended) {
+                return null;
+            }
+            const unwatch = job.channelLink.watchCallback(callbackId, onSettled);
+            // A child callback's barrier failure, timeout, or disconnect ends the job (`job-channel`).
+            return unwatch ? { channel: job.channelLink.channel, unwatch, endJob: () => abort(job, "failed") } : null;
+        },
+
         status(jobId: string, clientId: string | undefined): GenerationStatus | null {
             const job = ownJob(jobId, clientId);
             return job ? status(job) : null;

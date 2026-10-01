@@ -462,3 +462,27 @@ export function normalizePresets(input: unknown): botPreset[] {
     });
     return presets.length > 0 ? presets : [normalizePreset({ name: "New Preset" })];
 }
+
+const nullablePresetFields = new Set<string>(PRESET_NULLABLE_FIELDS);
+
+/**
+ * A preset field as the forwarding layer serves it (`src/ts/storage/forwarding.svelte.ts`) and the
+ * server request layer reads it (`server/src/llm/settings.ts`): a missing record or value reads as
+ * a fresh copy of its `PRESET_DEFAULTS` value, a `null` in an object or array field outside
+ * `PRESET_NULLABLE_FIELDS` as a fresh default, any other value as it is. Never writes.
+ */
+export function presetFieldValue(record: Record<string, unknown> | undefined, field: PresetField): unknown {
+    const fallback = PRESET_DEFAULTS[field];
+    if (record === undefined) {
+        return plainClone(fallback);
+    }
+    const value = record[field];
+    if (value === undefined) {
+        return plainClone(fallback);
+    }
+    const container = PRESET_FIELD_KINDS[field] === "object" || PRESET_FIELD_KINDS[field] === "array";
+    if (value === null && container && !nullablePresetFields.has(field)) {
+        return plainClone(fallback);
+    }
+    return value;
+}

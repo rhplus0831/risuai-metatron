@@ -26,6 +26,9 @@ import css, { type CssAtRuleAST } from "@adobe/css-tools";
 import { selectedCharID } from "../stores.svelte";
 import { calcString } from "../process/infunctions";
 import { findCharacterbyId, getPersonaPrompt, getUserIcon, getUserName, pickHashRand, replaceAsync } from "../util";
+import { PRESET_ROOT_ALIASES, presetFieldValue, type PresetField } from "../../../shared/presets.ts";
+import { PluginTargetGoneError } from "../plugins/apiV3/pluginContext";
+import { FORWARDED_PRESET_KEYS } from "../../../shared/sections.ts";
 import { getInlayAssetBlob } from "../process/files/inlays";
 import { getModuleAssets, getModuleLorebooks, getModules } from "../process/modules";
 import hljs from "highlight.js/lib/core";
@@ -38,6 +41,7 @@ import {
     risuEscape,
     risuUnescape,
     type CbsEvaluator,
+    type CbsHost,
     type CbsParseArg,
 } from "../../../shared/cbs/evaluator.ts";
 import type { CbsConditions } from "../../../shared/cbs/types.ts";
@@ -1056,7 +1060,12 @@ export type { CbsConditions };
 let cbsEvaluator: CbsEvaluator | null = null;
 
 function clientCbsEvaluator(): CbsEvaluator {
-    cbsEvaluator ??= createCbsEvaluator({
+    cbsEvaluator ??= createCbsEvaluator(clientCbsHost());
+    return cbsEvaluator;
+}
+
+function clientCbsHost(): CbsHost {
+    return {
         getDatabase: () => getDatabase(),
         getUserName: getUserName,
         getPersonaPrompt: getPersonaPrompt,
@@ -1088,12 +1097,83 @@ function clientCbsEvaluator(): CbsEvaluator {
         getViewport: () => ({ width: window.innerWidth, height: window.innerHeight }),
         getBrowserLanguage: () => navigator.language,
         findCharacterById: findCharacterbyId,
-    });
-    return cbsEvaluator;
+    };
 }
 
 export function risuChatParser(da: string, arg: CbsParseArg = {}): string {
     return clientCbsEvaluator().risuChatParser(da, arg);
+}
+
+const presetFieldOf: Record<string, string> = PRESET_ROOT_ALIASES;
+const forwardedPresetKeys = new Set<string>(FORWARDED_PRESET_KEYS);
+const scopedEvaluators = new Map<string, CbsEvaluator>();
+
+/**
+ * `risuChatParser` for a frozen plugin call context (Phase 4's hook context; Phase 5 slice 7a): the
+ * preset fields read the context's preset, and `{{user}}` and the persona prompt read the context's
+ * persona (the effective one when the context was taken: the chat's bound persona, else the
+ * selected one), instead of the tab's selection at parse time. Everything else is the tab's, as
+ * `risuChatParser` reads it. A context preset or persona that no longer exists fails the parse
+ * (`PluginTargetGoneError`), as a hook's other target-bound calls do.
+ */
+export function risuChatParserScoped(
+    da: string,
+    arg: CbsParseArg,
+    scope: { presetId: string; personaId: string },
+): string {
+    const key = `${scope.presetId}\u0000${scope.personaId}`;
+    let evaluator = scopedEvaluators.get(key);
+    if (!evaluator) {
+        const base = clientCbsHost();
+        const personaOf = () => {
+            const persona = DBState.db.personas?.find((entry) => entry?.id === scope.personaId);
+            if (!persona) {
+                throw new PluginTargetGoneError("persona");
+            }
+            return persona;
+        };
+        const presetOf = () => {
+            const preset = (DBState.db.botPresets as unknown as Record<string, unknown>[] | undefined)?.find(
+                (entry) => entry?.id === scope.presetId,
+            );
+            if (!preset) {
+                throw new PluginTargetGoneError("preset");
+            }
+            return preset;
+        };
+        const scopedDb = () => {
+            const live = getDatabase();
+            const preset = presetOf();
+            const persona = personaOf();
+            return new Proxy(live, {
+                get(target, prop, receiver) {
+                    if (typeof prop === "string") {
+                        if (forwardedPresetKeys.has(prop)) {
+                            return presetFieldValue(preset, (presetFieldOf[prop] ?? prop) as PresetField);
+                        }
+                        if (prop === "username") {
+                            return persona.name;
+                        }
+                        if (prop === "personaPrompt") {
+                            return persona.personaPrompt;
+                        }
+                    }
+                    return Reflect.get(target, prop, receiver);
+                },
+            });
+        };
+        evaluator = createCbsEvaluator({
+            ...base,
+            getDatabase: scopedDb,
+            getUserName: () => personaOf().name,
+            getPersonaPrompt: () => personaOf().personaPrompt,
+        });
+        if (scopedEvaluators.size >= 16) {
+            scopedEvaluators.delete(scopedEvaluators.keys().next().value!);
+        }
+        scopedEvaluators.set(key, evaluator);
+    }
+    return evaluator.risuChatParser(da, arg);
 }
 
 export function applyMarkdownToNode(node: Node) {

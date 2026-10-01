@@ -78,7 +78,7 @@ import { get } from "svelte/store";
 import { registerMCPModule, unregisterMCPModule } from "src/ts/process/mcp/pluginmcp";
 import { getInlayAsset } from "src/ts/process/files/inlays";
 import { getLLMCache, searchLLMCache } from "src/ts/translator/translator";
-import { hasher, risuChatParser, type CbsConditions } from "src/ts/parser/parser.svelte";
+import { hasher, risuChatParser, risuChatParserScoped, type CbsConditions } from "src/ts/parser/parser.svelte";
 import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./permissionStore";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat, doingChat } from "src/ts/process/index.svelte";
@@ -1409,7 +1409,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 ...(role ? { chatRole: role } : {}),
                 ...(options?.cbsConditions ?? {}),
             };
-            const parsed = risuChatParser(text ?? "", {
+            const parseArg = {
                 chara: char,
                 ...(context ? { chatRef: context.chatRef } : {}),
                 chatID,
@@ -1418,7 +1418,14 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 rmVar: options?.rmVar,
                 tokenizeAccurate: options?.tokenizeAccurate,
                 cbsConditions,
-            });
+            };
+            // Inside a hook, the hook's preset and persona (Phase 5 slice 7a), not the tab's selection.
+            const parsed = context
+                ? risuChatParserScoped(text ?? "", parseArg, {
+                      presetId: context.presetId,
+                      personaId: context.personaId,
+                  })
+                : risuChatParser(text ?? "", parseArg);
 
             if (!options?.processRegex) {
                 return parsed;

@@ -1,4 +1,6 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
+import { planAuxOp } from "../llm/auxOps.ts";
+import { createRedactor } from "../llm/redact.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
@@ -130,15 +132,101 @@ function filterHeaders(source: Headers, stripped: string[]): Headers {
 
 export function registerProxyRoutes(
     app: Hono<AppEnv>,
-    arg: { auth: AuthStore; limiter: MiddlewareHandler<AppEnv>; clientIp: (c: Context<AppEnv>) => string | undefined },
+    arg: {
+        auth: AuthStore;
+        limiter: MiddlewareHandler<AppEnv>;
+        clientIp: (c: Context<AppEnv>) => string | undefined;
+        /** The stored `llmSecrets` record, for the auxiliary operations (`risu-aux-op`). */
+        llmSecrets: () => Record<string, unknown> | null;
+    },
 ) {
-    const { auth, limiter, clientIp } = arg;
+    const { auth, limiter, clientIp, llmSecrets } = arg;
+
+    /**
+     * A `risu-aux-op` request (`server/src/llm/auxOps.ts`): JWT only, the row's exact endpoint, the
+     * server's credential, no redirect followed (a 3xx is a 502), and an error body without the
+     * credential in it.
+     */
+    const auxOp = async (c: Context<AppEnv>, name: string) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) {
+            return denied;
+        }
+        const downstreamSignal = c.req.raw.signal;
+        const risuUrl = c.req.header("risu-url");
+        const urlParam = risuUrl ? decodeURIComponent(risuUrl) : c.req.query("url");
+        if (!urlParam) {
+            return c.json({ error: "URL has no param" }, 400);
+        }
+        const risuHeader = c.req.header("risu-header");
+        const header = buildUpstreamHeaders(
+            risuHeader ? JSON.parse(decodeURIComponent(risuHeader)) : c.req.raw.headers,
+        );
+        const plan = planAuxOp(name, urlParam, c.req.method, header, llmSecrets() ?? {});
+        if (!plan.ok) {
+            return c.json({ error: plan.error }, plan.status);
+        }
+        const ip = clientIp(c);
+        if (!plan.headers.has("x-forwarded-for") && ip) {
+            plan.headers.set("x-forwarded-for", ip);
+        }
+        const redactor = createRedactor([plan.secret]);
+        const timeoutMs = getRequestTimeoutMs(c.req.header("risu-timeout-ms"));
+        const timeout = createTimeoutController(timeoutMs);
+        const aborted = () => timeout.signal.aborted || downstreamSignal.aborted;
+        let upstream: Response;
+        try {
+            upstream = await fetch(plan.url, {
+                method: c.req.method,
+                headers: plan.headers,
+                body: await c.req.arrayBuffer(),
+                redirect: "manual",
+                signal: AbortSignal.any([timeout.signal, downstreamSignal]),
+            });
+        } catch (error) {
+            timeout.cleanup();
+            if (aborted()) {
+                return c.json(
+                    { error: timeout.signal.aborted ? "Proxy request timed out" : "Proxy request aborted" },
+                    504,
+                );
+            }
+            return c.json({ error: redactor.text(`${error}`) }, 502);
+        }
+        if (upstream.status >= 300 && upstream.status < 400) {
+            timeout.cleanup();
+            await upstream.body?.cancel().catch(() => {});
+            return c.json({ error: `The ${name} endpoint answered a redirect, which is not followed` }, 502);
+        }
+        const headers = filterHeaders(upstream.headers, strippedProxyResponseHeaders);
+        // No response header carries the credential back (an upstream may echo it in a debug header).
+        for (const [name, value] of [...headers]) {
+            const redacted = redactor.text(value);
+            if (redacted !== value) {
+                headers.set(name, redacted);
+            }
+        }
+        if (upstream.status >= 400) {
+            const text = await upstream.text().catch(() => "");
+            timeout.cleanup();
+            return new Response(redactor.text(text), { status: upstream.status, headers });
+        }
+        const body = ownBody(nullBodyStatuses.has(upstream.status) ? null : upstream.body, {
+            onFinish: timeout.cleanup,
+            closeOnError: aborted,
+        });
+        return new Response(body, { status: upstream.status, headers });
+    };
 
     /**
      * Arbitrary reverse proxy. Target from `risu-url` (or `?url=`), headers from the encoded JSON
      * `risu-header` (or the incoming headers). POST forwards the raw request bytes.
      */
     const reverseProxy = (method: "GET" | "POST") => async (c: Context<AppEnv>) => {
+        const auxOpName = c.req.header("risu-aux-op");
+        if (auxOpName !== undefined) {
+            return await auxOp(c, auxOpName);
+        }
         const denied = await auth.checkProxyAuth(c);
         if (denied) {
             return denied;

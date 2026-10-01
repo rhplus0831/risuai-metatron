@@ -84,14 +84,14 @@ Plugins:
    - TTS hooks via `ttsHooks.ts`;
    - the memory summarization and image-generation paths.
 
-4. Inside a hook, the selection-dependent host functions read `currentContext` of their plugin instance on their first line: `getCharacter`/`setCharacter`, `getChar`/`setChar`, `getCurrentCharacterIndex`, `getCurrentChatIndex`, `getCurrentLorebookEntries`, `parseRisuChat`, `sendChat`, `runLLMModel`, `getDatabase`, and `setDatabase`/`setDatabaseLite`. They act on the hook's character, chat, and preset, and throw `PluginTargetGoneError` when the target the call needs no longer exists (a gone preset fails only the preset keys of `getDatabase`/`setDatabase`). `runLLMModel` uses the hook's chat for its parsing and for the provider hooks it triggers; the model settings stay the current ones. With no context on the stack, the tab's selection applies.
+4. Inside a hook, the selection-dependent host functions read `currentContext` of their plugin instance on their first line: `getCharacter`/`setCharacter`, `getChar`/`setChar`, `getCurrentCharacterIndex`, `getCurrentChatIndex`, `getCurrentLorebookEntries`, `parseRisuChat`, `sendChat`, `runLLMModel`, `getDatabase`, and `setDatabase`/`setDatabaseLite`. They act on the hook's character, chat, and preset, and throw `PluginTargetGoneError` when the target the call needs no longer exists (a gone preset fails only the preset keys of `getDatabase`/`setDatabase`). `runLLMModel` uses the hook's chat for its parsing and for the provider hooks it triggers; the model settings stay the current ones. `parseRisuChat` inside a hook parses with `risuChatParserScoped` (the hook's preset fields and persona, `parser.svelte.ts`). With no context on the stack, the tab's selection applies.
 5. UI extensions push into the rune arrays in `stores.svelte.ts` (`additionalSettingsMenu`, `additionalChatMenu`, `chatPanelStore`, ...) and must register cleanup with `addPluginUnloadCallback`.
 
 MCP:
 
 1. `getTools` collects the schemas.
 2. Provider adapters (OpenAI Chat/Responses, Google, Anthropic) run model tool calls.
-3. `callTool` dispatches by tool name, first match wins, and the result is appended.
+3. `callTool` dispatches by tool name, first match wins, and the result is appended. Since Phase 5 slice 7a the tool loops run on the server (`server/src/llm/`): a tool call becomes an `mcpTool` callback of `/api/llm/request`, which the tab answers with `callTool`, and a remembered call (`rememberToolUsage`) is stored in the tab by `encodeToolCall` from the request's `toolRecord` event; the tab sends the records a prompt's markers name with the request.
 4. The adapter recurses.
 
 ## State
@@ -130,7 +130,7 @@ MCP:
   4. Verify with a real v3 plugin, including the callback and error paths.
 - Add plugin metadata: `importPlugin`, `RisuPlugin` (`shared/plugins.ts`), `PluginSettings.svelte`, `risuai.d.ts` comments, and `plugins.md`.
 - Add an internal MCP server: subclass `MCPClientLike` (`getToolList`, `callTool`), add a switch case in `mcp.ts:initializeMCPs`, and optionally add a choice to `importMCPModule`.
-- Change the tool loop: `mcp.ts` `getTools`/`callTool` plus every adapter (`openAI/requests.ts`, `openAI/responses.ts`, `google.ts`, `anthropic.ts`). Update `requests.responses.test.ts`.
+- Change the tool loop: `mcp.ts` `getTools`/`callTool` plus every server adapter (`server/src/llm/openAI/requests.ts`, `openAI/responses.ts`, `google.ts`, `anthropic.ts`) and the callback leg (`server/src/llm/requests.ts`, `src/ts/process/request/transport.ts`). The client adapters are frozen until cutover.
 
 ## Tests
 

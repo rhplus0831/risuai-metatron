@@ -24,8 +24,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //   the custom storage;
 // - the runners: a script handler and the replacers and provider of a request get the context the
 //   send passes (a preset selected later is not recaptured), else one captured at entry;
-// - the forwarding host functions: `parseRisuChat` parses with the hook's character and chat and,
-//   with `processRegex`, its script path runs with the hook's context; `runLLMModel` sends the
+// - the forwarding host functions: `parseRisuChat` parses with the hook's character and chat, scoped
+//   to the hook's preset and persona (`risuChatParserScoped`), and, with `processRegex`, its script
+//   path runs with the hook's context; `runLLMModel` sends the
 //   request for the hook's chat with the hook's context (a plugin model blocked unless allowed);
 //   `getCurrentLorebookEntries` answers the hook's character, chat, and module lore. Another plugin
 //   instance observes the forwarded context, since the calling plugin's own hooks would see it
@@ -116,6 +117,7 @@ vi.mock("src/ts/process/modules", () => ({
 vi.mock("src/ts/parser/parser.svelte", () => ({
     hasher: vi.fn(async () => ""),
     risuChatParser: vi.fn((text: string) => text),
+    risuChatParserScoped: vi.fn((text: string) => text),
     risuEscape: vi.fn((text: string) => text),
     risuUnescape: vi.fn((text: string) => text),
 }));
@@ -161,7 +163,7 @@ import { doingChat } from "src/ts/process/index.svelte";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
 import { processScriptFull } from "src/ts/process/scripts";
 import { getModuleLorebooks } from "src/ts/process/modules";
-import { risuChatParser } from "src/ts/parser/parser.svelte";
+import { risuChatParser, risuChatParserScoped } from "src/ts/parser/parser.svelte";
 import { clearPluginHooks, pluginHooks } from "../pluginHooks";
 import { capturePluginContext, invokeHook, PluginTargetGoneError, type PluginCallContext } from "./pluginContext";
 import { executePluginV3, getV3PluginInstance, loadV3Plugins } from "./v3.svelte";
@@ -718,36 +720,47 @@ describe("the host functions that forward the hook's target", () => {
         chatStore.selectChat("b", 2);
         selectPreset("b");
         vi.mocked(risuChatParser).mockClear();
+        vi.mocked(risuChatParserScoped).mockClear();
 
         await invokeHook(listener, context, listenerArg);
 
         expect(results).toEqual(["plain", "scripted+"]);
         expect(seen).toEqual(["process 1/1 10 scripted"]);
-        const parses = vi.mocked(risuChatParser).mock.calls;
-        expect(parses.length).toBeGreaterThanOrEqual(3);
+        // Inside a hook the direct parses are scoped to the hook's frozen preset and persona (Phase 5
+        // slice 7a), not the tab's selection (`b` was selected after the context was captured).
+        const scope = { presetId: context!.presetId, personaId: context!.personaId };
+        const scoped = vi.mocked(risuChatParserScoped).mock.calls;
+        expect(scoped).toHaveLength(2);
         // The plain parse: the hook's character and chat, the message index and role as given.
-        expect(parses[0][0]).toBe("plain");
-        expect((parses[0][1] as any).chara.chaId).toBe("b");
-        expect(parses[0][1]).toMatchObject({
+        expect(scoped[0][0]).toBe("plain");
+        expect((scoped[0][1] as any).chara.chaId).toBe("b");
+        expect(scoped[0][1]).toMatchObject({
             chatRef: refB1,
             chatID: 0,
             role: "char",
             cbsConditions: { chatRole: "char" },
         });
-        // The script path: the parse before the handlers, and the one `processScriptFull` does after them.
-        expect(parses[1][0]).toBe("scripted");
-        expect((parses[1][1] as any).chara.chaId).toBe("b");
-        expect(parses[1][1]).toMatchObject({ chatRef: refB1, chatID: -1 });
-        expect(parses[2][0]).toBe("scripted+");
-        expect(parses[2][1]).toMatchObject({ chatRef: refB1 });
+        expect(scoped[0][2]).toEqual(scope);
+        // The script path: the scoped parse before the handlers, then the one `processScriptFull`
+        // does after them, which still goes through `risuChatParser`.
+        expect(scoped[1][0]).toBe("scripted");
+        expect((scoped[1][1] as any).chara.chaId).toBe("b");
+        expect(scoped[1][1]).toMatchObject({ chatRef: refB1, chatID: -1 });
+        expect(scoped[1][2]).toEqual(scope);
+        const parses = vi.mocked(risuChatParser).mock.calls;
+        expect(parses.length).toBeGreaterThanOrEqual(1);
+        expect(parses[0][0]).toBe("scripted+");
+        expect(parses[0][1]).toMatchObject({ chatRef: refB1 });
         // No parse of this hook fell back to the selected chat.
-        expect(parses.every((call) => (call[1] as any)?.chatRef?.chatId === "b1")).toBe(true);
+        expect([...scoped, ...parses].every((call) => (call[1] as any)?.chatRef?.chatId === "b1")).toBe(true);
         expect(where(other)).toEqual([0, 0]);
         expect(where(api)).toEqual([0, 0]);
 
-        // Outside a hook the same call parses the selected character without a chat ref.
+        // Outside a hook the same call parses the selected character without a chat ref, unscoped.
         vi.mocked(risuChatParser).mockClear();
+        vi.mocked(risuChatParserScoped).mockClear();
         expect(await api.parseRisuChat("outside")).toBe("outside");
+        expect(vi.mocked(risuChatParserScoped)).not.toHaveBeenCalled();
         expect((vi.mocked(risuChatParser).mock.calls[0][1] as any).chara.chaId).toBe("a");
         expect(vi.mocked(risuChatParser).mock.calls[0][1]).not.toHaveProperty("chatRef");
     });

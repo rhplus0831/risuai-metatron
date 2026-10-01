@@ -1,6 +1,8 @@
 import { get } from "svelte/store";
 import { getDatabase, type character } from "../storage/database.svelte";
 import { requestChatData } from "./request/request";
+import type { PluginCallContext } from "../plugins/apiV3/pluginContext";
+import type { ChatRef } from "../storage/chatStore.svelte";
 import { alertError } from "../alert";
 import { fetchNative, globalFetch, readImage } from "../globalApi.svelte";
 import { CharEmotion } from "../stores.svelte";
@@ -8,7 +10,15 @@ import type { OpenAIChat } from "./index.svelte";
 import { processZip } from "./processzip";
 import random from "lodash/random";
 
-export async function stableDiff(currentChar: character, prompt: string) {
+/**
+ * `chatRef` and `pluginContext` are the send's (Phase 5 slice 7a): the prompt request runs for that
+ * chat and that frozen preset and persona, not the tab's selection when it starts.
+ */
+export async function stableDiff(
+    currentChar: character,
+    prompt: string,
+    target: { chatRef?: ChatRef | null; pluginContext?: PluginCallContext } = {},
+) {
     let db = getDatabase();
 
     if (db.sdProvider === "") {
@@ -38,6 +48,8 @@ export async function stableDiff(currentChar: character, prompt: string) {
             bias: {},
             useStreaming: false,
             noMultiGen: true,
+            chatRef: target.chatRef ?? null,
+            pluginContext: target.pluginContext,
         },
         "submodel",
     );

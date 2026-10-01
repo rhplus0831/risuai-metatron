@@ -6,7 +6,7 @@ import {
     NANOGPT_SUBSCRIPTION_ENDPOINT,
     NANOGPT_SUBSCRIPTION_MODELS_ENDPOINT,
     NANOGPT_MODEL_PROVIDERS_ENDPOINT,
-} from "./providers/nanogpt";
+} from "../../../shared/llm/providers/nanogpt.ts";
 import type { ModelGridItem } from "./modelGrid";
 
 export type NanoGPTModelInfo = {

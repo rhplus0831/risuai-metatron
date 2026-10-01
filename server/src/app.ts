@@ -14,14 +14,21 @@ import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.t
 import { createRateLimiter } from "./http/rateLimit.ts";
 import { createGenerationJobs, type GenerationRunner } from "./jobs/generationJobs.ts";
 import { createGenerationLock } from "./jobs/generationLock.ts";
+import { createClaudeObserver } from "./llm/claudeObserver.ts";
+import { createLlmRequests } from "./llm/requests.ts";
+import { createVertexTokenCache } from "./llm/vertexToken.ts";
+import { createTokenizers } from "./prompt/tokenizers/index.ts";
+import { createTokenCounter } from "./prompt/tokens.ts";
 import { createAuthStore } from "./routes/auth.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { registerGenerationRoutes } from "./routes/generations.ts";
+import { registerLlmRoutes } from "./routes/llm.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
 import { createProxyStreamJobs } from "./routes/proxyStreamJobs.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
 import { registerStorageRoutes } from "./routes/storage.ts";
 import { createScriptWorkerPool } from "./scripts/workerPool.ts";
+import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import type { AppEnv } from "./types.ts";
 
 const MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -78,6 +85,24 @@ export function createServerContext(options: {
         authorize: auth.isAuthorizedToken,
         runner: options.generationRunner,
     });
+    // The server request layer (`POST /api/llm/request`): its tokenizers load on first use.
+    const tokenizers = createTokenizers({ rootDir: options.rootDir });
+    const llmRequests = createLlmRequests({
+        store: resources,
+        kinds: resourceKinds,
+        tokens: createTokenCounter({ tokenizers }),
+        vertexTokens: createVertexTokenCache(),
+        claudeObserver: createClaudeObserver(),
+        parentCallback: (jobId, clientId, callbackId, onSettled) =>
+            generationJobs.parentCallback(jobId, clientId, callbackId, onSettled),
+    });
+    // A restore or an import replaces the settings: live requests end, new ones wait (503).
+    snapshots.onMaintenance(async () => {
+        llmRequests.pause("The server data is being replaced");
+        return () => llmRequests.resume();
+    });
+    const llmSecretsKind = resourceKinds.get(RESOURCE_KIND.llmSecrets);
+
     /** The one `upgrade` listener per HTTP server (proxy stream jobs, then generation jobs). */
     const upgradeListeners = new Map<http.Server, (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void>();
     // Workers start on the first task; nothing runs scripts on the server yet (Phase 5 slice 8a).
@@ -113,6 +138,7 @@ export function createServerContext(options: {
         shuttingDown = true;
         // Time zero of every job's abort deadline; `dispose` waits for them to end.
         generationJobs.beginShutdown();
+        llmRequests.beginShutdown();
         for (const [server, listener] of upgradeListeners) {
             server.off("upgrade", listener);
         }
@@ -189,9 +215,24 @@ export function createServerContext(options: {
 
     app.get("*", serveStatic({ root: distPath }));
 
-    registerProxyRoutes(app, { auth, limiter: authenticatedRouteLimiter.middleware, clientIp });
+    registerProxyRoutes(app, {
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        clientIp,
+        llmSecrets: () =>
+            llmSecretsKind
+                ? ((resources.get(llmSecretsKind, SINGLETON_RESOURCE_ID)?.data as
+                      Record<string, unknown> | undefined) ?? null)
+                : null,
+    });
     proxyStreamJobs.registerRoutes(app, { limiter: authenticatedRouteLimiter.middleware, clientIp });
     registerGenerationRoutes(app, { jobs: generationJobs, auth, limiter: authenticatedRouteLimiter.middleware });
+    registerLlmRoutes(app, {
+        requests: llmRequests,
+        store: resources,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+    });
     auth.registerRoutes(app, { auth: authRouteLimiter.middleware, login: loginRouteLimiter.middleware });
     registerStorageRoutes(app, {
         savePath,
@@ -221,6 +262,7 @@ export function createServerContext(options: {
         scriptWorkers,
         beginShutdown,
         generationJobs,
+        llmRequests,
         /** Installs the one `upgrade` dispatcher: proxy stream jobs, generation jobs, else the socket is destroyed. */
         attachWebSocket: (server: http.Server) => {
             if (shuttingDown || upgradeListeners.has(server)) {
@@ -250,9 +292,9 @@ export function createServerContext(options: {
          */
         dispose: () => {
             beginShutdown();
-            disposing ??= generationJobs
-                .drain()
+            disposing ??= Promise.all([generationJobs.drain(), llmRequests.dispose()])
                 .then(() => generationJobs.dispose())
+                .then(() => tokenizers.dispose())
                 .then(() => scriptWorkers.dispose())
                 .then(() => snapshots.stop())
                 .then(() => resources.close());
