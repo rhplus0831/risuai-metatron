@@ -105,6 +105,11 @@ export function createAuthStore(savePath: string) {
         return await checkAuth(c);
     }
 
+    /** `checkAuth`'s rule for a raw token (a WebSocket handshake): a valid JWT only. */
+    async function isAuthorizedToken(token: string | undefined): Promise<boolean> {
+        return (await verifyJwt(token)) === null;
+    }
+
     async function isAuthorizedProxyToken(token: string | undefined): Promise<boolean> {
         return isStoredPassword(token) || (await verifyJwt(token)) === null;
     }
@@ -168,5 +173,5 @@ export function createAuthStore(savePath: string) {
         });
     }
 
-    return { checkAuth, checkProxyAuth, isAuthorizedProxyToken, registerRoutes };
+    return { checkAuth, checkProxyAuth, isAuthorizedToken, isAuthorizedProxyToken, registerRoutes };
 }

@@ -1,9 +1,12 @@
 import { tick, untrack } from "svelte";
 import { get } from "svelte/store";
 import { v4 as uuidv4 } from "uuid";
+import { HIDDEN_HYDRATION_KINDS, type StreamingMessage } from "../../../shared/jobs.ts";
 import {
+    compareRevision,
     isChatConflict,
     isChatOrderConflict,
+    parseRevisionToken,
     RESOURCE_KIND,
     type ResourceBatchResult,
     type ResourceReadKindsResult,
@@ -22,19 +25,22 @@ import { language } from "src/lang";
 import { llmSecretPresets, replacePresetSecrets } from "./llmSecrets.svelte";
 import { alertError, alertNormal, alertNormalWait } from "../alert";
 import { DBState, selectedCharID } from "../stores.svelte";
-import type { character, Database, groupChat } from "./database.svelte";
+import type { character, Chat, Database, groupChat } from "./database.svelte";
 import {
     acceptRemoteCollection,
     ackChatWork,
     adoptCharacter,
     captureChatObligations,
     chatDiscardSequence,
+    chatJobRetryAt,
     chatDiscardsSince,
     type ChatWork,
     chatWorkBody,
     checkpointAllGenerations,
     forgetCharacter,
     hasChatWork,
+    hydrateChat,
+    JOB_RETRY_MS,
     hasUnsavedChatWork,
     isCharacterGenerating,
     isChatDeferred,
@@ -62,6 +68,7 @@ import {
 } from "./chatStore.svelte";
 import {
     applyBatchText,
+    getResourceEpoch,
     prepareUnloadAuth,
     readRefs,
     ResourceConflictError,
@@ -93,6 +100,10 @@ import {
  *   shows `resourceReloaded` once per episode; a 412 (the server was restored) stops saving and
  *   reloads the page. The character a generation runs on is not swapped out under it: its reload
  *   is deferred and runs, inside the cycle, once the generation ends.
+ * - A 409 entry with `reason: "generating"` (a server generation job owns a message the change
+ *   touches) is not a reload: the work stays unsaved and is retried after `JOB_RETRY_MS`, and
+ *   `chatGenerating` is shown once per refusal episode.
+ * - `applyHydration` applies a record a server job sent, without any outgoing write.
  *
  * Transport state here is plain (no runes); only `saving` is reactive.
  */
@@ -185,6 +196,17 @@ let discardSequence = 0;
 const deferredCharacters = new Set<string>();
 let generatingCharacter: () => string | null = () => null;
 let noticeShown = false;
+/**
+ * Character deletes the server refused for a generating message → when they may be sent again
+ * (the deletion stays an unsaved membership change meanwhile).
+ */
+const jobBlockedRecords = new Map<string, number>();
+/** Whether `chatGenerating` was shown in the current refusal episode. */
+let generatingNoticeShown = false;
+/** Record keys of the batch in flight (hydration does not apply over them). */
+const sendingKeys = new Set<string>();
+/** The newest hydration refused for a record in flight or locally changed; retried after each cycle. */
+const deferredHydrations = new Map<string, HydrationRecord>();
 type RemoteChangeListener = (kind: string, id: string) => void;
 const remoteChangeListeners = new Set<RemoteChangeListener>();
 
@@ -249,7 +271,7 @@ function isBlockedKey(key: string): boolean {
 
 /** Whether anything waits to be saved or reloaded, not counting characters whose generation still runs. */
 function hasPendingWork(): boolean {
-    if (hasPendingMembership() || hasChatWork(canSaveCharacter) || hydrate.size > 0) {
+    if (hasPendingMembership(true) || hasChatWork(canSaveCharacter) || hydrate.size > 0) {
         return true;
     }
     for (const id of deferredCharacters) {
@@ -258,7 +280,8 @@ function hasPendingWork(): boolean {
         }
     }
     for (const key of dirty.keys()) {
-        if (!isBlockedKey(key) && !recordQuarantine(key)) {
+        // A delete refused for a generating message stays unsaved but waits for its retry.
+        if (!isBlockedKey(key) && !recordQuarantine(key) && !isRecordJobBlocked(key)) {
             return true;
         }
     }
@@ -406,7 +429,36 @@ function canSaveCharacter(id: string): boolean {
     return persisted.has(characterKey(id)) || !recordQuarantine(characterKey(id));
 }
 
-function hasPendingMembership(): boolean {
+/** Whether a character delete waits because the server refused it for a generating message. */
+function isRecordJobBlocked(key: string): boolean {
+    const until = jobBlockedRecords.get(key);
+    if (until === undefined) {
+        return false;
+    }
+    if (Date.now() >= until) {
+        jobBlockedRecords.delete(key);
+        return false;
+    }
+    return true;
+}
+
+/** When the earliest work refused for a generating message may be sent again, or null. */
+function jobRetryAt(): number | null {
+    let earliest = chatJobRetryAt();
+    for (const key of [...jobBlockedRecords.keys()]) {
+        if (isRecordJobBlocked(key)) {
+            const until = jobBlockedRecords.get(key)!;
+            earliest = earliest === null ? until : Math.min(earliest, until);
+        }
+    }
+    return earliest;
+}
+
+/**
+ * Whether a character was added or removed and not saved. `runnable`: leave out deletes waiting
+ * for a generating message's job (they stay unsaved, but there is nothing to send yet).
+ */
+function hasPendingMembership(runnable = false): boolean {
     if (membershipGeneration <= membershipAcked) {
         return false;
     }
@@ -417,7 +469,12 @@ function hasPendingMembership(): boolean {
         }
     }
     for (const key of persisted.keys()) {
-        if (key.startsWith(characterPrefix) && !ids.has(key.slice(characterPrefix.length)) && !recordQuarantine(key)) {
+        if (
+            key.startsWith(characterPrefix) &&
+            !ids.has(key.slice(characterPrefix.length)) &&
+            !recordQuarantine(key) &&
+            !(runnable && isRecordJobBlocked(key))
+        ) {
             return true;
         }
     }
@@ -558,6 +615,8 @@ function collectOperations(): {
         const id = character.chaId;
         present.add(id);
         const key = characterKey(id);
+        // A character whose refused delete was undone: nothing waits any more.
+        jobBlockedRecords.delete(key);
         if (deferredCharacters.has(id)) {
             continue;
         }
@@ -582,7 +641,7 @@ function collectOperations(): {
     for (const [key, current] of persisted) {
         if (key.startsWith(characterPrefix)) {
             const id = key.slice(characterPrefix.length);
-            if (!present.has(id) && !deferredCharacters.has(id)) {
+            if (!present.has(id) && !deferredCharacters.has(id) && !isRecordJobBlocked(key)) {
                 forgetCharacter(id);
                 addOperation(
                     pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: current.revision, text: null }),
@@ -704,10 +763,24 @@ function runCycle(): Promise<void> {
             handleCycleError(error);
         } finally {
             inFlight = null;
+            sendingKeys.clear();
+            // A record whose hydration waited for the batch: its ordering check runs again now.
+            for (const record of [...deferredHydrations.values()]) {
+                deferredHydrations.delete(recordKey(record.kind, record.id));
+                applyHydration(record);
+            }
             saving.state = false;
             backoffUntil = lastError ? Date.now() + Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(failures, 5)) : 0;
+            const retryAt = jobRetryAt();
+            if (retryAt === null) {
+                generatingNoticeShown = false;
+            }
             if (!halted && !permanentError && (hasPendingWork() || lastError)) {
                 schedule(DEBOUNCE_MS);
+            }
+            if (!halted && retryAt !== null) {
+                // Work refused for a generating message: one wakeup at its retry time.
+                schedule(Math.max(0, retryAt - Date.now()));
             }
         }
     })();
@@ -738,6 +811,9 @@ async function cycle() {
                 rebaseChatOrders(batch.work);
             }
             let result: ResourceBatchResult;
+            for (const op of batch.ops) {
+                sendingKeys.add(op.key);
+            }
             try {
                 result = await applyBatchText(batchBody(batch));
             } catch (error) {
@@ -792,6 +868,10 @@ async function cycle() {
         }
         if (key.startsWith(characterPrefix) && deferredCharacters.has(key.slice(characterPrefix.length))) {
             // Not saved: its reload waits for the running generation.
+            continue;
+        }
+        if (isRecordJobBlocked(key)) {
+            // Not saved: its delete waits for a generation job.
             continue;
         }
         settle(key, marked);
@@ -921,7 +1001,19 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
     const chatRefs: { characterId: string; id: string }[] = [];
     const conflictedChats = new Set<string>();
     const conflictedOrders = new Set<string>();
+    const generatingChats = new Set<string>();
+    let generating = false;
     for (const conflict of error.conflicts) {
+        if ("reason" in conflict && conflict.reason === "generating") {
+            // A server job owns a message this change touches: keep the work, retry after the job.
+            generating = true;
+            if (isChatConflict(conflict)) {
+                generatingChats.add(`${conflict.characterId}\u0000${conflict.id}`);
+            } else if (!isChatOrderConflict(conflict)) {
+                jobBlockedRecords.set(recordKey(conflict.kind, conflict.id), Date.now() + JOB_RETRY_MS);
+            }
+            continue;
+        }
         if (isChatConflict(conflict)) {
             chatRefs.push({ characterId: conflict.characterId, id: conflict.id });
             conflictedChats.add(`${conflict.characterId}\u0000${conflict.id}`);
@@ -939,7 +1031,17 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
         requeueChatWork(work);
         throw readError;
     }
-    const recovered = recoverChatConflicts(work, conflictedChats, conflictedOrders, (read.chats ?? []) as RemoteChat[]);
+    const recovered = recoverChatConflicts(
+        work,
+        conflictedChats,
+        conflictedOrders,
+        (read.chats ?? []) as RemoteChat[],
+        generatingChats,
+    );
+    if ((generating || recovered.blocked) && !generatingNoticeShown) {
+        generatingNoticeShown = true;
+        alertNormal(language.chatGenerating);
+    }
     let reloaded = recovered.reloaded;
     for (const characterId of recovered.refresh) {
         // Read in `hydrateCharacters` (now, and again next cycle if the read fails).
@@ -1158,6 +1260,93 @@ function applyToMirror(kind: string, id: string, data: unknown) {
 }
 
 /**
+ * A record a server generation job sent (`resource` event): an update, never a deletion.
+ * `job`: a job chat event's job and its messages still generating (see `hydrateChat`).
+ */
+export type HydrationRecord = {
+    kind: string;
+    id: string;
+    characterId?: string;
+    revision: string;
+    data: unknown;
+    job?: { jobId: string; streaming: readonly StreamingMessage[] };
+};
+
+/**
+ * Applies a record a server generation job sent, as the server holds it, without it ever becoming
+ * an outgoing write (PLAN invariant 2): no discard, no `discardSequence` bump, no settled key, no
+ * notice. Applied only when the token is of the loaded epoch and newer by `(seq, revision)` than
+ * the one this client holds, and the client has no local change of it: not in the batch in flight,
+ * its projection still equal to the saved text (a dirty mark alone is no change), not refused for a
+ * generating message, and (a character) not deferred behind a generation. A record refused for a
+ * local change is kept (the newest) and checked again after the next save cycle. A record this client does not hold, a
+ * deletion, `llmSecrets`, and `authRefreshes` are not hydrated. A chat goes to `hydrateChat`.
+ * Returns whether it applied.
+ */
+export function applyHydration(record: HydrationRecord): boolean {
+    if (halted || HIDDEN_HYDRATION_KINDS.includes(record.kind) || record.data === null || record.data === undefined) {
+        return false;
+    }
+    if (parseRevisionToken(record.revision)?.epoch !== getResourceEpoch()) {
+        return false;
+    }
+    if (record.kind === "chats") {
+        return typeof record.characterId === "string"
+            ? hydrateChat(
+                  {
+                      characterId: record.characterId,
+                      id: record.id,
+                      revision: record.revision,
+                      data: record.data as Chat,
+                  },
+                  record.job,
+              )
+            : false;
+    }
+    if (record.kind !== RESOURCE_KIND.characters && !COLLECTIONS.includes(record.kind as Collection)) {
+        return false;
+    }
+    const key = recordKey(record.kind, record.id);
+    const held = persisted.get(key);
+    if (!held) {
+        return false;
+    }
+    const order = compareRevision(record.revision, held.revision);
+    if (order === null || order <= 0) {
+        return false;
+    }
+    if (sendingKeys.has(key) || isRecordJobBlocked(key) || projectRecord(record.kind, record.id) !== held.text) {
+        // A local change (or one being sent): keep the newest event and check it again after the
+        // next cycle; by then the save has landed (and is older) or conflicted and reloaded. A dirty
+        // mark alone, with the projection still equal to the saved text, is no change.
+        const waiting = deferredHydrations.get(key);
+        if (!waiting || (compareRevision(record.revision, waiting.revision) ?? 0) > 0) {
+            deferredHydrations.set(key, record);
+        }
+        return false;
+    }
+    if (
+        record.kind === RESOURCE_KIND.characters &&
+        (deferredCharacters.has(record.id) || generatingCharacter() === record.id)
+    ) {
+        return false;
+    }
+    applyToMirror(record.kind, record.id, record.data);
+    persisted.set(key, {
+        revision: record.revision,
+        text: projectRecord(record.kind, record.id) ?? JSON.stringify(record.data),
+    });
+    for (const listener of remoteChangeListeners) {
+        try {
+            listener(record.kind, record.id);
+        } catch (error) {
+            console.error("[Save]", error);
+        }
+    }
+    return true;
+}
+
+/**
  * Where a mutation scope began: the resource and chat discard sequences at that moment. See
  * `beginMutationScope`.
  */
@@ -1213,7 +1402,11 @@ export async function flushResources(options: { scope?: MutationScope } = {}): P
         if (halted) {
             throw new Error("Saving stopped: the server data was restored");
         }
-        if (unsettled().some(isBlockedKey) || unsettledChatObligations(chatObligations).some(isChatDeferred)) {
+        if (
+            unsettled().some(isBlockedKey) ||
+            unsettledChatObligations(chatObligations).some(isChatDeferred) ||
+            [...jobBlockedRecords.keys()].some(isRecordJobBlocked)
+        ) {
             throw new Error("A character is still being generated; try again when it finishes");
         }
         if (timer) {

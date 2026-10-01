@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { createServerContext } from "../app.ts";
 import type { ResourceKind } from "../data/kinds.ts";
+import type { GenerationRunner } from "../jobs/generationJobs.ts";
 
 export const TEST_INDEX_HTML = '<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body></body></html>';
 
@@ -18,6 +19,8 @@ export type TestServerOptions = {
     resourceKinds?: readonly ResourceKind[];
     snapshotIntervalMs?: number;
     maxImportBytes?: number;
+    /** The generation jobs' runner (the default answers 501). */
+    generationRunner?: GenerationRunner;
     /** Reuse an existing root (a restart); `password` is ignored then. */
     rootDir?: string;
 };
@@ -40,6 +43,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         resourceKinds: options.resourceKinds,
         snapshotIntervalMs: options.snapshotIntervalMs,
         maxImportBytes: options.maxImportBytes,
+        generationRunner: options.generationRunner,
     });
     return {
         rootDir,

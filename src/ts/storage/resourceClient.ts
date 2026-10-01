@@ -64,7 +64,11 @@ export function setEpochMismatchListener(listener: ((epoch: string) => void) | n
     epochMismatchListener = listener;
 }
 
-function epochMismatch(epoch: string): ResourceEpochMismatchError {
+/**
+ * The error for a request that named another epoch, after the halt-and-reload listener ran (other
+ * transports to the server, such as the generation jobs, report a 412 through it too).
+ */
+export function epochMismatch(epoch: string): ResourceEpochMismatchError {
     try {
         epochMismatchListener?.(epoch);
     } catch (error) {
@@ -95,7 +99,13 @@ async function send(path: string, init: RequestInit & { mutation?: boolean } = {
     if (response.ok) {
         return response;
     }
-    let body: { error?: string; epoch?: string; conflicts?: BatchConflict[]; revision?: string | null } = {};
+    let body: {
+        error?: string;
+        epoch?: string;
+        conflicts?: BatchConflict[];
+        revision?: string | null;
+        reason?: "generating";
+    } = {};
     try {
         body = await response.json();
     } catch {}
@@ -104,7 +114,16 @@ async function send(path: string, init: RequestInit & { mutation?: boolean } = {
     }
     if (response.status === 409) {
         throw new ResourceConflictError(
-            Array.isArray(body.conflicts) ? body.conflicts : [{ kind: "", id: "", revision: body.revision ?? null }],
+            Array.isArray(body.conflicts)
+                ? body.conflicts
+                : [
+                      {
+                          kind: "",
+                          id: "",
+                          revision: body.revision ?? null,
+                          ...(body.reason === "generating" ? { reason: body.reason } : {}),
+                      },
+                  ],
         );
     }
     throw new ResourceRequestError(response.status, body.error ?? `Request failed (${response.status})`);
@@ -188,10 +207,14 @@ export async function deleteResource(kind: string, id: string, baseRevision: str
     }
 }
 
-/** The single-record routes answer a conflict as `{ revision }`; name the record in it. */
+/** The single-record routes answer a conflict as `{ revision, reason? }`; name the record in it. */
 function singleConflict(error: unknown, kind: string, id: string): unknown {
     if (error instanceof ResourceConflictError) {
-        return new ResourceConflictError([{ kind, id, revision: error.conflicts[0]?.revision ?? null }]);
+        const first = error.conflicts[0];
+        const reason = first && "reason" in first ? first.reason : undefined;
+        return new ResourceConflictError([
+            { kind, id, revision: first?.revision ?? null, ...(reason === "generating" ? { reason } : {}) },
+        ]);
     }
     return error;
 }

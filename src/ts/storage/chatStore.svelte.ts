@@ -10,6 +10,8 @@ import type {
     MessageGeneration,
 } from "../../../shared/chats.ts";
 import { CHAT_META_FORBIDDEN_KEYS } from "../../../shared/chats.ts";
+import type { StreamingMessage } from "../../../shared/jobs.ts";
+import { compareRevision } from "../../../shared/resources.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { language } from "src/lang";
 import { alertError } from "../alert";
@@ -45,6 +47,11 @@ import type { character, Chat, groupChat, Message } from "./database.svelte";
  * - A stale acknowledgement keeps the old base and requests an idle refresh. Only a chat with no
  *   pending/in-flight work, lock, deferral, or quarantine may accept it; this is not a discard.
  * - The selected chat is per tab: `selectChat` records the chat id, and `chatPage` is derived from it.
+ * - A server generation job (Phase 5) locks its message too: `applyServerGeneration` writes the
+ *   streamed text into the mirror without queuing anything, and the job's end releases its locks.
+ *   A chat `resource` event replaces the chat through `hydrateChat` (never an outgoing write). Work
+ *   the server refused for a generating message (`reason: "generating"`) is kept and retried after
+ *   `JOB_RETRY_MS`.
  */
 
 export type ChatRef = { chaId: string; chatId: string };
@@ -52,6 +59,8 @@ export type ChatRef = { chaId: string; chatId: string };
 type AnyCharacter = character | groupChat;
 
 const CHECKPOINT_INTERVAL_MS = 3000;
+/** How long a chat whose work the server refused for a generating message waits before it is retried. */
+export const JOB_RETRY_MS = 5000;
 const SELECTION_STORAGE_KEY = "risu-selected-chats";
 const forbiddenMetaKeys = new Set(CHAT_META_FORBIDDEN_KEYS);
 
@@ -141,6 +150,25 @@ const generations = new Map<string, Generation>();
 const generationFinals = new Map<string, GenerationFinal>();
 /** Bumped whenever `generations` gains or loses a lock, so the chat screen's lock reads re-run. */
 const lockState = $state({ version: 0 });
+/**
+ * Messages a server generation job writes (`messageKeyOf`) → the job, its generation, the last
+ * chunk's sequence, and the streamed text (put back after a chat hydration).
+ */
+const serverGenerations = new Map<string, { jobId: string; generationId: string; seq: number; text: string }>();
+/**
+ * Per message (`messageKeyOf`): the newest chunk `seq` of a server generation that the mirror's stored
+ * copy holds (from the job's chat events); a streamed text at or below it is older than the copy.
+ */
+const serverWatermarks = new Map<string, { generationId: string; seq: number }>();
+/** Server generations that ended or were replaced: their late events are dropped. */
+const retiredGenerations = new Set<string>();
+/**
+ * Per chat: the revision of the newest job chat event whose job metadata (streaming, releases) was
+ * taken, applied or not; an older event's metadata is ignored.
+ */
+const jobMetadataRevisions = new Map<string, string>();
+/** Chats whose work the server refused for a generating message → when it may be sent again. */
+const jobBlocked = new Map<string, number>();
 /** Generations the server stopped accepting → their message key. */
 const rejectedGenerations = new Map<string, string>();
 /** Chat keys → local version, bumped by every change of the chat in the mirror. */
@@ -378,7 +406,11 @@ function lockOf(ref: ChatRef, messageId: string): Generation | undefined {
  */
 export function isMessageLocked(ref: ChatRef | null, messageId: string | undefined): boolean {
     void lockState.version;
-    return ref !== null && messageId !== undefined && generations.has(messageKeyOf(ref, messageId));
+    if (ref === null || messageId === undefined) {
+        return false;
+    }
+    const key = messageKeyOf(ref, messageId);
+    return generations.has(key) || serverGenerations.has(key);
 }
 
 /**
@@ -400,19 +432,22 @@ export function isStreamingMessage(ref: ChatRef | null, messageId: string | unde
 export function isChatGenerating(ref: ChatRef): boolean {
     void lockState.version;
     const prefix = `${keyOf(ref.chaId, ref.chatId)}\u0000`;
-    return [...generations.keys()].some((key) => key.startsWith(prefix));
+    return [...generations.keys(), ...serverGenerations.keys()].some((key) => key.startsWith(prefix));
 }
 
 /** Whether a producer is still generating in a chat (not only waiting for its final write's answer). */
 function hasLiveGeneration(ref: ChatRef): boolean {
     const prefix = `${keyOf(ref.chaId, ref.chatId)}\u0000`;
-    return [...generations].some(([key, generation]) => key.startsWith(prefix) && !generation.ending);
+    return (
+        [...generations].some(([key, generation]) => key.startsWith(prefix) && !generation.ending) ||
+        [...serverGenerations.keys()].some((key) => key.startsWith(prefix))
+    );
 }
 
 /** Whether any chat of a character has a running generation. */
 export function isCharacterGenerating(chaId: string): boolean {
     const prefix = `${chaId}\u0000`;
-    return [...generations.keys()].some((key) => key.startsWith(prefix));
+    return [...generations.keys(), ...serverGenerations.keys()].some((key) => key.startsWith(prefix));
 }
 
 /** Whether `generationId` is a generation the server stopped accepting. */
@@ -427,7 +462,8 @@ function assertUnlocked(ref: ChatRef, messageIds: readonly (string | undefined)[
             continue;
         }
         const lock = lockOf(ref, id);
-        if (lock && lock.generationId !== generationId) {
+        // A server job's message: no client generation id passes.
+        if ((lock && lock.generationId !== generationId) || serverGenerations.has(messageKeyOf(ref, id))) {
             throw new Error("This message is being generated; wait until it finishes");
         }
     }
@@ -440,7 +476,7 @@ function assertUnlocked(ref: ChatRef, messageIds: readonly (string | undefined)[
 export function beginGeneration(ref: ChatRef, messageId: string, generationId: string) {
     const messageKey = messageKeyOf(ref, messageId);
     const existing = generations.get(messageKey);
-    if (existing && !existing.ending) {
+    if ((existing && !existing.ending) || serverGenerations.has(messageKey)) {
         throw new Error("This message is being generated; wait until it finishes");
     }
     requireChat(ref);
@@ -461,6 +497,229 @@ export function beginGeneration(ref: ChatRef, messageId: string, generationId: s
     lockState.version += 1;
     generation.timer = setInterval(() => checkpointGeneration(ref, messageId), CHECKPOINT_INTERVAL_MS);
     enqueue(ref, { op: "begin", id: messageId, generationId });
+}
+
+/**
+ * Mirrors a server generation job's reply (an `accepted` or `chunk` event): locks the message for
+ * the job and writes `text` into the mirror. Nothing is queued and the chat's revision does not
+ * move: only a whole-chat hydration (`hydrateChat`) advances it. A chunk older than the last one
+ * of its generation (`seq`) is dropped. Returns false when the chat or message is not in the mirror
+ * (its hydration comes first) or the chunk is old.
+ */
+export function applyServerGeneration(
+    ref: ChatRef,
+    update: { jobId: string; messageId: string; generationId: string; text: string; seq: number },
+): boolean {
+    if (retiredGenerations.has(update.generationId)) {
+        return false;
+    }
+    const message = mirrorChat(ref)?.message.find((entry) => entry.chatId === update.messageId);
+    if (!message) {
+        return false;
+    }
+    const messageKey = messageKeyOf(ref, update.messageId);
+    const existing = serverGenerations.get(messageKey);
+    if (existing && existing.generationId !== update.generationId) {
+        // A new generation of the message (a continue): the previous one's late events are dropped.
+        retiredGenerations.add(existing.generationId);
+    } else if (existing && update.seq <= existing.seq) {
+        return false;
+    }
+    // The stored copy may already hold this text or a later one (a processed checkpoint).
+    const mark = serverWatermarks.get(messageKey);
+    const older = mark?.generationId === update.generationId && update.seq <= mark.seq;
+    serverGenerations.set(messageKey, {
+        jobId: update.jobId,
+        generationId: update.generationId,
+        seq: update.seq,
+        // The stream buffer always holds the newest chunk, shown or not (a lower claim later shows it).
+        text: update.text,
+    });
+    if (!existing) {
+        lockState.version += 1;
+    }
+    if (older) {
+        return false;
+    }
+    message.data = update.text;
+    changed(keyOf(ref.chaId, ref.chatId));
+    return true;
+}
+
+/**
+ * Releases every message a server generation job still locks (its terminal event). The terminal's
+ * chat hydration normally released them already; one still locked here may hold streamed text
+ * instead of the stored final, so its chat is marked for an idle refresh.
+ */
+export function endServerJob(jobId: string) {
+    let released = false;
+    for (const [messageKey, entry] of [...serverGenerations]) {
+        if (entry.jobId === jobId) {
+            serverGenerations.delete(messageKey);
+            serverWatermarks.delete(messageKey);
+            retiredGenerations.add(entry.generationId);
+            const [chaId, chatId] = messageKey.split("\u0000");
+            if (chatRevisions.has(keyOf(chaId, chatId))) {
+                staleChats.add(keyOf(chaId, chatId));
+            }
+            released = true;
+        }
+    }
+    if (released) {
+        lockState.version += 1;
+        notifyWork();
+    }
+}
+
+/**
+ * Applies a chat `resource` event of a server job: the server's whole chat replaces the mirror's
+ * when its revision is at least the held one and the chat has no local work (pending, in flight,
+ * deferred, quarantined, refused for a generating message) and no client generation; otherwise the
+ * chat is marked for an idle refresh. A chat the mirror lacks, or one this client has not seen on
+ * the server, is not hydrated. Nothing is queued, discarded, or settled, and no notice is shown.
+ *
+ * `job` (a job's chat event): its `streaming` messages are still generating, each with the newest
+ * chunk the copy holds; a streamed text with a higher `seq` is put back on its message, and its lock
+ * stays. Every other lock of that job in the chat is released (the reply is final in the copy; if the
+ * copy could not be applied for local work, the chat is marked for an idle refresh). Another job's
+ * locks and newer streamed text are kept. A copy older than the held revision, or of another epoch,
+ * changes nothing, its job metadata included. Returns whether it applied.
+ */
+export function hydrateChat(
+    server: { characterId: string; id: string; revision: string; data: Chat },
+    job?: { jobId: string; streaming: readonly StreamingMessage[] },
+): boolean {
+    const key = keyOf(server.characterId, server.id);
+    const prefix = `${key}\u0000`;
+    const outcome = applyChatHydration(server);
+    if (outcome === "old") {
+        return false;
+    }
+    let released = false;
+    const metadataHeld = jobMetadataRevisions.get(key);
+    const metadataCurrent = !metadataHeld || (compareRevision(server.revision, metadataHeld) ?? -1) >= 0;
+    if (job && metadataCurrent) {
+        jobMetadataRevisions.set(key, server.revision);
+        const streaming = new Map(job.streaming.map((entry) => [entry.messageId, entry]));
+        for (const [messageKey, entry] of [...serverGenerations]) {
+            if (!messageKey.startsWith(prefix) || entry.jobId !== job.jobId) {
+                continue;
+            }
+            const still = streaming.get(messageKey.slice(prefix.length));
+            if (!still || still.generationId !== entry.generationId) {
+                serverGenerations.delete(messageKey);
+                serverWatermarks.delete(messageKey);
+                retiredGenerations.add(entry.generationId);
+                released = true;
+            }
+        }
+        for (const entry of job.streaming) {
+            const messageKey = `${prefix}${entry.messageId}`;
+            const holder = serverGenerations.get(messageKey);
+            if (holder && holder.generationId !== entry.generationId) {
+                // The server says this generation owns the message now: an older owner is gone.
+                serverGenerations.delete(messageKey);
+                retiredGenerations.add(holder.generationId);
+                released = true;
+            }
+            if (outcome === "applied") {
+                // Only a copy in the mirror holds those chunks.
+                serverWatermarks.set(messageKey, { generationId: entry.generationId, seq: entry.seq });
+            }
+        }
+    }
+    if (outcome === "applied") {
+        for (const [messageKey, entry] of serverGenerations) {
+            if (!messageKey.startsWith(prefix)) {
+                continue;
+            }
+            const mark = serverWatermarks.get(messageKey);
+            if (mark && mark.generationId === entry.generationId && entry.seq <= mark.seq) {
+                // The copy holds this text or a later one; the stream buffer is kept for a lower claim.
+                continue;
+            }
+            const message = mirrorChat({ chaId: server.characterId, chatId: server.id })?.message.find(
+                (candidate) => candidate.chatId === messageKey.slice(prefix.length),
+            );
+            if (message) {
+                message.data = entry.text;
+            }
+        }
+    }
+    if (released) {
+        lockState.version += 1;
+        if (outcome === "busy" && chatRevisions.has(key)) {
+            staleChats.add(key);
+        }
+        notifyWork();
+    }
+    return outcome === "applied";
+}
+
+/** "applied"; "busy" (current, but local work keeps the mirror's copy: marked stale); "old" (older, another epoch, or unknown). */
+function applyChatHydration(server: {
+    characterId: string;
+    id: string;
+    revision: string;
+    data: Chat;
+}): "applied" | "busy" | "old" {
+    const key = keyOf(server.characterId, server.id);
+    const ref = { chaId: server.characterId, chatId: server.id };
+    const character = findCharacter(server.characterId);
+    const held = chatRevisions.get(key);
+    if (!character || !mirrorChat(ref) || held === undefined) {
+        return "old";
+    }
+    const order = compareRevision(server.revision, held);
+    if (order === null || order < 0) {
+        return "old";
+    }
+    const prefix = `${key}\u0000`;
+    if (
+        pending.has(key) ||
+        inflight.has(key) ||
+        deferred.has(key) ||
+        quarantined.has(key) ||
+        jobBlocked.has(key) ||
+        [...generations.keys()].some((messageKey) => messageKey.startsWith(prefix))
+    ) {
+        staleChats.add(key);
+        return "busy";
+    }
+    const chats = chatsOf(character);
+    const index = chats.findIndex((chat) => chat.id === server.id);
+    chats[index] = clone<Chat>(server.data);
+    chatRevisions.set(key, server.revision);
+    staleChats.delete(key);
+    changed(key);
+    syncChatPage(server.characterId);
+    remoteListener?.(ref);
+    return "applied";
+}
+
+/** Whether a chat's work waits because the server refused it for a generating message. */
+function isJobBlocked(key: string): boolean {
+    const until = jobBlocked.get(key);
+    if (until === undefined) {
+        return false;
+    }
+    if (Date.now() >= until) {
+        jobBlocked.delete(key);
+        return false;
+    }
+    return true;
+}
+
+/** When the earliest chat refused for a generating message may be sent again, or null. */
+export function chatJobRetryAt(): number | null {
+    let earliest: number | null = null;
+    for (const key of [...jobBlocked.keys()]) {
+        if (isJobBlocked(key)) {
+            const until = jobBlocked.get(key)!;
+            earliest = earliest === null ? until : Math.min(earliest, until);
+        }
+    }
+    return earliest;
 }
 
 function stopTimer(generation: Generation) {
@@ -526,7 +785,14 @@ export function unloadCheckpoint(limitBytes: number): { body: string; work: Chat
         const key = keyOf(chaId, chatId);
         const baseRevision = chatRevisions.get(key);
         const message = mirrorChat({ chaId, chatId })?.message.find((entry) => entry.chatId === messageId);
-        if (!baseRevision || !message || deferred.has(key) || quarantined.has(key) || inflight.has(key)) {
+        if (
+            !baseRevision ||
+            !message ||
+            deferred.has(key) ||
+            quarantined.has(key) ||
+            inflight.has(key) ||
+            isJobBlocked(key)
+        ) {
             continue;
         }
         const previous = groups.get(key);
@@ -628,7 +894,15 @@ export function unloadPendingChatWork(limitBytes: number): { body: string; work:
     const encoder = new TextEncoder();
     for (const [key, entry] of pending) {
         const base = chatRevisions.get(key);
-        if (!base || entry.create || entry.resend || inflight.has(key) || deferred.has(key) || quarantined.has(key)) {
+        if (
+            !base ||
+            entry.create ||
+            entry.resend ||
+            inflight.has(key) ||
+            deferred.has(key) ||
+            quarantined.has(key) ||
+            isJobBlocked(key)
+        ) {
             continue;
         }
         const ops: ChatOp[] = [];
@@ -1410,6 +1684,7 @@ export function hasChatWork(canSaveCharacter: (id: string) => boolean = () => tr
             !quarantined.has(key) &&
             !deferred.has(key) &&
             !inflight.has(key) &&
+            !isJobBlocked(key) &&
             canSaveCharacter(entry.characterId) &&
             (entry.create || entry.resend || entry.ops.length > 0)
         ) {
@@ -1417,10 +1692,40 @@ export function hasChatWork(canSaveCharacter: (id: string) => boolean = () => tr
         }
     }
     return (
-        [...pendingOrders.keys()].some((id) => canSaveCharacter(id) && !isOrderQuarantined(id)) ||
+        [...pendingOrders.keys()].some(
+            (id) => canSaveCharacter(id) && !isOrderQuarantined(id) && orderMembershipReady(id),
+        ) ||
         deferredReloads().length > 0 ||
         idleChatRefreshes().length > 0
     );
+}
+
+/**
+ * Whether a reorder of `chaId` could go out now: every chat the server holds is in the mirror, or
+ * its delete can be sent (not blocked, deferred, quarantined, or in flight). `takeChatWork` holds a
+ * reorder back otherwise, so it is unsaved but not runnable (a delete refused for a generating
+ * message makes the reorder wait for the same retry).
+ */
+function orderMembershipReady(chaId: string): boolean {
+    const character = findCharacter(chaId);
+    if (!character) {
+        return false;
+    }
+    const visible = new Set(chatsOf(character).map((chat) => chat.id!));
+    const prefix = `${chaId}\u0000`;
+    return [...chatRevisions.keys()].every((key) => {
+        if (!key.startsWith(prefix) || visible.has(key.slice(prefix.length))) {
+            return true;
+        }
+        const entry = pending.get(key);
+        return (
+            !!entry?.ops.some((op) => op.op === "delete") &&
+            !quarantined.has(key) &&
+            !deferred.has(key) &&
+            !inflight.has(key) &&
+            !isJobBlocked(key)
+        );
+    });
 }
 
 /** Unsaved user work, including requests in flight and live text between checkpoints. */
@@ -1525,9 +1830,10 @@ export function forgetCharacter(chaId: string) {
             dropGenerations(key);
         }
     }
-    for (const key of [...chatRevisions.keys()]) {
+    for (const key of [...chatRevisions.keys(), ...jobBlocked.keys()]) {
         if (key.startsWith(prefix)) {
             chatRevisions.delete(key);
+            jobBlocked.delete(key);
         }
     }
     const orderSeq = pendingOrders.get(chaId);
@@ -1571,7 +1877,7 @@ export function takeChatWork(creating: ReadonlySet<string>, options: { maxOps?: 
     const createdHere = new Set<string>();
     const deletedHere = new Set<string>();
     const eligible = [...pending.entries()].filter(
-        ([key]) => !quarantined.has(key) && !deferred.has(key) && !inflight.has(key),
+        ([key]) => !quarantined.has(key) && !deferred.has(key) && !inflight.has(key) && !isJobBlocked(key),
     );
     const creates = eligible
         .filter(([, entry]) => entry.create || entry.resend)
@@ -1809,6 +2115,7 @@ export function ackChatWork(
 ): string[] {
     work.groups.forEach((group, index) => {
         inflight.delete(group.key);
+        jobBlocked.delete(group.key);
         const result = results[index];
         if (result) {
             if (result.revision === null) {
@@ -1985,6 +2292,7 @@ export function requeueChatWork(work: ChatWork) {
 /** Stops sending a chat whose work the server refused as invalid (its generations stop too). */
 export function quarantineChat(group: Pick<SentChatGroup, "key" | "seq">) {
     inflight.delete(group.key);
+    jobBlocked.delete(group.key);
     quarantined.add(group.key);
     deferred.delete(group.key);
     staleChats.delete(group.key);
@@ -2016,20 +2324,30 @@ export type RemoteChat = { characterId: string; id: string; revision: string | n
  * their finals even if they ended during the request); a chat
  * that is gone is dropped and its character's chat list is to be refreshed (`refresh`); any other
  * is replaced by the server copy and its local work discarded. Reorders that conflicted are dropped
- * (the caller refreshes those characters). Returns whether a chat was reloaded.
+ * (the caller refreshes those characters). A group refused for a generating message (`generating`:
+ * `reason: "generating"`) is kept and retried after `JOB_RETRY_MS`, not reloaded. Returns whether a
+ * chat was reloaded and whether one was refused for a generating message.
  */
 export function recoverChatConflicts(
     work: ChatWork,
     conflicted: ReadonlySet<string>,
     conflictedOrders: ReadonlySet<string>,
     remote: readonly RemoteChat[],
-): { reloaded: boolean; refresh: Set<string> } {
+    generating: ReadonlySet<string> = new Set(),
+): { reloaded: boolean; refresh: Set<string>; blocked: boolean } {
     const byKey = new Map(remote.map((chat) => [keyOf(chat.characterId, chat.id), chat]));
     const retry: SentChatGroup[] = [];
     const refresh = new Set<string>();
     let reloaded = false;
+    let blocked = false;
     for (const group of work.groups) {
         inflight.delete(group.key);
+        if (generating.has(group.key)) {
+            jobBlocked.set(group.key, Date.now() + JOB_RETRY_MS);
+            retry.push(group);
+            blocked = true;
+            continue;
+        }
         const server = byKey.get(group.key);
         if (!conflicted.has(group.key) || !server) {
             retry.push(group);
@@ -2096,7 +2414,7 @@ export function recoverChatConflicts(
             refresh.add(order.characterId);
         }
     }
-    return { reloaded, refresh };
+    return { reloaded, refresh, blocked };
 }
 
 /** Requeues recovered groups; a recognized create continues as ordinary work on its revision. */
@@ -2123,6 +2441,7 @@ function discardChatWork(key: string, seq: number, keepFinals = false) {
     pending.delete(key);
     inflight.delete(key);
     staleChats.delete(key);
+    jobBlocked.delete(key);
     // Recovered finals still owe an acknowledgement, including to a flush already waiting on
     // the discarded group's sequence. Their re-enqueued work will settle that sequence later.
     markDiscarded(key, keepFinals ? 0 : highest);
@@ -2202,6 +2521,11 @@ export function idleChatRefreshes(): ChatRef[] {
 export function finishIdleChatRefresh(server: RemoteChat): boolean {
     const key = keyOf(server.characterId, server.id);
     if (!staleChats.has(key) || !canRefreshChat({ chaId: server.characterId, chatId: server.id })) {
+        return false;
+    }
+    const held = chatRevisions.get(key);
+    if (server.revision !== null && held !== undefined && (compareRevision(server.revision, held) ?? 0) < 0) {
+        // A read older than a hydration that arrived meanwhile.
         return false;
     }
     applyRemoteChat(server);
@@ -2386,8 +2710,18 @@ export function unsettledChatObligations(obligations: ReturnType<typeof captureC
     return open;
 }
 
-/** Whether an obligation waits on a deferred chat whose producer is still generating. */
+/**
+ * Whether an obligation waits on a deferred chat whose producer is still generating, or on a chat
+ * the server refused for a generating message (until its retry).
+ */
 export function isChatDeferred(key: string): boolean {
+    if (!key.includes("\u0000")) {
+        // A reorder obligation (by character): it waits on a chat of it refused for a generating message.
+        return [...jobBlocked.keys()].some((chatKey) => chatKey.startsWith(`${key}\u0000`) && isJobBlocked(chatKey));
+    }
+    if (isJobBlocked(key)) {
+        return true;
+    }
     if (!deferred.has(key)) {
         return false;
     }

@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import fs from "node:fs/promises";
 import type http from "node:http";
 import path from "node:path";
+import type { Duplex } from "node:stream";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -11,8 +12,11 @@ import { createResourceStore, ResourceStoreClosedError } from "./data/resourceSt
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
+import { createGenerationJobs, type GenerationRunner } from "./jobs/generationJobs.ts";
+import { createGenerationLock } from "./jobs/generationLock.ts";
 import { createAuthStore } from "./routes/auth.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
+import { registerGenerationRoutes } from "./routes/generations.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
 import { createProxyStreamJobs } from "./routes/proxyStreamJobs.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
@@ -30,7 +34,8 @@ export type ServerContext = ReturnType<typeof createServerContext>;
  * All state (password, known keys, stream jobs, rate-limit counters, the resource database and its
  * snapshots) lives in the returned context. `resourceKinds` replaces the default resource kinds and
  * `snapshotIntervalMs` the 10-minute snapshot interval (tests use them); `maxImportBytes` caps an
- * uploaded backup archive (default `RISU_MAX_IMPORT_BYTES`, else 16 GiB).
+ * uploaded backup archive (default `RISU_MAX_IMPORT_BYTES`, else 16 GiB). `generationRunner` runs
+ * the generation jobs (tests inject one; the default answers 501 until prompt assembly).
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -38,6 +43,7 @@ export function createServerContext(options: {
     resourceKinds?: readonly ResourceKind[];
     snapshotIntervalMs?: number;
     maxImportBytes?: number;
+    generationRunner?: GenerationRunner;
 }) {
     const savePath = path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -48,10 +54,13 @@ export function createServerContext(options: {
 
     const auth = createAuthStore(savePath);
     const resourceKinds = createKindRegistry(options.resourceKinds ?? DEFAULT_RESOURCE_KINDS);
+    // The store consults the lock on every write that could rewrite or remove a job's message.
+    const generationLock = createGenerationLock();
     // `save/data/` is not a storage namespace, so the `/api/*` storage routes cannot reach the file.
     const resources = createResourceStore({
         file: path.join(savePath, "data", "resources.sqlite"),
         kinds: resourceKinds,
+        guard: generationLock,
     });
     const snapshots = createSnapshotManager({
         store: resources,
@@ -60,6 +69,17 @@ export function createServerContext(options: {
     });
     const maxImportBytes = options.maxImportBytes ?? parseMaxImportBytes(process.env.RISU_MAX_IMPORT_BYTES);
     const proxyStreamJobs = createProxyStreamJobs({ auth });
+    const generationJobs = createGenerationJobs({
+        store: resources,
+        kinds: resourceKinds,
+        gate: snapshots.gate,
+        snapshots,
+        lock: generationLock,
+        authorize: auth.isAuthorizedToken,
+        runner: options.generationRunner,
+    });
+    /** The one `upgrade` listener per HTTP server (proxy stream jobs, then generation jobs). */
+    const upgradeListeners = new Map<http.Server, (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void>();
     // Workers start on the first task; nothing runs scripts on the server yet (Phase 5 slice 8a).
     const scriptWorkers = createScriptWorkerPool({ rootDir: options.rootDir });
 
@@ -91,6 +111,12 @@ export function createServerContext(options: {
             return;
         }
         shuttingDown = true;
+        // Time zero of every job's abort deadline; `dispose` waits for them to end.
+        generationJobs.beginShutdown();
+        for (const [server, listener] of upgradeListeners) {
+            server.off("upgrade", listener);
+        }
+        upgradeListeners.clear();
         proxyStreamJobs.dispose();
         authenticatedRouteLimiter.dispose();
         authRouteLimiter.dispose();
@@ -165,6 +191,7 @@ export function createServerContext(options: {
 
     registerProxyRoutes(app, { auth, limiter: authenticatedRouteLimiter.middleware, clientIp });
     proxyStreamJobs.registerRoutes(app, { limiter: authenticatedRouteLimiter.middleware, clientIp });
+    registerGenerationRoutes(app, { jobs: generationJobs, auth, limiter: authenticatedRouteLimiter.middleware });
     auth.registerRoutes(app, { auth: authRouteLimiter.middleware, login: loginRouteLimiter.middleware });
     registerStorageRoutes(app, {
         savePath,
@@ -193,20 +220,40 @@ export function createServerContext(options: {
         snapshots,
         scriptWorkers,
         beginShutdown,
-        attachWebSocket: (server: http.Server) => proxyStreamJobs.attachWebSocket(server),
+        generationJobs,
+        /** Installs the one `upgrade` dispatcher: proxy stream jobs, generation jobs, else the socket is destroyed. */
+        attachWebSocket: (server: http.Server) => {
+            if (shuttingDown || upgradeListeners.has(server)) {
+                return;
+            }
+            const listener = (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
+                if (
+                    !proxyStreamJobs.handleUpgrade(req, socket, head) &&
+                    !generationJobs.handleUpgrade(req, socket, head)
+                ) {
+                    socket.destroy();
+                }
+            };
+            server.on("upgrade", listener);
+            upgradeListeners.set(server, listener);
+        },
         startBackgroundTasks: () => {
             proxyStreamJobs.startGc();
+            generationJobs.startGc();
             snapshots.start();
         },
         /**
-         * Begins shutdown, waits for admitted resource handlers and backup operations, then closes
-         * the store. The HTTP entrypoint drains connections before calling this; in-process callers
-         * can use it alone. Calling it again returns the same promise.
+         * Begins shutdown (every generation job is aborted), waits for the jobs to end (bounded by
+         * their abort deadline), disposes the script workers, waits for admitted resource handlers
+         * and backup operations, then closes the store. The HTTP entrypoint drains connections before
+         * calling this; in-process callers can use it alone. Calling it again returns the same promise.
          */
         dispose: () => {
             beginShutdown();
-            disposing ??= scriptWorkers
-                .dispose()
+            disposing ??= generationJobs
+                .drain()
+                .then(() => generationJobs.dispose())
+                .then(() => scriptWorkers.dispose())
                 .then(() => snapshots.stop())
                 .then(() => resources.close());
             return disposing;

@@ -10,6 +10,7 @@ import type {
 } from "../../../shared/chats.ts";
 import type { Chat } from "../../../shared/database.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
+import type { MessageGuard } from "../jobs/generationLock.ts";
 import {
     assertPatchableMetaKeys,
     CHAT_SCHEMA_VERSION,
@@ -385,7 +386,35 @@ class ChatChangeConflict extends Error {
     }
 }
 
-export function createChatTables(db: DatabaseSync, tokens: TokenFunctions) {
+/**
+ * The message ids of a group's ops that rewrite or remove a message, or "chat" for an op that
+ * replaces or deletes the whole chat (the generation lock's preflight).
+ */
+function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set<string> } {
+    const messages = new Set<string>();
+    let chat = false;
+    for (const op of group.ops) {
+        switch (op.op) {
+            case "delete":
+            case "replace":
+                chat = true;
+                break;
+            case "setMessage":
+                messages.add(op.message.id);
+                break;
+            case "setText":
+            case "begin":
+                messages.add(op.id);
+                break;
+            case "remove":
+                op.ids.forEach((id) => messages.add(id));
+                break;
+        }
+    }
+    return { chat, messages };
+}
+
+export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard?: MessageGuard) {
     const characterExists = db.prepare("SELECT 1 AS found FROM resources WHERE kind = ? AND id = ?");
     const selectChat = db.prepare("SELECT seq, revision, meta FROM chats WHERE characterId = ? AND id = ?");
     const insertChat = db.prepare(
@@ -538,9 +567,26 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions) {
     /** The index of the op `applyGroup` is applying, so a refusal can name it. */
     let applyingOp = -1;
 
+    /**
+     * Whether a group touches a message a generation job other than `jobToken` owns: an op that
+     * rewrites or removes it, or a whole-chat replace or delete of a chat holding one.
+     */
+    function refusedByLock(group: PreparedChatGroup, jobToken: string | undefined): boolean {
+        if (!guard) {
+            return false;
+        }
+        const foreign = (token: string | null) => token !== null && token !== jobToken;
+        const targets = lockedTargets(group);
+        if (targets.chat && [...guard.chatHolders(group.characterId, group.chatId)].some(foreign)) {
+            return true;
+        }
+        return [...targets.messages].some((id) => foreign(guard.holder(group.characterId, group.chatId, id)));
+    }
+
     function applyGroup(
         group: PreparedChatGroup,
         changedOrders: Set<string>,
+        jobToken: string | undefined,
     ): { result: ChatGroupResult; applied: number } {
         const { characterId, chatId } = group;
         const conflictHere = (row: ChatRow | undefined): never => {
@@ -552,6 +598,17 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions) {
             });
         };
         let row = selectChat.get(characterId, chatId) as ChatRow | undefined;
+        // Before the revision checks: a refused edit of a generating message must read as
+        // "retry after the job", not as a stale view to reload.
+        if (refusedByLock(group, jobToken)) {
+            throw new ChatChangeConflict({
+                kind: "chat",
+                characterId,
+                id: chatId,
+                revision: row ? tokens.token(row.seq, row.revision) : null,
+                reason: "generating",
+            });
+        }
         /** Whether the group names an older revision of this chat (allowed for by-id ops). */
         let stale = false;
         if (group.baseRevision === null) {
@@ -771,6 +828,17 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions) {
             }
         },
 
+        /** Whether a generation job other than `jobToken` owns a message of the character's chats. */
+        characterLocked(characterId: string, jobToken?: string): boolean {
+            return !!guard && [...guard.characterHolders(characterId)].some((token) => token !== jobToken);
+        },
+
+        /** The chat's revision token, or null when it does not exist (its messages are not read). */
+        chatRevision(characterId: string, id: string): string | null {
+            const row = selectChat.get(characterId, id) as ChatRow | undefined;
+            return row ? tokens.token(row.seq, row.revision) : null;
+        },
+
         /** Deletes a character's chats, their messages, and its order (inside the character's delete). */
         deleteCharacter(characterId: string) {
             deleteCharacterChats.run(characterId);
@@ -790,6 +858,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions) {
             orders: readonly PreparedChatOrder[],
             orderBases: ReadonlyMap<string, { seq: number; revision: number } | null>,
             priorConflicts: boolean,
+            jobToken?: string,
         ) {
             const conflicts: (ChatConflict | ChatOrderConflict)[] = [];
             const results: ChatGroupResult[] = [];
@@ -798,7 +867,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions) {
             for (const [index, group] of groups.entries()) {
                 applyingOp = -1;
                 try {
-                    const outcome = applyGroup(group, changedOrders);
+                    const outcome = applyGroup(group, changedOrders, jobToken);
                     results.push(outcome.result);
                     applied += outcome.applied;
                 } catch (error) {

@@ -16,6 +16,7 @@ import {
     prepareChatOrders,
     readChatSnapshotRows,
 } from "./chatStore.ts";
+import type { MessageGuard } from "../jobs/generationLock.ts";
 import type { ResourceKind, ResourceKindRegistry } from "./kinds.ts";
 
 /**
@@ -43,14 +44,28 @@ export class ResourceStoreClosedError extends Error {
     }
 }
 
-/** A write named a revision that is not the current one, or the record it addressed is gone. */
+/**
+ * A write named a revision that is not the current one, or the record it addressed is gone. With
+ * `reason: "generating"`: a character delete refused because a generation job owns one of its
+ * messages.
+ */
 export class ResourceConflictError extends Error {
     /** The current revision token, or null when the record does not exist. */
     readonly current: string | null;
-    constructor(current: string | null) {
+    readonly reason: "generating" | undefined;
+    constructor(current: string | null, reason?: "generating") {
         super("Revision conflict");
         this.name = "ResourceConflictError";
         this.current = current;
+        this.reason = reason;
+    }
+}
+
+/** A job write named a job token that is not live: the job has ended. */
+export class JobTokenError extends Error {
+    constructor() {
+        super("The generation job has ended");
+        this.name = "JobTokenError";
     }
 }
 
@@ -169,8 +184,8 @@ export function isValidResourceId(id: unknown): id is string {
  * a kind object from `kinds` and rejects any other, so a write always runs that kind's normalizer.
  * Kinds that need rows of their own (chat messages) get their own tables behind this interface later.
  */
-export function createResourceStore(options: { file: string; kinds: ResourceKindRegistry }) {
-    const { kinds } = options;
+export function createResourceStore(options: { file: string; kinds: ResourceKindRegistry; guard?: MessageGuard }) {
+    const { kinds, guard } = options;
     if (options.file !== ":memory:") {
         mkdirSync(path.dirname(options.file), { recursive: true });
     }
@@ -284,7 +299,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         return Number.isSafeInteger(seq) && Number.isSafeInteger(revision) ? { seq, revision } : null;
     }
 
-    const chatTables = createChatTables(db, { token, parse: parseToken });
+    const chatTables = createChatTables(db, { token, parse: parseToken }, guard);
     const isCharacterKind = (kind: ResourceKind) => kind.name === RESOURCE_KIND.characters;
 
     function assertOpen() {
@@ -362,8 +377,8 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         return row ? token(row.seq, row.revision) : null;
     }
 
-    function conflict(kind: ResourceKind, id: string): never {
-        const error = new ResourceConflictError(currentToken(kind, id));
+    function conflict(kind: ResourceKind, id: string, reason?: "generating"): never {
+        const error = new ResourceConflictError(currentToken(kind, id), reason);
         if (transactionState && !transactionState.conflict) {
             transactionState.conflict = error;
         }
@@ -523,6 +538,11 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
             assertId(kind, id);
             assertDeletable(kind);
             atomically(() => {
+                // Before the revision check: a refusal for a generating message reads as "retry
+                // after the job", not as a stale view.
+                if (isCharacterKind(kind) && chatTables.characterLocked(id)) {
+                    conflict(kind, id, "generating");
+                }
                 const base = parseToken(baseRevision);
                 if (!base || remove.run(kind.name, id, base.seq, base.revision).changes === 0) {
                     conflict(kind, id);
@@ -532,6 +552,12 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                 }
                 countWrite();
             });
+        },
+
+        /** A chat's revision token, or null when it does not exist (its messages are not read). */
+        chatRevision(characterId: string, id: string): string | null {
+            assertOpen();
+            return chatTables.chatRevision(characterId, id);
         },
 
         /** `applyChanges` with resource operations only; returns their tokens in operation order. */
@@ -550,14 +576,29 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
          * chat groups are applied in order, then reorders, each checked as `shared/chats.ts`
          * describes. If anything conflicts, nothing is written and `ResourceBatchConflictError`
          * lists every conflict. A batch that deletes a character and also names its chats is invalid.
+         *
+         * A change that rewrites or removes a message a generation job owns (the guard), or deletes
+         * a character holding one, conflicts with `reason: "generating"` unless `options.jobToken`
+         * is the owner's; that check precedes the revision checks. A generation job's own write
+         * (`server/src/jobs/`) passes its `epoch` and `jobToken`: the epoch is asserted and the token
+         * must be live (`JobTokenError` otherwise), in the same synchronous call as the write.
          */
-        applyChanges(batch: {
-            ops?: readonly ResourceBatchOperation[];
-            chats?: unknown;
-            chatOrders?: unknown;
-        }): AppliedChanges {
+        applyChanges(
+            batch: {
+                ops?: readonly ResourceBatchOperation[];
+                chats?: unknown;
+                chatOrders?: unknown;
+            },
+            options: { epoch?: string; jobToken?: string } = {},
+        ): AppliedChanges {
             assertWritable();
             assertNotInTransaction();
+            if (options.epoch !== undefined) {
+                store.assertEpoch(options.epoch);
+            }
+            if (options.jobToken !== undefined && !guard?.isLive(options.jobToken)) {
+                throw new JobTokenError();
+            }
             const operations = batch.ops ?? [];
             const seen = new Set<string>();
             const prepared = operations.map((operation, index) => {
@@ -604,9 +645,18 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
             let committed = false;
             try {
                 const conflicts: BatchConflict[] = [];
-                const bases = prepared.map(({ operation: { kind, id, baseRevision } }) => {
+                const bases = prepared.map(({ operation: { kind, id, baseRevision }, text }) => {
                     const row = selectOne.get(kind.name, id) as { seq: number; revision: number } | undefined;
                     const base = baseRevision === null ? null : parseToken(baseRevision);
+                    if (text === null && isCharacterKind(kind) && chatTables.characterLocked(id, options.jobToken)) {
+                        conflicts.push({
+                            kind: kind.name,
+                            id,
+                            revision: row ? token(row.seq, row.revision) : null,
+                            reason: "generating",
+                        });
+                        return base;
+                    }
                     const current =
                         baseRevision === null
                             ? row === undefined
@@ -642,7 +692,13 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
                               update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision);
                               return { kind: kind.name, id, revision: token(base.seq, revision) };
                           });
-                const chatOutcome = chatTables.apply(chatGroups, chatOrders, orderBases, conflicts.length > 0);
+                const chatOutcome = chatTables.apply(
+                    chatGroups,
+                    chatOrders,
+                    orderBases,
+                    conflicts.length > 0,
+                    options.jobToken,
+                );
                 conflicts.push(...chatOutcome.conflicts);
                 if (conflicts.length > 0) {
                     throw new ResourceBatchConflictError(conflicts);

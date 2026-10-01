@@ -40,15 +40,31 @@ export type ServerStore = {
         chats: (ChatRecord | { characterId: string; id: string; revision: null; data: null })[];
         chatCollections: { characterId: string; order: ChatOrderRecord | null; chats: ChatRecord[] }[];
     };
-    applyChanges(batch: { ops?: readonly unknown[]; chats?: unknown; chatOrders?: unknown }): {
+    applyChanges(
+        batch: { ops?: readonly unknown[]; chats?: unknown; chatOrders?: unknown },
+        options?: { epoch?: string; jobToken?: string },
+    ): {
         results: { kind: string; id: string; revision: string | null }[];
         chats: any[];
         chatOrders: any[];
     };
 };
 
+/** The server generation lock (`server/src/jobs/generationLock.ts`), as far as the tests drive it. */
+export type ServerGenerationLock = {
+    addToken(token: string): void;
+    acquire(
+        ref: { characterId: string; chatId: string; messageId: string },
+        owner: { jobId: string; generationId: string; token: string },
+    ): unknown;
+    release(ref: { characterId: string; chatId: string; messageId: string }, token: string, generationId: string): void;
+    endJob(token: string): void;
+};
+
+type LockModule = { createGenerationLock(): ServerGenerationLock };
+
 type StoreModule = {
-    createResourceStore(options: { file: string; kinds: unknown }): ServerStore;
+    createResourceStore(options: { file: string; kinds: unknown; guard?: ServerGenerationLock }): ServerStore;
     ResourceBatchConflictError: new (conflicts: unknown[]) => Error & { conflicts: unknown[] };
     ResourceValidationError: new (message: string) => Error;
 };
@@ -59,21 +75,26 @@ type KindsModule = {
 };
 
 const SERVER_DATA = "../../../../server/src/data/";
+const SERVER_JOBS = "../../../../server/src/jobs/";
 
 export class StoreBackedServer {
     /** Most operations one batch may name (`MAX_BATCH_OPERATIONS` of the batch route). */
     static readonly MAX_BATCH_OPERATIONS = 5000;
 
-    static async create(): Promise<StoreBackedServer> {
-        const [storeModule, kindsModule] = (await Promise.all([
+    /** `lock`: build the store with the server generation lock as its guard (`this.lock`). */
+    static async create(options: { lock?: boolean } = {}): Promise<StoreBackedServer> {
+        const [storeModule, kindsModule, lockModule] = (await Promise.all([
             import(/* @vite-ignore */ `${SERVER_DATA}resourceStore.ts`),
             import(/* @vite-ignore */ `${SERVER_DATA}kinds.ts`),
-        ])) as [StoreModule, KindsModule];
-        return new StoreBackedServer(storeModule, kindsModule);
+            options.lock ? import(/* @vite-ignore */ `${SERVER_JOBS}generationLock.ts`) : null,
+        ])) as [StoreModule, KindsModule, LockModule | null];
+        return new StoreBackedServer(storeModule, kindsModule, lockModule?.createGenerationLock() ?? null);
     }
 
     readonly kinds: ReadonlyMap<string, unknown>;
     readonly store: ServerStore;
+    /** The generation lock guarding the store (`create({ lock: true })`), or null. */
+    readonly lock: ServerGenerationLock | null;
     /** The server's error classes, for `instanceof` checks in tests. */
     readonly errors: Pick<StoreModule, "ResourceBatchConflictError" | "ResourceValidationError">;
     requests: { method: string; path: string; body: any }[] = [];
@@ -87,9 +108,10 @@ export class StoreBackedServer {
     /** Runs before the next batch is applied (something another tab does meanwhile); one-shot. */
     beforeNextBatch: (() => Promise<void> | void) | null = null;
 
-    private constructor(storeModule: StoreModule, kindsModule: KindsModule) {
+    private constructor(storeModule: StoreModule, kindsModule: KindsModule, lock: ServerGenerationLock | null) {
         this.kinds = kindsModule.createKindRegistry(kindsModule.DEFAULT_RESOURCE_KINDS);
-        this.store = storeModule.createResourceStore({ file: ":memory:", kinds: this.kinds });
+        this.lock = lock;
+        this.store = storeModule.createResourceStore({ file: ":memory:", kinds: this.kinds, guard: lock ?? undefined });
         this.errors = storeModule;
     }
 

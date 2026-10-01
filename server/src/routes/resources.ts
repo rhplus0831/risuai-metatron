@@ -29,7 +29,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * land), is refused with 503 while a restore or import runs, and names the revision it was based on
  * (`baseRevision`: null to create); a stale one is a 409 carrying the current revision (null when the
  * record is gone). The batch also carries chat groups and reorders, and the reads chats and chat
- * collections (`shared/chats.ts`). Responses are never cached.
+ * collections (`shared/chats.ts`). An edit of a message a generation job owns is a 409 whose entry
+ * (or, on the single routes, whose body) carries `reason: "generating"`. Responses are never cached.
  */
 export function registerResourceRoutes(
     app: Hono<AppEnv>,
@@ -301,7 +302,12 @@ function parseBatchOperation(op: unknown, kinds: ResourceKindRegistry): Resource
 
 function storeErrorResponse(c: Context<AppEnv>, error: unknown): Response {
     if (error instanceof ResourceConflictError) {
-        return c.json({ error: error.message, revision: error.current }, 409);
+        return c.json(
+            error.reason
+                ? { error: error.message, revision: error.current, reason: error.reason }
+                : { error: error.message, revision: error.current },
+            409,
+        );
     }
     if (error instanceof ResourceBatchConflictError) {
         return c.json({ error: error.message, conflicts: error.conflicts }, 409);

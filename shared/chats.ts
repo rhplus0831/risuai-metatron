@@ -76,8 +76,18 @@ export type ChatRecord = { characterId: string; id: string; revision: string; da
 
 export type ChatOrderRecord = { characterId: string; revision: string; ids: string[] };
 
-/** A 409 entry for a chat group (revision null: the chat is gone). */
-export type ChatConflict = { kind: "chat"; characterId: string; id: string; revision: string | null };
+/**
+ * A 409 entry for a chat group (revision null: the chat is gone). `reason: "generating"`: the group
+ * touches a message a server generation job owns (Phase 5); retry after the job ends instead of
+ * reloading.
+ */
+export type ChatConflict = {
+    kind: "chat";
+    characterId: string;
+    id: string;
+    revision: string | null;
+    reason?: "generating";
+};
 
 /** A 409 entry for a reorder or a chat whose parent order is gone. */
 export type ChatOrderConflict = { kind: "chatOrder"; characterId: string; revision: string | null };

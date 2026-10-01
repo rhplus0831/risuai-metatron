@@ -74,6 +74,8 @@ export function createSnapshotManager(options: {
     let stopping: Promise<void> | null = null;
     /** Resource handlers and backup operations admitted and not yet finished. */
     const active = new Set<Promise<unknown>>();
+    /** Run by `withMaintenance` before mutations close (the generation jobs end there). */
+    const maintenanceListeners = new Set<() => Promise<(() => void) | void>>();
     /** `store.writeCount()` covered by the last periodic snapshot (none is taken before the first write). */
     let snapshotWrites = store.writeCount();
 
@@ -220,18 +222,42 @@ export function createSnapshotManager(options: {
         },
 
         /**
+         * Registers work `withMaintenance` runs under the lock before it closes mutations: the
+         * generation jobs are aborted and end there, so their abort checkpoints still land in the
+         * database being replaced (and in the safety snapshot). A listener may return a function,
+         * called once the maintenance ends (the jobs reopen admission). Returns the unregister function.
+         */
+        onMaintenance(listener: () => Promise<(() => void) | void>): () => void {
+            maintenanceListeners.add(listener);
+            return () => {
+                maintenanceListeners.delete(listener);
+            };
+        },
+
+        /**
          * Runs `fn` under the lock with mutations closed: new ones answer 503, and storage mutations
          * admitted earlier finish before `fn` starts. `fn` gets a snapshot function that is safe to
-         * call inside (a safety snapshot before a restore).
+         * call inside (a safety snapshot before a restore). The `onMaintenance` listeners run first,
+         * under the lock, while mutations are still open.
          */
         withMaintenance<T>(fn: (tools: { snapshot(): Promise<BackupSnapshotInfo> }) => Promise<T>): Promise<T> {
             return exclusive(async () => {
-                maintenance = true;
+                const ends: (() => void)[] = [];
                 try {
+                    for (const listener of [...maintenanceListeners]) {
+                        const end = await listener();
+                        if (end) {
+                            ends.push(end);
+                        }
+                    }
+                    maintenance = true;
                     await drained();
                     return await fn({ snapshot: takeLocked });
                 } finally {
                     maintenance = false;
+                    for (const end of ends) {
+                        end();
+                    }
                 }
             });
         },

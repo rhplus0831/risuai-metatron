@@ -236,7 +236,8 @@ export function createProxyStreamJobs(arg: { auth: AuthStore }) {
     const { auth } = arg;
     const jobs = new Map<string, ProxyStreamJob>();
     let gcTimer: NodeJS.Timeout | undefined;
-    const attachments = new Map<http.Server, { wsServer: WebSocketServer; onUpgrade: (...args: any[]) => void }>();
+    const wsServer = new WebSocketServer({ noServer: true });
+    let disposed = false;
 
     function createJob(timeoutMsRaw: unknown, heartbeatSec: number): ProxyStreamJob {
         const timeoutMs = normalizeProxyStreamTimeoutMs(Number(timeoutMsRaw));
@@ -434,21 +435,23 @@ export function createProxyStreamJobs(arg: { auth: AuthStore }) {
         });
     }
 
-    /** Handles `upgrade` on the Node server for `/proxy-stream-jobs/:jobId/ws`. */
-    function attachWebSocket(server: http.Server) {
-        if (attachments.has(server)) {
-            return;
+    /**
+     * The `upgrade` handler for `/proxy-stream-jobs/:jobId/ws`, called by the server's one upgrade
+     * dispatcher (`app.ts`). Returns false, leaving the socket untouched, for any other path;
+     * otherwise it owns the socket and answers it asynchronously.
+     */
+    function handleUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): boolean {
+        let reqUrl: URL;
+        try {
+            reqUrl = new URL(req.url ?? "", `http://${req.headers.host}`);
+        } catch {
+            return false;
         }
-        const wsServer = new WebSocketServer({ noServer: true });
-
-        const onUpgrade = async (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
+        if (!reqUrl.pathname.startsWith("/proxy-stream-jobs/") || !reqUrl.pathname.endsWith("/ws")) {
+            return false;
+        }
+        void (async () => {
             try {
-                const reqUrl = new URL(req.url ?? "", `http://${req.headers.host}`);
-                if (!reqUrl.pathname.startsWith("/proxy-stream-jobs/") || !reqUrl.pathname.endsWith("/ws")) {
-                    socket.destroy();
-                    return;
-                }
-
                 const headerAuth = req.headers["risu-auth"];
                 const token =
                     reqUrl.searchParams.get("risu-auth") || (Array.isArray(headerAuth) ? headerAuth[0] : headerAuth);
@@ -460,7 +463,7 @@ export function createProxyStreamJobs(arg: { auth: AuthStore }) {
 
                 const pathParts = reqUrl.pathname.split("/").filter(Boolean);
                 const jobId = pathParts.length >= 3 ? pathParts[1] : "";
-                if (!jobs.has(jobId)) {
+                if (disposed || !jobs.has(jobId)) {
                     socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
                     socket.destroy();
                     return;
@@ -471,9 +474,8 @@ export function createProxyStreamJobs(arg: { auth: AuthStore }) {
                 socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
                 socket.destroy();
             }
-        };
-        server.on("upgrade", onUpgrade);
-        attachments.set(server, { wsServer, onUpgrade });
+        })();
+        return true;
     }
 
     function onConnection(ws: WebSocket, jobId: string) {
@@ -539,15 +541,12 @@ export function createProxyStreamJobs(arg: { auth: AuthStore }) {
     function dispose() {
         clearInterval(gcTimer);
         gcTimer = undefined;
+        disposed = true;
         for (const jobId of [...jobs.keys()]) {
             cleanupJob(jobId);
         }
-        for (const [server, { wsServer, onUpgrade }] of attachments) {
-            server.off("upgrade", onUpgrade);
-            wsServer.close();
-        }
-        attachments.clear();
+        wsServer.close();
     }
 
-    return { registerRoutes, attachWebSocket, startGc, dispose };
+    return { registerRoutes, handleUpgrade, startGc, dispose };
 }

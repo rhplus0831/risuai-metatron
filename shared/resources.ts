@@ -99,8 +99,45 @@ export type ResourceBatchResult = {
     chatOrders?: ChatOrderResult[];
 };
 
-/** A resource entry of a 409: `kind` is the resource kind name. */
-export type ResourceConflict = { kind: string; id: string; revision: string | null };
+/**
+ * A resource entry of a 409: `kind` is the resource kind name. `reason: "generating"`: a character
+ * delete refused because a server generation job owns one of its messages (Phase 5).
+ */
+export type ResourceConflict = { kind: string; id: string; revision: string | null; reason?: "generating" };
+
+const revisionTokenPattern =
+    /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):(0|[1-9][0-9]*):(0|[1-9][0-9]*)$/;
+
+/**
+ * A revision token `<epoch>:<seq>:<revision>` (the store's format: `seq` is the record's
+ * incarnation, `revision` counts its writes), or null when it is not one. Only hydration ordering
+ * reads tokens; everything else treats them as opaque.
+ */
+export function parseRevisionToken(token: unknown): { epoch: string; seq: number; revision: number } | null {
+    if (typeof token !== "string") {
+        return null;
+    }
+    const match = revisionTokenPattern.exec(token);
+    if (!match) {
+        return null;
+    }
+    const seq = Number(match[2]);
+    const revision = Number(match[3]);
+    return Number.isSafeInteger(seq) && Number.isSafeInteger(revision) ? { epoch: match[1], seq, revision } : null;
+}
+
+/**
+ * Orders two tokens of one epoch by `(seq, revision)`: negative when `a` is older, 0 when equal,
+ * positive when newer. Null across epochs or when either is not a token.
+ */
+export function compareRevision(a: unknown, b: unknown): number | null {
+    const left = parseRevisionToken(a);
+    const right = parseRevisionToken(b);
+    if (!left || !right || left.epoch !== right.epoch) {
+        return null;
+    }
+    return left.seq !== right.seq ? left.seq - right.seq : left.revision - right.revision;
+}
 
 /**
  * An entry of a batch 409. `kind` is `"chat"` or `"chatOrder"` for chat entries (both reserved as
