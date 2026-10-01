@@ -1,0 +1,64 @@
+{
+  "i-flag-plain-text": {
+    "messages": ["A dragon appears."],
+    "lore": [{ "comment": "regex-i", "key": "/dragon/i", "useRegex": true }],
+    "actives": [],
+    "matchLog": []
+  },
+  "empty-flags-plain-text": {
+    "messages": ["A dragon appears."],
+    "lore": [{ "comment": "regex-empty", "key": "/dragon/", "useRegex": true }],
+    "actives": [],
+    "matchLog": []
+  },
+  "i-flag-slash-in-text": {
+    "messages": ["Take the /dragon path."],
+    "lore": [{ "comment": "regex-i", "key": "/dragon/i", "useRegex": true }],
+    "actives": [{ "source": "regex-i", "prompt": "i flag", "pos": "", "depth": 0, "role": "system" }],
+    "matchLog": [
+      {
+        "prompt": "\u0001{{User}}:Take the /dragon path.\u0001",
+        "source": "message 0 by user",
+        "activated": "/dragon/i"
+      }
+    ]
+  },
+  "i-flag-two-messages-match-second": {
+    "messages": ["Hello there.", "Take the /dragon path."],
+    "lore": [{ "comment": "regex-i", "key": "/dragon/i", "useRegex": true }],
+    "actives": [],
+    "matchLog": []
+  },
+  "i-flag-two-messages-match-first": {
+    "messages": ["Take the /dragon path.", "Hello there."],
+    "lore": [{ "comment": "regex-i", "key": "/dragon/i", "useRegex": true }],
+    "actives": [{ "source": "regex-i", "prompt": "i flag", "pos": "", "depth": 0, "role": "system" }],
+    "matchLog": [
+      {
+        "prompt": "\u0001{{User}}:Take the /dragon path.\u0001",
+        "source": "message 0 by user",
+        "activated": "/dragon/i"
+      }
+    ]
+  },
+  "two-keys-second-matches": {
+    "messages": ["Take the /dragon path."],
+    "lore": [{ "comment": "regex-two", "key": "/cat/i, /dragon/i", "useRegex": true }],
+    "actives": [{ "source": "regex-two", "prompt": "two keys", "pos": "", "depth": 0, "role": "system" }],
+    "matchLog": [
+      {
+        "prompt": "\u0001{{User}}:Take the /dragon path.\u0001",
+        "source": "message 0 by user",
+        "activated": "/dragon/i"
+      }
+    ]
+  },
+  "plain-key-control": {
+    "messages": ["A dragon appears."],
+    "lore": [{ "comment": "plain", "key": "dragon", "useRegex": false }],
+    "actives": [{ "source": "plain", "prompt": "plain key", "pos": "", "depth": 0, "role": "system" }],
+    "matchLog": [
+      { "prompt": "\u0001{{user}}:a dragon appears.\u0001", "source": "message 0 by user", "activated": "dragon" }
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "commit": "efad2b7665659549eee947c00d160ef001143977",
+  "capturedAt": "2026-10-01T07:11:55.762Z",
+  "chrome": "Google Chrome 153.0.8010.52",
+  "playwrightCore": "1.63.0",
+  "wasmoon": "1.16.0",
+  "client": "the browser path unchanged at the commit above, Vite dev stack (util/playwright/stack.mjs), fresh server working directory",
+  "tool": "util/playwright/capturePhase5Baseline.mjs",
+  "pageErrors": [
+    {
+      "text": "TypeError: Cannot read properties of undefined (reading 'length')\n\n\tin <unknown>\n\tin DefaultChatScreen.svelte\n\tin ChatScreen.svelte\n\tin App.svelte\n\tin undefined\n",
+      "times": 7
+    }
+  ],
+  "blockedRequests": [
+    { "url": "https://cdn.jsdelivr.net/npm/katex@0.16.27/dist/katex.min.css", "times": 1 },
+    { "url": "https://fonts.googleapis.com/css2?family=Tilt+Prism&family=Yellowtail&display=swap", "times": 1 }
+  ],
+  "servedLocally": [{ "url": "https://unpkg.com/wasmoon@1.16.0/dist/glue.wasm", "times": 1 }],
+  "presetIds": [
+    { "id": "66c8efcb-4312-4ac7-9302-884c5762af31", "name": "Default" },
+    { "id": "1ca6e5ce-9db5-46c4-bdd4-08a3b307759c", "name": "Alpha" },
+    { "id": "7b79e56d-e0ad-47d3-9c3d-00de765a14dc", "name": "Beta" }
+  ]
+}

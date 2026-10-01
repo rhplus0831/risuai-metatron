@@ -1,0 +1,154 @@
+{
+  "withoutHooks": {
+    "greeting": {
+      "direct": "<p>First message with <em>Mark</em><br>\nfor User. ordered-Mark [lua:-1]</p>\n",
+      "prePass": {
+        "text": "First message with *Mark* for User. ORDER",
+        "html": "<p>First message with <em>Mark</em><br>\nfor User. ordered-Mark [lua:-1]</p>\n"
+      },
+      "back": "First message with <em>Mark</em>\n for User. ordered-Mark [lua:-1]",
+      "editprocess": "First message with *Mark* for User. ORDER"
+    },
+    "messages": {
+      "m-m1": {
+        "direct": "<p>Hello <em>Mark</em><br>\n, I am User. ordered-Mark [tag] PLAIN [lua:0]</p>\n",
+        "prePass": {
+          "text": "Hello *Mark*, I am User. ORDER Mark-tag plain",
+          "html": "<p>Hello <em>Mark</em><br>\n, I am User. ordered-Mark [tag] PLAIN [lua:0]</p>\n"
+        },
+        "back": "Hello <em>Mark</em>\n, I am User. ordered-Mark [tag] PLAIN [lua:0]",
+        "editprocess": "Hello *Mark*, I am User. ORDER Mark-tag plain"
+      },
+      "m-m2": {
+        "direct": "<p>Mood is calm and hp 14. calm-branch</p>\n<p>A secret line. [lua:1]<br>\nSTATUS: fine</p>\n",
+        "prePass": {
+          "text": "Mood is calm and hp 14. calm-branch\nSTATUS: fine\nA secret line.",
+          "html": "<p>Mood is calm and hp 14. calm-branch</p>\n<p>A secret line. [lua:1]<br>\nSTATUS: fine</p>\n"
+        },
+        "back": "Mood is calm and hp 14. calm-branch\n\nA secret line. [lua:1]\nSTATUS: fine",
+        "editprocess": "Mood is calm and hp 14. calm-branch\nSTATUS: fine\nA [redacted] line."
+      },
+      "m-m3": {
+        "direct": "<p>Random 0.3198020576965064 pick alpha dice 7 int 41. [lua:2]</p>\n",
+        "prePass": {
+          "text": "Random 0.3198020576965064 pick alpha dice 7 int 41.",
+          "html": "<p>Random 0.3198020576965064 pick alpha dice 7 int 41. [lua:2]</p>\n"
+        },
+        "back": "Random 0.3198020576965064 pick alpha dice 7 int 41. [lua:2]",
+        "editprocess": "Random 0.3198020576965064 pick alpha dice 7 int 41."
+      },
+      "m-m4": {
+        "direct": "<p>Date 2026-10-1 time 12:0:0 unix 1790856000 screen 1280x720 lang en-US ui en. [lua:3]</p>\n",
+        "prePass": {
+          "text": "Date 2026-10-1 time 12:0:0 unix 1790856000 screen 1280x720 lang en-US ui en.",
+          "html": "<p>Date 2026-10-1 time 12:0:0 unix 1790856000 screen 1280x720 lang en-US ui en. [lua:3]</p>\n"
+        },
+        "back": "Date 2026-10-1 time 12:0:0 unix 1790856000 screen 1280x720 lang en-US ui en. [lua:3]",
+        "editprocess": "Date 2026-10-1 time 12:0:0 unix 1790856000 screen 1280x720 lang en-US ui en."
+      },
+      "m-m5": {
+        "direct": "<p>Markdown: <em>*bold</em></p>\n<ul>\n<li><em>it</em> <code>code</code></li>\n</ul>\n<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n<pre class=\"hljs\" x-hl-lang=\"js\"><code><span class=\"hljs-keyword\">const</span> x = <span class=\"hljs-number\">1</span>;\n</code></pre>\n<details><summary>Chain of Thoughts</summary>hidden thought</details> visible <div class=\"x-risu-tool-call\">🛠️ Tool 'lookup' Called</div>\n<p>[lua:4]</p>\n",
+        "prePass": {
+          "text": "Markdown: **bold** _it_ `code`\n\n- a\n- b\n\n```js\nconst x = 1;\n```\n\n<Thoughts>hidden thought</Thoughts> visible <tool_call>id1lookup</tool_call>",
+          "html": "<p>Markdown: <em>*bold</em></p>\n<ul>\n<li><em>it</em> <code>code</code></li>\n</ul>\n<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n<pre class=\"hljs\" x-hl-lang=\"js\"><code><span class=\"hljs-keyword\">const</span> x = <span class=\"hljs-number\">1</span>;\n</code></pre>\n<details><summary>Chain of Thoughts</summary>hidden thought</details> visible <div class=\"x-risu-tool-call\">🛠️ Tool 'lookup' Called</div>\n<p>[lua:4]</p>\n"
+        },
+        "back": "Markdown: <em>*bold</em>\n* _it_ `code`\n\n- a\n- b\n\n```js\nconst x = 1;\n```\n\n<details><summary>Chain of Thoughts</summary>hidden thought</details> visible <div class=\"x-risu-tool-call\">🛠️ Tool 'lookup' Called</div>\n\n [lua:4]",
+        "editprocess": "Markdown: **bold** _it_ `code`\n\n- a\n- b\n\n```js\nconst x = 1;\n```\n\n<Thoughts>hidden thought</Thoughts> visible <tool_call>id1lookup</tool_call>"
+      },
+      "m-m6": {
+        "direct": "<p><style>.chattext .x-risu-a{color:red;}</style></p><div class=\"x-risu-a\">styled </div> <img src=\"x\" loading=\"lazy\" decoding=\"async\"> PLAIN [lua:5]<p></p>\n",
+        "prePass": {
+          "text": "<style>.x-risu-a{color:red}</style><div class=\"x-risu-a\" onclick=\"alert(1)\">styled <script>bad()</script></div> <img src=x onerror=alert(1)> plain",
+          "html": "<p><style>.chattext .x-risu-a{color:red;}</style></p><div class=\"x-risu-a\">styled </div> <img src=\"x\" loading=\"lazy\" decoding=\"async\"> PLAIN [lua:5]<p></p>\n"
+        },
+        "back": "<style>.chattext .x-risu-a{color:red;}</style><div class=\"x-risu-a\">styled </div> <img src=\"x\" loading=\"lazy\" decoding=\"async\"> PLAIN [lua:5]",
+        "editprocess": "<style>.x-risu-a{color:red}</style><div class=\"x-risu-a\" onclick=\"alert(1)\">styled <script>bad()</script></div> <img src=x onerror=alert(1)> plain"
+      },
+      "m-m7": {
+        "direct": "<p>literal-if Mark and User; unknown {{nosuchfunction::x}} stays literal. [lua:6]</p>\n",
+        "prePass": {
+          "text": "literal-if Mark and User; unknown {{nosuchfunction::x}} stays literal.",
+          "html": "<p>literal-if Mark and User; unknown {{nosuchfunction::x}} stays literal. [lua:6]</p>\n"
+        },
+        "back": "literal-if Mark and User; unknown {{nosuchfunction::x}} stays literal. [lua:6]",
+        "editprocess": "literal-if Mark and User; unknown {{nosuchfunction::x}} stays literal."
+      }
+    }
+  },
+  "withHooks": {
+    "greeting": {
+      "direct": "<p>First message with <em>Mark</em><br>\nfor User. ordered-Mark [lua:-1] [display-hook:literal-cbs]</p>\n",
+      "prePass": {
+        "text": "First message with *Mark* for User. ORDER",
+        "html": "<p>First message with <em>Mark</em><br>\nfor User. ordered-Mark [lua:-1] [display-hook:expanded]</p>\n"
+      },
+      "back": "First message with <em>Mark</em>\n for User. ordered-Mark [lua:-1] [display-hook:literal-cbs]",
+      "editprocess": "First message with *Mark* for User. ORDER [process-hook:literal-cbs]"
+    },
+    "messages": {
+      "m-m1": {
+        "direct": "<p>Hello <em>Mark</em><br>\n, I am User. ordered-Mark [tag] PLAIN [lua:0] [display-hook:literal-cbs]</p>\n",
+        "prePass": {
+          "text": "Hello *Mark*, I am User. ORDER Mark-tag plain",
+          "html": "<p>Hello <em>Mark</em><br>\n, I am User. ordered-Mark [tag] PLAIN [lua:0] [display-hook:expanded]</p>\n"
+        },
+        "back": "Hello <em>Mark</em>\n, I am User. ordered-Mark [tag] PLAIN [lua:0] [display-hook:literal-cbs]",
+        "editprocess": "Hello *Mark*, I am User. ORDER Mark-tag plain [process-hook:literal-cbs]"
+      },
+      "m-m2": {
+        "direct": "<p>Mood is calm and hp 14. calm-branch</p>\n<p>A secret line. [lua:1] [display-hook:literal-cbs]<br>\nSTATUS: fine</p>\n",
+        "prePass": {
+          "text": "Mood is calm and hp 14. calm-branch\nSTATUS: fine\nA secret line.",
+          "html": "<p>Mood is calm and hp 14. calm-branch</p>\n<p>A secret line. [lua:1] [display-hook:expanded]<br>\nSTATUS: fine</p>\n"
+        },
+        "back": "Mood is calm and hp 14. calm-branch\n\nA secret line. [lua:1] [display-hook:literal-cbs]\nSTATUS: fine",
+        "editprocess": "Mood is calm and hp 14. calm-branch\nSTATUS: fine\nA [redacted] line. [process-hook:literal-cbs]"
+      },
+      "m-m3": {
+        "direct": "<p>Random 0.3198020576965064 pick alpha dice 7 int 41. [lua:2] [display-hook:literal-cbs]</p>\n",
+        "prePass": {
+          "text": "Random 0.3198020576965064 pick alpha dice 7 int 41.",
+          "html": "<p>Random 0.3198020576965064 pick alpha dice 7 int 41. [lua:2] [display-hook:expanded]</p>\n"
+        },
+        "back": "Random 0.3198020576965064 pick alpha dice 7 int 41. [lua:2] [display-hook:literal-cbs]",
+        "editprocess": "Random 0.3198020576965064 pick alpha dice 7 int 41. [process-hook:literal-cbs]"
+      },
+      "m-m4": {
+        "direct": "<p>Date 2026-10-1 time 12:0:0 unix 1790856000 screen 1280x720 lang en-US ui en. [lua:3] [display-hook:literal-cbs]</p>\n",
+        "prePass": {
+          "text": "Date 2026-10-1 time 12:0:0 unix 1790856000 screen 1280x720 lang en-US ui en.",
+          "html": "<p>Date 2026-10-1 time 12:0:0 unix 1790856000 screen 1280x720 lang en-US ui en. [lua:3] [display-hook:expanded]</p>\n"
+        },
+        "back": "Date 2026-10-1 time 12:0:0 unix 1790856000 screen 1280x720 lang en-US ui en. [lua:3] [display-hook:literal-cbs]",
+        "editprocess": "Date 2026-10-1 time 12:0:0 unix 1790856000 screen 1280x720 lang en-US ui en. [process-hook:literal-cbs]"
+      },
+      "m-m5": {
+        "direct": "<p>Markdown: <em>*bold</em></p>\n<ul>\n<li><em>it</em> <code>code</code></li>\n</ul>\n<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n<pre class=\"hljs\" x-hl-lang=\"js\"><code><span class=\"hljs-keyword\">const</span> x = <span class=\"hljs-number\">1</span>;\n</code></pre>\n<details><summary>Chain of Thoughts</summary>hidden thought</details> visible <div class=\"x-risu-tool-call\">🛠️ Tool 'lookup' Called</div>\n<p>[lua:4] [display-hook:expanded]</p>\n",
+        "prePass": {
+          "text": "Markdown: **bold** _it_ `code`\n\n- a\n- b\n\n```js\nconst x = 1;\n```\n\n<Thoughts>hidden thought</Thoughts> visible <tool_call>id1lookup</tool_call>",
+          "html": "<p>Markdown: <em>*bold</em></p>\n<ul>\n<li><em>it</em> <code>code</code></li>\n</ul>\n<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n<pre class=\"hljs\" x-hl-lang=\"js\"><code><span class=\"hljs-keyword\">const</span> x = <span class=\"hljs-number\">1</span>;\n</code></pre>\n<details><summary>Chain of Thoughts</summary>hidden thought</details> visible <div class=\"x-risu-tool-call\">🛠️ Tool 'lookup' Called</div>\n<p>[lua:4] [display-hook:expanded]</p>\n"
+        },
+        "back": "Markdown: <em>*bold</em>\n* _it_ `code`\n\n- a\n- b\n\n```js\nconst x = 1;\n```\n\n<details><summary>Chain of Thoughts</summary>hidden thought</details> visible <div class=\"x-risu-tool-call\">🛠️ Tool 'lookup' Called</div>\n\n [lua:4] [display-hook:expanded]",
+        "editprocess": "Markdown: **bold** _it_ `code`\n\n- a\n- b\n\n```js\nconst x = 1;\n```\n\n<Thoughts>hidden thought</Thoughts> visible <tool_call>id1lookup</tool_call> [process-hook:expanded]"
+      },
+      "m-m6": {
+        "direct": "<p><style>.chattext .x-risu-a{color:red;}</style></p><div class=\"x-risu-a\">styled </div> <img src=\"x\" loading=\"lazy\" decoding=\"async\"> PLAIN [lua:5] [display-hook:expanded]<p></p>\n",
+        "prePass": {
+          "text": "<style>.x-risu-a{color:red}</style><div class=\"x-risu-a\" onclick=\"alert(1)\">styled <script>bad()</script></div> <img src=x onerror=alert(1)> plain",
+          "html": "<p><style>.chattext .x-risu-a{color:red;}</style></p><div class=\"x-risu-a\">styled </div> <img src=\"x\" loading=\"lazy\" decoding=\"async\"> PLAIN [lua:5] [display-hook:expanded]<p></p>\n"
+        },
+        "back": "<style>.chattext .x-risu-a{color:red;}</style><div class=\"x-risu-a\">styled </div> <img src=\"x\" loading=\"lazy\" decoding=\"async\"> PLAIN [lua:5] [display-hook:expanded]",
+        "editprocess": "<style>.x-risu-a{color:red}</style><div class=\"x-risu-a\" onclick=\"alert(1)\">styled <script>bad()</script></div> <img src=x onerror=alert(1)> plain [process-hook:expanded]"
+      },
+      "m-m7": {
+        "direct": "<p>literal-if Mark and User; unknown {{nosuchfunction::x}} stays literal. [lua:6] [display-hook:literal-cbs]</p>\n",
+        "prePass": {
+          "text": "literal-if Mark and User; unknown {{nosuchfunction::x}} stays literal.",
+          "html": "<p>literal-if Mark and User; unknown {{nosuchfunction::x}} stays literal. [lua:6] [display-hook:literal-cbs]</p>\n"
+        },
+        "back": "literal-if Mark and User; unknown {{nosuchfunction::x}} stays literal. [lua:6] [display-hook:literal-cbs]",
+        "editprocess": "literal-if Mark and User; unknown {{nosuchfunction::x}} stays literal. [process-hook:literal-cbs]"
+      }
+    }
+  }
+}

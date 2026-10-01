@@ -1,0 +1,40 @@
+{
+  "sendResult": true,
+  "providerCalls": [
+    {
+      "mode": "model",
+      "max_tokens": 300,
+      "prompt_chat": [
+        {
+          "role": "system",
+          "content": "You are Igor. The user is User. Stay in character.\nThe assistant must act as Igor. user is User."
+        },
+        { "role": "system", "content": "description of Igor: Igor replies through the mock provider." },
+        { "role": "system", "content": "Default persona prompt for User." },
+        { "role": "system", "content": "[Start a new chat]", "memo": "NewChat", "removable": true },
+        { "role": "assistant", "content": "Igor's greeting.", "removable": true },
+        {
+          "role": "assistant",
+          "content": "Igor's first reply.",
+          "memo": "m-i1",
+          "attr": [],
+          "thoughts": [],
+          "removable": true
+        },
+        { "role": "user", "content": "Say something, Igor.", "memo": "m-i2", "attr": [], "thoughts": [] },
+        { "role": "system", "content": "Jailbreak text for Igor." },
+        { "role": "system", "content": "Global note for Igor." }
+      ]
+    },
+    {
+      "mode": "emotion",
+      "max_tokens": 300,
+      "prompt_chat": [{ "role": "system", "content": "Summarize what Igor said to User.", "thoughts": [] }]
+    }
+  ],
+  "messages": [
+    { "role": "char", "saying": null, "data": "Igor's first reply." },
+    { "role": "user", "saying": null, "data": "Say something, Igor." },
+    { "role": "char", "saying": "char-igp", "data": "Reply from the mock provider.[object Object]" }
+  ]
+}

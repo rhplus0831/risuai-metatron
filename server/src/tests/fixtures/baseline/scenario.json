@@ -1,0 +1,1130 @@
+{
+  "environment": {
+    "fixedTime": "2026-10-01T12:00:00.000Z",
+    "timezoneId": "UTC",
+    "locale": "en-US",
+    "viewport": { "width": 1280, "height": 720 },
+    "randomSeed": 20261001,
+    "randomAlgorithm": "mulberry32 over Math.random, re-seeded with randomSeed before every capture unit"
+  },
+  "baseSettings": {
+    "username": "User",
+    "language": "en",
+    "selectedPersona": 0,
+    "aiModel": "reverse_proxy",
+    "subModel": "reverse_proxy",
+    "customTokenizer": "tik",
+    "customProxyRequestModel": "baseline-model",
+    "customAPIFormat": 0,
+    "forceReplaceUrl": "http://localhost:1/never-called",
+    "maxContext": 4000,
+    "maxResponse": 300,
+    "temperature": 80,
+    "mainPrompt": "You are {{char}}. The user is {{user}}. Stay in character.",
+    "jailbreakToggle": true,
+    "jailbreak": "Jailbreak text for {{char}}.",
+    "globalNote": "Global note for {{char}}.",
+    "promptPreprocess": true,
+    "additionalPrompt": "The assistant must act as {{char}}. user is {{user}}.",
+    "descriptionPrefix": "description of {{char}}: ",
+    "personaPrompt": "Default persona prompt for {{user}}.",
+    "formatingOrder": [
+      "main",
+      "description",
+      "personaPrompt",
+      "chats",
+      "lastChat",
+      "jailbreak",
+      "lorebook",
+      "globalNote",
+      "authorNote"
+    ],
+    "loreBookDepth": 5,
+    "loreBookToken": 8000,
+    "useTokenizerCaching": false,
+    "chainOfThought": false,
+    "promptSettings": {
+      "assistantPrefill": "",
+      "postEndInnerFormat": "",
+      "sendChatAsSystem": false,
+      "sendName": false,
+      "utilOverride": false,
+      "customChainOfThought": false,
+      "maxThoughtTagDepth": -1
+    },
+    "groupOtherBotRole": "user",
+    "groupTemplate": "",
+    "useStreaming": false,
+    "removeIncompleteResponse": false,
+    "autoContinueChat": false,
+    "autoContinueMinTokens": 0,
+    "ttsAutoSpeech": false,
+    "dynamicAssets": false,
+    "presetChain": "",
+    "igpPrompt": "",
+    "bias": [],
+    "presetRegex": [],
+    "instructChatTemplate": "chatml",
+    "JinjaTemplate": ""
+  },
+  "personas": [
+    { "name": "User", "personaPrompt": "", "icon": "", "note": "", "largePortrait": false, "id": "persona-user" },
+    {
+      "name": "Mina",
+      "personaPrompt": "Mina is a traveling archivist who asks precise questions.",
+      "icon": "",
+      "note": "",
+      "largePortrait": false,
+      "id": "persona-mina"
+    }
+  ],
+  "presets": [
+    { "name": "Alpha", "mainPrompt": "Alpha main prompt for {{char}}." },
+    { "name": "Beta", "mainPrompt": "Beta main prompt for {{char}}." }
+  ],
+  "characters": [
+    {
+      "type": "character",
+      "chaId": "char-aria",
+      "name": "Aria",
+      "desc": "Aria is a {{char}} who guides {{user}} through the archive.\nShe speaks in short sentences.",
+      "personality": "curious, precise",
+      "scenario": "A rainy evening in the archive.",
+      "firstMessage": "*The lamp flickers.* Welcome, {{user}}. I am {{char}}.",
+      "alternateGreetings": ["Alternate greeting for {{user}}."],
+      "exampleMessage": "<START>\n{{user}}: Where are we?\n{{char}}: In the archive, {{user}}.\n<START>\n<user>: Hello\n<bot>: Hi.",
+      "systemPrompt": "{{original}}\n[Card system prompt for {{char}}]",
+      "replaceGlobalNote": "[Card note] {{original}}",
+      "depth_prompt": { "depth": 2, "prompt": "[Depth prompt at 2 for {{char}}]" },
+      "notes": "",
+      "globalLore": [],
+      "customscript": [],
+      "triggerscript": [],
+      "emotionImages": [],
+      "bias": [],
+      "viewScreen": "none",
+      "utilityBot": false,
+      "chatPage": 0,
+      "chatFolders": [],
+      "chats": [
+        {
+          "id": "chat-aria-1",
+          "name": "Chat 1",
+          "message": [
+            { "chatId": "m-a1", "role": "user", "data": "Hello {{char}}, I am {{user}}.", "time": 1790855460000 },
+            { "chatId": "m-a2", "role": "char", "data": "Hello {{user}}. *smiles*", "time": 1790855520000 },
+            { "chatId": "m-a3", "role": "user", "data": "Tell me about the archive.", "time": 1790855580000 },
+            { "chatId": "m-a4", "role": "char", "data": "It holds every story ever told.", "time": 1790855640000 },
+            { "chatId": "m-a5", "role": "user", "data": "Which one is yours?", "time": 1790855700000 }
+          ],
+          "note": "Author note: keep it short, {{user}}.",
+          "localLore": [],
+          "fmIndex": -1,
+          "bindedPersona": "persona-mina"
+        }
+      ]
+    },
+    {
+      "type": "character",
+      "chaId": "char-lore",
+      "name": "Loremaster",
+      "desc": "Loremaster keeps the lore of {{user}}'s world.",
+      "personality": "",
+      "scenario": "",
+      "firstMessage": "Ask me about the dragon, the castle, or the river.",
+      "alternateGreetings": [],
+      "exampleMessage": "",
+      "systemPrompt": "",
+      "replaceGlobalNote": "",
+      "notes": "",
+      "globalLore": [
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "normal",
+          "content": "The castle stands on the hill.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "before",
+          "content": "@@position before_desc\nBefore the description.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "after",
+          "content": "@@position after_desc\nAfter the description.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "personality",
+          "content": "@@position personality\nPersonality position.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "scenario",
+          "content": "@@position scenario\nScenario position.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "end-system",
+          "content": "@@end\nAt the end as system.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "end-assistant",
+          "content": "@@depth 0\n@@role assistant\nAt the end as assistant.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "depth2-user",
+          "content": "@@depth 2\n@@role user\nDepth two as user.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "reverse1",
+          "content": "@@reverse_depth 1\nReverse depth one.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "pt-custom",
+          "content": "@@position pt_custom\nCustom position text.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "inject-main",
+          "content": "@@inject_at main\nInjected into main.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "inject-desc-prepend",
+          "content": "@@inject_at description\n@@inject_prepend\nPrepended to the description card.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "inject-lore",
+          "content": "@@inject_lore normal\nAppended to the normal entry.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "",
+          "secondkey": "",
+          "insertorder": 50,
+          "comment": "always",
+          "content": "Always active entry.",
+          "mode": "normal",
+          "alwaysActive": true,
+          "selective": false
+        },
+        {
+          "key": "/dragon/i",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "regex-i",
+          "content": "Regex entry with the i flag.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false,
+          "useRegex": true
+        },
+        {
+          "key": "/dragon/",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "regex-empty",
+          "content": "Regex entry with empty flags.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false,
+          "useRegex": true
+        },
+        {
+          "key": "hill",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "recursive",
+          "content": "Recursive: activated by the normal entry.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "river",
+          "secondkey": "boat",
+          "insertorder": 100,
+          "comment": "selective",
+          "content": "Selective river and boat.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": true
+        },
+        {
+          "key": "ocean",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "notmatched",
+          "content": "Should not appear.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 200,
+          "comment": "priority",
+          "content": "@@priority 5\nLow priority entry.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "cast",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "fullword",
+          "content": "@@match_full_word\nFull word cast must not match castle.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        },
+        {
+          "key": "castle",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "user-role",
+          "content": "@@role user\nNormal position as user.",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        }
+      ],
+      "customscript": [],
+      "triggerscript": [],
+      "emotionImages": [],
+      "bias": [],
+      "viewScreen": "none",
+      "utilityBot": false,
+      "chatPage": 0,
+      "chatFolders": [],
+      "chats": [
+        {
+          "id": "chat-lore-1",
+          "name": "Chat 1",
+          "message": [
+            {
+              "chatId": "m-l1",
+              "role": "user",
+              "data": "Tell me about the castle and the dragon.",
+              "time": 1790855460000
+            },
+            { "chatId": "m-l2", "role": "char", "data": "The castle? Certainly.", "time": 1790855520000 },
+            { "chatId": "m-l3", "role": "user", "data": "And the river with a boat.", "time": 1790855580000 },
+            { "chatId": "m-l4", "role": "char", "data": "The river flows past.", "time": 1790855640000 },
+            { "chatId": "m-l5", "role": "user", "data": "Go on.", "time": 1790855700000 }
+          ],
+          "note": "",
+          "localLore": [
+            {
+              "key": "castle",
+              "secondkey": "",
+              "insertorder": 100,
+              "comment": "chat-local",
+              "content": "Chat-local lore.",
+              "mode": "normal",
+              "alwaysActive": false,
+              "selective": false
+            }
+          ],
+          "fmIndex": -1
+        }
+      ]
+    },
+    {
+      "type": "character",
+      "chaId": "char-jinja",
+      "name": "Jin",
+      "desc": "Jin answers {{user}} tersely.",
+      "personality": "",
+      "scenario": "",
+      "firstMessage": "Jin here.",
+      "alternateGreetings": [],
+      "exampleMessage": "",
+      "systemPrompt": "",
+      "replaceGlobalNote": "",
+      "notes": "",
+      "globalLore": [],
+      "customscript": [],
+      "triggerscript": [],
+      "emotionImages": [],
+      "bias": [],
+      "viewScreen": "none",
+      "utilityBot": false,
+      "chatPage": 0,
+      "chatFolders": [],
+      "chats": [
+        {
+          "id": "chat-jinja-1",
+          "name": "Chat 1",
+          "message": [
+            { "chatId": "m-j1", "role": "user", "data": "Hi {{char}}.", "time": 1790855460000 },
+            { "chatId": "m-j2", "role": "char", "data": "Hi {{user}}.", "time": 1790855520000 },
+            { "chatId": "m-j3", "role": "user", "data": "Render me.", "time": 1790855580000 }
+          ],
+          "note": "",
+          "localLore": [],
+          "fmIndex": -1
+        }
+      ]
+    },
+    {
+      "type": "character",
+      "chaId": "char-bram",
+      "name": "Bram",
+      "desc": "Bram is the loud one.",
+      "personality": "loud",
+      "scenario": "",
+      "firstMessage": "Bram's greeting.",
+      "alternateGreetings": [],
+      "exampleMessage": "",
+      "systemPrompt": "",
+      "replaceGlobalNote": "",
+      "notes": "",
+      "globalLore": [
+        {
+          "key": "council",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "bram-lore",
+          "content": "Bram's own lore (member lore).",
+          "mode": "normal",
+          "alwaysActive": false,
+          "selective": false
+        }
+      ],
+      "customscript": [],
+      "triggerscript": [],
+      "emotionImages": [],
+      "bias": [],
+      "viewScreen": "none",
+      "utilityBot": false,
+      "chatPage": 0,
+      "chatFolders": [],
+      "chats": [{ "id": "chat-bram-1", "name": "Chat 1", "message": [], "note": "", "localLore": [], "fmIndex": -1 }]
+    },
+    {
+      "type": "character",
+      "chaId": "char-cora",
+      "name": "Cora",
+      "desc": "Cora is the quiet one.",
+      "personality": "quiet",
+      "scenario": "",
+      "firstMessage": "Cora's greeting.",
+      "alternateGreetings": [],
+      "exampleMessage": "",
+      "systemPrompt": "",
+      "replaceGlobalNote": "",
+      "notes": "",
+      "globalLore": [],
+      "customscript": [],
+      "triggerscript": [],
+      "emotionImages": [],
+      "bias": [],
+      "viewScreen": "none",
+      "utilityBot": false,
+      "chatPage": 0,
+      "chatFolders": [],
+      "chats": [{ "id": "chat-cora-1", "name": "Chat 1", "message": [], "note": "", "localLore": [], "fmIndex": -1 }]
+    },
+    {
+      "type": "group",
+      "chaId": "group-council",
+      "name": "Council",
+      "firstMessage": "",
+      "characters": ["char-bram", "char-cora"],
+      "characterTalks": [1, 1],
+      "characterActive": [true, true],
+      "orderByOrder": true,
+      "autoMode": false,
+      "useCharacterLore": true,
+      "firstMsgIndex": -1,
+      "globalLore": [
+        {
+          "key": "",
+          "secondkey": "",
+          "insertorder": 100,
+          "comment": "group-lore",
+          "content": "Group lore entry.",
+          "mode": "normal",
+          "alwaysActive": true,
+          "selective": false
+        }
+      ],
+      "emotionImages": [],
+      "customscript": [],
+      "viewScreen": "none",
+      "chatPage": 0,
+      "chatFolders": [],
+      "chats": [
+        {
+          "id": "chat-council-1",
+          "name": "Chat 1",
+          "message": [
+            { "chatId": "m-g1", "role": "user", "data": "Hello both, I am {{user}}.", "time": 1790855460000 },
+            {
+              "chatId": "m-g2",
+              "role": "char",
+              "data": "Bram here, {{user}}.",
+              "time": 1790855520000,
+              "saying": "char-bram"
+            },
+            { "chatId": "m-g3", "role": "char", "data": "Cora here.", "time": 1790855580000, "saying": "char-cora" },
+            { "chatId": "m-g4", "role": "user", "data": "Who speaks next about the council?", "time": 1790855640000 }
+          ],
+          "note": "",
+          "localLore": [],
+          "fmIndex": -1
+        }
+      ]
+    },
+    {
+      "type": "character",
+      "chaId": "char-mark",
+      "name": "Mark",
+      "desc": "Mark renders markdown for {{user}}.",
+      "personality": "",
+      "scenario": "",
+      "firstMessage": "First message with *{{char}}* for {{user}}. ORDER",
+      "alternateGreetings": [],
+      "exampleMessage": "",
+      "systemPrompt": "",
+      "replaceGlobalNote": "",
+      "notes": "",
+      "globalLore": [],
+      "customscript": [
+        {
+          "comment": "em",
+          "in": "\\*(.+?)\\*",
+          "out": "<em>$1</em>",
+          "type": "editdisplay",
+          "flag": "g",
+          "ableFlag": true
+        },
+        {
+          "comment": "order",
+          "in": "ORDER",
+          "out": "ordered-{{char}}",
+          "type": "editdisplay",
+          "flag": "g<order 5>",
+          "ableFlag": true
+        },
+        {
+          "comment": "cbs-in",
+          "in": "{{char}}-tag",
+          "out": "[tag]",
+          "type": "editdisplay",
+          "flag": "g<cbs>",
+          "ableFlag": true
+        },
+        {
+          "comment": "move",
+          "in": "^STATUS:.*$",
+          "out": "@@move_bottom $&",
+          "type": "editdisplay",
+          "flag": "m",
+          "ableFlag": true
+        },
+        {
+          "comment": "process",
+          "in": "secret",
+          "out": "[redacted]",
+          "type": "editprocess",
+          "flag": "gi",
+          "ableFlag": true
+        },
+        { "comment": "noflag", "in": "plain", "out": "PLAIN", "type": "editdisplay" }
+      ],
+      "triggerscript": [
+        {
+          "comment": "lua-edit",
+          "type": "manual",
+          "conditions": [],
+          "effect": [
+            {
+              "type": "triggerlua",
+              "code": "listenEdit('editDisplay', function(id, data, meta) return data .. ' [lua:' .. tostring(meta.index) .. ']' end)"
+            }
+          ]
+        }
+      ],
+      "emotionImages": [],
+      "bias": [],
+      "viewScreen": "none",
+      "utilityBot": false,
+      "chatPage": 0,
+      "chatFolders": [],
+      "chats": [
+        {
+          "id": "chat-mark-1",
+          "name": "Chat 1",
+          "message": [
+            {
+              "chatId": "m-m1",
+              "role": "user",
+              "data": "Hello *{{char}}*, I am {{user}}. ORDER {{char}}-tag plain",
+              "time": 1790855460000
+            },
+            {
+              "chatId": "m-m2",
+              "role": "char",
+              "data": "Mood is {{getvar::mood}} and hp {{calc::{{getvar::hp}}*2}}. {{#if {{equal::{{getvar::mood}}::calm}}}}calm-branch{{/if}}\nSTATUS: fine\nA secret line.",
+              "time": 1790855520000
+            },
+            {
+              "chatId": "m-m3",
+              "role": "user",
+              "data": "Random {{random}} pick {{random::alpha::beta::gamma}} dice {{dice::2d6}} int {{randint::1::100}}.",
+              "time": 1790855580000
+            },
+            {
+              "chatId": "m-m4",
+              "role": "char",
+              "data": "Date {{date}} time {{time}} unix {{unixtime}} screen {{screenwidth}}x{{screenheight}} lang {{metadata::browserlanguage}} ui {{metadata::language}}.",
+              "time": 1790855640000
+            },
+            {
+              "chatId": "m-m5",
+              "role": "char",
+              "data": "Markdown: **bold** _it_ `code`\n\n- a\n- b\n\n```js\nconst x = 1;\n```\n\n<Thoughts>hidden thought</Thoughts> visible <tool_call>id1lookup</tool_call>",
+              "time": 1790855700000
+            },
+            {
+              "chatId": "m-m6",
+              "role": "char",
+              "data": "<style>.x-risu-a{color:red}</style><div class=\"x-risu-a\" onclick=\"alert(1)\">styled <script>bad()</script></div> <img src=x onerror=alert(1)> plain",
+              "time": 1790855760000
+            },
+            {
+              "chatId": "m-m7",
+              "role": "user",
+              "data": "{{#if 1}}literal-if{{/if}} {{char}} and {{user}}; unknown {{nosuchfunction::x}} stays literal.",
+              "time": 1790855820000
+            }
+          ],
+          "note": "",
+          "localLore": [],
+          "fmIndex": -1,
+          "scriptstate": { "$mood": "calm", "$hp": "7" }
+        }
+      ]
+    },
+    {
+      "type": "character",
+      "chaId": "char-regex",
+      "name": "Regex",
+      "desc": "",
+      "personality": "",
+      "scenario": "",
+      "firstMessage": "Regex lore host.",
+      "alternateGreetings": [],
+      "exampleMessage": "",
+      "systemPrompt": "",
+      "replaceGlobalNote": "",
+      "notes": "",
+      "globalLore": [],
+      "customscript": [],
+      "triggerscript": [],
+      "emotionImages": [],
+      "bias": [],
+      "viewScreen": "none",
+      "utilityBot": false,
+      "chatPage": 0,
+      "chatFolders": [],
+      "loreSettings": { "scanDepth": 5, "tokenBudget": 8000, "recursiveScanning": false, "fullWordMatching": false },
+      "chats": [
+        {
+          "id": "chat-rx-single-plain",
+          "name": "single-plain",
+          "message": [{ "chatId": "m-r1", "role": "user", "data": "A dragon appears.", "time": 1790855460000 }],
+          "note": "",
+          "localLore": [],
+          "fmIndex": -1
+        },
+        {
+          "id": "chat-rx-single-slash",
+          "name": "single-slash",
+          "message": [{ "chatId": "m-r2", "role": "user", "data": "Take the /dragon path.", "time": 1790855460000 }],
+          "note": "",
+          "localLore": [],
+          "fmIndex": -1
+        },
+        {
+          "id": "chat-rx-two-second",
+          "name": "two-second",
+          "message": [
+            { "chatId": "m-r3", "role": "user", "data": "Hello there.", "time": 1790855460000 },
+            { "chatId": "m-r4", "role": "char", "data": "Take the /dragon path.", "time": 1790855520000 }
+          ],
+          "note": "",
+          "localLore": [],
+          "fmIndex": -1
+        },
+        {
+          "id": "chat-rx-two-first",
+          "name": "two-first",
+          "message": [
+            { "chatId": "m-r5", "role": "user", "data": "Take the /dragon path.", "time": 1790855460000 },
+            { "chatId": "m-r6", "role": "char", "data": "Hello there.", "time": 1790855520000 }
+          ],
+          "note": "",
+          "localLore": [],
+          "fmIndex": -1
+        }
+      ]
+    },
+    {
+      "type": "character",
+      "chaId": "char-igp",
+      "name": "Igor",
+      "desc": "Igor replies through the mock provider.",
+      "personality": "",
+      "scenario": "",
+      "firstMessage": "Igor's greeting.",
+      "alternateGreetings": [],
+      "exampleMessage": "",
+      "systemPrompt": "",
+      "replaceGlobalNote": "",
+      "notes": "",
+      "globalLore": [],
+      "customscript": [],
+      "triggerscript": [],
+      "emotionImages": [],
+      "bias": [],
+      "viewScreen": "none",
+      "utilityBot": false,
+      "chatPage": 0,
+      "chatFolders": [],
+      "chats": [
+        {
+          "id": "chat-igp-1",
+          "name": "Chat 1",
+          "message": [{ "chatId": "m-i1", "role": "char", "data": "Igor's first reply.", "time": 1790855460000 }],
+          "note": "",
+          "localLore": [],
+          "fmIndex": -1
+        }
+      ]
+    }
+  ],
+  "prompts": [
+    { "name": "plain", "chaId": "char-aria", "chatId": "chat-aria-1", "settings": {} },
+    { "name": "group", "chaId": "group-council", "chatId": "chat-council-1", "settings": {} },
+    {
+      "name": "presetChain",
+      "chaId": "char-aria",
+      "chatId": "chat-aria-1",
+      "settings": { "presetChain": "Alpha, Beta, Missing" },
+      "restorePreset": true
+    },
+    {
+      "name": "jinja",
+      "chaId": "char-jinja",
+      "chatId": "chat-jinja-1",
+      "settings": {
+        "aiModel": "ooba",
+        "subModel": "ooba",
+        "instructChatTemplate": "jinja",
+        "JinjaTemplate": "{% for message in messages %}<{{ message.role }}>{{ message.content }}</{{ message.role }}>\n{% endfor %}{% if add_generation_prompt %}<assistant>{% endif %}[{{ risu_char }}/{{ risu_user }}]",
+        "textgenWebUIBlockingURL": "http://localhost:1/api",
+        "textgenWebUIStreamURL": "ws://localhost:1/api"
+      },
+      "instructTypes": ["chatml", "mistral", "alpaca"],
+      "previewPrompt": true
+    },
+    {
+      "name": "lore",
+      "chaId": "char-lore",
+      "chatId": "chat-lore-1",
+      "settings": {
+        "aiModel": "gemini-3-flash-preview",
+        "subModel": "gemini-3-flash-preview",
+        "chainOfThought": true,
+        "personaPrompt": "Lore persona prompt for {{user}}.",
+        "promptTemplate": [
+          { "type": "plain", "type2": "main", "role": "system", "text": "Main for {{char}}. {{position::custom}}" },
+          { "type": "description", "innerFormat": "<desc>{{slot}}</desc>" },
+          { "type": "persona", "innerFormat": "<persona>{{slot}}</persona>" },
+          { "type": "lorebook" },
+          { "type": "authornote", "innerFormat": "<note>{{slot}}</note>", "defaultText": "No note." },
+          { "type": "chat", "rangeStart": 0, "rangeEnd": "end" },
+          { "type": "jailbreak", "role": "system", "text": "Jailbreak card for {{char}}." },
+          { "type": "chatML", "text": "<|im_start|>system<|im_sep|>ChatML card for {{char}}<|im_end|>" },
+          { "type": "cot", "role": "system", "text": "COT card." },
+          { "type": "plain", "type2": "globalNote", "role": "system", "text": "Global note card." },
+          { "type": "cache", "role": "user", "depth": 1 },
+          { "type": "postEverything" }
+        ]
+      }
+    }
+  ],
+  "markdown": {
+    "chaId": "char-mark",
+    "chatId": "chat-mark-1",
+    "hooks": {
+      "editdisplay": "content => content + (/\\{\\{[^{}]*\\}\\}/.test(content) ? ' [display-hook:literal-cbs]' : ' [display-hook:expanded]')",
+      "editprocess": "content => content + (/\\{\\{[^{}]*\\}\\}/.test(content) ? ' [process-hook:literal-cbs]' : ' [process-hook:expanded]')"
+    }
+  },
+  "tokens": {
+    "texts": {
+      "ascii": "hello world",
+      "mixed": "안녕하세요, 世界! Привет 👋🏽 café — naïve",
+      "special": "a <|endoftext|> b <|im_start|>user<|im_end|> <s> </s> [INST] <|eot_id|>",
+      "long": { "unit": "The quick brown fox jumps over the lazy dog. 다람쥐 헌 쳇바퀴에 타고파. ", "times": 2000 }
+    },
+    "configs": [
+      { "name": "gpt-o200k", "pick": { "tokenizer": "tiktokenO200Base", "idPrefix": "gpt" } },
+      { "name": "claude", "pick": { "tokenizer": "Claude", "idPrefix": "claude" } },
+      {
+        "name": "gemini-no-google-count",
+        "settings": { "aiModel": "gemini-3-flash-preview", "googleClaudeTokenizing": false }
+      },
+      { "name": "mistral", "settings": { "aiModel": "mistral-small-latest" } },
+      { "name": "deepseek", "settings": { "aiModel": "deepseek-chat" } },
+      { "name": "deepseek-v4", "settings": { "aiModel": "deepseek-v4-pro" } },
+      { "name": "cohere", "settings": { "aiModel": "cohere-command-r" } },
+      { "name": "novelai", "settings": { "aiModel": "novelai" } },
+      { "name": "novellist", "settings": { "aiModel": "novellist" } },
+      { "name": "ooba-llama", "settings": { "aiModel": "ooba" } },
+      { "name": "local-hf", "settings": { "aiModel": "hf:::Xenova/opt-350m" } },
+      { "name": "openrouter-tik", "settings": { "aiModel": "openrouter", "customTokenizer": "tik" } },
+      { "name": "reverse-proxy-llama3", "settings": { "aiModel": "reverse_proxy", "customTokenizer": "llama3" } },
+      { "name": "reverse-proxy-gemma", "settings": { "aiModel": "reverse_proxy", "customTokenizer": "gemma" } },
+      { "name": "reverse-proxy-claude", "settings": { "aiModel": "reverse_proxy", "customTokenizer": "claude" } },
+      { "name": "reverse-proxy-glm4", "settings": { "aiModel": "reverse_proxy", "customTokenizer": "glm4" } },
+      { "name": "reverse-proxy-glm5", "settings": { "aiModel": "reverse_proxy", "customTokenizer": "glm5" } },
+      {
+        "name": "custom-model-cl100k",
+        "settings": {
+          "aiModel": "xcustom:::baseline-cl100k",
+          "customModels": [
+            {
+              "id": "xcustom:::baseline-cl100k",
+              "name": "Baseline cl100k",
+              "internalId": "baseline-cl100k",
+              "url": "http://localhost:1/never",
+              "key": "",
+              "format": 0,
+              "flags": [],
+              "tokenizer": 1
+            }
+          ]
+        }
+      },
+      {
+        "name": "custom-model-mistral",
+        "settings": {
+          "aiModel": "xcustom:::baseline-mistral",
+          "customModels": [
+            {
+              "id": "xcustom:::baseline-mistral",
+              "name": "Baseline mistral",
+              "internalId": "baseline-mistral",
+              "url": "http://localhost:1/never",
+              "key": "",
+              "format": 0,
+              "flags": [],
+              "tokenizer": 3
+            }
+          ]
+        }
+      },
+      {
+        "name": "custom-model-llama3",
+        "settings": {
+          "aiModel": "xcustom:::baseline-llama3",
+          "customModels": [
+            {
+              "id": "xcustom:::baseline-llama3",
+              "name": "Baseline llama3",
+              "internalId": "baseline-llama3",
+              "url": "http://localhost:1/never",
+              "key": "",
+              "format": 0,
+              "flags": [],
+              "tokenizer": 8
+            }
+          ]
+        }
+      },
+      {
+        "name": "custom-model-gemma",
+        "settings": {
+          "aiModel": "xcustom:::baseline-gemma",
+          "customModels": [
+            {
+              "id": "xcustom:::baseline-gemma",
+              "name": "Baseline gemma",
+              "internalId": "baseline-gemma",
+              "url": "http://localhost:1/never",
+              "key": "",
+              "format": 0,
+              "flags": [],
+              "tokenizer": 9
+            }
+          ]
+        }
+      },
+      {
+        "name": "custom-model-glm4",
+        "settings": {
+          "aiModel": "xcustom:::baseline-glm4",
+          "customModels": [
+            {
+              "id": "xcustom:::baseline-glm4",
+              "name": "Baseline glm4",
+              "internalId": "baseline-glm4",
+              "url": "http://localhost:1/never",
+              "key": "",
+              "format": 0,
+              "flags": [],
+              "tokenizer": 15
+            }
+          ]
+        }
+      },
+      {
+        "name": "plugin-legacy-no-options",
+        "settings": { "aiModel": "custom", "currentPluginProvider": "baseline-provider" }
+      },
+      {
+        "name": "plugin-legacy-llama3",
+        "settings": { "aiModel": "custom", "currentPluginProvider": "baseline-provider" },
+        "providerOptions": { "tokenizer": "llama3" }
+      },
+      {
+        "name": "plugin-legacy-cl100k",
+        "settings": { "aiModel": "custom", "currentPluginProvider": "baseline-provider" },
+        "providerOptions": { "tokenizer": "cl100k_base" }
+      },
+      {
+        "name": "plugin-legacy-custom-func",
+        "settings": { "aiModel": "custom", "currentPluginProvider": "baseline-provider" },
+        "providerOptions": { "tokenizer": "custom", "tokenizerFunc": "text => [text.length, 1, 2]" }
+      }
+    ],
+    "promptFamilies": {
+      "cl100k_base": { "type": "tik" },
+      "mistral": { "type": "mistral" },
+      "novelai": { "type": "novelai" },
+      "claude": { "type": "claude" },
+      "llama": { "type": "llama" },
+      "llama3": { "type": "llama3" },
+      "novellist": { "type": "novellist" },
+      "gemma": { "type": "gemma" },
+      "cohere": { "type": "cohere" },
+      "DeepSeek": { "type": "deepseek" },
+      "DeepSeekV4": { "type": "deepseek-v4" },
+      "GLM4": { "type": "glm4" },
+      "GLM5": { "type": "glm5" },
+      "o200k_base": { "encode": { "aiModel": "openrouter", "customTokenizer": "tik" } }
+    }
+  },
+  "loreRegex": {
+    "chaId": "char-regex",
+    "scenarios": [
+      {
+        "name": "i-flag-plain-text",
+        "chatId": "chat-rx-single-plain",
+        "lore": [
+          {
+            "key": "/dragon/i",
+            "secondkey": "",
+            "insertorder": 100,
+            "comment": "regex-i",
+            "content": "i flag",
+            "mode": "normal",
+            "alwaysActive": false,
+            "selective": false,
+            "useRegex": true
+          }
+        ]
+      },
+      {
+        "name": "empty-flags-plain-text",
+        "chatId": "chat-rx-single-plain",
+        "lore": [
+          {
+            "key": "/dragon/",
+            "secondkey": "",
+            "insertorder": 100,
+            "comment": "regex-empty",
+            "content": "empty flags",
+            "mode": "normal",
+            "alwaysActive": false,
+            "selective": false,
+            "useRegex": true
+          }
+        ]
+      },
+      {
+        "name": "i-flag-slash-in-text",
+        "chatId": "chat-rx-single-slash",
+        "lore": [
+          {
+            "key": "/dragon/i",
+            "secondkey": "",
+            "insertorder": 100,
+            "comment": "regex-i",
+            "content": "i flag",
+            "mode": "normal",
+            "alwaysActive": false,
+            "selective": false,
+            "useRegex": true
+          }
+        ]
+      },
+      {
+        "name": "i-flag-two-messages-match-second",
+        "chatId": "chat-rx-two-second",
+        "lore": [
+          {
+            "key": "/dragon/i",
+            "secondkey": "",
+            "insertorder": 100,
+            "comment": "regex-i",
+            "content": "i flag",
+            "mode": "normal",
+            "alwaysActive": false,
+            "selective": false,
+            "useRegex": true
+          }
+        ]
+      },
+      {
+        "name": "i-flag-two-messages-match-first",
+        "chatId": "chat-rx-two-first",
+        "lore": [
+          {
+            "key": "/dragon/i",
+            "secondkey": "",
+            "insertorder": 100,
+            "comment": "regex-i",
+            "content": "i flag",
+            "mode": "normal",
+            "alwaysActive": false,
+            "selective": false,
+            "useRegex": true
+          }
+        ]
+      },
+      {
+        "name": "two-keys-second-matches",
+        "chatId": "chat-rx-single-slash",
+        "lore": [
+          {
+            "key": "/cat/i, /dragon/i",
+            "secondkey": "",
+            "insertorder": 100,
+            "comment": "regex-two",
+            "content": "two keys",
+            "mode": "normal",
+            "alwaysActive": false,
+            "selective": false,
+            "useRegex": true
+          }
+        ]
+      },
+      {
+        "name": "plain-key-control",
+        "chatId": "chat-rx-single-plain",
+        "lore": [
+          {
+            "key": "dragon",
+            "secondkey": "",
+            "insertorder": 100,
+            "comment": "plain",
+            "content": "plain key",
+            "mode": "normal",
+            "alwaysActive": false,
+            "selective": false
+          }
+        ]
+      }
+    ]
+  },
+  "igp": {
+    "chaId": "char-igp",
+    "chatId": "chat-igp-1",
+    "userMessage": { "chatId": "m-i2", "role": "user", "data": "Say something, {{char}}.", "time": 1790855520000 },
+    "settings": {
+      "aiModel": "custom",
+      "subModel": "custom",
+      "currentPluginProvider": "baseline-mock",
+      "igpPrompt": "<|im_start|>system<|im_sep|>Summarize what {{char}} said to {{user}}.<|im_end|>"
+    },
+    "providerReply": "Reply from the mock provider."
+  }
+}
