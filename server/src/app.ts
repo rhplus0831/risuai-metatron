@@ -17,6 +17,7 @@ import { registerProxyRoutes } from "./routes/proxy.ts";
 import { createProxyStreamJobs } from "./routes/proxyStreamJobs.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
 import { registerStorageRoutes } from "./routes/storage.ts";
+import { createScriptWorkerPool } from "./scripts/workerPool.ts";
 import type { AppEnv } from "./types.ts";
 
 const MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -59,6 +60,8 @@ export function createServerContext(options: {
     });
     const maxImportBytes = options.maxImportBytes ?? parseMaxImportBytes(process.env.RISU_MAX_IMPORT_BYTES);
     const proxyStreamJobs = createProxyStreamJobs({ auth });
+    // Workers start on the first task; nothing runs scripts on the server yet (Phase 5 slice 8a).
+    const scriptWorkers = createScriptWorkerPool({ rootDir: options.rootDir });
 
     const authenticatedRouteLimiter = createRateLimiter({
         windowMs: 60 * 1000,
@@ -188,6 +191,7 @@ export function createServerContext(options: {
     return {
         app,
         snapshots,
+        scriptWorkers,
         beginShutdown,
         attachWebSocket: (server: http.Server) => proxyStreamJobs.attachWebSocket(server),
         startBackgroundTasks: () => {
@@ -201,7 +205,10 @@ export function createServerContext(options: {
          */
         dispose: () => {
             beginShutdown();
-            disposing ??= snapshots.stop().then(() => resources.close());
+            disposing ??= scriptWorkers
+                .dispose()
+                .then(() => snapshots.stop())
+                .then(() => resources.close());
             return disposing;
         },
     };
