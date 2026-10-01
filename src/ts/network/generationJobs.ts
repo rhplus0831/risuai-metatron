@@ -1,15 +1,31 @@
 import { v4 as uuidv4 } from "uuid";
-import type {
-    GenerationCreateBody,
-    GenerationEvent,
-    GenerationStatus,
-    GenerationTerminalEvent,
+import {
+    type GenerationCreateBody,
+    type GenerationEvent,
+    type GenerationStatus,
+    type GenerationTerminalEvent,
 } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import { applyServerGeneration, type ChatRef, endServerJob } from "../storage/chatStore.svelte";
 import { authFetch, getNodeServerProxyAuth } from "../storage/nodeStorage";
 import { epochMismatch, getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 import { applyHydration } from "../storage/resourceSync.svelte";
+import type { ChannelTransport } from "./jobChannel";
+
+/**
+ * The channel dispatcher (UI, plugin registries) loads on first use, so this transport stays free of
+ * the UI modules. Its work runs on one chain, in the order the socket delivered the events.
+ */
+let dispatcher: Promise<typeof import("./jobChannel")> | null = null;
+let channelWork: Promise<unknown> = Promise.resolve();
+function onChannel(work: (channel: typeof import("./jobChannel")) => void) {
+    dispatcher ??= import("./jobChannel");
+    const loaded = dispatcher;
+    channelWork = channelWork
+        .then(() => loaded)
+        .then(work)
+        .catch((error) => console.error("[Channel]", error));
+}
 
 /**
  * The client transport of server generation jobs (Phase 5, `generation-jobs`; `shared/jobs.ts`):
@@ -129,12 +145,13 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
     return response.ok ? response : failure(response);
 }
 
-/** Creates a job for `body.context`'s chat and remembers it for this tab. */
+/** Creates a job for `body.context`'s chat and remembers it for this tab (`hooks`: the registered ones by default). */
 export async function createGenerationJob(body: Omit<GenerationCreateBody, "clientId">): Promise<string> {
+    const hooks = body.hooks ?? (await (await import("./jobChannel")).registeredHooks());
     const response = await request("/api/generations", {
         method: "POST",
         headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
-        body: JSON.stringify({ ...body, clientId: generationClientId() }),
+        body: JSON.stringify({ ...body, hooks, clientId: generationClientId() }),
     });
     const { jobId } = (await response.json()) as { jobId: string };
     rememberGenerationJob({ chaId: body.context.characterId, chatId: body.context.chatId }, jobId);
@@ -288,7 +305,12 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
  * records the job changed (`resource`, through `applyHydration`), and the end (`done`, `error`:
  * every lock of the job is released and the saved job is forgotten). Nothing is sent back.
  */
-export function applyGenerationEvent(jobId: string, ref: ChatRef, event: GenerationEvent) {
+export function applyGenerationEvent(
+    jobId: string,
+    ref: ChatRef,
+    event: GenerationEvent,
+    transport?: ChannelTransport,
+) {
     switch (event.type) {
         case "accepted":
             if (event.messageId && event.generationId) {
@@ -310,18 +332,33 @@ export function applyGenerationEvent(jobId: string, ref: ChatRef, event: Generat
                 seq: event.seq,
             });
             return;
-        case "resource":
-            applyHydration({
+        case "resource": {
+            const record = {
                 kind: event.kind,
                 id: event.id,
                 characterId: event.characterId,
                 revision: event.revision,
                 data: event.data,
                 ...("streaming" in event && event.streaming ? { job: { jobId, streaming: event.streaming } } : {}),
-            });
+            };
+            applyHydration(record);
+            // Kept for a later callback's barrier, which applies it again after local work settles.
+            onChannel((channel) => channel.rememberHydration(record));
+            return;
+        }
+        case "notice":
+        case "question":
+        case "callback":
+        case "cancel":
+            if (transport) {
+                onChannel((channel) => channel.handleChannelEvent(jobId, event, transport));
+            }
             return;
         case "done":
         case "error":
+            if (dispatcher) {
+                onChannel((channel) => channel.endJobChannel(jobId));
+            }
             endServerJob(jobId);
             forgetGenerationJob(jobId);
             return;
@@ -343,12 +380,12 @@ export async function resumeSavedGenerations(
             continue;
         }
         const ref = { chaId: status.characterId, chatId: status.chatId };
-        follows.push(
-            followGenerationJob(jobId, (event) => {
-                applyGenerationEvent(jobId, ref, event);
-                onEvent?.(jobId, ref, event);
-            }),
-        );
+        // The follow is the channel's transport: its answers go out on the job's current socket.
+        const follow: GenerationFollow = followGenerationJob(jobId, (event) => {
+            applyGenerationEvent(jobId, ref, event, follow);
+            onEvent?.(jobId, ref, event);
+        });
+        follows.push(follow);
     }
     return follows;
 }

@@ -6,6 +6,8 @@ import type { ChatGroup, ChatOrderChange } from "../../../shared/chats.ts";
 import {
     type GenerationContext,
     type GenerationCreateBody,
+    type GenerationHooks,
+    type HydrationReceipt,
     type GenerationErrorReason,
     type GenerationEvent,
     type GenerationKind,
@@ -22,6 +24,7 @@ import {
     type ResourceStore,
 } from "../data/resourceStore.ts";
 import type { MaintenanceGate, SnapshotManager } from "../data/snapshots.ts";
+import { type ChannelHub, createChannelHub, type JobChannel, parseGenerationHooks } from "./channel.ts";
 import type { GenerationLock, MessageOwner, MessageRef } from "./generationLock.ts";
 
 /** After its first abort, a job has this long to persist its text and end before it is ended for it. */
@@ -82,7 +85,12 @@ export type RunningJob = {
     readonly id: string;
     readonly kind: GenerationKind;
     readonly context: Readonly<GenerationContext>;
-    readonly hooks: unknown;
+    /** The plugin hooks the owner registered (validated; the channel calls back only for these). */
+    readonly hooks: GenerationHooks;
+    /** Notices, questions, and plugin callbacks to the owner (`job-channel`). */
+    readonly channel: JobChannel;
+    /** Whether an owner socket is attached now. */
+    ownerAttached(): boolean;
     /** The database epoch the job was admitted under; every write and event names it. */
     readonly epoch: string;
     /** Aborted by DELETE, the time limit, shutdown, or maintenance; the job then has
@@ -95,11 +103,14 @@ export type RunningJob = {
      * call throws `GenerationJobEndedError`). A `resource` of a hidden kind throws.
      */
     emit(event: JobEventInput): void;
-    /** Reads the named records and chats and sends them as `resource` events (missing ones are skipped). */
+    /**
+     * Reads the named records and chats and sends them as `resource` events (missing ones are
+     * skipped); returns what was sent, at the revisions sent.
+     */
     emitRecords(records: {
         refs?: readonly { kind: string; id: string }[];
         chats?: readonly { characterId: string; id: string }[];
-    }): void;
+    }): HydrationReceipt[];
     /**
      * `writeAsJob`: applies `build()` with the job's epoch and token. `build` is synchronous and
      * replay-safe: a conflict that names only resource records (a patch racing a client edit) calls
@@ -129,14 +140,15 @@ export const unavailableRunner: GenerationRunner = async () => {
 };
 
 export type CreateResult =
-    { ok: true; jobId: string } | { ok: false; status: 404 | 409 | 412 | 503; body: Record<string, unknown> };
+    { ok: true; jobId: string } | { ok: false; status: 400 | 404 | 409 | 412 | 503; body: Record<string, unknown> };
 
 type Job = {
     id: string;
     clientId: string;
     kind: GenerationKind;
     context: GenerationContext;
-    hooks: unknown;
+    hooks: GenerationHooks;
+    channelLink: ReturnType<ChannelHub["open"]>;
     epoch: string;
     token: string;
     controller: AbortController;
@@ -189,9 +201,12 @@ export function createGenerationJobs(options: {
     /** The JWT check for the socket handshake. */
     authorize: (token: string | undefined) => Promise<boolean>;
     runner?: GenerationRunner;
+    /** The channel hub (tests inject one with a fake clock). */
+    hub?: ChannelHub;
 }) {
     const { store, kinds, gate, snapshots, lock, authorize } = options;
     const runner = options.runner ?? unavailableRunner;
+    const hub = options.hub ?? createChannelHub();
     const jobs = new Map<string, Job>();
     /** Chat → its running job. */
     const chatSlots = new Map<string, string>();
@@ -201,21 +216,24 @@ export function createGenerationJobs(options: {
     let maintenancePending = 0;
     let gcTimer: ReturnType<typeof setInterval> | null = null;
 
-    function send(job: Job, event: GenerationEvent) {
-        sendText(job, JSON.stringify(event));
+    function send(job: Job, event: GenerationEvent): boolean {
+        return sendText(job, JSON.stringify(event));
     }
 
-    /** Sends to every open owner socket; one failing socket never stops the others. */
-    function sendText(job: Job, text: string) {
+    /** Sends to every open owner socket; one failing socket never stops the others. Whether one took it. */
+    function sendText(job: Job, text: string): boolean {
+        let taken = false;
         for (const ws of job.sockets) {
             try {
                 if (ws.readyState === ws.OPEN) {
                     ws.send(text);
+                    taken = true;
                 }
             } catch (error) {
                 console.error("[Generation]", error);
             }
         }
+        return taken;
     }
 
     /** The chat's current server copy as a `resource` event, or null (gone, or another epoch). */
@@ -294,6 +312,42 @@ export function createGenerationJobs(options: {
         }
     }
 
+    function receiptOf(event: GenerationEvent): HydrationReceipt {
+        const resource = event as Extract<GenerationEvent, { type: "resource" }>;
+        return {
+            kind: resource.kind,
+            id: resource.id,
+            ...(resource.characterId !== undefined ? { characterId: resource.characterId } : {}),
+            revision: resource.revision,
+        };
+    }
+
+    /** The job chat and every other record the job sent, read now (attach and the callback barrier). */
+    function freshRecords(job: Job): GenerationEvent[] {
+        const chat = chatEvent(job, job.context.characterId, job.context.chatId);
+        const events: GenerationEvent[] = chat ? [chat] : [];
+        for (const ref of job.refs.values()) {
+            if (ref.kind === "chats" && ref.characterId === job.context.characterId && ref.id === job.context.chatId) {
+                continue;
+            }
+            const event =
+                ref.kind === "chats" ? chatEvent(job, ref.characterId!, ref.id) : recordEvent(job, ref.kind, ref.id);
+            if (event) {
+                events.push(event);
+            }
+        }
+        return events;
+    }
+
+    /** Sends `freshRecords` and returns their receipts (synchronously: each receipt names the copy sent). */
+    function hydrateAll(job: Job): HydrationReceipt[] {
+        const events = freshRecords(job);
+        for (const event of events) {
+            send(job, event);
+        }
+        return events.map(receiptOf);
+    }
+
     function assertLive(job: Job) {
         if (job.ended) {
             throw new GenerationJobEndedError();
@@ -308,6 +362,12 @@ export function createGenerationJobs(options: {
     function finalize(job: Job, requested: TerminalInput) {
         if (job.ended) {
             return;
+        }
+        // Before anything dies: the channel's requests settle `aborted` and the owner gets their `cancel`.
+        try {
+            job.channelLink.close("The job has ended");
+        } catch (error) {
+            console.error("[Generation]", error);
         }
         let terminal = { ...(job.abortReason ? abortTerminal(job.abortReason) : requested), epoch: job.epoch };
         let text: string;
@@ -368,6 +428,8 @@ export function createGenerationJobs(options: {
         // later aborts do not extend it.
         job.abortTimer = setTimeout(() => finalize(job, abortTerminal(reason)), JOB_ABORT_GRACE_MS);
         try {
+            // A runner waiting on a question or callback gets `aborted` now, not at the deadline.
+            job.channelLink.close(abortMessages[reason].message);
             job.controller.abort(reason);
         } finally {
             if (job.ended && job.abortTimer) {
@@ -465,6 +527,8 @@ export function createGenerationJobs(options: {
             kind: job.kind,
             context: job.context,
             hooks: job.hooks,
+            channel: job.channelLink.channel,
+            ownerAttached: () => job.sockets.size > 0,
             epoch: job.epoch,
             signal: job.controller.signal,
             emit(input) {
@@ -516,11 +580,13 @@ export function createGenerationJobs(options: {
             },
             emitRecords(records) {
                 assertLive(job);
+                const receipts: HydrationReceipt[] = [];
                 for (const ref of records.refs ?? []) {
                     const event = recordEvent(job, ref.kind, ref.id);
                     track(job, `${ref.kind}\u0000${ref.id}`, ref);
                     if (event) {
                         send(job, event);
+                        receipts.push(receiptOf(event));
                     }
                 }
                 for (const ref of records.chats ?? []) {
@@ -528,8 +594,10 @@ export function createGenerationJobs(options: {
                     track(job, `chats\u0000${ref.characterId}\u0000${ref.id}`, { kind: "chats", ...ref });
                     if (event) {
                         send(job, event);
+                        receipts.push(receiptOf(event));
                     }
                 }
+                return receipts;
             },
             write: (build, options) => writeAsJob(job, build, options?.covers),
             onClientMessage(listener) {
@@ -565,6 +633,10 @@ export function createGenerationJobs(options: {
         if (epoch !== store.epoch()) {
             return { ok: false, status: 412, body: { error: "EpochMismatch", epoch: store.epoch() } };
         }
+        const hooks = parseGenerationHooks(body.hooks);
+        if (typeof hooks === "string") {
+            return { ok: false, status: 400, body: { error: hooks } };
+        }
         const { characterId, chatId } = body.context;
         const revision = store.chatRevision(characterId, chatId);
         if (revision === null) {
@@ -586,7 +658,8 @@ export function createGenerationJobs(options: {
             clientId: body.clientId,
             kind: body.kind,
             context: structuredClone(body.context),
-            hooks: body.hooks,
+            hooks,
+            channelLink: null as unknown as Job["channelLink"],
             epoch: store.epoch(),
             token: randomUUID(),
             controller: new AbortController(),
@@ -606,6 +679,20 @@ export function createGenerationJobs(options: {
             finished,
             resolveFinished,
         };
+        job.channelLink = hub.open({
+            jobId: job.id,
+            clientId: job.clientId,
+            epoch: job.epoch,
+            targets: {
+                chatRef: { chaId: characterId, chatId },
+                presetId: job.context.presetId ?? "",
+                personaId: job.context.personaId ?? "",
+            },
+            hooks,
+            send: (event) => !job.ended && send(job, event),
+            hydrate: () => hydrateAll(job),
+            ownerAttached: () => job.sockets.size > 0,
+        });
         try {
             snapshots.track(() => finished);
         } catch {
@@ -647,18 +734,7 @@ export function createGenerationJobs(options: {
         job.sockets.add(ws);
         // What the owner needs to resume: the job chat and every record the job sent, read fresh,
         // the chosen preset, the current reply with its text, and the result if it ended.
-        const chat = chatEvent(job, job.context.characterId, job.context.chatId);
-        const events: GenerationEvent[] = chat ? [chat] : [];
-        for (const ref of job.refs.values()) {
-            if (ref.kind === "chats" && ref.characterId === job.context.characterId && ref.id === job.context.chatId) {
-                continue;
-            }
-            const event =
-                ref.kind === "chats" ? chatEvent(job, ref.characterId!, ref.id) : recordEvent(job, ref.kind, ref.id);
-            if (event) {
-                events.push(event);
-            }
-        }
+        const events: GenerationEvent[] = freshRecords(job);
         if (job.preset) {
             events.push(job.preset);
         }
@@ -684,18 +760,27 @@ export function createGenerationJobs(options: {
         for (const event of events) {
             ws.send(JSON.stringify(event));
         }
+        if (!job.ended) {
+            // Then every request still waiting for an answer, marked as a replay.
+            job.channelLink.handleAttach();
+        }
         const ping = setInterval(() => {
             if (ws.readyState === ws.OPEN) {
                 ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
             }
         }, JOB_HEARTBEAT_MS);
         ws.on("message", (data) => {
+            // Only the job's current socket speaks for the owner (a superseded one may still deliver).
+            if (!job.sockets.has(ws)) {
+                return;
+            }
             let message: unknown;
             try {
                 message = JSON.parse(String(data));
             } catch {
                 return;
             }
+            job.channelLink.handleMessage(message);
             for (const listener of [...job.listeners]) {
                 try {
                     listener(message);

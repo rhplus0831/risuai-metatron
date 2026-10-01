@@ -1,3 +1,6 @@
+import type { LLMModel } from "./llm.ts";
+import type { OpenAIChat } from "./openai.ts";
+
 /**
  * The generation job contract (Phase 5, `generation-jobs`): `POST /api/generations` creates a job
  * for one chat, its owner (the tab's `clientId`) follows it over `/api/generations/:id/ws`, and
@@ -32,11 +35,39 @@ export type GenerationContext = {
     chatRevision: string;
 };
 
+export type ScriptHookMode = "editinput" | "editprocess" | "editoutput" | "editdisplay";
+
+export const SCRIPT_HOOK_MODES: readonly ScriptHookMode[] = ["editinput", "editprocess", "editoutput", "editdisplay"];
+
+/**
+ * The plugin hooks registered on the client when it created the job (`job-channel`): the server
+ * calls back only for these. Membership inside a hook set is read when a callback runs.
+ */
+export type GenerationHooks = {
+    replacers: { beforeRequest: boolean; afterRequest: boolean };
+    scripts: ScriptHookMode[];
+    interceptors: boolean;
+    chatOutput: boolean;
+    /** Each provider with its model descriptor as it was at creation. */
+    providers: { name: string; model: LLMModel }[];
+    /** The plugin MCP identifiers (`plugin:...`). */
+    mcpTools: string[];
+};
+
+export const NO_GENERATION_HOOKS: GenerationHooks = {
+    replacers: { beforeRequest: false, afterRequest: false },
+    scripts: [],
+    interceptors: false,
+    chatOutput: false,
+    providers: [],
+    mcpTools: [],
+};
+
 export type GenerationCreateBody = {
     kind: GenerationKind;
     context: GenerationContext;
-    /** The client's registered hooks (`job-channel`); accepted and not read yet. */
-    hooks?: unknown;
+    /** The client's registered hooks; missing means none. */
+    hooks?: GenerationHooks;
     clientId: string;
 };
 
@@ -116,12 +147,125 @@ export type GenerationTerminalEvent =
       }
     | { type: "error"; epoch: string; message: string; status: number; reason: GenerationErrorReason };
 
+// ---------------------------------------------------------------------------------------------
+// The job channel (`job-channel`): notices one way; questions and plugin callbacks are requests
+// the owner answers. Every request has one deadline from the moment it is queued; the server alone
+// decides `timedOut`, `disconnected`, `aborted`, and `refused`.
+
+/** A notice: a UI effect the job asks the owner's tab to show. */
+export type GenerationNotice =
+    | { kind: "alertNormal" | "alertError" | "alertToast" | "alertMd" | "alertWait"; payload: { message: string } }
+    | { kind: "alertClear"; payload: Record<string, never> }
+    | { kind: "reloadDisplay" | "updateGUI"; payload: Record<string, never> }
+    | { kind: "reloadChat"; payload: { chaId: string; chatId: string; messageId: string } }
+    | { kind: "emotion"; payload: { chaId: string; name: string; image: string } }
+    | { kind: "progress"; payload: { open: boolean; miniMsg: string; msg: string; subMsg: string } }
+    | { kind: "tts"; payload: { chaId: string; text: string } }
+    | { kind: "notification"; payload: { chaId: string; body: string } }
+    /** The secret-free request projection (`request-layer-and-llm-secrets`). */
+    | { kind: "requestLog"; payload: unknown };
+
+export type GenerationQuestion =
+    | { kind: "alertInput"; payload: { message: string; datalist?: [string, string][]; defaultValue?: string } }
+    | { kind: "alertSelect"; payload: { options: string[]; display?: string } }
+    | { kind: "alertConfirm"; payload: { message: string } }
+    | { kind: "alertSelectChar"; payload: Record<string, never> }
+    | { kind: "alertModuleSelect"; payload: Record<string, never> };
+
+export type CallbackName =
+    | "replacerbeforeRequest"
+    | "replacerafterRequest"
+    | "bodyIntercepter"
+    | ScriptHookMode
+    | "chatOutput"
+    | "provider"
+    | "mcpTool"
+    | "generateImage";
+
+/** A callback's payload by name; `chatOutput`, `provider`, and `generateImage` are defined by slices 11 and 8a. */
+export type CallbackPayloads = {
+    replacerbeforeRequest: { messages: OpenAIChat[]; model: string };
+    replacerafterRequest: { text: string; model: string };
+    bodyIntercepter: { body: unknown; type: string };
+    editinput: { text: string };
+    editprocess: { text: string };
+    editoutput: { text: string };
+    editdisplay: { text: string };
+    chatOutput: unknown;
+    provider: { name: string } & Record<string, unknown>;
+    mcpTool: { identifier: string; tool: string; args: unknown };
+    generateImage: unknown;
+};
+
+/** The chat, preset, and persona a callback acts on (the Phase 4 hook context). */
+export type CallbackTargets = { chatRef: { chaId: string; chatId: string }; presetId: string; personaId: string };
+
+/** A record the job hydrated before a callback, at the revision sent: the client must hold it at least that new. */
+export type HydrationReceipt = { kind: string; id: string; characterId?: string; revision: string };
+
+export type GenerationQuestionEvent = {
+    type: "question";
+    epoch: string;
+    id: string;
+    deadline: number;
+    replay?: true;
+} & GenerationQuestion;
+
+export type GenerationCallbackEvent = {
+    type: "callback";
+    epoch: string;
+    id: string;
+    jobId: string;
+    /** The outstanding callback this one runs inside (an aux request's callback), at most one level. */
+    parentId?: string;
+    name: CallbackName;
+    targets: CallbackTargets;
+    /** Every record the job hydrated right before this callback. */
+    revisions: HydrationReceipt[];
+    payload: unknown;
+    /** Epoch milliseconds (server clock) after which the server stops waiting. */
+    deadline: number;
+    /** Sent again on a reattach: a page without this request's state must not run it. */
+    replay?: true;
+};
+
+export type GenerationChannelEvent =
+    | ({ type: "notice"; epoch: string } & GenerationNotice)
+    | GenerationQuestionEvent
+    | GenerationCallbackEvent
+    /** The server stopped waiting for a request (timeout, job end): close it and drop its answer. */
+    | { type: "cancel"; epoch: string; id: string };
+
+export type QuestionOutcome = "answered" | "cancelled" | "timedOut" | "disconnected" | "aborted" | "refused";
+
+export type QuestionResult =
+    { outcome: "answered"; value: unknown } | { outcome: Exclude<QuestionOutcome, "answered">; error?: string };
+
+/**
+ * Why a callback failed on the client: the hook threw or was unavailable (`hook`); the barrier
+ * (hydration not held, discarded keys, a rejected flush: `barrier`, which ends the job whatever the
+ * hook's policy); a protocol rule (`protocol`: a replay without state, a bad nesting, an unknown name).
+ */
+export type CallbackFailure = "hook" | "barrier" | "protocol";
+
+export type CallbackResult =
+    | { outcome: "answered"; value: unknown }
+    | { outcome: "failed"; failure: CallbackFailure; error: string; discarded?: string[] }
+    | { outcome: "timedOut" | "disconnected" | "aborted" | "refused"; error?: string };
+
+/** The owner's answer to a question or callback (client to server). */
+export type ChannelAnswer =
+    | { type: "answer"; id: string; outcome: "answered"; value: unknown }
+    | { type: "answer"; id: string; outcome: "cancelled" }
+    | { type: "answer"; id: string; outcome: "failed"; failure: CallbackFailure; error: string; discarded?: string[] };
+
 export type GenerationEvent =
     | GenerationAcceptedEvent
     | GenerationChunkEvent
     | { type: "preset"; epoch: string; presetId: string }
     | GenerationResourceEvent
     | { type: "progress"; epoch: string; payload: unknown }
+    | GenerationChannelEvent
     | GenerationTerminalEvent
     | { type: "ping"; ts: number };
 

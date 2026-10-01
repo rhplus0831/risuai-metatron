@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type GenerationHooks, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 
 // The client transport of server generation jobs (`generationJobs.ts`): the tab's identity and
 // saved jobs, the create/status/abort requests and their errors, the owner socket's lifetime
 // (cancellation before and after authentication, supersession, stamps, event filtering), the event
-// dispatcher's wiring, and the resume after a reload. The chat module and the save adapter are
-// stubbed here; their hydration contracts are in `src/ts/storage/tests/resourceSyncHydration.test.ts`.
+// dispatcher's wiring, and the resume after a reload. The chat module, the save adapter, and the
+// channel dispatcher (`jobChannel.ts`, whose `registeredHooks` fills a create body's `hooks`) are
+// stubbed here; the hydration contracts are in `src/ts/storage/tests/resourceSyncHydration.test.ts`.
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 
@@ -16,6 +18,10 @@ const stubs = vi.hoisted(() => ({
     applyServerGeneration: vi.fn(() => true),
     endServerJob: vi.fn(),
     applyHydration: vi.fn(() => true),
+    registeredHooks: vi.fn<() => Promise<GenerationHooks>>(),
+    handleChannelEvent: vi.fn(),
+    rememberHydration: vi.fn(),
+    endJobChannel: vi.fn(),
 }));
 
 vi.mock("../storage/nodeStorage", () => ({
@@ -30,6 +36,12 @@ vi.mock("../storage/chatStore.svelte", () => ({
     endServerJob: stubs.endServerJob,
 }));
 vi.mock("../storage/resourceSync.svelte", () => ({ applyHydration: stubs.applyHydration }));
+vi.mock("./jobChannel", () => ({
+    registeredHooks: stubs.registeredHooks,
+    handleChannelEvent: stubs.handleChannelEvent,
+    rememberHydration: stubs.rememberHydration,
+    endJobChannel: stubs.endJobChannel,
+}));
 
 type Transport = typeof import("./generationJobs");
 type Client = typeof import("../storage/resourceClient");
@@ -87,6 +99,7 @@ beforeEach(async () => {
     vi.stubGlobal("location", { protocol: "https:", host: "risu.test" });
     sessionStorage.clear();
     vi.spyOn(console, "error").mockImplementation(() => {});
+    stubs.registeredHooks.mockResolvedValue(NO_GENERATION_HOOKS);
     client = await import("../storage/resourceClient");
     client.setResourceEpoch(EPOCH);
     transport = await import("./generationJobs");
@@ -134,20 +147,30 @@ describe("the requests", () => {
         },
     };
 
-    it("creates a job with the epoch and the client id, remembers it, and maps the refusals to typed errors", async () => {
+    it("creates a job with the epoch, the client id, and the hooks, remembers it, and maps the refusals to typed errors", async () => {
+        // Without a `hooks` list, the body carries the dispatcher's registered hooks.
+        const registered: GenerationHooks = { ...NO_GENERATION_HOOKS, scripts: ["editoutput"], mcpTools: ["plugin:t"] };
+        stubs.registeredHooks.mockResolvedValueOnce(registered);
         stubs.fetch.mockResolvedValueOnce(json(200, { jobId: "j1" }));
         await expect(transport.createGenerationJob(body)).resolves.toBe("j1");
         const [path, init] = stubs.fetch.mock.calls[0];
         expect(path).toBe("/api/generations");
         expect((init!.headers as Record<string, string>)[RESOURCE_EPOCH_HEADER]).toBe(EPOCH);
-        expect(JSON.parse(String(init!.body))).toEqual({ ...body, clientId: transport.generationClientId() });
+        expect(JSON.parse(String(init!.body))).toEqual({
+            ...body,
+            hooks: registered,
+            clientId: transport.generationClientId(),
+        });
         expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
 
+        // An explicit list is sent as given, without asking the dispatcher.
         stubs.fetch.mockResolvedValueOnce(json(409, { error: "chatBusy", jobId: "j9" }));
-        await expect(transport.createGenerationJob(body)).rejects.toMatchObject({
+        await expect(transport.createGenerationJob({ ...body, hooks: NO_GENERATION_HOOKS })).rejects.toMatchObject({
             name: "GenerationBusyError",
             jobId: "j9",
         });
+        expect(JSON.parse(String(stubs.fetch.mock.calls[1][1]!.body)).hooks).toEqual(NO_GENERATION_HOOKS);
+        expect(stubs.registeredHooks).toHaveBeenCalledTimes(1);
         stubs.fetch.mockResolvedValueOnce(json(409, { error: "stale" }));
         await expect(transport.createGenerationJob(body)).rejects.toMatchObject({ name: "GenerationStaleError" });
         // A 412 runs the resource client's restore halt, as any other resource request would.
@@ -377,6 +400,59 @@ describe("the event dispatcher and the resume", () => {
         });
         expect(stubs.endServerJob).toHaveBeenCalledWith("j1");
         expect(transport.savedGenerationJobs()).toEqual({});
+    });
+
+    it("hands channel events to the lazily loaded dispatcher with the follow as transport, in socket order with the hydrations, and ends the channel on the terminal", async () => {
+        const follow = { send: vi.fn(() => true) };
+        const order: string[] = [];
+        stubs.rememberHydration.mockImplementation((record: { id: string }) => order.push(`hydration:${record.id}`));
+        stubs.handleChannelEvent.mockImplementation((_jobId: string, event: { type: string }) =>
+            order.push(event.type),
+        );
+        stubs.endJobChannel.mockImplementation(() => order.push("end"));
+        const resource = {
+            type: "resource" as const,
+            epoch: EPOCH,
+            kind: "characters",
+            id: "c",
+            revision: "y",
+            data: { chaId: "c" },
+        };
+        const notice = {
+            type: "notice" as const,
+            epoch: EPOCH,
+            kind: "alertToast" as const,
+            payload: { message: "m" },
+        };
+        const callback = {
+            type: "callback" as const,
+            epoch: EPOCH,
+            id: "cb",
+            jobId: "j1",
+            name: "editoutput" as const,
+            targets: { chatRef: ref, presetId: "", personaId: "" },
+            revisions: [],
+            payload: { text: "t" },
+            deadline: 1,
+        };
+        // Without a transport nothing can be answered, so channel events are not dispatched.
+        transport.applyGenerationEvent("j1", ref, notice);
+        transport.applyGenerationEvent("j1", ref, resource, follow);
+        transport.applyGenerationEvent("j1", ref, notice, follow);
+        transport.applyGenerationEvent("j1", ref, callback, follow);
+        transport.applyGenerationEvent("j1", ref, { type: "cancel", epoch: EPOCH, id: "cb" }, follow);
+        transport.applyGenerationEvent("j1", ref, { type: "done", epoch: EPOCH, revision: null }, follow);
+        // The hydration itself is applied at once; the dispatcher's work follows on its chain.
+        expect(stubs.applyHydration).toHaveBeenCalledTimes(1);
+        expect(order).toEqual([]);
+        await vi.waitFor(() => expect(order).toContain("end"));
+        expect(order).toEqual(["hydration:c", "notice", "callback", "cancel", "end"]);
+        expect(stubs.handleChannelEvent.mock.calls.map((call) => [call[0], call[2]])).toEqual([
+            ["j1", follow],
+            ["j1", follow],
+            ["j1", follow],
+        ]);
+        expect(stubs.endJobChannel).toHaveBeenCalledWith("j1");
     });
 
     it("attaches again to the saved jobs the server still knows in this epoch, forgetting the others", async () => {

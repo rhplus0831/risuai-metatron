@@ -277,9 +277,15 @@ describe("POST /api/backups/:id/restore", () => {
             await holding.promise;
         });
         await entered.promise;
+        // The two restores must queue behind the held lock in order. Each request signs and verifies
+        // its JWT first, so under load the second could reach the lock first and win; the route's
+        // `track` call starts `withMaintenance`, which enqueues synchronously, so the second restore
+        // is sent only once the first is queued.
+        const tracked = vi.spyOn(s.context.snapshots, "track");
         const first = restore(s, snapshot.id);
+        await waitFor(() => tracked.mock.calls.length === 1);
         const second = restore(s, snapshot.id);
-        await sleep(10);
+        await waitFor(() => tracked.mock.calls.length === 2);
         holding.resolve();
         await lock;
         expect((await first).status).toBe(200);

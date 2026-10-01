@@ -697,6 +697,11 @@ function applyChatHydration(server: {
     return "applied";
 }
 
+/** The chat's revision this client holds (its saved base), or null when it has none (read only). */
+export function heldChatRevision(ref: ChatRef): string | null {
+    return chatRevisions.get(keyOf(ref.chaId, ref.chatId)) ?? null;
+}
+
 /** Whether a chat's work waits because the server refused it for a generating message. */
 function isJobBlocked(key: string): boolean {
     const until = jobBlocked.get(key);

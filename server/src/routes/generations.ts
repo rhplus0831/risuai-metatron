@@ -3,6 +3,7 @@ import { GENERATION_KINDS, type GenerationContext, type GenerationCreateBody } f
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import { isValidResourceId } from "../data/resourceStore.ts";
 import { readJsonBody } from "../http/body.ts";
+import { parseGenerationHooks } from "../jobs/channel.ts";
 import type { GenerationJobs } from "../jobs/generationJobs.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
@@ -57,10 +58,14 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
         ...(context.speakerChaId !== undefined ? { speakerChaId: context.speakerChaId as string } : {}),
         ...(context.triggerId !== undefined ? { triggerId: context.triggerId as string } : {}),
     };
+    const hooks = parseGenerationHooks(body.hooks);
+    if (typeof hooks === "string") {
+        return hooks;
+    }
     return {
         kind: body.kind as GenerationCreateBody["kind"],
         context: parsed,
-        hooks: body.hooks,
+        hooks,
         clientId: body.clientId,
     };
 }

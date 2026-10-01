@@ -1259,6 +1259,11 @@ function applyToMirror(kind: string, id: string, data: unknown) {
     }
 }
 
+/** The revision of a record this client holds as saved, or null (read only; the job channel's barrier). */
+export function heldRecordRevision(kind: string, id: string): string | null {
+    return persisted.get(recordKey(kind, id))?.revision ?? null;
+}
+
 /**
  * A record a server generation job sent (`resource` event): an update, never a deletion.
  * `job`: a job chat event's job and its messages still generating (see `hydrateChat`).
