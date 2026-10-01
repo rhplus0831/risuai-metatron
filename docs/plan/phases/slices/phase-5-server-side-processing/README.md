@@ -17,6 +17,11 @@ on needs Phase 3 (`llmSecrets`, per-client preset id) and from slice 8a on Phase
 API). A slice that ships routes or services before their consumer is tested infrastructure, not an
 integrated stage; the stage is integrated by the slice that wires the client.
 
+Execution follows [`implementation-plan.md`](implementation-plan.md) (final, 2026-10-01, with the
+owner's answers), which wins over this file where they disagree: it splits slice 7 into 7a
+(transport) and 7b (write-only secrets), adds a baseline fixture capture before slice 3, adds the
+edges 2 → 4 and 10 → 13, and sets the stops.
+
 Execution order (arrows are dependencies):
 
 Track A: spikes and pure services (startable now)
