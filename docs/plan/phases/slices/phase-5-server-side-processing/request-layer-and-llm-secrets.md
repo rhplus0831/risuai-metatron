@@ -217,17 +217,17 @@ Deviations from the reviewed plan (`p5s7a-decisions.md`):
 Recorded behavior and limits:
 
 - configured provider URLs are fetched from the server (Docker: `localhost` is the container);
-  carried to Stop B as an owner item, with the alternative of a keyless client exception for local
-  URLs;
+  kept at Stop B: a host provider is configured as `host.docker.internal` or the host's address
+  (README Docker note);
 - an aux call whose `chatRef` names another chat than the selected one names the selected
   character, as before (the `selectedCharacterId` the tab sends); `requestOllama` names the
   replying character;
-- server error strings are English whatever the tab's language;
+- server error strings are English whatever the tab's language (kept at Stop B, not in this plan);
 - the Claude cache warmer is one per server, not per tab, and its requests are in no request log;
 - `strongBan` is cached on the server by the text alone and returns the stored bias on a hit, as
-  the client did (suspected defect: a hit drops the current bias; reported at Stop B);
+  the client did (suspected defect: a hit drops the current bias; Stop B: not in this plan);
 - OobaLegacy's stream enqueues strings, not chunk maps, as before (suspected defect: the send
-  path reads it as a map; reported at Stop B);
+  path reads it as a map; Stop B: not in this plan);
 - `bodyIntercepter` is skipped for a request outside a job callback; inside one it runs through
   the job's channel as a child callback (skipped only when the job's hook list has none; a nesting
   or queue refusal fails the request); a body that carries a stored credential is not handed to a

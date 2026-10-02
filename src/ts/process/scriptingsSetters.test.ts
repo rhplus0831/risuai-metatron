@@ -78,8 +78,9 @@ vi.mock("./stableDiff", () => ({
 }));
 // wasmoon's emscripten glue sees both Node and a window under happy-dom: it resolves its script
 // directory from `document.baseURI` and reads the wasm with `fs`. The `<base>` element installed in
-// `boot` points the directory at the package, and the wasm is named by a `file:` URL (the glue
-// skips its `fetch` attempt for one), since `scriptings.ts` constructs `LuaFactory` without one.
+// `boot` points the directory at the package, and the subclass replaces the app's asset URL (the
+// `?url` import in `scriptings.ts`, a root-relative path under Vitest) with a package-local `file:`
+// URL, which the glue reads through `fs` without its `fetch` attempt.
 const wasmoonDist = dirname(createRequire(import.meta.url).resolve("wasmoon"));
 vi.mock("wasmoon", async (importOriginal) => {
     const original = await importOriginal<typeof import("wasmoon")>();

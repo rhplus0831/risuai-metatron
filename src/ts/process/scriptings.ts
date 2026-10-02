@@ -2,6 +2,8 @@ import { asBuffer } from "src/ts/util";
 import { getChatVarOf, getGlobalChatVar, getGlobalChatVarOf, setChatVarOf } from "../parser/chatVar.svelte";
 import { hasher, type simpleCharacterArgument, risuChatParser } from "../parser/parser.svelte";
 import { LuaEngine, LuaFactory } from "wasmoon";
+// The app's own copy of wasmoon's binary: without a URL, wasmoon fetches it from unpkg in a browser.
+import luaWasmUrl from "wasmoon/dist/glue.wasm?url";
 import {
     getCurrentCharacter,
     getCurrentChat,
@@ -1292,7 +1294,7 @@ export async function runScripted(
 }
 
 async function makeLuaFactory() {
-    const _luaFactory = new LuaFactory();
+    const _luaFactory = new LuaFactory(luaWasmUrl);
     async function mountFile(name: string) {
         let code = "";
         for (let i = 0; i < 3; i++) {

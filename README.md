@@ -90,3 +90,5 @@ You can also run Risuai using Docker. This method is particularly useful for web
    ```
 
 3. Access Risuai at `http://localhost:6001` in your web browser.
+
+The server makes every provider request itself, so inside the container `localhost` is the container, not your machine. To reach a provider running on the host (for example Ollama or a local OpenAI-compatible server), use `http://host.docker.internal:<port>` and add `--add-host host.docker.internal:host-gateway` to `docker run` on Linux, or use the host's LAN address.

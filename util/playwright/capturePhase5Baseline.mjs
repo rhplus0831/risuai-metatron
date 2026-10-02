@@ -848,9 +848,11 @@ try {
             return route.fulfill({ status: 500, body: "{}" });
         },
     );
-    // The client's Lua runtime (`scriptings.ts` `makeLuaFactory`, `new LuaFactory()` with no URL)
-    // fetches wasmoon's glue from unpkg at run time. The capture answers that request with the
-    // installed package's copy of the same version, so no network is used and the bytes are pinned.
+    // At the baseline commit the client's Lua runtime (`scriptings.ts` `makeLuaFactory`, then
+    // `new LuaFactory()` with no URL) fetched wasmoon's glue from unpkg at run time; since Stop B it
+    // loads the app's own asset. For a recapture of the baseline, the capture answers that request
+    // with the installed package's copy of the same version, so no network is used and the bytes
+    // are pinned.
     const wasmoonVersion = JSON.parse(
         await readFile(path.join(repoRoot, "node_modules/wasmoon/package.json"), "utf8"),
     ).version;

@@ -4,6 +4,16 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { beforeAll, expect, test, vi } from "vitest";
 
+// `scriptings.ts` hands `LuaFactory` the app's own `glue.wasm` through a `?url` import. Under Vitest
+// that import is a root-relative URL path, which wasmoon under Node reads with `fs` (its `fetch`
+// attempt is the `json.lua` stub below), so the harness replaces the asset URL with a package-local
+// `file:` URL: the glue skips `fetch` for one and reads the installed package's file.
+vi.mock("wasmoon/dist/glue.wasm?url", async () => {
+    const { pathToFileURL } = await import("node:url");
+    const { createRequire } = await import("node:module");
+    return { default: pathToFileURL(createRequire(import.meta.url).resolve("wasmoon/dist/glue.wasm")).href };
+});
+
 vi.mock("../parser/parser.svelte", () => ({
     hasher: vi.fn(),
     risuChatParser: vi.fn(),

@@ -170,6 +170,19 @@ step 0 ─→ 1 → 2 [A] → baseline capture → 3 → 4 → 5 → 6 → 7a �
     the keep and don't-activate "seen" flags are function-wide, so after one keep entry every
     later active also writes `__internal_ka_`; a bound persona's embedded module resolves only if
     a module with its id is in `db.modules`.
+- **Stop B decisions** (owner, 2026-10-02):
+  - provider URLs stay fetched from the server; under Docker a host provider is configured as
+    `host.docker.internal` or the host's address (README Docker note). No keyless client
+    exception for local URLs;
+  - the `strongBan` cache, OobaLegacy's string chunks, and English server error strings are not
+    worked on in this plan (systems rarely used now); the behavior stays as recorded;
+  - group chats will be removed later: their suspected defects (the "Unknown Character's
+    Message" wrapper, member lore, `DefaultChatScreen.svelte` throwing) are not fixed here;
+  - `{{date}}` and `{{time}}` keep the original unpadded output for compatibility;
+  - client Lua loads `glue.wasm` from the app's own origin instead of `unpkg.com` (done as a
+    follow-up before slice 8a);
+  - the lore regex keys with a comma and the inherited lore behaviors are noted for later and
+    stay as they are.
 - **Stop C** follows prompt assembly: the first server send behind the flag.
 - **Stop D** is the parity gate before the cutover. Every slice is in, the flag-on matrix
   passes, and both golden tests are green.

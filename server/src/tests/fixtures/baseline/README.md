@@ -83,8 +83,9 @@ does not write this folder.
   and a Google Fonts stylesheet were the only ones). The client's Lua runtime fetches
   `https://unpkg.com/wasmoon@1.16.0/dist/glue.wasm` at run time (`scriptings.ts`
   `makeLuaFactory`, a bare `new LuaFactory()`); the capture answers it with the installed package's
-  `node_modules/wasmoon/dist/glue.wasm` of the same version. No provider is called: the previews
-  return before the request layer, `previewBody` returns the body instead of sending it, and the
+  `node_modules/wasmoon/dist/glue.wasm` of the same version (this describes the captured commit;
+  since Stop B the client loads the app's own `glue.wasm` asset). No provider is called: the
+  previews return before the request layer, `previewBody` returns the body instead of sending it, and the
   `igp` send uses a plugin provider registered on `pluginHooks.providers`.
 - **Plugin hooks.** The markdown hooks and the `igp` provider are plain functions registered on
   `pluginHooks` (the seam `processScriptFull` and `requestPlugin` read), not a plugin loaded through
