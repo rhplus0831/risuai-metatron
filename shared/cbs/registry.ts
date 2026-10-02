@@ -1,5 +1,6 @@
 import type { Chat, character, groupChat } from "../database.ts";
 import type { LLMModel } from "../llm.ts";
+import { replaceAllBound } from "./limits.ts";
 import type { CBSRegisterArg, matcherArg } from "./types.ts";
 
 export type { CBSRegisterArg, CbsConditions, matcherArg, RegisterCallback } from "./types.ts";
@@ -58,6 +59,7 @@ export const defaultCBSRegisterArg: CBSRegisterArg = {
     getTriggerId: () => null,
     getViewport: () => ({ width: 0, height: 0 }),
     getBrowserLanguage: () => "en",
+    spend: () => {},
     getModelInfo: () =>
         ({
             id: "placeholder",
@@ -97,6 +99,7 @@ export function registerCBS(arg: CBSRegisterArg) {
         getTriggerId,
         getViewport,
         getBrowserLanguage,
+        spend,
     } = arg;
 
     // The callbacks dereference these without checks, as the client always has: a missing record
@@ -1067,6 +1070,10 @@ export function registerCBS(arg: CBSRegisterArg) {
     registerFunction({
         name: "replace",
         callback: (str, matcherArg, args, vars) => {
+            if (typeof args[0] === "string") {
+                // A missing argument is the text "undefined", as `replaceAll` takes it.
+                spend(() => replaceAllBound(args[0], String(args[1]), String(args[2])));
+            }
             return args[0].replaceAll(args[1], args[2]);
         },
         alias: [],
@@ -1087,7 +1094,10 @@ export function registerCBS(arg: CBSRegisterArg) {
     registerFunction({
         name: "join",
         callback: (str, matcherArg, args, vars) => {
-            return parseArray(args[0]).join(args[1]);
+            const array = parseArray(args[0]);
+            // Without a separator `join` uses a comma.
+            spend(array.length * (typeof args[1] === "string" ? args[1].length : 1));
+            return array.join(args[1]);
         },
         alias: [],
         description:
@@ -1484,7 +1494,10 @@ export function registerCBS(arg: CBSRegisterArg) {
         name: "cbr",
         callback: (str, matcherArg, args, vars) => {
             if (args.length > 0) {
-                return str.repeat(Number(args[0]) < 1 ? 1 : Number(args[0]));
+                const count = Number(args[0]) < 1 ? 1 : Number(args[0]);
+                // `repeat` truncates the count, takes NaN as zero, and throws on an infinite one.
+                spend(Number.isFinite(count) ? Math.floor(count) * str.length : 0);
+                return str.repeat(count);
             }
             return "\\n";
         },
@@ -1672,7 +1685,10 @@ export function registerCBS(arg: CBSRegisterArg) {
             let out: string[] = [];
 
             for (let i = start; i < end; i += step) {
-                out.push(i.toString());
+                const element = i.toString();
+                // An element is a string on the heap and a slot, and its text in the result.
+                spend(16 + element.length);
+                out.push(element);
             }
 
             return makeArray(out);
@@ -1771,15 +1787,21 @@ export function registerCBS(arg: CBSRegisterArg) {
             if (filterType === -1) {
                 filterType = 0;
             }
+            // `indexOf` per element: each search is charged by how far it went.
+            const firstIndexOf = (f: unknown) => {
+                const at = array.indexOf(f);
+                spend(1 + (at === -1 ? array.length : at) / 64);
+                return at;
+            };
             return makeArray(
                 array.filter((f, i) => {
                     switch (filterType) {
                         case 0:
-                            return f !== "" && i === array.indexOf(f);
+                            return f !== "" && i === firstIndexOf(f);
                         case 1:
                             return f !== "";
                         case 2:
-                            return i === array.indexOf(f);
+                            return i === firstIndexOf(f);
                     }
                 }),
             );
@@ -1981,6 +2003,7 @@ export function registerCBS(arg: CBSRegisterArg) {
             }
             let total = 0;
             for (let i = 0; i < num; i++) {
+                spend(1);
                 total += Math.floor(Math.random() * sides) + 1;
             }
             return total.toString();
@@ -2221,6 +2244,7 @@ export function registerCBS(arg: CBSRegisterArg) {
             }
             let total = 0;
             for (let i = 0; i < num; i++) {
+                spend(1);
                 total += Math.floor(Math.random() * sides) + 1;
             }
             return total.toString();
@@ -2250,6 +2274,7 @@ export function registerCBS(arg: CBSRegisterArg) {
             }
             let total = 0;
             for (let i = 0; i < num; i++) {
+                spend(1);
                 const db = getDatabase();
                 const selchar = contextChar(matcherArg);
                 const selChat = contextChat(matcherArg);
@@ -2344,6 +2369,8 @@ export function registerCBS(arg: CBSRegisterArg) {
             if (!root) {
                 return "";
             }
+            // The output so far is read whole on every call.
+            spend(root.length >> 7);
             root = root.trimEnd();
 
             let trimPointer = root.length - 1;
@@ -2377,6 +2404,8 @@ export function registerCBS(arg: CBSRegisterArg) {
             if (!root) {
                 return "";
             }
+            // The output so far is read whole on every call.
+            spend(root.length >> 7);
             root = root.trimEnd();
 
             let trimPointer = root.length - 1;

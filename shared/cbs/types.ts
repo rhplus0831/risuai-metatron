@@ -90,4 +90,10 @@ export type CBSRegisterArg = {
     getViewport: () => { width: number; height: number };
     /** The browser's language (`navigator.language` on the client). */
     getBrowserLanguage: () => string;
+    /**
+     * Charges work to the evaluation in progress (`limits.ts`), before a loop or an allocation whose
+     * size an argument sets: the units, or a function that counts them (called only by an evaluator
+     * with limits). It throws when a limit is reached and does nothing in an evaluator without limits.
+     */
+    spend: (units: number | (() => number)) => void;
 };

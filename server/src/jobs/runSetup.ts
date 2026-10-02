@@ -1,3 +1,4 @@
+import type { CbsUsage } from "../../../shared/cbs/limits.ts";
 import type { character, Chat, groupChat } from "../../../shared/database.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { createScriptCache } from "../../../shared/scripts/regex.ts";
@@ -61,13 +62,15 @@ export function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promi
 }
 
 /**
- * What every run of one job shares, whatever its speaker: one aggregate Lua budget, the effect count
- * of its native triggers, the fatal abort (the first fatal host failure stops the run in progress at
+ * What every run of one job shares, whatever its speaker: one aggregate Lua budget, its CBS
+ * evaluation time, the effect count of its native triggers, the fatal abort (the first fatal host failure stops the run in progress at
  * once: the Lua hook raises, so a script that catches it cannot go on writing), and the regex
  * scripts' cache.
  */
 export type JobRunState = {
     budget: LuaBudget;
+    /** The CBS evaluation time of the job, across its runs (`serverCbsLimits`). */
+    cbsUsage: CbsUsage;
     effects: { count: number };
     fatalAbort: AbortController;
     runSignal: AbortSignal;
@@ -79,6 +82,7 @@ export function createJobRunState(job: RunningJob): JobRunState {
     const fatalAbort = new AbortController();
     return {
         budget: createLuaBudget(),
+        cbsUsage: { usedMs: 0 },
         effects: { count: 0 },
         fatalAbort,
         runSignal: AbortSignal.any([job.signal, fatalAbort.signal]),
@@ -153,6 +157,7 @@ export function createRunSetup(
         runCharacterId: ids.runCharacterId,
         engineCharacterId: ids.engineCharacterId,
         triggerId: job.context.triggerId ?? null,
+        cbsUsage: state.cbsUsage,
         lock: deps.lock,
         onFatal: (error) => state.fatalAbort.abort(error),
     });

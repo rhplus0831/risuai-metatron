@@ -134,7 +134,7 @@ slice re-derives its Identifiers paragraph when it is implemented. The substanti
 
 ```
 step 0 ─→ 1 → 2 [A] → baseline capture → 3 → 4 → 5 → 6 → 7a ─(parity gate)→ 7b [B]
-        → 8a → 8b → 9 [C] → 10 → 11 → 12 → 13 [D] → 14 [E]
+        → 8a → 8b → 9 [C] → 9b → 10 → 11 → 12 → 13 [D] → 14 [E]
 ```
 
 - **Step 0** applies the phase-file edits with your answers to the owner questions. Docs only,
@@ -184,6 +184,18 @@ step 0 ─→ 1 → 2 [A] → baseline capture → 3 → 4 → 5 → 6 → 7a �
   - the lore regex keys with a comma and the inherited lore behaviors are noted for later and
     stay as they are.
 - **Stop C** follows prompt assembly: the first server send behind the flag.
+- **Stop C decisions** (owner, 2026-10-02):
+  - server CBS gets a step and output limit in its own small slice before Stop D (slice 9b,
+    `cbs-evaluator-limits.md`);
+  - `/multisend` on the server path is added in slice 11 as a queued follow-up send (it reverses
+    question 7 for the server path, now that server sends exist);
+  - a server trigger's per-variable writes stay; the cost is measured in the Stop D matrix, and the
+    writes are batched per trigger run only if real cards hit it;
+  - a running job sees unrelated edits made to its chat, as the browser path does (the slice 9
+    relaxation stays);
+  - the preset replay after a reload during a `presetChain` send is accepted;
+  - removing group chats stays deferred; the `Invalid return` log line of a character without
+    trigger scripts stays (it matches the browser).
 - **Stop D** is the parity gate before the cutover. Every slice is in, the flag-on matrix
   passes, and both golden tests are green.
 - **Stop E** is the cutover and closeout.
@@ -584,6 +596,13 @@ As described under Order and stops. Fable writes it. I may write the capture scr
   icon reads, or records which ones the server refuses until slice 10.
 - The golden test compares against the baseline capture, not a capture taken now.
 
+### Slice 9b (`cbs-evaluator-limits`)
+
+- Added at Stop C. Cooperative limits in the shared evaluator, set only by the server host: a work
+  count and a wall time per top-level parse, and an allowance of evaluation time per job.
+- A reached limit ends the job (latched), like the native effect limit.
+- The browser path sets no limits and keeps its results.
+
 ### Slice 10 (`memory-on-server`)
 
 - The credential sources as in the Baseline: `supaMemoryKey` from `llmSecrets`, the others from
@@ -620,6 +639,8 @@ As described under Order and stops. Fable writes it. I may write the capture scr
   provider fails the callback.
 - `chatOutput` listeners get fresh hydration before each listener. Today one snapshot serves all
   listeners, a difference recorded.
+- `/multisend` on the server path queues a follow-up send (Stop C decision) instead of the
+  `alertError` of slice 8b.
 - The hook policies:
   - a provider error fails the job;
   - a `chatOutput` error is logged and continues, as today;

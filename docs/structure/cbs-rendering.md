@@ -33,6 +33,7 @@
   - `defaultCBSRegisterArg` is a placeholder adapter for docs and scaffolding.
 - `shared/cbs/types.ts`: `CBSRegisterArg` (injected runtime helpers), `matcherArg` (per-call context), `RegisterCallback`, `CbsConditions`.
 - `shared/cbs/evaluator.ts` `createCbsEvaluator(host: CbsHost)`: the parse/eval loop (`risuChatParser(text, arg)`, call depth capped at 20), the block matchers, and its own function map, filled from `registerCBS` on first use. `CbsHost` is `CBSRegisterArg` without the parts the evaluator supplies itself (`registerFunction`, `risuChatParser`, `makeArray`, `parseArray`, `parseDict`, `dateTimeFormat`), plus `findCharacterById` (a group's last speaker). Also `risuEscape`/`risuUnescape`.
+- `shared/cbs/limits.ts`: cooperative evaluation limits for a host that sets `CbsHost.limits` (the server; the client sets none, and an evaluator without limits never counts or reads the clock). `CbsLimits` (`maxWork`, `maxMs`, an optional shared `total` allowance, `now`), `CbsLimitError` (`reason`: `work`, `time`, `total`), the budget of one top-level parse shared by its nested parses (`enterCbsParse`/`leaveCbsParse`, `spendCbsWork`, `checkCbsClock`), and `replaceAllBound` (the length of a `replaceAll` result, counted before it is built). The evaluator charges a unit per scanned character and per character a function returns, the stack moves of `{{` and of the unfinished-syntax drain, each `#each` piece and `call::` substitution before it is built, and the `#each` splice; the registry charges its counted loops through `CBSRegisterArg.spend` (a no-op without limits). The matcher's swallow-all `catch` lets `CbsLimitError` through.
 - `shared/cbs/calc.ts` `calcString(text, { getChatVar, getGlobalChatVar })`: the `{{? ...}}` and trigger calculator (`$name` a chat variable, `@name` a global). `process/infunctions.ts` binds it to the selected chat's variables.
 - `parser/parser.svelte.ts`: the client host of the evaluator, and the renderer.
   - `risuChatParser(text, arg)`: the shared evaluator with the client host (the live database, the selected character, `CurrentTriggerIdStore`, `window`, `navigator`, `findCharacterbyId`).
@@ -134,5 +135,6 @@ Display:
 ## Known Hazards
 
 - `escapes.test.ts` documents a known broken `cbr` repetition case.
+- Without limits (the browser), a non-progressing loop such as `{{range::[0,1,0]}}` never ends, and the evaluator has quadratic paths: `{{` nesting (`unshift`), the `#each` splice, `filter` with `unique`/`all`. `arg.callStack` is incremented on the caller's object and never decremented, so the limit of 20 also counts sequential `call::` and nested `history` parses.
 - `removeHighlight` deletes the stored ID but leaves the global `CSS.highlights` ranges in place.
 - `chatML.ts` references `OpenAIChat` without importing it and relies on an ambient declaration.

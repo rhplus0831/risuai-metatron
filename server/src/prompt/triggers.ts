@@ -270,8 +270,12 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 /** One turn of the event loop, so a long run or a deep recursion lets other work in. */
 const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+/** A straight list of effects yields a turn once it has held the thread this long. */
+const EFFECT_YIELD_AFTER_MS = 50;
+
 export function createTriggerRuntime(host: TriggerHost) {
     const { services, ctx } = host;
+    let lastEffectYieldAt = performance.now();
 
     /** A fatal failure or the run's abort is never turned into an effect's fallback value. */
     const rethrowFatal = (error: unknown) => {
@@ -541,6 +545,11 @@ export function createTriggerRuntime(host: TriggerHost) {
                     continue;
                 }
 
+                // Effects evaluate their CBS on this thread: a request to stop the job must get in.
+                if (performance.now() - lastEffectYieldAt > EFFECT_YIELD_AFTER_MS) {
+                    await yieldTurn();
+                    lastEffectYieldAt = performance.now();
+                }
                 services.fence(ctx);
                 host.effects.count++;
                 if (host.effects.count > MAX_TRIGGER_EFFECTS) {

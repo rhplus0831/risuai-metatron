@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { CbsEvaluator, CbsHost } from "../../../shared/cbs/evaluator.ts";
+import { CbsLimitError, type CbsUsage } from "../../../shared/cbs/limits.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message, character, groupChat, loreBook } from "../../../shared/database.ts";
 import type { CallbackName, CallbackPayloads, CallbackResult, GenerationQuestion } from "../../../shared/jobs.ts";
@@ -16,7 +17,7 @@ import { type InlayResource, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
-import { createJobCbsHost, jobModuleLorebooks } from "../jobs/cbsHost.ts";
+import { createJobCbsHost, jobModuleLorebooks, serverCbsLimits } from "../jobs/cbsHost.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import { JobWriteConflictError, type RunningJob } from "../jobs/generationJobs.ts";
 import { type JobScope, refreshCharacter, refreshChat, scopeChat } from "../jobs/jobScope.ts";
@@ -60,6 +61,8 @@ export type LuaBindingDeps = {
     engineCharacterId: string;
     /** `{{trigger_id}}` while a manual trigger runs. */
     triggerId?: string | null;
+    /** The job's CBS evaluation time, shared by every run of it (`serverCbsLimits`); its own when absent. */
+    cbsUsage?: CbsUsage;
     /** Called once with the first fatal failure: the runner aborts the run in progress with it. */
     onFatal?: (error: LuaJobFatalError) => void;
     /**
@@ -358,8 +361,30 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         setChatVar: (key, value) => setChatVar(key, value),
         client: job.context.client,
         triggerId: deps.triggerId ?? null,
+        limits: serverCbsLimits(deps.cbsUsage ?? { usedMs: 0 }),
     });
-    const evaluator = createCbsEvaluator(cbsHost);
+    const bounded = createCbsEvaluator(cbsHost);
+    /**
+     * Every CBS evaluation of the run. A reached limit is the job's, not the text's or a script's: it
+     * is latched, so the job ends with it whatever evaluated the text (a Lua `cbs` inside `pcall`, a
+     * regex script's host call, a trigger effect), and nothing is evaluated after a fatal failure.
+     */
+    const evaluator: CbsEvaluator = {
+        risuChatParser: (text, arg) => {
+            if (fatalError) {
+                throw fatalError;
+            }
+            try {
+                return bounded.risuChatParser(text, arg);
+            } catch (error) {
+                if (error instanceof CbsLimitError) {
+                    const name = engineCharacter()?.name;
+                    throw latch(new LuaJobFatalError(name ? `${error.message} (${name})` : error.message));
+                }
+                throw error;
+            }
+        },
+    };
     const parse = (text: string) =>
         evaluator.risuChatParser(text, { chara: engineCharacter() as character, chatRef: ref });
 

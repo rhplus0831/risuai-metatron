@@ -258,6 +258,9 @@ server is listed here before the browser path is removed:
 - Lore matching uses the effective persona's name.
 - Callbacks nest at most two deep; a deeper request is refused with an error.
 - A native trigger run stops after 100,000 effects.
+- Server CBS evaluation is limited (slice 9b): a job ends with an error when one template takes
+  more than 10,000,000 work units or 5 s, or its templates together more than 60 s. In a tab the
+  same template runs without a limit, as today.
 - `header::` values in `additionalParams` and custom-model `params` stay readable user
   configuration, outside the credential criterion.
 - A downloaded backup archive carries no LLM credentials; restoring it means entering the keys

@@ -55,6 +55,8 @@ Track C: processing stages on the server (needs Phases 3 and 4)
   `v2Command` on the server, manual triggers through the command endpoint. (← 8a)
 - **9.** `prompt-assembly.md`: the body of `sendChat` up to the provider call as the job runner,
   with raw-text checkpoints, behind a client-local flag introduced here. (← 4, 7, 8b)
+- **9b.** `cbs-evaluator-limits.md`: cooperative work and time limits on server CBS evaluation,
+  added at Stop C. (← 9)
 - **10.** `memory-on-server.md`: the four memory algorithms, the embeddings service with a
   disposable vector cache file, captioning and local Transformers.js generation. (← 9)
 - **11.** `post-generation-and-plugin-callbacks.md`: the persistence sequence per path

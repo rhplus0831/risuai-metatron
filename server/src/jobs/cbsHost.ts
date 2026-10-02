@@ -3,7 +3,8 @@ import path from "node:path";
 import type { Chat, character, groupChat, loreBook } from "../../../shared/database.ts";
 import type { RisuModule } from "../../../shared/modules.ts";
 import { calcString } from "../../../shared/cbs/calc.ts";
-import { createCbsEvaluator, type CbsEvaluator, type CbsHost } from "../../../shared/cbs/evaluator.ts";
+import type { CbsHost } from "../../../shared/cbs/evaluator.ts";
+import type { CbsLimits, CbsUsage } from "../../../shared/cbs/limits.ts";
 import type { matcherArg } from "../../../shared/cbs/types.ts";
 import { pickHashRand } from "../../../shared/hashRand.ts";
 import type { GenerationClientEnv } from "../../../shared/jobs.ts";
@@ -44,6 +45,25 @@ export function serverAppVersion(rootDir: string): string {
     return appVersion;
 }
 
+/**
+ * The server's CBS limits (Phase 5 slice 9b; `shared/cbs/limits.ts`): card text is evaluated on the
+ * main thread, so one template is held to a work count and a wall time, and a job's templates
+ * together to an allowance of evaluation time. The numbers are policy, chosen with room for large
+ * inline data in card text (a multi-megabyte data URL scans at about 80 ns per character).
+ */
+export const SERVER_CBS_MAX_WORK = 10_000_000;
+export const SERVER_CBS_MAX_MS = 5_000;
+export const SERVER_CBS_JOB_MS = 60_000;
+
+/** The limits of one job's evaluators: `usage` is the job's, shared by every run of it. */
+export function serverCbsLimits(usage: CbsUsage): CbsLimits {
+    return {
+        maxWork: SERVER_CBS_MAX_WORK,
+        maxMs: SERVER_CBS_MAX_MS,
+        total: { usage, maxMs: SERVER_CBS_JOB_MS },
+    };
+}
+
 /** How a job's chat variables are written: through the job (`job.write`), the change itself or false. */
 export type JobChatVarWriter = (key: string, value: string) => boolean;
 
@@ -54,6 +74,8 @@ export type JobCbsOptions = {
     client?: GenerationClientEnv;
     /** `{{trigger_id}}`: the manual trigger's element id, if the job runs one. */
     triggerId?: string | null;
+    /** The evaluation limits (`serverCbsLimits` of the job's usage). */
+    limits: CbsLimits;
 };
 
 /**
@@ -66,8 +88,8 @@ export type JobCbsOptions = {
  * (`context.client`); `isMobile` is false and the internal function empty, as the client host has
  * them.
  *
- * Every server CBS evaluation goes through `createJobCbsEvaluator`, so a bound on evaluation
- * (Stop C owner item: untrusted CBS on the main thread) plugs in at one place.
+ * The host carries `options.limits`, so its evaluator is bounded (`shared/cbs/limits.ts`). The
+ * default variables are parsed once per source text, not per missing variable.
  */
 export function createJobCbsHost(scope: JobScope, options: JobCbsOptions): CbsHost {
     const db = scope.db;
@@ -91,6 +113,24 @@ export function createJobCbsHost(scope: JobScope, options: JobCbsOptions): CbsHo
         const bound = chatOf(ref)?.bindedPersona;
         return bound ? db.personas.find((persona) => persona.id === bound) : undefined;
     };
+    // The defaults of the last character asked for, by their source texts: the first pair of a key
+    // wins, the character's before the template's.
+    let defaultsOf: { character: string | undefined; template: string | undefined; map: Map<string, string> } | null =
+        null;
+    const defaultVariable = (char: character | groupChat, key: string): string | undefined => {
+        const characterText = (char as character).defaultVariables;
+        const templateText = db.templateDefaultVariables;
+        if (!defaultsOf || defaultsOf.character !== characterText || defaultsOf.template !== templateText) {
+            const map = new Map<string, string>();
+            for (const [name, value] of parseKeyValue(characterText).concat(parseKeyValue(templateText))) {
+                if (!map.has(name)) {
+                    map.set(name, value);
+                }
+            }
+            defaultsOf = { character: characterText, template: templateText, map };
+        }
+        return defaultsOf.map.get(key);
+    };
     const getChatVar = (key: string, ref?: ChatRef): string => {
         const char = characterOf(ref);
         if (!char) {
@@ -98,10 +138,7 @@ export function createJobCbsHost(scope: JobScope, options: JobCbsOptions): CbsHo
         }
         const state = chatOf(ref)?.scriptstate?.["$" + key];
         if (state === undefined || state === null) {
-            const defaults = parseKeyValue((char as character).defaultVariables).concat(
-                parseKeyValue(db.templateDefaultVariables),
-            );
-            return defaults.find((pair) => pair[0] === key)?.[1] ?? "null";
+            return defaultVariable(char, key) ?? "null";
         }
         return state.toString();
     };
@@ -140,11 +177,25 @@ export function createJobCbsHost(scope: JobScope, options: JobCbsOptions): CbsHo
         },
         getGlobalChatVar,
         // The client binds the calculator to the selected chat (`src/ts/process/infunctions.ts`).
-        calcString: (text) =>
-            calcString(text, {
-                getChatVar: (key) => getChatVar(key),
-                getGlobalChatVar: (key) => getGlobalChatVar(key),
-            }) as number,
+        // The calculator reads and converts a variable at every reference: here one calculation reads
+        // it once and hands over its number (the same text the calculator's own conversion gives).
+        calcString: (text) => {
+            const once = (read: (key: string) => string) => {
+                const numbers = new Map<string, string>();
+                return (key: string) => {
+                    let number = numbers.get(key);
+                    if (number === undefined) {
+                        number = String(parseFloat(read(key)));
+                        numbers.set(key, number);
+                    }
+                    return number;
+                };
+            };
+            return calcString(text, {
+                getChatVar: once((key) => getChatVar(key)),
+                getGlobalChatVar: once((key) => getGlobalChatVar(key)),
+            }) as number;
+        },
         getModules: (ref) => jobModules(scope, ref),
         getModuleLorebooks: (ref) => jobModuleLorebooks(scope, ref),
         pickHashRand,
@@ -162,11 +213,8 @@ export function createJobCbsHost(scope: JobScope, options: JobCbsOptions): CbsHo
         getViewport: () => options.client?.viewport ?? { width: 0, height: 0 },
         getBrowserLanguage: () => options.client?.browserLanguage ?? "en",
         findCharacterById,
+        limits: options.limits,
     };
-}
-
-export function createJobCbsEvaluator(scope: JobScope, options: JobCbsOptions): CbsEvaluator {
-    return createCbsEvaluator(createJobCbsHost(scope, options));
 }
 
 /** `getModuleByIds` of `src/ts/process/modules.ts`: stored order, by id or namespace, first of an id. */

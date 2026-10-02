@@ -1,4 +1,15 @@
 import type { Database, character, groupChat } from "../database.ts";
+import {
+    CbsLimitError,
+    checkCbsClock,
+    createCbsBudget,
+    enterCbsParse,
+    leaveCbsParse,
+    replaceAllBound,
+    spendCbsWork,
+    type CbsBudget,
+    type CbsLimits,
+} from "./limits.ts";
 import { registerCBS } from "./registry.ts";
 import type { CBSRegisterArg, CbsConditions, RegisterCallback, matcherArg } from "./types.ts";
 
@@ -8,13 +19,19 @@ import type { CBSRegisterArg, CbsConditions, RegisterCallback, matcherArg } from
  * The application state comes only through `CbsHost` (the registry's globals apply here too,
  * and `dateTimeFormat` uses the runtime's timezone); an evaluator registers the functions on first
  * use.
+ *
+ * A host with `limits` (`limits.ts`: the server) gets a bounded evaluator: a top-level
+ * `risuChatParser` call that reaches a limit throws `CbsLimitError`. Without `limits` nothing is
+ * counted and the results are the same.
  */
 export type CbsHost = Omit<
     CBSRegisterArg,
-    "registerFunction" | "risuChatParser" | "makeArray" | "parseArray" | "parseDict" | "dateTimeFormat"
+    "registerFunction" | "risuChatParser" | "makeArray" | "parseArray" | "parseDict" | "dateTimeFormat" | "spend"
 > & {
     /** A character by `chaId`; the client answers a blank "Unknown Character" when there is none. */
     findCharacterById: (id: string) => character;
+    /** Limits on evaluation; none on the client. */
+    limits?: CbsLimits;
 };
 
 export type CbsParseArg = {
@@ -35,14 +52,24 @@ export type CbsParseArg = {
     chatRef?: { chaId: string; chatId: string } | null;
 };
 
-type Evaluator = { host: CbsHost; matchers: Map<string, RegisterCallback>; registered: boolean };
+type Evaluator = {
+    host: CbsHost;
+    matchers: Map<string, RegisterCallback>;
+    registered: boolean;
+    budget: CbsBudget | null;
+};
 
 export type CbsEvaluator = {
     risuChatParser: (da: string, arg?: CbsParseArg) => string;
 };
 
 export function createCbsEvaluator(host: CbsHost): CbsEvaluator {
-    const ev: Evaluator = { host, matchers: new Map(), registered: false };
+    const ev: Evaluator = {
+        host,
+        matchers: new Map(),
+        registered: false,
+        budget: host.limits ? createCbsBudget(host.limits) : null,
+    };
     return { risuChatParser: (da, arg = {}) => parse(ev, da, arg) };
 }
 
@@ -66,6 +93,11 @@ function ensureRegistered(ev: Evaluator): void {
         parseArray,
         parseDict,
         dateTimeFormat,
+        spend: (units) => {
+            if (ev.budget) {
+                spendCbsWork(ev.budget, typeof units === "function" ? units() : units);
+            }
+        },
     });
     ev.registered = true;
 }
@@ -137,7 +169,12 @@ function matcher(
         if (callback) {
             return callback(p1, matcherArg, args, vars);
         }
-    } catch (error) {}
+    } catch (error) {
+        // A function's failure leaves its literal text; a reached limit ends the evaluation.
+        if (error instanceof CbsLimitError) {
+            throw error;
+        }
+    }
 
     return null;
 }
@@ -581,12 +618,16 @@ function blockEndMatcher(
             }
 
             if (type.type2 !== "keep") {
-                while (lines.length > 0 && lines[0].trim() === "") {
-                    lines.shift();
+                // The blank lines at both ends go (by index: `shift` in a loop is quadratic).
+                let start = 0;
+                while (start < lines.length && lines[start].trim() === "") {
+                    start++;
                 }
-                while (lines.length > 0 && lines[lines.length - 1].trim() === "") {
-                    lines.pop();
+                let end = lines.length;
+                while (end > start && lines[end - 1].trim() === "") {
+                    end--;
                 }
+                return lines.slice(start, end).join("\n");
             }
             return lines.join("\n");
         }
@@ -631,7 +672,31 @@ function blockEndMatcher(
     }
 }
 
+/** A parse under the evaluator's budget, if it has one: nested parses share the outermost one's. */
 function parse(ev: Evaluator, da: string, arg: CbsParseArg = {}): string {
+    const budget = ev.budget;
+    if (!budget) {
+        return parseText(ev, da, arg, null);
+    }
+    enterCbsParse(budget);
+    try {
+        // Every character costs a unit, so a text longer than what is left cannot finish.
+        if (da.length > budget.limits.maxWork - budget.work) {
+            throw new CbsLimitError("work", budget.limits);
+        }
+        const result = parseText(ev, da, arg, budget);
+        checkCbsClock(budget);
+        // Whatever built it: a result is never longer than the work one parse may spend.
+        if (result.length > budget.limits.maxWork) {
+            throw new CbsLimitError("work", budget.limits);
+        }
+        return result;
+    } finally {
+        leaveCbsParse(budget);
+    }
+}
+
+function parseText(ev: Evaluator, da: string, arg: CbsParseArg, budget: CbsBudget | null): string {
     const chatID = arg.chatID ?? -1;
     const db = arg.db ?? ev.host.getDatabase();
     const aChara = arg.chara;
@@ -726,6 +791,9 @@ function parse(ev: Evaluator, da: string, arg: CbsParseArg = {}): string {
     };
 
     while (pointer < da.length) {
+        if (budget) {
+            spendCbsWork(budget, 1);
+        }
         switch (da[pointer]) {
             case "{": {
                 if (da[pointer + 1] !== "{" && da[pointer + 1] !== "#") {
@@ -735,6 +803,11 @@ function parse(ev: Evaluator, da: string, arg: CbsParseArg = {}): string {
                 pointer++;
                 nested.unshift("");
                 stackType[nested.length] = 1;
+                if (budget) {
+                    // `unshift` moves the whole stack.
+                    spendCbsWork(budget, nested.length >> 8);
+                    checkCbsClock(budget);
+                }
                 break;
             }
             case "#": {
@@ -756,6 +829,9 @@ function parse(ev: Evaluator, da: string, arg: CbsParseArg = {}): string {
                 }
                 pointer++;
                 const dat = nested.shift()!;
+                if (budget) {
+                    checkCbsClock(budget);
+                }
                 if (dat.startsWith("#") || dat.startsWith(":")) {
                     if (isPureMode()) {
                         nested[0] += `{{${dat}}}`;
@@ -818,16 +894,25 @@ function parse(ev: Evaluator, da: string, arg: CbsParseArg = {}): string {
                                 array = parseArray(blockType.type2!.substring(0, subind));
                             }
                             let added = "";
+                            const slot = `{{slot::${sub}}}`;
                             for (let i = 0; i < array.length; i++) {
-                                added += matchResult.replaceAll(
-                                    `{{slot::${sub}}}`,
-                                    typeof array[i] === "string" ? (array[i] as string) : JSON.stringify(array[i]),
-                                );
+                                const value =
+                                    typeof array[i] === "string" ? (array[i] as string) : JSON.stringify(array[i]);
+                                if (budget) {
+                                    // An element that is not a string or JSON makes the replacement "undefined".
+                                    spendCbsWork(budget, 1 + replaceAllBound(matchResult, slot, String(value)));
+                                }
+                                added += matchResult.replaceAll(slot, value);
                             }
                             da =
                                 da.substring(0, pointer + 1) +
                                 (blockType.mode === "keep" ? added : added.trim()) +
                                 da.substring(pointer + 1);
+                            if (budget) {
+                                // The splice makes the next read copy the whole text.
+                                spendCbsWork(budget, da.length >> 7);
+                                checkCbsClock(budget);
+                            }
                             break;
                         }
                         if (blockType.type === "function") {
@@ -839,6 +924,10 @@ function parse(ev: Evaluator, da: string, arg: CbsParseArg = {}): string {
                             break;
                         }
                         if (blockType.type === "pure-display") {
+                            if (budget) {
+                                // The escapes double the braces at most.
+                                spendCbsWork(budget, matchResult.length);
+                            }
                             nested[0] += matchResult.replaceAll("{{", "\\{\\{").replaceAll("}}", "\\}\\}");
                             break;
                         }
@@ -866,6 +955,9 @@ function parse(ev: Evaluator, da: string, arg: CbsParseArg = {}): string {
                     if (func) {
                         let data = func.data;
                         for (let i = 0; i < argData.length; i++) {
+                            if (budget) {
+                                spendCbsWork(budget, replaceAllBound(data, `{{arg::${i}}}`, argData[i]));
+                            }
                             data = data.replaceAll(`{{arg::${i}}}`, argData[i]);
                         }
                         arg.functions = functions;
@@ -874,6 +966,10 @@ function parse(ev: Evaluator, da: string, arg: CbsParseArg = {}): string {
                     }
                 }
                 const mc = isPureMode() ? null : matcher(ev, dat, matcherObj, tempVar);
+                if (budget && mc) {
+                    spendCbsWork(budget, typeof mc === "string" ? mc.length : (mc.text?.length ?? 0));
+                    checkCbsClock(budget);
+                }
                 if (!mc && mc !== "") {
                     nested[0] += `{{${dat}}}`;
                 } else if (typeof mc === "string") {
@@ -907,6 +1003,10 @@ function parse(ev: Evaluator, da: string, arg: CbsParseArg = {}): string {
     }
     let result = "";
     while (nested.length > 1) {
+        if (budget) {
+            // `shift` moves the whole stack.
+            spendCbsWork(budget, 1 + (nested.length >> 8));
+        }
         let dat = stackType[nested.length] === 1 ? "{{" : "<";
         dat += nested.shift();
         result = dat + result;
