@@ -8,6 +8,7 @@ import type { MCPClientLike } from "./internalmcp";
 import localforage from "localforage";
 import { registeredCustomPluginMCPs } from "./pluginmcp";
 import { type ChatRef, findChat, mergeChatMeta } from "src/ts/storage/chatStore.svelte";
+import { TAB_MCP_IDENTIFIERS } from "../../../../shared/jobs.ts";
 
 export type MCPToolWithURL = MCPTool & {
     mcpURL: string;
@@ -16,6 +17,39 @@ export type MCPToolWithURL = MCPTool & {
 export const MCPs: Record<string, MCPClient | MCPClientLike> = {};
 export const callOnlyMCPs: Record<string, MCPClient | MCPClientLike> = {};
 const callOnlyMCPUrls = ["internal:risuai"];
+
+/**
+ * The internal MCPs that live in the tab also for a server job (`TAB_MCP_IDENTIFIERS`): one instance
+ * each for both paths (the browser registry below and a job's `mcpList`/`mcpTool` callbacks), so a
+ * directory is picked once. The registry's cleanup drops its own reference only.
+ */
+const tabClients = new Map<string, Promise<MCPClientLike>>();
+const tabHandshakes = new Map<string, Promise<unknown>>();
+
+function tabClient(identifier: string): Promise<MCPClientLike> {
+    let created = tabClients.get(identifier);
+    if (!created) {
+        created =
+            identifier === "internal:fs"
+                ? import("./filesystemclient").then(({ FileSystemClient }) => new FileSystemClient())
+                : import("./googlesearchclient").then(({ GoogleSearchClient }) => new GoogleSearchClient());
+        tabClients.set(identifier, created);
+        created.catch(() => tabClients.delete(identifier));
+    }
+    return created;
+}
+
+/** The tab client of `identifier`, handshaken (concurrent first uses share one handshake). */
+export async function readyTabClient(identifier: string): Promise<MCPClientLike> {
+    const client = await tabClient(identifier);
+    let handshake = tabHandshakes.get(identifier);
+    if (!handshake) {
+        handshake = client.checkHandshake().finally(() => tabHandshakes.delete(identifier));
+        tabHandshakes.set(identifier, handshake);
+    }
+    await handshake;
+    return client;
+}
 
 export async function initializeMCPs(additionalMCPs?: string[]) {
     const mcpUrls = getModuleMcps();
@@ -39,10 +73,12 @@ export async function initializeMCPs(additionalMCPs?: string[]) {
 
             if (mcp.startsWith("internal:")) {
                 switch (mcp) {
-                    case "internal:fs": {
-                        const { FileSystemClient } = await import("./filesystemclient");
-                        MCPs[mcp] = new FileSystemClient();
-                        break;
+                    case "internal:fs":
+                    case "internal:googlesearch": {
+                        // Registered before its handshake, as every internal client is.
+                        MCPs[mcp] = await tabClient(mcp);
+                        await readyTabClient(mcp);
+                        continue;
                     }
                     case "internal:risuai": {
                         const { RisuAccessClient } = await import("./risuaccess");
@@ -52,11 +88,6 @@ export async function initializeMCPs(additionalMCPs?: string[]) {
                     case "internal:aiaccess": {
                         const { AIAccessClient } = await import("./aiaccess");
                         MCPs[mcp] = new AIAccessClient();
-                        break;
-                    }
-                    case "internal:googlesearch": {
-                        const { GoogleSearchClient } = await import("./googlesearchclient");
-                        MCPs[mcp] = new GoogleSearchClient();
                         break;
                     }
                     case "internal:graphmem": {
@@ -128,7 +159,10 @@ export async function initializeMCPs(additionalMCPs?: string[]) {
 
     for (const key of Object.keys(MCPs)) {
         if (!mcpUrls.includes(key)) {
-            MCPs[key].destroy();
+            // A shared tab client stays as it is for a server job that uses it: only this reference goes.
+            if (!TAB_MCP_IDENTIFIERS.includes(key)) {
+                MCPs[key].destroy();
+            }
             delete MCPs[key];
         }
     }

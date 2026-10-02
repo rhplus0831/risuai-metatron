@@ -226,6 +226,8 @@ export type GenerationNotice =
     | { kind: "progress"; payload: { open: boolean; miniMsg: string; msg: string; subMsg: string } }
     | { kind: "tts"; payload: { chaId: string; text: string } }
     | { kind: "notification"; payload: { chaId: string; body: string } }
+    /** Opens a web page in the tab (an MCP server's OAuth authorization page, slice 12); `http(s)` only. */
+    | { kind: "openURL"; payload: { url: string } }
     /** The secret-free request projection (`request-layer-and-llm-secrets`). */
     | { kind: "requestLog"; payload: unknown };
 
@@ -236,6 +238,12 @@ export type GenerationQuestion =
     | { kind: "alertSelectChar"; payload: Record<string, never> }
     | { kind: "alertModuleSelect"; payload: Record<string, never> };
 
+/**
+ * The internal MCPs that run in the tab for a job (they need the browser: a directory handle, the
+ * tab's own search credentials): a capability of every tab, not a plugin hook.
+ */
+export const TAB_MCP_IDENTIFIERS: readonly string[] = ["internal:fs", "internal:googlesearch"];
+
 export type CallbackName =
     | "replacerbeforeRequest"
     | "replacerafterRequest"
@@ -243,6 +251,7 @@ export type CallbackName =
     | ScriptHookMode
     | "chatOutput"
     | "provider"
+    | "mcpList"
     | "mcpTool"
     | "generateImage"
     | "inlayImage"
@@ -272,6 +281,13 @@ export type CallbackPayloads = {
      * answer from the provider at all: `{ none: true }`.
      */
     provider: { name: string; argument: Record<string, unknown> };
+    /**
+     * The tools of an MCP that lives in the tab (slice 12): a plugin MCP of the job's hook list, or one
+     * of `TAB_MCP_IDENTIFIERS`. The tab handshakes it (a directory picker, a credential prompt) and
+     * answers its tools as `{ name, description, inputSchema }` entries.
+     */
+    mcpList: { identifier: string };
+    /** A call of one of those tools: answered with the tool's content. */
     mcpTool: { identifier: string; tool: string; args: unknown };
     /** Lua `generateImage`: the client generates for `characterId`, writes the inlay, and answers `{ id }`. */
     generateImage: { prompt: string; negative: string; characterId: string };

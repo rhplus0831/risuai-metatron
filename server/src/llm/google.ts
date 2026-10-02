@@ -760,6 +760,7 @@ async function requestGoogle(
 
         // Handle tool calls
         for (const call of calls) {
+            arg.ctx.tools.attempt?.();
             const functionName = call.name;
             const functionArgs = call.args;
 
@@ -1085,6 +1086,7 @@ function wrapToolStream(
                         const tools = arg?.tools ?? [];
                         // Handle tool calls
                         for (const call of calls) {
+                            arg.ctx.tools.attempt?.();
                             const functionName = call.name;
                             const functionArgs = call.args;
                             const tool = tools.find((t) => t.name === functionName);

@@ -1,6 +1,6 @@
 # Slice: MCP On The Server
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: 12a implemented (2026-10-03); 12b (`aiaccess`, `risuaccess`, `graphmem` on the server) not started.
 
 Phase: [Phase 5](../../phase-5-server-side-processing.md), the MCP part of step 7 (remote MCP
 servers and internal tools through server adapters; plugin and browser-file tools as channel
@@ -65,3 +65,61 @@ MCP tool and one with a plugin tool.
 
 Remote MCP sessions live in the server process; a restart drops them (they are re-established on
 the next call, as the client does after a reload).
+
+## 12a: what landed
+
+As `docs/structure/self-host-server.md` (`server/src/mcp/`), `plugins-mcp.md`, `global-api.md`, and
+`persistence.md` describe it. The slice is split as slice 11 was: 12a is the transport, the
+registry, the job's tool set, `internal:dice`, the tab callbacks, OAuth, and the budget; 12b moves
+`internal:aiaccess`, `internal:risuai`, and `internal:graphmem`. Until 12b a module naming one of
+the three offers a job no tools (a warning), and `internal:risuai` is not call-only for a job.
+
+Files beyond the drafted list: `server/src/jobs/{channel,runSetup}.ts`, `server/src/lua/bindings.ts`,
+`server/src/app.ts`, `shared/jobs.ts`, `src/ts/process/mcp/mcplib.ts` (the refresh fix, the
+authorization URL check), `src/ts/storage/collectionStore.svelte.ts` (`addAuthRefresh`).
+
+Decisions that differ from the proposal above:
+
+- The tab's tool descriptors are not in the hook list: the job asks for them when its modules name
+  the MCP (`mcpList`), so a plugin MCP no module names is never called, and the two internal tab
+  kinds, whose handshake prompts the user, have a place.
+- `authRefreshes` is written with the job's `write` and not reported by a `resource` event (the
+  amendment). Replacing by URL removes every entry of that URL, on both paths.
+- A tool's own failure is a text result at the job's boundary, for every adapter; the fatal
+  outcomes end the job (`implementation-plan.md`, "a tool error returns to the model").
+- The budget (64) counts every tool call a model asks for, in the adapters, because an unknown
+  tool name never reaches `callTool` and the adapters' loops have no bound.
+- The Node client settles every pending answer, bounds what it reads, and shares one handshake;
+  the registry closes idle clients (15 minutes) and every client on a new database epoch.
+- No stopping condition was met: Node's `fetch` reproduces both transports. A server that depends
+  on the browser's own session (a userscript, cookies) or on the browser's `localhost` is not
+  reachable from the server and is recorded, not routed through a callback.
+
+Challenge (two rounds; nine findings and two left partly fixed after the first round, all fixed): the legacy session stream had no deadline to connect; a
+session that ended during its handshake was taken as initialized; a client closed during the OAuth
+question left its callers waiting; a remote tool list that failed after the handshake was kept as
+an empty list; a callback cancelled while the tab loaded its MCP module still started the picker;
+the browser registry's cleanup reset the shared Google client; the tool set's cache key could
+collide; stream readers kept their locks; the event bound counted characters, not bytes.
+
+Suspected defects kept as they are in both clients, for Stop D: `\r\n` event separators are not
+understood; a session id sent with an event-stream `initialize` answer is not taken; a refresh
+answer's new refresh token is not stored.
+
+Live check (a fresh server, a mock provider, a mock MCP server; 20 checks): a streamable-HTTP
+server's paginated tools offered and called (a JSON answer, an event-stream answer, an RPC error as
+text) with one handshake and the session id, and the next job reusing the session; the legacy SSE
+transport; a 401 answered by the stored refresh token; `internal:dice` with its bound, without
+streaming, beside an unreachable server; a plugin MCP through `mcpList` and `mcpTool` (a throwing
+tool as an error result, an unregistered plugin MCP offering nothing); a remembered call stored in
+`chat.toolCalls` and decoded by the next send; the budget ending the job at the 65th call. The full
+OAuth login is not driven live (it calls the public account helper); it is left to tests with an
+injected `fetch`.
+
+Review: no problem found; the reviewer added `server/src/tests/mcp.test.ts` and cases in
+`llmRequests.test.ts`, `collectionStore.test.ts`, and `mcpWriters.test.ts`. Not pinned: the tool
+loops of the Responses, Google, and Anthropic adapters (the budget line is the same at each loop
+head; the OpenAI-compatible adapter is driven, buffered and streaming), a cancellation during the
+tab's module import (no harness for the tab's dispatcher), and a tab that reconnects inside the
+attach grace. Residual: the OAuth code question is withdrawn when the client closes, not when its
+caller alone is aborted (it then ends with the job's channel or its timeout, as every question).

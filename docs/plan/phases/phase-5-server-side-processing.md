@@ -284,6 +284,34 @@ server is listed here before the browser path is removed:
   a ranking near a tie can differ from the tab's. An embedding provider's answer that is not the
   expected vectors is an error. The Transformers.js generation models of the catalogue, which do
   not load in a browser, run on the server with their default weights.
+- MCP tools of a server job (slice 12):
+  - A remote MCP server is called from the server's host, not from the browser. A URL only the
+    browser reaches (its own `localhost`, a userscript or cookie session) does not work for a job,
+    and a module's MCP URL reaches what the server's host reaches, loopback and private addresses
+    included (a local MCP server is the common case, so Lua's public-only rule is not applied).
+  - A job's models may ask for 64 tool calls in all; the next one ends the job. In a tab the tool
+    loop has no bound.
+  - A tool's own failure is always a text result for the model
+    (`Tool call failed with error: ...`); in a tab the Google and Anthropic adapters fail the
+    request instead.
+  - The tool list is made once per job, at its first request; a later request of the job gets the
+    same list. A tab-resident tool kind (`internal:fs`, `internal:googlesearch`, a plugin MCP)
+    offers nothing to a job whose tab is not connected then (after 10 s), and its call fails as a
+    tool error while no tab is connected; a tab lost after the call was sent ends the job.
+  - A remote server's request ends with an error after 5 minutes, a message over 8 MiB or a tool
+    list over 32 pages, 512 tools, or 1 MiB is refused, and a stream that ends without the answer
+    is an error; the tab's client waits without a bound.
+  - `internal:dice` on the server rolls at most 1,000 dice a call from a notation of at most 200
+    characters.
+  - A tool call whose name or arguments carry a stored LLM credential is not sent.
+  - The OAuth prompt of a job's remote server is in English, and its page opens through a notice
+    (a popup blocker may stop it). A login made by a job is stored on the server; the tab's copy
+    of the refresh entries stays old until a reload, and a tab that logs in on the browser path
+    with that old copy loses its new entry (the server asks again later).
+  - A module that names an `internal:` MCP the server does not know offers nothing; in a tab it
+    fails the request.
+  - Tools are offered in the job's module order; the tab's registry keeps the order in which its
+    clients were first made.
 - `header::` values in `additionalParams` and custom-model `params` stay readable user
   configuration, outside the credential criterion.
 - A downloaded backup archive carries no LLM credentials; restoring it means entering the keys

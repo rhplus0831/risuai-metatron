@@ -23,12 +23,20 @@ import { JobWriteConflictError, type RunningJob } from "../jobs/generationJobs.t
 import { type JobScope, refreshCharacter, refreshChat, scopeChat } from "../jobs/jobScope.ts";
 import { requestChatDataOuter } from "../llm/outer.ts";
 import type { requestDataResponse } from "../llm/request.ts";
-import type { LlmRequests } from "../llm/requests.ts";
+import type { JobRequestSpec, LlmRequests } from "../llm/requests.ts";
 import { mainModelTakesImages, tokenScopeFor } from "../llm/settings.ts";
 import type { TokenCounter } from "../prompt/tokens.ts";
 import { readStorageFile, storageFileExists, writeStorageFile } from "../routes/storage.ts";
 import { type EmbeddingEnv, type EmbeddingsService, HypaProcesser } from "../prompt/embeddings.ts";
 import type { HostContext, LuaHost } from "../scripts/workerPool.ts";
+import {
+    createJobTools,
+    type JobTools,
+    type JobToolSet,
+    type JobToolState,
+    MAX_JOB_TOOL_CALLS,
+} from "../mcp/jobTools.ts";
+import type { McpRegistry } from "../mcp/registry.ts";
 import { createCbsEvaluator } from "../../../shared/cbs/evaluator.ts";
 
 /**
@@ -66,6 +74,11 @@ export type LuaBindingDeps = {
     cbsUsage?: CbsUsage;
     /** The embeddings service (Phase 5 slice 10); without one, a similarity search fails with an error. */
     embeddings?: EmbeddingsService;
+    /**
+     * The remote MCP clients and the job's tool state (Phase 5 slice 12); without them the job's
+     * requests offer no tools.
+     */
+    mcp?: { registry: McpRegistry; state: JobToolState };
     /** Called once with the first fatal failure: the runner aborts the run in progress with it. */
     onFatal?: (error: LuaJobFatalError) => void;
     /**
@@ -112,7 +125,8 @@ export type LuaBindingServices = {
     patchCharacter(patch: Record<string, unknown>, ctx: HostContext): boolean;
     /** Sets `personaPrompt` of the persona `personaId`; false when it is gone. */
     patchPersonaPrompt(personaId: string, value: string, ctx: HostContext): boolean;
-    ask(question: GenerationQuestion, ctx: HostContext): Promise<unknown>;
+    /** `options.signal` withdraws the question: an ordinary failure, not the job's. */
+    ask(question: GenerationQuestion, ctx: HostContext, options?: { signal?: AbortSignal }): Promise<unknown>;
     notice(notice: Parameters<JobChannel["notice"]>[0]): void;
     request(arg: RequestArgs, mode: ModelModeExtended, ctx: HostContext): Promise<requestDataResponse>;
     collectStreamText(stream: ReadableStream<StreamResponseChunk>): Promise<string>;
@@ -514,12 +528,23 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     };
 
     /** A channel question; a non-answered outcome raises in the script, a lost owner also ends the job. */
-    const ask = async (question: GenerationQuestion, ctx: HostContext): Promise<unknown> => {
-        const result = await untilAborted(job.channel.ask(question), ctx.signal);
+    const ask = async (
+        question: GenerationQuestion,
+        ctx: HostContext,
+        options: { signal?: AbortSignal } = {},
+    ): Promise<unknown> => {
+        const result = await untilAborted(
+            options.signal ? job.channel.ask(question, { signal: options.signal }) : job.channel.ask(question),
+            ctx.signal,
+        );
         if (result.outcome === "answered") {
             return result.value;
         }
         const message = `The ${question.kind} question ended: ${result.outcome}${result.error ? ` (${result.error})` : ""}`;
+        // The caller withdrew its own question: its failure, not the job's.
+        if (result.outcome === "aborted" && options.signal?.aborted) {
+            throw new Error(message);
+        }
         if (result.outcome === "timedOut" || result.outcome === "disconnected" || result.outcome === "aborted") {
             throw latch(new LuaJobFatalError(message));
         }
@@ -527,16 +552,16 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     };
 
     /**
-     * A client callback; the answer's value, or null for an ordinary failure (a hook that failed, an
+     * A client callback; the answer's value, or an ordinary failure's text (a hook that failed, an
      * unregistered capability). A barrier or protocol failure, a timeout, a disconnect, or an abort
      * is fatal. The chat and characters are read again afterwards (the barrier flushed the tab).
      */
-    const callback = async <N extends CallbackName>(
+    const tryCallback = async <N extends CallbackName>(
         name: N,
         payload: CallbackPayloads[N],
         ctx: HostContext,
         options: { timeoutMs?: number; skipDisconnected?: boolean } = {},
-    ): Promise<unknown | null> => {
+    ): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> => {
         let result: CallbackResult;
         // Nothing is asked of the tab once the call or the job is over.
         fence(ctx);
@@ -554,21 +579,32 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         }
         if (options.skipDisconnected && result.outcome === "disconnected") {
             fence(ctx);
-            return null;
+            return { ok: false, error: result.error ?? "No owner was connected" };
         }
         switch (result.outcome) {
             case "answered":
-                return result.value;
+                return { ok: true, value: result.value };
             case "refused":
-                return null;
+                return { ok: false, error: result.error ?? `The ${name} callback was refused` };
             case "failed":
                 if (result.failure === "hook") {
-                    return null;
+                    return { ok: false, error: result.error ?? `The ${name} hook failed` };
                 }
                 throw latch(new LuaJobFatalError(`The ${name} callback failed (${result.failure}): ${result.error}`));
             default:
                 throw latch(new LuaJobFatalError(`The ${name} callback ended: ${result.outcome}`));
         }
+    };
+
+    /** `tryCallback` with null for an ordinary failure. */
+    const callback = async <N extends CallbackName>(
+        name: N,
+        payload: CallbackPayloads[N],
+        ctx: HostContext,
+        options: { timeoutMs?: number; skipDisconnected?: boolean } = {},
+    ): Promise<unknown | null> => {
+        const answer = await tryCallback(name, payload, ctx, options);
+        return answer.ok ? answer.value : null;
     };
 
     /** Whether a stored inlay is a usable image: an image record whose media file is stored. */
@@ -667,6 +703,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         },
     };
 
+    /** The job's MCP tools (slice 12), set below once the services exist; none without a registry. */
+    let jobTools: JobTools | null = null;
+
     /** The native `request` trigger every request runs (`setRequestTrigger`), or none. */
     let requestTrigger: ((formated: OpenAIChat[]) => Promise<OpenAIChat[]>) | null = null;
 
@@ -690,6 +729,33 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             return value;
         };
         const db = scope.request.db;
+        // The client's `getTools()`: once per request, before the fallback loop, whatever the mode.
+        let toolSet: JobToolSet | null = null;
+        if (jobTools) {
+            try {
+                toolSet = await jobTools.list(ctx);
+            } catch (error) {
+                // The job's end or a latched failure goes on as it is; a tool list that failed fails
+                // the request, as the client's `getTools()` rejects.
+                fence(ctx);
+                return {
+                    type: "fail",
+                    result: `MCP: ${error instanceof Error ? error.message : String(error)}`,
+                    noRetry: true,
+                };
+            }
+        }
+        const tools: JobRequestSpec["tools"] = {
+            descriptors: toolSet?.descriptors ?? [],
+            charge: () => (jobTools ? jobTools.charge() : true),
+            limit: MAX_JOB_TOOL_CALLS,
+            call: async (name, args) => {
+                if (!jobTools || !toolSet) {
+                    return [{ type: "text", text: `Tool ${name} not found on any MCP` }];
+                }
+                return jobTools.call(toolSet, name, args, ctx);
+            },
+        };
         return requestChatDataOuter(arg, mode, {
             db,
             signal,
@@ -743,6 +809,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                     endJob: (message) => {
                         latch(new LuaJobFatalError(message));
                     },
+                    tools,
                     toolCalls: {
                         read: () => {
                             refreshAll();
@@ -1486,6 +1553,15 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         embeddings: embeddingEnv,
         similarity,
     };
+    if (deps.mcp) {
+        jobTools = createJobTools({
+            job,
+            scope,
+            state: deps.mcp.state,
+            registry: deps.mcp.registry,
+            services: { fence, latch, ask, notice: services.notice, tryCallback },
+        });
+    }
     return {
         host: { sync: guardedSync, async: guardedAsync },
         fatal: () => fatalError,

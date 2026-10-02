@@ -509,6 +509,7 @@ async function appendResponsesToolOutputs(
 
     const callCodes: string[] = [];
     for (const toolCall of calls) {
+        arg.ctx.tools.attempt?.();
         let output = "Tool call failed with no text response";
         try {
             const parsed = toolCall.arguments ? JSON.parse(toolCall.arguments) : {};

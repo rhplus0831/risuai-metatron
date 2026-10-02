@@ -5,8 +5,10 @@ import { LLMFlags, LLMFormat, type LLMModel, LLMProvider, LLMTokenizer } from ".
 import type {
     LlmRequestBody,
     LlmRequestEvent,
+    RPCToolCallContent,
     StreamResponseChunk,
     ToolCallRecord,
+    ToolDescriptor,
 } from "../../../shared/llm/request.ts";
 import { normalizePersonas } from "../../../shared/personas.ts";
 import { normalizePresets } from "../../../shared/presets.ts";
@@ -81,6 +83,18 @@ function fakeStore(records: Records): ResourceStore {
 }
 
 const kinds = { get: (name: string) => ({ name }) } as unknown as ResourceKindRegistry;
+
+/** A job's tool set that offers nothing (slice 12a): no descriptors, so a call is never legitimate. */
+function noTools(): JobRequestSpec["tools"] {
+    return {
+        descriptors: [],
+        charge: () => true,
+        limit: 64,
+        call: async (name) => {
+            throw new Error(`no tool is offered: ${name}`);
+        },
+    };
+}
 
 function body(arg: Record<string, unknown> = {}, extra: Partial<LlmRequestBody> = {}): LlmRequestBody {
     return {
@@ -896,7 +910,13 @@ describe("a job's in-process request (runInJob, slice 8a)", () => {
     /** A spec over `records` with recording sinks; `channel.callback` answers `intercept`. */
     function jobSpec(
         records: Records,
-        options: { intercept?: CallbackResult; streaming?: boolean; signal?: AbortSignal } = {},
+        options: {
+            intercept?: CallbackResult;
+            streaming?: boolean;
+            signal?: AbortSignal;
+            /** The job's MCP tools (slice 12a); none by default. */
+            tools?: JobRequestSpec["tools"];
+        } = {},
     ) {
         const loaded = loadRequestDb(fakeStore(records), kinds, ids);
         const logs: unknown[] = [];
@@ -924,6 +944,7 @@ describe("a job's in-process request (runInJob, slice 8a)", () => {
             log: (entry) => logs.push(entry),
             alertError: (text) => alerts.push(text),
             endJob: (message) => ended.push(message),
+            tools: options.tools ?? noTools(),
             toolCalls: { read: () => undefined, write: () => {} },
             signal: options.signal ?? new AbortController().signal,
         };
@@ -1021,6 +1042,185 @@ describe("a job's in-process request (runInJob, slice 8a)", () => {
             "stop",
         );
         await Promise.all([normal.registry.dispose(), slow.registry.dispose()]);
+    });
+});
+
+describe("a job's MCP tools (runInJob, slice 12a)", () => {
+    // The job's tool set reaches the real OpenAI-compatible adapter: its descriptors go out as the
+    // body's tools, every tool call the model asks for is charged before the lookup (an unknown
+    // name too), the job's `call` answers the follow-up request, a spent budget or a throwing tool
+    // ends the request and the job with no further provider request, and a text failure result is
+    // ordinary model input. Buffered and streaming (`wrapToolStream`).
+    const ids = { presetId: "p", personaId: "u", selectedPersonaId: "u", selectedCharacterId: "c", speakerId: null };
+    const echo: ToolDescriptor = {
+        name: "echo",
+        description: "The echo tool",
+        inputSchema: { type: "object", properties: { text: { type: "string" } } },
+    };
+    const toolCall = (name: string, args: unknown, id = "call-1") => ({
+        id,
+        type: "function",
+        function: { name, arguments: JSON.stringify(args) },
+    });
+    function jobTools(
+        options: {
+            charge?: () => boolean;
+            call?: (name: string, args: unknown) => Promise<RPCToolCallContent[]>;
+        } = {},
+    ) {
+        const calls: { name: string; args: unknown }[] = [];
+        const tools: JobRequestSpec["tools"] = {
+            descriptors: [echo],
+            charge: options.charge ?? (() => true),
+            limit: 64,
+            call: async (name, args) => {
+                calls.push({ name, args });
+                return options.call
+                    ? options.call(name, args)
+                    : [{ type: "text", text: `echoed ${(args as { text: string }).text}` }];
+            },
+        };
+        return { tools, calls };
+    }
+    function spec(records: Records, tools: JobRequestSpec["tools"], streaming = false) {
+        const loaded = loadRequestDb(fakeStore(records), kinds, ids);
+        const ended: string[] = [];
+        const jobSpec: JobRequestSpec = {
+            jobId: "job",
+            loaded,
+            mode: "model",
+            arg: { formated: [{ role: "user", content: "hi" }], bias: {}, useStreaming: streaming },
+            tokenScope: tokenScopeFor(loaded.db),
+            mainModelImageInput: false,
+            channel: {
+                notice() {},
+                ask: async () => ({ outcome: "aborted" }),
+                callback: async () => ({ outcome: "refused", refusal: "unregistered", error: "none" }),
+            },
+            parseCbs: (text) => text,
+            inlays: {
+                saveSignature: async (id) => id,
+                writeImage: async (image) => image.id,
+                setAsset: async () => {},
+            },
+            log: () => {},
+            alertError: () => {},
+            endJob: (message) => ended.push(message),
+            tools,
+            toolCalls: { read: () => undefined, write: () => {} },
+            signal: new AbortController().signal,
+        };
+        return { spec: jobSpec, ended };
+    }
+    const toolMessages = (call: Upstream) =>
+        (JSON.parse(call.body).messages as { role: string; content: string; tool_call_id?: string }[]).filter(
+            (message) => message.role === "tool",
+        );
+
+    it("offers the descriptors, charges every call the model asks for before the lookup, runs the known one through the job, and sends the results back", async () => {
+        const records = makeRecords();
+        const { registry, calls } = harness(records, (call) =>
+            afterTool(call)
+                ? chat("done")
+                : chat("", { tool_calls: [toolCall("echo", { text: "hi" }), toolCall("nope", {}, "call-2")] }),
+        );
+        let charged = 0;
+        const tools = jobTools({
+            charge: () => {
+                charged++;
+                return true;
+            },
+        });
+        const job = spec(records, tools.tools);
+        // The adapter joins the tool round's (empty) assistant text and the final answer with blank lines.
+        expect(await registry.runInJob(job.spec)).toMatchObject({
+            type: "success",
+            result: expect.stringMatching(/^\s*done$/),
+        });
+        expect(JSON.parse(calls[0].body).tools).toMatchObject([{ type: "function", function: { name: "echo" } }]);
+        expect(charged).toBe(2);
+        expect(tools.calls).toEqual([{ name: "echo", args: { text: "hi" } }]);
+        expect(toolMessages(calls[1])).toEqual([
+            { role: "tool", content: "echoed hi", tool_call_id: "call-1" },
+            { role: "tool", content: "No tool found with name: nope", tool_call_id: "call-2" },
+        ]);
+        expect(job.ended).toEqual([]);
+        expect(registry.liveIds()).toEqual([]);
+        await registry.dispose();
+    });
+
+    it("ends the request and the job at the spent budget, before any tool runs and with no further provider request, buffered and streaming", async () => {
+        const limit = "The job reached its tool call limit (64)";
+        const buffered = makeRecords();
+        const plain = harness(buffered, () => chat("", { tool_calls: [toolCall("nope", {})] }));
+        const spent = jobTools({ charge: () => false });
+        const job = spec(buffered, spent.tools);
+        expect(await plain.registry.runInJob(job.spec)).toEqual({ type: "fail", result: limit, noRetry: true });
+        expect(job.ended).toEqual([limit]);
+        expect(plain.calls).toHaveLength(1);
+        expect(spent.calls).toEqual([]);
+        expect(plain.registry.liveIds()).toEqual([]);
+        await plain.registry.dispose();
+
+        const streamed = makeRecords();
+        (streamed.providers as Record<string, unknown>).useStreaming = true;
+        const frame = JSON.stringify({
+            choices: [{ delta: { tool_calls: [{ index: 0, ...toolCall("echo", { text: "hi" }) }] } }],
+        });
+        const live = harness(streamed, () => sse([frame, "[DONE]"]));
+        const spentLive = jobTools({ charge: () => false });
+        const streamingJob = spec(streamed, spentLive.tools, true);
+        const response = await live.registry.runInJob(streamingJob.spec);
+        expect(response.type).toBe("streaming");
+        const reader = (response as { result: ReadableStream<StreamResponseChunk> }).result.getReader();
+        await expect(
+            (async () => {
+                for (;;) {
+                    const { done } = await reader.read();
+                    if (done) {
+                        return;
+                    }
+                }
+            })(),
+        ).rejects.toThrow(limit);
+        expect(streamingJob.ended).toEqual([limit]);
+        expect(live.calls).toHaveLength(1);
+        expect(spentLive.calls).toEqual([]);
+        await waitFor(() => live.registry.liveIds().length === 0);
+        await live.registry.dispose();
+    });
+
+    it("ends the job when a tool throws (a fatal outcome), while a text failure result goes back to the model as ordinary input", async () => {
+        const records = makeRecords();
+        const fatal = "The mcpTool callback failed (barrier): stale";
+        const thrown = harness(records, () => chat("", { tool_calls: [toolCall("echo", { text: "x" })] }));
+        const failing = jobTools({
+            call: async () => {
+                throw new Error(fatal);
+            },
+        });
+        const failed = spec(records, failing.tools);
+        expect(await thrown.registry.runInJob(failed.spec)).toEqual({ type: "fail", result: fatal, noRetry: true });
+        expect(failed.ended).toEqual([fatal]);
+        expect(failing.calls).toHaveLength(1);
+        expect(thrown.calls).toHaveLength(1);
+        expect(thrown.registry.liveIds()).toEqual([]);
+        await thrown.registry.dispose();
+
+        const text = harness(records, (call) =>
+            afterTool(call) ? chat("recovered") : chat("", { tool_calls: [toolCall("echo", { text: "x" })] }),
+        );
+        const answering = jobTools({ call: async () => [{ type: "text", text: "Tool call failed with error: boom" }] });
+        const ok = spec(records, answering.tools);
+        expect(await text.registry.runInJob(ok.spec)).toMatchObject({
+            type: "success",
+            result: expect.stringMatching(/^\s*recovered$/),
+        });
+        expect(toolMessages(text.calls[1])).toEqual([
+            { role: "tool", content: "Tool call failed with error: boom", tool_call_id: "call-1" },
+        ]);
+        expect(ok.ended).toEqual([]);
+        await text.registry.dispose();
     });
 });
 
@@ -1259,6 +1459,7 @@ describe("a job's plugin provider model (runInJob, slice 11b)", () => {
             log: () => {},
             alertError: () => {},
             endJob: (message) => ended.push(message),
+            tools: noTools(),
             toolCalls: { read: () => options.toolCalls, write: () => {} },
             signal: options.signal ?? new AbortController().signal,
         };

@@ -13,7 +13,7 @@ import type {
     HydrationReceipt,
     ScriptHookMode,
 } from "../../../shared/jobs.ts";
-import { MAX_PROVIDER_TEXT_CHARS, SCRIPT_HOOK_MODES } from "../../../shared/jobs.ts";
+import { MAX_PROVIDER_TEXT_CHARS, SCRIPT_HOOK_MODES, TAB_MCP_IDENTIFIERS } from "../../../shared/jobs.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { compareRevision } from "../../../shared/resources.ts";
 import {
@@ -30,6 +30,7 @@ import {
     alertWait,
     waitAlert,
 } from "../alert";
+import type { MCPClientLike } from "../process/mcp/internalmcp";
 import { registeredCustomPluginMCPs } from "../process/mcp/pluginmcp";
 import type { character } from "../storage/database.svelte";
 import { invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
@@ -259,6 +260,14 @@ function applyEffect(notice: GenerationNotice) {
             // Slice 7a defines the projection and where it is kept.
             console.debug("[Channel] request log", notice.payload);
             return;
+        case "openURL": {
+            // An MCP server's OAuth page (slice 12): only a web address is opened.
+            const { url } = notice.payload;
+            if (typeof url === "string" && /^https?:\/\//i.test(url)) {
+                void import("../globalApi.svelte").then(({ openURL }) => openURL(url)).catch(console.error);
+            }
+            return;
+        }
     }
 }
 
@@ -469,13 +478,37 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             }
             return body;
         }
+        case "mcpList":
         case "mcpTool": {
-            const client = registeredCustomPluginMCPs.get(String(payload.identifier));
+            // A plugin MCP as it is registered now, or one of the two internal MCPs that live in the
+            // tab (handshaken here: a directory picker, a credential prompt), shared with the
+            // browser path's registry.
+            const identifier = String(payload.identifier);
+            let client: MCPClientLike | undefined;
+            if (TAB_MCP_IDENTIFIERS.includes(identifier)) {
+                const registry = await import("../process/mcp/mcp");
+                // No picker or prompt is started for a callback the server already cancelled.
+                stillWanted();
+                client = await registry.readyTabClient(identifier);
+            } else {
+                client = registeredCustomPluginMCPs.get(identifier);
+            }
             if (!client) {
                 throw unavailable();
             }
             stillWanted();
-            return await client.callTool(String(payload.tool), payload.args);
+            if (event.name === "mcpList") {
+                const tools = await client.getToolList();
+                stillWanted();
+                return tools.map((tool) => ({
+                    name: tool.name,
+                    description: tool.description,
+                    inputSchema: tool.inputSchema,
+                }));
+            }
+            const content = await client.callTool(String(payload.tool), payload.args);
+            stillWanted();
+            return content;
         }
         case "generateImage": {
             // Lua `generateImage` on the server (Phase 5 slice 8a): generated here with the tab's

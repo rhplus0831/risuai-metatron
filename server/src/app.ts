@@ -20,6 +20,7 @@ import { createClaudeObserver } from "./llm/claudeObserver.ts";
 import { createLlmRequests } from "./llm/requests.ts";
 import { createVertexTokenCache } from "./llm/vertexToken.ts";
 import { createEmbeddings } from "./prompt/embeddings.ts";
+import { createMcpRegistry } from "./mcp/registry.ts";
 import { createTokenizers } from "./prompt/tokenizers/index.ts";
 import { createTokenCounter } from "./prompt/tokens.ts";
 import { createTransformers } from "./prompt/transformers.ts";
@@ -125,6 +126,11 @@ export function createServerContext(options: {
     // The vectors belong to the data: when a maintenance replaced it (a new epoch), the cache is
     // emptied as the maintenance ends, and a write of work that began before is dropped.
     snapshots.onMaintenance(async () => () => vectorCache.sync(resources.epoch()));
+    // The remote MCP clients of the jobs (Phase 5 slice 12): their sessions and tokens live in this
+    // process and belong to the data they were made with.
+    const mcpRegistry = createMcpRegistry({ store: resources, kinds: resourceKinds });
+    mcpRegistry.sync(resources.epoch());
+    snapshots.onMaintenance(async () => () => mcpRegistry.sync(resources.epoch()));
     const llmSecretsKind = resourceKinds.get(RESOURCE_KIND.llmSecrets);
 
     /** The one `upgrade` listener per HTTP server (proxy stream jobs, then generation jobs). */
@@ -141,6 +147,7 @@ export function createServerContext(options: {
         tokens: tokenCounter,
         embeddings,
         transformers,
+        mcp: mcpRegistry,
         lock: generationLock,
         ...(options.generationRandom ? { random: options.generationRandom } : {}),
     });
@@ -342,6 +349,7 @@ export function createServerContext(options: {
                 .then(() => tokenizers.dispose())
                 .then(() => scriptWorkers.dispose())
                 .then(() => transformers.dispose())
+                .then(() => mcpRegistry.dispose())
                 .then(() => vectorCache.close())
                 .then(() => snapshots.stop())
                 .then(() => resources.close());

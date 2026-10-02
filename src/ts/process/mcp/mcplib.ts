@@ -630,10 +630,14 @@ export class MCPClient {
                         client_secret: refreshTokenData.clientSecret,
                     }).toString(),
                 });
-                if (tokenResponse.status !== 200) {
-                    const tokenData = await tokenResponse.json();
-                    this.accessToken = tokenData.access_token;
-                    return;
+                // A successful refresh gives the token (the check used to be inverted: Phase 5 slice
+                // 12); anything else goes on to a full login.
+                if (tokenResponse.status === 200) {
+                    const tokenData = await tokenResponse.json().catch((): null => null);
+                    if (typeof tokenData?.access_token === "string" && tokenData.access_token !== "") {
+                        this.accessToken = tokenData.access_token;
+                        return;
+                    }
                 }
             }
         }
@@ -690,6 +694,10 @@ export class MCPClient {
             .replace(/\//g, "_");
 
         const authUrl = new URL(discoveryURLS.authorization_endpoint);
+        // The server names this address, and it is opened in a window: only a web address may be.
+        if (authUrl.protocol !== "http:" && authUrl.protocol !== "https:") {
+            throw new Error("The OAuth authorization endpoint is not a web address");
+        }
         authUrl.searchParams.set("client_id", clientData.client_id);
         authUrl.searchParams.set("response_type", "code");
         authUrl.searchParams.set("redirect_uri", redirectURL);

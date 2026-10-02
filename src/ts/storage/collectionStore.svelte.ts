@@ -327,7 +327,7 @@ export function setPluginArgument(pluginName: string, key: string, value: unknow
     return found;
 }
 
-/** Adds an OAuth refresh entry (an MCP server's token refresh). */
+/** Stores an MCP server's OAuth refresh entry: the server's own entry is replaced (one per `url`). */
 export function addAuthRefresh(entry: unknown) {
     requireObject("authRefresh", entry);
     requireJsonData("authRefresh", entry);
@@ -337,7 +337,20 @@ export function addAuthRefresh(entry: unknown) {
         }
     }
     DBState.db.authRefreshes ??= [];
-    DBState.db.authRefreshes.push(detach(entry) as unknown as Database["authRefreshes"][number]);
+    const next = detach(entry) as unknown as Database["authRefreshes"][number];
+    // One entry per server: a new login replaces the server's entry (every one with its URL).
+    const list = DBState.db.authRefreshes;
+    const first = list.findIndex((refresh) => refresh?.url === next.url);
+    if (typeof next.url !== "string" || first === -1) {
+        list.push(next);
+        return;
+    }
+    list[first] = next;
+    for (let index = list.length - 1; index > first; index--) {
+        if (list[index]?.url === next.url) {
+            list.splice(index, 1);
+        }
+    }
 }
 
 /** Adds a preset: the canonical fields (`normalizePreset`) under a fresh id. Returns the id. */

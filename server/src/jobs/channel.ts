@@ -15,6 +15,7 @@ import {
     type QuestionResult,
     SCRIPT_HOOK_MODES,
     type ScriptHookMode,
+    TAB_MCP_IDENTIFIERS,
 } from "../../../shared/jobs.ts";
 
 /** A question waits this long from the moment it is queued. */
@@ -45,7 +46,11 @@ export type ChannelTransport = {
 
 export type JobChannel = {
     notice(notice: GenerationNotice): void;
-    ask(question: GenerationQuestion, options?: { timeoutMs?: number }): Promise<QuestionResult>;
+    ask(
+        question: GenerationQuestion,
+        /** `signal`: the caller withdraws the question (`aborted`, the tab told). */
+        options?: { timeoutMs?: number; signal?: AbortSignal },
+    ): Promise<QuestionResult>;
     callback<N extends CallbackName>(
         name: N,
         payload: CallbackPayloads[N],
@@ -183,8 +188,13 @@ function hasHook(hooks: GenerationHooks, name: CallbackName, payload: unknown): 
             return hooks.chatOutput;
         case "provider":
             return isPlainObject(payload) && hooks.providers.some((entry) => entry.name === payload.name);
+        case "mcpList":
         case "mcpTool":
-            return isPlainObject(payload) && hooks.mcpTools.includes(payload.identifier as string);
+            return (
+                isPlainObject(payload) &&
+                (hooks.mcpTools.includes(payload.identifier as string) ||
+                    TAB_MCP_IDENTIFIERS.includes(payload.identifier as string))
+            );
         case "generateImage":
         case "inlayImage":
         case "imggen":
@@ -464,6 +474,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                         }),
                         options.timeoutMs ?? QUESTION_TIMEOUT_MS,
                         undefined,
+                        options.signal ? { signal: options.signal } : undefined,
                     ) as Promise<QuestionResult>;
                 },
                 callback(name, payload, options = {}) {

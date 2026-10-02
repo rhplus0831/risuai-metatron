@@ -48,6 +48,11 @@ export type RequestContext = {
      */
     parseCbs: (text: string, chatRef?: { chaId: string; chatId: string } | null) => Promise<string>;
     tools: {
+        /**
+         * A job's request only (slice 12): called for every tool call a model asks for, before the
+         * adapter looks the tool up; it throws once the job's tool budget is spent.
+         */
+        attempt?: () => void;
         call: (name: string, args: unknown) => Promise<RPCToolCallContent[]>;
         encode: (record: ToolCallRecord) => Promise<string>;
         decode: (text: string) => Promise<ToolCallRecord | undefined>;

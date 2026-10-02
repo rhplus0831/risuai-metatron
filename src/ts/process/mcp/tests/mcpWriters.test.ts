@@ -23,6 +23,10 @@ const { server, alerts, remote } = vi.hoisted(() => ({
         refresh: null as null | { clientId: string; clientSecret: string; refreshToken: string; tokenUrl: string },
     },
 }));
+/** The stubbed `internal:fs` client (Phase 5 slice 12a): its constructions, handshakes, and destructions. */
+const { tab } = vi.hoisted(() => ({
+    tab: { constructed: 0, handshakes: 0, destroyed: 0, release: null as null | (() => void) },
+}));
 
 vi.mock("src/ts/storage/nodeStorage", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
@@ -89,6 +93,42 @@ vi.mock("src/ts/process/mcp/mcplib", () => {
     }
     class MCPToolHandler {}
     return { MCPClient, MCPToolHandler };
+});
+// The filesystem client without a directory picker: its first handshake waits for the test's
+// release and later ones return at once, as the real client's `initialized` flag does.
+vi.mock("src/ts/process/mcp/filesystemclient", () => {
+    class FileSystemClient {
+        url = "internal:fs";
+        serverInfo = {
+            protocolVersion: "2025-03-26",
+            capabilities: { tools: {} },
+            serverInfo: { name: "FS", version: "1" },
+        };
+        initialized = false;
+        constructor() {
+            tab.constructed++;
+        }
+        async checkHandshake() {
+            if (!this.initialized) {
+                tab.handshakes++;
+                await new Promise<void>((resolve) => {
+                    tab.release = resolve;
+                });
+                this.initialized = true;
+            }
+            return this.serverInfo;
+        }
+        async getToolList() {
+            return [{ name: "fs_read", description: "d", inputSchema: {} }];
+        }
+        async callTool() {
+            return [];
+        }
+        destroy() {
+            tab.destroyed++;
+        }
+    }
+    return { FileSystemClient };
 });
 
 async function boot() {
@@ -197,6 +237,41 @@ describe("initializeMCPs", () => {
         });
         await sync.flushResources();
         expect(record("authRefreshes")).toEqual([{ url: "https://mcp.example/sse", ...remote.refresh }]);
+    });
+});
+
+describe("the tab clients shared with a server job (readyTabClient, Phase 5 slice 12a)", () => {
+    it("creates one internal:fs client whose first handshake concurrent callers share, hands the same instance to the registry, and keeps it when the registry's cleanup drops its reference", async () => {
+        await boot();
+        tab.constructed = 0;
+        tab.handshakes = 0;
+        tab.destroyed = 0;
+        tab.release = null;
+        const mcp = await import("../mcp");
+        const first = mcp.readyTabClient("internal:fs");
+        const second = mcp.readyTabClient("internal:fs");
+        for (let turn = 0; turn < 50 && tab.release === null; turn++) {
+            await Promise.resolve();
+        }
+        expect(tab.handshakes).toBe(1);
+        tab.release!();
+        const [a, b] = await Promise.all([first, second]);
+        expect(a).toBe(b);
+        expect(tab.constructed).toBe(1);
+
+        // The browser registry takes the shared instance (no second handshake), and its cleanup
+        // drops only its own reference: the client a server job may still use is not destroyed.
+        const modules = await import("src/ts/process/modules");
+        vi.mocked(modules.getModuleMcps).mockReturnValueOnce(["internal:fs"] as never);
+        await mcp.initializeMCPs();
+        expect(mcp.MCPs["internal:fs"]).toBe(a);
+        expect(tab.constructed).toBe(1);
+        expect(tab.handshakes).toBe(1);
+        await mcp.initializeMCPs();
+        expect(mcp.MCPs["internal:fs"]).toBeUndefined();
+        expect(tab.destroyed).toBe(0);
+        expect(await mcp.readyTabClient("internal:fs")).toBe(a);
+        expect(tab.handshakes).toBe(1);
     });
 });
 

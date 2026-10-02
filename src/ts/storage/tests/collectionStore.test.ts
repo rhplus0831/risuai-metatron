@@ -405,4 +405,25 @@ describe("character order, plugins, and OAuth entries", () => {
             { url: "https://mcp", tokenUrl: "https://mcp/token", refreshToken: "r", clientId: "id" },
         ]);
     });
+
+    it("addAuthRefresh keeps one entry per server url: a new login replaces every entry of that url in place and keeps the others (Phase 5 slice 12a)", async () => {
+        const { sync, collectionStore, record, db } = await boot();
+        collectionStore.addAuthRefresh({ url: "https://a", refreshToken: "1" });
+        collectionStore.addAuthRefresh({ url: "https://b", refreshToken: "2" });
+        // A duplicate from before the replacement rule (the core app wrote the list directly).
+        db().authRefreshes.push({ url: "https://a", refreshToken: "3" } as never);
+        collectionStore.addAuthRefresh({ url: "https://a", refreshToken: "9", tokenUrl: "https://a/token" });
+        expect(plain(db().authRefreshes)).toEqual([
+            { url: "https://a", refreshToken: "9", tokenUrl: "https://a/token" },
+            { url: "https://b", refreshToken: "2" },
+        ]);
+        // An entry without a url is appended, as before.
+        collectionStore.addAuthRefresh({ refreshToken: "no-url" });
+        await sync.flushResources();
+        expect(record("authRefreshes")).toEqual([
+            { url: "https://a", refreshToken: "9", tokenUrl: "https://a/token" },
+            { url: "https://b", refreshToken: "2" },
+            { refreshToken: "no-url" },
+        ]);
+    });
 });

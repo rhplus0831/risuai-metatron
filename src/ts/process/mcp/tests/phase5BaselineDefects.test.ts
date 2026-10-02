@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // functions themselves (they are pure, so no browser capture is needed). Each test pins the defect
 // until the slice that fixes it FLIPS it to the intended behavior (implementation plan, question
 // 10): `decodeToolCall` was flipped in slice 11b (`post-generation-and-plugin-callbacks`); the OAuth
-// refresh flips in slice 12 (`mcp-on-server`).
+// refresh was flipped in slice 12a (`mcp-on-server`).
 
 const { fetchCalls, fetchAnswers } = vi.hoisted(() => ({
     fetchCalls: [] as { url: string; init: RequestInit | undefined }[],
@@ -73,7 +73,7 @@ describe("Phase 5 baseline, flipped in slice 11b: decodeToolCall decodes a remem
     });
 });
 
-describe("Phase 5 baseline: the MCP OAuth refresh reads the token only when the status is not 200 (flip in slice 12)", () => {
+describe("Phase 5 baseline, flipped in slice 12a: the MCP OAuth refresh stores the token only when the status is 200", () => {
     const refresh = {
         clientId: "client",
         clientSecret: "secret",
@@ -81,32 +81,35 @@ describe("Phase 5 baseline: the MCP OAuth refresh reads the token only when the 
         tokenUrl: "https://auth.example/token",
     };
 
-    it("ignores a successful refresh (200) and falls through to discovery with no access token", async () => {
+    it("stores a successful refresh (200) as the access token and stops there", async () => {
         const { MCPClient } = await import("../mcplib");
         const client = new MCPClient("https://mcp.example/sse");
         client.getRefreshToken = async () => refresh;
-        fetchAnswers.push(new Response(JSON.stringify({ access_token: "fresh" }), { status: 200 }), () => {
+        fetchAnswers.push(new Response(JSON.stringify({ access_token: "fresh" }), { status: 200 }));
+
+        // Before slice 12a the status check was inverted: a 200 was ignored and the login went on
+        // to discovery; now the refreshed token is stored and no discovery request is made.
+        await expect(client.oauthLogin()).resolves.toBeUndefined();
+        expect(client.accessToken).toBe("fresh");
+        expect(fetchCalls.map((c) => c.url)).toEqual([refresh.tokenUrl]);
+        expect(fetchCalls[0].init?.method).toBe("POST");
+        expect(String(fetchCalls[0].init?.body)).toContain("grant_type=refresh_token");
+    });
+
+    it("ignores a failed refresh (not 200) and falls through to discovery with no access token", async () => {
+        const { MCPClient } = await import("../mcplib");
+        const client = new MCPClient("https://mcp.example/sse");
+        client.getRefreshToken = async () => refresh;
+        fetchAnswers.push(new Response(JSON.stringify({ access_token: "from-error-body" }), { status: 400 }), () => {
             throw new Error("discovery reached");
         });
 
+        // Before slice 12a the error body's `access_token` was stored as the access token.
         await expect(client.oauthLogin()).rejects.toThrow("discovery reached");
         expect(client.accessToken).toBeNull();
         expect(fetchCalls.map((c) => c.url)).toEqual([
             refresh.tokenUrl,
             "https://mcp.example/.well-known/oauth-authorization-server",
         ]);
-        expect(fetchCalls[0].init?.method).toBe("POST");
-        expect(String(fetchCalls[0].init?.body)).toContain("grant_type=refresh_token");
-    });
-
-    it("stores whatever a failed refresh (not 200) answers as the access token and stops there", async () => {
-        const { MCPClient } = await import("../mcplib");
-        const client = new MCPClient("https://mcp.example/sse");
-        client.getRefreshToken = async () => refresh;
-        fetchAnswers.push(new Response(JSON.stringify({ access_token: "from-error-body" }), { status: 400 }));
-
-        await expect(client.oauthLogin()).resolves.toBeUndefined();
-        expect(client.accessToken).toBe("from-error-body");
-        expect(fetchCalls.map((c) => c.url)).toEqual([refresh.tokenUrl]);
     });
 });

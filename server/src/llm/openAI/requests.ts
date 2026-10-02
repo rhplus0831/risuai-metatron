@@ -791,6 +791,7 @@ export async function requestHTTPOpenAI(
                 const callCodes: string[] = [];
 
                 for (const toolCall of toolCalls) {
+                    arg.ctx.tools.attempt?.();
                     if (
                         !toolCall.function ||
                         !toolCall.function.name ||
@@ -1252,6 +1253,7 @@ function wrapToolStream(
                         const callCodes: string[] = [];
 
                         for (const toolCall of toolCalls) {
+                            arg.ctx.tools.attempt?.();
                             if (!toolCall.function || !toolCall.function.name || !toolCall.function.arguments) {
                                 continue;
                             }

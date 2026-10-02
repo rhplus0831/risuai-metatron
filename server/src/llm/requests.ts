@@ -15,6 +15,7 @@ import {
     type RPCToolCallContent,
     type StreamResponseChunk,
     type ToolCallRecord,
+    type ToolDescriptor,
 } from "../../../shared/llm/request.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
@@ -297,6 +298,17 @@ export type JobRequestSpec = {
     /** Ends the job: a barrier failure, a timeout, or a disconnect of an interceptor callback. */
     endJob: (message: string) => void;
     /**
+     * The job's MCP tools (slice 12): what the request offers, the job's budget (`charge` is false
+     * once the `limit` calls are spent, which ends the job), and a tool's call. A tool's own failure
+     * comes back as a text result; a throw is the job's end.
+     */
+    tools: {
+        descriptors: ToolDescriptor[];
+        charge(): boolean;
+        limit: number;
+        call(name: string, args: unknown): Promise<RPCToolCallContent[]>;
+    };
+    /**
      * The remembered tool calls of the job's chat (`chat.toolCalls`, slice 11b): read as stored now,
      * and a new record written with the chat.
      */
@@ -513,9 +525,23 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             alertError: (text) => spec.alertError(redactor.text(text)),
             parseCbs: async (text, chatRef) => spec.parseCbs(text, chatRef),
             tools: {
-                // Server-side requests send no tools until slice 12 (recorded): nothing calls a tool.
-                call: async () => {
-                    throw fatal("Tools are not available to server-side requests yet");
+                // Every tool call a model asks for is charged, also one an adapter answers itself (an
+                // unknown name, arguments that do not parse): the adapters' loops have no bound.
+                attempt: () => {
+                    if (!spec.tools.charge()) {
+                        throw endWith(`The job reached its tool call limit (${spec.tools.limit})`, true);
+                    }
+                },
+                call: async (name, args) => {
+                    if (controller.signal.aborted) {
+                        throw controller.signal.reason ?? new Error("The request ended");
+                    }
+                    try {
+                        return await spec.tools.call(name, args);
+                    } catch (error) {
+                        // Only a fatal outcome throws out of a job's tool: no later provider request.
+                        throw endWith(errorText(error), true);
+                    }
                 },
                 // A remembered call is conversation data, stored with the job's chat as it is: one
                 // that carries a stored credential is refused (the chat goes to the tab).
@@ -714,7 +740,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         };
         let response: requestDataResponse;
         try {
-            response = await requestChatDataMain({ ...spec.arg, tools: [] }, spec.mode, ctx);
+            response = await requestChatDataMain({ ...spec.arg, tools: spec.tools.descriptors }, spec.mode, ctx);
         } catch (error) {
             // Classified before the cleanup, whose own abort would otherwise become the reason.
             try {

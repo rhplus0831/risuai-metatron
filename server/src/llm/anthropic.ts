@@ -1119,6 +1119,7 @@ async function requestClaudeHTTP(
             }
 
             if (content.type === "tool_use") {
+                arg.ctx.tools.attempt?.();
                 const used = await arg.ctx.tools.call(content.name, content.input);
                 const r: Claude3ToolResponseBlock = {
                     type: "tool_result",

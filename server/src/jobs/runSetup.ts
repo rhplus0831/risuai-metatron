@@ -27,6 +27,8 @@ import { applyTriggerChat, type OwnedGeneration } from "./chatResult.ts";
 import { GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
 import type { MessageGuard } from "./generationLock.ts";
 import { type JobScope, refreshChat, scopeChat } from "./jobScope.ts";
+import { createJobToolState, type JobToolState } from "../mcp/jobTools.ts";
+import type { McpRegistry } from "../mcp/registry.ts";
 
 export type GenerationRunnerDeps = {
     store: ResourceStore;
@@ -40,6 +42,8 @@ export type GenerationRunnerDeps = {
     embeddings: EmbeddingsService;
     /** The local models: the summarizer and the image captioner of prompt assembly. */
     transformers: TransformersService;
+    /** The remote MCP clients of the process (Phase 5 slice 12); without them a job's requests offer no tools. */
+    mcp?: McpRegistry;
     /** The generation lock: a trigger's reorder replaces the chat only while no message of it is generated. */
     lock: MessageGuard;
     /** The random source of `presetChain` and the group order (default `Math.random`). */
@@ -94,6 +98,8 @@ export type JobRunState = {
     followUps: GenerationFollowUp[];
     /** The auto-continue and resend rounds the job has run (slice 11a: at most `MAX_SEND_ROUNDS`). */
     rounds: { count: number; noticed?: boolean };
+    /** The job's MCP tool sets and the tool calls its models asked for (slice 12). */
+    tools: JobToolState;
 };
 
 /** The auto-continue and resend rounds one job may run beyond its speakers' own turns. */
@@ -135,6 +141,7 @@ export function createJobRunState(job: RunningJob): JobRunState {
         emotions: new Map(Object.entries(job.context.client?.emotions ?? {}).map(([id, names]) => [id, [...names]])),
         followUps: [],
         rounds: { count: 0 },
+        tools: createJobToolState(),
     };
 }
 
@@ -207,6 +214,7 @@ export function createRunSetup(
         triggerId: job.context.triggerId ?? null,
         cbsUsage: state.cbsUsage,
         embeddings: deps.embeddings,
+        ...(deps.mcp ? { mcp: { registry: deps.mcp, state: state.tools } } : {}),
         lock: deps.lock,
         onFatal: (error) => state.fatalAbort.abort(error),
     });
