@@ -26,6 +26,7 @@ const deps = vi.hoisted(() => ({
     contexts: [] as unknown[],
     mcps: new Map<string, { callTool: (tool: string, args: unknown) => Promise<unknown> }>(),
     sayTTS: vi.fn(),
+    stableDiff: vi.fn<(char: unknown, text: string, target: { check?: () => void }) => Promise<unknown>>(),
     getModelInfo: vi.fn((id: string) => ({
         id,
         name: id,
@@ -84,6 +85,7 @@ vi.mock("../util", () => ({ sleep: (ms: number) => new Promise((resolve) => setT
 vi.mock("../../lang", () => ({ language: {} }));
 vi.mock("../storage/database.svelte", () => ({ getDatabase: () => ({}) }));
 vi.mock("../process/tts", () => ({ sayTTS: deps.sayTTS }));
+vi.mock("../process/stableDiff", () => ({ stableDiff: deps.stableDiff }));
 vi.mock("../model/modellist", () => ({ getModelInfo: deps.getModelInfo }));
 
 type Channel = typeof import("./jobChannel");
@@ -173,6 +175,7 @@ beforeEach(async () => {
     deps.contexts.length = 0;
     deps.mcps.clear();
     deps.sayTTS.mockReset();
+    deps.stableDiff.mockReset();
     stores = await import("../stores.svelte");
     // The mocked stores module outlives `resetModules`: start each test from idle registries.
     stores.bodyIntercepterStore.length = 0;
@@ -497,23 +500,21 @@ describe("callbacks", () => {
         });
     });
 
-    it("refuses an unavailable hook set and the callbacks later slices own; replacers stop at the first throw, interceptors continue per entry without the hook context", async () => {
+    it("refuses an unavailable hook set and the provider callback slice 11b owns, answers chatOutput true with no listener; replacers stop at the first throw, interceptors continue per entry without the hook context", async () => {
         for (const event of [
             callback("u1", "editoutput"),
             callback("u2", "mcpTool", { identifier: "plugin:x", tool: "t", args: {} }),
-            callback("u3", "chatOutput", {}),
+            callback("u3", "chatOutput", { messageId: "m1", speakerId: "c" }),
             callback("u4", "provider", { name: "p" }),
         ]) {
             send(event);
             await pump();
         }
-        expect(tx.answers.map((answer) => (answer as { error: string }).error)).toEqual([
-            "The editoutput hook is not registered any more",
-            "The mcpTool hook is not registered any more",
-            "The chatOutput callback is not supported yet",
-            "The provider callback is not supported yet",
-        ]);
-        expect(tx.answers.every((answer) => (answer as { failure: string }).failure === "protocol")).toBe(true);
+        expect(tx.answers[0]).toEqual(failed("protocol", "The editoutput hook is not registered any more"));
+        expect(tx.answers[1]).toEqual(failed("protocol", "The mcpTool hook is not registered any more"));
+        // `chatOutput` (slice 11a) runs the registered listeners in order; with none it answers `true`.
+        expect(tx.answers[2]).toEqual({ type: "answer", id: "u3", outcome: "answered", value: true });
+        expect(tx.answers[3]).toEqual(failed("protocol", "The provider callback is not supported yet"));
         const second = vi.fn((messages: unknown) => messages);
         hooks.replacerbeforeRequest.add(() => {
             throw new Error("first replacer");
@@ -700,6 +701,121 @@ describe("callbacks", () => {
         });
         expect(deps.getModelInfo).toHaveBeenCalledWith("pluginmodel:::prov");
         expect(listed.providers[0].model).not.toBe(deps.getModelInfo.mock.results[0].value);
+    });
+});
+
+describe("the reply tail's callbacks (slice 11a)", () => {
+    // `chatOutput` walks the live listener set as the tab's own send does (a listener an earlier one
+    // removed does not run, one it added does), gives each listener a plain copy of the speaker and
+    // the chat as they are then with indices looked up again, logs a throw, and answers `true`.
+    it("chatOutput runs the live listener set in order with fresh copies and indices, logs a throw, and answers true", async () => {
+        const chat = stores.DBState.db.characters[0].chats[0] as unknown as { message: { chatId: string }[] };
+        const original = [...chat.message];
+        const calls: { name: string; messages: number; messageIndex: number; chatIndex: number }[] = [];
+        const listener = (name: string, effect?: () => void) => (arg: unknown) => {
+            const {
+                chat: seen,
+                messageIndex,
+                chatIndex,
+            } = arg as {
+                chat: { message: unknown[] };
+                messageIndex: number;
+                chatIndex: number;
+            };
+            calls.push({ name, messages: seen.message.length, messageIndex, chatIndex });
+            effect?.();
+        };
+        try {
+            const second = listener("second");
+            const third = listener("third");
+            const first = listener("first", () => {
+                hooks.chatOutput.delete(second);
+                hooks.chatOutput.add(() => {
+                    calls.push({ name: "throws", messages: -1, messageIndex: -1, chatIndex: -1 });
+                    throw new Error("listener broke");
+                });
+                hooks.chatOutput.add(third);
+                // The chat changes under the later listeners: a message inserted before the reply.
+                chat.message.unshift({ chatId: "m0" });
+            });
+            hooks.chatOutput.add(first);
+            hooks.chatOutput.add(second);
+            send(callback("out", "chatOutput", { messageId: "m2", speakerId: "c" }));
+            await pump();
+            expect(calls).toEqual([
+                { name: "first", messages: 2, messageIndex: 1, chatIndex: 0 },
+                { name: "throws", messages: -1, messageIndex: -1, chatIndex: -1 },
+                { name: "third", messages: 3, messageIndex: 2, chatIndex: 0 },
+            ]);
+            expect(tx.answers).toEqual([{ type: "answer", id: "out", outcome: "answered", value: true }]);
+            expect(deps.contexts).toEqual([targets, targets, targets]);
+            // The copies are plain (not the live records): a listener's edit of its copy changes nothing.
+            expect(chat.message.map((message) => message.chatId)).toEqual(["m0", "m1", "m2"]);
+            // A speaker the tab no longer has fails the callback as a hook failure.
+            send(callback("gone", "chatOutput", { messageId: "m2", speakerId: "nobody" }));
+            await pump();
+            expect(tx.answers[1]).toEqual(failed("hook", "The chat the output listeners run for is gone"));
+        } finally {
+            chat.message.splice(0, chat.message.length, ...original);
+        }
+    });
+
+    it("imggen runs stableDiff for the job's chat with a check that throws once the callback is cancelled, and answers whether an image was shown", async () => {
+        deps.stableDiff.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+        send(callback("i1", "imggen", { characterId: "c", text: "user: hi \n" }));
+        await pump();
+        send(callback("i2", "imggen", { characterId: "c", text: "user: hi \n" }));
+        await pump();
+        expect(tx.answers).toEqual([
+            { type: "answer", id: "i1", outcome: "answered", value: true },
+            { type: "answer", id: "i2", outcome: "answered", value: false },
+        ]);
+        expect(deps.stableDiff).toHaveBeenCalledTimes(2);
+        const [char, text, target] = deps.stableDiff.mock.calls[0];
+        expect(char).toBe(stores.DBState.db.characters[0]);
+        expect(text).toBe("user: hi \n");
+        expect(target).toMatchObject({ chatRef: targets.chatRef, pluginContext: targets });
+        expect(() => target.check!()).not.toThrow();
+        // Cancelled while the prompt request runs: the check throws, no image is asked for, no answer goes out.
+        const prompting = deferred<void>();
+        let thrown: unknown = null;
+        deps.stableDiff.mockImplementationOnce(async (_char, _text, options) => {
+            await prompting.promise;
+            try {
+                options.check?.();
+            } catch (error) {
+                thrown = error;
+                throw error;
+            }
+            return true;
+        });
+        send(callback("i3", "imggen", { characterId: "c", text: "t" }));
+        await pump();
+        send(cancel("i3"));
+        prompting.resolve();
+        await pump();
+        expect(thrown).toMatchObject({ message: "The server cancelled this callback" });
+        expect(tx.answers).toHaveLength(2);
+        // A character the tab no longer has is a hook failure.
+        send(callback("i4", "imggen", { characterId: "nobody", text: "t" }));
+        await pump();
+        expect(tx.answers[2]).toEqual(failed("hook", "The character to generate for is gone"));
+        expect(deps.stableDiff).toHaveBeenCalledTimes(3);
+    });
+
+    it("recentEmotions lists the last five emotions shown for the chat's character, or for each member of its group", () => {
+        const shown = (names: string[]) => names.map((name, i) => [name, `${name}.png`, i] as [string, string, number]);
+        stores.CharEmotion.set({ c: shown(["a", "b", "c", "d", "e", "f"]), d: shown(["x"]), other: shown(["z"]) });
+        expect(channel.recentEmotions("c")).toEqual({ c: ["b", "c", "d", "e", "f"] });
+        const characters = stores.DBState.db.characters as unknown[];
+        characters.push({ chaId: "g", type: "group", characters: ["c", "d", "e"], chats: [] });
+        try {
+            // Each member with something shown; a member without is left out, the group itself is not listed.
+            expect(channel.recentEmotions("g")).toEqual({ c: ["b", "c", "d", "e", "f"], d: ["x"] });
+        } finally {
+            characters.pop();
+        }
+        expect(channel.recentEmotions("unknown")).toEqual({});
     });
 });
 

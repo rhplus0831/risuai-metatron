@@ -154,11 +154,24 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
 type CreateInput = GenerationCreateBody extends infer T ? (T extends unknown ? Omit<T, "clientId"> : never) : never;
 
 export async function createGenerationJob(body: CreateInput): Promise<string> {
-    const hooks = body.hooks ?? (await (await import("./jobChannel")).registeredHooks());
+    let hooks = body.hooks;
+    let context = body.context;
+    if (!hooks) {
+        // The tab's own job: its registered hooks, and the emotions it showed last (the server's
+        // emotion modes penalize a recent choice as the tab's do).
+        const channel = await import("./jobChannel");
+        hooks = await channel.registeredHooks();
+        if (context.client && !context.client.emotions) {
+            context = {
+                ...context,
+                client: { ...context.client, emotions: channel.recentEmotions(context.characterId) },
+            };
+        }
+    }
     const response = await request("/api/generations", {
         method: "POST",
         headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
-        body: JSON.stringify({ ...body, hooks, clientId: generationClientId() }),
+        body: JSON.stringify({ ...body, context, hooks, clientId: generationClientId() }),
     });
     const { jobId } = (await response.json()) as { jobId: string };
     rememberGenerationJob({ chaId: body.context.characterId, chatId: body.context.chatId }, jobId);

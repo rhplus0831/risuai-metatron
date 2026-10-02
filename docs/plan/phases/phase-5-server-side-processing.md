@@ -233,7 +233,17 @@ server is listed here before the browser path is removed:
 - A button or manual trigger during a send is refused: a command job takes the chat's one job
   slot.
 - `/multisend` inside a trigger is refused on the server.
-- The resend and auto-continue loop is capped.
+- The resend and auto-continue loop is capped: a job runs at most 8 such rounds (all its speakers
+  together); past that the reply is finished as it stands. The rounds keep the job's preset (a
+  tab's recursive send picks `presetChain` again).
+- `igp` runs once, on the reply no further round follows; a reply a resend follows gets none (the
+  tab runs it before each resend). On the server a prompt that is not ChatML is an error notice.
+- The automatic emotion modes read the emotions the tab showed last as they were when the job was
+  created, plus the job's own.
+- An inlay image command of a reroll alternative is not generated (the tab starts its image and
+  drops it); a reply's images are asked one after the other.
+- `chatOutput` listeners each get a fresh copy of the character and chat; a listener cannot rewrite
+  the reply while its job runs.
 - Local WebLLM summarization is unsupported on the server, and so is each local Transformers.js
   capability that fails the in-image check.
 - Dynamic-asset regex replacement runs on the server only from the memory step on.

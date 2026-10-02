@@ -11,13 +11,14 @@ import { LuaJobFatalError } from "../lua/bindings.ts";
 import type { ScriptWorkerPool } from "../scripts/workerPool.ts";
 import { HypaProcesser } from "./embeddings.ts";
 
-/** The script modes the server runs on a send (slice 11 adds `editoutput`). */
-export type ServerScriptMode = "editinput" | "editprocess";
+/** The script modes the server runs on a send (`editoutput` on the completed reply, slice 11a). */
+export type ServerScriptMode = "editinput" | "editprocess" | "editoutput";
 
 const luaModeOf: Record<ServerScriptMode, string | null> = {
     editinput: "editInput",
     // `runLuaEditTrigger` returns `editprocess` content untouched.
     editprocess: null,
+    editoutput: "editOutput",
 };
 
 /** `assetRegex` of `src/ts/parser/parser.svelte.ts`. */
@@ -81,6 +82,8 @@ export function createScriptProcessor(deps: {
     cache: ReturnType<typeof createScriptCache>;
     /** The job's dynamic-asset matches (`JobRunState.assetMatches`): `<chaId>::<name>` to the asset chosen. */
     assetMatches: Map<string, string>;
+    /** `@@emo`: the emotion shown (`showEmotion` of the job: its history and the notice). */
+    showEmotion(chaId: string, name: string, image: string): void;
 }): ScriptProcessor {
     const { job, setup, scriptWorkers, lock, cache, assetMatches } = deps;
     const { bindings, nativeCtx, scope } = setup;
@@ -231,7 +234,8 @@ export function createScriptProcessor(deps: {
                 .concat(moduleRegexScripts(setup));
             const hash = regexScriptCacheKey(scripts, data, mode, chatID, `${chatRef.chaId}/${chatRef.chatId}`, parse);
             const cached = cache.get(hash);
-            if (cached !== undefined) {
+            // The client's `if (cached)`: an empty result is computed again (its effects run again).
+            if (cached) {
                 return { data: cached, emoChanged: false };
             }
             if (scripts.length === 0) {
@@ -243,10 +247,7 @@ export function createScriptProcessor(deps: {
                 if (effect.kind === "emotion") {
                     const image = (char as character).emotionImages?.find((emo) => emo[0] === effect.name);
                     if (image) {
-                        services.notice({
-                            kind: "emotion",
-                            payload: { chaId: char.chaId, name: image[0], image: image[1] },
-                        });
+                        deps.showEmotion(char.chaId, image[0], image[1]);
                         emoChanged = true;
                     }
                     return;

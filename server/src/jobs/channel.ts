@@ -177,6 +177,7 @@ function hasHook(hooks: GenerationHooks, name: CallbackName, payload: unknown): 
             return isPlainObject(payload) && hooks.mcpTools.includes(payload.identifier as string);
         case "generateImage":
         case "inlayImage":
+        case "imggen":
             // A client capability, not a plugin hook.
             return true;
         default:

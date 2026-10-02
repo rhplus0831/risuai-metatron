@@ -84,7 +84,40 @@ export type JobRunState = {
     scriptCache: ReturnType<typeof createScriptCache>;
     /** The dynamic-asset matches of the job (the client's `bestMatchCache`, one per tab). */
     assetMatches: Map<string, string>;
+    /**
+     * The emotions shown last per character (the tab's `CharEmotion` names when the job was created,
+     * `context.client.emotions`, plus every emotion the job showed since), oldest first.
+     */
+    emotions: Map<string, string[]>;
+    /** The auto-continue and resend rounds the job has run (slice 11a: at most `MAX_SEND_ROUNDS`). */
+    rounds: { count: number; noticed?: boolean };
 };
+
+/** The auto-continue and resend rounds one job may run beyond its speakers' own turns. */
+export const MAX_SEND_ROUNDS = 8;
+
+/**
+ * Shows an emotion of `chaId` (the client's `CharEmotion` update): the job's history gets the name
+ * as the tab's store does (the oldest dropped when there are five), and the tab gets the notice.
+ */
+export function showEmotion(job: RunningJob, state: JobRunState, chaId: string, name: string, image: string): void {
+    const list = emotionHistory(state, chaId);
+    if (list.length > 4) {
+        list.splice(0, 1);
+    }
+    list.push(name);
+    job.channel.notice({ kind: "emotion", payload: { chaId, name, image } });
+}
+
+/** The job's list of the emotions shown last for `chaId` (the list itself: trimmed and extended in place). */
+export function emotionHistory(state: JobRunState, chaId: string): string[] {
+    let list = state.emotions.get(chaId);
+    if (!list) {
+        list = [];
+        state.emotions.set(chaId, list);
+    }
+    return list;
+}
 
 export function createJobRunState(job: RunningJob): JobRunState {
     const fatalAbort = new AbortController();
@@ -96,6 +129,8 @@ export function createJobRunState(job: RunningJob): JobRunState {
         runSignal: AbortSignal.any([job.signal, fatalAbort.signal]),
         scriptCache: createScriptCache(),
         assetMatches: new Map(),
+        emotions: new Map(Object.entries(job.context.client?.emotions ?? {}).map(([id, names]) => [id, [...names]])),
+        rounds: { count: 0 },
     };
 }
 

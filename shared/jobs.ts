@@ -48,8 +48,22 @@ export type GenerationContext = {
     client?: GenerationClientEnv;
 };
 
-/** The tab's viewport (CSS pixels) and `navigator.language` when the job was created. */
-export type GenerationClientEnv = { viewport: { width: number; height: number }; browserLanguage: string };
+/**
+ * The tab's viewport (CSS pixels) and `navigator.language` when the job was created, and the
+ * emotions it showed last (`CharEmotion`) for the chat's character or each member of its group, by
+ * character id, oldest first (Phase 5 slice 11: the emotion modes penalize a recent choice).
+ */
+export type GenerationClientEnv = {
+    viewport: { width: number; height: number };
+    browserLanguage: string;
+    emotions?: Record<string, string[]>;
+};
+
+/** How many shown emotions per character `GenerationClientEnv.emotions` carries (`CharEmotion` keeps five). */
+export const MAX_CLIENT_EMOTIONS = 5;
+
+/** The longest emotion name `GenerationClientEnv.emotions` carries, in characters. */
+export const MAX_CLIENT_EMOTION_NAME_CHARS = 256;
 
 /** The largest `command.data`, in UTF-8 bytes (a `risu-btn` attribute). */
 export const MAX_COMMAND_DATA_BYTES = 64 * 1024;
@@ -218,9 +232,10 @@ export type CallbackName =
     | "provider"
     | "mcpTool"
     | "generateImage"
-    | "inlayImage";
+    | "inlayImage"
+    | "imggen";
 
-/** A callback's payload by name; `chatOutput` and `provider` are defined by slice 11. */
+/** A callback's payload by name; `provider` is defined by slice 11b. */
 export type CallbackPayloads = {
     replacerbeforeRequest: { messages: OpenAIChat[]; model: string };
     replacerafterRequest: { text: string; model: string };
@@ -229,7 +244,12 @@ export type CallbackPayloads = {
     editprocess: { text: string };
     editoutput: { text: string };
     editdisplay: { text: string };
-    chatOutput: unknown;
+    /**
+     * The `chatOutput` listeners for the reply `messageId` of `speakerId` (slice 11): the tab runs
+     * them in order, each with a fresh snapshot of the character and chat and fresh indices, and
+     * answers `true`.
+     */
+    chatOutput: { messageId: string; speakerId: string };
     provider: { name: string } & Record<string, unknown>;
     mcpTool: { identifier: string; tool: string; args: unknown };
     /** Lua `generateImage`: the client generates for `characterId`, writes the inlay, and answers `{ id }`. */
@@ -240,6 +260,12 @@ export type CallbackPayloads = {
      * `getPersonaImage`, whose inlay id is the asset key) or a model's base64 image.
      */
     inlayImage: { id: string; asset: string } | { id: string; mimeType: string; data: string };
+    /**
+     * The image view of a reply (`viewScreen === "imggen"`, slice 11): the tab runs `stableDiff` for
+     * `characterId` with `text` (the last user message and the character messages after it) and its
+     * own image settings, shows the image, and answers whether one was made.
+     */
+    imggen: { characterId: string; text: string };
 };
 
 /** The chat, preset, and persona a callback acts on (the Phase 4 hook context). */

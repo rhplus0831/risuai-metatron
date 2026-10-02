@@ -5,6 +5,8 @@ import {
     type GenerationCommand,
     type GenerationContext,
     type GenerationCreateBody,
+    MAX_CLIENT_EMOTION_NAME_CHARS,
+    MAX_CLIENT_EMOTIONS,
     MAX_COMMAND_DATA_BYTES,
     MAX_TRIGGER_NAME_BYTES,
 } from "../../../shared/jobs.ts";
@@ -22,6 +24,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 const MAX_BROWSER_LANGUAGE_CHARS = 64;
 const MAX_VIEWPORT_PX = 1_000_000;
+/** A group's members at most (the tab sends the chat's character, or each member of its group). */
+const MAX_CLIENT_EMOTION_CHARACTERS = 256;
 
 /** `context.client`: a viewport of finite, non-negative sizes and a short language tag. */
 function parseClientEnv(value: unknown): GenerationClientEnv | string {
@@ -37,9 +41,28 @@ function parseClientEnv(value: unknown): GenerationClientEnv | string {
     if (typeof value.browserLanguage !== "string" || value.browserLanguage.length > MAX_BROWSER_LANGUAGE_CHARS) {
         return `context.client.browserLanguage must be a string of at most ${MAX_BROWSER_LANGUAGE_CHARS} characters`;
     }
+    let emotions: Record<string, string[]> | undefined;
+    if (value.emotions !== undefined) {
+        if (!isPlainObject(value.emotions) || Object.keys(value.emotions).length > MAX_CLIENT_EMOTION_CHARACTERS) {
+            return "context.client.emotions must be a map of character ids to emotion names";
+        }
+        emotions = {};
+        for (const [id, names] of Object.entries(value.emotions)) {
+            if (
+                !isValidResourceId(id) ||
+                !Array.isArray(names) ||
+                names.length > MAX_CLIENT_EMOTIONS ||
+                names.some((name) => typeof name !== "string" || name.length > MAX_CLIENT_EMOTION_NAME_CHARS)
+            ) {
+                return `context.client.emotions must map character ids to at most ${MAX_CLIENT_EMOTIONS} names`;
+            }
+            emotions[id] = names as string[];
+        }
+    }
     return {
         viewport: { width: width as number, height: height as number },
         browserLanguage: value.browserLanguage,
+        ...(emotions ? { emotions } : {}),
     };
 }
 

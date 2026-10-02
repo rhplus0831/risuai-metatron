@@ -380,7 +380,7 @@ describe("the hub: callbacks and nesting", () => {
             link.channel.callback("replacerafterRequest", { text: "t", model: "m" }),
             link.channel.callback("editoutput", { text: "t" }),
             link.channel.callback("bodyIntercepter", { body: {}, type: "x" }),
-            link.channel.callback("chatOutput", {}),
+            link.channel.callback("chatOutput", { messageId: "m", speakerId: "c" }),
             link.channel.callback("provider", { name: "other" }),
             link.channel.callback("mcpTool", { identifier: "plugin:other", tool: "t", args: {} }),
         ]);

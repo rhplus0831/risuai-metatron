@@ -498,7 +498,58 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             }
             return { id: await writeInlayImage(image, options) };
         }
-        case "chatOutput":
+        case "chatOutput": {
+            // The `chatOutput` listeners of a server send's reply (Phase 5 slice 11a), in order. Each
+            // gets the speaker and the chat as they are now (a plain copy) and indices looked up again:
+            // an earlier listener may have changed, reordered, or deleted them. A listener's throw is
+            // logged and the next one runs, as in the tab's own send.
+            const { chaId, chatId } = context.chatRef;
+            const messageId = String(payload.messageId);
+            const speakerId = String(payload.speakerId);
+            const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+            // The live set, as the tab's own send walks it: a listener an earlier one removed does not
+            // run, one it added does.
+            for (const listener of pluginHooks.chatOutput) {
+                stillWanted();
+                const characterIndex = DBState.db.characters.findIndex((entry) => entry?.chaId === chaId);
+                const owner = DBState.db.characters[characterIndex];
+                const chatIndex = owner?.chats?.findIndex((entry) => entry?.id === chatId) ?? -1;
+                const chat = owner?.chats?.[chatIndex];
+                const speaker = DBState.db.characters.find((entry) => entry?.chaId === speakerId);
+                if (!owner || !chat || !speaker) {
+                    throw new CallbackFailed("hook", "The chat the output listeners run for is gone");
+                }
+                try {
+                    await invokeHook(listener, context, {
+                        char: plain(speaker),
+                        chat: plain(chat),
+                        characterIndex,
+                        chatIndex,
+                        messageIndex: chat.message.findIndex((message) => message.chatId === messageId),
+                    });
+                } catch (error) {
+                    console.error(error);
+                }
+            }
+            return true;
+        }
+        case "imggen": {
+            // The image view of a server send's reply (slice 11a): `stableDiff` with the tab's image
+            // settings and keys; its prompt request runs for the job's chat, preset, and persona.
+            const characterId = String(payload.characterId);
+            const target = DBState.db.characters.find((entry) => entry?.chaId === characterId);
+            if (!target || target.type === "group") {
+                throw new CallbackFailed("hook", "The character to generate for is gone");
+            }
+            const { stableDiff } = await import("../process/stableDiff");
+            stillWanted();
+            const shown = await stableDiff(target as character, String(payload.text), {
+                chatRef: context.chatRef,
+                pluginContext: context,
+                check: stillWanted,
+            });
+            return shown !== false;
+        }
         case "provider":
             throw new CallbackFailed("protocol", `The ${event.name} callback is not supported yet`);
     }
@@ -623,6 +674,24 @@ export async function registeredHooks(): Promise<GenerationHooks> {
         })),
         mcpTools: [...registeredCustomPluginMCPs.keys()],
     };
+}
+
+/**
+ * The emotions this tab showed last (`CharEmotion`) for the chat's character, or for each member of
+ * its group, oldest first (`GenerationClientEnv.emotions`).
+ */
+export function recentEmotions(chaId: string): Record<string, string[]> {
+    const owner = DBState.db.characters?.find((entry) => entry?.chaId === chaId);
+    const ids = owner?.type === "group" ? owner.characters : [chaId];
+    const shown = get(CharEmotion);
+    const emotions: Record<string, string[]> = {};
+    for (const id of ids.slice(0, 256)) {
+        const names = (shown[id] ?? []).map((entry) => entry[0]).filter((name) => name.length <= 256);
+        if (names.length > 0) {
+            emotions[id] = names.slice(-5);
+        }
+    }
+    return emotions;
 }
 
 // ---------------------------------------------------------------------------------------------

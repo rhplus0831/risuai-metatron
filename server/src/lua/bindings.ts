@@ -116,8 +116,18 @@ export type LuaBindingServices = {
     notice(notice: Parameters<JobChannel["notice"]>[0]): void;
     request(arg: RequestArgs, mode: ModelModeExtended, ctx: HostContext): Promise<requestDataResponse>;
     collectStreamText(stream: ReadableStream<StreamResponseChunk>): Promise<string>;
-    /** The `generateImage` callback for `characterId`: the stored inlay's id, or null when the tab could not. */
-    generateImageInlay(prompt: string, negative: string, characterId: string, ctx: HostContext): Promise<string | null>;
+    /**
+     * The `generateImage` callback for `characterId`: the stored inlay's id, or null when the tab could
+     * not. `skipDisconnected`: no tab attached is null too (a reply's inlay image, slice 11a), not the
+     * job's end.
+     */
+    generateImageInlay(
+        prompt: string,
+        negative: string,
+        characterId: string,
+        ctx: HostContext,
+        options?: { timeoutMs?: number; skipDisconnected?: boolean },
+    ): Promise<string | null>;
     tokenize(text: string): Promise<number>;
     /** `loadLoreBookV3Prompt` of the job's chat (the live chat and the chat owner). */
     activateLore(ctx: HostContext): ReturnType<typeof activateLore>;
@@ -525,14 +535,26 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         name: N,
         payload: CallbackPayloads[N],
         ctx: HostContext,
+        options: { timeoutMs?: number; skipDisconnected?: boolean } = {},
     ): Promise<unknown | null> => {
         let result: CallbackResult;
         // Nothing is asked of the tab once the call or the job is over.
         fence(ctx);
         try {
-            result = await untilAborted(job.channel.callback(name, payload), ctx.signal);
+            result = await untilAborted(
+                job.channel.callback(
+                    name,
+                    payload,
+                    options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : undefined,
+                ),
+                ctx.signal,
+            );
         } finally {
             refreshAll();
+        }
+        if (options.skipDisconnected && result.outcome === "disconnected") {
+            fence(ctx);
+            return null;
         }
         switch (result.outcome) {
             case "answered":
@@ -626,8 +648,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         negative: string,
         characterId: string,
         ctx: HostContext,
+        options: { timeoutMs?: number; skipDisconnected?: boolean } = {},
     ): Promise<string | null> => {
-        const answer = await callback("generateImage", { prompt, negative, characterId }, ctx);
+        const answer = await callback("generateImage", { prompt, negative, characterId }, ctx, options);
         return answer === null ? null : await answeredInlayId(answer, null, ctx);
     };
 

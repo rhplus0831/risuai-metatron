@@ -2330,11 +2330,22 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
             abortSignal,
         );
 
+        // The answer's text by its type (the request object itself used to be appended): the result,
+        // the first of several, or nothing for a failure, which is shown instead.
+        let appended: string | undefined;
+        if (rq.type === "success") {
+            appended = rq.result;
+        } else if (rq.type === "multiline") {
+            appended = rq.result[0]?.[1];
+        } else if (rq.type === "fail") {
+            alertError(rq.result);
+        }
+
         // Appended to this send's reply (not whatever message is last now).
         const replyId = scope.current?.messageId;
         const reply = chatNow()?.message.find((message) => message.chatId === replyId);
-        if (replyId && reply) {
-            writeText(replyId, reply.data + rq);
+        if (replyId && reply && appended !== undefined) {
+            writeText(replyId, reply.data + appended);
         }
     }
 

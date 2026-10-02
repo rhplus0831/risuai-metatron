@@ -7,7 +7,15 @@ import type { MessageGuard } from "./generationLock.ts";
 import { type JobScope, refreshChat, scopeChat } from "./jobScope.ts";
 
 /** A message the job is generating: its id and the next checkpoint of its generation (`seq` advanced). */
-export type OwnedGeneration = { messageId: string; next(): MessageGeneration };
+export type OwnedGeneration = {
+    messageId: string;
+    next(): MessageGeneration;
+    /**
+     * The newest streamed chunk the message's stored text includes (a completed stream's last one):
+     * each generation write claims it, so the tab does not put older streamed text over the write.
+     */
+    covers?(): { generationId: string; seq: number } | undefined;
+};
 
 /** What a trigger started from: the job's chat as stored then, with its revision. */
 export type ChatBaseline = { chat: Chat; revision: string };
@@ -75,11 +83,15 @@ export function applyTriggerChat(
             return;
         }
         try {
-            job.write(() => ({
-                chats: [
-                    { characterId: scope.characterId, chatId: scope.chatId, baseRevision: scope.chatRevision, ops },
-                ],
-            }));
+            const cover = options.generation?.covers?.();
+            job.write(
+                () => ({
+                    chats: [
+                        { characterId: scope.characterId, chatId: scope.chatId, baseRevision: scope.chatRevision, ops },
+                    ],
+                }),
+                cover ? { covers: [{ messageId: options.generation!.messageId, ...cover }] } : undefined,
+            );
         } catch (error) {
             if (
                 error instanceof JobWriteConflictError &&

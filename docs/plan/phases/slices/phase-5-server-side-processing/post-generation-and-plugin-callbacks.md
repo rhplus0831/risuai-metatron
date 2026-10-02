@@ -1,6 +1,8 @@
 # Slice: Post-Generation And Plugin Callbacks
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: 11a (the reply tail) implemented on 2026-10-03; 11b (provider plugins, stored tool calls,
+`/multisend`) open. The sections from "Scope" to "Residual risk" are the plan as drafted; the
+amendments in `implementation-plan.md` win over them, and "11a: what landed" records what was built.
 
 Phase: [Phase 5](../../phase-5-server-side-processing.md), step 9 (post-generation effects) and
 the plugin, `chatOutput`, and provider-plugin parts of step 7; PLAN.md Decision 4 (the reply
@@ -125,3 +127,55 @@ provider plugin answers.
 
 A reply that completes while its client is disconnected skips `chatOutput` and any image callback
 (recorded). The TTS notice plays only on the owner client.
+
+## 11a: what landed
+
+The slice is built as two commits. 11a is the tail of a reply in the job
+(`server/src/prompt/runner.ts`, `postProcess.ts`, `scripts.ts`), as `docs/structure/self-host-server.md`
+(`runPromptJob`) describes it. Files beyond the drafted list: `server/src/prompt/scripts.ts`,
+`server/src/jobs/{runSetup,chatResult,channel}.ts`, `server/src/lua/bindings.ts`,
+`server/src/routes/generations.ts`, `shared/jobs.ts`, `src/ts/network/generationJobs.ts`,
+`src/ts/process/stableDiff.ts`, `src/ts/process/index.svelte.ts` (the `igp` fix).
+
+Decisions that differ from the draft above:
+
+- The order is the tab's on each path (the amendment), not the draft's single sequence: TTS and the
+  listeners stay inside each round; `igp` runs only on the reply no further round follows.
+- The loop cap is 8 extra rounds per job across its speakers (`MAX_SEND_ROUNDS`); past it the reply
+  is finished with its whole terminal tail and a toast.
+- The completed raw text is stored before the first hook of the tail, and every later write of the
+  reply claims the stream's last chunk, so a tab never shows streamed text over a processed write.
+- A reply the output trigger removed ends the turn.
+- The emotion modes run on the server with the tab's recent emotions sent at job creation
+  (`context.client.emotions`); the image view is a new `imggen` callback, before `done`.
+- Tail callbacks: no tab attached, skipped; a hook's failure, the effect left out; a timeout (60 s
+  for listeners, 5 minutes for an image), a barrier or protocol failure, or an abort ends the job.
+- An inlay image command is generated for the reply only, one after the other.
+- `igp` with a prompt that is not ChatML is an error notice on the server; the tab is unchanged
+  there.
+
+Plan review (GPT-6-Astra, 18 points): adopted, with two changes: `stableDiff` checks for
+cancellation after its prompt request and does not cancel a running image request (point 9), and
+the plugin `editoutput` hook keeps slice 9's policy for a hook unloaded during a job (point 10).
+Points 11 to 16 are 11b's.
+
+Challenge (one round, four findings, all fixed): the `chatOutput` handler walked a copy of the
+listener set (the tab walks the live set); a cached empty script result was a cache hit on the
+server (the tab computes it again, with its effects); a cancelled image callback could still alert
+its prompt request's failure; an emotion choice that failed did not drop the oldest of five recent
+emotions as the tab's store does. The submodel emotion mode matched the client's code on 36 cases
+after the fix.
+
+Live check (a fresh server with a mock provider, 27 checks): Lua `editOutput`, a plugin
+`editoutput` hook, and an `editoutput` regex applied once to the completed reply while raw chunks
+stream; the output trigger; a `chatOutput` listener with the processed reply; `tts` and
+`notification` notices; timings; the same without streaming; auto-continue; the cap; a resend with
+`igp` on the last reply only; a failing `igp`; both emotion modes; the inlay emotion rewrite; an
+inlay image the tab could not make.
+
+Review: no problem found; the reviewer added `server/src/tests/promptTail.test.ts`,
+`postProcess.test.ts`, and three cases in `src/ts/network/jobChannel.test.ts`. Not pinned: multiline
+answers and a two-speaker group through the tail, an abort at each tail stage (no seam to pause a
+stage), and an unmatched `special.emotion`. Note: the channel decides "no tab attached" at a
+callback's deadline, so a reply that completes while its tab is away waits up to 60 s for the
+listeners and 5 minutes per image before they are skipped.

@@ -13,12 +13,14 @@ import random from "lodash/random";
 
 /**
  * `chatRef` and `pluginContext` are the send's (Phase 5 slice 7a): the prompt request runs for that
- * chat and that frozen preset and persona, not the tab's selection when it starts.
+ * chat and that frozen preset and persona, not the tab's selection when it starts. `check` (a server
+ * job's image callback, slice 11a) throws once the job no longer wants the image: no image request
+ * is started after that. An image request already running is not cancelled.
  */
 export async function stableDiff(
     currentChar: character,
     prompt: string,
-    target: { chatRef?: ChatRef | null; pluginContext?: PluginCallContext } = {},
+    target: { chatRef?: ChatRef | null; pluginContext?: PluginCallContext; check?: () => void } = {},
 ) {
     let db = getDatabase();
 
@@ -54,6 +56,9 @@ export async function stableDiff(
         },
         "submodel",
     );
+
+    // A cancelled job callback stops here: no alert for a request its cancellation ended, no image.
+    target.check?.();
 
     if (rq.type === "fail") {
         alertError(rq.result);
