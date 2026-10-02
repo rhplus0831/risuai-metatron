@@ -30,6 +30,12 @@ export type GenerationContext = {
     input: string;
     continueMessageId?: string;
     speakerChaId?: string;
+    /**
+     * A send's user message (Phase 5 slice 9): the id the job appends `input` under after the input
+     * trigger and `editinput`. The input stage is skipped when the chat already holds a user message
+     * with this id (a job created again after the first one appended it).
+     */
+    userMessageId?: string;
     /** A command job's trigger (buttons, manual triggers). */
     triggerId?: string;
     chatRevision: string;
@@ -170,6 +176,11 @@ export type GenerationTerminalEvent =
           alternatives?: string[];
           /** A preview's result (`preview`: the assembled messages; `previewPrompt`: the provider body). */
           result?: unknown;
+          /**
+           * A send that ended without counting as sent (a trigger's stop, an error written into the
+           * chat, nothing to continue): the tab's `sendChat` returns false (Phase 5 slice 9).
+           */
+          stopped?: true;
       }
     | { type: "error"; epoch: string; message: string; status: number; reason: GenerationErrorReason };
 

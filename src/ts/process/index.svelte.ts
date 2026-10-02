@@ -69,6 +69,8 @@ import { capturePluginContext, invokeHook, type PluginCallContext } from "../plu
 import { pluginHooks } from "../plugins/pluginHooks";
 import type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
+import { readClientFlag } from "../storage/clientFlags";
+import { sendChatOnServer } from "./serverGeneration";
 
 export type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
 
@@ -139,6 +141,14 @@ type SendChatArg = {
     usedContinueTokens?: number;
     preview?: boolean;
     previewPrompt?: boolean;
+    /** With `risu.serverGeneration`: the chat input the job's input stage appends, under `userMessageId`. */
+    input?: string;
+    userMessageId?: string;
+    /**
+     * With `risu.serverGeneration`: called when the send did not run; `ambiguous` when the create
+     * request got no answer (the input may have been appended under `userMessageId`).
+     */
+    onServerRefused?: (ambiguous: boolean) => void;
 };
 
 /**
@@ -156,12 +166,40 @@ function endScopeGeneration(scope: GenerationScope) {
 }
 
 export async function sendChat(chatProcessIndex = -1, arg: SendChatArg = {}): Promise<boolean> {
+    // Phase 5 slice 9: a top-level send runs as a server job behind the client-local flag (plugin
+    // `sendChat`, slash commands, and file sends reach it without `sendMain`).
+    if (chatProcessIndex === -1 && !arg.speakerChaId && readClientFlag("risu.serverGeneration")) {
+        return await sendChatServerBranch(arg);
+    }
     const scope: GenerationScope = { current: null };
     try {
         return await sendChatInner(chatProcessIndex, arg, scope);
     } finally {
         endScopeGeneration(scope);
     }
+}
+
+/**
+ * The flag branch of `sendChat`: the busy guard and the deleted-target check as below, then the job
+ * (`sendChatOnServer`); a preview's result becomes `previewFormated` or `previewBody`.
+ */
+async function sendChatServerBranch(arg: SendChatArg): Promise<boolean> {
+    if (get(doingChat) || (arg.target && !findChat(arg.target))) {
+        arg.onServerRefused?.(false);
+        return false;
+    }
+    doingChat.set(true);
+    const { ok, result, refusal } = await sendChatOnServer(arg);
+    if (refusal) {
+        arg.onServerRefused?.(refusal === "ambiguous");
+    }
+    if (ok && arg.preview && Array.isArray(result)) {
+        previewFormated = result as OpenAIChat[];
+    }
+    if (ok && arg.previewPrompt && typeof result === "string") {
+        previewBody = result;
+    }
+    return ok;
 }
 
 async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: GenerationScope): Promise<boolean> {

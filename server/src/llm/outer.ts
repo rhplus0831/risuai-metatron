@@ -17,8 +17,13 @@ export type OuterRequestDeps = {
     beforeRequest?: (formated: OpenAIChat[], model: ModelModeExtended) => Promise<OpenAIChat[]>;
     /** The plugins' `replacerafterRequest` hooks, in order. */
     afterRequest?: (text: string, model: ModelModeExtended) => Promise<string>;
-    /** The `request` trigger over the messages (slice 8b; none until then). */
+    /** The `request` trigger over the messages (the job's trigger runtime, Phase 5 slice 9). */
     requestTrigger?: (formated: OpenAIChat[]) => Promise<OpenAIChat[]>;
+    /**
+     * Whether a `requestTrigger` failure ends the request (the job's fatal failure or abort) instead
+     * of the client's log-and-continue.
+     */
+    isFatal?: (error: unknown) => boolean;
 };
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -92,6 +97,9 @@ export async function requestChatDataOuter(
                     }
                     arg.formated = got;
                 } catch (error) {
+                    if (deps.isFatal?.(error)) {
+                        throw error;
+                    }
                     console.error(error);
                 }
             }

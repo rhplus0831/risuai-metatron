@@ -1236,6 +1236,7 @@ export const languageEnglish = {
     hideApiKeys: "Hide API Keys",
     unformatQuotes: "Disable Quote Formatting",
     enableDevTools: "Enable Dev Tools",
+    serverGenerationExperimental: "Server generation (experimental, this browser only)",
     selectFile: "Select File",
     namespace: "Namespace",
     moduleIntergration: "Module Integration",

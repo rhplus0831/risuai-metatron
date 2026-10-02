@@ -65,6 +65,7 @@
     import { v4 } from "uuid";
     import { PreUnreroll, Prereroll } from "src/ts/process/prereroll";
     import { processMultiCommand } from "src/ts/process/command";
+    import { readClientFlag } from "src/ts/storage/clientFlags";
     import { postChatFile } from "src/ts/process/files/multisend";
     import { getInlayAsset } from "src/ts/process/files/inlays";
     import Chats from "./Chats.svelte";
@@ -214,6 +215,8 @@
             fileInput = [];
         }
 
+        // Behind the server flag the job runs the input stage and appends the user message (Phase 5 slice 9).
+        let serverInput: { input: string; userMessageId: string } | null = null;
         if (messageInput === "") {
             if (char.type !== "group") {
                 if (cha.length === 0 || cha[cha.length - 1].role !== "user") {
@@ -223,7 +226,13 @@
                 }
             }
         } else {
-            if (char.type === "character") {
+            if (readClientFlag("risu.serverGeneration")) {
+                // The same text after a send that got no answer keeps its id: the server skips an input
+                // it already appended under it.
+                const unresolved = pendingServerInputs.get(chatKeyOf(ref));
+                const pending = unresolved?.input === messageInput ? unresolved : null;
+                serverInput = { input: messageInput, userMessageId: pending?.userMessageId ?? v4() };
+            } else if (char.type === "character") {
                 const baseline = captureChatBaseline(ref);
                 let triggerResult = await runTrigger(char, "input", { chat: findChat(ref), chatRef: ref });
                 if (!findChat(ref)) {
@@ -247,7 +256,7 @@
         rerolls = [];
         await sleep(10);
         updateInputSizeAll();
-        await sendChatMain(continueResponse, ref);
+        await sendChatMain(continueResponse, ref, serverInput);
     }
 
     async function reroll() {
@@ -375,9 +384,19 @@
     }
 
     let abortController: null | AbortController = null;
+    /** Per chat: a server send's input that got no answer (it may have been appended under its id). */
+    let pendingServerInputs = new Map<string, { input: string; userMessageId: string }>();
+    const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
 
-    /** Sends in `target` (default: the selected chat now), captured by the caller before its awaits. */
-    async function sendChatMain(continued: boolean = false, target: ChatRef | null = currentChatRef()) {
+    /**
+     * Sends in `target` (default: the selected chat now), captured by the caller before its awaits.
+     * `serverInput`: the input a server job appends (its user message is not part of the reroll).
+     */
+    async function sendChatMain(
+        continued: boolean = false,
+        target: ChatRef | null = currentChatRef(),
+        serverInput: { input: string; userMessageId: string } | null = null,
+    ) {
         if (!target) {
             return;
         }
@@ -389,8 +408,41 @@
                 target,
                 signal: abortController.signal,
                 continue: continued,
+                ...(serverInput
+                    ? {
+                          ...serverInput,
+                          onServerRefused: (ambiguous: boolean) => {
+                              // Appended after all (an earlier attempt that got no answer): nothing to put back.
+                              if (findChat(target)?.message.some((m) => m.chatId === serverInput.userMessageId)) {
+                                  pendingServerInputs.delete(chatKeyOf(target));
+                                  return;
+                              }
+                              if (messageInput === "") {
+                                  messageInput = serverInput.input;
+                              }
+                              // A send that got no answer may still append under its id, also after a later
+                              // refusal of a retry: the id stays with the text until the chat holds it.
+                              const key = chatKeyOf(target);
+                              if (
+                                  ambiguous ||
+                                  pendingServerInputs.get(key)?.userMessageId === serverInput.userMessageId
+                              ) {
+                                  pendingServerInputs.set(key, serverInput);
+                              }
+                          },
+                      }
+                    : {}),
             });
             const messages = findChat(target)?.message ?? [];
+            if (serverInput) {
+                const userIndex = messages.findIndex((message) => message.chatId === serverInput.userMessageId);
+                if (userIndex !== -1) {
+                    previousLength = userIndex + 1;
+                    if (pendingServerInputs.get(chatKeyOf(target))?.userMessageId === serverInput.userMessageId) {
+                        pendingServerInputs.delete(chatKeyOf(target));
+                    }
+                }
+            }
             if (previousLength < messages.length) {
                 rerolls.push((safeStructuredClone(messages) as Message[]).slice(previousLength));
                 rerollid = rerolls.length - 1;

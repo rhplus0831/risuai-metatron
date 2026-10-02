@@ -22,6 +22,7 @@ const stubs = vi.hoisted(() => ({
     handleChannelEvent: vi.fn(),
     rememberHydration: vi.fn(),
     endJobChannel: vi.fn(),
+    changeToPreset: vi.fn(),
 }));
 
 vi.mock("../storage/nodeStorage", () => ({
@@ -42,6 +43,7 @@ vi.mock("./jobChannel", () => ({
     rememberHydration: stubs.rememberHydration,
     endJobChannel: stubs.endJobChannel,
 }));
+vi.mock("../storage/database.svelte", () => ({ changeToPreset: stubs.changeToPreset }));
 
 type Transport = typeof import("./generationJobs");
 type Client = typeof import("../storage/resourceClient");
@@ -400,6 +402,25 @@ describe("the event dispatcher and the resume", () => {
         });
         expect(stubs.endServerJob).toHaveBeenCalledWith("j1");
         expect(transport.savedGenerationJobs()).toEqual({});
+    });
+
+    it("applies a job's `preset` event with changeToPreset(id, true) once per job, whatever an attach re-sends (slice 9)", async () => {
+        // An earlier test's preset event may still settle its import: start from a clean count.
+        await flush();
+        stubs.changeToPreset.mockClear();
+        const preset = { type: "preset" as const, epoch: EPOCH, presetId: "pa" };
+        transport.applyGenerationEvent("jp1", ref, preset);
+        transport.applyGenerationEvent("jp1", ref, preset);
+        transport.applyGenerationEvent("jp1", ref, { ...preset, presetId: "pb" });
+        await flush();
+        expect(stubs.changeToPreset.mock.calls).toEqual([["pa", true]]);
+        transport.applyGenerationEvent("jp2", ref, { ...preset, presetId: "pb" });
+        await flush();
+        expect(stubs.changeToPreset.mock.calls).toEqual([
+            ["pa", true],
+            ["pb", true],
+        ]);
+        expect(stubs.endServerJob).not.toHaveBeenCalled();
     });
 
     it("hands channel events to the lazily loaded dispatcher with the follow as transport, in socket order with the hydrations, and ends the channel on the terminal", async () => {

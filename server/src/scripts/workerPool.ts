@@ -3,12 +3,15 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { MessageChannel, type MessagePort, type ResourceLimits, Worker } from "node:worker_threads";
 import { createRequestLimiter, type EgressDeps, serverLuaRequest } from "../lua/egress.ts";
+import type { RegexScriptEffect } from "../../../shared/scripts/regex.ts";
 import { DEFAULT_LUA_CPU_MS, type HostAccess, type LuaRunInput, type LuaRunOutput } from "../lua/runtime.ts";
 import {
     ABORTED_TASK,
     type FromWorker,
+    REGEX_SCRIPTS_MODE,
     type RegexOp,
     type RegexOpResult,
+    type RegexScriptsInput,
     type ScriptWorkerData,
     SYNC_HOST_TIMEOUT_MS,
     SYNC_REPLIES,
@@ -43,6 +46,8 @@ export const MAX_HOST_REPLY_CHARS = 16 * 1024 * 1024;
 export const MAX_REGEX_PATTERN_CHARS = 100_000;
 export const MAX_REGEX_INPUT_CHARS = 16 * 1024 * 1024;
 export const MAX_QUEUED_TASKS = 1000;
+/** The CPU limit of one regex script run (`runScripts`), its synchronous host answers excluded. */
+export const DEFAULT_REGEX_SCRIPTS_CPU_MS = 5000;
 const WATCHDOG_GRACE_MS = 1000;
 const WATCHDOG_POLL_MS = 50;
 const ABORT_GRACE_MS = 500;
@@ -76,6 +81,20 @@ export type LuaHost = {
 };
 
 export type LuaTask = Omit<LuaRunInput, "cpuMs" | "asyncHost" | "syncHost"> & { cpuMs?: number };
+
+/**
+ * The main-thread side of a regex script run (`runScripts`): CBS of a text, `@@repeat_back`'s source,
+ * and an effect applied where its script matched. Each one blocks the worker until it answers; a
+ * throw skips that script (the engine's per-script catch), so a fatal failure must also abort the
+ * run's signal.
+ */
+export type RegexScriptsHost = {
+    parse(text: string): string;
+    repeatBack(): string;
+    effect(effect: RegexScriptEffect): void;
+};
+
+export type RegexScriptsResult = { data: string } | { error: string; aborted?: boolean; timedOut?: boolean };
 
 /**
  * A job's aggregate Lua budget. A run reserves its allowance when it starts and is charged its CPU
@@ -683,7 +702,7 @@ export function createScriptWorkerPool(options: {
         top.abortTimer = setTimeout(() => kill(slot, "request aborted", "abort"), ABORT_GRACE_MS);
     }
 
-    return {
+    const api = {
         /**
          * Runs one Lua task. A failure is reported in the result, never thrown, as the client
          * swallows script errors. An exhausted budget, an aborted `signal`, or a task over the
@@ -731,6 +750,46 @@ export function createScriptWorkerPool(options: {
                 signal?.addEventListener("abort", onAbort, { once: true });
                 enqueue(top);
             });
+        },
+
+        /**
+         * Runs the regex script engine on a worker (Phase 5 slice 9: user regexes never run on the
+         * main thread), under `cpuMs` of the worker's own time. A failure is reported, never thrown.
+         */
+        async runScripts(
+            input: RegexScriptsInput & { identity: LuaIdentity; cpuMs?: number },
+            run: { host: RegexScriptsHost; signal?: AbortSignal },
+        ): Promise<RegexScriptsResult> {
+            const { identity, cpuMs, ...data } = input;
+            const { host } = run;
+            const result = await api.runLua(
+                { code: "", mode: REGEX_SCRIPTS_MODE, data, identity, cpuMs: cpuMs ?? DEFAULT_REGEX_SCRIPTS_CPU_MS },
+                {
+                    signal: run.signal,
+                    host: {
+                        sync: {
+                            parse: ([text]) => host.parse(String(text ?? "")),
+                            repeatBack: () => host.repeatBack(),
+                            effect: ([json]) => {
+                                host.effect(JSON.parse(String(json)) as RegexScriptEffect);
+                                return undefined;
+                            },
+                        },
+                    },
+                },
+            );
+            if (
+                result.error !== undefined ||
+                typeof result.res !== "string" ||
+                JSON.stringify(result.res).length > MAX_HOST_REPLY_CHARS
+            ) {
+                return {
+                    error: result.error ?? "The regex scripts returned no text, or too much",
+                    ...(result.aborted ? { aborted: true } : {}),
+                    ...(result.timedOut ? { timedOut: true } : {}),
+                };
+            }
+            return { data: result.res };
         },
 
         /** Runs one regex on any worker, under `deadlineMs` (1,000 ms by default). */
@@ -786,4 +845,5 @@ export function createScriptWorkerPool(options: {
             return disposing;
         },
     };
+    return api;
 }

@@ -90,6 +90,14 @@ export type TriggerHost = {
 /** A run stops with an error past this many effects in one job (the client loops forever). */
 export const MAX_TRIGGER_EFFECTS = 100_000;
 
+/** The job's native effect limit was reached: never a script's own failure (`requestChatData`'s request-trigger fallback does not take it). */
+export class TriggerEffectLimitError extends Error {
+    constructor() {
+        super(`more than ${MAX_TRIGGER_EFFECTS} trigger effects in one job`);
+        this.name = "TriggerEffectLimitError";
+    }
+}
+
 const safeSubset = [
     "v2SetVar",
     "v2If",
@@ -159,7 +167,7 @@ export function parseKeyValue(template: string | undefined): [string, string][] 
 }
 
 /** `parseChatML` of `src/ts/parser/chatML.ts`, with the job's CBS. */
-function parseChatML(data: string, parse: (text: string) => string): OpenAIChat[] | null {
+export function parseChatML(data: string, parse: (text: string) => string): OpenAIChat[] | null {
     const starter = "<|im_start|>";
     const seperator = "<|im_sep|>";
     const ender = "<|im_end|>";
@@ -536,7 +544,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                 services.fence(ctx);
                 host.effects.count++;
                 if (host.effects.count > MAX_TRIGGER_EFFECTS) {
-                    throw new Error(`more than ${MAX_TRIGGER_EFFECTS} trigger effects in one job`);
+                    throw new TriggerEffectLimitError();
                 }
 
                 if (effect && "indent" in effect && typeof effect.indent === "number" && effect.indent >= 0) {

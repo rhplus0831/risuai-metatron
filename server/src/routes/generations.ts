@@ -63,6 +63,9 @@ function parseCommand(kind: string, value: unknown): GenerationCommand | undefin
     return { type: "button", data: value.data };
 }
 
+/** The kinds whose job runs the input stage (`userMessageId`). */
+const INPUT_KINDS: readonly string[] = ["send", "continue", "reroll", "group"];
+
 /** Checks a create body; returns the reason as a string when it is malformed. */
 function parseCreateBody(body: unknown): GenerationCreateBody | string {
     if (!isPlainObject(body)) {
@@ -92,10 +95,14 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
     if (typeof context.chatRevision !== "string") {
         return "context.chatRevision must be a string";
     }
-    for (const field of ["continueMessageId", "speakerChaId"] as const) {
+    for (const field of ["continueMessageId", "speakerChaId", "userMessageId"] as const) {
         if (context[field] !== undefined && !isValidResourceId(context[field])) {
             return `context.${field} must be an id when present`;
         }
+    }
+    // Only a send runs the input stage that appends the user message.
+    if (context.userMessageId !== undefined && !INPUT_KINDS.includes(body.kind)) {
+        return "context.userMessageId is only for send, continue, reroll, and group jobs";
     }
     // A `risu-id` attribute: any nonempty text (not a resource id), bounded.
     if (
@@ -131,6 +138,7 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
         chatRevision: context.chatRevision,
         ...(context.continueMessageId !== undefined ? { continueMessageId: context.continueMessageId as string } : {}),
         ...(context.speakerChaId !== undefined ? { speakerChaId: context.speakerChaId as string } : {}),
+        ...(context.userMessageId !== undefined ? { userMessageId: context.userMessageId as string } : {}),
         ...(context.triggerId !== undefined ? { triggerId: context.triggerId as string } : {}),
         ...(context.selectedPersonaId !== undefined
             ? { selectedPersonaId: context.selectedPersonaId as string | null }

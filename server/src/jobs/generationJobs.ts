@@ -4,6 +4,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ChatGroup, ChatOrderChange } from "../../../shared/chats.ts";
 import {
+    type CallbackTargets,
     type GenerationCommand,
     type GenerationContext,
     type GenerationCreateBody,
@@ -133,6 +134,11 @@ export type RunningJob = {
     ): AppliedChanges;
     /** Parsed JSON messages from the owner's socket (the `job-channel` slice answers through it). */
     onClientMessage(listener: (message: unknown) => void): () => void;
+    /**
+     * The preset the job's later callbacks name in their targets (a send's `presetChain` pick,
+     * Phase 5 slice 9); callbacks already sent keep theirs.
+     */
+    setCallbackPreset?(presetId: string): void;
 };
 
 export type GenerationRunner = (job: RunningJob) => Promise<void>;
@@ -169,6 +175,8 @@ type Job = {
     /** The newest attach stamp admitted (the client's `attach` query); an older handshake is refused. */
     attachStamp: number;
     preset: Extract<GenerationEvent, { type: "preset" }> | null;
+    /** What the job's callbacks act on (its preset can change once: `setCallbackPreset`). */
+    targets: CallbackTargets;
     /** Records the job sent (`kind\0id`, or `chats\0characterId\0id`), re-sent fresh on attach. */
     refs: Map<string, { kind: string; id: string; characterId?: string }>;
     terminal: GenerationTerminalEvent | null;
@@ -605,6 +613,9 @@ export function createGenerationJobs(options: {
                 return receipts;
             },
             write: (build, options) => writeAsJob(job, build, options?.covers),
+            setCallbackPreset(presetId) {
+                job.targets.presetId = presetId;
+            },
             onClientMessage(listener) {
                 assertLive(job);
                 job.listeners.add(listener);
@@ -679,6 +690,11 @@ export function createGenerationJobs(options: {
             watermarks: new Map(),
             attachStamp: -1,
             preset: null,
+            targets: {
+                chatRef: { chaId: characterId, chatId },
+                presetId: body.context.presetId ?? "",
+                personaId: body.context.personaId ?? "",
+            },
             refs: new Map(),
             terminal: null,
             listeners: new Set(),
@@ -689,11 +705,7 @@ export function createGenerationJobs(options: {
             jobId: job.id,
             clientId: job.clientId,
             epoch: job.epoch,
-            targets: {
-                chatRef: { chaId: characterId, chatId },
-                presetId: job.context.presetId ?? "",
-                personaId: job.context.personaId ?? "",
-            },
+            targets: job.targets,
             hooks,
             send: (event) => !job.ended && send(job, event),
             hydrate: () => hydrateAll(job),

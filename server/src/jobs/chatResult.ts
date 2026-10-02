@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type { ChatOp, MessageAnchor } from "../../../shared/chats.ts";
+import type { ChatOp, MessageAnchor, MessageGeneration } from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { GenerationRunnerError, JobWriteConflictError, type RunningJob } from "./generationJobs.ts";
 import type { MessageGuard } from "./generationLock.ts";
 import { type JobScope, refreshChat, scopeChat } from "./jobScope.ts";
+
+/** A message the job is generating: its id and the next checkpoint of its generation (`seq` advanced). */
+export type OwnedGeneration = { messageId: string; next(): MessageGeneration };
 
 /** What a trigger started from: the job's chat as stored then, with its revision. */
 export type ChatBaseline = { chat: Chat; revision: string };
@@ -30,6 +33,7 @@ export function applyTriggerChat(
     deps: { job: RunningJob; store: ResourceStore; scope: JobScope; lock: MessageGuard },
     baseline: ChatBaseline,
     result: Chat,
+    options: { generation?: OwnedGeneration } = {},
 ): void {
     const { job, store, scope, lock } = deps;
     if (!refreshChat(store, scope)) {
@@ -124,7 +128,11 @@ export function applyTriggerChat(
                 }
             }
         }
-        ops.push({ op: "setMessage", message: merged as unknown as Message });
+        // The message the job generates (a continue's) is written as a checkpoint of that generation,
+        // so the edit keeps its generation open (the client's `applyChatResult` with its capability).
+        const owned = options.generation;
+        const generation = owned && owned.messageId === message.chatId ? owned.next() : undefined;
+        ops.push({ op: "setMessage", message: merged as unknown as Message, ...(generation ? { generation } : {}) });
     }
     // New messages after their predecessor as the chat holds it, counting the ones inserted before.
     let previous: string | null = null;

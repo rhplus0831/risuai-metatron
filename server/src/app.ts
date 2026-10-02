@@ -44,8 +44,8 @@ export type ServerContext = ReturnType<typeof createServerContext>;
  * snapshots) lives in the returned context. `resourceKinds` replaces the default resource kinds and
  * `snapshotIntervalMs` the 10-minute snapshot interval (tests use them); `maxImportBytes` caps an
  * uploaded backup archive (default `RISU_MAX_IMPORT_BYTES`, else 16 GiB). `generationRunner` runs
- * the generation jobs (tests inject one; the default runs `command` jobs and answers 501 for the
- * other kinds until prompt assembly).
+ * the generation jobs (tests inject one; the default runs `command` jobs and the sends and previews
+ * of prompt assembly), and `generationRandom` is the default runner's random source.
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -54,6 +54,8 @@ export function createServerContext(options: {
     snapshotIntervalMs?: number;
     maxImportBytes?: number;
     generationRunner?: GenerationRunner;
+    /** The default runner's random source (`presetChain`, the group order); default `Math.random`. */
+    generationRandom?: () => number;
 }) {
     const savePath = path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -122,6 +124,7 @@ export function createServerContext(options: {
         llm: llmRequests,
         tokens: tokenCounter,
         lock: generationLock,
+        ...(options.generationRandom ? { random: options.generationRandom } : {}),
     });
 
     const authenticatedRouteLimiter = createRateLimiter({

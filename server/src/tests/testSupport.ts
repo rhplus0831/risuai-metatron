@@ -19,8 +19,10 @@ export type TestServerOptions = {
     resourceKinds?: readonly ResourceKind[];
     snapshotIntervalMs?: number;
     maxImportBytes?: number;
-    /** The generation jobs' runner (the default answers 501). */
+    /** The generation jobs' runner (the default runs command jobs and sends). */
     generationRunner?: GenerationRunner;
+    /** The default runner's random source (`presetChain`, the group order; Phase 5 slice 9). */
+    generationRandom?: () => number;
     /** Reuse an existing root (a restart); `password` is ignored then. */
     rootDir?: string;
 };
@@ -44,6 +46,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         snapshotIntervalMs: options.snapshotIntervalMs,
         maxImportBytes: options.maxImportBytes,
         generationRunner: options.generationRunner,
+        generationRandom: options.generationRandom,
     });
     return {
         rootDir,

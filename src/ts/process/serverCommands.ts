@@ -1,7 +1,13 @@
-import type { GenerationCommand, GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import type {
+    GenerationCommand,
+    GenerationContext,
+    GenerationKind,
+    GenerationTerminalEvent,
+} from "../../../shared/jobs.ts";
 import { language } from "src/lang";
 import { alertError } from "../alert";
 import {
+    abortGenerationJob,
     applyGenerationEvent,
     createGenerationJob,
     followGenerationJob,
@@ -12,7 +18,7 @@ import {
     savedGenerationJobIds,
 } from "../network/generationJobs";
 import { type ChatRef, findChat, heldChatRevision } from "../storage/chatStore.svelte";
-import { getResourceEpoch } from "../storage/resourceClient";
+import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 import { getDatabase, type character, type groupChat } from "../storage/database.svelte";
 import { selectedPersona, selectedPreset } from "../storage/forwarding.svelte";
 import { flushResources } from "../storage/resourceSync.svelte";
@@ -127,16 +133,134 @@ export async function resumeServerJobs(): Promise<void> {
     await Promise.all(savedGenerationJobIds().map((jobId) => followJobToEnd(jobId)));
 }
 
-/** How a server command ended for the caller: it ran (`started`), this tab's busy job was followed, or it did not run. */
-export type ServerCommandOutcome = "started" | "followed" | "refused";
+/**
+ * How a server job ended for the caller: it ran (`started`), this tab's busy job (another action) was
+ * followed instead, it did not run (`refused`), or the create request failed without an answer, so it
+ * may have run (`unknown`).
+ */
+export type ServerCommandOutcome = "started" | "followed" | "refused" | "unknown";
+
+/** What a server job of this tab runs: its kind, its command, and the context fields of the caller. */
+export type ServerJobRequest = {
+    kind: GenerationKind;
+    command?: GenerationCommand;
+    /** What did not run, for the refusal alert ("the button did not run"). */
+    label: string;
+    context?: Partial<Pick<GenerationContext, "mode" | "input" | "userMessageId" | "continueMessageId" | "triggerId">>;
+};
 
 /**
- * A command job (Phase 5 slices 8a and 8b, behind `risu.serverGeneration`): the target and the
- * settings ids are taken before the first await (a selection change while the save flushes does not
- * move the command), every pending write is saved first (a refused or a discarding flush runs
- * nothing), then the job runs and its events are applied until it ends. Its chat and record changes
- * arrive as the server's records; its alerts and questions through the job's channel. An error ends
- * with `alertError`. `onStart` runs once the job exists, before it is followed.
+ * A server job of this tab (Phase 5 slices 8a, 8b, 9, behind `risu.serverGeneration`): the target
+ * and the settings ids are taken before the first await (a selection change while the save flushes
+ * does not move the job; `identity` gives a plugin call's own preset and effective persona), every
+ * pending write is saved first (a refused or a discarding flush runs nothing), then the job runs and
+ * its events are applied until it ends. Its chat and record changes arrive as the server's records;
+ * its alerts and questions through the job's channel. An error ends with `alertError`. `onStart`
+ * runs once the job exists, before it is followed. `signal` aborts the job (`DELETE`), also when it
+ * fires while the job is being created, and the busy job of this tab followed instead; an abort
+ * before the flush ends runs nothing.
+ */
+export async function runServerJob(
+    char: character | groupChat,
+    ref: ChatRef | null,
+    request: ServerJobRequest,
+    options: {
+        onStart?: () => void;
+        signal?: AbortSignal;
+        identity?: { presetId: string | null; personaId: string | null };
+    } = {},
+): Promise<{ outcome: ServerCommandOutcome; terminal: GenerationTerminalEvent | "lost" | null }> {
+    const refused = { outcome: "refused" as const, terminal: null };
+    if (!ref) {
+        return refused;
+    }
+    const db = getDatabase();
+    const presetId = options.identity ? options.identity.presetId : (selectedPreset(db)?.id ?? null);
+    const selectedPersonaId = selectedPersona(db)?.id ?? null;
+    // `getUserName(ref)`: the chat's bound persona, else the selected one.
+    const personaId = options.identity
+        ? options.identity.personaId
+        : (checkPersonaBinded(ref)?.id ?? selectedPersonaId);
+    const client = {
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        browserLanguage: navigator.language,
+    };
+    try {
+        const { discarded } = await flushResources();
+        if (discarded.length > 0) {
+            alertError(`A conflict discarded local changes; the ${request.label} did not run`);
+            return refused;
+        }
+    } catch (error) {
+        alertError(`Local changes could not be saved: ${errorText(error)}`);
+        return refused;
+    }
+    if (!findChat(ref) || options.signal?.aborted) {
+        return refused;
+    }
+    const chatRevision = heldChatRevision(ref);
+    if (chatRevision === null) {
+        alertError("This chat is not saved on the server yet");
+        return refused;
+    }
+    let jobId: string;
+    let outcome: "started" | "followed" = "started";
+    try {
+        jobId = await createGenerationJob({
+            kind: request.kind,
+            context: {
+                characterId: ref.chaId,
+                chatId: ref.chatId,
+                presetId,
+                personaId,
+                selectedPersonaId,
+                mode: request.kind,
+                input: "",
+                chatRevision,
+                client,
+                ...request.context,
+            },
+            ...(request.command ? { command: request.command } : {}),
+        } as Parameters<typeof createGenerationJob>[0]);
+    } catch (error) {
+        if (error instanceof GenerationBusyError) {
+            // This tab's own job (one a reload lost track of): follow it instead; another's is busy.
+            const owned = await readGenerationJob(error.jobId).catch(() => null);
+            if (!owned) {
+                alertError(language.chatGenerating);
+                return refused;
+            }
+            jobId = error.jobId;
+            outcome = "followed";
+        } else {
+            alertError(errorText(error));
+            // No answer (the network, or a body that did not arrive whole): the job may exist.
+            const unanswered = !(error instanceof ResourceRequestError) || error.status === 0;
+            return { outcome: unanswered ? "unknown" : "refused", terminal: null };
+        }
+    }
+    const onAbort = () => {
+        void abortGenerationJob(jobId).catch((error) => console.error("[Generation]", error));
+    };
+    if (options.signal?.aborted) {
+        onAbort();
+    } else {
+        options.signal?.addEventListener("abort", onAbort, { once: true });
+    }
+    try {
+        if (outcome === "started") {
+            options.onStart?.();
+        }
+        const terminal = await followJobToEnd(jobId, ref);
+        return { outcome, terminal };
+    } finally {
+        options.signal?.removeEventListener("abort", onAbort);
+    }
+}
+
+/**
+ * A command job (Phase 5 slices 8a and 8b, behind `risu.serverGeneration`): `runServerJob` with the
+ * command; a group chat refuses it.
  */
 async function runServerCommand(
     char: character | groupChat,
@@ -147,68 +271,21 @@ async function runServerCommand(
     if (!ref || char.type === "group") {
         return "refused";
     }
-    const db = getDatabase();
-    const presetId = selectedPreset(db)?.id ?? null;
-    const selectedPersonaId = selectedPersona(db)?.id ?? null;
-    // `getUserName(ref)`: the chat's bound persona, else the selected one.
-    const personaId = checkPersonaBinded(ref)?.id ?? selectedPersonaId;
-    const client = {
-        viewport: { width: window.innerWidth, height: window.innerHeight },
-        browserLanguage: navigator.language,
-    };
-    try {
-        const { discarded } = await flushResources();
-        if (discarded.length > 0) {
-            alertError(`A conflict discarded local changes; the ${commandLabel(command)} did not run`);
-            return "refused";
-        }
-    } catch (error) {
-        alertError(`Local changes could not be saved: ${errorText(error)}`);
-        return "refused";
-    }
-    if (!findChat(ref)) {
-        return "refused";
-    }
-    const chatRevision = heldChatRevision(ref);
-    if (chatRevision === null) {
-        alertError("This chat is not saved on the server yet");
-        return "refused";
-    }
-    let jobId: string;
-    try {
-        jobId = await createGenerationJob({
+    const { outcome } = await runServerJob(
+        char,
+        ref,
+        {
             kind: "command",
+            command,
+            label: commandLabel(command),
             context: {
-                characterId: ref.chaId,
-                chatId: ref.chatId,
-                presetId,
-                personaId,
-                selectedPersonaId,
                 mode: command.type === "button" ? "button" : "manual",
-                input: "",
-                chatRevision,
-                client,
                 ...(options.triggerId ? { triggerId: options.triggerId } : {}),
             },
-            command,
-        });
-    } catch (error) {
-        if (error instanceof GenerationBusyError) {
-            // This tab's own job (one a reload lost track of): follow it instead; another's is busy.
-            const owned = await readGenerationJob(error.jobId).catch(() => null);
-            if (owned) {
-                await followJobToEnd(error.jobId, ref);
-                return "followed";
-            }
-            alertError(language.chatGenerating);
-            return "refused";
-        }
-        alertError(errorText(error));
-        return "refused";
-    }
-    options.onStart?.();
-    await followJobToEnd(jobId, ref);
-    return "started";
+        },
+        { onStart: options.onStart },
+    );
+    return outcome;
 }
 
 function commandLabel(command: GenerationCommand): string {

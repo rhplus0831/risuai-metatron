@@ -15,6 +15,7 @@ import { pickHashRand } from "../../../shared/hashRand.ts";
 import { type InlayResource, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
+import type { MessageGuard } from "../jobs/generationLock.ts";
 import { createJobCbsHost, jobModuleLorebooks } from "../jobs/cbsHost.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import { JobWriteConflictError, type RunningJob } from "../jobs/generationJobs.ts";
@@ -61,6 +62,11 @@ export type LuaBindingDeps = {
     triggerId?: string | null;
     /** Called once with the first fatal failure: the runner aborts the run in progress with it. */
     onFatal?: (error: LuaJobFatalError) => void;
+    /**
+     * The generation lock: a chat write touching a message any generation owns, this job's own
+     * included, is skipped (the client's `liveWrite` has no generation capability either).
+     */
+    lock?: MessageGuard;
 };
 
 /**
@@ -125,6 +131,13 @@ export type LuaBindings = {
     withWorking<T>(working: LuaWorkingCopy, fn: () => Promise<T>): Promise<T>;
     /** Calls `listener` after every Lua setter that wrote the run's character; returns the unsubscribe. */
     observeCharacterPatches(listener: CharacterPatchListener): () => void;
+    /**
+     * The native `request` trigger (`requestChatData`'s `runTrigger(…, 'request', …)`) every request
+     * of these bindings runs before each attempt (Phase 5 slice 9); null for none.
+     */
+    setRequestTrigger(trigger: ((formated: OpenAIChat[]) => Promise<OpenAIChat[]>) | null): void;
+    /** `getInlayAsset`: an inlay's media as a data URI (a signature: its JSON text) with its type, or null. */
+    readInlay(id: string): Promise<{ type: string; data: string; width?: number; height?: number } | null>;
 };
 
 type ParsedPrompt = { role: string; content: string }[];
@@ -282,6 +295,10 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         if (!ops || ops.length === 0) {
             return;
         }
+        if (deps.lock && touchesGenerating(ops, current)) {
+            console.warn("[Lua] A chat change was refused: a message is being generated");
+            return;
+        }
         try {
             job.write(() => ({
                 chats: [
@@ -303,6 +320,23 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         }
         refreshAll();
         job.emitRecords({ chats: [{ characterId: scope.characterId, id: scope.chatId }] });
+    };
+
+    /** Whether `ops` rewrite or remove a message a generation owns (the store lets this job's own through). */
+    const touchesGenerating = (ops: ChatOp[], chat: Chat): boolean => {
+        const ids: string[] = [];
+        for (const op of ops) {
+            if (op.op === "setText") {
+                ids.push(op.id);
+            } else if (op.op === "setMessage") {
+                ids.push(op.message.chatId!);
+            } else if (op.op === "remove") {
+                ids.push(...op.ids);
+            } else if (op.op === "replace" || op.op === "delete") {
+                ids.push(...chat.message.map((message) => message.chatId!));
+            }
+        }
+        return ids.some((id) => deps.lock!.holder(scope.characterId, scope.chatId, id) !== null);
     };
 
     /** `setChatVarOf` for the job's chat: the whole `scriptstate` as stored now, true when it changed. */
@@ -548,6 +582,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         },
     };
 
+    /** The native `request` trigger every request runs (`setRequestTrigger`), or none. */
+    let requestTrigger: ((formated: OpenAIChat[]) => Promise<OpenAIChat[]>) | null = null;
+
     /** A request of the job: the client's outer `requestChatData` around the server request layer. */
     const request = async (
         arg: RequestArgs,
@@ -571,6 +608,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         return requestChatDataOuter(arg, mode, {
             db,
             signal,
+            ...(requestTrigger ? { requestTrigger } : {}),
+            isFatal: (error) => error instanceof LuaJobFatalError || fatalError !== null || signal.aborted,
             attempt: (attemptArg) =>
                 deps.llm.runInJob({
                     jobId: job.id,
@@ -1366,5 +1405,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             characterListeners.add(listener);
             return () => characterListeners.delete(listener);
         },
+        setRequestTrigger(trigger) {
+            requestTrigger = trigger;
+        },
+        readInlay,
     };
 }

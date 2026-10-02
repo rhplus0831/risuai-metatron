@@ -1,7 +1,16 @@
 import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { type MessagePort, parentPort, receiveMessageOnPort, workerData } from "node:worker_threads";
-import { createLuaRuntime, type HostAccess, type LuaRunInput, type LuaRunOutput } from "../lua/runtime.ts";
+import type { customscript } from "../../../shared/database.ts";
+import { runRegexScripts, type RegexScriptMode } from "../../../shared/scripts/regex.ts";
+import {
+    createLuaRuntime,
+    type HostAccess,
+    type LuaRunInput,
+    type LuaRunOutput,
+    MAX_HOST_ARG_CHARS,
+    MAX_RESULT_JSON_CHARS,
+} from "../lua/runtime.ts";
 
 /**
  * A script worker: one wasm Lua module (`createLuaRuntime`) and the regex executor. The pool sends
@@ -17,6 +26,17 @@ export type ScriptWorkerData = { jsonLuaPath: string; syncPort: MessagePort; syn
  */
 export const SYNC_REPLIES = 0;
 export const ABORTED_TASK = 1;
+
+/**
+ * A `lua` task whose `mode` is this runs the regex script engine (`runRegexScripts`) instead of Lua
+ * (Phase 5 slice 9): `data` is a `RegexScriptsInput`, and the engine's `parse`, `repeatBackSource`,
+ * and `applyEffect` are the synchronous host functions `parse`, `repeatBack`, and `effect` (an
+ * effect crosses as JSON), so CBS runs on the main thread and an effect lands where its script
+ * matched. `res` is the output text. It shares the Lua task's watchdog, abort, and host plumbing.
+ */
+export const REGEX_SCRIPTS_MODE = "\u0000regexScripts";
+
+export type RegexScriptsInput = { data: string; scripts: customscript[]; mode: RegexScriptMode; chatID: number };
 
 /** A single user regex: `test`, `exec` (the first match), `split`, or `matches` (what `replace` visits). */
 export type RegexOp = { op: "test" | "exec" | "split" | "matches"; pattern: string; flags: string; input: string };
@@ -176,23 +196,75 @@ if (parentPort) {
         return reply.value;
     };
 
+    /** The regex script engine as a task: its host calls block the worker, as Lua's synchronous ones do. */
+    const runScripts = (taskId: number, input: LuaRunInput): LuaRunOutput => {
+        const start = performance.now();
+        const { data, scripts, mode, chatID } = input.data as RegexScriptsInput;
+        const access: HostAccess = "safe";
+        // The Lua task's bounds, as JSON (the unit the runtime counts): a host argument and the result.
+        // An oversized one fails the task, and no host call follows it (the engine would otherwise
+        // skip just that script and go on to the next one's effects).
+        let oversize: string | null = null;
+        const live = () => {
+            if (oversize !== null) {
+                throw new Error(oversize);
+            }
+        };
+        const bounded = (text: string, what: string) => {
+            live();
+            if (JSON.stringify(text).length > MAX_HOST_ARG_CHARS) {
+                oversize = `Regex scripts: ${what} too large`;
+                throw new Error(oversize);
+            }
+            return text;
+        };
+        const result = runRegexScripts(data, scripts, {
+            mode,
+            chatID,
+            parse: (text) => String(callSync(taskId, "parse", [bounded(text, "a CBS input")], access) ?? ""),
+            repeatBackSource: () => {
+                live();
+                return String(callSync(taskId, "repeatBack", [], access) ?? "");
+            },
+            applyEffect: (effect) => {
+                callSync(taskId, "effect", [bounded(JSON.stringify(effect), "an effect")], access);
+            },
+        });
+        const aborted = abortedByMain(taskId);
+        if (!aborted && oversize === null && JSON.stringify(result.data).length > MAX_RESULT_JSON_CHARS) {
+            oversize = "Regex scripts: the result is too large";
+        }
+        const error = aborted ? "request aborted" : oversize;
+        return {
+            res: error === null ? result.data : undefined,
+            stopSending: false,
+            ...(error !== null ? { error } : {}),
+            ...(aborted ? { aborted: true } : {}),
+            cpuMs: Math.round(performance.now() - start),
+            memory: { used: 0, max: 0 },
+        };
+    };
+
     const runLua = async (taskId: number, input: LuaRunInput) => {
         const run = { controller: new AbortController(), callIds: new Set<number>() };
         runs.set(taskId, run);
         let result: LuaRunOutput;
         try {
-            result = await runtime.run(input, {
-                aborted: () => run.controller.signal.aborted || abortedByMain(taskId),
-                log: (value) => post({ type: "log", taskId, value }),
-                callSync: (name, args, access) => callSync(taskId, name, args, access),
-                callAsync: (name, args, access) =>
-                    new Promise((resolve, reject) => {
-                        const callId = nextCallId++;
-                        run.callIds.add(callId);
-                        hostCalls.set(callId, { resolve, reject });
-                        post({ type: "host", taskId, callId, name, args, access });
-                    }),
-            });
+            result =
+                input.mode === REGEX_SCRIPTS_MODE
+                    ? runScripts(taskId, input)
+                    : await runtime.run(input, {
+                          aborted: () => run.controller.signal.aborted || abortedByMain(taskId),
+                          log: (value) => post({ type: "log", taskId, value }),
+                          callSync: (name, args, access) => callSync(taskId, name, args, access),
+                          callAsync: (name, args, access) =>
+                              new Promise((resolve, reject) => {
+                                  const callId = nextCallId++;
+                                  run.callIds.add(callId);
+                                  hostCalls.set(callId, { resolve, reject });
+                                  post({ type: "host", taskId, callId, name, args, access });
+                              }),
+                      });
         } catch (error) {
             result = {
                 res: undefined,

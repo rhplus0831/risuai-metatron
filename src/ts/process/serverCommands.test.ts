@@ -7,7 +7,10 @@ import type { GenerationEvent, GenerationTerminalEvent } from "../../../shared/j
 // read retried, a job the server no longer knows released as lost), the end reported once, the
 // boot discovery joining an active follow and never releasing it, and `runServerButton`'s
 // preflight (ids before the flush, a discarding or rejected flush runs nothing, a saved revision,
-// the owned-busy path).
+// the owned-busy path). Slice 9 adds `runServerJob` itself: the send kinds with their context,
+// the `unknown` outcome of a create request without an answer, the abort signal (a DELETE for a
+// started job, for a followed busy job, and for a signal that fired during the create; nothing
+// posted after an abort before the flush ends), and a plugin call's identity.
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 const ref = { chaId: "c", chatId: "k" };
@@ -21,6 +24,7 @@ type Follow = {
 const stubs = vi.hoisted(() => ({
     follows: [] as unknown[],
     create: vi.fn<(body: unknown) => Promise<string>>(),
+    abort: vi.fn<(jobId: string) => Promise<void>>(async () => {}),
     read: vi.fn<(jobId: string) => Promise<unknown>>(),
     release: vi.fn(),
     saved: vi.fn<() => string[]>(() => []),
@@ -37,10 +41,20 @@ class BusyError extends Error {
         super("busy");
     }
 }
+/** The resource client's error: `status` 0 is a request without an answer. */
+class RequestError extends Error {
+    constructor(
+        readonly status: number,
+        message: string,
+    ) {
+        super(message);
+    }
+}
 
 vi.mock("src/lang", () => ({ language: { chatGenerating: "generating" } }));
 vi.mock("../alert", () => ({ alertError: stubs.alertError }));
 vi.mock("../network/generationJobs", () => ({
+    abortGenerationJob: (jobId: string) => stubs.abort(jobId),
     applyGenerationEvent: stubs.apply,
     createGenerationJob: stubs.create,
     followGenerationJob: (jobId: string, onEvent: (event: GenerationEvent) => void) => {
@@ -57,7 +71,7 @@ vi.mock("../network/generationJobs", () => ({
     savedGenerationJobIds: stubs.saved,
 }));
 vi.mock("../storage/chatStore.svelte", () => ({ findChat: stubs.findChat, heldChatRevision: stubs.held }));
-vi.mock("../storage/resourceClient", () => ({ getResourceEpoch: () => EPOCH }));
+vi.mock("../storage/resourceClient", () => ({ getResourceEpoch: () => EPOCH, ResourceRequestError: RequestError }));
 vi.mock("../storage/database.svelte", () => ({ getDatabase: () => ({}) }));
 vi.mock("../storage/forwarding.svelte", () => ({
     selectedPersona: () => ({ id: "selected" }),
@@ -89,6 +103,7 @@ beforeEach(async () => {
     stubs.held.mockReset().mockReturnValue("e:1:1");
     stubs.bound.mockReset().mockReturnValue(null);
     stubs.flush.mockReset().mockResolvedValue({ discarded: [] });
+    stubs.abort.mockReset().mockResolvedValue(undefined);
     vi.spyOn(console, "error").mockImplementation(() => {});
     commands = await import("./serverCommands");
 });
@@ -376,5 +391,132 @@ describe("runServerManualTrigger", () => {
         endWith(follows()[0], done);
         expect(await run).toBe("followed");
         expect(onStart).not.toHaveBeenCalled();
+    });
+});
+
+// Phase 5 slice 9: the shared job runner the sends use (`sendChatOnServer` maps its outcome).
+describe("runServerJob", () => {
+    const char = { chaId: "c", type: "character" } as never;
+    const send = (
+        context: Record<string, unknown>,
+        options: Parameters<Module["runServerJob"]>[3] = {},
+        kind = "send" as const,
+    ) => commands.runServerJob(char, ref, { kind, label: "send", context }, options);
+
+    it("posts the kind with the caller's context fields and no command, and reports `started` with the terminal", async () => {
+        stubs.create.mockResolvedValue("j");
+        const run = send({ input: "hi", userMessageId: "u1", continueMessageId: "m9" });
+        await flush();
+        const body = stubs.create.mock.calls[0][0] as {
+            kind: string;
+            command?: unknown;
+            context: Record<string, unknown>;
+        };
+        expect(body.kind).toBe("send");
+        expect("command" in body).toBe(false);
+        expect(body.context).toMatchObject({
+            characterId: "c",
+            chatId: "k",
+            presetId: "preset",
+            personaId: "selected",
+            selectedPersonaId: "selected",
+            mode: "send",
+            input: "hi",
+            userMessageId: "u1",
+            continueMessageId: "m9",
+            chatRevision: "e:1:1",
+        });
+        endWith(follows()[0], done);
+        expect(await run).toEqual({ outcome: "started", terminal: done });
+        expect(stubs.abort).not.toHaveBeenCalled();
+    });
+
+    it("takes a plugin call's preset and effective persona as the identity, keeping the selected persona", async () => {
+        stubs.bound.mockReturnValue({ id: "bound" });
+        stubs.create.mockResolvedValue("j");
+        const run = send({ input: "" }, { identity: { presetId: "plug-preset", personaId: "plug-persona" } });
+        await flush();
+        const body = stubs.create.mock.calls[0][0] as { context: Record<string, unknown> };
+        expect(body.context).toMatchObject({
+            presetId: "plug-preset",
+            personaId: "plug-persona",
+            selectedPersonaId: "selected",
+        });
+        endWith(follows()[0], done);
+        await run;
+    });
+
+    it("reports `unknown` for a create request without an answer and `refused` for an answered refusal, alerting once each", async () => {
+        stubs.create.mockRejectedValueOnce(new TypeError("fetch failed"));
+        expect(await send({ input: "hi" })).toEqual({ outcome: "unknown", terminal: null });
+        stubs.create.mockRejectedValueOnce(new RequestError(0, "The network is unreachable"));
+        expect(await send({ input: "hi" })).toEqual({ outcome: "unknown", terminal: null });
+        stubs.create.mockRejectedValueOnce(new RequestError(400, "context.userMessageId must be an id"));
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        stubs.create.mockRejectedValueOnce(new RequestError(409, "stale"));
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(follows()).toHaveLength(0);
+        expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
+            "fetch failed",
+            "The network is unreachable",
+            "context.userMessageId must be an id",
+            "stale",
+        ]);
+    });
+
+    it("aborts the job it started when the signal fires, and one aborted during the create as soon as it exists", async () => {
+        stubs.create.mockResolvedValue("j");
+        const controller = new AbortController();
+        const run = send({ input: "hi" }, { signal: controller.signal });
+        await flush();
+        expect(follows()[0]?.jobId).toBe("j");
+        controller.abort();
+        await flush();
+        expect(stubs.abort).toHaveBeenCalledWith("j");
+        endWith(follows()[0], { type: "error", epoch: EPOCH, message: "stopped", status: 499, reason: "aborted" });
+        expect((await run).outcome).toBe("started");
+
+        let answer!: (jobId: string) => void;
+        stubs.create.mockReturnValueOnce(new Promise<string>((resolve) => (answer = resolve)));
+        const during = new AbortController();
+        const late = send({ input: "hi" }, { signal: during.signal });
+        await flush();
+        during.abort();
+        answer("j2");
+        await flush();
+        expect(stubs.abort).toHaveBeenLastCalledWith("j2");
+        endWith(follows()[1], { type: "error", epoch: EPOCH, message: "stopped", status: 499, reason: "aborted" });
+        expect((await late).outcome).toBe("started");
+    });
+
+    it("aborts this tab's busy job it follows instead, reporting `followed` without onStart", async () => {
+        stubs.create.mockRejectedValueOnce(new BusyError("mine"));
+        stubs.read.mockResolvedValueOnce(status);
+        const onStart = vi.fn();
+        const controller = new AbortController();
+        const run = send({ input: "hi" }, { signal: controller.signal, onStart });
+        await flush();
+        await flush();
+        expect(follows()[0]?.jobId).toBe("mine");
+        controller.abort();
+        await flush();
+        expect(stubs.abort).toHaveBeenCalledWith("mine");
+        endWith(follows()[0], done);
+        expect(await run).toEqual({ outcome: "followed", terminal: done });
+        expect(onStart).not.toHaveBeenCalled();
+    });
+
+    it("posts nothing for a signal already aborted when the flush ends", async () => {
+        const controller = new AbortController();
+        stubs.flush.mockImplementationOnce(async () => {
+            controller.abort();
+            return { discarded: [] };
+        });
+        expect(await send({ input: "hi" }, { signal: controller.signal })).toEqual({
+            outcome: "refused",
+            terminal: null,
+        });
+        expect(stubs.create).not.toHaveBeenCalled();
+        expect(stubs.abort).not.toHaveBeenCalled();
     });
 });

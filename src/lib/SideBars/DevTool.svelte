@@ -22,6 +22,12 @@
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import { loadLoreBookV3Prompt } from "src/ts/process/lorebook.svelte";
     import { getModules } from "src/ts/process/modules";
+    import CheckInput from "../UI/GUI/CheckInput.svelte";
+    import { language } from "src/lang";
+    import { readClientFlag, writeClientFlag } from "src/ts/storage/clientFlags";
+
+    // The Phase 5 server pipeline's client-local switch (removed at the cutover).
+    let serverGeneration = $state(readClientFlag("risu.serverGeneration"));
 
     let previewMode = $state("chat");
     let previewJoin = $state("yes");
@@ -120,6 +126,14 @@
         }
     }
 </script>
+
+<div class="mb-2">
+    <CheckInput
+        bind:check={serverGeneration}
+        name={language.serverGenerationExperimental}
+        onChange={(check) => writeClientFlag("risu.serverGeneration", check)}
+    />
+</div>
 
 <Accordion styled name={"Variables"}>
     <div class="rounded-md border border-darkborderc grid grid-cols-2 gap-2 p-2">
