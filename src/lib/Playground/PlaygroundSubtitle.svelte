@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { auxFetch } from "src/ts/network/auxFetch";
     import { language } from "src/lang";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
@@ -282,11 +283,9 @@
             formData.append("model", "whisper-1");
             formData.append("response_format", "vtt");
 
-            const d = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+            // With the stored OpenAI key, on the server (`auxFetch`, Phase 5 slice 7b).
+            const d = await auxFetch("openai-whisper", "https://api.openai.com/v1/audio/transcriptions", {
                 method: "POST",
-                headers: {
-                    Authorization: `Bearer ${DBState.db.openAIKey}`,
-                },
                 body: formData,
             });
             outputText = await d.text();

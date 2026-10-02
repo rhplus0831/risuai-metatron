@@ -170,16 +170,18 @@ export function registerProxyRoutes(
         if (!plan.headers.has("x-forwarded-for") && ip) {
             plan.headers.set("x-forwarded-for", ip);
         }
-        const redactor = createRedactor([plan.secret]);
+        const redactor = createRedactor(plan.secrets);
         const timeoutMs = getRequestTimeoutMs(c.req.header("risu-timeout-ms"));
         const timeout = createTimeoutController(timeoutMs);
         const aborted = () => timeout.signal.aborted || downstreamSignal.aborted;
         let upstream: Response;
         try {
+            const method = c.req.method.toUpperCase();
             upstream = await fetch(plan.url, {
-                method: c.req.method,
+                method,
                 headers: plan.headers,
-                body: await c.req.arrayBuffer(),
+                // A GET (the discovery and account rows) sends no body.
+                body: method === "GET" || method === "HEAD" ? undefined : await c.req.arrayBuffer(),
                 redirect: "manual",
                 signal: AbortSignal.any([timeout.signal, downstreamSignal]),
             });
@@ -206,10 +208,65 @@ export function registerProxyRoutes(
                 headers.set(name, redacted);
             }
         }
+        // A JSON body is checked as the tab will read it: its decoded keys and values (an escape such
+        // as `\u0073k-...` hides the credential from a text match), and as text.
+        const carriesDecoded = (text: string) => {
+            if (redactor.carries(text)) {
+                return true;
+            }
+            try {
+                return redactor.carries(JSON.parse(text));
+            } catch {
+                return false;
+            }
+        };
+        const isJson = (upstream.headers.get("content-type") ?? "").toLowerCase().includes("json");
         if (upstream.status >= 400) {
-            const text = await upstream.text().catch(() => "");
-            timeout.cleanup();
-            return new Response(redactor.text(text), { status: upstream.status, headers });
+            try {
+                const text = await upstream.text().catch(() => "");
+                if (isJson && carriesDecoded(text)) {
+                    return new Response(
+                        JSON.stringify({
+                            error: `The ${name} endpoint answered ${upstream.status} with the stored credential in it`,
+                        }),
+                        { status: upstream.status, headers: { "content-type": "application/json" } },
+                    );
+                }
+                return new Response(redactor.text(text), { status: upstream.status, headers });
+            } finally {
+                timeout.cleanup();
+            }
+        }
+        if (isJson) {
+            // A successful JSON answer (an account or model list) reaches the tab only without the
+            // credential in it; one that carries it is refused rather than rewritten. Media bodies
+            // (speech, images) pass as they are. A body that fails to arrive, or is not JSON, is an
+            // error, never an empty success.
+            try {
+                let text: string;
+                try {
+                    text = await upstream.text();
+                } catch {
+                    return c.json(
+                        aborted()
+                            ? { error: timeout.signal.aborted ? "Proxy request timed out" : "Proxy request aborted" }
+                            : { error: `The ${name} answer could not be read` },
+                        aborted() ? 504 : 502,
+                    );
+                }
+                let parsed: unknown;
+                try {
+                    parsed = JSON.parse(text);
+                } catch {
+                    return c.json({ error: `The ${name} answer is not valid JSON` }, 502);
+                }
+                if (redactor.carries(text) || redactor.carries(parsed)) {
+                    return c.json({ error: `The ${name} answer carried the stored credential; it is not sent` }, 502);
+                }
+                return new Response(text, { status: upstream.status, headers });
+            } finally {
+                timeout.cleanup();
+            }
         }
         const body = ownBody(nullBodyStatuses.has(upstream.status) ? null : upstream.body, {
             onFinish: timeout.cleanup,

@@ -5,6 +5,7 @@ import type { PluginCallContext } from "../plugins/apiV3/pluginContext";
 import type { ChatRef } from "../storage/chatStore.svelte";
 import { alertError } from "../alert";
 import { fetchNative, globalFetch, readImage } from "../globalApi.svelte";
+import { auxFetchJson } from "../network/auxFetch";
 import { CharEmotion } from "../stores.svelte";
 import type { OpenAIChat } from "./index.svelte";
 import { processZip } from "./processzip";
@@ -419,16 +420,15 @@ export async function generateAIImage(
         }
     }
     if (db.sdProvider === "dalle") {
-        const da = await globalFetch("https://api.openai.com/v1/images/generations", {
+        // With the stored OpenAI key, on the server (`auxFetch`, Phase 5 slice 7b).
+        const da = await auxFetchJson("openai-dalle", "https://api.openai.com/v1/images/generations", {
+            method: "POST",
             body: {
                 prompt: genPrompt,
                 model: "dall-e-3",
                 response_format: "b64_json",
                 style: "natural",
                 quality: db.dallEQuality || "standard",
-            },
-            headers: {
-                Authorization: "Bearer " + db.openAIKey,
             },
         });
 
@@ -704,9 +704,10 @@ export async function generateAIImage(
             };
         }
 
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${db.google.accessToken}`;
+        // With the stored Google key, on the server (`auxFetch`, Phase 5 slice 7b).
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict`;
 
-        const res = await globalFetch(url, {
+        const res = await auxFetchJson("google-imagen", url, {
             headers: {
                 "Content-Type": "application/json",
             },

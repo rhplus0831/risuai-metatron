@@ -28,7 +28,8 @@ vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: stri
 import type { SettingContext, SettingItem } from "../../setting/types";
 import { DBState } from "../../stores.svelte";
 import { changeToPreset, setDatabase, type Database } from "../database.svelte";
-import { replacePresetSecrets } from "../llmSecrets.svelte";
+import { llmSecretState, setMaskedSecrets } from "../llmSecrets.svelte";
+import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
 import { selectPreset } from "../selection.svelte";
 import SettingCheck from "src/lib/Setting/Wrappers/SettingCheck.svelte";
 import SettingColor from "src/lib/Setting/Wrappers/SettingColor.svelte";
@@ -125,7 +126,9 @@ beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
     selectPreset("");
-    replacePresetSecrets({});
+    // The write-only `llmSecrets` state (7b): an empty masked record and no queued credential write.
+    llmSecretState.queue.splice(0);
+    setMaskedSecrets(maskLlmSecrets({}));
     boot();
 });
 

@@ -392,9 +392,9 @@ export async function requestChatDataMain(
         targ.key = db.proxyKey;
     }
     if (targ.aiModel.startsWith("xcustom:::")) {
+        // (Not reached: an `xcustom:::` model goes to the server, which holds its key.)
         const found = db.customModels.find((m) => m.id === targ.aiModel);
         targ.customURL = found?.url;
-        targ.key = found?.key;
     }
 
     const format = targ.modelInfo.format;

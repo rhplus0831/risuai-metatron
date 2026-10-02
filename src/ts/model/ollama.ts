@@ -1,4 +1,5 @@
 import { globalFetch } from "../globalApi.svelte";
+import { auxFetch } from "../network/auxFetch";
 import type { ModelGridItem } from "./modelGrid";
 
 export type OllamaModelSource = "local" | "cloud";
@@ -20,23 +21,29 @@ type OllamaTagModel = {
     };
 };
 
-export async function getOllamaModels(host: string, source: OllamaModelSource, apiKey = ""): Promise<ModelGridItem[]> {
+/**
+ * The models of an Ollama host. The cloud list uses the stored Ollama key on the server
+ * (`auxFetch`, Phase 5 slice 7b); a local host is read as before.
+ */
+export async function getOllamaModels(host: string, source: OllamaModelSource): Promise<ModelGridItem[]> {
     try {
-        const baseUrl = source === "cloud" ? "https://ollama.com" : host.replace(/\/$/, "");
-        const headers: Record<string, string> = {};
-
-        if (source === "cloud" && apiKey) {
-            headers.Authorization = `Bearer ${apiKey}`;
+        let models: OllamaTagModel[];
+        if (source === "cloud") {
+            const response = await auxFetch("ollama-cloud-tags", "https://ollama.com/api/tags", {
+                method: "GET",
+                interceptor: "ollama_models",
+            });
+            if (!response.ok) return [];
+            models = ((await response.json()) as { models?: OllamaTagModel[] })?.models ?? [];
+        } else {
+            const response = await globalFetch(`${host.replace(/\/$/, "")}/api/tags`, {
+                method: "GET",
+                headers: {},
+                interceptor: "ollama_models",
+            });
+            if (!response.ok) return [];
+            models = response.data?.models ?? [];
         }
-
-        const response = await globalFetch(`${baseUrl}/api/tags`, {
-            method: "GET",
-            headers,
-            interceptor: "ollama_models",
-        });
-
-        if (!response.ok) return [];
-        const models: OllamaTagModel[] = response.data?.models ?? [];
 
         return models.map((model) => toModelGridItem(model, source));
     } catch {

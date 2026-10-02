@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { SECTION_FIELDS } from "../../../../../shared/sections.ts";
     import { language } from "src/lang";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import { DBState } from "src/ts/stores.svelte";
@@ -80,6 +81,8 @@
         for (const key in db) {
             if (
                 keyToRemove.includes(key) ||
+                // Every `llmSecrets` field (its credentials are `""` here anyway, Phase 5 slice 7b).
+                (SECTION_FIELDS.llmSecrets as readonly string[]).includes(key) ||
                 key.toLowerCase().includes("key") ||
                 key.toLowerCase().includes("proxy") ||
                 key.toLowerCase().includes("hypa")

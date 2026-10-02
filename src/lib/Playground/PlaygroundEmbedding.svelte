@@ -1,6 +1,7 @@
 <script lang="ts">
     import { language } from "src/lang";
     import TextInput from "../UI/GUI/TextInput.svelte";
+    import SecretInput from "../UI/GUI/SecretInput.svelte";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
@@ -51,7 +52,7 @@
 
 {#if model === "openai3small" || model === "openai3large" || model === "ada"}
     <span class="text-textcolor text-lg">OpenAI API Key</span>
-    <TextInput size="sm" marginBottom bind:value={DBState.db.supaMemoryKey} />
+    <SecretInput path={{ kind: "flat", field: "supaMemoryKey" }} marginBottom />
 {/if}
 
 {#if model === "custom"}

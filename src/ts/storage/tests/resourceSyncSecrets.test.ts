@@ -1,0 +1,557 @@
+import { tick } from "svelte";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SecretPath } from "../../../../shared/llmSecrets.ts";
+import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { FakeResourceServer } from "./fakeResourceServer";
+import { materialize, serverNormalizer } from "./serverKinds";
+
+// Phase 5 slice 7b (`request-layer-and-llm-secrets.md`): the credential write queue of the save
+// adapter (`resourceSync.svelte.ts` with `llmSecrets.svelte.ts`) against the in-memory stand-in of
+// the resource routes, which serves the write-only contract (`fakeResourceServer.ts`). A queued
+// set, clear, copy, or cleanup is sent after the cycle's resource batch, one at a time on the
+// record's revision; a stale revision rereads and retries a bounded number of times; a refused
+// write (400) is a reported discard; a retryable failure keeps the write; a 412 halts; an
+// acknowledgement or a reread is adopted by the sibling text (unchanged, local-only, both changed);
+// a cleanup follows its owner's deletion (sent once saved, dropped once restored, waiting while
+// quarantined without keeping the loop running); and `awaitSecretWrites` is the barrier the
+// auxiliary calls take.
+
+const { server, alerts } = vi.hoisted(() => ({
+    server: { current: null as any },
+    alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
+}));
+
+vi.mock("../nodeStorage", () => ({
+    authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
+}));
+vi.mock("../../alert", () => ({
+    alertError: alerts.error,
+    alertNormal: alerts.normal,
+    alertNormalWait: alerts.normalWait,
+}));
+vi.mock("src/lang", () => ({
+    language: { resourceReloaded: "reloaded", resourceRestored: "restored", resourceRecordRefused: "refused" },
+}));
+vi.mock("../../process/modules", () => ({
+    moduleUpdate: vi.fn(),
+    getModules: vi.fn(() => []),
+    getModuleLorebooks: vi.fn(() => []),
+    getModuleAssets: vi.fn(() => []),
+}));
+vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
+vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+
+type Sync = typeof import("../resourceSync.svelte");
+type Client = typeof import("../resourceClient");
+type Stores = typeof import("../../stores.svelte");
+type Bootstrap = typeof import("../../bootstrap");
+type Secrets = typeof import("../llmSecrets.svelte");
+
+const STORED_KEY = "sk-stored-SENTINEL-AAAA";
+const flat = (
+    field: "openAIKey" | "mistralKey" | "cohereAPIKey" | "nanogptKey" | "openrouterKey" | "claudeAPIKey",
+): SecretPath => ({
+    kind: "flat",
+    field,
+});
+const preset = (id: string): SecretPath => ({ kind: "entry", field: "presets", id });
+const model = (id: string): SecretPath => ({ kind: "entry", field: "customModels", id });
+const secretRequests = (fake: FakeResourceServer) =>
+    fake.requests.filter((r) => r.path.startsWith("/api/llm-secrets/"));
+const requestLog = (fake: FakeResourceServer) => fake.requests.map((r) => `${r.method} ${r.path}`);
+const onSecretRoutes = (path: string) => path.startsWith("/api/llm-secrets/");
+const onBatch = (path: string) => path === "/api/resources/batch";
+
+/**
+ * Boots the adapter the way `loadData` does over a store holding two presets with keys, one custom
+ * model with a key, a stored OpenAI key, and a readable sibling; the boot compare pass has run.
+ */
+async function boot() {
+    vi.resetModules();
+    const fake = new FakeResourceServer();
+    fake.set(
+        "presets",
+        "main",
+        (await serverNormalizer("presets"))([
+            { id: "p1", name: "p1" },
+            { id: "p2", name: "p2" },
+        ]),
+    );
+    fake.set("modules", "main", []);
+    fake.set("plugins", "main", []);
+    fake.set("pluginStorage", "main", {});
+    await materialize(fake);
+    fake.set(
+        "customModels",
+        "main",
+        (await serverNormalizer("customModels"))([
+            {
+                id: "m1",
+                internalId: "i1",
+                url: "https://m.test",
+                format: 0,
+                tokenizer: 0,
+                name: "M1",
+                params: "",
+                flags: [],
+            },
+        ]),
+    );
+    fake.set(
+        "llmSecrets",
+        "main",
+        (await serverNormalizer("llmSecrets"))({
+            openAIKey: STORED_KEY,
+            google: { projectId: "proj", accessToken: "" },
+            presets: { p1: { proxyKey: "pk-1" }, p2: { proxyKey: "pk-2" } },
+            customModels: { m1: { key: "mk-1" } },
+        }),
+    );
+    server.current = fake;
+
+    const stores: Stores = await import("../../stores.svelte");
+    const client: Client = await import("../resourceClient");
+    const sync: Sync = await import("../resourceSync.svelte");
+    const bootstrap: Bootstrap = await import("../../bootstrap");
+    const secrets: Secrets = await import("../llmSecrets.svelte");
+
+    const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
+    sync.seedResources(snapshot);
+    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
+    stores.selectedCharID.set(-1);
+    fake.requests.length = 0;
+    sync.startResourceSync();
+    await tick();
+    await sync.flushResources();
+    const bootBatches = fake.batchBodies();
+    fake.requests.length = 0;
+    return { fake, stores, client, sync, secrets, bootBatches, db: () => stores.DBState.db as any };
+}
+
+beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.stubGlobal("location", { reload: vi.fn() });
+});
+
+afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
+});
+
+describe("a queued credential write", () => {
+    it("is sent after the cycle's batch on the record's revision, never in the record, and its acknowledgement bumps the path's version", async () => {
+        const { fake, sync, secrets, db, bootBatches } = await boot();
+        const path = flat("openAIKey");
+        // An idle boot with set and unset keys writes nothing for the record, and shows the statuses.
+        expect(bootBatches.flatMap((batch) => batch.ops.map((op) => op.kind))).not.toContain("llmSecrets");
+        expect(secrets.secretStatus(path)).toEqual({ set: true, hint: "AAAA", pending: false });
+        expect(secrets.secretStatus(flat("claudeAPIKey"))).toEqual({ set: false, hint: "", pending: false });
+        expect(secrets.secretStatus(preset("p1"))).toEqual({ set: true, hint: "", pending: false });
+        expect(secrets.secretStatus(model("m1"))).toEqual({ set: true, hint: "", pending: false });
+        expect(db().openAIKey).toBe("");
+        const unload = () => {
+            const event = new Event("beforeunload", { cancelable: true });
+            window.dispatchEvent(event);
+            return event.defaultPrevented;
+        };
+        expect(unload()).toBe(false);
+
+        const revision = fake.get("llmSecrets", "main")!.revision;
+        db().zoomsize = 123;
+        secrets.setSecret(path, "sk-new-SENTINEL-BBBB");
+        expect(secrets.secretStatus(path)).toEqual({ set: true, hint: "", pending: true });
+        expect(db().openAIKey).toBe("");
+        // A queued write is unsaved work: the unload warning shows.
+        expect(unload()).toBe(true);
+        await sync.flushResources();
+        expect(requestLog(fake)).toEqual(["POST /api/resources/batch", "PUT /api/llm-secrets/openAIKey"]);
+        expect(fake.batchBodies()[0].ops.map((op) => op.kind)).toEqual(["ui"]);
+        expect(secretRequests(fake)[0].body).toEqual({ value: "sk-new-SENTINEL-BBBB", baseRevision: revision });
+        expect(fake.data("llmSecrets", "main").openAIKey).toBe("sk-new-SENTINEL-BBBB");
+        expect(secrets.secretStatus(path)).toEqual({ set: true, hint: "BBBB", pending: false });
+        expect(secrets.llmSecretState.queue).toEqual([]);
+        expect(secrets.secretVersion(path)).toBe(1);
+        expect(db().openAIKey).toBe("");
+        // Nothing is echoed afterwards (adopting the server's record marks the mirror once more, as
+        // any reload does; the next cycle finds the text equal), and nothing is unsaved.
+        await sync.flushResources();
+        expect(fake.requests).toHaveLength(2);
+        expect(unload()).toBe(false);
+
+        // Two short keys share a masked status; each acknowledged replacement still bumps the version,
+        // and `awaitSecretWrites` is the barrier that sends it.
+        secrets.setSecret(path, "short-1");
+        await sync.awaitSecretWrites();
+        expect(secrets.secretStatus(path)).toEqual({ set: true, hint: "", pending: false });
+        expect(secrets.secretVersion(path)).toBe(2);
+        secrets.setSecret(path, "short-2");
+        await sync.awaitSecretWrites();
+        expect(secrets.secretVersion(path)).toBe(3);
+        expect(fake.data("llmSecrets", "main").openAIKey).toBe("short-2");
+        // An unrelated path keeps its version; an empty barrier resolves at once.
+        expect(secrets.secretVersion(flat("claudeAPIKey"))).toBe(0);
+        await sync.awaitSecretWrites();
+        expect(fake.requests).toHaveLength(4);
+        // A clear removes the key; the plain record never carried any credential.
+        secrets.clearSecret(path);
+        await sync.flushResources();
+        expect(fake.data("llmSecrets", "main").openAIKey).toBe("");
+        expect(secrets.secretStatus(path)).toEqual({ set: false, hint: "", pending: false });
+        for (const batch of fake.batchBodies()) {
+            expect(batch.ops.map((op) => op.kind)).not.toContain("llmSecrets");
+        }
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(alerts.normal).not.toHaveBeenCalled();
+    });
+
+    it("goes after the batch that creates its preset: a copy, and a key queued while a batch is in flight", async () => {
+        const { fake, sync, secrets, db } = await boot();
+        db().botPresets.push({ ...JSON.parse(JSON.stringify(db().botPresets[0])), id: "p3", name: "p3" });
+        secrets.copyPresetSecret("p1", "p3");
+        expect(secrets.secretStatus(preset("p3"))).toEqual({ set: true, hint: "", pending: true });
+        await sync.flushResources();
+        expect(requestLog(fake)).toEqual(["POST /api/resources/batch", "POST /api/llm-secrets/presets/copy"]);
+        expect(fake.batchBodies()[0].ops.map((op) => op.kind)).toEqual(["presets"]);
+        expect(secretRequests(fake)[0].body).toMatchObject({ from: "p1", to: "p3" });
+        expect(fake.data("presets", "main").map((p: { id: string }) => p.id)).toEqual(["p1", "p2", "p3"]);
+        expect(fake.data("llmSecrets", "main").presets.p3).toEqual({ proxyKey: "pk-1" });
+        expect(secrets.secretStatus(preset("p3"))).toEqual({ set: true, hint: "", pending: false });
+
+        // A preset created, and its key queued, while a batch is in flight: the key waits for the
+        // next cycle, after the batch that carries the preset.
+        fake.requests.length = 0;
+        fake.holdNextBatch = true;
+        db().botPresets.push({ ...JSON.parse(JSON.stringify(db().botPresets[0])), id: "p4", name: "p4" });
+        const flushed = sync.flushResources();
+        await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
+        db().botPresets.push({ ...JSON.parse(JSON.stringify(db().botPresets[0])), id: "p5", name: "p5" });
+        secrets.setSecret(preset("p5"), "pk-5");
+        await tick();
+        fake.releaseBatch!();
+        await flushed;
+        await sync.flushResources();
+        const log = requestLog(fake);
+        const batches = fake.batchBodies();
+        expect(batches).toHaveLength(2);
+        expect(batches[0].ops[0].data.map((p: { id: string }) => p.id)).toEqual(["p1", "p2", "p3", "p4"]);
+        expect(batches[1].ops[0].data.map((p: { id: string }) => p.id)).toEqual(["p1", "p2", "p3", "p4", "p5"]);
+        expect(log).toEqual([
+            "POST /api/resources/batch",
+            "POST /api/resources/batch",
+            "PUT /api/llm-secrets/presets/~p5/proxyKey",
+        ]);
+        expect(fake.data("llmSecrets", "main").presets.p5).toEqual({ proxyKey: "pk-5" });
+    });
+
+    it("retries a stale revision after a reread, a bounded number of times per cycle, and keeps the write for the next cycle", async () => {
+        const { fake, sync, secrets, client } = await boot();
+        const conflict = (times: number) => {
+            fake.failNext = {
+                status: 409,
+                body: { error: "Revision conflict", revision: fake.get("llmSecrets", "main")!.revision },
+                times,
+                match: onSecretRoutes,
+            };
+        };
+        conflict(1);
+        secrets.setSecret(flat("mistralKey"), "m1");
+        await sync.flushResources();
+        expect(requestLog(fake)).toEqual([
+            "PUT /api/llm-secrets/mistralKey",
+            "GET /api/resources/llmSecrets/main",
+            "PUT /api/llm-secrets/mistralKey",
+        ]);
+        expect(fake.data("llmSecrets", "main").mistralKey).toBe("m1");
+        expect(secrets.secretStatus(flat("mistralKey"))).toEqual({ set: true, hint: "", pending: false });
+
+        fake.requests.length = 0;
+        conflict(3);
+        secrets.setSecret(flat("mistralKey"), "m2");
+        await expect(sync.flushResources()).rejects.toBeInstanceOf(client.ResourceConflictError);
+        expect(requestLog(fake).filter((entry) => entry.startsWith("PUT"))).toHaveLength(3);
+        expect(requestLog(fake).filter((entry) => entry.startsWith("GET"))).toHaveLength(2);
+        expect(secrets.secretStatus(flat("mistralKey"))).toEqual({ set: true, hint: "", pending: true });
+        expect(fake.data("llmSecrets", "main").mistralKey).toBe("m1");
+        await sync.flushResources();
+        expect(fake.data("llmSecrets", "main").mistralKey).toBe("m2");
+        expect(secrets.llmSecretState.queue).toEqual([]);
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("drops a refused write (400) as a reported discard with an alert that never carries the value; the barrier reports the refusal", async () => {
+        const { fake, sync, secrets } = await boot();
+        fake.failNext = { status: 400, body: { error: "Unknown credential path" }, times: 1, match: onSecretRoutes };
+        secrets.setSecret(flat("cohereAPIKey"), "co-VALUE-1");
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual(["llmSecrets/cohereAPIKey"]);
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(alerts.error.mock.calls[0][0]).toContain("llmSecrets/cohereAPIKey");
+        expect(alerts.error.mock.calls[0][0]).not.toContain("co-VALUE-1");
+        expect(secrets.secretStatus(flat("cohereAPIKey"))).toEqual({ set: false, hint: "", pending: false });
+        expect(secrets.llmSecretState.queue).toEqual([]);
+        expect(fake.data("llmSecrets", "main").cohereAPIKey ?? "").toBe("");
+        // Not retried.
+        await sync.flushResources();
+        expect(secretRequests(fake)).toHaveLength(1);
+
+        fake.failNext = { status: 404, body: { error: "Unknown resource kind" }, times: 1, match: onSecretRoutes };
+        secrets.setSecret(flat("cohereAPIKey"), "co-VALUE-2");
+        await expect(sync.awaitSecretWrites()).rejects.toThrow("The server refused a key");
+        expect(secrets.llmSecretState.queue).toEqual([]);
+        // A later write of the same path goes through.
+        secrets.setSecret(flat("cohereAPIKey"), "co-3");
+        await sync.awaitSecretWrites();
+        expect(fake.data("llmSecrets", "main").cohereAPIKey).toBe("co-3");
+    });
+
+    it("keeps a write through a retryable failure (5xx, network) and sends it once the server answers; the barrier fails meanwhile", async () => {
+        const { fake, sync, secrets } = await boot();
+        fake.failNext = { status: 503, times: 1, match: onSecretRoutes };
+        secrets.setSecret(flat("nanogptKey"), "n1");
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 503 });
+        expect(secrets.secretStatus(flat("nanogptKey"))).toEqual({ set: true, hint: "", pending: true });
+        expect(fake.data("llmSecrets", "main").nanogptKey ?? "").toBe("");
+        await sync.flushResources();
+        expect(fake.data("llmSecrets", "main").nanogptKey).toBe("n1");
+        expect(secrets.secretStatus(flat("nanogptKey"))).toEqual({ set: true, hint: "", pending: false });
+
+        fake.failNext = { status: 0, times: 1, match: onSecretRoutes };
+        secrets.setSecret(flat("nanogptKey"), "n2");
+        await expect(sync.awaitSecretWrites()).rejects.toMatchObject({ status: 0 });
+        expect(secrets.llmSecretState.queue).toHaveLength(1);
+        await sync.awaitSecretWrites();
+        expect(fake.data("llmSecrets", "main").nanogptKey).toBe("n2");
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("halts for a restore on a 412 and keeps the write; the barrier refuses while halted, with or without a queue", async () => {
+        const { fake, sync, secrets } = await boot();
+        fake.failNext = {
+            status: 412,
+            body: { error: "EpochMismatch", epoch: "epoch-2" },
+            times: 1,
+            match: onSecretRoutes,
+        };
+        secrets.setSecret(flat("openrouterKey"), "or-1");
+        await expect(sync.flushResources()).rejects.toThrow();
+        expect(alerts.normalWait).toHaveBeenCalledWith("restored");
+        expect(secrets.llmSecretState.queue).toHaveLength(1);
+        expect(secrets.secretStatus(flat("openrouterKey")).pending).toBe(true);
+        expect(fake.data("llmSecrets", "main").openrouterKey ?? "").toBe("");
+        await expect(sync.awaitSecretWrites()).rejects.toThrow("Saving stopped");
+        expect(() => sync.assertSaveAdmission()).toThrow("Saving stopped");
+        secrets.llmSecretState.queue.splice(0);
+        await expect(sync.awaitSecretWrites()).rejects.toThrow("Saving stopped");
+        // Nothing more was sent.
+        expect(secretRequests(fake)).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(secretRequests(fake)).toHaveLength(1);
+    });
+});
+
+describe("adopting the server's record after a write or a reread", () => {
+    it("takes the server's siblings when the local ones are unchanged, even under a no-op dirty mark", async () => {
+        const { fake, sync, secrets, db } = await boot();
+        // A dirty mark without a change: an edit and its undo in one tick.
+        db().vertexClientEmail = "tmp";
+        db().vertexClientEmail = "";
+        await tick();
+        // Another tab changed a sibling.
+        const remote = fake.data("llmSecrets", "main");
+        fake.set("llmSecrets", "main", { ...remote, google: { ...remote.google, projectId: "remote" } });
+        secrets.setSecret(flat("openAIKey"), "sk-x");
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual([]);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(requestLog(fake)).toEqual([
+            "PUT /api/llm-secrets/openAIKey",
+            "GET /api/resources/llmSecrets/main",
+            "PUT /api/llm-secrets/openAIKey",
+        ]);
+        expect(db().google.projectId).toBe("remote");
+        expect(db().google.accessToken).toBe("");
+        expect(fake.data("llmSecrets", "main")).toMatchObject({ openAIKey: "sk-x", google: { projectId: "remote" } });
+        // The reread's changed revision invalidated every path; the write bumped its own again.
+        expect(secrets.secretVersion(flat("claudeAPIKey"))).toBe(1);
+        expect(secrets.secretVersion(preset("p1"))).toBe(1);
+        expect(secrets.secretVersion(flat("openAIKey"))).toBe(2);
+        // Nothing is written back: the mirror equals the server.
+        fake.requests.length = 0;
+        await sync.flushResources();
+        expect(fake.requests).toEqual([]);
+    });
+
+    it("keeps a local sibling edit made during the write and sends it next on the acknowledged revision", async () => {
+        const { fake, sync, secrets, db } = await boot();
+        db().zoomsize = 5;
+        secrets.setSecret(flat("openAIKey"), "sk-y");
+        fake.beforeNextBatch = () => {
+            db().vertexClientEmail = "edited-during";
+        };
+        const first = await sync.flushResources();
+        expect(first.discarded).toEqual([]);
+        expect(requestLog(fake)).toEqual(["POST /api/resources/batch", "PUT /api/llm-secrets/openAIKey"]);
+        expect(fake.data("llmSecrets", "main").openAIKey).toBe("sk-y");
+        expect(db().vertexClientEmail).toBe("edited-during");
+        const second = await sync.flushResources();
+        expect(second.discarded).toEqual([]);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        const sibling = fake
+            .batchBodies()
+            .at(-1)!
+            .ops.find((op) => op.kind === "llmSecrets");
+        expect(sibling.data).toMatchObject({ vertexClientEmail: "edited-during" });
+        expect(sibling.data).not.toHaveProperty("openAIKey");
+        expect(sibling.data).not.toHaveProperty("presets");
+        expect(fake.data("llmSecrets", "main")).toMatchObject({
+            openAIKey: "sk-y",
+            vertexClientEmail: "edited-during",
+        });
+        expect(secrets.secretStatus(flat("openAIKey"))).toEqual({ set: true, hint: "", pending: false });
+    });
+
+    it("treats a local edit over a remotely changed sibling as the normal conflict: the server's copy wins, the discard is reported, the write still lands", async () => {
+        const { fake, sync, secrets, db } = await boot();
+        db().zoomsize = 6;
+        secrets.setSecret(flat("openAIKey"), "sk-z");
+        fake.beforeNextBatch = () => {
+            const remote = fake.data("llmSecrets", "main");
+            fake.set("llmSecrets", "main", { ...remote, vertexClientEmail: "remote" });
+            db().vertexClientEmail = "local";
+        };
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual(["llmSecrets/main"]);
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+        expect(db().vertexClientEmail).toBe("remote");
+        expect(db().openAIKey).toBe("");
+        expect(fake.data("llmSecrets", "main")).toMatchObject({ openAIKey: "sk-z", vertexClientEmail: "remote" });
+        expect(secrets.secretStatus(flat("openAIKey"))).toEqual({ set: true, hint: "", pending: false });
+        fake.requests.length = 0;
+        await sync.flushResources();
+        expect(fake.requests).toEqual([]);
+    });
+
+    it("recognizes a sibling write whose acknowledgement was lost on the conflict reread, keeps the stored keys, and echoes nothing", async () => {
+        const { fake, sync, secrets, db } = await boot();
+        fake.dropNextBatchResponse = true;
+        db().vertexClientEmail = "lost-ack";
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        expect(fake.data("llmSecrets", "main")).toMatchObject({ vertexClientEmail: "lost-ack", openAIKey: STORED_KEY });
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual([]);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(db().vertexClientEmail).toBe("lost-ack");
+        expect(secrets.secretStatus(flat("openAIKey"))).toEqual({ set: true, hint: "AAAA", pending: false });
+        fake.requests.length = 0;
+        await sync.flushResources();
+        expect(fake.requests).toEqual([]);
+    });
+});
+
+describe("the cleanup of a deleted owner's entry", () => {
+    const removePreset = (db: any, id: string) => {
+        db.botPresets.splice(
+            db.botPresets.findIndex((entry: { id: string }) => entry.id === id),
+            1,
+        );
+    };
+
+    it("is sent once the deletion is saved, for a preset and for a custom model", async () => {
+        const { fake, sync, secrets, db } = await boot();
+        removePreset(db(), "p2");
+        secrets.deletePresetSecret("p2");
+        expect(secrets.secretStatus(preset("p2"))).toEqual({ set: false, hint: "", pending: true });
+        await sync.flushResources();
+        expect(requestLog(fake)).toEqual(["POST /api/resources/batch", "PUT /api/llm-secrets/presets/~p2/proxyKey"]);
+        expect(secretRequests(fake)[0].body).toMatchObject({ value: "" });
+        expect(fake.data("llmSecrets", "main").presets).toEqual({ p1: { proxyKey: "pk-1" } });
+        expect(secrets.secretStatus(preset("p2"))).toEqual({ set: false, hint: "", pending: false });
+
+        fake.requests.length = 0;
+        db().customModels.splice(0, 1);
+        secrets.deleteEntrySecret("customModels", "m1");
+        await sync.flushResources();
+        expect(requestLog(fake)).toEqual(["POST /api/resources/batch", "PUT /api/llm-secrets/customModels/~m1/key"]);
+        expect(fake.batchBodies()[0].ops.map((op) => op.kind)).toEqual(["customModels"]);
+        expect(fake.data("llmSecrets", "main").customModels).toEqual({});
+        expect(secrets.llmSecretState.queue).toEqual([]);
+    });
+
+    it("is dropped without a request when a conflict restored the owner, while an explicit clear of a live owner still goes", async () => {
+        const { fake, sync, secrets, db } = await boot();
+        // Another tab renamed p1: this client's deletion of p2 conflicts and is discarded.
+        const presets = fake.data("presets", "main");
+        fake.set(
+            "presets",
+            "main",
+            presets.map((p: { id: string }) => (p.id === "p1" ? { ...p, name: "renamed" } : p)),
+        );
+        removePreset(db(), "p2");
+        secrets.deletePresetSecret("p2");
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual(["presets/main"]);
+        expect(db().botPresets.map((p: { id: string; name: string }) => [p.id, p.name])).toEqual([
+            ["p1", "renamed"],
+            ["p2", "p2"],
+        ]);
+        expect(secretRequests(fake)).toEqual([]);
+        expect(fake.data("llmSecrets", "main").presets.p2).toEqual({ proxyKey: "pk-2" });
+        expect(secrets.secretStatus(preset("p2"))).toEqual({ set: true, hint: "", pending: false });
+        expect(secrets.llmSecretState.queue).toEqual([]);
+
+        secrets.clearSecret(preset("p2"));
+        await sync.flushResources();
+        expect(secretRequests(fake).map((r) => `${r.method} ${r.path}`)).toEqual([
+            "PUT /api/llm-secrets/presets/~p2/proxyKey",
+        ]);
+        expect(fake.data("llmSecrets", "main").presets).toEqual({ p1: { proxyKey: "pk-1" } });
+
+        // The same for a custom model whose deletion a conflict discarded.
+        fake.requests.length = 0;
+        const models = fake.data("customModels", "main");
+        fake.set("customModels", "main", [{ ...models[0], name: "renamed" }]);
+        db().customModels.splice(0, 1);
+        secrets.deleteEntrySecret("customModels", "m1");
+        expect((await sync.flushResources()).discarded).toEqual(["customModels/main"]);
+        expect(db().customModels.map((m: { id: string }) => m.id)).toEqual(["m1"]);
+        expect(secretRequests(fake)).toEqual([]);
+        expect(fake.data("llmSecrets", "main").customModels).toEqual({ m1: { key: "mk-1" } });
+        expect(secrets.secretStatus(model("m1")).set).toBe(true);
+    });
+
+    it("waits behind a quarantined deletion without keeping the loop running, the barrier names the refusal, and goes once the deletion is saved", async () => {
+        const { fake, sync, secrets, db } = await boot();
+        // The adapter's own periodic timers, set at start; a scheduled cycle would add one.
+        const timersAtRest = vi.getTimerCount();
+        fake.failNext = { status: 400, body: { error: "ops[0]: presets refused" }, times: 1, match: onBatch };
+        removePreset(db(), "p2");
+        secrets.deletePresetSecret("p2");
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 400 });
+        expect(fake.batchCount()).toBe(1);
+        expect(secretRequests(fake)).toEqual([]);
+        expect(fake.data("llmSecrets", "main").presets.p2).toEqual({ proxyKey: "pk-2" });
+        // Unsaved, but not runnable work: no cycle is scheduled for it.
+        expect(secrets.secretStatus(preset("p2"))).toEqual({ set: false, hint: "", pending: true });
+        expect(vi.getTimerCount()).toBe(timersAtRest);
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(fake.batchCount()).toBe(1);
+        expect(secretRequests(fake)).toEqual([]);
+        await expect(sync.awaitSecretWrites()).rejects.toMatchObject({ status: 400 });
+        expect(secretRequests(fake)).toEqual([]);
+        expect(secrets.llmSecretState.queue).toHaveLength(1);
+
+        // An edit of the refused collection retries it; the cleanup follows the saved deletion.
+        db().botPresets[0].name = "fixed";
+        await sync.flushResources();
+        expect(requestLog(fake).slice(1)).toEqual([
+            "POST /api/resources/batch",
+            "PUT /api/llm-secrets/presets/~p2/proxyKey",
+        ]);
+        expect(fake.data("presets", "main").map((p: { id: string }) => p.id)).toEqual(["p1"]);
+        expect(fake.data("llmSecrets", "main").presets).toEqual({ p1: { proxyKey: "pk-1" } });
+        expect(secrets.llmSecretState.queue).toEqual([]);
+        expect(secrets.secretStatus(preset("p2"))).toEqual({ set: false, hint: "", pending: false });
+    });
+});

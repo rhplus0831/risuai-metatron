@@ -57,6 +57,17 @@ export function registerResourceRoutes(
         store.assertEpoch(c.req.header(RESOURCE_EPOCH_HEADER));
     }
 
+    /** What a client reads of a record: the kind's projection (a write-only kind's masked view). */
+    const project = (kind: ResourceKind | undefined, data: unknown) =>
+        kind?.project && data !== null && data !== undefined ? kind.project(data) : data;
+
+    /**
+     * A plain write's data for a kind with `prepareWrite` (from the stored record, read in the
+     * same synchronous block as the write: no await before the store call).
+     */
+    const prepare = (kind: ResourceKind, id: string, data: unknown) =>
+        kind.prepareWrite ? kind.prepareWrite(data, store.get(kind, id)?.data ?? null) : data;
+
     app.get("/api/resources", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -78,7 +89,16 @@ export function registerResourceRoutes(
         if (chats !== undefined && chats !== "1") {
             return c.json({ error: "chats query parameter must be 1" }, 400);
         }
-        return c.json(store.readKinds(selected, { chats: chats === "1" }));
+        const read = store.readKinds(selected, { chats: chats === "1" });
+        for (const kind of selected) {
+            if (kind.project) {
+                read.kinds[kind.name] = read.kinds[kind.name].map((record) => ({
+                    ...record,
+                    data: project(kind, record.data),
+                }));
+            }
+        }
+        return c.json(read);
     });
 
     app.post("/api/resources/read", limiter, async (c) => {
@@ -117,7 +137,11 @@ export function registerResourceRoutes(
             return c.json({ error: "chatCollections must be character ids" }, 400);
         }
         try {
-            return c.json(store.readRefs(resolved, { chats: chatRefs, chatCollections }));
+            const read = store.readRefs(resolved, { chats: chatRefs, chatCollections });
+            return c.json({
+                ...read,
+                items: read.items.map((item) => ({ ...item, data: project(kinds.get(item.kind), item.data) })),
+            });
         } catch (error) {
             return storeErrorResponse(c, error);
         }
@@ -164,6 +188,12 @@ export function registerResourceRoutes(
         }
         try {
             assertMutable(c);
+            // Every write-only record of the batch is prepared before anything is applied.
+            for (const operation of operations) {
+                if (operation.kind.prepareWrite && !operation.delete) {
+                    operation.data = prepare(operation.kind, operation.id, operation.data);
+                }
+            }
             const applied = store.applyChanges({ ops: operations, chats, chatOrders });
             return c.json({ epoch: store.epoch(), ...applied });
         } catch (error) {
@@ -180,7 +210,10 @@ export function registerResourceRoutes(
         if (!kind) {
             return c.json({ error: "Unknown resource kind" }, 404);
         }
-        return c.json({ epoch: store.epoch(), items: store.list(kind) });
+        return c.json({
+            epoch: store.epoch(),
+            items: store.list(kind).map((record) => ({ ...record, data: project(kind, record.data) })),
+        });
     });
 
     app.get("/api/resources/:kind/:id", limiter, async (c) => {
@@ -205,7 +238,7 @@ export function registerResourceRoutes(
         if (!resource) {
             return c.json({ error: "Resource not found", epoch: store.epoch() }, 404);
         }
-        return c.json({ epoch: store.epoch(), ...resource });
+        return c.json({ epoch: store.epoch(), revision: resource.revision, data: project(kind, resource.data) });
     });
 
     app.put("/api/resources/:kind/:id", limiter, async (c) => {
@@ -238,7 +271,8 @@ export function registerResourceRoutes(
         }
         try {
             assertMutable(c);
-            return c.json({ epoch: store.epoch(), ...store.put(kind, id, body.data, body.baseRevision) });
+            const saved = store.put(kind, id, prepare(kind, id, body.data), body.baseRevision);
+            return c.json({ epoch: store.epoch(), revision: saved.revision, data: project(kind, saved.data) });
         } catch (error) {
             return storeErrorResponse(c, error);
         }
@@ -300,7 +334,7 @@ function parseBatchOperation(op: unknown, kinds: ResourceKindRegistry): Resource
     return { kind, id: op.id, baseRevision: op.baseRevision as string | null, data: op.data };
 }
 
-function storeErrorResponse(c: Context<AppEnv>, error: unknown): Response {
+export function storeErrorResponse(c: Context<AppEnv>, error: unknown): Response {
     if (error instanceof ResourceConflictError) {
         return c.json(
             error.reason

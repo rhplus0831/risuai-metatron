@@ -1,3 +1,4 @@
+import { auxFetchJson } from "../../network/auxFetch";
 import type { OpenAIChat } from "../index.svelte";
 import { getDatabase, type Chat, type character, type groupChat } from "../../storage/database.svelte";
 import { tokenize, type ChatTokenizer } from "../../tokenizer";
@@ -133,7 +134,6 @@ export async function supaMemory(
 
         if (arg.asHyper) {
             const hypa = new HypaProcesser(db.hypaModel);
-            hypa.oaikey = db.supaMemoryKey;
             hypa.vectors = [];
             hypaChunks = hypaChunks.filter((value) => value.length > 1);
             if (hypaChunks.length > 0) {
@@ -207,10 +207,10 @@ export async function supaMemory(
             if (db.supaModelType !== "subModel") {
                 const promptbody = stringlizedChat + "\n\n" + supaPrompt + "\n\nOutput:";
 
-                const da = await globalFetch("https://api.openai.com/v1/completions", {
+                const da = await auxFetchJson("openai-completions", "https://api.openai.com/v1/completions", {
+                    // With the stored memory key, on the server (`auxFetch`, Phase 5 slice 7b).
                     headers: {
                         "Content-Type": "application/json",
-                        Authorization: "Bearer " + db.supaMemoryKey,
                     },
                     method: "POST",
                     body: {

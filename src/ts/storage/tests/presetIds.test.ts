@@ -77,7 +77,7 @@ import {
     type Database,
 } from "../database.svelte";
 import { selection, selectPreset } from "../selection.svelte";
-import { getPresetSecret } from "../llmSecrets.svelte";
+import { llmSecretState } from "../llmSecrets.svelte";
 import {
     normalizePromptTemplate,
     PRESET_DEFAULTS,
@@ -574,15 +574,18 @@ describe("importPreset through addPreset (Phase 4 slice 7)", () => {
         expect(imported.NAISettings).toMatchObject({ cfg_scale: 1, mirostat_tau: 0, mirostat_lr: 1, starter: "" });
     });
 
-    it("a JSON preset's proxyKey goes to the secret map under the returned id and not into the preset", async () => {
+    it("a JSON preset's proxyKey is queued as the returned id's credential write and not put into the preset", async () => {
         bootWith();
+        llmSecretState.queue.splice(0);
         const file = { name: "With key", proxyKey: "pk-from-file", temperature: 12 };
         await importPreset({ name: "keyed.json", data: new TextEncoder().encode(JSON.stringify(file)) });
         const imported = DBState.db.botPresets[1] as unknown as Record<string, unknown>;
         expect(imported.id).toMatch(UUID_V4);
         expect(Object.hasOwn(imported, "proxyKey")).toBe(false);
-        expect(getPresetSecret(imported.id as string)).toEqual({ proxyKey: "pk-from-file" });
-        expect(getPresetSecret(DBState.db.botPresets[0].id)).toBeUndefined();
+        // Write-only `llmSecrets` (Phase 5 slice 7b): the key goes to the server through the queue.
+        expect(llmSecretState.queue.map((op) => op.request)).toEqual([
+            { kind: "put", path: { kind: "entry", field: "presets", id: imported.id }, value: "pk-from-file" },
+        ]);
         expect(DBState.db.botPresetsId).toBe(0);
     });
 });

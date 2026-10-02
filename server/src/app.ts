@@ -23,6 +23,7 @@ import { createAuthStore } from "./routes/auth.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { registerGenerationRoutes } from "./routes/generations.ts";
 import { registerLlmRoutes } from "./routes/llm.ts";
+import { registerLlmSecretRoutes } from "./routes/llmSecrets.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
 import { createProxyStreamJobs } from "./routes/proxyStreamJobs.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
@@ -165,7 +166,8 @@ export function createServerContext(options: {
     // Admit resource handlers before their first await (including body parsing and auth). Tracking
     // them also makes in-process dispose safe; maintenance only waits for storage-gate admissions.
     app.use(async (c, next) => {
-        const resource = /^\/api\/resources(?:\/|$)/.test(c.req.path);
+        // The credential writes (`/api/llm-secrets`) are resource writes too.
+        const resource = /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path);
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
         if (shuttingDown) {
             c.header("Connection", "close");
@@ -241,6 +243,13 @@ export function createServerContext(options: {
         maintenance: snapshots.gate,
     });
     registerResourceRoutes(app, {
+        store: resources,
+        kinds: resourceKinds,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        maintenance: snapshots.gate,
+    });
+    registerLlmSecretRoutes(app, {
         store: resources,
         kinds: resourceKinds,
         auth,

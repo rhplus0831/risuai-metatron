@@ -12,7 +12,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // removal (a read repairs the selection, a write is dropped and never redirected), the missing and
 // `null` value rules (a read never writes), the `proxyKey` and selection-index accessors, and the
 // preset functions of `database.svelte.ts` that changed with it (`changeToPreset` with the three
-// keep-on-switch toggles, `applyPresetTemplate`, `copyPreset`, `importPreset`).
+// keep-on-switch toggles, `applyPresetTemplate`, `copyPreset`, `importPreset`). Since Phase 5 slice
+// 7b (`request-layer-and-llm-secrets.md`) `llmSecrets` is write-only: `db.proxyKey` reads `""` and
+// its writes, the preset copy, and the import queue credential writes (`llmSecretState.queue`).
 
 await vi.hoisted(async () => {
     const { Buffer: BufferPolyfill } = await import("buffer");
@@ -41,7 +43,8 @@ import {
     type Database,
 } from "../database.svelte";
 import { installForwarding, selectedPreset, selectedPresetForWrite } from "../forwarding.svelte";
-import { getPresetSecret, llmSecretPresets, replacePresetSecrets, setPresetSecret } from "../llmSecrets.svelte";
+import { llmSecretState, secretOpTarget, secretStatus, setMaskedSecrets, setSecret } from "../llmSecrets.svelte";
+import { maskLlmSecrets, type SecretPath } from "../../../../shared/llmSecrets.ts";
 import { selection, selectPreset } from "../selection.svelte";
 import { PRESET_DEFAULTS, PRESET_ROOT_ALIASES, defaultOoba, plainClone } from "../../../../shared/presets.ts";
 import { FORWARDED_ROOT_KEYS } from "../../../../shared/sections.ts";
@@ -52,6 +55,9 @@ type AnyDb = Record<string, any>;
 const db = () => DBState.db as unknown as AnyDb;
 const preset = (id: string) => db().botPresets.find((entry: { id: string }) => entry.id === id);
 const text = (value: unknown) => JSON.stringify(plainClone(value));
+const presetPath = (id: string): SecretPath => ({ kind: "entry", field: "presets", id });
+/** The queued credential writes, in order. */
+const queued = () => llmSecretState.queue.map((op) => op.request);
 
 function presetA() {
     return {
@@ -100,7 +106,8 @@ beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
     selectPreset("");
-    replacePresetSecrets({});
+    llmSecretState.queue.splice(0);
+    setMaskedSecrets(maskLlmSecrets({}));
 });
 
 afterEach(() => {
@@ -258,7 +265,7 @@ describe("reads and writes by the selected id", () => {
         db().NAIsettings = { starter: "lost" };
         db().proxyKey = "pk-lost";
         expect([text(preset("a")), text(preset("b"))]).toEqual(before);
-        expect(llmSecretPresets.value).toEqual({});
+        expect(queued()).toEqual([]);
         expect(selection.presetId).toBe("missing");
 
         expect(db().temperature).toBe(80);
@@ -303,33 +310,39 @@ describe("missing and null values", () => {
 });
 
 describe("proxyKey", () => {
-    it("reads and writes the selected preset's llmSecrets entry; an empty write deletes it; the record has no proxyKey field", () => {
+    it('reads "" and queues the selected preset\'s credential write; an empty write queues a clear; the record has no proxyKey field', () => {
         boot();
         expect(db().proxyKey).toBe("");
         db().proxyKey = "pk-a";
-        expect(getPresetSecret("a")).toEqual({ proxyKey: "pk-a" });
+        expect(queued()).toEqual([{ kind: "put", path: presetPath("a"), value: "pk-a" }]);
+        expect(secretStatus(presetPath("a"))).toEqual({ set: true, hint: "", pending: true });
         // Slice 7: `proxyKey` is not a preset field, so the write never lands on the record.
         expect(Object.hasOwn(preset("a"), "proxyKey")).toBe(false);
-        expect(db().proxyKey).toBe("pk-a");
+        // Write-only (Phase 5 slice 7b): the tab never holds the key, so the read stays "".
+        expect(db().proxyKey).toBe("");
 
         changeToPreset("b", false);
         expect(db().proxyKey).toBe("");
         db().proxyKey = "pk-b";
-        expect(getPresetSecret("b")).toEqual({ proxyKey: "pk-b" });
+        expect(secretStatus(presetPath("b")).set).toBe(true);
         db().proxyKey = "";
-        expect(getPresetSecret("b")).toBeUndefined();
-        expect(getPresetSecret("a")).toEqual({ proxyKey: "pk-a" });
+        expect(queued().slice(1)).toEqual([
+            { kind: "put", path: presetPath("b"), value: "pk-b" },
+            { kind: "put", path: presetPath("b"), value: "" },
+        ]);
+        expect(secretStatus(presetPath("b"))).toEqual({ set: false, hint: "", pending: true });
+        expect(secretStatus(presetPath("a")).set).toBe(true);
 
-        // A tracked read: the accessor follows the map.
+        // A tracked read: the accessor resolves the selection but never carries the key.
         const probe = createProbe(() => db().proxyKey);
         expect(probe.seen).toEqual([""]);
-        setPresetSecret("b", { proxyKey: "pk-b2" });
+        setSecret(presetPath("b"), "pk-b2");
         flushSync();
-        expect(probe.seen).toEqual(["", "pk-b2"]);
+        expect(probe.seen).toEqual([""]);
         probe.dispose();
     });
 
-    it("copyPreset copies the entry and importPreset moves a file's proxyKey into the map", async () => {
+    it("copyPreset queues a server-side copy of the entry and importPreset queues a file's proxyKey for the new preset", async () => {
         boot();
         db().proxyKey = "pk-a";
         copyPreset("a");
@@ -337,7 +350,9 @@ describe("proxyKey", () => {
         expect(copy.name).toBe("A Copy");
         expect(copy.id).not.toBe("a");
         expect(Object.hasOwn(copy, "proxyKey")).toBe(false);
-        expect(getPresetSecret(copy.id)).toEqual({ proxyKey: "pk-a" });
+        expect(queued().at(-1)).toEqual({ kind: "copy", from: "a", to: copy.id });
+        // The copy reads its source as it stands in the queue: set, pending.
+        expect(secretStatus(presetPath(copy.id))).toEqual({ set: true, hint: "", pending: true });
 
         await importPreset({
             name: "hand.json",
@@ -346,8 +361,12 @@ describe("proxyKey", () => {
         const imported = db().botPresets[3];
         expect(imported).toMatchObject({ name: "Hand", temperature: 33 });
         expect(Object.hasOwn(imported, "proxyKey")).toBe(false);
-        expect(getPresetSecret(imported.id)).toEqual({ proxyKey: "pk-hand" });
-        expect(Object.keys(llmSecretPresets.value).sort()).toEqual(["a", copy.id, imported.id].sort());
+        expect(queued().at(-1)).toEqual({ kind: "put", path: presetPath(imported.id), value: "pk-hand" });
+        expect(
+            queued()
+                .map((request) => (secretOpTarget(request) as { id: string }).id)
+                .sort(),
+        ).toEqual(["a", copy.id, imported.id].sort());
     });
 });
 

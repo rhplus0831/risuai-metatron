@@ -55,8 +55,9 @@ describe("createKindRegistry", () => {
             "presets",
             ...phase3Kinds,
         ]);
-        // Phase 5 makes the credential kinds write-only; until then the client may still read `llmSecrets`.
-        expect([...kinds.values()].filter((k) => k.clientReadable).map((k) => k.name)).toEqual(["llmSecrets"]);
+        // Phase 5 slice 7b: `llmSecrets` is write-only, the only kind with a projection and a write rule.
+        expect([...kinds.values()].filter((k) => k.project).map((k) => k.name)).toEqual(["llmSecrets"]);
+        expect([...kinds.values()].filter((k) => k.prepareWrite).map((k) => k.name)).toEqual(["llmSecrets"]);
     });
 
     it("rejects invalid, reserved, and duplicate names and invalid schema versions", () => {

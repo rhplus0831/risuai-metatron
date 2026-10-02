@@ -1,3 +1,4 @@
+import { auxFetchJson } from "../../network/auxFetch";
 import localforage from "localforage";
 import { globalFetch } from "src/ts/globalApi.svelte";
 import { runEmbedding } from "../transformers";
@@ -119,15 +120,21 @@ export class HypaProcesser {
                 openai3large: "text-embedding-3-large",
             };
 
-            gf = await globalFetch("https://api.openai.com/v1/embeddings", {
-                headers: {
-                    Authorization: "Bearer " + (this.oaikey?.trim() || db.supaMemoryKey?.trim()),
-                },
-                body: {
-                    input: input,
-                    model: models[this.model],
-                },
-            });
+            const body = {
+                input: input,
+                model: models[this.model],
+            };
+            // A key given to this processor is used as it is; the stored memory key is used on the
+            // server (`auxFetch`, Phase 5 slice 7b).
+            gf = this.oaikey?.trim()
+                ? await globalFetch("https://api.openai.com/v1/embeddings", {
+                      headers: { Authorization: "Bearer " + this.oaikey.trim() },
+                      body,
+                  })
+                : await auxFetchJson("openai-embeddings", "https://api.openai.com/v1/embeddings", {
+                      method: "POST",
+                      body,
+                  });
         }
         const data = gf.data;
 

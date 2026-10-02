@@ -58,12 +58,14 @@ function withoutIds(value: unknown): unknown {
 }
 
 describe("the registry", () => {
-    it("registers every section and collection kind as a materialized singleton, `llmSecrets` client-readable", () => {
+    it("registers every section and collection kind as a materialized singleton, `llmSecrets` write-only", () => {
         for (const name of [...Object.values(SECTION_KIND), ...Object.values(COLLECTION_KIND)]) {
             const kind = kinds.get(name);
             expect(kind, name).toBeDefined();
             expect(kind, name).toMatchObject({ singleton: true, materialize: true, schemaVersion: 1 });
-            expect(kind!.clientReadable, name).toBe(name === "llmSecrets" ? true : undefined);
+            // Phase 5 slice 7b: only `llmSecrets` projects its reads and prepares its plain writes.
+            expect(typeof kind!.project, name).toBe(name === "llmSecrets" ? "function" : "undefined");
+            expect(typeof kind!.prepareWrite, name).toBe(name === "llmSecrets" ? "function" : "undefined");
         }
     });
 
@@ -98,8 +100,9 @@ describe("plain list and map collections", () => {
         const modules = ["m1", "m2"];
         expect(normalizeEnabledModules(modules)).toEqual(modules);
         expect(normalizeEnabledModules(modules)).not.toBe(modules);
+        // A model's key is an `llmSecrets` credential (Phase 5 slice 7b): one in the record is dropped.
         const models = [{ id: "a", internalId: "b", key: "secret", extra: 1 }];
-        expect(normalizeCustomModels(models)).toEqual(models);
+        expect(normalizeCustomModels(models)).toEqual([{ id: "a", internalId: "b", extra: 1 }]);
     });
 
     it("reject a record or an element of the wrong shape", () => {

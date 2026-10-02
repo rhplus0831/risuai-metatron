@@ -83,7 +83,9 @@ export function normalizeCustomModels(input: unknown): Database["customModels"] 
     if (!entries.every((entry) => typeof entry.id === "string" && typeof entry.internalId === "string")) {
         throw new ResourceValidationError("customModels entries need string id and internalId");
     }
-    return plainClone(entries) as unknown as Database["customModels"];
+    // A model's key is an `llmSecrets` credential (`customModels.<id>.key`), never stored here: one
+    // in the data (an older client or record) is dropped, not kept readable.
+    return plainClone(entries).map(({ key: _key, ...entry }) => entry) as unknown as Database["customModels"];
 }
 
 /** `enabledModules`: module ids. */

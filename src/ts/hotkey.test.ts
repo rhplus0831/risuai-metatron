@@ -34,7 +34,8 @@ vi.mock("./process/index.svelte", () => ({
 import { alertToast, doingAlert } from "./alert";
 import { initHotkey } from "./hotkey";
 import { setDatabase, type Database } from "./storage/database.svelte";
-import { replacePresetSecrets } from "./storage/llmSecrets.svelte";
+import { llmSecretState, setMaskedSecrets } from "./storage/llmSecrets.svelte";
+import { maskLlmSecrets } from "../../shared/llmSecrets.ts";
 import { selection, selectPreset } from "./storage/selection.svelte";
 import { DBState, popUpEditorStore } from "./stores.svelte";
 
@@ -48,7 +49,9 @@ beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
     selectPreset("");
-    replacePresetSecrets({});
+    // The write-only `llmSecrets` state (7b): an empty masked record and no queued credential write.
+    llmSecretState.queue.splice(0);
+    setMaskedSecrets(maskLlmSecrets({}));
     DBState.db = {} as Database;
     setDatabase({
         characters: [],

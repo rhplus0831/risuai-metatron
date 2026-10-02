@@ -7,7 +7,7 @@ import {
     type PresetField,
 } from "../../../shared/presets.ts";
 import { FORWARDED_PRESET_KEYS } from "../../../shared/sections.ts";
-import { deletePresetSecret, getPresetSecret, setPresetSecret } from "./llmSecrets.svelte";
+import { clearSecret, setSecret } from "./llmSecrets.svelte";
 import { PERSONA_DEFAULTS } from "../../../shared/personas.ts";
 import { selectLoreBookPage, selectPersona, selectPreset, selection } from "./selection.svelte";
 
@@ -15,7 +15,7 @@ import { selectLoreBookPage, selectPersona, selectPreset, selection } from "./se
  * The forwarding layer (Phase 3, `PLAN.md` Decision 3). `DBState.db` keeps the old flat preset
  * fields (`db.temperature`, `db.NAIsettings`, ...), but they are no longer root copies: each is an
  * accessor on the database object that reads and writes the selected preset (`selection.presetId`)
- * in `db.botPresets`. `db.proxyKey` reads and writes that preset's entry of `llmSecretPresets`; the
+ * in `db.botPresets`. `db.proxyKey` reads `""` and writes that preset's `llmSecrets` entry (queued); the
  * four persona fields (`db.username`, `db.userIcon`, `db.userNote`, `db.personaPrompt`,
  * `PERSONA_ROOT_ALIASES`) read and write the selected persona (`selection.personaId`) in
  * `db.personas`; and `db.botPresetsId`, `db.selectedPersona`, and `db.loreBookPage` read and write
@@ -157,8 +157,10 @@ export function installForwarding<T extends object>(raw: T): T {
         raw,
         "proxyKey",
         (db) => {
-            const record = resolvePreset(db);
-            return record === undefined ? "" : (getPresetSecret(record.id)?.proxyKey ?? "");
+            // Write-only (Phase 5 slice 7b): the tab never holds the key (`secretStatus` says whether
+            // the preset has one). The read still resolves the selection, as every preset read does.
+            resolvePreset(db);
+            return "";
         },
         (db, value) => {
             const record = presetForWrite(db);
@@ -167,9 +169,9 @@ export function installForwarding<T extends object>(raw: T): T {
             }
             untrack(() => {
                 if (typeof value === "string" && value !== "") {
-                    setPresetSecret(record.id, { proxyKey: value });
+                    setSecret({ kind: "entry", field: "presets", id: record.id }, value);
                 } else {
-                    deletePresetSecret(record.id);
+                    clearSecret({ kind: "entry", field: "presets", id: record.id });
                 }
             });
         },

@@ -1,3 +1,4 @@
+import { auxFetchJson } from "../../network/auxFetch";
 import localforage from "localforage";
 import { type HypaModel, localModels } from "./hypamemory";
 import { isContextModel, getContextProvider } from "./contextualEmbedding";
@@ -42,7 +43,8 @@ export class HypaProcessorV2<TMetadata> {
         this.options = {
             model: db.hypaModel || "MiniLM",
             customEmbeddingUrl: db.hypaCustomSettings?.url?.trim() || "",
-            oaiKey: db.supaMemoryKey?.trim() || "",
+            // No key of its own: the stored memory key is used on the server (`auxFetch`).
+            oaiKey: "",
             rateLimiter: new TaskRateLimiter(),
             ...options,
         };
@@ -435,17 +437,21 @@ export class HypaProcessorV2<TMetadata> {
                 openai3large: "text-embedding-3-large",
             };
 
-            const fetchArgs = {
-                headers: {
-                    Authorization: "Bearer " + (this.options.oaiKey?.trim() || db.supaMemoryKey?.trim()),
-                },
-                body: {
-                    input: contents,
-                    model: models[this.options.model],
-                },
+            const body = {
+                input: contents,
+                model: models[this.options.model],
             };
-
-            response = await globalFetch("https://api.openai.com/v1/embeddings", fetchArgs);
+            // A key given to this processor is used as it is; the stored memory key is used on the
+            // server (`auxFetch`, Phase 5 slice 7b).
+            response = this.options.oaiKey?.trim()
+                ? await globalFetch("https://api.openai.com/v1/embeddings", {
+                      headers: { Authorization: "Bearer " + this.options.oaiKey.trim() },
+                      body,
+                  })
+                : await auxFetchJson("openai-embeddings", "https://api.openai.com/v1/embeddings", {
+                      method: "POST",
+                      body,
+                  });
         } else if (isContextModel(this.options.model)) {
             const provider = getContextProvider(this.options.model);
             return await provider.embedQueries(contents);

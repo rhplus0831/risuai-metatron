@@ -132,7 +132,7 @@ Theme and GUI helpers:
 
 ## Tests
 
-- `src/lib/UI/GUI/guiRendering.test.ts` (happy-dom, Svelte `mount`): the primitives only.
+- `src/lib/UI/GUI/guiRendering.test.ts` (happy-dom, Svelte `mount`): the primitives only. `src/lib/UI/GUI/SecretInput.test.ts` (with `src/lib/UI/tests/reactiveProps.svelte.ts`): the credential input (Phase 5 slice 7b): the status without the value, a draft submitted once on Enter or the button and never on blur, nothing submitted empty, the draft dropped when the path changes, a clear queued without the draft.
 - Not tested: chat screens, sidebar, mobile, colorscheme, sizing.
 
 ## Known Hazards

@@ -197,8 +197,11 @@ export type BackupArchiveManifest = {
  */
 export type SectionResource<K extends SectionKind> = Pick<Database, (typeof SECTION_FIELDS)[K][number]>;
 
+/** The stored record (the server's view); a client reads `MaskedLlmSecrets` (`shared/llmSecrets.ts`). */
 export type LlmSecretsResource = SectionResource<"llmSecrets"> & {
     presets: Record<string, { proxyKey: string }>;
+    /** Each custom model's key, by model id (moved from `customModels[].key`, Phase 5 slice 7b). */
+    customModels: Record<string, { key: string }>;
 };
 
 type SelectableCollection = keyof typeof COLLECTION_SELECTION_FIELDS;

@@ -4,8 +4,13 @@
 // server (`POST /api/llm/request`), and the browser makes no request to the provider's origin and
 // sends no stored credential anywhere but the settings writes.
 //
+// Slice 7b (write-only `llmSecrets`): the sentinel proxy key is typed into the settings page's
+// credential input, and the send right after it reaches the provider with that key. Only the
+// `PUT /api/llm-secrets/*` request carries the key, no response does, the mirror holds `""`, and
+// after a reload the status reads "set" with the key's last characters.
+//
 // A mock OpenAI-compatible provider listens on 127.0.0.1 (another origin than the app); the preset
-// uses `reverse_proxy` with a sentinel proxy key.
+// uses `reverse_proxy`.
 //
 // Usage: node util/playwright/checkLlmTransport.mjs
 import http from "node:http";
@@ -70,6 +75,20 @@ try {
             body: request.postData() ?? "",
         });
     });
+    const responseBodies = [];
+    context.on("requestfinished", (request) => {
+        responseBodies.push(
+            (async () => {
+                const response = await request.response();
+                const body = response ? await response.body().catch(() => Buffer.alloc(0)) : Buffer.alloc(0);
+                return {
+                    url: request.url(),
+                    body: body.toString("latin1"),
+                    headers: JSON.stringify(response?.headers() ?? {}),
+                };
+            })(),
+        );
+    });
     await context.route(
         (url) => url.hostname !== "localhost",
         (route) => route.fulfill({ status: 500, body: "{}" }),
@@ -112,7 +131,6 @@ try {
         DBState.db.subModel = "reverse_proxy";
         DBState.db.forceReplaceUrl = arg.providerURL + "/v1/chat/completions";
         DBState.db.customProxyRequestModel = "mock-model";
-        DBState.db.proxyKey = arg.sentinel;
         DBState.db.useStreaming = false;
         const char = characters.createBlankChar();
         char.name = "Mock Character";
@@ -131,6 +149,22 @@ try {
     );
     check("seeded a character and a chat", !!seeded.chaId && !!seeded.chatId, seeded);
     browserRequests.length = 0;
+
+    // The key, typed into the settings page's proxy key input (Enter replaces it).
+    await page.evaluate(async () => {
+        const stores = await import("/src/ts/stores.svelte.ts");
+        stores.settingsOpen.set(true);
+        stores.SettingsMenuIndex.set(1);
+    });
+    const keyInput = page.getByPlaceholder("leave it blank if it hasn't password");
+    await keyInput.waitFor({ timeout: 10000 });
+    await keyInput.fill(SENTINEL);
+    await keyInput.press("Enter");
+    check("settings: the input is emptied once the key is queued", (await keyInput.inputValue()) === "");
+    await page.evaluate(async () => {
+        const stores = await import("/src/ts/stores.svelte.ts");
+        stores.settingsOpen.set(false);
+    });
 
     // 1. A send (non-streaming).
     const sent = await evaluate(
@@ -230,21 +264,65 @@ try {
     );
     const llmRequests = browserRequests.filter((r) => r.url.includes("/api/llm/request"));
     check("network: the provider calls went through /api/llm/request", llmRequests.length >= 5, llmRequests.length);
-    const leaked = browserRequests.filter(
-        (r) =>
-            !r.url.includes("/api/resources") &&
-            (r.body.includes(SENTINEL) || JSON.stringify(r.headers).includes(SENTINEL)),
+    const carrying = browserRequests.filter(
+        (r) => r.body.includes(SENTINEL) || JSON.stringify(r.headers).includes(SENTINEL) || r.url.includes(SENTINEL),
+    );
+    const leaked = carrying.filter(
+        (r) => !(r.method === "PUT" && new URL(r.url).pathname.startsWith("/api/llm-secrets/")),
     );
     check(
-        "network: no request but a settings write carried the stored key",
-        leaked.length === 0,
-        leaked.map((r) => r.url),
+        "network: only the PUT /api/llm-secrets request carried the key",
+        leaked.length === 0 && carrying.length === 1,
+        { leaked: leaked.map((r) => `${r.method} ${r.url}`), carrying: carrying.map((r) => `${r.method} ${r.url}`) },
+    );
+    const bodies = await Promise.all(responseBodies);
+    const echoed = bodies.filter((r) => r.body.includes(SENTINEL) || r.headers.includes(SENTINEL));
+    check(
+        "network: no response carried the key",
+        echoed.length === 0,
+        echoed.map((r) => r.url),
     );
     const nonLocal = browserRequests.filter((r) => new URL(r.url).hostname !== "localhost");
     check(
         "network: every browser request was same-origin",
         nonLocal.length === 0,
         nonLocal.map((r) => r.url),
+    );
+    const mirror = await evaluate(`
+        const secrets = await import("/src/ts/storage/llmSecrets.svelte.ts");
+        const id = DBState.db.botPresets[DBState.db.botPresetsId]?.id;
+        return { proxyKey: DBState.db.proxyKey, status: secrets.secretStatus({ kind: "entry", field: "presets", id }) };
+    `);
+    check(
+        'mirror: proxyKey reads "" and the status is set with the last four characters',
+        mirror.proxyKey === "" &&
+            mirror.status?.set === true &&
+            mirror.status?.hint === SENTINEL.slice(-4) &&
+            !mirror.status?.pending,
+        mirror,
+    );
+    const storedLocally = await page.evaluate(
+        (sentinel) =>
+            JSON.stringify({ ...localStorage }).includes(sentinel) ||
+            JSON.stringify({ ...sessionStorage }).includes(sentinel),
+        SENTINEL,
+    );
+    check("browser storage holds no copy of the key", !storedLocally);
+
+    // After a reload, the status comes from the server's masked record.
+    await page.reload();
+    await openApp(page, stack.baseURL);
+    await page.evaluate(async () => {
+        const stores = await import("/src/ts/stores.svelte.ts");
+        stores.settingsOpen.set(true);
+        stores.SettingsMenuIndex.set(1);
+    });
+    await page.getByPlaceholder("leave it blank if it hasn't password").waitFor({ timeout: 10000 });
+    const statusText = await page.evaluate(() => document.body.innerText);
+    check(
+        "reload: the settings page shows the key as set with its hint",
+        statusText.includes(`…${SENTINEL.slice(-4)}`),
+        statusText.slice(0, 200),
     );
     check("no page errors", pageErrors.length === 0, pageErrors);
 } finally {

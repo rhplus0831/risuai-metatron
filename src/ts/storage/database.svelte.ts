@@ -20,7 +20,7 @@ import { safeStructuredClone } from "../polyfill";
 import { markCharacterDirtyAt } from "./resourceSync.svelte";
 import { writeCharacterFieldsAt } from "./characterStore.svelte";
 import { installForwarding, reconcileSelection, selectedPreset, selectedPresetForWrite } from "./forwarding.svelte";
-import { copyPresetSecret, setPresetSecret } from "./llmSecrets.svelte";
+import { copyPresetSecret, setSecret } from "./llmSecrets.svelte";
 import { selectPreset } from "./selection.svelte";
 import type { botPreset, Chat, character, Database, groupChat, Message } from "../../../shared/database.ts";
 
@@ -492,6 +492,6 @@ export async function importPreset(
     // missing parameter) becomes the field's default instead of refusing the import.
     const id = addPreset(normalizePreset(pre));
     if (proxyKey !== "") {
-        setPresetSecret(id, { proxyKey });
+        setSecret({ kind: "entry", field: "presets", id }, proxyKey);
     }
 }

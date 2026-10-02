@@ -953,6 +953,13 @@ export const languageEnglish = {
     dataSavingInAccount: "Saving Data in Account",
     chatAssumed: "",
     proxyAPIKey: "Key/Password",
+    secretSet: "Set",
+    secretNotSet: "Not set",
+    secretSaving: "saving",
+    secretReplace: "Replace",
+    secretClear: "Clear",
+    ttsCustomUrlNeedsKey:
+        "A custom OpenAI TTS base URL needs its own API key in the TTS settings: the stored OpenAI key is only sent to api.openai.com.",
     proxyRequestModel: "Request Model",
     officialWiki: "Official Wiki",
     officialWikiDesc: "Official Wiki for Risuai. Feel free to see.",

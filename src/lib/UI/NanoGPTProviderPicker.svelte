@@ -4,16 +4,18 @@
     import { language } from "src/lang";
 
     interface Props {
-        apiKey: string;
+        /** Whether a NanoGPT key is stored, and its version (a replaced key refetches). */
+        keySet: boolean;
+        keyVersion: number;
         modelId: string;
         value: string;
     }
 
-    let { apiKey, modelId, value = $bindable("") }: Props = $props();
+    let { keySet, keyVersion, modelId, value = $bindable("") }: Props = $props();
 
     let providersPromise = $derived(
-        apiKey && modelId
-            ? getNanoGPTModelProviders(apiKey, modelId)
+        keySet && modelId
+            ? (void keyVersion, getNanoGPTModelProviders(modelId))
             : Promise.resolve<NanoGPTModelProviders | null>(null),
     );
 

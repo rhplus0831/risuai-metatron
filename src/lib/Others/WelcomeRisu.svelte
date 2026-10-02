@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { setSecret } from "src/ts/storage/llmSecrets.svelte";
     import { Send } from "@lucide/svelte";
     import { changeLanguage, language } from "src/lang";
     import { applyPresetTemplate } from "src/ts/storage/database.svelte";
@@ -54,14 +55,15 @@
                     alertError("Invalid API key");
                     break;
                 }
+                // Write-only keys (Phase 5 slice 7b): queued to the server, never kept in the mirror.
                 if (provider === "openai") {
-                    DBState.db.openAIKey = input;
+                    setSecret({ kind: "flat", field: "openAIKey" }, input);
                 }
                 if (provider === "openrouter") {
-                    DBState.db.openrouterKey = input;
+                    setSecret({ kind: "flat", field: "openrouterKey" }, input);
                 }
                 if (provider === "claude") {
-                    DBState.db.claudeAPIKey = input;
+                    setSecret({ kind: "flat", field: "claudeAPIKey" }, input);
                 }
                 step = 5;
                 input = "";

@@ -1,10 +1,23 @@
+import {
+    carriesSecretPath,
+    maskLlmSecrets,
+    parseSecretPath,
+    readSecret,
+    withStoredSecrets,
+    writeSecret,
+    type SecretPath,
+} from "../../../../shared/llmSecrets.ts";
 import { RESOURCE_EPOCH_HEADER, type ResourceConflict } from "../../../../shared/resources.ts";
 
 /**
  * An in-memory stand-in for the server's `/api/resources` routes, with the same contract the client
  * relies on: revisions, the epoch fence (412), batch atomicity with every conflict listed (409),
- * single-record conflicts as `{ revision }`, and a body limit (413). Tests plug it in as `authFetch`
- * and use the hooks to hold a batch, drop a response after it was applied, or fail requests.
+ * single-record conflicts as `{ revision }`, and a body limit (413). The write-only `llmSecrets`
+ * record (Phase 5 slice 7b) follows the server's contract too: it is stored as plaintext (what a
+ * test puts in it, or what `/api/llm-secrets/*` writes) and answered masked on every read; a plain
+ * write may carry no credential path (400) and keeps the stored credentials. Tests plug it in as
+ * `authFetch` and use the hooks to hold a batch, drop a response after it was applied, or fail
+ * requests.
  */
 export class FakeResourceServer {
     epoch = "epoch-1";
@@ -62,6 +75,54 @@ export class FakeResourceServer {
             .map((request) => request.body as { ops: any[] });
     }
 
+    /** The requests to `/api/llm-secrets/*` (the credential writes), in order. */
+    secretRequests() {
+        return this.requests.filter((request) => request.path.startsWith("/api/llm-secrets/"));
+    }
+
+    /** What a client reads of a record: the masked `llmSecrets` record, any other as stored. */
+    private project(kind: string, data: unknown): unknown {
+        return kind === "llmSecrets" && data && typeof data === "object"
+            ? maskLlmSecrets(data as Record<string, unknown>)
+            : data;
+    }
+
+    /** A plain write's data: an `llmSecrets` write may carry no credential and keeps the stored ones. */
+    private prepareWrite(kind: string, id: string, data: unknown): unknown {
+        if (kind !== "llmSecrets") {
+            return data;
+        }
+        if (!data || typeof data !== "object" || Array.isArray(data)) {
+            throw new FakeValidationError("llmSecrets must be an object");
+        }
+        if (carriesSecretPath(data as Record<string, unknown>)) {
+            throw new FakeValidationError(
+                "llmSecrets credentials are written through /api/llm-secrets, not in the record",
+            );
+        }
+        return withStoredSecrets(
+            data as Record<string, unknown>,
+            (this.data(kind, id) ?? {}) as Record<string, unknown>,
+        );
+    }
+
+    /** `/api/llm-secrets/*`: one credential write on the record's revision, answered masked. */
+    private writeSecretRoute(
+        baseRevision: unknown,
+        change: (record: Record<string, any>) => Record<string, any>,
+    ): Response {
+        const current = this.get("llmSecrets", "main");
+        if (typeof baseRevision !== "string") {
+            return Response.json({ error: "baseRevision required" }, { status: 400 });
+        }
+        if (!current || current.revision !== baseRevision) {
+            return Response.json({ error: "Revision conflict", revision: current?.revision ?? null }, { status: 409 });
+        }
+        const next = change(current.data as Record<string, any>);
+        const revision = this.set("llmSecrets", "main", next);
+        return Response.json({ epoch: this.epoch, revision, data: this.project("llmSecrets", next) });
+    }
+
     readonly fetch = async (path: string, init: RequestInit = {}): Promise<Response> => {
         const method = init.method ?? "GET";
         const rawBody = typeof init.body === "string" ? init.body : null;
@@ -98,7 +159,11 @@ export class FakeResourceServer {
                 result[kind] = [];
                 for (const [key, record] of this.records) {
                     if (key.startsWith(`${kind}/`)) {
-                        result[kind].push({ id: key.slice(kind.length + 1), ...record });
+                        result[kind].push({
+                            id: key.slice(kind.length + 1),
+                            revision: record.revision,
+                            data: this.project(kind, record.data),
+                        });
                     }
                 }
             }
@@ -107,7 +172,12 @@ export class FakeResourceServer {
         if (url.pathname === "/api/resources/read" && method === "POST") {
             const items = (body.refs as { kind: string; id: string }[]).map((ref) => {
                 const record = this.get(ref.kind, ref.id);
-                return { kind: ref.kind, id: ref.id, revision: record?.revision ?? null, data: record?.data ?? null };
+                return {
+                    kind: ref.kind,
+                    id: ref.id,
+                    revision: record?.revision ?? null,
+                    data: record ? this.project(ref.kind, record.data) : null,
+                };
             });
             return Response.json({ epoch: epochOf(), items });
         }
@@ -147,12 +217,22 @@ export class FakeResourceServer {
             if (conflicts.length > 0) {
                 return Response.json({ error: "Revision conflict", conflicts }, { status: 409 });
             }
-            const results = ops.map((op) => {
+            // Prepared apart from the recorded body, which stays what the client sent.
+            let prepared: unknown[];
+            try {
+                prepared = ops.map((op) => (op.delete ? undefined : this.prepareWrite(op.kind, op.id, op.data)));
+            } catch (error) {
+                if (error instanceof FakeValidationError) {
+                    return Response.json({ error: error.message }, { status: 400 });
+                }
+                throw error;
+            }
+            const results = ops.map((op, index) => {
                 if (op.delete) {
                     this.delete(op.kind, op.id);
                     return { kind: op.kind, id: op.id, revision: null };
                 }
-                return { kind: op.kind, id: op.id, revision: this.set(op.kind, op.id, op.data) };
+                return { kind: op.kind, id: op.id, revision: this.set(op.kind, op.id, prepared[index]) };
             });
             if (this.dropNextBatchResponse) {
                 this.dropNextBatchResponse = false;
@@ -169,7 +249,11 @@ export class FakeResourceServer {
                 if (!current) {
                     return Response.json({ error: "Resource not found", epoch: epochOf() }, { status: 404 });
                 }
-                return Response.json({ epoch: epochOf(), ...current });
+                return Response.json({
+                    epoch: epochOf(),
+                    revision: current.revision,
+                    data: this.project(kind, current.data),
+                });
             }
             const mismatch = assertEpoch();
             if (mismatch) {
@@ -182,8 +266,17 @@ export class FakeResourceServer {
                         { status: 409 },
                     );
                 }
-                const revision = this.set(kind, id, body.data);
-                return Response.json({ epoch: this.epoch, revision, data: body.data });
+                let data: unknown;
+                try {
+                    data = this.prepareWrite(kind, id, body.data);
+                } catch (error) {
+                    if (error instanceof FakeValidationError) {
+                        return Response.json({ error: error.message }, { status: 400 });
+                    }
+                    throw error;
+                }
+                const revision = this.set(kind, id, data);
+                return Response.json({ epoch: this.epoch, revision, data: this.project(kind, data) });
             }
             if (method === "DELETE") {
                 const baseRevision = url.searchParams.get("baseRevision");
@@ -197,6 +290,47 @@ export class FakeResourceServer {
                 return Response.json({ success: true, epoch: this.epoch });
             }
         }
+        if (url.pathname === "/api/llm-secrets/presets/copy" && method === "POST") {
+            const mismatch = assertEpoch();
+            if (mismatch) {
+                return mismatch;
+            }
+            if (typeof body?.from !== "string" || typeof body?.to !== "string" || !body.from || !body.to) {
+                return Response.json({ error: "Body must be { from, to, baseRevision }" }, { status: 400 });
+            }
+            const from: SecretPath = { kind: "entry", field: "presets", id: body.from };
+            const to: SecretPath = { kind: "entry", field: "presets", id: body.to };
+            return this.writeSecretRoute(body.baseRevision, (record) =>
+                writeSecret(record, to, readSecret(record, from)),
+            );
+        }
+        if (url.pathname.startsWith("/api/llm-secrets/") && (method === "PUT" || method === "DELETE")) {
+            const mismatch = assertEpoch();
+            if (mismatch) {
+                return mismatch;
+            }
+            const secretPath = parseSecretPath(url.pathname.slice("/api/llm-secrets/".length));
+            if (!secretPath) {
+                return Response.json({ error: "Unknown credential path" }, { status: 400 });
+            }
+            if (method === "PUT") {
+                if (typeof body?.value !== "string") {
+                    return Response.json(
+                        { error: "Body must be { value: string, baseRevision: string }" },
+                        { status: 400 },
+                    );
+                }
+                return this.writeSecretRoute(body.baseRevision, (record) =>
+                    writeSecret(record, secretPath, body.value),
+                );
+            }
+            return this.writeSecretRoute(url.searchParams.get("baseRevision") ?? undefined, (record) =>
+                writeSecret(record, secretPath, ""),
+            );
+        }
         return Response.json({ error: `Unhandled ${method} ${url.pathname}` }, { status: 500 });
     };
 }
+
+/** A refused write of the fake's own write rule (the server's `ResourceValidationError`). */
+class FakeValidationError extends Error {}

@@ -1,3 +1,4 @@
+import { auxFetchJson } from "../../network/auxFetch";
 import { parseChatML } from "src/ts/parser/chatML";
 import { getDatabase, type Chat, type character, type groupChat } from "src/ts/storage/database.svelte";
 import type { OpenAIChat } from "../index.svelte";
@@ -35,10 +36,10 @@ async function summary(stringlizedChat: string): Promise<{ success: boolean; dat
     if (db.supaModelType !== "subModel") {
         const promptbody = stringlizedChat + "\n\n" + supaPrompt + "\n\nOutput:";
 
-        const da = await globalFetch("https://api.openai.com/v1/completions", {
+        const da = await auxFetchJson("openai-completions", "https://api.openai.com/v1/completions", {
+            // With the stored memory key, on the server (`auxFetch`, Phase 5 slice 7b).
             headers: {
                 "Content-Type": "application/json",
-                Authorization: "Bearer " + db.supaMemoryKey,
             },
             method: "POST",
             body: {
@@ -558,7 +559,6 @@ export async function hypaMemoryV2(
 
     // Fetch additional memory from chunks
     const processor = new HypaProcesser(db.hypaModel);
-    processor.oaikey = db.supaMemoryKey;
 
     const searchDocumentPrefix = "search_document: ";
     const prefixLength = searchDocumentPrefix.length;

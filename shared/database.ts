@@ -37,6 +37,18 @@ export interface DynamicOutput {
     dynamicRequest: boolean;
 }
 
+/** A custom model (`CustomModelsSettings.svelte`); its key is a write-only `llmSecrets` credential. */
+export interface CustomModel {
+    id: string;
+    internalId: string;
+    url: string;
+    format: LLMFormat;
+    tokenizer: LLMTokenizer;
+    name: string;
+    params: string;
+    flags: LLMFlags[];
+}
+
 export interface RisuPersona {
     personaPrompt: string;
     name: string;
@@ -422,17 +434,8 @@ export interface Database {
     };
     doNotChangeFallbackModels: boolean;
     fallbackWhenBlankResponse: boolean;
-    customModels: {
-        id: string;
-        internalId: string;
-        url: string;
-        format: LLMFormat;
-        tokenizer: LLMTokenizer;
-        key: string;
-        name: string;
-        params: string;
-        flags: LLMFlags[];
-    }[];
+    /** The custom models; each one's key is in `llmSecrets.customModels.<id>.key` (Phase 5 slice 7b). */
+    customModels: CustomModel[];
     igpPrompt: string;
     useTokenizerCaching: boolean;
     showMenuHypaMemoryModal: boolean;

@@ -133,11 +133,11 @@ Settings:
 
 ## Tests
 
-- `src/ts/process/ttsHooks.test.ts`.
+- `src/ts/process/ttsHooks.test.ts`. `src/ts/process/ttsOpenAI.test.ts`: the OpenAI TTS routing of `sayTTS` (Phase 5 slice 7b): the stored key through the server's `openai-tts` operation for the official endpoint only, a character's own key with the character's request to any base URL, a custom base URL with the stored key and no key of its own refused with `ttsCustomUrlNeedsKey`, a keyless endpoint called without a key.
 - `src/ts/translator/presets.test.ts`, `src/ts/translator/edittransRegex.test.ts`. `src/ts/translator/presetsCodec.test.ts`: the `.risutl` round trip through the real codecs (WebCrypto, the RPack map from disk, `fflate`, msgpack): the container shape, a payload of exactly `name`, `prompt`, and `maxResponse` with no id, a fresh id on decode, a second cycle, and a corrupt file rejected.
 - `src/lib/Setting/Pages/Language/TranslatorPresetSettings.test.ts` (mounted under happy-dom): selection by id with the first-preset fallback, and the rename and delete dialogs while a conflict reload replaces the list meanwhile (the survivor is edited, a vanished target is left alone, the selection moves only when it pointed at the deleted preset, a list reduced to one preset is kept).
 - `src/ts/media/tests/imageType.test.ts`, `src/ts/media/compressImage/tests/compressImage.test.ts`.
-- Not tested: `sayTTS` providers, `stableDiff` backends, translator routing, HTML translation, Bergamot, the playground.
+- Not tested: the other `sayTTS` providers, `stableDiff` backends, translator routing, HTML translation, Bergamot, the playground.
 
 ## Known Hazards
 

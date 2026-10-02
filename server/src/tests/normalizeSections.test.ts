@@ -42,6 +42,8 @@ function bootDefaults(section: SectionKind): Record<string, unknown> {
     }
     if (section === "llmSecrets") {
         record.presets = {};
+        // Phase 5 slice 7b: each custom model's key, by model id.
+        record.customModels = {};
     }
     return record;
 }

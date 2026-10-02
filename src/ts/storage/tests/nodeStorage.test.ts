@@ -172,4 +172,39 @@ describe("authFetch", () => {
         await authFetch("/api/ping");
         expect(prompts.asked).toEqual(["input password"]);
     });
+
+    it("runs beforeDispatch after the authentication and the signing, right before the request, and a throw stops it (7b)", async () => {
+        // A fresh shared instance, so the authentication runs inside this test.
+        vi.resetModules();
+        const { authFetch: freshAuthFetch } = (await import("../nodeStorage")) as typeof import("../nodeStorage");
+        auth.password = "digest(pw)";
+        prompts.answers = ["pw"];
+        const order: string[] = [];
+        const response = await freshAuthFetch(
+            "/api/ping",
+            {},
+            {
+                beforeDispatch: () => {
+                    order.push(`dispatch after ${paths().join(",")}`);
+                },
+            },
+        );
+        expect(await response.json()).toEqual({ ok: true });
+        // The check ran once the password prompt and the login were done, with no ping sent yet.
+        expect(order).toEqual(["dispatch after /api/test_auth,/api/crypto,/api/login"]);
+        expect(paths().at(-1)).toBe("/api/ping");
+        const before = auth.calls.length;
+        await expect(
+            freshAuthFetch(
+                "/api/ping",
+                {},
+                {
+                    beforeDispatch: () => {
+                        throw new Error("Saving stopped: the server data was restored");
+                    },
+                },
+            ),
+        ).rejects.toThrow("Saving stopped");
+        expect(auth.calls.length).toBe(before);
+    });
 });

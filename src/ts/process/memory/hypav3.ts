@@ -1146,7 +1146,6 @@ async function hypaMemoryV3Main(
 
         // Initialize embedding processor
         const processor = new HypaProcesserEx(db.hypaModel);
-        processor.oaikey = db.supaMemoryKey;
 
         // Add summaryChunks to processor for similarity search
         try {

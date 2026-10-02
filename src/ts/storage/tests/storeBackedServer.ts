@@ -1,4 +1,5 @@
 import type { ChatOp, ChatOrderRecord, ChatRecord } from "../../../../shared/chats.ts";
+import { parseSecretPath, readSecret, writeSecret, type SecretPath } from "../../../../shared/llmSecrets.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../../shared/resources.ts";
 
 /**
@@ -6,8 +7,10 @@ import { RESOURCE_EPOCH_HEADER } from "../../../../shared/resources.ts";
  * memory), for tests of the chat module and the save loop that need the real chat contract:
  * revision tokens, the stale-by-id rule and `stale` results, the generation fence outcomes, the
  * 409 union, the 400 validation messages, and the request cap. The route layer is reduced to what
- * the client relies on: the epoch fence, the operation count, and the error mapping. The hooks
- * mirror `FakeResourceServer`'s: hold a batch, drop a response after it was applied, fail requests.
+ * the client relies on: the epoch fence, the operation count, the error mapping, and (Phase 5
+ * slice 7b) the write-only kinds' contract: a kind's `project` on every read, its `prepareWrite` on
+ * every plain write, and `/api/llm-secrets/*` for the credential writes. The hooks mirror
+ * `FakeResourceServer`'s: hold a batch, drop a response after it was applied, fail requests.
  *
  * The server modules are loaded at run time (`create`) through a computed specifier: the client
  * `tsconfig.json` is not strict and must not type-check the strict server sources, so a static
@@ -65,6 +68,7 @@ type LockModule = { createGenerationLock(): ServerGenerationLock };
 
 type StoreModule = {
     createResourceStore(options: { file: string; kinds: unknown; guard?: ServerGenerationLock }): ServerStore;
+    ResourceConflictError: new (current: string | null) => Error & { current: string | null };
     ResourceBatchConflictError: new (conflicts: unknown[]) => Error & { conflicts: unknown[] };
     ResourceValidationError: new (message: string) => Error;
 };
@@ -72,6 +76,12 @@ type StoreModule = {
 type KindsModule = {
     createKindRegistry(kinds: readonly unknown[]): ReadonlyMap<string, unknown>;
     DEFAULT_RESOURCE_KINDS: readonly unknown[];
+};
+
+/** A kind's write-only hooks (`server/src/data/kinds.ts` `ResourceKind`), as far as the routes use them. */
+type ProjectingKind = {
+    project?(data: unknown): unknown;
+    prepareWrite?(incoming: unknown, stored: unknown | null): unknown;
 };
 
 const SERVER_DATA = "../../../../server/src/data/";
@@ -96,7 +106,10 @@ export class StoreBackedServer {
     /** The generation lock guarding the store (`create({ lock: true })`), or null. */
     readonly lock: ServerGenerationLock | null;
     /** The server's error classes, for `instanceof` checks in tests. */
-    readonly errors: Pick<StoreModule, "ResourceBatchConflictError" | "ResourceValidationError">;
+    readonly errors: Pick<
+        StoreModule,
+        "ResourceConflictError" | "ResourceBatchConflictError" | "ResourceValidationError"
+    >;
     requests: { method: string; path: string; body: any }[] = [];
     /** Resolves a held batch; set while `holdNextBatch` is pending. */
     releaseBatch: (() => void) | null = null;
@@ -164,6 +177,62 @@ export class StoreBackedServer {
         return this.batchBodies().length;
     }
 
+    /** The requests to `/api/llm-secrets/*` (the credential writes), in order. */
+    secretRequests() {
+        return this.requests.filter((request) => request.path.startsWith("/api/llm-secrets/"));
+    }
+
+    /** What a client reads of a record: the kind's projection (the masked `llmSecrets` record). */
+    private project(kind: unknown, data: unknown): unknown {
+        const hooks = kind as ProjectingKind;
+        return hooks.project && data !== null && data !== undefined ? hooks.project(data) : data;
+    }
+
+    /** A plain write's data for a kind with `prepareWrite`, from the stored record. */
+    private prepareWrite(kind: unknown, id: string, data: unknown): unknown {
+        const hooks = kind as ProjectingKind;
+        return hooks.prepareWrite ? hooks.prepareWrite(data, this.store.get(kind, id)?.data ?? null) : data;
+    }
+
+    /** The server's error mapping for one write (`storeErrorResponse`), without the epoch cases. */
+    private errorResponse(error: unknown): Response {
+        if (error instanceof this.errors.ResourceConflictError) {
+            return Response.json({ error: error.message, revision: error.current }, { status: 409 });
+        }
+        if (error instanceof this.errors.ResourceBatchConflictError) {
+            return Response.json({ error: error.message, conflicts: error.conflicts }, { status: 409 });
+        }
+        if (error instanceof this.errors.ResourceValidationError) {
+            return Response.json({ error: error.message }, { status: 400 });
+        }
+        throw error;
+    }
+
+    /** `/api/llm-secrets/*`: one credential write on the record's revision, answered masked. */
+    private writeSecretRoute(
+        baseRevision: unknown,
+        change: (record: Record<string, any>) => Record<string, any>,
+    ): Response {
+        if (typeof baseRevision !== "string") {
+            return Response.json({ error: "baseRevision required" }, { status: 400 });
+        }
+        const kind = this.kind("llmSecrets");
+        try {
+            const current = this.store.get(kind, "main");
+            if (!current) {
+                throw new this.errors.ResourceConflictError(null);
+            }
+            const saved = this.store.put(kind, "main", change(current.data as Record<string, any>), baseRevision);
+            return Response.json({
+                epoch: this.store.epoch(),
+                revision: saved.revision,
+                data: this.project(kind, saved.data),
+            });
+        } catch (error) {
+            return this.errorResponse(error);
+        }
+    }
+
     readonly fetch = async (path: string, init: RequestInit = {}): Promise<Response> => {
         const method = init.method ?? "GET";
         const rawBody = typeof init.body === "string" ? init.body : null;
@@ -185,21 +254,31 @@ export class StoreBackedServer {
 
         if (url.pathname === "/api/resources" && method === "GET") {
             const names = (url.searchParams.get("kinds") ?? "").split(",").filter((name) => name !== "");
-            return Response.json(
-                this.store.readKinds(
-                    names.map((name) => this.kind(name)),
-                    { chats: url.searchParams.get("chats") === "1" },
-                ),
+            const read = this.store.readKinds(
+                names.map((name) => this.kind(name)),
+                { chats: url.searchParams.get("chats") === "1" },
             );
+            for (const name of names) {
+                read.kinds[name] = read.kinds[name].map((record) => ({
+                    ...record,
+                    data: this.project(this.kind(name), record.data),
+                }));
+            }
+            return Response.json(read);
         }
         if (url.pathname === "/api/resources/read" && method === "POST") {
             const refs = ((body.refs ?? []) as { kind: string; id: string }[]).map((ref) => ({
                 kind: this.kind(ref.kind),
                 id: ref.id,
             }));
-            return Response.json(
-                this.store.readRefs(refs, { chats: body.chats ?? [], chatCollections: body.chatCollections ?? [] }),
-            );
+            const read = this.store.readRefs(refs, {
+                chats: body.chats ?? [],
+                chatCollections: body.chatCollections ?? [],
+            });
+            return Response.json({
+                ...read,
+                items: read.items.map((item) => ({ ...item, data: this.project(this.kind(item.kind), item.data) })),
+            });
         }
         if (url.pathname === "/api/resources/batch" && method === "POST") {
             if (headers.get(RESOURCE_EPOCH_HEADER) !== this.store.epoch()) {
@@ -234,25 +313,69 @@ export class StoreBackedServer {
             }
             let applied;
             try {
-                applied = this.store.applyChanges({
-                    ops: ops.map((op) => ({ ...op, kind: this.kind(op.kind) })),
-                    chats,
-                    chatOrders,
-                });
+                const resolved = ops.map((op) => ({ ...op, kind: this.kind(op.kind) }));
+                for (const op of resolved) {
+                    if (!op.delete) {
+                        op.data = this.prepareWrite(op.kind, op.id, op.data);
+                    }
+                }
+                applied = this.store.applyChanges({ ops: resolved, chats, chatOrders });
             } catch (error) {
-                if (error instanceof this.errors.ResourceBatchConflictError) {
-                    return Response.json({ error: error.message, conflicts: error.conflicts }, { status: 409 });
-                }
-                if (error instanceof this.errors.ResourceValidationError) {
-                    return Response.json({ error: error.message }, { status: 400 });
-                }
-                throw error;
+                return this.errorResponse(error);
             }
             if (this.dropNextBatchResponse) {
                 this.dropNextBatchResponse = false;
                 throw new TypeError("Failed to fetch");
             }
             return Response.json({ epoch: this.store.epoch(), ...applied });
+        }
+        const single = url.pathname.match(/^\/api\/resources\/([^/]+)\/([^/]+)$/);
+        if (single && method === "GET") {
+            const kind = this.kind(decodeURIComponent(single[1]));
+            const current = this.store.get(kind, decodeURIComponent(single[2]));
+            if (!current) {
+                return Response.json({ error: "Resource not found", epoch: this.store.epoch() }, { status: 404 });
+            }
+            return Response.json({
+                epoch: this.store.epoch(),
+                revision: current.revision,
+                data: this.project(kind, current.data),
+            });
+        }
+        if (url.pathname.startsWith("/api/llm-secrets/")) {
+            if (headers.get(RESOURCE_EPOCH_HEADER) !== this.store.epoch()) {
+                return Response.json({ error: "EpochMismatch", epoch: this.store.epoch() }, { status: 412 });
+            }
+            if (url.pathname === "/api/llm-secrets/presets/copy" && method === "POST") {
+                if (typeof body?.from !== "string" || typeof body?.to !== "string" || !body.from || !body.to) {
+                    return Response.json({ error: "Body must be { from, to, baseRevision }" }, { status: 400 });
+                }
+                const from: SecretPath = { kind: "entry", field: "presets", id: body.from };
+                const to: SecretPath = { kind: "entry", field: "presets", id: body.to };
+                return this.writeSecretRoute(body.baseRevision, (record) =>
+                    writeSecret(record, to, readSecret(record, from)),
+                );
+            }
+            const secretPath = parseSecretPath(url.pathname.slice("/api/llm-secrets/".length));
+            if (!secretPath) {
+                return Response.json({ error: "Unknown credential path" }, { status: 400 });
+            }
+            if (method === "PUT") {
+                if (typeof body?.value !== "string") {
+                    return Response.json(
+                        { error: "Body must be { value: string, baseRevision: string }" },
+                        { status: 400 },
+                    );
+                }
+                return this.writeSecretRoute(body.baseRevision, (record) =>
+                    writeSecret(record, secretPath, body.value),
+                );
+            }
+            if (method === "DELETE") {
+                return this.writeSecretRoute(url.searchParams.get("baseRevision") ?? undefined, (record) =>
+                    writeSecret(record, secretPath, ""),
+                );
+            }
         }
         return Response.json({ error: `Unhandled ${method} ${url.pathname}` }, { status: 500 });
     };

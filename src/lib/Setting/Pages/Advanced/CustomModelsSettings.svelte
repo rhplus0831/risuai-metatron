@@ -10,6 +10,8 @@
     import { PlusIcon, TrashIcon, ArrowUp, ArrowDown } from "@lucide/svelte";
     import type { LLMFlags, LLMFormat, LLMTokenizer } from "src/ts/model/types";
     import { v4 } from "uuid";
+    import SecretInput from "src/lib/UI/GUI/SecretInput.svelte";
+    import { deleteEntrySecret } from "src/ts/storage/llmSecrets.svelte";
 
     let openedModels = $state(new Set<string>());
 
@@ -89,9 +91,15 @@
                         styled="outlined"
                         onclick={(e) => {
                             e.stopPropagation();
+                            // By the captured id: the model's key leaves the server with it.
+                            const id = model.id;
                             let models = DBState.db.customModels;
-                            models.splice(index, 1);
+                            const at = models.findIndex((entry) => entry.id === id);
+                            if (at !== -1) {
+                                models.splice(at, 1);
+                            }
                             DBState.db.customModels = models;
+                            deleteEntrySecret("customModels", id);
                             openedModels.delete(model.id);
                             openedModels = new Set(openedModels);
                         }}
@@ -158,7 +166,7 @@
                         <OptionInput value="18">OpenAIResponseAPI</OptionInput>
                     </SelectInput>
                     <span class="text-textcolor">{language.proxyAPIKey}</span>
-                    <TextInput size={"sm"} bind:value={DBState.db.customModels[index].key} />
+                    <SecretInput path={{ kind: "entry", field: "customModels", id: model.id }} />
                     <span class="text-textcolor">{language.additionalParams}</span>
                     <TextAreaInput
                         bind:value={DBState.db.customModels[index].params}
@@ -209,7 +217,6 @@
                     tokenizer: 0,
                     format: 0,
                     id: "xcustom:::" + v4(),
-                    key: "",
                     name: "",
                     params: "",
                     flags: [],

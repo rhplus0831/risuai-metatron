@@ -7,6 +7,7 @@
     import { saveAsset, downloadFile, globalFetch } from "src/ts/globalApi.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
+    import SecretInput from "src/lib/UI/GUI/SecretInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
@@ -699,7 +700,7 @@
 
         {#if DBState.db.sdProvider === "dalle"}
             <span class="text-textcolor">OpenAI API Key</span>
-            <TextInput size="sm" marginBottom placeholder="sk-..." bind:value={DBState.db.openAIKey} />
+            <SecretInput path={{ kind: "flat", field: "openAIKey" }} marginBottom placeholder="sk-..." />
 
             <span class="text-textcolor mt-4">Dall-E Quality</span>
             <SelectInput className="mt-2 mb-4" bind:value={DBState.db.dallEQuality}>
@@ -819,13 +820,7 @@
 
         {#if DBState.db.sdProvider === "Imagen"}
             <span class="text-textcolor mt-2">GoogleAI API Key</span>
-            <TextInput
-                marginBottom={true}
-                size={"sm"}
-                placeholder="..."
-                hideText={DBState.db.hideApiKey}
-                bind:value={DBState.db.google.accessToken}
-            />
+            <SecretInput path={{ kind: "nested", field: "google" }} marginBottom />
 
             <span class="text-textcolor">Model</span>
             <SelectInput className="mb-4" bind:value={DBState.db.ImagenModel}>
@@ -1038,7 +1033,7 @@
         <TextInput size="sm" marginBottom bind:value={DBState.db.voicevoxUrl} />
 
         <span class="text-textcolor">OpenAI Key</span>
-        <TextInput size="sm" marginBottom bind:value={DBState.db.openAIKey} />
+        <SecretInput path={{ kind: "flat", field: "openAIKey" }} marginBottom />
 
         <span class="text-textcolor mt-2">NovelAI API key</span>
         <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={DBState.db.NAIApiKey} />
@@ -1138,7 +1133,7 @@
             </SelectInput>
             {#if DBState.db.supaModelType === "davinci" || DBState.db.supaModelType === "curie" || DBState.db.supaModelType === "instruct35"}
                 <span class="text-textcolor">{language.SuperMemory} OpenAI Key</span>
-                <TextInput size="sm" marginBottom bind:value={DBState.db.supaMemoryKey} />
+                <SecretInput path={{ kind: "flat", field: "supaMemoryKey" }} marginBottom />
             {/if}
             <span class="text-textcolor">{language.summarizationPrompt} <Help key="summarizationPrompt" /></span>
             <TextAreaInput
@@ -1489,7 +1484,7 @@
             <NumberInput size="sm" marginBottom bind:value={DBState.db.maxSupaChunkSize} min={100} />
             {#if DBState.db.supaModelType === "davinci" || DBState.db.supaModelType === "curie" || DBState.db.supaModelType === "instruct35"}
                 <span class="text-textcolor">{language.SuperMemory} OpenAI Key</span>
-                <TextInput size="sm" marginBottom bind:value={DBState.db.supaMemoryKey} />
+                <SecretInput path={{ kind: "flat", field: "supaMemoryKey" }} marginBottom />
             {/if}
             {#if DBState.db.supaModelType !== "none"}
                 <span class="text-textcolor">{language.SuperMemory} Prompt</span>
@@ -1530,7 +1525,7 @@
 
         {#if DBState.db.hypaModel === "openai3small" || DBState.db.hypaModel === "openai3large" || DBState.db.hypaModel === "ada"}
             <span class="text-textcolor">OpenAI API Key</span>
-            <TextInput size="sm" marginBottom bind:value={DBState.db.supaMemoryKey} />
+            <SecretInput path={{ kind: "flat", field: "supaMemoryKey" }} marginBottom />
         {/if}
 
         {#if DBState.db.hypaModel === "custom"}

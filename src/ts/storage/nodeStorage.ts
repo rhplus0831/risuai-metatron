@@ -231,11 +231,19 @@ export async function getNodeServerProxyAuth() {
     return await sharedNodeStorage.getProxyAuth();
 }
 
-/** `fetch` to the self-host server with a fresh `risu-auth` token. */
-export async function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
+/**
+ * `fetch` to the self-host server with a fresh `risu-auth` token. `beforeDispatch` runs after the
+ * authentication and signing, right before the request goes out; a throw stops it.
+ */
+export async function authFetch(
+    input: string,
+    init: RequestInit = {},
+    options: { beforeDispatch?: () => void } = {},
+): Promise<Response> {
     await sharedNodeStorage.ensureAuth();
     const headers = new Headers(init.headers);
     headers.set("risu-auth", await sharedNodeStorage.createAuth());
+    options.beforeDispatch?.();
     return await fetch(input, { ...init, headers });
 }
 

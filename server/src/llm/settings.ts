@@ -1,4 +1,4 @@
-import type { Database } from "../../../shared/database.ts";
+import type { CustomModel, Database } from "../../../shared/database.ts";
 import { PERSONA_DEFAULTS } from "../../../shared/personas.ts";
 import {
     PERSONA_ROOT_ALIASES,
@@ -29,15 +29,11 @@ type PresetRootField = Extract<RootOf<Exclude<PresetField, "name" | "image">>, k
  */
 export type RequestDb = Pick<
     Database,
-    | ProvidersField
-    | LlmSecretsField
-    | PresetRootField
-    | "proxyKey"
-    | "username"
-    | "personaPrompt"
-    | "autoSuggestPrefix"
-    | "customModels"
->;
+    ProvidersField | LlmSecretsField | PresetRootField | "proxyKey" | "username" | "personaPrompt" | "autoSuggestPrefix"
+> & {
+    /** The custom models, each with its key from `llmSecrets.customModels` (`""` for none). */
+    customModels: (CustomModel & { key: string })[];
+};
 
 export type RequestScopeIds = {
     presetId: string;
@@ -136,7 +132,11 @@ export function loadRequestDb(
         db[rootKey] = typeof value === "string" ? value : PERSONA_DEFAULTS[PERSONA_ROOT_ALIASES[rootKey]];
     }
     db.autoSuggestPrefix = ui.autoSuggestPrefix;
-    db.customModels = customModels;
+    const modelKeys = (llmSecrets.customModels ?? {}) as Record<string, { key?: unknown }>;
+    db.customModels = (customModels as CustomModel[]).map((model) => {
+        const entry = Object.prototype.hasOwnProperty.call(modelKeys, model.id) ? modelKeys[model.id] : undefined;
+        return { ...model, key: typeof entry?.key === "string" ? entry.key : "" };
+    });
 
     const nameOf = (id: string | null): string | null => {
         if (!id) {

@@ -787,13 +787,14 @@ describe("the server port against the client adapters", () => {
         const custom = await both({
             settings: {
                 preset: { aiModel: "xcustom:::mine" },
+                // The model's key is an `llmSecrets` credential (7b): `loadRequestDb` merges it back.
+                secrets: { customModels: { "xcustom:::mine": { key: "custom-key" } } },
                 customModels: [
                     {
                         id: "xcustom:::mine",
                         name: "Mine",
                         internalId: "mine-1",
                         url: "https://custom.test/v1/chat/completions",
-                        key: "custom-key",
                         format: LLMFormat.OpenAICompatible,
                         flags: [LLMFlags.hasFullSystemPrompt],
                         tokenizer: 0,

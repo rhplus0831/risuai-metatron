@@ -184,8 +184,12 @@ async function tokenizeGoogleCloud(text: string) {
         return new Uint32Array(count);
     }
 
-    const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model.internalID}:countTokens?key=${db.google?.accessToken}`,
+    // With the stored Google key, on the server (`auxFetch`, Phase 5 slice 7b); loaded on first use,
+    // as this module is imported nearly everywhere.
+    const { auxFetch } = await import("./network/auxFetch");
+    const res = await auxFetch(
+        "google-count-tokens",
+        `https://generativelanguage.googleapis.com/v1beta/models/${model.internalID}:countTokens`,
         {
             method: "POST",
             headers: {
@@ -243,34 +247,6 @@ async function tikJS(text: string, model = "cl100k_base") {
         }
     }
     return tikParser.encode(text);
-}
-
-async function geminiTokenizer(text: string) {
-    const db = getDatabase();
-    const fetchResult = await globalFetch(
-        `https://generativelanguage.googleapis.com/v1beta/${db.aiModel}:countTextTokens`,
-        {
-            headers: {
-                "content-type": "application/json",
-                authorization: `Bearer ${db.google.accessToken}`,
-            },
-            body: JSON.stringify({
-                prompt: {
-                    text: text,
-                },
-            }),
-            method: "POST",
-        },
-    );
-
-    if (!fetchResult.ok) {
-        //fallback to tiktoken
-        return await tikJS(text);
-    }
-
-    const result = fetchResult.data;
-
-    return result.tokenCount ?? 0;
 }
 
 async function tokenizeWebTokenizers(text: string, type: tokenizerType) {

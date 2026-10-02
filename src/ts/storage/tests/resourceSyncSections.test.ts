@@ -1,6 +1,7 @@
 import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+import { maskLlmSecrets, type SecretPath } from "../../../../shared/llmSecrets.ts";
 import { newPersonaId } from "../../../../shared/presets.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { COLLECTION_KIND, PERSONA_ROOT_KEYS, SECTION_FIELDS, SECTION_KIND } from "../../../../shared/sections.ts";
@@ -16,7 +17,11 @@ import { StoreBackedServer } from "./storeBackedServer";
 // rule of the implementation plan (A12) is the central contract: for every kind,
 // `normalize(project(assemble(normalized)))` equals `normalized` as text, so an unchanged record is
 // never written. The real server store (`storeBackedServer.ts`) materializes and normalizes the
-// records; the in-memory fake (`fakeResourceServer.ts`) stores exactly what a test puts in it.
+// records; the in-memory fake (`fakeResourceServer.ts`) stores exactly what a test puts in it. Since
+// Phase 5 slice 7b (`request-layer-and-llm-secrets.md`) `llmSecrets` is write-only: both stand-ins
+// answer it masked, the record's text is its readable siblings, the mirror's credential fields are
+// `""`, the status comes from the masked record (`llmSecretState`), and a credential write goes
+// through `/api/llm-secrets/*` after the cycle's batch, never in the record.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -63,6 +68,7 @@ type Server = FakeResourceServer | StoreBackedServer;
 const json = (text: string) => JSON.parse(text);
 /** A plain copy of a mirror value, for `Object.hasOwn` checks that a Svelte proxy would answer differently. */
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+const presetPath = (id: string): SecretPath => ({ kind: "entry", field: "presets", id });
 
 /** A fresh module graph with the server stand-in installed, without starting the adapter. */
 async function fresh<S extends Server>(fake: S) {
@@ -254,11 +260,17 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             expect(db().hotkeys.length).toBeGreaterThan(1);
             expect(db().personas[1].id).toEqual(expect.any(String));
             expect(Object.hasOwn(plain(db().globalChatVariables), "__proto__")).toBe(true);
-            expect(Object.hasOwn(plain(db().OaiCompAPIKeys), "__proto__")).toBe(true);
             expect(Object.hasOwn(plain(db().seperateParameters.overrides), "__proto__")).toBe(true);
             expect(Object.hasOwn(plain(db().botPresets[0].seperateParameters.overrides), "__proto__")).toBe(true);
-            expect(secrets.getPresetSecret("__proto__")).toEqual({ proxyKey: "proto" });
-            expect(secrets.getPresetSecret("preset-1")).toEqual({ proxyKey: "p1" });
+            // The write-only `llmSecrets` record (7b) reaches the tab masked: the mirror's credential
+            // fields read "", and the status (own `__proto__` keys included) is in `llmSecretState`.
+            expect(db().openAIKey).toBe("");
+            expect(plain(db().OaiCompAPIKeys)).toEqual({});
+            expect(Object.hasOwn(plain(secrets.llmSecretState.masked!.OaiCompAPIKeys), "__proto__")).toBe(true);
+            expect(secrets.isSecretSet({ kind: "map", field: "OaiCompAPIKeys", id: "__proto__" })).toBe(true);
+            expect(secrets.isSecretSet({ kind: "flat", field: "openAIKey" })).toBe(true);
+            expect(secrets.secretStatus(presetPath("__proto__"))).toEqual({ set: true, hint: "", pending: false });
+            expect(secrets.secretStatus(presetPath("preset-1"))).toEqual({ set: true, hint: "", pending: false });
             await sync.flushResources();
             expect(store.batchCount()).toBe(0);
         } finally {
@@ -329,9 +341,10 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             const hypa = createHypaV3Preset("H3");
             db.zoomsize = 112;
             db.seperateParameters.overrides.claude = { temperature: 3 };
-            db.openAIKey = "sk2";
-            first.secrets.setPresetSecret("__proto__", { proxyKey: "proto2" });
-            first.secrets.setPresetSecret(db.botPresets[1].id, { proxyKey: "q" });
+            // The `llmSecrets` edit is a sibling (its credentials are queued writes, not record edits).
+            db.vertexClientEmail = "vertex@example.test";
+            first.secrets.setSecret(presetPath("__proto__"), "proto2");
+            first.secrets.setSecret(presetPath(db.botPresets[1].id), "q");
             db.elevenLabKey = "el";
             db.sdSteps = 32;
             db.globalChatVariables.y = "2";
@@ -378,6 +391,14 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             expect(store.record("statics", "main")!.data).toEqual({ messages: 4, imports: 0 });
             expect(Object.hasOwn(store.record("llmSecrets", "main")!.data.presets, "__proto__")).toBe(true);
             expect(store.record("llmSecrets", "main")!.data.presets.__proto__).toEqual({ proxyKey: "proto2" });
+            expect(store.record("llmSecrets", "main")!.data.presets[db.botPresets[1].id]).toEqual({ proxyKey: "q" });
+            // The sibling write carried no credential, and the server kept the stored ones.
+            expect(store.record("llmSecrets", "main")!.data.vertexClientEmail).toBe("vertex@example.test");
+            expect(store.record("llmSecrets", "main")!.data.openAIKey).toBe("sk");
+            expect(store.secretRequests().map((request) => request.path)).toEqual([
+                "/api/llm-secrets/presets/~__proto__/proxyKey",
+                `/api/llm-secrets/presets/~${db.botPresets[1].id}/proxyKey`,
+            ]);
             expect(store.record("personas", "main")!.data[0].name).toBe("u2");
             expect(store.record("personas", "main")!.data[0]).not.toHaveProperty("username");
             expect(store.record("presets", "main")!.data[0]).toMatchObject({ name: "P2", temperature: 42 });
@@ -389,7 +410,13 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             expect(second.db().temperature).toBe(42);
             expect(second.db().translatorPresetId).toBe(third.id);
             expect(second.db().hypaV3PresetId).toBe(hypa.id);
-            expect(second.secrets.getPresetSecret("__proto__")).toEqual({ proxyKey: "proto2" });
+            expect(second.db().vertexClientEmail).toBe("vertex@example.test");
+            expect(second.secrets.secretStatus(presetPath("__proto__"))).toEqual({
+                set: true,
+                hint: "",
+                pending: false,
+            });
+            expect(second.secrets.isSecretSet(presetPath(db.botPresets[1].id))).toBe(true);
             expect(Object.hasOwn(plain(second.db().seperateParameters.overrides), "__proto__")).toBe(true);
             await second.sync.flushResources();
             expect(store.batchCount()).toBe(0);
@@ -400,7 +427,7 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
 });
 
 describe("assembleDatabase", () => {
-    it("takes every section field, the collections unpacked, and the secret map, and assembles no forwarded field", async () => {
+    it("takes every section field, the collections unpacked, and the masked secret status, and assembles no forwarded field", async () => {
         const fake = await fakeStore();
         fake.set("llmSecrets", "main", {
             ...fake.data<Record<string, unknown>>("llmSecrets", "main")!,
@@ -419,7 +446,10 @@ describe("assembleDatabase", () => {
         expect(db.zoomsize).toBe(100);
         expect(db.language).toBe("en");
         for (const [section, fields] of Object.entries(SECTION_FIELDS)) {
-            const record = fake.data<Record<string, unknown>>(section, "main")!;
+            const stored = fake.data<Record<string, unknown>>(section, "main")!;
+            // The write-only `llmSecrets` record (7b) is read masked and assembled through
+            // `mirrorFields`: its siblings as stored, every credential field "".
+            const record = section === "llmSecrets" ? secrets.mirrorFields(maskLlmSecrets(stored)) : stored;
             for (const field of fields) {
                 if (Object.hasOwn(record, field)) {
                     expect(db[field], `${section}.${field}`).toEqual(record[field]);
@@ -444,8 +474,10 @@ describe("assembleDatabase", () => {
         expect(db.pluginCustomStorage).toEqual({});
         expect(db.characters).toEqual([{ chaId: "a", name: "Alice", type: "character", chats: [], chatPage: 0 }]);
         expect(db).not.toHaveProperty("presets");
-        expect(secrets.getPresetSecret("p")).toEqual({ proxyKey: "x" });
-        expect(secrets.getPresetSecret("__proto__")).toEqual({ proxyKey: "y" });
+        expect(db.openAIKey).toBe("");
+        expect(secrets.isSecretSet(presetPath("p"))).toBe(true);
+        expect(secrets.isSecretSet(presetPath("__proto__"))).toBe(true);
+        expect(secrets.isSecretSet(presetPath("absent"))).toBe(false);
     });
 
     it("leaves the optional Phase 1 collections absent when the server has no record, and defaults nothing else", async () => {
@@ -527,8 +559,9 @@ describe("watchers", () => {
             ["ui", () => (db().zoomsize = 111)],
             ["ui", () => (db().colorScheme.bgcolor = "#123")],
             ["providers", () => (db().seperateParameters.overrides.gpt = { temperature: 2 })],
-            ["llmSecrets", () => (db().openAIKey = "sk")],
-            ["llmSecrets", () => secrets.setPresetSecret("p", { proxyKey: "k" })],
+            // The `llmSecrets` siblings (7b): a credential is not a record edit (checked below).
+            ["llmSecrets", () => (db().vertexClientEmail = "vertex@example.test")],
+            ["llmSecrets", () => (db().google.projectId = "proj")],
             ["secrets", () => (db().elevenLabKey = "el")],
             ["memoryTranslateMedia", () => (db().sdConfig.width = 640)],
             ["loreBook", () => db().loreBook[0].data.push({ key: "k", content: "c", comment: "", mode: "normal" })],
@@ -558,6 +591,14 @@ describe("watchers", () => {
             expect(batches, `${kind} edit`).toHaveLength(1);
             expect(opKinds(batches), `${kind} edit`).toEqual([kind]);
         }
+        // A credential write (7b) is no record edit: no batch, one request to `/api/llm-secrets`.
+        fake.requests.length = 0;
+        secrets.setSecret(presetPath("p"), "k");
+        await sync.flushResources();
+        expect(fake.batchBodies()).toHaveLength(0);
+        expect(fake.secretRequests().map((request) => request.path)).toEqual(["/api/llm-secrets/presets/~p/proxyKey"]);
+        expect(fake.data("llmSecrets", "main").presets).toEqual({ p: { proxyKey: "k" } });
+        expect(secrets.secretStatus(presetPath("p"))).toEqual({ set: true, hint: "", pending: false });
     });
 
     it("send a selection change as the collection's { items, selectedId } record", async () => {
@@ -612,35 +653,49 @@ describe("conflict reloads", () => {
         expect(fake.data("ui", "main").zoomsize).toBe(51);
     });
 
-    it("replaces the secret map with the llmSecrets record, own __proto__ key included, and echoes nothing", async () => {
+    it("replaces the secret status with the masked llmSecrets record, own __proto__ key included, keeps the stored credentials on the next sibling write, and echoes nothing", async () => {
         const { fake, sync, secrets, db } = await boot(await fakeStore());
-        secrets.setPresetSecret("p1", { proxyKey: "local" });
+        secrets.setSecret(presetPath("p1"), "local");
         await sync.flushResources();
         expect(fake.data("llmSecrets", "main").presets).toEqual({ p1: { proxyKey: "local" } });
+        expect(secrets.secretStatus(presetPath("p1"))).toEqual({ set: true, hint: "", pending: false });
+        // Another client replaced the record: a sibling, a credential, and the presets map.
         fake.set("llmSecrets", "main", {
             ...fake.data<Record<string, unknown>>("llmSecrets", "main")!,
             openAIKey: "remote",
+            vertexClientEmail: "remote",
             presets: json('{"p2":{"proxyKey":"remote"},"__proto__":{"proxyKey":"proto"}}'),
         });
-        db().openAIKey = "local";
+        db().vertexClientEmail = "local";
         fake.requests.length = 0;
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["llmSecrets/main"]);
-        expect(db().openAIKey).toBe("remote");
-        expect(secrets.getPresetSecret("p1")).toBeUndefined();
-        expect(secrets.getPresetSecret("p2")).toEqual({ proxyKey: "remote" });
-        expect(secrets.getPresetSecret("__proto__")).toEqual({ proxyKey: "proto" });
+        expect(db().vertexClientEmail).toBe("remote");
+        // The mirror never holds a credential; the status comes from the masked record.
+        expect(db().openAIKey).toBe("");
+        expect(secrets.isSecretSet({ kind: "flat", field: "openAIKey" })).toBe(true);
+        expect(secrets.isSecretSet(presetPath("p1"))).toBe(false);
+        expect(secrets.isSecretSet(presetPath("p2"))).toBe(true);
+        expect(secrets.isSecretSet(presetPath("__proto__"))).toBe(true);
         const before = fake.batchCount();
         await sync.flushResources();
         expect(fake.batchCount()).toBe(before);
-        db().openAIKey = "again";
+        // The next sibling write carries no credential and no map; the server keeps the stored ones.
+        db().vertexClientEmail = "again";
         await sync.flushResources();
-        const sent = fake.data("llmSecrets", "main");
-        expect(sent.openAIKey).toBe("again");
-        expect(Object.hasOwn(sent.presets, "__proto__")).toBe(true);
-        expect(sent.presets.__proto__).toEqual({ proxyKey: "proto" });
-        expect(sent.presets.p2).toEqual({ proxyKey: "remote" });
-        expect(sent.presets).not.toHaveProperty("p1");
+        const sentOp = fake
+            .batchBodies()
+            .at(-1)!
+            .ops.find((op) => op.kind === "llmSecrets");
+        expect(sentOp.data).not.toHaveProperty("openAIKey");
+        expect(sentOp.data).not.toHaveProperty("presets");
+        const stored = fake.data("llmSecrets", "main");
+        expect(stored.vertexClientEmail).toBe("again");
+        expect(stored.openAIKey).toBe("remote");
+        expect(Object.hasOwn(stored.presets, "__proto__")).toBe(true);
+        expect(stored.presets.__proto__).toEqual({ proxyKey: "proto" });
+        expect(stored.presets.p2).toEqual({ proxyKey: "remote" });
+        expect(stored.presets).not.toHaveProperty("p1");
     });
 
     it("replaces a selectable collection and its selection together, and echoes nothing", async () => {

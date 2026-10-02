@@ -3,6 +3,7 @@ import http from "node:http";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LlmRequestEvent } from "../../../shared/llm/request.ts";
+import { encodeSecretPath, type SecretPath } from "../../../shared/llmSecrets.ts";
 import {
     createResourceTestClient,
     createSigner,
@@ -28,7 +29,7 @@ const SECRET = {
 
 type Seen = { method: string; url: string; headers: http.IncomingHttpHeaders; body: Buffer; closed: boolean };
 const upstreamRequests: Seen[] = [];
-let upstreamMode: "chat" | "stall" | "redirect" | "error" = "chat";
+let upstreamMode: "chat" | "stall" | "redirect" | "error" | "error-text" = "chat";
 let upstream: { url: string; close(): void };
 const realFetch = globalThis.fetch;
 
@@ -61,16 +62,15 @@ async function startProvider() {
                 res.end("moved");
                 return;
             }
-            if (upstreamMode === "error") {
+            if (upstreamMode === "error" || upstreamMode === "error-text") {
+                // The error echoes the credential in a header and in the body: as JSON (which the
+                // server refuses as a whole, 7b) or as text (which it redacts in place).
+                const echo = `rejected ${req.headers.authorization} ${new URL(url, "http://x").searchParams.get("key")}`;
                 res.writeHead(401, {
-                    "content-type": "application/json",
+                    "content-type": upstreamMode === "error" ? "application/json" : "text/plain",
                     "x-provider-debug": `key was ${req.headers.authorization}`,
                 });
-                res.end(
-                    JSON.stringify({
-                        error: `rejected ${req.headers.authorization} ${new URL(url, "http://x").searchParams.get("key")}`,
-                    }),
-                );
+                res.end(upstreamMode === "error" ? JSON.stringify({ error: echo }) : echo);
                 return;
             }
             res.writeHead(200, { "content-type": "application/octet-stream", "x-upstream": "aux" });
@@ -130,15 +130,23 @@ async function seed() {
         customAPIFormat: 0,
     };
     await write("presets", presets.data);
-    const secrets = await read("llmSecrets");
-    await write("llmSecrets", {
-        ...secrets.data,
-        openAIKey: SECRET.openai,
-        supaMemoryKey: SECRET.memory,
-        google: { ...secrets.data.google, accessToken: SECRET.google },
-        presets: { [presetId]: { proxyKey: SECRET.proxy } },
-    });
+    // The credentials go through `/api/llm-secrets/*` (Phase 5 slice 7b): the record is write-only.
+    await writeSecret({ kind: "flat", field: "openAIKey" }, SECRET.openai);
+    await writeSecret({ kind: "flat", field: "supaMemoryKey" }, SECRET.memory);
+    await writeSecret({ kind: "nested", field: "google" }, SECRET.google);
+    await writeSecret({ kind: "entry", field: "presets", id: presetId }, SECRET.proxy);
     return { presetId, personaId };
+}
+
+/** One credential write on the record's current revision (`PUT /api/llm-secrets/<path>`). */
+async function writeSecret(path: SecretPath, value: string) {
+    const current = (await (await client.get("llmSecrets", "main")).json()) as { revision: string };
+    const res = await client.json(
+        `/api/llm-secrets/${encodeSecretPath(path)}`,
+        { value, baseRevision: current.revision },
+        { method: "PUT" },
+    );
+    expect(res.status).toBe(200);
 }
 
 function body(
@@ -478,13 +486,7 @@ describe("the auxiliary operations of /proxy2", () => {
             expect(res.status, `${name} ${method} ${url}`).toBe(400);
         }
         expect(upstreamRequests).toHaveLength(0);
-        const read = async (kind: string) =>
-            (await (await client.get(kind, "main")).json()) as { revision: string; data: any };
-        const secrets = await read("llmSecrets");
-        await client.put("llmSecrets", "main", {
-            baseRevision: secrets.revision,
-            data: { ...secrets.data, openAIKey: " " },
-        });
+        await writeSecret({ kind: "flat", field: "openAIKey" }, " ");
         const missing = await aux("openai-tts", "https://api.openai.com/v1/audio/speech");
         expect(missing.status).toBe(400);
         expect(await missing.json()).toEqual({ error: "No credential is stored for openai-tts" });
@@ -498,6 +500,7 @@ describe("the auxiliary operations of /proxy2", () => {
         expect(redirected.status).toBe(502);
         expect(((await redirected.json()) as { error: string }).error).toMatch(/redirect/);
         expect(upstreamRequests).toHaveLength(1);
+        // A JSON error answer that carries the credential (7b): refused as a whole, under its status.
         upstreamMode = "error";
         const failed = await aux(
             "google-imagen",
@@ -505,11 +508,17 @@ describe("the auxiliary operations of /proxy2", () => {
         );
         expect(failed.status).toBe(401);
         const text = await failed.text();
-        expect(text).toContain("[redacted]");
+        expect(JSON.parse(text)).toEqual({
+            error: "The google-imagen endpoint answered 401 with the stored credential in it",
+        });
         expect(text).not.toContain(SECRET.google);
+        // A non-JSON error body is redacted in place, and so are its headers.
+        upstreamMode = "error-text";
         const errored = await aux("openai-tts", "https://api.openai.com/v1/audio/speech");
         expect(errored.status).toBe(401);
-        expect(await errored.text()).not.toContain(SECRET.openai);
+        const erroredText = await errored.text();
+        expect(erroredText).toContain("[redacted]");
+        expect(erroredText).not.toContain(SECRET.openai);
         expect(errored.headers.get("x-provider-debug")).toBe("key was Bearer [redacted]");
         // Without the header, the ordinary reverse proxy: the client's own credential, any URL.
         upstreamMode = "chat";

@@ -3,7 +3,8 @@ import { constants, type Dirent } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import { type BackupArchiveManifest, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { DatabaseSync } from "node:sqlite";
+import { type BackupArchiveManifest, RESOURCE_EPOCH_HEADER, RESOURCE_KIND } from "../../../shared/resources.ts";
 import {
     ArchiveFormatError,
     copyRecordToFile,
@@ -154,6 +155,16 @@ export function registerBackupRoutes(
             await snapshots.exclusive(() => store.backupTo(databaseFile));
             if (signal.aborted) {
                 return;
+            }
+            // A downloaded archive carries no LLM credentials (owner answer 12 (a)): the staged copy
+            // loses its `llmSecrets` row, and `VACUUM` rewrites the file so no page keeps the deleted
+            // row (or an older version of it). Snapshots on the server keep the record.
+            const staged = new DatabaseSync(databaseFile);
+            try {
+                staged.prepare("DELETE FROM resources WHERE kind = ?").run(RESOURCE_KIND.llmSecrets);
+                staged.exec("VACUUM");
+            } finally {
+                staged.close();
             }
             if ((await fs.stat(databaseFile)).size > MAX_ARCHIVE_RECORD_BYTES) {
                 throw new ArchiveRejectedError("The resource database is too large for the archive format");

@@ -1,6 +1,6 @@
 # Slice: Request Layer And LLM Secrets
 
-Status: 7a (transport) implemented (2026-10-01); 7b (write-only) not started.
+Status: 7a (transport) implemented (2026-10-01); 7b (write-only) implemented (2026-10-02).
 
 Phase: [Phase 5](../../phase-5-server-side-processing.md), step 2 (the request layer on the
 server, `llmSecrets` write-only, LLM calls off the proxy); PLAN.md Decision 6 (credentials).
@@ -418,3 +418,143 @@ import of the server graph (the Stop B Docker smoke). Observed, not defects: a B
 region part is a redaction target (decision 14), so a payload containing it is refused; a streaming
 request with `extractJson` makes one `cbs` round trip per chunk (decision 5). Pre-existing:
 `verifyJwt` answers 500, not 400, to a non-JWT `risu-auth`.
+
+## Implementation record (7b, write-only)
+
+Implemented 2026-10-02 on `911dfa00`, by the slice 7b amendments of
+[`implementation-plan.md`](implementation-plan.md) and Astra's plan review (15 points, all
+adopted).
+
+- **The record** (`shared/llmSecrets.ts`): the credential paths (twelve flat fields, the nested
+  `google.accessToken`, `hordeConfig.apiKey`, `novelai.token`, the `OaiCompAPIKeys` map, and the
+  entry maps `presets.<id>.proxyKey` and `customModels.<id>.key`), one path codec, the read and
+  write helpers, `maskLlmSecrets` (`{ set, hint }` leaves, the maps keep their nesting),
+  `carriesSecretPath`/`withStoredSecrets` (the write rule), and `llmSecretSiblings` (the readable
+  fields). A custom model's key moves from `customModels[].key` to `llmSecrets.customModels`.
+- **The server** (`self-host-server.md`): `ResourceKind` loses `clientReadable` and gains `project`
+  and `prepareWrite`; every read route and the PUT response project; a resource PUT or batch write
+  of `llmSecrets` may carry no credential (400) and keeps the stored ones; `/api/llm-secrets/*`
+  (PUT, DELETE, the preset copy) writes them, atomically with the revision check; the exported
+  archive's staged copy loses the row and is `VACUUM`ed; twelve new auxiliary rows (GET rows send no
+  body, a query allowlist, `x-api-key` injection), a successful JSON answer carrying a key refused
+  (502), response headers redacted; `loadRequestDb` merges the custom-model keys.
+- **The client** (`persistence.md`, `global-api.md`, `settings-i18n.md`): `llmSecrets.svelte.ts`
+  (the masked record, per-path versions, the write queue), the queue sent after each cycle's batch
+  (`resourceSync.svelte.ts`, `resourceClient.ts` `sendSecretRequest`), the sibling-only text
+  everywhere the record is seeded, compared, or written, `mirrorFields` in the boot assembly and
+  the conflict reload, `SecretInput.svelte` for all 24 credential inputs (`BotSettings`,
+  `OtherBotSettings`, `PlaygroundEmbedding`, `CustomModelsSettings`), the onboarding key, the
+  `proxyKey` accessor and the preset copy and import through the queue, and `auxFetch` for every
+  browser call that used a stored key. The settings report drops every `llmSecrets` field.
+
+Deviations from the reviewed plan (`p5s7b-decisions.md`):
+
+- A refused credential write (decision 14, "failed shown apart") is shown by the alert and by the
+  status falling back to the acknowledged one; `SecretInput` has no lasting failed marker.
+- `geminiTokenizer` (no caller) and the dead client key reads in `request.ts`, `hypav2.ts`, and
+  `supaMemory.ts` are removed; the Vertex token's clear button is gone (the server holds the
+  token in memory, 7a).
+
+Recorded behaviors (no migration owed, alpha):
+
+- OpenAI TTS with a custom URL and a stored key but no TTS key of its own alerts
+  `ttsCustomUrlNeedsKey`: the stored key goes only to the official origin.
+- Custom-model keys stored before this slice are dropped by the normalizer, not moved.
+- Importing an archive (which has no `llmSecrets` row) leaves every key empty.
+- A page unload does not send queued credential writes (the warning shows them as unsaved).
+- The mirror holds `""` for every credential field, where a fresh store had some absent before.
+
+## Astra challenge (7b, 2026-10-02) and decisions
+
+Three rounds (`/tmp/astra-p5s7b/challenge-{1,2,3}.md`); every point was adopted.
+
+- Round 1 (7 blocking, 4 non-blocking): a successful or error JSON answer is checked through its
+  decoded keys and values (a Unicode-escaped echo of the key is refused); the redactor knows the
+  credential as stored and as injected (trimmed); an acknowledged write bumps its path's version
+  and a changed reread bumps every path (two keys can share a masked status); the secret
+  acknowledgement judges the siblings by text, not by the dirty mark (unchanged → the server's;
+  local-only → kept; both → the normal conflict, discarded and noticed); the queued secret
+  operations are captured with the batch, so one queued meanwhile waits for the next cycle;
+  `auxFetch` settles on abort at once and starts nothing after it; the barrier refuses while
+  saving is halted; id segments carry a `~` prefix (`.` and `..` survive URL parsing); the queued
+  status is computed in queue order; clearing the NanoGPT key invalidates an answer still on its
+  way; a JSON body that fails mid-read is a 502.
+- Round 2 (3 blocking): a deleted preset's or model's key is a `cleanup`, sent only once the
+  owner's deletion is saved and dropped if a conflict restored the owner (an explicit clear stays a
+  plain write); `authFetch` takes `beforeDispatch`, which `auxFetch` uses to check abort and save
+  admission after authentication and signing; the abort race observes the raced promise first.
+- Round 3: R1–R3 resolved; a cleanup waiting for a quarantined deletion no longer keeps the loop
+  scheduled, and the barrier reports the quarantine at once.
+
+Recorded limits: the cleanup check is on the client (no server-side condition); a future flow that
+restores an existing id on another client would need one. A cleanup for a preset whose creation
+was never saved leaves an orphan entry (masked, never read).
+
+## Checks (7b)
+
+The scratch smoke on a listening server passes 57/57 (masked reads on all four read routes and
+the PUT response, the write rule on PUT and batch, the singleton delete refused, every secret
+route with its revision, epoch, length, and path checks, the preset copy, the export scanned
+byte-wise for every sentinel with the resource table present, the new auxiliary rows with their
+injection, method, empty GET body, query allowlist, missing key, the carrying 502, Unicode-escaped
+echoes in success and error bodies, a padded key echoed trimmed, and a body failing mid-read);
+`util/playwright/checkLlmTransport.mjs` passes 17/17 (a key typed into the settings input reaches
+the provider on the send right after; only the `PUT /api/llm-secrets` request carries it; no
+response does; the mirror reads `""`; browser storage holds no copy; the status after a reload).
+
+## Tests (7b)
+
+The Fable test-adapter adapted the 13 invalidated files and the three harnesses (its report is in
+the review record). The Fable reviewer (verdict: **problem**, below) wrote 50 tests, adapting none
+further:
+
+- `server/src/tests/llmSecrets.test.ts`: the masked projection on every read route and the PUT
+  response with the stored record plaintext for the server; the write rule (a carrying write in any
+  shape refused without an echo, an omitting write keeping every credential, a batch prepared before
+  anything is applied and rolled back by one carrying op, the singleton delete refused); the secret
+  routes (set, replace, clear, delete, the preset copy; 409 with the revision, 412, 503, the JWT; bad
+  paths, bodies, and the length refused without an echo; the hint rule; every id through a real URL:
+  `.`, `..`, slashes, percent signs, Unicode, spaces, a tilde, `__proto__`); the exported archive
+  without the row or any byte of a current or replaced credential while a snapshot keeps the record;
+  an import of such an archive leaving every key empty under the new epoch.
+- `server/src/tests/auxOps.test.ts`: the twelve new rows (method, endpoint, injection, an empty GET
+  body; another method, origin, path, query parameter, a redirect, a missing key refused) and the
+  response policy (a carrying successful JSON answer refused as text, Unicode-escaped, or as a
+  property name, the trimmed injected form included; a carrying JSON error refused as a whole with
+  its headers redacted; a body failing mid-read or not JSON a 502; a non-JSON body passed through).
+- `src/ts/storage/tests/resourceSyncSecrets.test.ts`: the queue in the save adapter (sent after the
+  batch on the record's revision and never in the record; the unload warning; versions bumped on
+  every acknowledged replacement; the barrier; the copy after its preset's batch and a key queued
+  during an in-flight batch waiting for the next; a stale revision reread and retried a bounded
+  number of times; 400 and 404 as reported discards with an alert carrying no value; 5xx and
+  network failures kept; 412 halting with the barrier refusing while halted; the acknowledgement
+  adopted by text in its three cases and a lost sibling acknowledgement recognized; the cleanup
+  sent once the deletion is saved, dropped when a conflict restored the owner, waiting behind a
+  quarantined deletion without a scheduled cycle, for presets and custom models).
+- `src/ts/network/auxFetch.test.ts`: the barrier, the method and headers without a credential, the
+  bodies (JSON, bytes, `FormData` serialized once with its boundary), the interceptors, the failures
+  (a refused key, a halt), the abort at each stage settling at once with nothing started after it,
+  no unobserved rejection, the dispatch check after authentication, `auxFetchJson`.
+  `src/ts/storage/tests/nodeStorage.test.ts` gains `authFetch`'s `beforeDispatch` (after the
+  authentication and the signing, before the request; a throw stops it).
+- `src/ts/process/ttsOpenAI.test.ts`: the four OpenAI TTS routes (the stored key through the server
+  for the official endpoint only; a character's own key to any URL; the custom-URL refusal; keyless).
+- `src/lib/UI/GUI/SecretInput.test.ts` and `src/lib/UI/NanoGPTDashboard.test.ts` (with the
+  `src/lib/UI/tests/reactiveProps.svelte.ts` helper): the credential input's draft rules, and the
+  dashboard's stale answers.
+
+Problem found (round 1 N3, recorded as resolved in round 2 "by inspection"): in
+`NanoGPTDashboard.svelte`, `dashboardPromise` is a `$derived` that is read only inside
+`{#if keySet}`. When the key is cleared, that block is torn down and nothing reads the derived, so
+its no-key branch (`cleared()`, which bumps `latest`) never runs; an answer still on its way then
+passes the `request !== latest` check and writes `nanogptSubscriptionState`, undoing the reset
+`BotSettings` made. `NanoGPTDashboard.test.ts` fails on exactly that step (the replace and unmount
+paths hold). Observed, not a defect: adopting an acknowledged `llmSecrets` record writes the
+mirror, whose watcher re-marks the record until the next cycle, so the unload warning shows for up
+to one debounce after each acknowledged key write (the same transient mark every reload produces).
+
+Fixed on the owner's instruction (2026-10-02): the invalidation moved out of the derived into a
+`$effect` that bumps `latest` whenever `keySet` is false, which runs on every clear whether or not
+the block reads the derived. `NanoGPTDashboard.test.ts` passes; on the final tree `pnpm check`,
+`pnpm format:check`, `pnpm test` (132 files, 1,587 passed, 3 skipped), `pnpm build`, and
+`pnpm test:e2e` (5 passed) pass, the smoke 57/57 and the browser check 17/17.

@@ -1,3 +1,5 @@
+import { auxFetch } from "../network/auxFetch";
+import { isSecretSet } from "../storage/llmSecrets.svelte";
 import { alertError } from "../alert";
 import { getCurrentCharacter, getDatabase, type character } from "../storage/database.svelte";
 import { runTranslator, translateVox } from "../translator/translator";
@@ -197,25 +199,43 @@ export async function sayTTS(character: character, text: string) {
             case "openai": {
                 const cfg = character.oaiTTSConfig?.enabled ? character.oaiTTSConfig : null;
                 const baseURL = (cfg?.baseURL?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
-                const apiKey = (cfg?.apiKey || db.openAIKey || "").trim();
+                // The per-character key is the character's (Decision 6); the stored OpenAI key is
+                // write-only (Phase 5 slice 7b) and only reaches api.openai.com, through the server.
+                const ownKey = (cfg?.apiKey || "").trim();
+                const official = baseURL === "https://api.openai.com/v1";
+                const storedKey = isSecretSet({ kind: "flat", field: "openAIKey" });
                 const model = cfg?.model || "tts-1";
                 const voice = cfg?.voice || character.oaiVoice || "alloy";
                 const format = cfg?.format || "mp3";
+                const body = {
+                    model,
+                    input: text,
+                    voice,
+                    response_format: format,
+                };
 
-                const res = await globalFetch(`${baseURL}/audio/speech`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        ...(apiKey ? { Authorization: "Bearer " + apiKey } : {}),
-                    },
-                    body: {
-                        model,
-                        input: text,
-                        voice,
-                        response_format: format,
-                    },
-                    rawResponse: true,
-                });
+                let res: { ok: boolean; data: any };
+                if (!ownKey && official && storedKey) {
+                    const response = await auxFetch("openai-tts", `${baseURL}/audio/speech`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body,
+                    });
+                    res = { ok: response.ok, data: new Uint8Array(await response.arrayBuffer()) };
+                } else if (!ownKey && !official && storedKey) {
+                    alertError(language.ttsCustomUrlNeedsKey);
+                    break;
+                } else {
+                    res = await globalFetch(`${baseURL}/audio/speech`, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(ownKey ? { Authorization: "Bearer " + ownKey } : {}),
+                        },
+                        body,
+                        rawResponse: true,
+                    });
+                }
                 const dat = res.data;
 
                 if (res.ok) {

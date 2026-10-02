@@ -1,14 +1,17 @@
 <script lang="ts">
+    import { onDestroy } from "svelte";
     import { getNanoGPTBalance, getNanoGPTSubscription } from "src/ts/model/nanogpt";
     import type { NanoGPTBalance, NanoGPTSubscriptionUsage } from "src/ts/model/nanogpt";
     import { getDatabase } from "src/ts/storage/database.svelte";
     import { language } from "src/lang";
 
     interface Props {
-        apiKey: string;
+        /** Whether a NanoGPT key is stored, and its version (a replaced key refetches). */
+        keySet: boolean;
+        keyVersion: number;
     }
 
-    let { apiKey }: Props = $props();
+    let { keySet, keyVersion }: Props = $props();
 
     type DashboardData = {
         balance: NanoGPTBalance | null;
@@ -16,11 +19,28 @@
     };
 
     let dashboardPromise = $derived(
-        apiKey ? fetchDashboard(apiKey) : Promise.resolve<DashboardData>({ balance: null, subscription: null }),
+        keySet ? fetchDashboard(keyVersion) : Promise.resolve<DashboardData>({ balance: null, subscription: null }),
     );
 
-    async function fetchDashboard(key: string): Promise<DashboardData> {
-        const [balance, subscription] = await Promise.all([getNanoGPTBalance(key), getNanoGPTSubscription(key)]);
+    let latest = 0;
+    // No key: an answer still on its way for the old key is stale. An effect, not the derived
+    // (which nothing reads once the `{#if keySet}` block is gone), so it runs on every clear.
+    $effect(() => {
+        if (!keySet) {
+            latest += 1;
+        }
+    });
+    onDestroy(() => {
+        latest += 1;
+    });
+    async function fetchDashboard(version: number): Promise<DashboardData> {
+        const request = ++latest;
+        const [balance, subscription] = await Promise.all([getNanoGPTBalance(), getNanoGPTSubscription()]);
+        if (request !== latest) {
+            // A newer key's answer is on its way: this one is stale.
+            return { balance, subscription };
+        }
+        void version;
         // Persist subscription state so chat requests can pick the right endpoint
         const db = getDatabase();
         db.nanogptSubscriptionState = subscription?.state ?? "";
@@ -78,7 +98,7 @@
     }
 </script>
 
-{#if apiKey}
+{#if keySet}
     {#await dashboardPromise}
         <div class="mt-3 mb-2 flex items-center gap-2 text-sm text-textcolor">
             <span class="animate-pulse">●</span>

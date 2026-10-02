@@ -11,7 +11,8 @@ import {
     GPT5XHighParameters,
 } from "./types";
 import { BASE_LLM_MODELS, resolveModelInfo } from "../../../shared/llm/models.ts";
-import { fetchNative } from "../globalApi.svelte";
+import { auxFetch } from "../network/auxFetch";
+import { isSecretSet } from "../storage/llmSecrets.svelte";
 import { DBState } from "../stores.svelte";
 import { customV3ProviderMetaStore } from "../plugins/apiV3/v3.svelte";
 
@@ -43,13 +44,11 @@ export async function registerModelDynamic() {
     }
     //google
     try {
-        if (DBState.db.google.accessToken) {
-            const res = await fetchNative(
-                `https://generativelanguage.googleapis.com/v1beta/models?key=${DBState.db.google.accessToken}`,
-                {
-                    method: "GET",
-                },
-            );
+        // The three lists use the stored keys on the server (`auxFetch`, Phase 5 slice 7b).
+        if (isSecretSet({ kind: "nested", field: "google" })) {
+            const res = await auxFetch("google-models", "https://generativelanguage.googleapis.com/v1beta/models", {
+                method: "GET",
+            });
             const json = await res.json();
             console.log("Google models response", json);
             const models = json?.models || [];
@@ -101,12 +100,11 @@ export async function registerModelDynamic() {
 
     //Anthropic
     try {
-        if (DBState.db.claudeAPIKey) {
-            const res = await fetchNative("https://api.anthropic.com/v1/models", {
+        if (isSecretSet({ kind: "flat", field: "claudeAPIKey" })) {
+            const res = await auxFetch("anthropic-models", "https://api.anthropic.com/v1/models", {
                 method: "GET",
                 headers: {
                     "anthropic-version": "2023-06-01",
-                    "x-api-key": DBState.db.claudeAPIKey,
                 },
             });
 
@@ -147,13 +145,8 @@ export async function registerModelDynamic() {
     }
 
     try {
-        if (DBState.db.openAIKey) {
-            const res = await fetchNative(`https://api.openai.com/v1/models`, {
-                method: "GET",
-                headers: {
-                    Authorization: "Bearer " + DBState.db.openAIKey,
-                },
-            });
+        if (isSecretSet({ kind: "flat", field: "openAIKey" })) {
+            const res = await auxFetch("openai-models", "https://api.openai.com/v1/models", { method: "GET" });
             const json = await res.json();
             console.log(json);
             if (!json.data) {

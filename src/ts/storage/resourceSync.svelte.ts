@@ -22,7 +22,22 @@ import {
     type SectionKind,
 } from "../../../shared/sections.ts";
 import { language } from "src/lang";
-import { llmSecretPresets, replacePresetSecrets } from "./llmSecrets.svelte";
+import {
+    llmSecretState,
+    llmSecretsText,
+    mirrorFields,
+    removeSecretOp,
+    secretOpTarget,
+    setMaskedSecrets,
+    setSecretScheduler,
+    type QueuedSecretOp,
+} from "./llmSecrets.svelte";
+import {
+    encodeSecretPath,
+    type MaskedLlmSecrets,
+    type SecretEntryMap,
+    type SecretPath,
+} from "../../../shared/llmSecrets.ts";
 import { alertError, alertNormal, alertNormalWait } from "../alert";
 import { DBState, selectedCharID } from "../stores.svelte";
 import type { character, Chat, Database, groupChat } from "./database.svelte";
@@ -68,6 +83,7 @@ import {
 } from "./chatStore.svelte";
 import {
     applyBatchText,
+    getResource,
     getResourceEpoch,
     prepareUnloadAuth,
     readRefs,
@@ -75,6 +91,7 @@ import {
     ResourceEpochMismatchError,
     ResourceRequestError,
     sendBatchOnUnload,
+    sendSecretRequest,
     setEpochMismatchListener,
     setResourceEpoch,
     UNLOAD_BODY_LIMIT,
@@ -216,9 +233,21 @@ export function seedResources(result: ResourceReadKindsResult) {
     persisted.clear();
     for (const [kind, records] of Object.entries(result.kinds)) {
         for (const record of records) {
-            persisted.set(recordKey(kind, record.id), { revision: record.revision, text: JSON.stringify(record.data) });
+            persisted.set(recordKey(kind, record.id), {
+                revision: record.revision,
+                text: recordText(kind, record.data),
+            });
         }
     }
+}
+
+/**
+ * A record's text as this client writes and compares it: the JSON of its data, except the
+ * write-only `llmSecrets` record, whose text is its readable siblings (the server keeps the
+ * credentials and answers them masked).
+ */
+function recordText(kind: string, data: unknown): string {
+    return kind === SECTION_KIND.llmSecrets ? llmSecretsText(data as Record<string, unknown>) : JSON.stringify(data);
 }
 
 /**
@@ -271,7 +300,12 @@ function isBlockedKey(key: string): boolean {
 
 /** Whether anything waits to be saved or reloaded, not counting characters whose generation still runs. */
 function hasPendingWork(): boolean {
-    if (hasPendingMembership(true) || hasChatWork(canSaveCharacter) || hydrate.size > 0) {
+    if (
+        hasPendingMembership(true) ||
+        hasChatWork(canSaveCharacter) ||
+        hydrate.size > 0 ||
+        llmSecretState.queue.some((op) => !awaitsOwnerDeletion(op))
+    ) {
         return true;
     }
     for (const id of deferredCharacters) {
@@ -361,12 +395,13 @@ function projectCollection(collection: Collection): string | undefined {
     const db = DBState.db;
     const fields = db as unknown as Record<string, unknown>;
     if (isSection(collection)) {
+        if (collection === SECTION_KIND.llmSecrets) {
+            // Its readable siblings only: the credentials are written through `/api/llm-secrets`.
+            return llmSecretsText(fields);
+        }
         const record: Record<string, unknown> = {};
         for (const field of SECTION_FIELDS[collection]) {
             record[field] = fields[field];
-        }
-        if (collection === SECTION_KIND.llmSecrets) {
-            record.presets = llmSecretPresets.value;
         }
         return JSON.stringify(record);
     }
@@ -484,6 +519,7 @@ function hasPendingMembership(runnable = false): boolean {
 function hasUnsavedWork(): boolean {
     return (
         inFlight !== null ||
+        llmSecretState.queue.length > 0 ||
         [...dirty.keys()].some((key) => !recordQuarantine(key)) ||
         hasPendingMembership() ||
         hasUnsavedChatWork(canSaveCharacter)
@@ -796,6 +832,9 @@ async function cycle() {
     await hydrateCharacters();
     await refreshIdleChats();
     const { ops, captured, membership, chatWork } = collectOperations();
+    // The credential writes queued so far go after this batch; one queued while it is in flight
+    // (say, the key of a preset created meanwhile) waits for the next cycle, after its resource.
+    const capturedSecretOps = new Set(llmSecretState.queue.map((op) => op.id));
     const { batches, oversized } = planBatches(ops, chatWork);
     for (const group of oversized) {
         quarantineChat(group);
@@ -862,6 +901,7 @@ async function cycle() {
             }
         }
     }
+    await sendSecretOps(capturedSecretOps);
     for (const [key, marked] of captured) {
         if (recordQuarantine(key)) {
             continue;
@@ -883,6 +923,191 @@ async function cycle() {
         membershipAcked = membership;
     }
     await refreshIdleChats();
+}
+
+/** Queued credential writes the server refused (400, 404): dropped and reported, by op id. */
+const failedSecretOps = new Set<number>();
+/** How many times one credential write is retried on a stale revision within one cycle. */
+const SECRET_CONFLICT_RETRIES = 2;
+
+/**
+ * Where the owner of a deleted entry stands: `live` while the mirror holds it (also once a conflict
+ * restored it), `unsaved` while the server's saved copy still holds it, `gone` once both lost it.
+ */
+function entryOwnerState(field: SecretEntryMap, id: string): "live" | "unsaved" | "gone" {
+    const holds = (list: unknown) =>
+        Array.isArray(list) && list.some((entry) => (entry as { id?: unknown } | null)?.id === id);
+    const mirror = field === "presets" ? DBState.db.botPresets : DBState.db.customModels;
+    if (holds(mirror)) {
+        return "live";
+    }
+    const saved = persisted.get(
+        field === "presets"
+            ? recordKey(RESOURCE_KIND.presets, SINGLETON_RESOURCE_ID)
+            : collectionKey(COLLECTION_KIND.customModels),
+    )?.text;
+    let savedList: unknown = null;
+    try {
+        savedList = saved === undefined ? null : JSON.parse(saved);
+    } catch {}
+    return holds(savedList) ? "unsaved" : "gone";
+}
+
+/**
+ * A cleanup whose owner's deletion is not saved yet: unsaved, but not work a cycle can do (the
+ * owner's own write wakes the loop; a quarantined one waits for an edit).
+ */
+function awaitsOwnerDeletion(op: QueuedSecretOp): boolean {
+    return op.request.kind === "cleanup" && entryOwnerState(op.request.path.field, op.request.path.id) === "unsaved";
+}
+
+/** What a credential write is called in a discard report (never its value). */
+function secretOpLabel(op: QueuedSecretOp): string {
+    return encodeSecretPath(secretOpTarget(op.request));
+}
+
+/**
+ * Adopts the server's `llmSecrets` record after a credential write or a reread: its revision, its
+ * masked status, and its siblings, judged by text against the saved siblings (a dirty mark alone
+ * is no edit). Mirror siblings equal to the saved text take the server's; a local edit over
+ * unchanged server siblings is kept (written next, on this revision); a local edit where the
+ * server's siblings changed too is the normal conflict: the server's copy wins, the local edit is
+ * reported as discarded, and the reload notice is shown.
+ */
+function adoptSecretRecord(revision: string, masked: MaskedLlmSecrets, invalidate: SecretPath[] | "all") {
+    const key = collectionKey(SECTION_KIND.llmSecrets);
+    const saved = persisted.get(key)?.text;
+    const remote = llmSecretsText(masked);
+    const local = projectCollection(SECTION_KIND.llmSecrets);
+    if (local === saved) {
+        persisted.set(key, { revision, text: remote });
+        applySettingsRecord(SECTION_KIND.llmSecrets, masked, invalidate);
+    } else if (remote === saved) {
+        persisted.set(key, { revision, text: remote });
+        setMaskedSecrets(masked, invalidate);
+    } else {
+        // Through `applySettingsRecord`, which invalidates every credential path.
+        acceptRemote({ kind: SECTION_KIND.llmSecrets, id: SINGLETON_RESOURCE_ID, revision, data: masked });
+        showReloadedNotice();
+    }
+}
+
+async function rereadSecrets() {
+    const item = await getResource<MaskedLlmSecrets>(SECTION_KIND.llmSecrets, SINGLETON_RESOURCE_ID);
+    if (item) {
+        const before = persisted.get(collectionKey(SECTION_KIND.llmSecrets))?.revision;
+        adoptSecretRecord(item.revision, item.data, item.revision === before ? [] : "all");
+    }
+}
+
+/**
+ * Sends the queued credential writes (`llmSecrets.svelte.ts`), after this cycle's resource batch
+ * (a preset is saved before its key is copied or set), one at a time on the record's current
+ * revision. A stale revision rereads the record and retries (a set is a blind write of one path),
+ * a few times per cycle; a refused write (400, 404) is dropped and reported as a discard; any
+ * other failure keeps the queue for the next cycle (the save backoff; 412 halts for a restore).
+ */
+async function sendSecretOps(captured: ReadonlySet<number>) {
+    const key = collectionKey(SECTION_KIND.llmSecrets);
+    for (const op of llmSecretState.queue.filter((entry) => captured.has(entry.id))) {
+        if (op.request.kind === "cleanup") {
+            const owner = entryOwnerState(op.request.path.field, op.request.path.id);
+            if (owner === "live") {
+                // The deletion was discarded (a conflict restored the owner): its key stays.
+                removeSecretOp(op.id);
+                continue;
+            }
+            if (owner === "unsaved") {
+                // Its deletion is not on the server yet: the cleanup waits for it.
+                continue;
+            }
+        }
+        for (let attempt = 0; ; attempt += 1) {
+            if (halted) {
+                return;
+            }
+            const base = persisted.get(key)?.revision;
+            if (!base) {
+                throw new Error("The llmSecrets record is not loaded");
+            }
+            saving.state = true;
+            try {
+                const reply = await sendSecretRequest(
+                    op.request.kind === "copy"
+                        ? op.request
+                        : {
+                              kind: "put",
+                              path: encodeSecretPath(op.request.path),
+                              value: op.request.kind === "put" ? op.request.value : "",
+                          },
+                    base,
+                );
+                removeSecretOp(op.id);
+                adoptSecretRecord(reply.revision, reply.data as MaskedLlmSecrets, [secretOpTarget(op.request)]);
+                break;
+            } catch (error) {
+                if (error instanceof ResourceConflictError && attempt < SECRET_CONFLICT_RETRIES) {
+                    await rereadSecrets();
+                    continue;
+                }
+                if (error instanceof ResourceRequestError && (error.status === 400 || error.status === 404)) {
+                    removeSecretOp(op.id);
+                    failedSecretOps.add(op.id);
+                    discardSequence += 1;
+                    discarded.set(recordKey(SECTION_KIND.llmSecrets, secretOpLabel(op)), discardSequence);
+                    alertError(`${language.resourceRecordRefused}\nllmSecrets/${secretOpLabel(op)}: ${error.message}`);
+                    break;
+                }
+                throw error;
+            }
+        }
+    }
+}
+
+/**
+ * Waits until every credential write queued now is saved: an auxiliary call that uses a stored key
+ * (`auxFetch`) goes out only after the key the user just entered is on the server. Throws when one
+ * of them was refused, when saving fails, or when the data was restored.
+ */
+export async function awaitSecretWrites(): Promise<void> {
+    assertSaveAdmission();
+    const target = new Set(llmSecretState.queue.map((op) => op.id));
+    const waiting = () => llmSecretState.queue.some((op) => target.has(op.id));
+    for (let attempt = 0; attempt < 10 && waiting(); attempt += 1) {
+        if (halted) {
+            throw new Error("Saving stopped: the server data was restored");
+        }
+        if (timer) {
+            clearTimeout(timer);
+            timer = null;
+        }
+        await runCycle();
+        if (lastError || permanentError) {
+            throw lastError ?? permanentError;
+        }
+        const left = llmSecretState.queue.filter((op) => target.has(op.id));
+        if (left.length > 0 && left.every(awaitsOwnerDeletion)) {
+            // Only cleanups behind an unsaved deletion are left: another cycle cannot help.
+            throw quarantineReason() ?? new Error("A deleted preset or model is not saved yet");
+        }
+    }
+    if (waiting()) {
+        throw new Error("A key could not be saved");
+    }
+    if ([...target].some((id) => failedSecretOps.has(id))) {
+        throw new Error("The server refused a key");
+    }
+    assertSaveAdmission();
+}
+
+/**
+ * Throws once saving has stopped (the server data was restored): the tab's state is from the old
+ * data, so a call that uses the server's stored keys is not sent until the page reloads.
+ */
+export function assertSaveAdmission() {
+    if (halted) {
+        throw new Error("Saving stopped: the server data was restored");
+    }
 }
 
 function mergeWork(works: readonly ChatWork[]): ChatWork {
@@ -1049,7 +1274,7 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
     }
     for (const item of read.items) {
         const key = recordKey(item.kind, item.id);
-        const text = item.revision === null ? null : JSON.stringify(item.data);
+        const text = item.revision === null ? null : recordText(item.kind, item.data);
         if (text !== null && sent.get(key) === text) {
             persisted.set(key, { revision: item.revision!, text });
             continue;
@@ -1184,17 +1409,25 @@ function replaceFields(fields: readonly string[], next: Record<string, unknown>)
     }
 }
 
-/** Puts a section or settings collection record into `DBState.db` (and `llmSecretPresets`). */
-function applySettingsRecord(kind: SectionKind | CollectionKind, data: unknown) {
+/** Puts a section or settings collection record into `DBState.db` (and `llmSecretState`). */
+function applySettingsRecord(
+    kind: SectionKind | CollectionKind,
+    data: unknown,
+    secretInvalidate: SecretPath[] | "all" = "all",
+) {
     if (data === null) {
         // Singletons: the server never deletes them.
         return;
     }
     if (isSection(kind)) {
-        replaceFields(SECTION_FIELDS[kind], data as Record<string, unknown>);
         if (kind === SECTION_KIND.llmSecrets) {
-            replacePresetSecrets((data as { presets?: unknown }).presets);
+            // The masked record: its siblings into the mirror (its credential fields `""`), its
+            // status into `llmSecretState`.
+            replaceFields(SECTION_FIELDS[kind], mirrorFields(data as Record<string, unknown>));
+            setMaskedSecrets(data as MaskedLlmSecrets, secretInvalidate);
+            return;
         }
+        replaceFields(SECTION_FIELDS[kind], data as Record<string, unknown>);
         return;
     }
     const db = DBState.db as unknown as Record<string, unknown>;
@@ -1398,7 +1631,9 @@ export async function flushResources(options: { scope?: MutationScope } = {}): P
     const unsettled = () =>
         [...obligations].filter(([key, marked]) => (acked.get(key) ?? 0) < marked).map(([key]) => key);
     const hydrating = new Set(hydrate);
+    const secretTarget = new Set(llmSecretState.queue.map((op) => op.id));
     const pending = () =>
+        llmSecretState.queue.some((op) => secretTarget.has(op.id)) ||
         unsettled().length > 0 ||
         membershipAcked < membershipTarget ||
         unsettledChatObligations(chatObligations).length > 0 ||
@@ -1473,6 +1708,10 @@ export function startResourceSync() {
     started = true;
     setEpochMismatchListener(() => {
         void haltForRestore();
+    });
+    setSecretScheduler(() => {
+        permanentError = null;
+        schedule();
     });
     setChatWorkListener(() => {
         schedule();

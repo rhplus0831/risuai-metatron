@@ -22,6 +22,7 @@ import { normalizeProviders } from "./normalize/providers.ts";
 import { normalizeSecrets } from "./normalize/secrets.ts";
 import { requireArrayOfObjects, requireObject } from "./normalize/shared.ts";
 import { normalizeUi } from "./normalize/ui.ts";
+import { carriesSecretPath, maskLlmSecrets, withStoredSecrets } from "../../../shared/llmSecrets.ts";
 import { ResourceValidationError } from "./resourceStore.ts";
 
 /**
@@ -31,16 +32,22 @@ import { ResourceValidationError } from "./resourceStore.ts";
  * its own output returns the same JSON), or the startup pass rewrites the record on every start. A
  * singleton kind has exactly one record, `SINGLETON_RESOURCE_ID`, which cannot be deleted. A
  * `materialize` kind is a singleton the store creates as `normalize(undefined)` whenever it is missing
- * (at startup and after a restore), so a client always finds it. `clientReadable` marks a credential
- * kind the client may still read (Phase 5 makes `llmSecrets` write-only).
+ * (at startup and after a restore), so a client always finds it.
+ *
+ * A write-only kind (`llmSecrets`, Phase 5 slice 7b) has `project` and `prepareWrite`: the resource
+ * routes return `project(data)` wherever a record reaches a client (the stored data stays as it is
+ * for the server), and a plain write's data is `prepareWrite(incoming, stored)` before it is
+ * normalized (it may refuse with `ResourceValidationError`). Both run in the same synchronous block
+ * as the write, so they are atomic with its revision check.
  */
 export interface ResourceKind<T = unknown> {
     readonly name: string;
     readonly schemaVersion: number;
     readonly singleton?: boolean;
     readonly materialize?: true;
-    readonly clientReadable?: true;
     normalize(input: unknown, context: { id: string }): T;
+    project?(data: unknown): unknown;
+    prepareWrite?(incoming: unknown, stored: unknown | null): unknown;
 }
 
 export type ResourceKindRegistry = ReadonlyMap<string, ResourceKind>;
@@ -83,7 +90,7 @@ function requireOptionalNumber(record: Record<string, unknown>, key: string, wha
 function settingsKind(
     name: string,
     normalize: (input: unknown) => unknown,
-    extra: { clientReadable?: true } = {},
+    extra: Pick<ResourceKind, "project" | "prepareWrite"> = {},
 ): ResourceKind {
     return {
         name,
@@ -189,7 +196,22 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
     },
     settingsKind(RESOURCE_KIND.providers, normalizeProviders),
     settingsKind(RESOURCE_KIND.secrets, normalizeSecrets),
-    settingsKind(RESOURCE_KIND.llmSecrets, normalizeLlmSecrets, { clientReadable: true }),
+    settingsKind(RESOURCE_KIND.llmSecrets, normalizeLlmSecrets, {
+        // Write-only (`shared/llmSecrets.ts`): a client reads masked leaves; a plain write keeps
+        // every stored credential and may not carry one (they are written through `/api/llm-secrets`).
+        project: (data) => maskLlmSecrets(data as Record<string, unknown>),
+        prepareWrite: (incoming, stored) => {
+            if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
+                throw new ResourceValidationError("llmSecrets must be an object");
+            }
+            if (carriesSecretPath(incoming as Record<string, unknown>)) {
+                throw new ResourceValidationError(
+                    "llmSecrets credentials are written through /api/llm-secrets, not in the record",
+                );
+            }
+            return withStoredSecrets(incoming as Record<string, unknown>, (stored ?? {}) as Record<string, unknown>);
+        },
+    }),
     settingsKind(RESOURCE_KIND.ui, normalizeUi),
     settingsKind(RESOURCE_KIND.memoryTranslateMedia, normalizeMemoryTranslateMedia),
     settingsKind(RESOURCE_KIND.loreBook, normalizeLoreBook),

@@ -2,70 +2,191 @@
  * The auxiliary operations of `/proxy2` (owner answer 2, `implementation-plan.md` step 0): a
  * `risu-aux-op` header names one row, and the server sends the request with its stored credential
  * instead of one the browser holds. Each row fixes the HTTPS origin, the method, the path, the
- * secret, and how it is injected. The browser callers (OpenAI TTS, DALL-E, Whisper, the memory
- * embeddings and completions, Imagen) switch to it in 7b.
+ * secret, and how it is injected. The callers: OpenAI TTS, DALL-E, Whisper, the memory embeddings
+ * and completions, Imagen, and (Phase 5 slice 7b) the model discovery, account, and count calls
+ * (`src/ts/network/auxFetch.ts`).
  */
 export type AuxOpName =
-    "openai-tts" | "openai-dalle" | "openai-whisper" | "openai-embeddings" | "openai-completions" | "google-imagen";
+    | "openai-tts"
+    | "openai-dalle"
+    | "openai-whisper"
+    | "openai-embeddings"
+    | "openai-completions"
+    | "google-imagen"
+    // Phase 5 slice 7b: the browser's model discovery, account, and count calls.
+    | "google-models"
+    | "anthropic-models"
+    | "openai-models"
+    | "openrouter-providers"
+    | "openrouter-models"
+    | "nanogpt-balance"
+    | "nanogpt-subscription"
+    | "nanogpt-subscription-models"
+    | "nanogpt-model-providers"
+    | "nanogpt-models"
+    | "ollama-cloud-tags"
+    | "google-count-tokens";
 
-type AuxSecrets = { openAIKey?: unknown; supaMemoryKey?: unknown; google?: unknown };
+type AuxSecrets = Record<string, unknown>;
 
 type AuxOp = {
     origin: string;
-    method: "POST";
+    method: "GET" | "POST";
     path: RegExp;
+    /** The query parameters the request may carry (besides the injected `key`); any other is refused. */
+    query?: readonly string[];
     secret: (secrets: AuxSecrets) => unknown;
-    inject: "bearer" | "query-key";
+    inject: "bearer" | "query-key" | "x-api-key";
 };
+
+const googleKey = (s: AuxSecrets) =>
+    s.google && typeof s.google === "object" ? (s.google as { accessToken?: unknown }).accessToken : "";
+
+const OPENAI = "https://api.openai.com";
+const GOOGLE = "https://generativelanguage.googleapis.com";
+const NANOGPT = "https://nano-gpt.com";
+const OPENROUTER = "https://openrouter.ai";
 
 export const AUX_OPS: Record<AuxOpName, AuxOp> = {
     "openai-tts": {
-        origin: "https://api.openai.com",
+        origin: OPENAI,
         method: "POST",
         path: /^\/v1\/audio\/speech$/,
         secret: (s) => s.openAIKey,
         inject: "bearer",
     },
     "openai-dalle": {
-        origin: "https://api.openai.com",
+        origin: OPENAI,
         method: "POST",
         path: /^\/v1\/images\/generations$/,
         secret: (s) => s.openAIKey,
         inject: "bearer",
     },
     "openai-whisper": {
-        origin: "https://api.openai.com",
+        origin: OPENAI,
         method: "POST",
         path: /^\/v1\/audio\/transcriptions$/,
         secret: (s) => s.openAIKey,
         inject: "bearer",
     },
     "openai-embeddings": {
-        origin: "https://api.openai.com",
+        origin: OPENAI,
         method: "POST",
         path: /^\/v1\/embeddings$/,
         secret: (s) => s.supaMemoryKey,
         inject: "bearer",
     },
     "openai-completions": {
-        origin: "https://api.openai.com",
+        origin: OPENAI,
         method: "POST",
         path: /^\/v1\/completions$/,
         secret: (s) => s.supaMemoryKey,
         inject: "bearer",
     },
     "google-imagen": {
-        origin: "https://generativelanguage.googleapis.com",
+        origin: GOOGLE,
         method: "POST",
         path: /^\/v1beta\/models\/[A-Za-z0-9._-]+:predict$/,
-        secret: (s) =>
-            s.google && typeof s.google === "object" ? (s.google as { accessToken?: unknown }).accessToken : "",
+        secret: googleKey,
+        inject: "query-key",
+    },
+    "google-models": {
+        origin: GOOGLE,
+        method: "GET",
+        path: /^\/v1beta\/models$/,
+        secret: googleKey,
+        inject: "query-key",
+    },
+    "anthropic-models": {
+        origin: "https://api.anthropic.com",
+        method: "GET",
+        path: /^\/v1\/models$/,
+        secret: (s) => s.claudeAPIKey,
+        inject: "x-api-key",
+    },
+    "openai-models": {
+        origin: OPENAI,
+        method: "GET",
+        path: /^\/v1\/models$/,
+        secret: (s) => s.openAIKey,
+        inject: "bearer",
+    },
+    "openrouter-providers": {
+        origin: OPENROUTER,
+        method: "GET",
+        path: /^\/api\/v1\/providers$/,
+        secret: (s) => s.openrouterKey,
+        inject: "bearer",
+    },
+    "openrouter-models": {
+        origin: OPENROUTER,
+        method: "GET",
+        path: /^\/api\/v1\/models$/,
+        secret: (s) => s.openrouterKey,
+        inject: "bearer",
+    },
+    "nanogpt-balance": {
+        origin: NANOGPT,
+        method: "POST",
+        path: /^\/api\/check-balance$/,
+        secret: (s) => s.nanogptKey,
+        inject: "x-api-key",
+    },
+    "nanogpt-subscription": {
+        origin: NANOGPT,
+        method: "GET",
+        path: /^\/api\/subscription\/v1\/usage$/,
+        secret: (s) => s.nanogptKey,
+        inject: "bearer",
+    },
+    "nanogpt-subscription-models": {
+        origin: NANOGPT,
+        method: "GET",
+        path: /^\/api\/subscription\/v1\/models$/,
+        query: ["detailed"],
+        secret: (s) => s.nanogptKey,
+        inject: "bearer",
+    },
+    "nanogpt-model-providers": {
+        origin: NANOGPT,
+        method: "GET",
+        path: /^\/api\/models\/[^/]+\/providers$/,
+        secret: (s) => s.nanogptKey,
+        inject: "bearer",
+    },
+    "nanogpt-models": {
+        origin: NANOGPT,
+        method: "GET",
+        path: /^\/api\/personalized\/v1\/models$/,
+        query: ["detailed"],
+        secret: (s) => s.nanogptKey,
+        inject: "bearer",
+    },
+    "ollama-cloud-tags": {
+        origin: "https://ollama.com",
+        method: "GET",
+        path: /^\/api\/tags$/,
+        secret: (s) => s.ollamaApiKey,
+        inject: "bearer",
+    },
+    "google-count-tokens": {
+        origin: GOOGLE,
+        method: "POST",
+        path: /^\/v1beta\/models\/[A-Za-z0-9._-]+:countTokens$/,
+        secret: googleKey,
         inject: "query-key",
     },
 };
 
 export type AuxOpPlan =
-    { ok: true; url: string; headers: Headers; secret: string } | { ok: false; status: 400; error: string };
+    | {
+          ok: true;
+          url: string;
+          headers: Headers;
+          /** Every form of the credential the response must not carry: as stored and as injected. */
+          secrets: string[];
+      }
+    | { ok: false; status: 400; error: string };
 
 /**
  * Checks a request against its row and returns the upstream URL and headers with the credential
@@ -107,10 +228,18 @@ export function planAuxOp(
     for (const param of ["key", "api_key", "token"]) {
         url.searchParams.delete(param);
     }
-    if (op.inject === "bearer") {
-        out.set("authorization", "Bearer " + secret.trim());
-    } else {
-        url.searchParams.set("key", secret);
+    for (const param of url.searchParams.keys()) {
+        if (!(op.query ?? []).includes(param)) {
+            return { ok: false, status: 400, error: `${name} takes no ${param} parameter` };
+        }
     }
-    return { ok: true, url: url.toString(), headers: out, secret };
+    const injected = op.inject === "query-key" ? secret : secret.trim();
+    if (op.inject === "bearer") {
+        out.set("authorization", "Bearer " + injected);
+    } else if (op.inject === "x-api-key") {
+        out.set("x-api-key", injected);
+    } else {
+        url.searchParams.set("key", injected);
+    }
+    return { ok: true, url: url.toString(), headers: out, secrets: [secret, injected] };
 }

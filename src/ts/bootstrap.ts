@@ -9,7 +9,8 @@ import {
     SECTION_FIELDS,
     SECTION_KIND,
 } from "../../shared/sections.ts";
-import { replacePresetSecrets } from "./storage/llmSecrets.svelte";
+import { mirrorFields, setMaskedSecrets } from "./storage/llmSecrets.svelte";
+import type { MaskedLlmSecrets } from "../../shared/llmSecrets.ts";
 import { loadSelection } from "./storage/selection.svelte";
 import { botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
@@ -134,7 +135,8 @@ export async function loadData() {
  * and the selection indexes are not assembled: the forwarding layer serves them
  * (`forwarding.svelte.ts`). The server creates and normalizes
  * every section and collection, so a missing one is an error, not a default. The `llmSecrets`
- * record's `presets` map goes to `llmSecretPresets`, not into `Database`.
+ * record is masked (Phase 5 slice 7b): its status goes to `llmSecretState`, and the mirror's
+ * credential fields are `""`.
  */
 export function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
     const single = (kind: string) =>
@@ -148,14 +150,16 @@ export function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
     };
     const db: Record<string, unknown> = {};
     for (const section of Object.values(SECTION_KIND)) {
-        const record = required(section);
+        // The write-only `llmSecrets` record arrives masked: its siblings into the mirror (the
+        // credential fields `""`), its status into `llmSecretState`.
+        const record = section === SECTION_KIND.llmSecrets ? mirrorFields(required(section)) : required(section);
         for (const field of SECTION_FIELDS[section]) {
             if (Object.hasOwn(record, field)) {
                 db[field] = record[field];
             }
         }
     }
-    replacePresetSecrets(required(RESOURCE_KIND.llmSecrets).presets);
+    setMaskedSecrets(required(RESOURCE_KIND.llmSecrets) as MaskedLlmSecrets);
     for (const kind of Object.values(COLLECTION_KIND)) {
         const record = required(kind);
         if (Object.hasOwn(COLLECTION_SELECTION_FIELDS, kind)) {

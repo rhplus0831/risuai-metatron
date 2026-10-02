@@ -1,4 +1,4 @@
-import { getDatabase } from "../storage/database.svelte";
+import { auxFetch } from "../network/auxFetch";
 import type { ModelGridItem } from "./modelGrid";
 
 /** Per-1M-token price entry. undefined means the field is not available for this model. */
@@ -32,17 +32,11 @@ export type OpenRouterModelInfo = {
 
 export async function getOpenRouterProviders(): Promise<{ name: string; slug: string }[]> {
     try {
-        const db = getDatabase();
-        const headers = {
-            Authorization: "Bearer " + db.openrouterKey,
-            "Content-Type": "application/json",
-        };
-
-        const providers: { data: { name: string; slug: string }[] } = await fetch(
+        // With the stored OpenRouter key, on the server (`auxFetch`, Phase 5 slice 7b).
+        const providers: { data: { name: string; slug: string }[] } = await auxFetch(
+            "openrouter-providers",
             "https://openrouter.ai/api/v1/providers",
-            {
-                headers,
-            },
+            { method: "GET", headers: { "Content-Type": "application/json" } },
         ).then((res) => res.json());
 
         return providers.data.map(({ name, slug }) => ({ name, slug })).sort((a, b) => a.name.localeCompare(b.name));
@@ -53,14 +47,9 @@ export async function getOpenRouterProviders(): Promise<{ name: string; slug: st
 
 export async function getOpenRouterModels(): Promise<OpenRouterModelInfo[]> {
     try {
-        const db = getDatabase();
-        const headers = {
-            Authorization: "Bearer " + db.openrouterKey,
-            "Content-Type": "application/json",
-        };
-
-        const aim = await fetch("https://openrouter.ai/api/v1/models", {
-            headers,
+        const aim = await auxFetch("openrouter-models", "https://openrouter.ai/api/v1/models", {
+            method: "GET",
+            headers: { "Content-Type": "application/json" },
         }).then((res) => res.json());
 
         return aim.data

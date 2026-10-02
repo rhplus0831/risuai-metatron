@@ -11,6 +11,9 @@
     import DropList from "src/lib/SideBars/DropList.svelte";
     import { PlusIcon, TrashIcon, HardDriveUploadIcon, DownloadIcon, UploadIcon } from "@lucide/svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
+    import SecretInput from "src/lib/UI/GUI/SecretInput.svelte";
+    import { isSecretSet, secretVersion } from "src/ts/storage/llmSecrets.svelte";
+    import { selectedPreset } from "src/ts/storage/forwarding.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
@@ -74,9 +77,10 @@
     });
 
     // Reset subscription mode (and related state) when API key is cleared
+    const NANOGPT_KEY = { kind: "flat", field: "nanogptKey" } as const;
     let _nanogptKeyInitialized = false;
     $effect(() => {
-        const _key = DBState.db.nanogptKey;
+        const _key = isSecretSet(NANOGPT_KEY);
         if (!_nanogptKeyInitialized) {
             _nanogptKeyInitialized = true;
             return;
@@ -113,12 +117,6 @@
             DBState.db.useStreaming = DBState.db.textgenWebUIStreamURL.startsWith("wss://");
         }
     });
-
-    function clearVertexToken() {
-        DBState.db.vertexAccessToken = "";
-        DBState.db.vertexAccessTokenExpires = 0;
-        console.log("Vertex AI token cleared");
-    }
 
     let submenu = $state(DBState.db.useLegacyGUI ? -1 : 0);
     let modelInfo = $derived(getModelInfo(DBState.db.aiModel));
@@ -192,46 +190,20 @@
 
     {#if modelInfo.provider === LLMProvider.GoogleCloud || subModelInfo.provider === LLMProvider.GoogleCloud}
         <span class="text-textcolor">GoogleAI API Key</span>
-        <TextInput
-            marginBottom={true}
-            size={"sm"}
-            placeholder="..."
-            hideText={DBState.db.hideApiKey}
-            bind:value={DBState.db.google.accessToken}
-        />
+        <SecretInput path={{ kind: "nested", field: "google" }} marginBottom />
     {/if}
     {#if modelInfo.provider === LLMProvider.VertexAI || subModelInfo.provider === LLMProvider.VertexAI}
         <span class="text-textcolor">Project ID</span>
-        <TextInput
-            marginBottom={true}
-            size={"sm"}
-            placeholder="..."
-            bind:value={DBState.db.google.projectId}
-            oninput={clearVertexToken}
-        />
+        <TextInput marginBottom={true} size={"sm"} placeholder="..." bind:value={DBState.db.google.projectId} />
         <span class="text-textcolor">Vertex Client Email</span>
-        <TextInput
-            marginBottom={true}
-            size={"sm"}
-            placeholder="..."
-            bind:value={DBState.db.vertexClientEmail}
-            oninput={clearVertexToken}
-        />
+        <TextInput marginBottom={true} size={"sm"} placeholder="..." bind:value={DBState.db.vertexClientEmail} />
         <span class="text-textcolor">Vertex Private Key</span>
-        <TextInput
-            marginBottom={true}
-            size={"sm"}
-            placeholder="..."
-            hideText={DBState.db.hideApiKey}
-            bind:value={DBState.db.vertexPrivateKey}
-            oninput={clearVertexToken}
-        />
+        <SecretInput path={{ kind: "flat", field: "vertexPrivateKey" }} marginBottom />
         <span class="text-textcolor">Region</span>
         <SelectInput
             value={DBState.db.vertexRegion}
             onchange={(e) => {
                 DBState.db.vertexRegion = e.currentTarget.value;
-                clearVertexToken();
             }}
         >
             <OptionInput value={"global"}>global</OptionInput>
@@ -241,58 +213,32 @@
     {/if}
     {#if modelInfo.provider === LLMProvider.NovelList || subModelInfo.provider === LLMProvider.NovelList}
         <span class="text-textcolor">NovelList {language.apiKey}</span>
-        <TextInput
-            hideText={DBState.db.hideApiKey}
-            marginBottom={true}
-            size={"sm"}
-            placeholder="..."
-            bind:value={DBState.db.novellistAPI}
-        />
+        <SecretInput path={{ kind: "flat", field: "novellistAPI" }} marginBottom />
     {/if}
     {#if DBState.db.aiModel.startsWith("mancer") || DBState.db.subModel.startsWith("mancer")}
         <span class="text-textcolor">Mancer {language.apiKey}</span>
-        <TextInput
-            hideText={DBState.db.hideApiKey}
-            marginBottom={true}
-            size={"sm"}
-            placeholder="..."
-            bind:value={DBState.db.mancerHeader}
-        />
+        <SecretInput path={{ kind: "flat", field: "mancerHeader" }} marginBottom />
     {/if}
     {#if modelInfo.provider === LLMProvider.Anthropic || subModelInfo.provider === LLMProvider.Anthropic || modelInfo.provider === LLMProvider.AWS || subModelInfo.provider === LLMProvider.AWS}
         <span class="text-textcolor">Claude {language.apiKey}</span>
-        <TextInput
-            hideText={DBState.db.hideApiKey}
-            marginBottom={true}
-            size={"sm"}
-            placeholder="..."
-            bind:value={DBState.db.claudeAPIKey}
-        />
+        <SecretInput path={{ kind: "flat", field: "claudeAPIKey" }} marginBottom />
     {/if}
     {#if modelInfo.provider === LLMProvider.Mistral || subModelInfo.provider === LLMProvider.Mistral}
         <span class="text-textcolor">Mistral {language.apiKey}</span>
-        <TextInput
-            hideText={DBState.db.hideApiKey}
-            marginBottom={true}
-            size={"sm"}
-            placeholder="..."
-            bind:value={DBState.db.mistralKey}
-        />
+        <SecretInput path={{ kind: "flat", field: "mistralKey" }} marginBottom />
     {/if}
     {#if modelInfo.provider === LLMProvider.NovelAI || subModelInfo.provider === LLMProvider.NovelAI}
         <span class="text-textcolor">NovelAI Bearer Token</span>
-        <TextInput bind:value={DBState.db.novelai.token} />
+        <SecretInput path={{ kind: "nested", field: "novelai" }} />
     {/if}
     {#if DBState.db.aiModel === "reverse_proxy" || DBState.db.subModel === "reverse_proxy"}
         <span class="text-textcolor mt-2">URL <Help key="forceUrl" /></span>
         <TextInput marginBottom={false} size={"sm"} bind:value={DBState.db.forceReplaceUrl} placeholder="https//..." />
         <span class="text-textcolor mt-4"> {language.proxyAPIKey}</span>
-        <TextInput
-            hideText={DBState.db.hideApiKey}
-            marginBottom={false}
-            size={"sm"}
+        <SecretInput
+            path={{ kind: "entry", field: "presets", id: selectedPreset(DBState.db)?.id ?? "" }}
+            marginBottom
             placeholder="leave it blank if it hasn't password"
-            bind:value={DBState.db.proxyKey}
         />
         <span class="text-textcolor mt-4"> {language.proxyRequestModel}</span>
         <TextInput
@@ -318,12 +264,7 @@
     {/if}
     {#if modelInfo.provider === LLMProvider.Cohere || subModelInfo.provider === LLMProvider.Cohere}
         <span class="text-textcolor mt-4">Cohere {language.apiKey}</span>
-        <TextInput
-            hideText={DBState.db.hideApiKey}
-            marginBottom={false}
-            size={"sm"}
-            bind:value={DBState.db.cohereAPIKey}
-        />
+        <SecretInput path={{ kind: "flat", field: "cohereAPIKey" }} marginBottom />
     {/if}
     {#if usesOllamaLocal || usesOllamaCloud}
         {#if usesOllamaLocal}
@@ -351,7 +292,7 @@
                     oninput={() => (DBState.db.ollamaCloudModelName = "")}
                 />
             {:else}
-                {#await getOllamaModels(DBState.db.ollamaURL, "cloud", DBState.db.ollamaApiKey)}
+                {#await (secretVersion( { kind: "flat", field: "ollamaApiKey" } ), getOllamaModels(DBState.db.ollamaURL, "cloud"))}
                     <ModelGrid bind:value={DBState.db.ollamaCloudModel} loading={true} />
                 {:then cloudModels}
                     <ModelGrid
@@ -369,12 +310,7 @@
             {/if}
 
             <span class="text-textcolor mt-4">Ollama {language.apiKey}</span>
-            <TextInput
-                hideText={DBState.db.hideApiKey}
-                marginBottom={false}
-                size={"sm"}
-                bind:value={DBState.db.ollamaApiKey}
-            />
+            <SecretInput path={{ kind: "flat", field: "ollamaApiKey" }} marginBottom />
 
             <span class="text-textcolor mt-4">Ollama {language.format}</span>
             <SelectInput
@@ -422,14 +358,9 @@
     {/if}
     {#if DBState.db.aiModel === "nanogpt" || DBState.db.subModel === "nanogpt"}
         <span class="text-textcolor mt-4">NanoGPT {language.apiKey}</span>
-        <TextInput
-            hideText={DBState.db.hideApiKey}
-            marginBottom={false}
-            size={"sm"}
-            bind:value={DBState.db.nanogptKey}
-        />
+        <SecretInput path={{ kind: "flat", field: "nanogptKey" }} marginBottom />
 
-        <NanoGPTDashboard apiKey={DBState.db.nanogptKey} />
+        <NanoGPTDashboard keySet={isSecretSet(NANOGPT_KEY)} keyVersion={secretVersion(NANOGPT_KEY)} />
 
         {#if DBState.db.nanogptSubscriptionState === "active" || DBState.db.nanogptSubscriptionState === "grace"}
             <div class="flex items-center mt-3">
@@ -459,7 +390,7 @@
                 oninput={() => (DBState.db.nanogptRequestModelName = "")}
             />
         {:else}
-            {#await Promise.all([getNanoGPTModels(), getNanoGPTSubscriptionModels(DBState.db.nanogptKey)])}
+            {#await Promise.all([getNanoGPTModels(), (secretVersion(NANOGPT_KEY), getNanoGPTSubscriptionModels())])}
                 <ModelGrid bind:value={DBState.db.nanogptRequestModel} loading={true} />
             {:then [regular, sub]}
                 <ModelGrid
@@ -477,7 +408,8 @@
                 />
                 {#if !DBState.db.nanogptUseSubscriptionEndpoint}
                     <NanoGPTProviderPicker
-                        apiKey={DBState.db.nanogptKey}
+                        keySet={isSecretSet(NANOGPT_KEY)}
+                        keyVersion={secretVersion(NANOGPT_KEY)}
                         modelId={DBState.db.nanogptRequestModel}
                         bind:value={DBState.db.nanogptProvider}
                     />
@@ -487,12 +419,7 @@
     {/if}
     {#if DBState.db.aiModel === "openrouter" || DBState.db.subModel === "openrouter"}
         <span class="text-textcolor mt-4">OpenRouter {language.apiKey}</span>
-        <TextInput
-            hideText={DBState.db.hideApiKey}
-            marginBottom={false}
-            size={"sm"}
-            bind:value={DBState.db.openrouterKey}
-        />
+        <SecretInput path={{ kind: "flat", field: "openrouterKey" }} marginBottom />
 
         <span class="text-textcolor mt-4">OpenRouter {language.model}</span>
         {#await getOpenRouterModels()}
@@ -519,35 +446,17 @@
     {/if}
     {#if modelInfo.provider === LLMProvider.OpenAI || subModelInfo.provider === LLMProvider.OpenAI}
         <span class="text-textcolor">OpenAI {language.apiKey} <Help key="oaiapikey" /></span>
-        <TextInput
-            hideText={DBState.db.hideApiKey}
-            marginBottom={false}
-            size={"sm"}
-            bind:value={DBState.db.openAIKey}
-            placeholder="sk-XXXXXXXXXXXXXXXXXXXX"
-        />
+        <SecretInput path={{ kind: "flat", field: "openAIKey" }} marginBottom placeholder="sk-XXXXXXXXXXXXXXXXXXXX" />
     {/if}
 
     {#if modelInfo.keyIdentifier}
         <span class="text-textcolor">{modelInfo.name} {language.apiKey}</span>
-        <TextInput
-            hideText={DBState.db.hideApiKey}
-            marginBottom={false}
-            size={"sm"}
-            bind:value={DBState.db.OaiCompAPIKeys[modelInfo.keyIdentifier]}
-            placeholder="..."
-        />
+        <SecretInput path={{ kind: "map", field: "OaiCompAPIKeys", id: modelInfo.keyIdentifier }} marginBottom />
     {/if}
 
     {#if subModelInfo.keyIdentifier && subModelInfo.keyIdentifier !== modelInfo.keyIdentifier}
         <span class="text-textcolor">{subModelInfo.name} {language.apiKey}</span>
-        <TextInput
-            hideText={DBState.db.hideApiKey}
-            marginBottom={false}
-            size={"sm"}
-            bind:value={DBState.db.OaiCompAPIKeys[subModelInfo.keyIdentifier]}
-            placeholder="..."
-        />
+        <SecretInput path={{ kind: "map", field: "OaiCompAPIKeys", id: subModelInfo.keyIdentifier }} marginBottom />
     {/if}
 
     <div class="py-2 flex flex-col gap-2 mb-4">
@@ -597,7 +506,7 @@
 
     {#if DBState.db.aiModel.startsWith("horde") || DBState.db.subModel.startsWith("horde")}
         <span class="text-textcolor">Horde {language.apiKey}</span>
-        <TextInput hideText={DBState.db.hideApiKey} marginBottom={true} bind:value={DBState.db.hordeConfig.apiKey} />
+        <SecretInput path={{ kind: "nested", field: "hordeConfig" }} marginBottom />
     {/if}
     {#if DBState.db.aiModel === "textgen_webui" || DBState.db.subModel === "textgen_webui" || DBState.db.aiModel === "mancer" || DBState.db.subModel === "mancer"}
         <span class="text-textcolor mt-2">Blocking {language.providerURL}</span>

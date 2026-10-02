@@ -37,9 +37,11 @@ import { StoreBackedServer } from "./storeBackedServer";
 //
 // The only allowed differences are pinned by field and value: the nine preset fields the pre-phase
 // first boot left unset in the root (absent from the fixture) that now read the canonical default,
-// the value `saveCurrentPreset` already wrote into every preset before the phase. A field the
-// pre-phase boot left `undefined` (dropped by the fixture's JSON) that is still `undefined` is equal.
-// The phase file records the result; anything else is a regression.
+// the value `saveCurrentPreset` already wrote into every preset before the phase, and (Phase 5 slice
+// 7b, `request-layer-and-llm-secrets.md`) the four `llmSecrets` credential fields the fixture left
+// absent that the write-only mirror now holds as `""` (`mirrorFields`: every credential field of
+// `DBState.db` is `""`). A field the pre-phase boot left `undefined` (dropped by the fixture's JSON)
+// that is still `undefined` is equal. The phase file records the result; anything else is a regression.
 
 const { server } = vi.hoisted(() => ({ server: { current: null as any } }));
 
@@ -78,6 +80,12 @@ const ALLOWED_DEFAULTS: Partial<Record<PresetField, unknown>> = {
     outputImageModal: false,
     dynamicOutput: null,
 };
+
+/**
+ * The four credential fields the pre-phase boot left unset: the write-only `llmSecrets` mirror
+ * holds `""` for every credential field (7b), so these read `""` where the fixture has nothing.
+ */
+const EMPTY_CREDENTIALS = ["claudeAPIKey", "mistralKey", "cohereAPIKey", "novellistAPI"];
 
 const PHASE1_LISTS = ["botPresets", "characters", "modules", "plugins", "pluginCustomStorage"];
 const SELECTABLE = ["personas", "translatorPresets", "hypaV3Presets"];
@@ -131,6 +139,7 @@ describe("the boot snapshot of a fresh store against the pre-Phase 3 fixture", (
             // (1) Every root field of the fixture, forwarded ones read through the layer.
             const absentNowUndefined: string[] = [];
             const absentNowDefault: string[] = [];
+            const absentNowEmptyCredential: string[] = [];
             for (const key of Object.keys(fixture)) {
                 if (skip.has(key)) continue;
                 if (!isDeepStrictEqual(fixture[key], snapshot[key])) {
@@ -146,6 +155,8 @@ describe("the boot snapshot of a fresh store against the pre-Phase 3 fixture", (
                     isDeepStrictEqual(snapshot[key], ALLOWED_DEFAULTS[key])
                 ) {
                     absentNowDefault.push(key);
+                } else if (EMPTY_CREDENTIALS.includes(key) && snapshot[key] === "") {
+                    absentNowEmptyCredential.push(key);
                 } else {
                     unexpected.push({ rule: 1, key, before: "(absent)", after: snapshot[key] });
                 }
@@ -210,6 +221,8 @@ describe("the boot snapshot of a fresh store against the pre-Phase 3 fixture", (
             const nine = Object.keys(ALLOWED_DEFAULTS).sort();
             expect(absentNowDefault.sort()).toEqual(nine);
             expect(presetDefaults.sort()).toEqual(nine);
+            // The write-only mirror's `""` for the four credentials the fixture left absent (7b).
+            expect(absentNowEmptyCredential.sort()).toEqual([...EMPTY_CREDENTIALS].sort());
             // The pre-phase boot left these `undefined` too (the fixture's JSON dropped them).
             expect(absentNowUndefined.sort()).toEqual([
                 "koboldURL",
