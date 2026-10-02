@@ -4,6 +4,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ChatGroup, ChatOrderChange } from "../../../shared/chats.ts";
 import {
+    type GenerationCommand,
     type GenerationContext,
     type GenerationCreateBody,
     type GenerationHooks,
@@ -85,6 +86,8 @@ export type RunningJob = {
     readonly id: string;
     readonly kind: GenerationKind;
     readonly context: Readonly<GenerationContext>;
+    /** A `command` job's command (validated by the route; a copy), null for every other kind. */
+    readonly command: Readonly<GenerationCommand> | null;
     /** The plugin hooks the owner registered (validated; the channel calls back only for these). */
     readonly hooks: GenerationHooks;
     /** Notices, questions, and plugin callbacks to the owner (`job-channel`). */
@@ -147,6 +150,7 @@ type Job = {
     clientId: string;
     kind: GenerationKind;
     context: GenerationContext;
+    command: GenerationCommand | null;
     hooks: GenerationHooks;
     channelLink: ReturnType<ChannelHub["open"]>;
     epoch: string;
@@ -526,6 +530,7 @@ export function createGenerationJobs(options: {
             id: job.id,
             kind: job.kind,
             context: job.context,
+            command: job.command,
             hooks: job.hooks,
             channel: job.channelLink.channel,
             ownerAttached: () => job.sockets.size > 0,
@@ -658,6 +663,7 @@ export function createGenerationJobs(options: {
             clientId: body.clientId,
             kind: body.kind,
             context: structuredClone(body.context),
+            command: body.command ? structuredClone(body.command) : null,
             hooks,
             channelLink: null as unknown as Job["channelLink"],
             epoch: store.epoch(),
@@ -755,6 +761,8 @@ export function createGenerationJobs(options: {
             events.push(current);
         }
         if (job.terminal) {
+            // A job that ended before its owner first attached: the notices it sent meanwhile first.
+            events.push(...(job.channelLink.takeEarly() as GenerationEvent[]));
             events.push(job.terminal);
         }
         for (const event of events) {

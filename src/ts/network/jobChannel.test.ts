@@ -503,7 +503,6 @@ describe("callbacks", () => {
             callback("u2", "mcpTool", { identifier: "plugin:x", tool: "t", args: {} }),
             callback("u3", "chatOutput", {}),
             callback("u4", "provider", { name: "p" }),
-            callback("u5", "generateImage", {}),
         ]) {
             send(event);
             await pump();
@@ -513,7 +512,6 @@ describe("callbacks", () => {
             "The mcpTool hook is not registered any more",
             "The chatOutput callback is not supported yet",
             "The provider callback is not supported yet",
-            "The generateImage callback is not supported yet",
         ]);
         expect(tx.answers.every((answer) => (answer as { failure: string }).failure === "protocol")).toBe(true);
         const second = vi.fn((messages: unknown) => messages);
@@ -523,12 +521,12 @@ describe("callbacks", () => {
         hooks.replacerbeforeRequest.add(second as never);
         send(callback("rep", "replacerbeforeRequest", { messages: [{ role: "user", content: "m" }], model: "gpt" }));
         await pump();
-        expect(tx.answers[5]).toEqual(failed("hook", "first replacer"));
+        expect(tx.answers[4]).toEqual(failed("hook", "first replacer"));
         expect(second).not.toHaveBeenCalled();
         hooks.replacerafterRequest.add(async (text, model) => `${text}/${model}`);
         send(callback("after", "replacerafterRequest", { text: "out", model: "gpt" }));
         await pump();
-        expect(tx.answers[6]).toMatchObject({ outcome: "answered", value: "out/gpt" });
+        expect(tx.answers[5]).toMatchObject({ outcome: "answered", value: "out/gpt" });
         deps.contexts.length = 0;
         stores.bodyIntercepterStore.push(
             {
@@ -542,14 +540,14 @@ describe("callbacks", () => {
         );
         send(callback("int", "bodyIntercepter", { body: { a: 1 }, type: "openai" }));
         await pump();
-        expect(tx.answers[7]).toMatchObject({ outcome: "answered", value: { a: 1, type: "openai" } });
+        expect(tx.answers[6]).toMatchObject({ outcome: "answered", value: { a: 1, type: "openai" } });
         expect(deps.contexts).toEqual([]);
         deps.mcps.set("plugin:x", {
             callTool: async (tool, args) => [{ type: "text", text: `${tool}:${JSON.stringify(args)}` }],
         });
         send(callback("mcp", "mcpTool", { identifier: "plugin:x", tool: "sum", args: { n: 2 } }));
         await pump();
-        expect(tx.answers[8]).toMatchObject({ outcome: "answered", value: [{ type: "text", text: 'sum:{"n":2}' }] });
+        expect(tx.answers[7]).toMatchObject({ outcome: "answered", value: [{ type: "text", text: 'sum:{"n":2}' }] });
         expect(deps.contexts).toEqual([]);
     });
 

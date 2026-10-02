@@ -8,6 +8,8 @@ import {
     type LlmCallbackPayloads,
     type LlmRequestBody,
     type LlmRequestEvent,
+    type ModelModeExtended,
+    type RequestArgs,
     type RPCToolCallContent,
     type StreamResponseChunk,
     type ToolCallRecord,
@@ -20,7 +22,7 @@ import type { ClaudeObserver } from "./claudeObserver.ts";
 import type { RequestContext } from "./context.ts";
 import { collectSecrets, createRedactor, redactHeaderText, type Redactor } from "./redact.ts";
 import { requestChatDataMain, type requestDataResponse } from "./request.ts";
-import { loadRequestDb, RequestTargetGoneError } from "./settings.ts";
+import { type LoadedRequestDb, loadRequestDb, RequestTargetGoneError } from "./settings.ts";
 import { createTransport, type FetchLogEntry } from "./transport.ts";
 import type { VertexTokenCache } from "./vertexToken.ts";
 
@@ -179,6 +181,128 @@ function isToolContent(value: unknown): value is RPCToolCallContent[] {
 }
 
 /**
+ * `bodyIntercepter` through a job's channel (the client's `bodyIntercepterStore`): as a child of
+ * the job callback the request runs inside (`parentId`), or as a root callback of the job that makes
+ * the request itself. A body that carries a stored credential is never handed to a plugin; the
+ * failure policy is the browser path's (a hook's throw keeps the body; a barrier failure, a timeout,
+ * or a disconnect ends the job).
+ */
+function channelIntercept(p: {
+    channel: JobChannel;
+    parentId?: string;
+    signal: AbortSignal;
+    redactor: () => Redactor;
+    endWith: (message: string, endsJob: boolean) => Error;
+    fatal: (message: string) => Error;
+    /**
+     * A job's own request (`runInJob`): every outcome other than an answer, an unregistered hook, or a
+     * hook's own throw ends the job (a protocol failure, a nesting or queue refusal, an abort), as
+     * the job's other callbacks do.
+     */
+    strict?: boolean;
+}): (value: unknown, type: string) => Promise<unknown> {
+    const strict = p.strict === true;
+    return async (value, type) => {
+        if (p.signal.aborted) {
+            throw p.signal.reason;
+        }
+        // A plugin sees the body in the tab: a body that carries a stored credential (one the user
+        // put into a parameter) is not handed to it, and the request fails.
+        if (p.redactor().carries(value)) {
+            throw p.endWith(
+                "The request body carries a stored credential; it is not sent to a plugin interceptor",
+                false,
+            );
+        }
+        const result = await p.channel.callback(
+            "bodyIntercepter",
+            { body: value, type },
+            p.parentId ? { parentId: p.parentId } : {},
+        );
+        switch (result.outcome) {
+            case "answered":
+                return result.value ?? value;
+            case "refused":
+                if (result.refusal === "unregistered") {
+                    // The job's hook list has no interceptor: nothing to apply.
+                    return value;
+                }
+                // A nesting or queue rule: a registered hook is never skipped silently.
+                throw p.endWith(`The bodyIntercepter callback was refused: ${result.error}`, strict);
+            case "failed":
+                if (result.failure === "hook") {
+                    // An interceptor that threw: the browser path logs it and sends the body.
+                    console.error("[LLM] bodyIntercepter:", p.redactor().text(result.error));
+                    return value;
+                }
+                throw p.endWith(
+                    `The bodyIntercepter callback failed: ${result.error}`,
+                    strict || result.failure === "barrier",
+                );
+            case "timedOut":
+            case "disconnected":
+                throw p.endWith(`The bodyIntercepter callback ${result.outcome}: ${result.error}`, true);
+            default:
+                if (strict) {
+                    throw p.endWith(`The bodyIntercepter callback ended: ${result.error}`, true);
+                }
+                throw p.fatal(`The bodyIntercepter callback ended: ${result.error}`);
+        }
+    };
+}
+
+/** A log entry's secret-free projection: the fields a credential could be in, redacted. */
+function redactLogEntry(entry: unknown, redactor: Redactor): Record<string, unknown> {
+    const source = entry as Record<string, unknown>;
+    const out: Record<string, unknown> = { ...source };
+    for (const field of ["body", "header", "response", "url"]) {
+        if (typeof source[field] === "string") {
+            out[field] = redactor.text(source[field] as string);
+        }
+    }
+    return out;
+}
+
+/** A failure's or a preview's text, redacted (a model's answer is the user's text and stays as it is). */
+function redactResponse(response: requestDataResponse, redactor: Redactor): requestDataResponse {
+    if (response.type === "multiline") {
+        return { ...response, result: response.result.map(([role, text]) => [role, redactor.text(text)]) };
+    }
+    if (response.type === "streaming") {
+        return response;
+    }
+    return { ...response, result: redactor.text(response.result) };
+}
+
+/**
+ * A request a server job makes in-process (Lua `LLM`, `simpleLLM`, `axLLM` in slice 8a): the job's
+ * frozen settings (`loaded`, read once at the job's start), its derived token scope, and the job's
+ * own sinks instead of a tab's SSE stream.
+ */
+export type JobRequestSpec = {
+    jobId: string;
+    loaded: LoadedRequestDb;
+    mode: ModelModeExtended;
+    arg: RequestArgs;
+    tokenScope: TokenCountScope;
+    mainModelImageInput: boolean;
+    /** The job's channel: `bodyIntercepter` runs as a root callback of the job. */
+    channel: JobChannel;
+    /** The job's own CBS evaluation (with the request's chat). */
+    parseCbs: (text: string, chatRef?: { chaId: string; chatId: string } | null) => string;
+    /** Persists what an adapter writes (signatures and audio on the server; images through the tab). */
+    inlays: RequestContext["inlays"];
+    /** A redacted request-log entry (the tab's `requestLog` notice). */
+    log: (entry: Record<string, unknown>) => void;
+    /** A redacted `alertError` text for the tab. */
+    alertError: (text: string) => void;
+    /** Ends the job: a barrier failure, a timeout, or a disconnect of an interceptor callback. */
+    endJob: (message: string) => void;
+    /** The job's and the calling host task's signal: the request ends with it. */
+    signal: AbortSignal;
+};
+
+/**
  * The live `POST /api/llm/request` requests (`request-layer-and-llm-secrets`). Each request reads its
  * settings from the store by the ids the client sent, runs `requestChatDataMain`, and answers with
  * one ordered SSE stream (`LlmRequestEvent`): `accepted`, side events (logs, notices, inlays, tool
@@ -207,6 +331,278 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             }
         }
         return count;
+    }
+
+    type ContextParts = {
+        loaded: LoadedRequestDb;
+        tokenScope: TokenCountScope;
+        controller: AbortController;
+        /** The request's redactor as it is now (a Vertex token joins it when acquired). */
+        redactor: () => Redactor;
+        extraModels: (modelId: string) => LLMModel[];
+        /** A log entry, its header line already redacted. */
+        log: (entry: FetchLogEntry) => void;
+        alertError: (text: string) => void;
+        parseCbs: RequestContext["parseCbs"];
+        tools: RequestContext["tools"];
+        inlays: RequestContext["inlays"];
+        intercept: RequestContext["intercept"];
+        supportsInlayImage: () => boolean;
+        /** A job's own request: models the server knows only through a tab (see `runInJob`). */
+        browserOnlyModels?: boolean;
+    };
+
+    /** The `RequestContext` both entries share (`start` for a tab, `runInJob` for a job). */
+    function buildContext(p: ContextParts): RequestContext {
+        const { db } = p.loaded;
+        const modelInfo = (modelId: string): LLMModel => {
+            const model = resolveModelInfo(modelId, {
+                enableCustomFlags: db.enableCustomFlags,
+                customFlags: db.customFlags,
+                customModels: db.customModels,
+                extraModels: p.extraModels(modelId),
+            });
+            // A plugin model or a tab's dynamic model reaches the server only as the tab's descriptor;
+            // without one, the catalogue would read it as an OpenAI-compatible model and send it to
+            // OpenAI. A job has no tab descriptor: such a model runs in the browser (refused).
+            if (p.browserOnlyModels && (modelId.startsWith("pluginmodel:::") || modelId.startsWith("dynamic_"))) {
+                return { ...model, format: LLMFormat.Plugin };
+            }
+            return model;
+        };
+        const tokenizeNum = (text: string) => options.tokens.encode(text, p.tokenScope);
+        const transport = createTransport({
+            signal: p.controller.signal,
+            log: (entry: FetchLogEntry) => p.log({ ...entry, header: redactHeaderText(entry.header) }),
+            intercept: p.intercept,
+            redact: (text) => p.redactor().text(text),
+            fetchImpl: options.fetchImpl,
+        });
+        return {
+            db,
+            selectedCharacterName: p.loaded.selectedCharacterName,
+            speakerName: p.loaded.speakerName,
+            userName: p.loaded.userName,
+            signal: p.controller.signal,
+            transport,
+            alertError: (message) => {
+                let text: string;
+                if (typeof message === "string") {
+                    text = message;
+                } else {
+                    try {
+                        text = message instanceof Error ? message.message : JSON.stringify(message);
+                    } catch {
+                        text = `${message}`;
+                    }
+                }
+                p.alertError(text);
+            },
+            redactText: (text) => p.redactor().text(text),
+            tokenizeNum,
+            strongBan: (text, bias) => strongBan(text, bias, tokenizeNum),
+            parseCbs: p.parseCbs,
+            tools: p.tools,
+            inlays: p.inlays,
+            supportsInlayImage: p.supportsInlayImage,
+            getModelInfo: modelInfo,
+            intercept: p.intercept,
+            vertexAccessToken: async (clientEmail, privateKey) => {
+                const token = await options.vertexTokens.get(clientEmail, privateKey, p.controller.signal);
+                p.redactor().add(token);
+                return token;
+            },
+            registerClaudeObserver: (arg) => {
+                // Work that drains after the request ended (maintenance reset the warmer) must
+                // not register the old request and its key again.
+                if (!p.controller.signal.aborted) {
+                    options.claudeObserver.register(arg);
+                }
+            },
+        };
+    }
+
+    /**
+     * Runs a job's request in-process (`JobRequestSpec`): admitted like a tab's request (refused
+     * during shutdown and maintenance, ended by `pause`/`beginShutdown`, waited for by `dispose`),
+     * without the per-client count. A failure's and a preview's text are redacted; a model's answer
+     * is not. A stream is handed back live: the request ends when it is read to the end, cancelled,
+     * or the job's signal aborts. An abort of the job rejects; any other failure is a `fail` result.
+     */
+    async function runInJob(spec: JobRequestSpec): Promise<requestDataResponse> {
+        if (!accepting) {
+            return { type: "fail", result: "The server is shutting down", noRetry: true };
+        }
+        if (paused) {
+            return { type: "fail", result: "The server is under maintenance", noRetry: true };
+        }
+        if (spec.signal.aborted) {
+            throw spec.signal.reason ?? new Error("The job ended");
+        }
+        const id = randomUUID();
+        const controller = new AbortController();
+        // A job's requests are not a client's: the client count never sees this id.
+        const live: LiveRequest = {
+            id,
+            clientId: `\u0000job:${spec.jobId}`,
+            controller,
+            callbacks: new Map(),
+            finishedCallbacks: new Set(),
+        };
+        requests.set(id, live);
+        let resolveDrained!: () => void;
+        const drained = new Promise<void>((resolve) => {
+            resolveDrained = resolve;
+        });
+        draining.add(drained);
+        let finalized = false;
+        const onJobAbort = () => controller.abort(spec.signal.reason ?? new Error("The job ended"));
+        spec.signal.addEventListener("abort", onJobAbort, { once: true });
+        const finalize = () => {
+            if (finalized) {
+                return;
+            }
+            finalized = true;
+            spec.signal.removeEventListener("abort", onJobAbort);
+            if (!controller.signal.aborted) {
+                controller.abort(new Error("The request finished"));
+            }
+            requests.delete(id);
+            draining.delete(drained);
+            resolveDrained();
+        };
+        const redactor = createRedactor(collectSecrets(spec.loaded.db));
+        const fatal = (message: string) => {
+            const error = new FatalRequestError(message);
+            controller.abort(error);
+            return error;
+        };
+        const endWith = (message: string, endsJob: boolean) => {
+            const error = fatal(message);
+            if (endsJob) {
+                spec.endJob(redactor.text(message));
+            }
+            return error;
+        };
+        const ctx = buildContext({
+            loaded: spec.loaded,
+            tokenScope: spec.tokenScope,
+            controller,
+            redactor: () => redactor,
+            extraModels: () => [],
+            log: (entry) => spec.log(redactLogEntry(entry, redactor)),
+            alertError: (text) => spec.alertError(redactor.text(text)),
+            parseCbs: async (text, chatRef) => spec.parseCbs(text, chatRef),
+            tools: {
+                // Server-side scripts send no tools until slice 12 (recorded).
+                call: async () => {
+                    throw fatal("Tools are not available to server-side requests yet");
+                },
+                encode: async () => {
+                    throw fatal("Tools are not available to server-side requests yet");
+                },
+                decode: async () => undefined,
+            },
+            inlays: spec.inlays,
+            intercept: channelIntercept({
+                channel: spec.channel,
+                signal: controller.signal,
+                redactor: () => redactor,
+                endWith,
+                fatal,
+                strict: true,
+            }),
+            supportsInlayImage: () => spec.mainModelImageInput,
+            browserOnlyModels: true,
+        });
+        const failed = (error: unknown): requestDataResponse => {
+            if (spec.signal.aborted) {
+                throw spec.signal.reason ?? new Error("The job ended");
+            }
+            const reason = controller.signal.aborted ? controller.signal.reason : error;
+            return { type: "fail", result: redactor.text(errorText(reason)), noRetry: true };
+        };
+        let response: requestDataResponse;
+        try {
+            response = await requestChatDataMain({ ...spec.arg, tools: [] }, spec.mode, ctx);
+        } catch (error) {
+            // Classified before the cleanup, whose own abort would otherwise become the reason.
+            try {
+                return failed(error);
+            } finally {
+                finalize();
+            }
+        }
+        if (controller.signal.aborted) {
+            if (response.type === "streaming") {
+                await response.result.cancel(controller.signal.reason).catch(() => {});
+            }
+            try {
+                return failed(controller.signal.reason);
+            } finally {
+                finalize();
+            }
+        }
+        if (response.type !== "streaming") {
+            finalize();
+            return response.type === "fail" || spec.arg.previewBody ? redactResponse(response, redactor) : response;
+        }
+        const reader = response.result.getReader();
+        let output!: ReadableStreamDefaultController<StreamResponseChunk>;
+        let settled = false;
+        const end = () => {
+            settled = true;
+            controller.signal.removeEventListener("abort", onAbort);
+            finalize();
+        };
+        // An abort ends the request at once, whether or not the stream is being read, and the
+        // stream errors with the (redacted) reason: a reader never mistakes it for the end.
+        const onAbort = () => {
+            if (settled) {
+                return;
+            }
+            const reason = new Error(redactor.text(errorText(controller.signal.reason)));
+            reader.cancel(controller.signal.reason).catch(() => {});
+            end();
+            try {
+                output.error(reason);
+            } catch {}
+        };
+        controller.signal.addEventListener("abort", onAbort, { once: true });
+        const stream = new ReadableStream<StreamResponseChunk>(
+            {
+                start(c) {
+                    output = c;
+                },
+                async pull(out) {
+                    try {
+                        const { done, value } = await reader.read();
+                        if (settled) {
+                            return;
+                        }
+                        if (done) {
+                            end();
+                            out.close();
+                            return;
+                        }
+                        out.enqueue(value as StreamResponseChunk);
+                    } catch (error) {
+                        if (settled) {
+                            return;
+                        }
+                        const reason = controller.signal.aborted ? controller.signal.reason : error;
+                        end();
+                        out.error(new Error(redactor.text(errorText(reason))));
+                    }
+                },
+                cancel(reason) {
+                    reader.cancel(reason).catch(() => {});
+                    end();
+                },
+            },
+            { highWaterMark: 0 },
+        );
+        return { ...response, result: stream };
     }
 
     function start(body: LlmRequestBody, signal: AbortSignal): StartResult {
@@ -273,16 +669,8 @@ export function createLlmRequests(options: LlmRequestsOptions) {
          */
         const project = (event: LlmRequestEvent): LlmRequestEvent => {
             switch (event.type) {
-                case "log": {
-                    const entry = event.entry as Record<string, unknown>;
-                    const out: Record<string, unknown> = { ...entry };
-                    for (const field of ["body", "header", "response", "url"]) {
-                        if (typeof entry[field] === "string") {
-                            out[field] = redactor.text(entry[field] as string);
-                        }
-                    }
-                    return { ...event, entry: out };
-                }
+                case "log":
+                    return { ...event, entry: redactLogEntry(event.entry, redactor) };
                 case "notice":
                 case "error":
                     return { ...event, message: redactor.text(event.message) };
@@ -424,16 +812,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 }
                 throw error;
             }
-            const { db } = loaded;
-            redactor = createRedactor(collectSecrets(db));
-
-            const modelInfo = (modelId: string): LLMModel =>
-                resolveModelInfo(modelId, {
-                    enableCustomFlags: db.enableCustomFlags,
-                    customFlags: db.customFlags,
-                    customModels: db.customModels,
-                    extraModels: dynamicModelFor(body, modelId),
-                });
+            redactor = createRedactor(collectSecrets(loaded.db));
             // The client's `encode` scope, read in the tab when the request started (its main model,
             // whatever preset the request uses), with the stored Google key for a remote count.
             const tokenizer = body.context.tokenizer;
@@ -448,9 +827,8 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 customTokenizer: tokenizer.customTokenizer,
                 googleClaudeTokenizing: tokenizer.googleClaudeTokenizing,
                 useTokenizerCaching: tokenizer.useTokenizerCaching,
-                googleAccessToken: db.google?.accessToken,
+                googleAccessToken: loaded.db.google?.accessToken,
             };
-            const tokenizeNum = (text: string) => options.tokens.encode(text, tokenScope);
             /** Ends the request (and, for a barrier failure, a timeout, or a disconnect, the job). */
             const endWith = (message: string, endsJob: boolean) => {
                 const error = fatal(message);
@@ -463,87 +841,29 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 }
                 return error;
             };
-            const intercept = async (value: unknown, type: string): Promise<unknown> => {
-                if (!parent) {
-                    // No job callback: interceptors are not applied (recorded).
-                    return value;
-                }
-                if (controller.signal.aborted) {
-                    throw controller.signal.reason;
-                }
-                // A plugin sees the body in the tab: a body that carries a stored credential (one
-                // the user put into a parameter) is not handed to it, and the request fails.
-                if (redactor.carries(value)) {
-                    throw endWith(
-                        "The request body carries a stored credential; it is not sent to a plugin interceptor",
-                        false,
-                    );
-                }
-                const result = await parent.channel.callback(
-                    "bodyIntercepter",
-                    { body: value, type },
-                    { parentId: body.channelCall!.callbackId },
-                );
-                switch (result.outcome) {
-                    case "answered":
-                        return result.value ?? value;
-                    case "refused":
-                        if (result.refusal === "unregistered") {
-                            // The job's hook list has no interceptor: nothing to apply.
-                            return value;
-                        }
-                        // A nesting or queue rule: a registered hook is never skipped silently.
-                        throw endWith(`The bodyIntercepter callback was refused: ${result.error}`, false);
-                    case "failed":
-                        if (result.failure === "hook") {
-                            // An interceptor that threw: the browser path logs it and sends the body.
-                            console.error("[LLM] bodyIntercepter:", redactor.text(result.error));
-                            return value;
-                        }
-                        throw endWith(
-                            `The bodyIntercepter callback failed: ${result.error}`,
-                            result.failure === "barrier",
-                        );
-                    case "timedOut":
-                    case "disconnected":
-                        throw endWith(`The bodyIntercepter callback ${result.outcome}: ${result.error}`, true);
-                    default:
-                        throw fatal(`The bodyIntercepter callback ended: ${result.error}`);
-                }
-            };
-            const transport = createTransport({
-                signal: controller.signal,
-                log: (entry: FetchLogEntry) =>
-                    emitRedacted({ type: "log", entry: { ...entry, header: redactHeaderText(entry.header) } }),
-                intercept,
-                redact: (text) => redactor.text(text),
-                fetchImpl: options.fetchImpl,
-            });
+            const viaChannel = parent
+                ? channelIntercept({
+                      channel: parent.channel,
+                      parentId: body.channelCall!.callbackId,
+                      signal: controller.signal,
+                      redactor: () => redactor,
+                      endWith,
+                      fatal,
+                  })
+                : null;
+            const intercept = async (value: unknown, type: string): Promise<unknown> =>
+                // No job callback: interceptors are not applied (recorded).
+                viaChannel ? viaChannel(value, type) : value;
 
             const toolRecords = new Map<string, ToolCallRecord>(Object.entries(body.toolRecords));
-            const ctx: RequestContext = {
-                db,
-                selectedCharacterName: loaded.selectedCharacterName,
-                speakerName: loaded.speakerName,
-                userName: loaded.userName,
-                signal: controller.signal,
-                transport,
-                alertError: (message) => {
-                    let text: string;
-                    if (typeof message === "string") {
-                        text = message;
-                    } else {
-                        try {
-                            text = message instanceof Error ? message.message : JSON.stringify(message);
-                        } catch {
-                            text = `${message}`;
-                        }
-                    }
-                    emitRedacted({ type: "notice", kind: "alertError", message: text });
-                },
-                redactText: (text) => redactor.text(text),
-                tokenizeNum,
-                strongBan: (text, bias) => strongBan(text, bias, tokenizeNum),
+            const ctx = buildContext({
+                loaded,
+                tokenScope,
+                controller,
+                redactor: () => redactor,
+                extraModels: (modelId) => dynamicModelFor(body, modelId),
+                log: (entry) => emitRedacted({ type: "log", entry }),
+                alertError: (text) => emitRedacted({ type: "notice", kind: "alertError", message: text }),
                 parseCbs: async (text, chatRef) => {
                     let value: unknown;
                     try {
@@ -597,22 +917,9 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                         emit({ type: "inlay", inlay: { kind: "audio", ...asset } });
                     },
                 },
-                supportsInlayImage: () => body.context.mainModel.imageInput,
-                getModelInfo: modelInfo,
                 intercept,
-                vertexAccessToken: async (clientEmail, privateKey) => {
-                    const token = await options.vertexTokens.get(clientEmail, privateKey, controller.signal);
-                    redactor.add(token);
-                    return token;
-                },
-                registerClaudeObserver: (arg) => {
-                    // Work that drains after the request ended (maintenance reset the warmer) must
-                    // not register the old request and its key again.
-                    if (!controller.signal.aborted) {
-                        options.claudeObserver.register(arg);
-                    }
-                },
-            };
+                supportsInlayImage: () => body.context.mainModel.imageInput,
+            });
 
             const response = await requestChatDataMain({ ...body.arg, tools: body.tools }, body.mode, ctx);
             await deliver(response);
@@ -749,6 +1056,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
 
     return {
         start,
+        runInJob,
         answer,
         /** Maintenance began: live requests end and new ones are refused until `resume`. */
         pause(reason: string) {

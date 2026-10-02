@@ -30,6 +30,8 @@
     import { longpress } from "src/ts/gui/longtouch";
     import { getModelInfo } from "src/ts/model/modellist";
     import { runLuaButtonTrigger } from "src/ts/process/scriptings";
+    import { runServerButton } from "src/ts/process/serverCommands";
+    import { readClientFlag } from "src/ts/storage/clientFlags";
     import { risuChatParser } from "src/ts/process/scripts";
     import { runTrigger } from "src/ts/process/triggers";
     import { sayTTS } from "src/ts/process/tts";
@@ -445,6 +447,15 @@
         const ref = currentChatRef();
         const baseline = triggerName && ref ? captureChatBaseline(ref) : null;
         try {
+            if (!triggerName && btnEvent && readClientFlag("risu.serverGeneration")) {
+                // The server runs the button (Phase 5 slice 8a); its changes arrive as the server's records.
+                await runServerButton(currentChar, btnEvent, ref);
+                ReloadChatPointer.update((v) => {
+                    v[idx] = (v[idx] ?? 0) + 1;
+                    return v;
+                });
+                return;
+            }
             const triggerResult = triggerName
                 ? await runTrigger(currentChar, "manual", {
                       chat: ref ? findChat(ref) : getCurrentChat(),

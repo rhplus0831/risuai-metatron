@@ -1,4 +1,6 @@
 import type { CustomModel, Database } from "../../../shared/database.ts";
+import { LLMFlags, type LLMModel } from "../../../shared/llm.ts";
+import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import { PERSONA_DEFAULTS } from "../../../shared/personas.ts";
 import {
     PERSONA_ROOT_ALIASES,
@@ -10,6 +12,7 @@ import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.
 import { FORWARDED_PRESET_KEYS, SECTION_FIELDS } from "../../../shared/sections.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
+import type { TokenCountScope } from "../prompt/tokens.ts";
 
 type ProvidersField = (typeof SECTION_FIELDS)["providers"][number];
 type LlmSecretsField = (typeof SECTION_FIELDS)["llmSecrets"][number];
@@ -151,4 +154,41 @@ export function loadRequestDb(
         speakerName: nameOf(ids.speakerId),
         userName: typeof effective.name === "string" ? effective.name : PERSONA_DEFAULTS.name,
     };
+}
+
+/** The main model (`db.aiModel`) in the catalogue, the custom models, and the custom flags. */
+function mainModelOf(db: RequestDb): LLMModel {
+    return resolveModelInfo(db.aiModel ?? "", {
+        enableCustomFlags: db.enableCustomFlags,
+        customFlags: db.customFlags,
+        customModels: db.customModels,
+    });
+}
+
+/**
+ * The client's `encode` scope (`src/ts/process/request/transport.ts` builds it for
+ * `/api/llm/request`), derived on the server for a job's own requests and counts: the job's
+ * settings' main model and tokenizer fields, with the stored Google key. A plugin provider's
+ * tokenizer is not used (`"none"`: plugin tokenizers do not count on the server, Safety Contract).
+ */
+export function tokenScopeFor(db: RequestDb): TokenCountScope {
+    const mainModel = mainModelOf(db);
+    return {
+        aiModel: db.aiModel ?? "",
+        currentPluginProvider: db.currentPluginProvider ?? "",
+        model: {
+            tokenizer: mainModel.tokenizer,
+            ...(mainModel.internalID !== undefined ? { internalID: mainModel.internalID } : {}),
+        },
+        pluginTokenizer: "none",
+        customTokenizer: db.customTokenizer ?? "",
+        googleClaudeTokenizing: !!db.googleClaudeTokenizing,
+        useTokenizerCaching: !!db.useTokenizerCaching,
+        googleAccessToken: db.google?.accessToken,
+    };
+}
+
+/** `supportsInlayImage()`: whether the main model takes image input. */
+export function mainModelTakesImages(db: RequestDb): boolean {
+    return mainModelOf(db).flags.includes(LLMFlags.hasImageInput);
 }

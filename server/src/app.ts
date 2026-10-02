@@ -12,6 +12,7 @@ import { createResourceStore, ResourceStoreClosedError } from "./data/resourceSt
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
+import { createGenerationRunner } from "./jobs/commandRunner.ts";
 import { createGenerationJobs, type GenerationRunner } from "./jobs/generationJobs.ts";
 import { createGenerationLock } from "./jobs/generationLock.ts";
 import { createClaudeObserver } from "./llm/claudeObserver.ts";
@@ -43,7 +44,8 @@ export type ServerContext = ReturnType<typeof createServerContext>;
  * snapshots) lives in the returned context. `resourceKinds` replaces the default resource kinds and
  * `snapshotIntervalMs` the 10-minute snapshot interval (tests use them); `maxImportBytes` caps an
  * uploaded backup archive (default `RISU_MAX_IMPORT_BYTES`, else 16 GiB). `generationRunner` runs
- * the generation jobs (tests inject one; the default answers 501 until prompt assembly).
+ * the generation jobs (tests inject one; the default runs `command` jobs and answers 501 for the
+ * other kinds until prompt assembly).
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -84,14 +86,17 @@ export function createServerContext(options: {
         snapshots,
         lock: generationLock,
         authorize: auth.isAuthorizedToken,
-        runner: options.generationRunner,
+        // The default runner is built below (it needs the request layer and the script workers);
+        // a job starts only after the context exists.
+        runner: options.generationRunner ?? ((job) => defaultRunner(job)),
     });
     // The server request layer (`POST /api/llm/request`): its tokenizers load on first use.
     const tokenizers = createTokenizers({ rootDir: options.rootDir });
+    const tokenCounter = createTokenCounter({ tokenizers });
     const llmRequests = createLlmRequests({
         store: resources,
         kinds: resourceKinds,
-        tokens: createTokenCounter({ tokenizers }),
+        tokens: tokenCounter,
         vertexTokens: createVertexTokenCache(),
         claudeObserver: createClaudeObserver(),
         parentCallback: (jobId, clientId, callbackId, onSettled) =>
@@ -106,8 +111,17 @@ export function createServerContext(options: {
 
     /** The one `upgrade` listener per HTTP server (proxy stream jobs, then generation jobs). */
     const upgradeListeners = new Map<http.Server, (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void>();
-    // Workers start on the first task; nothing runs scripts on the server yet (Phase 5 slice 8a).
+    // Workers start on the first task: Lua buttons (`command` jobs, Phase 5 slice 8a) run there.
     const scriptWorkers = createScriptWorkerPool({ rootDir: options.rootDir });
+    const defaultRunner = createGenerationRunner({
+        store: resources,
+        kinds: resourceKinds,
+        rootDir: options.rootDir,
+        savePath,
+        scriptWorkers,
+        llm: llmRequests,
+        tokens: tokenCounter,
+    });
 
     const authenticatedRouteLimiter = createRateLimiter({
         windowMs: 60 * 1000,

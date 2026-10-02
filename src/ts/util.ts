@@ -8,6 +8,9 @@ import type { Attachment } from "svelte/attachments";
 import { mount, unmount, type Snippet } from "svelte";
 import PopupList from "src/lib/UI/PopupList.svelte";
 
+// Shared with the server (Phase 5 slice 8a) so CBS and lore pick the same values.
+export { pickHashRand, sfc32 } from "../../shared/hashRand.ts";
+
 export interface Messagec extends Message {
     index: number;
 }
@@ -572,22 +575,6 @@ export const languageCodes = [
     "zu",
 ];
 
-export function sfc32(a: number, b: number, c: number, d: number) {
-    return function () {
-        a |= 0;
-        b |= 0;
-        c |= 0;
-        d |= 0;
-        let t = (((a + b) | 0) + d) | 0;
-        d = (d + 1) | 0;
-        a = b ^ (b >>> 9);
-        b = (c + (c << 3)) | 0;
-        c = (c << 21) | (c >>> 11);
-        c = (c + t) | 0;
-        return (t >>> 0) / 4294967296;
-    };
-}
-
 export function uuidtoNumber(uuid: string) {
     let result = 0;
     for (let i = 0; i < uuid.length; i++) {
@@ -1107,22 +1094,6 @@ export const sortableOptions = {
         return event.related.className.indexOf("no-sort") === -1;
     },
 } as const;
-
-export function pickHashRand(cid: number, word: string) {
-    let hashAddress = 5515;
-    const rand = (word: string) => {
-        for (let counter = 0; counter < word.length; counter++) {
-            hashAddress = (hashAddress << 5) + hashAddress + word.charCodeAt(counter);
-        }
-        return hashAddress;
-    };
-    const randF = sfc32(rand(word), rand(word), rand(word), rand(word));
-    const v = cid % 1000;
-    for (let i = 0; i < v; i++) {
-        randF();
-    }
-    return randF();
-}
 
 export async function replaceAsync(
     string: string,

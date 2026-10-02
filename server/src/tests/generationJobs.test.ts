@@ -110,7 +110,13 @@ function setup() {
     });
     /** Creates a job for chat k owned by `tab` and returns its id (the create must succeed). */
     const create = (input = "", kind: "send" | "command" = "send") => {
-        const result = jobs.create({ kind, context: context(input), clientId: "tab" }, store.epoch());
+        // A command job carries what it runs (slice 8a); the body is a union by kind, so each branch names its kind.
+        const result = jobs.create(
+            kind === "command"
+                ? { kind, context: context(input), clientId: "tab", command: { type: "button", data: "" } }
+                : { kind, context: context(input), clientId: "tab" },
+            store.epoch(),
+        );
         if (!result.ok) {
             throw new Error(`create: ${result.status} ${JSON.stringify(result.body)}`);
         }
@@ -165,7 +171,12 @@ describe("admission", () => {
             body: { error: "chatBusy", jobId },
         });
         // A command job takes the slot too; another chat is free.
-        expect(jobs.create({ kind: "command", context: context(), clientId: "tab" }, store.epoch())).toMatchObject({
+        expect(
+            jobs.create(
+                { kind: "command", context: context(), clientId: "tab", command: { type: "button", data: "" } },
+                store.epoch(),
+            ),
+        ).toMatchObject({
             ok: false,
             status: 409,
         });

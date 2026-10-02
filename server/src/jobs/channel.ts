@@ -75,9 +75,30 @@ type Request = {
     /** Called once when it settles (an aux request running inside this callback ends with it). */
     onSettled: Set<() => void>;
     resolve: (result: QuestionResult | CallbackResult) => void;
+    /** When it was asked, against the notices kept before the first attach (`earlyOrder`). */
+    order: number;
 };
 
-type ChannelState = { transport: ChannelTransport; requests: Set<Request>; closed: boolean };
+/** Orders the notices kept before a first attach against the requests made meanwhile. */
+let earlyOrder = 0;
+
+type ChannelState = {
+    transport: ChannelTransport;
+    requests: Set<Request>;
+    closed: boolean;
+    /**
+     * Notices sent before an owner socket first attached (a job starts at once, its owner attaches
+     * right after the create answer): kept, within `MAX_EARLY_NOTICE_BYTES`, and sent on that first
+     * attach in their order among the requests made meanwhile, even after the job ended (the
+     * registry takes them before the terminal), then null. After the first attach a notice nobody
+     * receives is gone, as a notice is one way.
+     */
+    early: { order: number; event: GenerationChannelEvent }[] | null;
+    earlyBytes: number;
+};
+
+/** The serialized size of the notices kept for an owner that has not attached yet; later ones are dropped. */
+const MAX_EARLY_NOTICE_BYTES = 1024 * 1024;
 
 type ClientLane = { queue: Request[]; stack: Request[] };
 
@@ -155,6 +176,7 @@ function hasHook(hooks: GenerationHooks, name: CallbackName, payload: unknown): 
         case "mcpTool":
             return isPlainObject(payload) && hooks.mcpTools.includes(payload.identifier as string);
         case "generateImage":
+        case "inlayImage":
             // A client capability, not a plugin hook.
             return true;
         default:
@@ -361,6 +383,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 timer: null,
                 onSettled: new Set(),
                 resolve,
+                order: ++earlyOrder,
             };
             channel.requests.add(request);
             parent?.children.add(request);
@@ -383,14 +406,23 @@ export function createChannelHub(options: { now?: () => number } = {}) {
     return {
         /** Opens the channel of one job. The registry passes answers, attaches, and the job's end to it. */
         open(transport: ChannelTransport) {
-            const state: ChannelState = { transport, requests: new Set(), closed: false };
+            const state: ChannelState = { transport, requests: new Set(), closed: false, early: [], earlyBytes: 0 };
 
             const channel: JobChannel = {
                 notice(notice) {
                     if (state.closed) {
                         return;
                     }
-                    transport.send({ type: "notice", epoch: transport.epoch, ...notice } as GenerationChannelEvent);
+                    const event = { type: "notice", epoch: transport.epoch, ...notice } as GenerationChannelEvent;
+                    if (state.early && !transport.ownerAttached()) {
+                        const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
+                        if (state.earlyBytes + bytes <= MAX_EARLY_NOTICE_BYTES) {
+                            state.early.push({ order: ++earlyOrder, event });
+                            state.earlyBytes += bytes;
+                        }
+                        return;
+                    }
+                    transport.send(event);
                 },
                 ask(question, options = {}) {
                     // Serialized now, so an unsendable payload throws here and never occupies a slot.
@@ -467,17 +499,47 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                  * owner socket took it before (it may have run on a page that is gone).
                  */
                 handleAttach() {
+                    const early = state.early ?? [];
+                    state.early = null;
+                    state.earlyBytes = 0;
+                    // The first attach: the kept notices and the waiting requests in the order made.
+                    const sends: { order: number; send: () => void }[] = early.map(({ order, event }) => ({
+                        order,
+                        send: () => {
+                            transport.send(event);
+                        },
+                    }));
                     for (const request of [...state.requests]) {
                         if (!request.dispatched || request.settled || expireIfDue(request)) {
                             continue;
                         }
+                        sends.push({
+                            order: request.order,
+                            send: () => {
+                                const sent = transport.send(request.build(request.delivered));
+                                request.delivered ||= sent;
+                            },
+                        });
+                    }
+                    sends.sort((a, b) => a.order - b.order);
+                    for (const entry of sends) {
                         try {
-                            const sent = transport.send(request.build(request.delivered));
-                            request.delivered ||= sent;
+                            entry.send();
                         } catch (error) {
                             console.error("[Channel]", error);
                         }
                     }
+                },
+
+                /**
+                 * The notices kept for an owner that never attached while the job ran (the registry
+                 * sends them before the terminal of an ended job's first attach); empties the buffer.
+                 */
+                takeEarly(): GenerationChannelEvent[] {
+                    const early = state.early ?? [];
+                    state.early = null;
+                    state.earlyBytes = 0;
+                    return early.map(({ event }) => event);
                 },
 
                 /**

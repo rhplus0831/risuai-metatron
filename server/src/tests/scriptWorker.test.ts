@@ -195,6 +195,51 @@ describe("the shared pool", () => {
             expect(r.res).toBe("string,boom,string,sboom,string,table,1,nil,nil,table,2,table,1,nil");
         });
 
+        it("hands no answer (undefined or null) to Lua as nil on both paths, and keeps false, zero, and the empty string", async () => {
+            // Through wasmoon a JS `null` would be its truthy `null` userdata, which `json.encode`
+            // refuses; the client's functions answer `undefined` (nil) for no answer (slice 8a).
+            const nullish: LuaHost = {
+                async: {
+                    aundef: async () => undefined,
+                    anull: async () => null,
+                    afalse: async () => false,
+                    azero: async () => 0,
+                    aempty: async () => "",
+                },
+                sync: {
+                    sundef: () => undefined,
+                    snull: () => null,
+                    sfalse: () => false,
+                    szero: () => 0,
+                    sempty: () => "",
+                },
+            };
+            const r = await pool.runLua(
+                task(`probe = async(function(id)
+                    local a = aundef():await()
+                    local b = anull():await()
+                    local c = sundef()
+                    local d = snull()
+                    local f1 = afalse():await()
+                    local z1 = azero():await()
+                    local e1 = aempty():await()
+                    local f2 = sfalse()
+                    local z2 = szero()
+                    local e2 = sempty()
+                    return table.concat({
+                        type(a), type(b), type(c), type(d),
+                        tostring(a == nil and b == nil and c == nil and d == nil),
+                        json.encode({ a = a, b = b, c = c, d = d, z = 1 }),
+                        tostring(f1), tostring(z1), e1 == "" and "empty" or "?",
+                        tostring(f2), tostring(z2), e2 == "" and "empty" or "?",
+                    }, "|")
+                end)`),
+                { host: nullish },
+            );
+            expect(r.error).toBeUndefined();
+            expect(r.res).toBe('nil|nil|nil|nil|true|{"z":1}|false|0|empty|false|0|empty');
+        });
+
         it("lets no run change the worker's prototypes for a later run", async () => {
             const first = await pool.runLua(
                 task(`probe = async(function(id)
@@ -754,7 +799,11 @@ describe("the shared pool", () => {
                 async: { hold: () => new Promise<string>((resolve) => (release = () => resolve("go"))) },
             };
             const blocker = one.runLua(task("probe = async(function(id) return hold():await() end)"), { host });
-            await sleep(100);
+            // The worker holds the slot once it called `hold` (a fixed wait is too short under load).
+            for (let i = 0; i < 400 && release === undefined; i++) {
+                await sleep(25);
+            }
+            expect(release).toBeDefined();
             const queued = Array.from({ length: MAX_QUEUED_TASKS }, () =>
                 one.regex({ op: "test", pattern: "a", flags: "", input: "a" }),
             );

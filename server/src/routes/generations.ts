@@ -1,5 +1,12 @@
 import type { Hono, MiddlewareHandler } from "hono";
-import { GENERATION_KINDS, type GenerationContext, type GenerationCreateBody } from "../../../shared/jobs.ts";
+import {
+    GENERATION_KINDS,
+    type GenerationClientEnv,
+    type GenerationCommand,
+    type GenerationContext,
+    type GenerationCreateBody,
+    MAX_COMMAND_DATA_BYTES,
+} from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import { isValidResourceId } from "../data/resourceStore.ts";
 import { readJsonBody } from "../http/body.ts";
@@ -10,6 +17,43 @@ import type { AuthStore } from "./auth.ts";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const MAX_BROWSER_LANGUAGE_CHARS = 64;
+const MAX_VIEWPORT_PX = 1_000_000;
+
+/** `context.client`: a viewport of finite, non-negative sizes and a short language tag. */
+function parseClientEnv(value: unknown): GenerationClientEnv | string {
+    if (!isPlainObject(value) || !isPlainObject(value.viewport)) {
+        return "context.client must be { viewport: { width, height }, browserLanguage }";
+    }
+    const { width, height } = value.viewport;
+    for (const size of [width, height]) {
+        if (typeof size !== "number" || !Number.isFinite(size) || size < 0 || size > MAX_VIEWPORT_PX) {
+            return "context.client.viewport sizes must be finite non-negative numbers";
+        }
+    }
+    if (typeof value.browserLanguage !== "string" || value.browserLanguage.length > MAX_BROWSER_LANGUAGE_CHARS) {
+        return `context.client.browserLanguage must be a string of at most ${MAX_BROWSER_LANGUAGE_CHARS} characters`;
+    }
+    return {
+        viewport: { width: width as number, height: height as number },
+        browserLanguage: value.browserLanguage,
+    };
+}
+
+/** `command`: required for a `command` job, refused for every other kind. Data only: no code, no permission. */
+function parseCommand(kind: string, value: unknown): GenerationCommand | undefined | string {
+    if (kind !== "command") {
+        return value === undefined ? undefined : "command is only for a command job";
+    }
+    if (!isPlainObject(value) || value.type !== "button" || typeof value.data !== "string") {
+        return 'command must be { type: "button", data: string }';
+    }
+    if (Buffer.byteLength(value.data, "utf8") > MAX_COMMAND_DATA_BYTES) {
+        return `command.data must be at most ${MAX_COMMAND_DATA_BYTES} bytes`;
+    }
+    return { type: "button", data: value.data };
 }
 
 /** Checks a create body; returns the reason as a string when it is malformed. */
@@ -46,6 +90,21 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
             return `context.${field} must be an id when present`;
         }
     }
+    if (
+        context.selectedPersonaId !== undefined &&
+        context.selectedPersonaId !== null &&
+        !isValidResourceId(context.selectedPersonaId)
+    ) {
+        return "context.selectedPersonaId must be an id or null when present";
+    }
+    const client = context.client === undefined ? undefined : parseClientEnv(context.client);
+    if (typeof client === "string") {
+        return client;
+    }
+    const command = parseCommand(body.kind, body.command);
+    if (typeof command === "string") {
+        return command;
+    }
     const parsed: GenerationContext = {
         characterId: context.characterId,
         chatId: context.chatId,
@@ -57,17 +116,19 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
         ...(context.continueMessageId !== undefined ? { continueMessageId: context.continueMessageId as string } : {}),
         ...(context.speakerChaId !== undefined ? { speakerChaId: context.speakerChaId as string } : {}),
         ...(context.triggerId !== undefined ? { triggerId: context.triggerId as string } : {}),
+        ...(context.selectedPersonaId !== undefined
+            ? { selectedPersonaId: context.selectedPersonaId as string | null }
+            : {}),
+        ...(client !== undefined ? { client } : {}),
     };
     const hooks = parseGenerationHooks(body.hooks);
     if (typeof hooks === "string") {
         return hooks;
     }
-    return {
-        kind: body.kind as GenerationCreateBody["kind"],
-        context: parsed,
-        hooks,
-        clientId: body.clientId,
-    };
+    const base = { context: parsed, hooks, clientId: body.clientId };
+    return command !== undefined
+        ? { ...base, kind: "command", command }
+        : { ...base, kind: body.kind as Exclude<GenerationCreateBody["kind"], "command"> };
 }
 
 /**

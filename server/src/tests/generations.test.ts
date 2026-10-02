@@ -142,7 +142,9 @@ describe("generation jobs over HTTP and WebSocket", () => {
         return { status: res.status, body: (await res.json()) as Record<string, unknown> };
     };
     const createOk = async (kind = "send", clientId = "tab") => {
-        const res = await create({ kind, context: await context(), clientId });
+        // A command job carries what it runs (slice 8a); the route refuses `command` on any other kind.
+        const command = kind === "command" ? { command: { type: "button", data: "" } } : {};
+        const res = await create({ kind, context: await context(), clientId, ...command });
         expect(res.status).toBe(200);
         return res.body.jobId as string;
     };

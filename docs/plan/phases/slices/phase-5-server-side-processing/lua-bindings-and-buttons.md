@@ -1,6 +1,6 @@
 # Slice: Lua Bindings And Buttons
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented (2026-10-02); see the implementation record at the end.
 
 Phase: [Phase 5](../../phase-5-server-side-processing.md), step 6 (the host bindings; buttons
 through a server command endpoint); PLAN.md Decision 5. Moved ahead of step 4 (prompt assembly),
@@ -96,3 +96,101 @@ its alert appears.
 ## Residual risk
 
 Command lines are not atomic on the server either (Phase 2's known limit).
+
+## Implementation record (2026-10-02)
+
+Plan, Astra's plan review (15 points), and Opus's decisions are in the session scratchpad
+(`p5s8a-plan.md`, `/tmp/astra-p5-segC/p5s8a-plan-review.md`, `p5s8a-decisions.md`): every point was
+adopted except point 4 (below); point 12 was adopted with a change.
+
+What landed:
+
+- Wire: `GenerationCreateBody.command` (`{ type: "button", data }`, required for `command` jobs and
+  refused for others, 64 KiB of UTF-8), `GenerationContext.selectedPersonaId` and `.client`
+  (viewport, browser language), validated by the route and carried to the runner
+  (`RunningJob.command`). Callback payloads for `generateImage` and the new `inlayImage`.
+- `server/src/jobs/jobScope.ts` (the frozen projection plus the live chat and characters),
+  `server/src/jobs/cbsHost.ts` (the server CBS host; `shared/hashRand.ts` takes `pickHashRand` and
+  `sfc32` from `src/ts/util.ts`, which re-exports them), `server/src/lua/bindings.ts` (the 50 host
+  functions; Astra's per-function table is the contract), `server/src/jobs/commandRunner.ts` (the
+  default runner: `command` jobs run, other kinds 501), the runtime's JSON wrappers and
+  `failedAt`, `server/src/llm/requests.ts` `runInJob` with the shared `buildContext` and
+  `channelIntercept`, `server/src/llm/outer.ts` (the client's outer `requestChatData`),
+  `tokenScopeFor`/`mainModelTakesImages` (`settings.ts`), `readStorageFile`/`writeStorageFile`
+  (`routes/storage.ts`).
+- Client: `src/ts/storage/clientFlags.ts` (`risu.serverGeneration`, `risu.serverTransform`; no UI
+  toggle until slice 9), `src/ts/process/serverCommands.ts` (`runServerButton`, `followJobToEnd`),
+  the `Chat.svelte` branch, the `generateImage` and `inlayImage` callbacks in `jobChannel.ts`, and
+  the saved-job resume at boot (`bootstrap.ts`).
+- `Dockerfile` copies `version.json` (the server's `appVer`).
+
+Deviations from the plan and the slice doc:
+
+- Point 4 (Astra: untrusted CBS on the main thread has no execution bound, e.g.
+  `{{range::[0,1,0]}}`) was rejected for this slice and is carried to Stop C as an owner item: it is
+  phase-wide (slices 9 and 13 evaluate card CBS on the server by the phase design), and every server
+  CBS evaluation goes through `cbsHost.ts`, where a bound would plug in. Recommendation for the
+  owner: host-injected evaluator work/output limits on the server only.
+- Point 12: the character and persona images are not decoded on the server. The inlay id is the
+  asset key, as on the client; an existing inlay is returned at once, else the tab draws it with its
+  canvas through an `inlayImage` callback (the client's PNG normalization and 1024² cap). A model's
+  image output takes the same callback.
+- The job channel keeps notices sent before the owner's first attach (1 MiB) and sends them on it in
+  their order among the requests made meanwhile, or before the terminal of a job that ended first
+  (a defect found by the browser check: a button's first `alertNormal` was lost, since the job
+  starts before its owner attaches).
+- A Lua run that fails outside its handler (a pool failure: no worker, a crash) ends the job, like
+  a load failure; only a handler error is logged and skipped.
+- `util/playwright/stack.mjs` links `public/` and copies `version.json` into its temporary root
+  (the script workers read `public/lua/json.lua` there).
+
+Recorded behavior:
+
+- Through the job channel, notices and questions are shown one at a time; in the tab,
+  `alertNormal` does not wait and a following question replaces it at once.
+- `stopChat` keeps setting the run's `stopSending`; a button ignores it, as the client does.
+- The built-in `request` returns nil at once on a refused key (the client returns a promise of
+  nil); `logMain` logs raw text (the client parses its JSON).
+- `similarity` raises "similarity is not available on the server yet" until slice 10.
+- Lua `LLM`/`axLLM`/`simpleLLM` send no tools (MCP is slice 12) and no `request` trigger (slice 8b).
+- A tab follows each job once (`followJobToEnd`, shared by the button, a busy job of its own, and the
+  boot resume), with bounded reattaches; the end is reported once, and a lost job is released.
+- A plugin model or a tab's dynamic model is refused in a job's request (it runs in the browser).
+- The chat functions' reads use the job's view of the chat as read after its writes and callbacks;
+  writes read the chat first.
+- The command job's settings are frozen at its start; its chat and characters are read again after
+  its own writes and callbacks; another chat is out of its scope (CBS `setvar` on another chat is
+  not written).
+
+Checks: `pnpm check` (only the invalidated test file's error), `pnpm format:check`, `pnpm build`,
+`pnpm test:e2e` 6 passed, `pnpm test` (only the invalidated tests listed for the adapter), the
+server tsconfig is strict (no new error); scratch smoke `p5s8a-smoke.ts` 24/24 (a real server, a
+mock provider, the owner socket answering the questions); `util/playwright/checkServerButton.mjs`
+14/14 (flag on: the job posted, the alert and the question in the UI, the edits shown, stored, and
+kept after a reload; flag off: the browser path, no job).
+
+Astra challenge (2026-10-02): round 1 found 9 blocking and 4 non-blocking points
+(`/tmp/astra-p5-segC/p5s8a-challenge.md`): a fatal failure did not stop the handler's later
+effects, a job interceptor's protocol failure was not fatal, writes were built from an older view,
+async lore and inlay writes were not fenced after an abort, the tab's inlay writer ignored a
+cancellation, early notices were lost for an ended job and reordered, the early buffer was not
+bounded in bytes, plugin and dynamic model ids went to OpenAI, the reattach lifecycle lost final
+records, plus error masking, an unread stream's registration, inlay answer checks, and the wire
+union. All were fixed; round 2 (`p5s8a-challenge-2.md`) found three remaining blocking points (the
+inlay metadata retry after a cancellation, concurrent follows of one job, a lost follow's channel
+requests) and five smaller ones (boot resume retries, an aborted stream ending as success, image
+media existence, UTF-8 counting, docs), all fixed. Round 3 (`p5s8a-challenge-3.md`) found two
+blocking points (the boot resume's discovery outside the shared per-job lifecycle; a callback
+started after an abort during the image file check), both fixed: the lifecycle is reserved before
+discovery, and every callback starts behind the call's fence.
+
+Fable's review found one problem the challenge rounds missed: the worker pool answered a host
+function's `undefined` as JS `null`, which wasmoon pushes as its truthy `null` userdata, so a refused
+guard, a void setter, or an unchanged `setChatVarChanged` was not `nil` in the script (and broke
+`json.encode`). The pool now answers no value (`undefined` or `null`) as `nil` (`hostValue`). Astra's
+round 5 (`p5s8a-challenge-5.md`) found no remaining defect. Fable then added
+`server/src/tests/luaBindings.test.ts`, `luaBindingsFences.test.ts`, `serverCommands.test.ts`, and
+cases in `scriptWorker.test.ts` (the nil boundary; the queue-cap test now waits for its blocker
+instead of a fixed sleep), `jobChannel.test.ts`, `llmRequests.test.ts`, and `inlays.test.ts`. The
+unbounded server CBS evaluation (Astra point 4) is recorded in `self-host-server.md` Known Hazards
+and goes to Stop C.

@@ -402,6 +402,42 @@ describe("writeInlayImage", () => {
         expect(fake.data<InlayResource>("inlays", "broken")!.type).toBe("signature");
     });
 
+    test("stops where `check` throws: before anything, after hashing (no upload), or after the upload (no metadata)", async () => {
+        // A server job's callback that was cancelled meanwhile (slice 8a): `check` runs at the
+        // start, after the image loaded, before the media write (after hashing), and before the
+        // metadata write; a throw there leaves nothing newer behind.
+        const { forageStorage } = await import("../../../globalApi.svelte");
+        const setItem = forageStorage.setItem as unknown as { mock: { calls: unknown[][] } };
+        const stopAt = (n: number) => {
+            let calls = 0;
+            return () => {
+                if (++calls >= n) {
+                    throw new Error("cancelled");
+                }
+            };
+        };
+        await expect(I.writeInlayImage(makeImage(4, 2, true), { id: "c1", check: stopAt(1) })).rejects.toThrow(
+            "cancelled",
+        );
+        expect(setItem.mock.calls).toHaveLength(0);
+        expect(fake.data("inlays", "c1")).toBeNull();
+        // The media key is hashed before the upload starts; a cancel there uploads nothing.
+        await expect(I.writeInlayImage(makeImage(4, 2, true), { id: "c2", check: stopAt(4) })).rejects.toThrow(
+            "cancelled",
+        );
+        expect(setItem.mock.calls).toHaveLength(0);
+        expect(fake.data("inlays", "c2")).toBeNull();
+        // A cancel after the upload writes no metadata (the bytes are content-addressed and inert).
+        await expect(I.writeInlayImage(makeImage(4, 2, true), { id: "c3", check: stopAt(5) })).rejects.toThrow(
+            "cancelled",
+        );
+        expect(setItem.mock.calls).toHaveLength(1);
+        expect(fake.data("inlays", "c3")).toBeNull();
+        // Without a cancel the same image lands, and the id's queue moved on.
+        expect(await I.writeInlayImage(makeImage(4, 2, true), { id: "c3", check: () => {} })).toBe("c3");
+        expect(fake.data<InlayResource>("inlays", "c3")).toMatchObject({ type: "image", width: 4, height: 2 });
+    });
+
     test("output pixels never exceed 1024 * 1024 and the aspect ratio survives downscaling", async () => {
         await fc.assert(
             fc.asyncProperty(fc.integer({ min: 1, max: 10000 }), fc.integer({ min: 1, max: 10000 }), async (w, h) => {

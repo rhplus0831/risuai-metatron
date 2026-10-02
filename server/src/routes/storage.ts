@@ -126,6 +126,73 @@ export function resolveStorageKey(savePath: string, key: string): string | null 
     return path.dirname(fullPath) === namespaceDir ? fullPath : null;
 }
 
+/**
+ * Reads a stored file by logical key in-process (a server job's asset read), with the read route's
+ * rules: no symlinks, regular files only. Null when the key has no location or the file is missing.
+ */
+export async function readStorageFile(savePath: string, key: string): Promise<Uint8Array | null> {
+    const fullPath = resolveStorageKey(savePath, key);
+    if (fullPath === null) {
+        return null;
+    }
+    let handle: FileHandle;
+    try {
+        handle = await fs.open(fullPath, readFlags);
+    } catch (error) {
+        if (isMissingFileError(error)) {
+            return null;
+        }
+        throw error;
+    }
+    try {
+        if (!(await handle.stat()).isFile()) {
+            return null;
+        }
+        return new Uint8Array(await handle.readFile());
+    } finally {
+        await handle.close();
+    }
+}
+
+/** Whether a logical key names a stored regular file (not a symlink), without reading it. */
+export async function storageFileExists(savePath: string, key: string): Promise<boolean> {
+    const fullPath = resolveStorageKey(savePath, key);
+    if (fullPath === null) {
+        return false;
+    }
+    try {
+        return (await fs.lstat(fullPath)).isFile();
+    } catch (error) {
+        if (isMissingFileError(error)) {
+            return false;
+        }
+        throw error;
+    }
+}
+
+/**
+ * Writes a stored file by logical key in-process (a server job's asset write), staged under
+ * `save/.tmp/` and renamed into place as the write route does. The caller holds the job's
+ * admission: a job ends before maintenance replaces the data.
+ */
+export async function writeStorageFile(savePath: string, key: string, bytes: Uint8Array): Promise<void> {
+    const fullPath = resolveStorageKey(savePath, key);
+    if (fullPath === null) {
+        throw new Error(`No storage location for ${key}`);
+    }
+    const tmpPath = path.join(savePath, TMP_DIR);
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.mkdir(tmpPath, { recursive: true });
+    const stagedPath = path.join(tmpPath, `${randomUUID()}.tmp`);
+    try {
+        await fs.writeFile(stagedPath, bytes, { flag: "wx" });
+        await fs.rename(stagedPath, fullPath);
+    } catch (error) {
+        await fs.rm(stagedPath, { force: true }).catch(() => {});
+        throw error;
+    }
+}
+
 function isMissingFileError(error: unknown): boolean {
     return missingFileCodes.has((error as NodeJS.ErrnoException)?.code ?? "");
 }

@@ -191,11 +191,12 @@ function serialize<T>(id: string, task: () => Promise<T>): Promise<T> {
  * Writes an inlay's metadata. Same-id writes keep today's last-writer-wins semantics: a conflict
  * with another tab re-reads the record once and writes over it.
  */
-/** Callers hold the id's write queue (`serialize`). */
-function putMeta(id: string, data: InlayResource): Promise<void> {
+/** Callers hold the id's write queue (`serialize`). `check` throws to stop before each write. */
+function putMeta(id: string, data: InlayResource, check?: () => void): Promise<void> {
     return (async () => {
         let base = metaCache.get(id)?.revision ?? null;
         for (let attempt = 0; attempt < 2; attempt += 1) {
+            check?.();
             try {
                 const saved = await putResource(RESOURCE_KIND.inlays, id, data, base);
                 metaCache.set(id, { revision: saved.revision, data });
@@ -222,9 +223,15 @@ async function mediaKey(bytes: Uint8Array, ext: string): Promise<string> {
     return `assets/inlay_${await sha256Hex(bytes)}.${safeExt}`;
 }
 
-/** Stores media bytes under their content hash; returns the asset key. */
-async function storeMedia(bytes: Uint8Array, ext: string, meta: Omit<InlayResource, "asset">): Promise<string> {
+/** Stores media bytes under their content hash; returns the asset key. `check` throws to stop before the upload. */
+async function storeMedia(
+    bytes: Uint8Array,
+    ext: string,
+    meta: Omit<InlayResource, "asset">,
+    check?: () => void,
+): Promise<string> {
     const key = await mediaKey(bytes, ext);
+    check?.();
     if (!blobCache.has(key)) {
         await forageStorage.setItem(key, bytes);
         cacheBlob(key, new Blob([asBuffer(bytes)], { type: mimeOf({ ...meta, asset: key }) }));
@@ -232,14 +239,20 @@ async function storeMedia(bytes: Uint8Array, ext: string, meta: Omit<InlayResour
     return key;
 }
 
-async function writeMedia(id: string, bytes: Uint8Array, meta: Omit<InlayResource, "asset" | "size">) {
-    const asset = await storeMedia(bytes, meta.ext, meta);
+async function writeMedia(
+    id: string,
+    bytes: Uint8Array,
+    meta: Omit<InlayResource, "asset" | "size">,
+    check?: () => void,
+) {
+    check?.();
+    const asset = await storeMedia(bytes, meta.ext, meta, check);
     const data: InlayResource = { ...meta, asset, size: bytes.byteLength };
     const current = metaCache.get(id)?.data;
     if (current && JSON.stringify(current) === JSON.stringify(data)) {
         return;
     }
-    await putMeta(id, data);
+    await putMeta(id, data, check);
 }
 
 export async function postInlayAsset(img: { name: string; data: Uint8Array }) {
@@ -270,15 +283,21 @@ export async function postInlayAsset(img: { name: string; data: Uint8Array }) {
     return null;
 }
 
+/**
+ * Draws an image as an inlay (PNG, at most 1024² pixels). `check`, when given, throws to stop the
+ * write: it runs after the wait for the id's queue, after the image loads and encodes, and before
+ * the media and the metadata are written (a server job's callback that was cancelled meanwhile).
+ */
 export async function writeInlayImage(
     imgObj: HTMLImageElement,
-    arg: { name?: string; ext?: string; id?: string } = {},
+    arg: { name?: string; ext?: string; id?: string; check?: () => void } = {},
 ) {
     const imgid = arg.id ?? v4();
     return serialize(imgid, () => drawInlayImage(imgObj, imgid, arg));
 }
 
-async function drawInlayImage(imgObj: HTMLImageElement, imgid: string, arg: { name?: string }) {
+async function drawInlayImage(imgObj: HTMLImageElement, imgid: string, arg: { name?: string; check?: () => void }) {
+    arg.check?.();
     let drawHeight = 0;
     let drawWidth = 0;
     const canvas = document.createElement("canvas");
@@ -315,15 +334,21 @@ async function drawInlayImage(imgObj: HTMLImageElement, imgid: string, arg: { na
         imgObj.onload = draw;
         imgObj.onerror = () => reject(new Error("The inlay image could not be loaded"));
     });
+    arg.check?.();
     const imageBlob = await new Promise<Blob>((resolve) => canvas.toBlob(resolve, "image/png"));
 
-    await writeMedia(imgid, new Uint8Array(await imageBlob.arrayBuffer()), {
-        name: arg.name ?? imgid,
-        ext: "png",
-        height: drawHeight,
-        width: drawWidth,
-        type: "image",
-    });
+    await writeMedia(
+        imgid,
+        new Uint8Array(await imageBlob.arrayBuffer()),
+        {
+            name: arg.name ?? imgid,
+            ext: "png",
+            height: drawHeight,
+            width: drawWidth,
+            type: "image",
+        },
+        arg.check,
+    );
 
     return `${imgid}`;
 }

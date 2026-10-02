@@ -30,6 +30,7 @@ import {
     waitAlert,
 } from "../alert";
 import { registeredCustomPluginMCPs } from "../process/mcp/pluginmcp";
+import type { character } from "../storage/database.svelte";
 import { invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../plugins/pluginHooks";
 import { heldChatRevision } from "../storage/chatStore.svelte";
@@ -446,9 +447,53 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             stillWanted();
             return await client.callTool(String(payload.tool), payload.args);
         }
+        case "generateImage": {
+            // Lua `generateImage` on the server (Phase 5 slice 8a): generated here with the tab's
+            // image settings and keys, written as an inlay, answered with its id.
+            const characterId = String(payload.characterId);
+            const target = DBState.db.characters.find((entry) => entry?.chaId === characterId);
+            if (!target || target.type === "group") {
+                throw new CallbackFailed("hook", "The character to generate for is gone");
+            }
+            const { generateAIImage } = await import("../process/stableDiff");
+            const { writeInlayImage } = await import("../process/files/inlays");
+            stillWanted();
+            const generated = await generateAIImage(
+                String(payload.prompt),
+                target as character,
+                String(payload.negative ?? ""),
+                "inlay",
+            );
+            stillWanted();
+            if (!generated) {
+                throw new CallbackFailed("hook", "Image generation failed");
+            }
+            const image = new Image();
+            image.src = generated;
+            return { id: await writeInlayImage(image, { check: stillWanted }) };
+        }
+        case "inlayImage": {
+            // An image the server cannot draw (no canvas there): a stored asset (Lua
+            // `getCharacterImage`/`getPersonaImage`, under the asset key) or a model's image.
+            const id = String(payload.id);
+            const { writeInlayImage } = await import("../process/files/inlays");
+            const image = new Image();
+            let options: { id: string; name?: string; ext?: string; check: () => void } = { id, check: stillWanted };
+            if (typeof payload.asset === "string") {
+                const asset = payload.asset;
+                const { readImage } = await import("../globalApi.svelte");
+                const bytes = await readImage(asset);
+                const ext = asset.split(".").at(-1);
+                image.src = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: `image/${ext}` }));
+                stillWanted();
+                options = { id, name: asset, ext, check: stillWanted };
+            } else {
+                image.src = `data:${String(payload.mimeType)};base64,${String(payload.data)}`;
+            }
+            return { id: await writeInlayImage(image, options) };
+        }
         case "chatOutput":
         case "provider":
-        case "generateImage":
             throw new CallbackFailed("protocol", `The ${event.name} callback is not supported yet`);
     }
 }

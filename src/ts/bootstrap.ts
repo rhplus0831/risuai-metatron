@@ -117,6 +117,11 @@ export async function loadData() {
             }
             loadedStore.set(true);
             selectedCharID.set(-1);
+            // A server job of this tab that a reload interrupted (a Lua button, Phase 5 slice 8a)
+            // is attached again; nothing is sent when the tab has none.
+            void import("./process/serverCommands")
+                .then(({ resumeServerJobs }) => resumeServerJobs())
+                .catch((error) => console.error("[Generation]", error));
             startObserveDom();
             registerModelDynamic();
             moduleUpdate();

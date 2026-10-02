@@ -33,7 +33,23 @@ export type GenerationContext = {
     /** A command job's trigger (buttons, manual triggers). */
     triggerId?: string;
     chatRevision: string;
+    /**
+     * The tab's selected persona (the forwarded `db.username` and `db.personaPrompt`), which
+     * `personaId` differs from when the chat binds a persona. Absent or null: `personaId`.
+     */
+    selectedPersonaId?: string | null;
+    /** What CBS reads of the tab (`{{screenwidth}}`, `{{metadata::browserlanguage}}`). Absent: 0×0 and `en`. */
+    client?: GenerationClientEnv;
 };
+
+/** The tab's viewport (CSS pixels) and `navigator.language` when the job was created. */
+export type GenerationClientEnv = { viewport: { width: number; height: number }; browserLanguage: string };
+
+/** The largest `command.data`, in UTF-8 bytes (a `risu-btn` attribute). */
+export const MAX_COMMAND_DATA_BYTES = 64 * 1024;
+
+/** What a `command` job runs: a Lua button (`risu-btn`) with its attribute's text. */
+export type GenerationCommand = { type: "button"; data: string };
 
 export type ScriptHookMode = "editinput" | "editprocess" | "editoutput" | "editdisplay";
 
@@ -63,13 +79,17 @@ export const NO_GENERATION_HOOKS: GenerationHooks = {
     mcpTools: [],
 };
 
-export type GenerationCreateBody = {
-    kind: GenerationKind;
+type GenerationCreateBase = {
     context: GenerationContext;
     /** The client's registered hooks; missing means none. */
     hooks?: GenerationHooks;
     clientId: string;
 };
+
+/** A create body: a `command` job carries its `command`; every other kind has none. */
+export type GenerationCreateBody =
+    | (GenerationCreateBase & { kind: Exclude<GenerationKind, "command">; command?: undefined })
+    | (GenerationCreateBase & { kind: "command"; command: GenerationCommand });
 
 export type GenerationCreated = { jobId: string };
 
@@ -180,9 +200,10 @@ export type CallbackName =
     | "chatOutput"
     | "provider"
     | "mcpTool"
-    | "generateImage";
+    | "generateImage"
+    | "inlayImage";
 
-/** A callback's payload by name; `chatOutput`, `provider`, and `generateImage` are defined by slices 11 and 8a. */
+/** A callback's payload by name; `chatOutput` and `provider` are defined by slice 11. */
 export type CallbackPayloads = {
     replacerbeforeRequest: { messages: OpenAIChat[]; model: string };
     replacerafterRequest: { text: string; model: string };
@@ -194,7 +215,14 @@ export type CallbackPayloads = {
     chatOutput: unknown;
     provider: { name: string } & Record<string, unknown>;
     mcpTool: { identifier: string; tool: string; args: unknown };
-    generateImage: unknown;
+    /** Lua `generateImage`: the client generates for `characterId`, writes the inlay, and answers `{ id }`. */
+    generateImage: { prompt: string; negative: string; characterId: string };
+    /**
+     * An image inlay drawn by the client's canvas (`writeInlayImage`: PNG, at most 1024² pixels),
+     * written under `id`, answered `{ id }`: a stored image `asset` (Lua `getCharacterImage`/
+     * `getPersonaImage`, whose inlay id is the asset key) or a model's base64 image.
+     */
+    inlayImage: { id: string; asset: string } | { id: string; mimeType: string; data: string };
 };
 
 /** The chat, preset, and persona a callback acts on (the Phase 4 hook context). */

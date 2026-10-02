@@ -215,6 +215,48 @@ describe("the hub: notices and questions", () => {
         expect(await first).toEqual({ outcome: "answered", value: "typed" });
     });
 
+    it("keeps the notices of an owner that has not attached yet within a UTF-8 byte budget, sends them on the first attach in order with the requests made meanwhile, and buffers nothing after it", async () => {
+        const h = harness();
+        h.attached.value = false;
+        const link = h.open("a");
+        // 400k UTF-16 units but 1.2 MB of UTF-8: over the budget, dropped; the small ones are kept.
+        link.channel.notice({ kind: "alertNormal", payload: { message: "가".repeat(400_000) } });
+        link.channel.notice({ kind: "alertNormal", payload: { message: "first" } });
+        const question = link.channel.ask({ kind: "alertInput", payload: { message: "q" } });
+        link.channel.notice({ kind: "alertNormal", payload: { message: "second" } });
+        // A request is dispatched to the transport as before; the notices wait for the owner.
+        expect(h.sent.map((event) => event.type)).toEqual(["question"]);
+        h.attached.value = true;
+        link.handleAttach();
+        expect(
+            h.sent
+                .slice(1)
+                .map((event) =>
+                    event.type === "notice" ? (event.payload as { message: string }).message : event.type,
+                ),
+        ).toEqual(["first", "question", "second"]);
+        expect(h.last("question").replay).toBe(true);
+        expect(h.ofType("notice").some((event) => (event.payload as { message: string }).message.length > 1000)).toBe(
+            false,
+        );
+        // After the first attach a notice goes to the transport whether or not an owner is there.
+        h.attached.value = false;
+        link.channel.notice({ kind: "alertNormal", payload: { message: "third" } });
+        expect(h.last("notice").payload).toEqual({ message: "third" });
+        expect(link.takeEarly()).toEqual([]);
+        h.answer(link, h.last("question").id, "a");
+        expect(await question).toEqual({ outcome: "answered", value: "a" });
+
+        // A job that ended before any attach: the registry takes the kept notices for its terminal.
+        const ended = h.open("b");
+        ended.channel.notice({ kind: "alertNormal", payload: { message: "only" } });
+        ended.close("done");
+        expect(ended.takeEarly()).toMatchObject([
+            { type: "notice", kind: "alertNormal", payload: { message: "only" } },
+        ]);
+        expect(ended.takeEarly()).toEqual([]);
+    });
+
     it("refuses an unsendable payload before it takes a slot", () => {
         const h = harness();
         const link = h.open("a");
@@ -355,7 +397,7 @@ describe("the hub: callbacks and nesting", () => {
         allowed.push(link.channel.callback("mcpTool", { identifier: "plugin:tool", tool: "t", args: {} }));
         h.answer(link, h.last("callback").id);
         // A client capability, always allowed.
-        allowed.push(link.channel.callback("generateImage", { prompt: "p" }));
+        allowed.push(link.channel.callback("generateImage", { prompt: "p", negative: "", characterId: "c" }));
         h.answer(link, h.last("callback").id);
         expect((await Promise.all(allowed)).every((result) => result.outcome === "answered")).toBe(true);
         expect(h.ofType("callback").map((event) => event.name)).toEqual([
@@ -685,6 +727,8 @@ describe("the registry over a real socket", () => {
             "/api/generations",
             json({
                 kind: "command",
+                // A command job carries what it runs (slice 8a); the fake runner here never reads it.
+                command: { type: "button", data: "" },
                 clientId: "tab",
                 ...(hooks === undefined ? {} : { hooks }),
                 context: {

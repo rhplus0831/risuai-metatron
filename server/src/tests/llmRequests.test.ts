@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { LLMFormat } from "../../../shared/llm.ts";
-import type { LlmRequestBody, LlmRequestEvent } from "../../../shared/llm/request.ts";
+import type { LlmRequestBody, LlmRequestEvent, StreamResponseChunk } from "../../../shared/llm/request.ts";
 import { normalizePersonas } from "../../../shared/personas.ts";
 import { normalizePresets } from "../../../shared/presets.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
@@ -10,7 +10,13 @@ import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeProviders } from "../data/normalize/providers.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import type { CallbackResult } from "../../../shared/jobs.ts";
-import { createLlmRequests, MAX_REQUESTS_PER_CLIENT, type LlmRequestsOptions } from "../llm/requests.ts";
+import {
+    createLlmRequests,
+    type JobRequestSpec,
+    MAX_REQUESTS_PER_CLIENT,
+    type LlmRequestsOptions,
+} from "../llm/requests.ts";
+import { loadRequestDb, tokenScopeFor } from "../llm/settings.ts";
 import { sleep, waitFor } from "./testSupport.ts";
 
 // Phase 5 slice 7a: the live requests of `POST /api/llm/request` (`server/src/llm/requests.ts`)
@@ -876,6 +882,138 @@ describe("OobaLegacy over a real Node WebSocket", () => {
             malformed.close();
             closing.close();
         }
+    });
+});
+
+describe("a job's in-process request (runInJob, slice 8a)", () => {
+    const ids = { presetId: "p", personaId: "u", selectedPersonaId: "u", selectedCharacterId: "c", speakerId: null };
+    /** A spec over `records` with recording sinks; `channel.callback` answers `intercept`. */
+    function jobSpec(
+        records: Records,
+        options: { intercept?: CallbackResult; streaming?: boolean; signal?: AbortSignal } = {},
+    ) {
+        const loaded = loadRequestDb(fakeStore(records), kinds, ids);
+        const logs: unknown[] = [];
+        const alerts: string[] = [];
+        const ended: string[] = [];
+        const spec: JobRequestSpec = {
+            jobId: "job",
+            loaded,
+            mode: "model",
+            arg: { formated: [{ role: "user", content: "hi" }], bias: {}, useStreaming: options.streaming === true },
+            tokenScope: tokenScopeFor(loaded.db),
+            mainModelImageInput: false,
+            channel: {
+                notice() {},
+                ask: async () => ({ outcome: "aborted" }),
+                callback: async () =>
+                    options.intercept ?? { outcome: "refused", refusal: "unregistered", error: "none" },
+            },
+            parseCbs: (text) => text,
+            inlays: {
+                saveSignature: async (id) => id,
+                writeImage: async (image) => image.id,
+                setAsset: async () => {},
+            },
+            log: (entry) => logs.push(entry),
+            alertError: (text) => alerts.push(text),
+            endJob: (message) => ended.push(message),
+            signal: options.signal ?? new AbortController().signal,
+        };
+        return { spec, logs, alerts, ended };
+    }
+
+    it("sends the stored key, keeps a model's answer as it is, and redacts a failure's text and the logs", async () => {
+        const { registry, calls } = harness(makeRecords(), (_call, index) =>
+            index === 0 ? chat(`echo ${SECRET}`) : json({ error: { message: `bad key ${SECRET}` } }, 401),
+        );
+        const { spec, logs } = jobSpec(makeRecords());
+        const success = await registry.runInJob(spec);
+        expect(success).toMatchObject({ type: "success", result: `echo ${SECRET}` });
+        expect(calls[0].headers.authorization).toContain(SECRET);
+        const failure = await registry.runInJob(spec);
+        expect(failure.type).toBe("fail");
+        expect(JSON.stringify(failure)).not.toContain(SECRET);
+        expect(logs.length).toBeGreaterThan(0);
+        expect(JSON.stringify(logs)).not.toContain(SECRET);
+        expect(registry.liveIds()).toEqual([]);
+        await registry.dispose();
+    });
+
+    it("refuses a plugin or a tab's dynamic model without a provider request (they run in the browser)", async () => {
+        for (const aiModel of ["pluginmodel:::example", "dynamic_google_future-model"]) {
+            const records = makeRecords({ preset: { aiModel } });
+            const { registry, calls } = harness(records, () => chat("never"));
+            const { spec } = jobSpec(records);
+            const response = await registry.runInJob(spec);
+            expect(response.type).toBe("fail");
+            expect(calls).toHaveLength(0);
+            expect(registry.liveIds()).toEqual([]);
+            await registry.dispose();
+        }
+    });
+
+    it("runs the interceptor as a root callback of the job: an unregistered hook is skipped, a hook's throw keeps the body, and every other refusal or failure ends the job", async () => {
+        const records = makeRecords();
+        (records.providers as Record<string, unknown>).additionalParams = [["marker", "value"]];
+        for (const [intercept, calls, ends] of [
+            [{ outcome: "refused", refusal: "unregistered", error: "none" }, 1, 0],
+            [{ outcome: "failed", failure: "hook", error: "plugin threw" }, 1, 0],
+            [{ outcome: "failed", failure: "protocol", error: "malformed" }, 0, 1],
+            [{ outcome: "refused", refusal: "nesting", error: "deep" }, 0, 1],
+            [{ outcome: "failed", failure: "barrier", error: "stale" }, 0, 1],
+            [{ outcome: "disconnected", error: "gone" }, 0, 1],
+        ] as [CallbackResult, number, number][]) {
+            const { registry, calls: made } = harness(records, () => chat("done"));
+            const { spec, ended } = jobSpec(records, { intercept });
+            const response = await registry.runInJob(spec);
+            expect(made, JSON.stringify(intercept)).toHaveLength(calls);
+            expect(response.type).toBe(calls === 1 ? "success" : "fail");
+            if (calls === 0) {
+                expect((response as { result: string }).result).toMatch(/bodyIntercepter/);
+            }
+            expect(ended, JSON.stringify(intercept)).toHaveLength(ends);
+            expect(registry.liveIds()).toEqual([]);
+            await registry.dispose();
+        }
+    });
+
+    it("hands a stream back live: read to its end it drains normally; aborted unread, its reader rejects with the reason and the registry drains at once", async () => {
+        const records = makeRecords();
+        (records.providers as Record<string, unknown>).useStreaming = true;
+        const frame = (text: string) => JSON.stringify({ choices: [{ delta: { content: text } }] });
+        const normal = harness(records, () => sse([frame("hi"), frame(" there")]));
+        const done = await normal.registry.runInJob(jobSpec(records, { streaming: true }).spec);
+        expect(done.type).toBe("streaming");
+        const chunks: StreamResponseChunk[] = [];
+        const reader = (done as { result: ReadableStream<StreamResponseChunk> }).result.getReader();
+        for (;;) {
+            const { done: finished, value } = await reader.read();
+            if (finished) {
+                break;
+            }
+            chunks.push(value);
+        }
+        expect(chunks.at(-1)?.["0"]).toBe("hi there");
+        expect(normal.registry.liveIds()).toEqual([]);
+
+        const controller = new AbortController();
+        const slow = harness(records, (call) => sse([frame("a"), frame("b")], 5000, call.signal));
+        const streaming = await slow.registry.runInJob(
+            jobSpec(records, { streaming: true, signal: controller.signal }).spec,
+        );
+        expect(streaming.type).toBe("streaming");
+        expect(slow.registry.liveIds()).toHaveLength(1);
+        controller.abort(new Error("stop"));
+        await waitFor(() => slow.registry.liveIds().length === 0);
+        await expect(
+            (streaming as { result: ReadableStream<StreamResponseChunk> }).result.getReader().read(),
+        ).rejects.toThrow("stop");
+        // A request of a job whose signal already aborted rejects instead of answering.
+        await expect(slow.registry.runInJob(jobSpec(records, { signal: controller.signal }).spec)).rejects.toThrow(
+            "stop",
+        );
+        await Promise.all([normal.registry.dispose(), slow.registry.dispose()]);
     });
 });
 

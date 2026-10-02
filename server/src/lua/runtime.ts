@@ -59,6 +59,11 @@ export type LuaRunOutput = {
     res: unknown;
     stopSending: boolean;
     error?: string;
+    /**
+     * Where `error` came from: loading the code (its top level), as the client's `doString` before
+     * its dispatch catch, or the dispatched handler.
+     */
+    failedAt?: "load" | "dispatch";
     timedOut?: boolean;
     aborted?: boolean;
     cpuMs: number;
@@ -208,7 +213,10 @@ print = function(...)
 end
 `;
 
-/** The client's `luaCodeWrapper` (`src/ts/process/scriptings.ts`) without the trailing user code. */
+/**
+ * The client's `luaCodeWrapper` (`src/ts/process/scriptings.ts`) without the trailing user code,
+ * plus the server's JSON wrappers of the table-taking functions.
+ */
 export const LUA_PRELUDE = `
 json = require 'json'
 
@@ -255,6 +263,53 @@ end
 
 function getCharacterImage(id)
     return getCharacterImageMain(id):await()
+end
+
+-- Server additions (Phase 5 slice 8a): host calls carry primitives only, so the client functions
+-- that take or return a table cross as JSON here; the public names and their returns are the
+-- client's. A refused key returns nil at once where the client does (the host checks again).
+local function __safeKey(id)
+    local access = __risuAccess(id)
+    return access == "safe" or access == "lowLevel"
+end
+
+function alertInput(id, value)
+    if not __safeKey(id) then
+        return nil
+    end
+    return alertInputMain(id, value)
+end
+
+function alertSelect(id, value)
+    if not __safeKey(id) then
+        return nil
+    end
+    return alertSelectMain(id, json.encode(value))
+end
+
+function alertConfirm(id, value)
+    if not __safeKey(id) then
+        return nil
+    end
+    return alertConfirmMain(id, value)
+end
+
+function upsertLocalLoreBook(id, name, content, options)
+    return upsertLocalLoreBookMain(id, name, content, json.encode(options))
+end
+
+function similarity(id, source, value)
+    return similarityMain(id, source, json.encode(value))
+end
+
+function simpleLLM(id, prompt)
+    return async(function()
+        local result = simpleLLMMain(id, prompt):await()
+        if result == nil then
+            return nil
+        end
+        return json.decode(result)
+    end)()
 end
 
 function getPersonaImage(id)
@@ -555,9 +610,9 @@ export function createLuaRuntime(options: { jsonLua: string }) {
             try {
                 await Promise.race([runChunk(engine, input.code), faulted]);
             } catch (error) {
-                // A load failure or a top-level runaway leaves nothing to dispatch (the client
-                // swallows it the same way).
+                // A load failure or a top-level runaway leaves nothing to dispatch.
                 result.error = errorMessage(error);
+                result.failedAt = "load";
                 return result;
             }
             if (hooks.aborted()) {
@@ -580,6 +635,7 @@ export function createLuaRuntime(options: { jsonLua: string }) {
                 result.res = res;
             } catch (error) {
                 result.error = errorMessage(error);
+                result.failedAt = "dispatch";
             }
             return result;
         } catch (error) {
@@ -795,6 +851,13 @@ function declareBuiltins(engine: LuaEngine): (state: RunState) => void {
         const ms = Math.min(Math.max(0, Number(time) || 0), MAX_SLEEP_MS, MAX_TOTAL_SLEEP_MS - current.sleptMs);
         current.sleptMs += ms;
         return callAsync(current, "sleep", [ms], "safe").then(() => true);
+    });
+    // What a key grants, for the prelude's wrappers of the client functions that return nil at once
+    // on a refused key and a promise otherwise; the host checks the key again.
+    engine.global.set("__risuAccess", (id: string) => {
+        const current = bound();
+        checkpoint(current);
+        return accessOf(current, id) ?? undefined;
     });
     engine.global.set("request", (id: string, url: string) => {
         const current = bound();

@@ -32,8 +32,8 @@ function onChannel(work: (channel: typeof import("./jobChannel")) => void) {
  * create, status, abort, and the owner socket, plus `applyGenerationEvent`, which mirrors a job's
  * events into the chat module and the save loop without any outgoing write. The tab's `clientId`
  * and its jobs (one per chat) are kept in `sessionStorage`, so a reloaded tab can attach again
- * (`resumeSavedGenerations`). Nothing calls this yet: prompt assembly (slice 9) wires it behind the
- * client flag.
+ * (`resumeSavedGenerations`, at boot). Its first caller is the Lua button behind the client flag
+ * (`process/serverCommands.ts`, slice 8a); prompt assembly (slice 9) wires the send path.
  */
 
 const CLIENT_ID_KEY = "risu-generation-client";
@@ -103,6 +103,11 @@ export function savedGenerationJobs(): Record<string, string> {
     return readSavedJobs();
 }
 
+/** This tab's saved jobs (one per chat), as `rememberGenerationJob` keeps them. */
+export function savedGenerationJobIds(): string[] {
+    return [...new Set(Object.values(readSavedJobs()))];
+}
+
 export function rememberGenerationJob(ref: ChatRef, jobId: string) {
     writeSavedJobs({ ...readSavedJobs(), [chatKey(ref)]: jobId });
 }
@@ -146,7 +151,9 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
 }
 
 /** Creates a job for `body.context`'s chat and remembers it for this tab (`hooks`: the registered ones by default). */
-export async function createGenerationJob(body: Omit<GenerationCreateBody, "clientId">): Promise<string> {
+type CreateInput = GenerationCreateBody extends infer T ? (T extends unknown ? Omit<T, "clientId"> : never) : never;
+
+export async function createGenerationJob(body: CreateInput): Promise<string> {
     const hooks = body.hooks ?? (await (await import("./jobChannel")).registeredHooks());
     const response = await request("/api/generations", {
         method: "POST",
@@ -356,13 +363,22 @@ export function applyGenerationEvent(
             return;
         case "done":
         case "error":
-            if (dispatcher) {
-                onChannel((channel) => channel.endJobChannel(jobId));
-            }
-            endServerJob(jobId);
-            forgetGenerationJob(jobId);
+            releaseGenerationJob(jobId);
             return;
     }
+}
+
+/**
+ * Everything this tab holds for a job, released as its end releases it: the channel's outstanding
+ * questions and callbacks (cancelled), the job's message locks, and the saved job. Also for a job
+ * the tab stopped following without its end (lost).
+ */
+export function releaseGenerationJob(jobId: string) {
+    if (dispatcher) {
+        onChannel((channel) => channel.endJobChannel(jobId));
+    }
+    endServerJob(jobId);
+    forgetGenerationJob(jobId);
 }
 
 /**

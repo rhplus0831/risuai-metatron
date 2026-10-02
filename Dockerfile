@@ -35,6 +35,8 @@ COPY --from=deps /app/node_modules /app/node_modules
 COPY --from=builder /app/server ./server
 COPY --from=builder /app/shared ./shared
 COPY --from=builder /app/dist ./dist
+# The server reads the app version from it (CBS `{{appver}}` in server-side scripts).
+COPY --from=builder /app/version.json ./version.json
 
 ENV NODE_ENV=production
 EXPOSE 6001

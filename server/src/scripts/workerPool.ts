@@ -182,6 +182,15 @@ function checkHostReply(name: string, value: unknown): string | null {
         : null;
 }
 
+/**
+ * A host function's answer as it enters Lua: no answer (JS `undefined` or `null`) is `nil`. Through
+ * wasmoon, JS `null` would arrive as its `null` userdata, which is truthy and no JSON value, while
+ * the client's functions return `undefined` (`nil`) for no answer.
+ */
+function hostValue(value: unknown): unknown {
+    return value ?? undefined;
+}
+
 /** The time the worker spent blocked on a synchronous call: never past the worker's own timeout. */
 function blockedMs(since: number, until: number): number {
     return Math.min(Math.max(0, until - since), SYNC_HOST_TIMEOUT_MS);
@@ -529,7 +538,7 @@ export function createScriptWorkerPool(options: {
             const replyError = checkHostReply(message.name, value);
             reply = replyError
                 ? { type: "hostResult", callId: message.callId, ok: false, error: replyError }
-                : { type: "hostResult", callId: message.callId, ok: true, value: value ?? null };
+                : { type: "hostResult", callId: message.callId, ok: true, value: hostValue(value) };
         } catch (error) {
             reply = { type: "hostResult", callId: message.callId, ok: false, error: errorMessage(error) };
         } finally {
@@ -569,7 +578,7 @@ export function createScriptWorkerPool(options: {
                 const replyError = checkHostReply(request.name, value);
                 reply = replyError
                     ? { seq: request.seq, ok: false, error: replyError }
-                    : { seq: request.seq, ok: true, value: value ?? null };
+                    : { seq: request.seq, ok: true, value: hostValue(value) };
             } catch (error) {
                 reply = { seq: request.seq, ok: false, error: errorMessage(error) };
             }
