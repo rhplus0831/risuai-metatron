@@ -25,10 +25,24 @@ const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const SLOW = 60_000;
 
 type Provider = { body: { model: string; messages: { role: string; content: string }[] }; auth?: string };
+type EmbeddingCall = { body: { input: string | string[]; model?: string }; auth?: string };
 
 let provider: http.Server;
 let providerUrl = "";
 const providerCalls: Provider[] = [];
+let embedder: http.Server;
+let embedderUrl = "";
+const embeddingCalls: EmbeddingCall[] = [];
+/**
+ * The mock embedding server's vectors: `q` is the query, and `near`, `mid`, `far` rank by their dot
+ * product with it (0.9, 0.5, 0); any other text is the zero vector.
+ */
+const MOCK_VECTORS: Record<string, number[]> = {
+    q: [1, 0],
+    near: [0.9, 0.1],
+    mid: [0.5, 0.5],
+    far: [0, 1],
+};
 let rootDir = "";
 let server: ReturnType<typeof createTestServer>;
 let node: http.Server;
@@ -74,6 +88,21 @@ beforeAll(async () => {
     });
     await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", () => resolve()));
     providerUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1/chat/completions`;
+    // The mock embedding server (`hypaModel: "custom"`): deterministic vectors per input text, in the
+    // OpenAI-compatible `{ data: [{ embedding }] }` shape; no local model, nothing on the network.
+    embedder = http.createServer(async (req, res) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+            chunks.push(chunk as Buffer);
+        }
+        const body = JSON.parse(Buffer.concat(chunks).toString() || "{}") as EmbeddingCall["body"];
+        embeddingCalls.push({ body, auth: req.headers.authorization });
+        const inputs = Array.isArray(body.input) ? body.input : [body.input];
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ data: inputs.map((text) => ({ embedding: MOCK_VECTORS[text] ?? [0, 0] })) }));
+    });
+    await new Promise<void>((resolve) => embedder.listen(0, "127.0.0.1", () => resolve()));
+    embedderUrl = `http://127.0.0.1:${(embedder.address() as { port: number }).port}/v1`;
 
     // The server's root: `public/` (json.lua, the tokenizer payloads) and `version.json` as the
     // repository has them, an empty `save/`.
@@ -98,9 +127,11 @@ beforeAll(async () => {
     ).epoch;
 
     // The preset on the mock provider for both the main and the aux model; a second persona the
-    // chats can bind, with a prompt CBS parses.
+    // chats can bind, with a prompt CBS parses; the embeddings on the mock embedding server.
     const presets = await single("presets");
     const personas = await single("personas");
+    const memorySettings = await single("memoryTranslateMedia");
+    const secrets = await single("secrets");
     presetId = presets.data[0].id;
     defaultPersonaId = personas.data[0].id;
     defaultPersonaName = personas.data[0].name;
@@ -132,6 +163,21 @@ beforeAll(async () => {
                     baseRevision: personas.revision,
                     data: [...personas.data, { id: "bound", name: "Bound", personaPrompt: "I am {{user}}" }],
                 },
+                {
+                    kind: "memoryTranslateMedia",
+                    id: "main",
+                    baseRevision: memorySettings.revision,
+                    data: { ...memorySettings.data, hypaModel: "custom" },
+                },
+                {
+                    kind: "secrets",
+                    id: "main",
+                    baseRevision: secrets.revision,
+                    data: {
+                        ...secrets.data,
+                        hypaCustomSettings: { url: embedderUrl, key: "embed-key", model: "mock-embed" },
+                    },
+                },
             ],
         }),
     });
@@ -143,6 +189,7 @@ afterAll(async () => {
     node?.closeAllConnections();
     await new Promise((resolve) => node?.close(resolve));
     provider?.close();
+    embedder?.close();
     rmSync(rootDir, { recursive: true, force: true });
     vi.restoreAllMocks();
 });
@@ -367,7 +414,7 @@ describe("the route", () => {
 
 describe("the host-function contract through the real worker", () => {
     it(
-        "answers the client's shapes and values over the job scope: reads, variables, CBS, the bound persona, live character reads and setters, hash, tokens, questions, lore, LLM, and the staged refusals",
+        "answers the client's shapes and values over the job scope: reads, variables, CBS, the bound persona, live character reads and setters, hash, tokens, questions, lore, LLM, similarity, and the staged refusals",
         async () => {
             const code = button(`
                 local R = {}
@@ -416,14 +463,14 @@ describe("the host-function contract through the real worker", () => {
                 R.llm = LLM(id, {{role = "sys", content = "S"}, {role = "user", content = "hi from lua"}})
                 R.simple = simpleLLM(id, "simple"):await()
                 R.ax = axLLM(id, {{role = "user", content = "ax"}})
-                local okSim, errSim = pcall(function() return similarity(id, "q", {"a"}):await() end)
-                R.sim = tostring(okSim) .. ":" .. tostring(errSim)
+                R.sim = similarity(id, "q", {"far", "mid", "near"}):await()
                 R.img = getCharacterImage(id)
                 R.gen = generateImage(id, "a cat", "bad"):await()
                 alertNormal(id, json.encode(R))
             `);
             const chaId = await seedCharacter({ codes: [code], bindPersona: true });
             providerCalls.length = 0;
+            embeddingCalls.length = 0;
             const callbacks: any[] = [];
             const { events, terminal } = await runButton(chaId, {
                 bound: true,
@@ -502,8 +549,14 @@ describe("the host-function contract through the real worker", () => {
             const llmCall = providerCalls.find((call) => call.body.messages.at(-1)?.content === "hi from lua")!;
             expect(llmCall.body.messages.map((message) => message.role)).toEqual(["system", "user"]);
             expect(providerCalls.every((call) => call.body.model === "mock")).toBe(true);
-            // The staged refusal, the empty image, the image callback's ordinary failure.
-            expect(R.sim).toMatch(/^false:.*similarity is not available on the server yet/);
+            // Similarity through the server embeddings (the job's `hypaModel: "custom"` on the mock
+            // embedding server): the values as a table ranked by their similarity to the source, the
+            // values embedded as documents and the source as the query, with the settings' key and model.
+            expect(R.sim).toEqual(["near", "mid", "far"]);
+            expect(embeddingCalls.map((call) => call.body.input)).toEqual([["far", "mid", "near"], "q"]);
+            expect(embeddingCalls.every((call) => call.body.model === "mock-embed")).toBe(true);
+            expect(embeddingCalls.every((call) => call.auth === "Bearer embed-key")).toBe(true);
+            // The empty image, the image callback's ordinary failure.
             expect(R.img).toBe("");
             expect(R.gen).toBe("Error: Image generation failed");
             expect(callbacks).toHaveLength(1);
@@ -583,6 +636,7 @@ describe("the host-function contract through the real worker", () => {
                 local r = {}
                 local llm = LLMMain(id, "[]", false, ""):await()
                 local sim = similarity(id, "q", {"a"}):await()
+                local simple = simpleLLM(id, "p"):await()
                 local lore = loadLoreBooksMain(id):await()
                 local req = request(id, "https://example.com/")
                 local gen = generateImage(id, "p"):await()
@@ -590,6 +644,7 @@ describe("the host-function contract through the real worker", () => {
                 local tokens = getTokens(id, "x"):await()
                 r.llm = type(llm)
                 r.sim = type(sim)
+                r.simple = type(simple)
                 r.lore = type(lore)
                 r.req = type(req)
                 r.gen = type(gen)
@@ -651,6 +706,8 @@ describe("the host-function contract through the real worker", () => {
                 expect(JSON.parse(a.slice("char:A:".length))).toEqual({
                     llm: "nil",
                     sim: "nil",
+                    // The prelude's `__decoded` wrapper keeps a refused call's nil (not wasmoon's null userdata).
+                    simple: "nil",
                     lore: "nil",
                     req: "nil",
                     gen: "nil",

@@ -1384,6 +1384,8 @@ async function sendChatInner(chatProcessIndex: number, arg: SendChatArg, scope: 
                 detachedChat(),
                 nowChatroom,
                 tokenizer,
+                // The summaries are this send's requests (its chat and its plugin context).
+                { chatRef: chatTarget, pluginContext },
             );
             if (sp.error) {
                 // Save new summary

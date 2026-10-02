@@ -76,6 +76,7 @@ function harness(options: {
     const personaWrites: [string, string][] = [];
     const requests: { arg: RequestArgs; mode: string }[] = [];
     const images: { prompt: string; negative: string; characterId: string }[] = [];
+    const similarities: { source: string; values: string[] }[] = [];
     const luaRuns: { code: string; mode: string; lowLevelAccess: boolean; working: LuaWorkingCopy }[] = [];
     const commands: string[] = [];
     const listeners = new Set<(characterId: string, patch: Record<string, unknown>) => void>();
@@ -86,6 +87,8 @@ function harness(options: {
         fatal: null as LuaJobFatalError | null,
         requestAnswer: { type: "success", result: "llm said" } as unknown,
         imageAnswer: "inlay-1" as string | null,
+        /** The similarity service's ranking; the default reverses the values (an order the input does not have). */
+        similarityAnswer: null as null | ((source: string, values: string[]) => string[]),
         tokens: async (text: string) => text.length,
         lua: null as null | ((code: string, working: LuaWorkingCopy) => Promise<{ stopSending: boolean }>),
         command: null as null | ((line: string) => Promise<unknown>),
@@ -200,6 +203,15 @@ function harness(options: {
         activateLore: async () => ({ actives: [] }) as never,
         parse,
         calc: (text) => calcString(text, { getChatVar: () => "0", getGlobalChatVar: () => "0" }) as number,
+        // The harness has no embeddings service: the production refusal of a job without one.
+        embeddings: () => {
+            throw new Error("The embeddings service is not available");
+        },
+        async similarity(source, values, ctx) {
+            fence(ctx);
+            similarities.push({ source, values: [...values] });
+            return state.similarityAnswer ? state.similarityAnswer(source, values) : [...values].reverse();
+        },
     };
     const ctx: HostContext = {
         identity: { characterId: "c", chatId: "k", presetId: "p", personaId: "u" },
@@ -263,6 +275,7 @@ function harness(options: {
         personaWrites,
         requests,
         images,
+        similarities,
         luaRuns,
         commands,
         effects,
@@ -1301,7 +1314,9 @@ describe("chat, character, persona, and UI effects", () => {
         });
         const result = await h.run();
         expect(result?.sendAIprompt).toBe(true);
-        expect(result?.chat.scriptstate).toEqual({ $img: "{{inlay::inlay-1}}", $llm: "llm said", $sim: "null" });
+        // The similarity search gets the source and the value split on `§`; its ranking is joined with `§`.
+        expect(result?.chat.scriptstate).toEqual({ $img: "{{inlay::inlay-1}}", $llm: "llm said", $sim: "c§b" });
+        expect(h.similarities).toEqual([{ source: "a", values: ["b", "c"] }]);
         expect(h.images).toEqual([{ prompt: "a cat", negative: "dogs", characterId: "c" }]);
         expect(h.requests).toHaveLength(1);
         expect(h.requests[0].mode).toBe("submodel");

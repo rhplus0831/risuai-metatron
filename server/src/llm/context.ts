@@ -59,6 +59,11 @@ export type RequestContext = {
     getModelInfo: (id: string) => LLMModel;
     /** A Google service-account access token for Vertex, cached on the server. */
     vertexAccessToken: (clientEmail: string, privateKey: string) => Promise<string>;
+    /**
+     * `runTransformers` (a local Transformers.js generation model, `LLMFormat.WebLLM`): the generated
+     * text. Present for a job's request only; a tab's request never names such a model.
+     */
+    localGeneration?: (text: string, model: string, config: Record<string, unknown>) => Promise<string>;
     /** `registerClaudeObserver`. */
     registerClaudeObserver: (arg: { url: string; body: any; headers: { [key: string]: string } }) => void;
 };

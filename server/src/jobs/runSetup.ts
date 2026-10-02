@@ -9,7 +9,9 @@ import type { ResourceStore } from "../data/resourceStore.ts";
 import type { LlmRequests } from "../llm/requests.ts";
 import { createLuaBindings, type LuaBindings, LuaJobFatalError, type LuaWorkingCopy } from "../lua/bindings.ts";
 import { createCommandExecutor } from "../prompt/commands.ts";
+import type { EmbeddingsService } from "../prompt/embeddings.ts";
 import type { TokenCounter } from "../prompt/tokens.ts";
+import type { TransformersService } from "../prompt/transformers.ts";
 import {
     createTriggerRuntime,
     type TriggerArg,
@@ -33,6 +35,10 @@ export type GenerationRunnerDeps = {
     scriptWorkers: ScriptWorkerPool;
     llm: LlmRequests;
     tokens: TokenCounter;
+    /** The embeddings of the memory algorithms and the similarity searches (Phase 5 slice 10). */
+    embeddings: EmbeddingsService;
+    /** The local models: the summarizer and the image captioner of prompt assembly. */
+    transformers: TransformersService;
     /** The generation lock: a trigger's reorder replaces the chat only while no message of it is generated. */
     lock: MessageGuard;
     /** The random source of `presetChain` and the group order (default `Math.random`). */
@@ -76,6 +82,8 @@ export type JobRunState = {
     runSignal: AbortSignal;
     /** The regex scripts' result cache of the job (the client keeps one per tab). */
     scriptCache: ReturnType<typeof createScriptCache>;
+    /** The dynamic-asset matches of the job (the client's `bestMatchCache`, one per tab). */
+    assetMatches: Map<string, string>;
 };
 
 export function createJobRunState(job: RunningJob): JobRunState {
@@ -87,6 +95,7 @@ export function createJobRunState(job: RunningJob): JobRunState {
         fatalAbort,
         runSignal: AbortSignal.any([job.signal, fatalAbort.signal]),
         scriptCache: createScriptCache(),
+        assetMatches: new Map(),
     };
 }
 
@@ -158,6 +167,7 @@ export function createRunSetup(
         engineCharacterId: ids.engineCharacterId,
         triggerId: job.context.triggerId ?? null,
         cbsUsage: state.cbsUsage,
+        embeddings: deps.embeddings,
         lock: deps.lock,
         onFatal: (error) => state.fatalAbort.abort(error),
     });

@@ -1,0 +1,4168 @@
+{
+  "capturedFrom": "the flag-off client algorithms (src/ts/process/memory) as committed at 3f5416d5, run by memoryOracle.test.ts with CAPTURE_MEMORY_FIXTURE=1 on 2026-10-03",
+  "cases": {
+    "supa-fits": {
+      "result": {
+        "currentTokens": 202,
+        "chats": [
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          }
+        ]
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-cold-overflow": {
+      "result": {
+        "currentTokens": 349,
+        "chats": [
+          {
+            "role": "system",
+            "content": "Summary 1: the events so far, in short.\nDetail 1.",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "memory": "m5\nSummary 1: the events so far, in short.\nDetail 1.",
+        "lastId": "m5"
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "User: Message 0: river meadow gravel orchard ember lantern.\n\nMira: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\nUser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\nMira: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\nUser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-existing-data": {
+      "result": {
+        "currentTokens": 306,
+        "chats": [
+          {
+            "role": "system",
+            "content": "An earlier summary of the first messages.\n\nSummary 1: the events so far, in short.\nDetail 1.",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "memory": "m7\nAn earlier summary of the first messages.\n\nSummary 1: the events so far, in short.\nDetail 1.",
+        "lastId": "m7"
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "Mira: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\nUser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\nMira: Message 5: orchard ember lantern whisper saffron copper willow silent.\n\nUser: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.\n\n"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-existing-fits-after-drop": {
+      "result": {
+        "currentTokens": 210,
+        "chats": [
+          {
+            "role": "system",
+            "content": "An earlier summary, kept as the card.\n\n",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          }
+        ]
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-id-not-found": {
+      "result": {
+        "currentTokens": 50,
+        "chats": [],
+        "error": "SupaMemory: chat ID not found"
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-hypa-data-loaded-as-supa": {
+      "result": {
+        "currentTokens": 261,
+        "chats": [
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          }
+        ],
+        "error": "SupaMemory: Data saved in hypaMemory, loaded as SupaMemory."
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-summary-fails": {
+      "result": {
+        "currentTokens": 336,
+        "chats": [
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "error": "SupaMemory: HTTP: the summary model is down"
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "User: Message 0: river meadow gravel orchard ember lantern.\n\nMira: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\nUser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\nMira: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\nUser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-group-and-punctuation": {
+      "result": {
+        "currentTokens": 308,
+        "chats": [
+          {
+            "role": "system",
+            "content": "An earlier summary with punctuation yes it has some\n\nSummary 1: the events so far, in short.\nDetail 1.",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "memory": "m7\nAn earlier summary with punctuation yes it has some\n\nSummary 1: the events so far, in short.\nDetail 1.",
+        "lastId": "m7"
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "User: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\n: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\nUser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n: Message 5: orchard ember lantern whisper saffron copper willow silent.\n\nUser: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.\n\n"
+          },
+          {
+            "role": "system",
+            "content": "Summarize: {{slot}}"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-instruct-completions": {
+      "result": {
+        "currentTokens": 342,
+        "chats": [
+          {
+            "role": "system",
+            "content": "Instruct summary 0.",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "memory": "m5\nInstruct summary 0.",
+        "lastId": "m5"
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [
+        {
+          "model": "gpt-3.5-turbo-instruct",
+          "prompt": "User: Message 0: river meadow gravel orchard ember lantern.\n\nMira: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\nUser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\nMira: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\nUser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n\n\n[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n\n\nOutput:",
+          "max_tokens": 600,
+          "temperature": 0
+        }
+      ],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-instruct-http-error": {
+      "result": {
+        "currentTokens": 336,
+        "chats": [
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "error": "SupaMemory: HTTP: {\"error\":{\"message\":\"quota exceeded\"}}"
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [
+        {
+          "model": "text-curie-001",
+          "prompt": "User: Message 0: river meadow gravel orchard ember lantern.\n\nMira: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\nUser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\nMira: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\nUser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n\n\n[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n\n\nOutput:",
+          "max_tokens": 600,
+          "temperature": 0
+        }
+      ],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-instruct-empty-choice": {
+      "result": {
+        "currentTokens": 336,
+        "chats": [
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "error": "SupaMemory: HTTP: {\"choices\":[{\"text\":\"   \"}]}"
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [
+        {
+          "model": "gpt-3.5-turbo-instruct",
+          "prompt": "User: Message 0: river meadow gravel orchard ember lantern.\n\nMira: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\nUser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\nMira: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\nUser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n\n\n[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n\n\nOutput:",
+          "max_tokens": 600,
+          "temperature": 0
+        }
+      ],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-distilbart": {
+      "result": {
+        "currentTokens": 345,
+        "chats": [
+          {
+            "role": "system",
+            "content": "A local summary of the opening.",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "memory": "m5\nA local summary of the opening.",
+        "lastId": "m5"
+      },
+      "requests": [],
+      "summarizer": [
+        "User: Message 0: river meadow gravel orchard ember lantern.\n\nMira: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\nUser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\nMira: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\nUser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n"
+      ],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-distilbart-fails": {
+      "result": {
+        "currentTokens": 336,
+        "chats": [
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "error": "SupaMemory: Summarizer: Error: the model file is missing"
+      },
+      "requests": [],
+      "summarizer": [
+        "User: Message 0: river meadow gravel orchard ember lantern.\n\nMira: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\nUser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\nMira: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\nUser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n"
+      ],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "supa-not-enough-tokens": {
+      "result": {
+        "currentTokens": 140,
+        "chats": [
+          {
+            "role": "system",
+            "content": "Too long summary 7: word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word \n\n",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          }
+        ],
+        "memory": "m9\nToo long summary 7: word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word \n\n",
+        "lastId": "m9"
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "User: Message 0: river meadow gravel orchard ember lantern.\n\nMira: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\n"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ],
+        [
+          {
+            "role": "user",
+            "content": "User: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\n"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ],
+        [
+          {
+            "role": "user",
+            "content": "Mira: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\n"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ],
+        [
+          {
+            "role": "user",
+            "content": "User: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\nMira: Message 5: orchard ember lantern whisper saffron copper willow silent.\n\n"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ],
+        [
+          {
+            "role": "user",
+            "content": "User: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.\n\n"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ],
+        [
+          {
+            "role": "user",
+            "content": "Too long summary 0: word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word \n\nToo long summary 1: word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word \n\nToo long summary 2: word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word \n\nToo long summary 3: word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ],
+        [
+          {
+            "role": "user",
+            "content": "Mira: Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.\n\nUser: Message 8: river meadow gravel orchard ember lantern whisper.\n\n"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ],
+        [
+          {
+            "role": "user",
+            "content": "Too long summary 5: word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word \n\nToo long summary 4: word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word \n\nToo long summary 6: word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "hyper-cold-overflow": {
+      "result": {
+        "currentTokens": 349,
+        "chats": [
+          {
+            "role": "system",
+            "content": "Summary 1: the events so far, in short.\nDetail 1.",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "memory": "hypa:\n[\n  {\n    \"id\": \"m5\",\n    \"hypa\": [\n      \"Summary 1: the events so far, in short.\\nDetail 1.\"\n    ],\n    \"supa\": \"Summary 1: the events so far, in short.\\nDetail 1.\"\n  }\n]",
+        "lastId": "m5"
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "User: Message 0: river meadow gravel orchard ember lantern.\n\nMira: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\nUser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\nMira: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\nUser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "hyper-existing-data": {
+      "result": {
+        "currentTokens": 446,
+        "chats": [
+          {
+            "role": "system",
+            "content": "The supa summary so far.\n\npast events: chunk about the lantern,chunk about the river",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          },
+          {
+            "role": "user",
+            "content": "Message 16: river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m16"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 17: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern.",
+            "memo": "m17"
+          }
+        ]
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": ["chunk about the river", "chunk about the lantern"],
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\nMessage 5: orchard ember lantern whisper saffron copper willow silent.\n\nMessage 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.\n\nMessage 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.\n\nMira:",
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": ["chunk about the lantern|custom-em", "chunk about the river|custom-em"],
+      "progress": [],
+      "alerts": []
+    },
+    "hyper-existing-fits": {
+      "result": {
+        "currentTokens": 352,
+        "chats": [
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          }
+        ]
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "hyper-plain-data-ignored": {
+      "result": {
+        "currentTokens": 349,
+        "chats": [
+          {
+            "role": "system",
+            "content": "Summary 1: the events so far, in short.\nDetail 1.",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "memory": "hypa:\n[\n  {\n    \"id\": \"m5\",\n    \"hypa\": [\n      \"Summary 1: the events so far, in short.\\nDetail 1.\"\n    ],\n    \"supa\": \"Summary 1: the events so far, in short.\\nDetail 1.\"\n  }\n]",
+        "lastId": "m5"
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "User: Message 0: river meadow gravel orchard ember lantern.\n\nMira: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\nUser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\nMira: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\nUser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output to reduce tokens for gpt3 and other sublanguage models]\n"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "hyper-id-not-found": {
+      "result": {
+        "currentTokens": 261,
+        "chats": [
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          }
+        ],
+        "error": "hypaMemory: chat ID not found"
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "hyper-not-an-array": {
+      "result": {
+        "currentTokens": 261,
+        "chats": [
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          }
+        ],
+        "error": "hypaMemory: hypaMemory isn't Array"
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "v2-fits": {
+      "result": {
+        "currentTokens": 167,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary></Past Events Summary>\n<Past Events Details></Past Events Details>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          }
+        ],
+        "memory": {
+          "lastMainChunkID": 0,
+          "chunks": [],
+          "mainChunks": []
+        }
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "v2-cold-overflow": {
+      "result": {
+        "currentTokens": 173,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\n\nSummary 1: the events so far, in short.\n\nDetail 1.</Past Events Summary>\n<Past Events Details>Summary 1: the events so far, in short.\n\nDetail 1.\n\n</Past Events Details>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "memory": {
+          "lastMainChunkID": 1,
+          "chunks": [
+            {
+              "mainChunkID": 1,
+              "text": "Summary 1: the events so far, in short."
+            },
+            {
+              "mainChunkID": 1,
+              "text": "Detail 1."
+            }
+          ],
+          "mainChunks": [
+            {
+              "id": 1,
+              "text": "Summary 1: the events so far, in short.\n\nDetail 1.",
+              "chatMemos": ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10", "m11"],
+              "lastChatMemo": "m11"
+            }
+          ]
+        }
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "assistant: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\nuser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\nassistant: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\nuser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\nassistant: Message 5: orchard ember lantern whisper saffron copper willow silent.\nuser: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.\nassistant: Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.\nuser: Message 8: river meadow gravel orchard ember lantern whisper.\nassistant: Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.\nuser: Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.\nassistant: Message 11: willow silent harbor river meadow gravel.",
+            "memo": "supaPrompt"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]\n",
+            "memo": "supaPrompt"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": ["search_document: Summary 1: the events so far, in short.", "search_document: Detail 1."],
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": [
+        "search_document: Detail 1.|custom-em",
+        "search_document: Summary 1: the events so far, in short.|custom-em"
+      ],
+      "progress": [],
+      "alerts": []
+    },
+    "v2-existing-with-orphan": {
+      "result": {
+        "currentTokens": 173,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\n\nOld main one.\n\nIts second part.\n\nSummary 1: the events so far, in short.\n\nDetail 1.</Past Events Summary>\n<Past Events Details>Old main one.\n\nSummary 1: the events so far, in short.\n\nIts second part.\n\nDetail 1.\n\n</Past Events Details>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "memory": {
+          "lastMainChunkID": 2,
+          "mainChunks": [
+            {
+              "id": 1,
+              "text": "Old main one.\n\nIts second part.",
+              "chatMemos": ["m0", "m1"],
+              "lastChatMemo": "m1"
+            },
+            {
+              "id": 2,
+              "text": "Summary 1: the events so far, in short.\n\nDetail 1.",
+              "chatMemos": ["m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10", "m11"],
+              "lastChatMemo": "m11"
+            }
+          ],
+          "chunks": [
+            {
+              "mainChunkID": 1,
+              "text": "Old main one."
+            },
+            {
+              "mainChunkID": 1,
+              "text": "Its second part."
+            },
+            {
+              "mainChunkID": 2,
+              "text": "Summary 1: the events so far, in short."
+            },
+            {
+              "mainChunkID": 2,
+              "text": "Detail 1."
+            }
+          ]
+        }
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "user: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\nassistant: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\nuser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\nassistant: Message 5: orchard ember lantern whisper saffron copper willow silent.\nuser: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.\nassistant: Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.\nuser: Message 8: river meadow gravel orchard ember lantern whisper.\nassistant: Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.\nuser: Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.\nassistant: Message 11: willow silent harbor river meadow gravel.",
+            "memo": "supaPrompt"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]\n",
+            "memo": "supaPrompt"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": [
+              "search_document: Old main one.",
+              "search_document: Its second part.",
+              "search_document: Summary 1: the events so far, in short.",
+              "search_document: Detail 1."
+            ],
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": [
+        "search_document: Detail 1.|custom-em",
+        "search_document: Its second part.|custom-em",
+        "search_document: Old main one.|custom-em",
+        "search_document: Summary 1: the events so far, in short.|custom-em"
+      ],
+      "progress": [],
+      "alerts": []
+    },
+    "v2-repeated-failure": {
+      "result": {
+        "currentTokens": 707,
+        "chats": [
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "error": "[HypaV2] Input tokens (707) exceeds max context size (560), but can't summarize last 4 messages. Please increase max context size to at least 707."
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "assistant: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\nuser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\nassistant: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\nuser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\nassistant: Message 5: orchard ember lantern whisper saffron copper willow silent.\nuser: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.\nassistant: Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.\nuser: Message 8: river meadow gravel orchard ember lantern whisper.\nassistant: Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.\nuser: Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.\nassistant: Message 11: willow silent harbor river meadow gravel.",
+            "memo": "supaPrompt"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]\n",
+            "memo": "supaPrompt"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "v2-one-failure-then-success": {
+      "result": {
+        "currentTokens": 707,
+        "chats": [
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "error": "[HypaV2] Input tokens (707) exceeds max context size (560), but can't summarize last 4 messages. Please increase max context size to at least 707."
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "assistant: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\nuser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\nassistant: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\nuser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\nassistant: Message 5: orchard ember lantern whisper saffron copper willow silent.\nuser: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.\nassistant: Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.\nuser: Message 8: river meadow gravel orchard ember lantern whisper.\nassistant: Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.\nuser: Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.\nassistant: Message 11: willow silent harbor river meadow gravel.",
+            "memo": "supaPrompt"
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]\n",
+            "memo": "supaPrompt"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "v2-message-over-chunk": {
+      "result": {
+        "currentTokens": 551,
+        "chats": [
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          }
+        ],
+        "error": "[HypaV2] Message tokens (30) exceeds chunk size (10). Please increase chunk size to at least 30."
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "v3-fits-empty": {
+      "result": {
+        "currentTokens": 157,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\n\n</Past Events Summary>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          }
+        ],
+        "memory": {
+          "summaries": []
+        }
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "v3-cold-overflow": {
+      "result": {
+        "currentTokens": 318,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\nSummary 1: the events so far, in short.\n\nDetail 1.\n\nSummary 2: the events so far, in short.\n\nDetail 2.\n</Past Events Summary>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.\n\nSecond paragraph of 9: orchard ember lantern whisper.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.\n\nSecond paragraph of 14: whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          },
+          {
+            "role": "user",
+            "content": "Message 16: river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m16"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 17: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern.",
+            "memo": "m17"
+          }
+        ],
+        "memory": {
+          "summaries": [
+            {
+              "text": "Summary 1: the events so far, in short.\n\nDetail 1.",
+              "chatMemos": ["m0", "m1", "m2", "m3"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Summary 2: the events so far, in short.\n\nDetail 2.",
+              "chatMemos": ["m4", "m5", "m6", "m7"],
+              "isImportant": false,
+              "tags": []
+            }
+          ],
+          "metrics": {
+            "lastImportantSummaries": [],
+            "lastRecentSummaries": [1],
+            "lastSimilarSummaries": [0],
+            "lastRandomSummaries": []
+          }
+        }
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "user: Message 0: river meadow gravel orchard ember lantern.\nassistant: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\nuser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\nassistant: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ],
+        [
+          {
+            "role": "user",
+            "content": "user: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\nSecond paragraph of 4: river meadow gravel orchard.\nassistant: Message 5: orchard ember lantern whisper saffron copper willow silent.\nuser: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.\nassistant: Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": ["Summary 1: the events so far, in short.", "Detail 1."],
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 16: river meadow gravel orchard ember lantern whisper saffron.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 17: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern.",
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": ["Detail 1.|custom-em", "Summary 1: the events so far, in short.|custom-em"],
+      "progress": [],
+      "alerts": []
+    },
+    "v3-existing-then-summarize": {
+      "result": {
+        "currentTokens": 99,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\nOld summary one: the river crossing.\n\nThey camped by the lantern.\n\nOld summary two: an important vow.\n</Past Events Summary>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          }
+        ],
+        "memory": {
+          "summaries": [
+            {
+              "text": "Old summary one: the river crossing.\n\nThey camped by the lantern.",
+              "chatMemos": ["m0", "m1"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary two: an important vow.",
+              "chatMemos": ["m2", "m3"],
+              "isImportant": true,
+              "tags": ["vow"]
+            },
+            {
+              "text": "Old summary three: copper coins traded.\n\nThe harbor was silent.",
+              "chatMemos": ["m4", "m5"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary four: a whisper in the orchard.",
+              "chatMemos": ["m6", "m7"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary six: ember and willow.\n\nGravel underfoot.",
+              "chatMemos": ["m8", "m9"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Summary 1: the events so far, in short.\n\nDetail 1.",
+              "chatMemos": ["m10"],
+              "isImportant": false,
+              "tags": []
+            }
+          ],
+          "metrics": {
+            "lastImportantSummaries": [1],
+            "lastRecentSummaries": [],
+            "lastSimilarSummaries": [],
+            "lastRandomSummaries": [0]
+          }
+        }
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "user: Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": [
+              "Old summary one: the river crossing.",
+              "They camped by the lantern.",
+              "Old summary three: copper coins traded.",
+              "The harbor was silent.",
+              "Old summary four: a whisper in the orchard.",
+              "Old summary six: ember and willow.",
+              "Gravel underfoot.",
+              "Summary 1: the events so far, in short.",
+              "Detail 1."
+            ],
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 11: willow silent harbor river meadow gravel.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": [
+        "Detail 1.|custom-em",
+        "Gravel underfoot.|custom-em",
+        "Old summary four: a whisper in the orchard.|custom-em",
+        "Old summary one: the river crossing.|custom-em",
+        "Old summary six: ember and willow.|custom-em",
+        "Old summary three: copper coins traded.|custom-em",
+        "Summary 1: the events so far, in short.|custom-em",
+        "The harbor was silent.|custom-em",
+        "They camped by the lantern.|custom-em"
+      ],
+      "progress": [],
+      "alerts": []
+    },
+    "v3-existing-selection": {
+      "result": {
+        "currentTokens": 164,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\nOld summary one: the river crossing.\n\nThey camped by the lantern.\n\nOld summary two: an important vow.\n\nOld summary three: copper coins traded.\n\nThe harbor was silent.\n\nOld summary four: a whisper in the orchard.\n\nOld summary six: ember and willow.\n\nGravel underfoot.\n</Past Events Summary>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          }
+        ],
+        "memory": {
+          "summaries": [
+            {
+              "text": "Old summary one: the river crossing.\n\nThey camped by the lantern.",
+              "chatMemos": ["m0", "m1"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary two: an important vow.",
+              "chatMemos": ["m2", "m3"],
+              "isImportant": true,
+              "tags": ["vow"]
+            },
+            {
+              "text": "Old summary three: copper coins traded.\n\nThe harbor was silent.",
+              "chatMemos": ["m4", "m5"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary four: a whisper in the orchard.",
+              "chatMemos": ["m6", "m7"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary six: ember and willow.\n\nGravel underfoot.",
+              "chatMemos": ["m8", "m9"],
+              "isImportant": false,
+              "tags": []
+            }
+          ],
+          "metrics": {
+            "lastImportantSummaries": [1],
+            "lastRecentSummaries": [4, 3, 2],
+            "lastSimilarSummaries": [0],
+            "lastRandomSummaries": []
+          }
+        }
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": ["Old summary one: the river crossing.", "They camped by the lantern."],
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 11: willow silent harbor river meadow gravel.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": ["Old summary one: the river crossing.|custom-em", "They camped by the lantern.|custom-em"],
+      "progress": [],
+      "alerts": []
+    },
+    "v3-preserve-orphans-recent-only": {
+      "result": {
+        "currentTokens": 174,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\nOld summary one: the river crossing.\n\nThey camped by the lantern.\n\nOld summary two: an important vow.\n\nOld summary three: copper coins traded.\n\nThe harbor was silent.\n\nOld summary four: a whisper in the orchard.\n\nOrphaned summary: a chat that is gone.\n\nOld summary six: ember and willow.\n\nGravel underfoot.\n</Past Events Summary>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          }
+        ],
+        "memory": {
+          "summaries": [
+            {
+              "text": "Old summary one: the river crossing.\n\nThey camped by the lantern.",
+              "chatMemos": ["m0", "m1"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary two: an important vow.",
+              "chatMemos": ["m2", "m3"],
+              "isImportant": true,
+              "tags": ["vow"]
+            },
+            {
+              "text": "Old summary three: copper coins traded.\n\nThe harbor was silent.",
+              "chatMemos": ["m4", "m5"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary four: a whisper in the orchard.",
+              "chatMemos": ["m6", "m7"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Orphaned summary: a chat that is gone.",
+              "chatMemos": ["gone-1", "gone-2"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary six: ember and willow.\n\nGravel underfoot.",
+              "chatMemos": ["m8", "m9"],
+              "isImportant": false,
+              "tags": []
+            }
+          ],
+          "metrics": {
+            "lastImportantSummaries": [1],
+            "lastRecentSummaries": [5, 4, 3, 2, 0],
+            "lastSimilarSummaries": [],
+            "lastRandomSummaries": []
+          }
+        }
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "v3-partial-then-failure": {
+      "result": {
+        "currentTokens": 472,
+        "chats": [
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          },
+          {
+            "role": "user",
+            "content": "Message 16: river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m16"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 17: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern.",
+            "memo": "m17"
+          }
+        ],
+        "error": "[HypaV3] Summarization failed: Error: the summary model is down",
+        "memory": {
+          "summaries": [
+            {
+              "text": "First summary landed.",
+              "chatMemos": ["m0", "m1", "m2"],
+              "isImportant": false,
+              "tags": []
+            }
+          ]
+        }
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "user: Message 0: river meadow gravel orchard ember lantern.\nassistant: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\nuser: Message 2: whisper saffron copper willow silent harbor river meadow gravel."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ],
+        [
+          {
+            "role": "user",
+            "content": "assistant: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\nuser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\nassistant: Message 5: orchard ember lantern whisper saffron copper willow silent."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "v3-similarity-correction": {
+      "result": {
+        "currentTokens": 164,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\nOld summary one: the river crossing.\n\nThey camped by the lantern.\n\nOld summary two: an important vow.\n\nOld summary three: copper coins traded.\n\nThe harbor was silent.\n\nOld summary four: a whisper in the orchard.\n\nOld summary six: ember and willow.\n\nGravel underfoot.\n</Past Events Summary>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          }
+        ],
+        "memory": {
+          "summaries": [
+            {
+              "text": "Old summary one: the river crossing.\n\nThey camped by the lantern.",
+              "chatMemos": ["m0", "m1"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary two: an important vow.",
+              "chatMemos": ["m2", "m3"],
+              "isImportant": true,
+              "tags": ["vow"]
+            },
+            {
+              "text": "Old summary three: copper coins traded.\n\nThe harbor was silent.",
+              "chatMemos": ["m4", "m5"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary four: a whisper in the orchard.",
+              "chatMemos": ["m6", "m7"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary six: ember and willow.\n\nGravel underfoot.",
+              "chatMemos": ["m8", "m9"],
+              "isImportant": false,
+              "tags": []
+            }
+          ],
+          "metrics": {
+            "lastImportantSummaries": [1],
+            "lastRecentSummaries": [4, 3],
+            "lastSimilarSummaries": [0, 2],
+            "lastRandomSummaries": []
+          }
+        }
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "assistant: Message 11: willow silent harbor river meadow gravel.\nuser: Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\nassistant: Message 13: orchard ember lantern whisper saffron copper willow silent harbor."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": [
+              "Old summary one: the river crossing.",
+              "They camped by the lantern.",
+              "Old summary three: copper coins traded.",
+              "The harbor was silent."
+            ],
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 11: willow silent harbor river meadow gravel.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "A query summary of the recent chats.",
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": [
+        "Old summary one: the river crossing.|custom-em",
+        "Old summary three: copper coins traded.|custom-em",
+        "The harbor was silent.|custom-em",
+        "They camped by the lantern.|custom-em"
+      ],
+      "progress": [],
+      "alerts": []
+    },
+    "v3-voyage-similar-full": {
+      "result": {
+        "currentTokens": 164,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\nOld summary one: the river crossing.\n\nThey camped by the lantern.\n\nOld summary two: an important vow.\n\nOld summary three: copper coins traded.\n\nThe harbor was silent.\n\nOld summary four: a whisper in the orchard.\n\nOld summary six: ember and willow.\n\nGravel underfoot.\n</Past Events Summary>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          }
+        ],
+        "memory": {
+          "summaries": [
+            {
+              "text": "Old summary one: the river crossing.\n\nThey camped by the lantern.",
+              "chatMemos": ["m0", "m1"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary two: an important vow.",
+              "chatMemos": ["m2", "m3"],
+              "isImportant": true,
+              "tags": ["vow"]
+            },
+            {
+              "text": "Old summary three: copper coins traded.\n\nThe harbor was silent.",
+              "chatMemos": ["m4", "m5"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary four: a whisper in the orchard.",
+              "chatMemos": ["m6", "m7"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary six: ember and willow.\n\nGravel underfoot.",
+              "chatMemos": ["m8", "m9"],
+              "isImportant": false,
+              "tags": []
+            }
+          ],
+          "metrics": {
+            "lastImportantSummaries": [1],
+            "lastRecentSummaries": [],
+            "lastSimilarSummaries": [2, 0, 4, 3],
+            "lastRandomSummaries": []
+          }
+        }
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "https://api.voyageai.com/v1/contextualizedembeddings",
+          "body": {
+            "model": "voyage-context-3",
+            "inputs": [
+              ["Old summary one: the river crossing.", "They camped by the lantern."],
+              ["Old summary three: copper coins traded.", "The harbor was silent."],
+              ["Old summary four: a whisper in the orchard."],
+              ["Old summary six: ember and willow.", "Gravel underfoot."]
+            ],
+            "input_type": "document"
+          }
+        },
+        {
+          "url": "https://api.voyageai.com/v1/contextualizedembeddings",
+          "body": {
+            "inputs": [["Message 11: willow silent harbor river meadow gravel."]],
+            "model": "voyage-context-3",
+            "input_type": "query"
+          }
+        },
+        {
+          "url": "https://api.voyageai.com/v1/contextualizedembeddings",
+          "body": {
+            "inputs": [
+              [
+                "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river."
+              ]
+            ],
+            "model": "voyage-context-3",
+            "input_type": "query"
+          }
+        },
+        {
+          "url": "https://api.voyageai.com/v1/contextualizedembeddings",
+          "body": {
+            "inputs": [["Message 13: orchard ember lantern whisper saffron copper willow silent harbor."]],
+            "model": "voyage-context-3",
+            "input_type": "query"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": [
+        "Gravel underfoot.|voyageContext3|ctx:wbf3zz",
+        "Old summary four: a whisper in the orchard.|voyageContext3",
+        "Old summary one: the river crossing.|voyageContext3|ctx:1t4y9hp",
+        "Old summary six: ember and willow.|voyageContext3|ctx:wbf3zz",
+        "Old summary three: copper coins traded.|voyageContext3|ctx:shczrm",
+        "The harbor was silent.|voyageContext3|ctx:shczrm",
+        "They camped by the lantern.|voyageContext3|ctx:1t4y9hp"
+      ],
+      "progress": [],
+      "alerts": []
+    },
+    "v3-ratio-error": {
+      "result": {
+        "currentTokens": 251,
+        "chats": [
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          }
+        ],
+        "error": "[HypaV3] The sum of Recent Memory Ratio and Similar Memory Ratio is greater than 1."
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "v3-cannot-summarize-further": {
+      "result": {
+        "currentTokens": 231,
+        "chats": [
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          }
+        ],
+        "error": "[HypaV3] Cannot summarize further: input token count (231) exceeds max context size (150), but minimum 8 messages required.",
+        "memory": {
+          "summaries": []
+        }
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "v3-preset-by-id": {
+      "result": {
+        "currentTokens": 336,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\nSummary 1: the events so far, in short.\n\nDetail 1.\n</Past Events Summary>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          },
+          {
+            "role": "user",
+            "content": "Message 16: river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m16"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 17: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern.",
+            "memo": "m17"
+          }
+        ],
+        "memory": {
+          "summaries": [
+            {
+              "text": "Summary 1: the events so far, in short.\n\nDetail 1.",
+              "chatMemos": ["m0", "m1", "m2", "m3", "m4", "m5"],
+              "isImportant": false,
+              "tags": []
+            }
+          ],
+          "metrics": {
+            "lastImportantSummaries": [],
+            "lastRecentSummaries": [0],
+            "lastSimilarSummaries": [],
+            "lastRandomSummaries": []
+          }
+        }
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "user: Message 0: river meadow gravel orchard ember lantern.\nassistant: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\nuser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\nassistant: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\nuser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\nassistant: Message 5: orchard ember lantern whisper saffron copper willow silent."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 16: river meadow gravel orchard ember lantern whisper saffron.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 17: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern.",
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [],
+      "alerts": []
+    },
+    "v3-user-messages-kept": {
+      "result": {
+        "currentTokens": 262,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\nSummary 1: the events so far, in short.\n\nDetail 1.\n\nSummary 2: the events so far, in short.\n\nDetail 2.\n</Past Events Summary>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          }
+        ],
+        "memory": {
+          "summaries": [
+            {
+              "text": "Summary 1: the events so far, in short.\n\nDetail 1.",
+              "chatMemos": ["m1"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Summary 2: the events so far, in short.\n\nDetail 2.",
+              "chatMemos": ["m3", "m5"],
+              "isImportant": false,
+              "tags": []
+            }
+          ],
+          "metrics": {
+            "lastImportantSummaries": [],
+            "lastRecentSummaries": [1],
+            "lastSimilarSummaries": [0],
+            "lastRandomSummaries": []
+          }
+        }
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "assistant: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ],
+        [
+          {
+            "role": "user",
+            "content": "assistant: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\nassistant: Message 5: orchard ember lantern whisper saffron copper willow silent."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": ["Summary 1: the events so far, in short.", "Detail 1."],
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": ["Detail 1.|custom-em", "Summary 1: the events so far, in short.|custom-em"],
+      "progress": [],
+      "alerts": []
+    },
+    "v3exp-cold-overflow": {
+      "result": {
+        "currentTokens": 318,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\nSummary 1: the events so far, in short.\n\nDetail 1.\n\nSummary 2: the events so far, in short.\n\nDetail 2.\n</Past Events Summary>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.\n\nSecond paragraph of 9: orchard ember lantern whisper.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.\n\nSecond paragraph of 14: whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          },
+          {
+            "role": "user",
+            "content": "Message 16: river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m16"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 17: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern.",
+            "memo": "m17"
+          }
+        ],
+        "memory": {
+          "summaries": [
+            {
+              "text": "Summary 1: the events so far, in short.\n\nDetail 1.",
+              "chatMemos": ["m0", "m1", "m2", "m3"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Summary 2: the events so far, in short.\n\nDetail 2.",
+              "chatMemos": ["m4", "m5", "m6", "m7"],
+              "isImportant": false,
+              "tags": []
+            }
+          ],
+          "metrics": {
+            "lastImportantSummaries": [],
+            "lastRecentSummaries": [1],
+            "lastSimilarSummaries": [0],
+            "lastRandomSummaries": []
+          }
+        }
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "user: Message 0: river meadow gravel orchard ember lantern.\nassistant: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\nuser: Message 2: whisper saffron copper willow silent harbor river meadow gravel.\nassistant: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ],
+        [
+          {
+            "role": "user",
+            "content": "user: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\nSecond paragraph of 4: river meadow gravel orchard.\nassistant: Message 5: orchard ember lantern whisper saffron copper willow silent.\nuser: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.\nassistant: Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": ["Summary 1: the events so far, in short.", "Detail 1."],
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": [
+              "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+              "Message 16: river meadow gravel orchard ember lantern whisper saffron.",
+              "Message 17: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern."
+            ],
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": [
+        "Detail 1.|custom-em",
+        "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.|custom-em",
+        "Message 16: river meadow gravel orchard ember lantern whisper saffron.|custom-em",
+        "Message 17: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern.|custom-em",
+        "Summary 1: the events so far, in short.|custom-em"
+      ],
+      "progress": [
+        {
+          "open": true,
+          "miniMsg": "1",
+          "msg": "[HypaV3] Summarizing...",
+          "subMsg": "1 queued"
+        },
+        {
+          "open": true,
+          "miniMsg": "0",
+          "msg": "[HypaV3] Summarizing...",
+          "subMsg": "0 queued"
+        },
+        {
+          "open": true,
+          "miniMsg": "1",
+          "msg": "[HypaV3] Summarizing...",
+          "subMsg": "1 queued"
+        },
+        {
+          "open": true,
+          "miniMsg": "0",
+          "msg": "[HypaV3] Summarizing...",
+          "subMsg": "0 queued"
+        },
+        {
+          "open": false,
+          "miniMsg": "",
+          "msg": "",
+          "subMsg": ""
+        },
+        {
+          "open": true,
+          "miniMsg": "1",
+          "msg": "[HypaV3] Similarity searching...",
+          "subMsg": "1 queued"
+        },
+        {
+          "open": true,
+          "miniMsg": "0",
+          "msg": "[HypaV3] Similarity searching...",
+          "subMsg": "0 queued"
+        },
+        {
+          "open": false,
+          "miniMsg": "",
+          "msg": "",
+          "subMsg": ""
+        },
+        {
+          "open": true,
+          "miniMsg": "1",
+          "msg": "[HypaV3] Similarity searching...",
+          "subMsg": "1 queued"
+        },
+        {
+          "open": true,
+          "miniMsg": "0",
+          "msg": "[HypaV3] Similarity searching...",
+          "subMsg": "0 queued"
+        },
+        {
+          "open": false,
+          "miniMsg": "",
+          "msg": "",
+          "subMsg": ""
+        }
+      ],
+      "alerts": []
+    },
+    "v3exp-existing-voyage-groups": {
+      "result": {
+        "currentTokens": 164,
+        "chats": [
+          {
+            "role": "system",
+            "content": "<Past Events Summary>\nOld summary one: the river crossing.\n\nThey camped by the lantern.\n\nOld summary two: an important vow.\n\nOld summary three: copper coins traded.\n\nThe harbor was silent.\n\nOld summary four: a whisper in the orchard.\n\nOld summary six: ember and willow.\n\nGravel underfoot.\n</Past Events Summary>",
+            "memo": "supaMemory"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          }
+        ],
+        "memory": {
+          "summaries": [
+            {
+              "text": "Old summary one: the river crossing.\n\nThey camped by the lantern.",
+              "chatMemos": ["m0", "m1"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary two: an important vow.",
+              "chatMemos": ["m2", "m3"],
+              "isImportant": true,
+              "tags": ["vow"]
+            },
+            {
+              "text": "Old summary three: copper coins traded.\n\nThe harbor was silent.",
+              "chatMemos": ["m4", "m5"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary four: a whisper in the orchard.",
+              "chatMemos": ["m6", "m7"],
+              "isImportant": false,
+              "tags": []
+            },
+            {
+              "text": "Old summary six: ember and willow.\n\nGravel underfoot.",
+              "chatMemos": ["m8", "m9"],
+              "isImportant": false,
+              "tags": []
+            }
+          ],
+          "metrics": {
+            "lastImportantSummaries": [1],
+            "lastRecentSummaries": [4, 3],
+            "lastSimilarSummaries": [0, 2],
+            "lastRandomSummaries": []
+          }
+        }
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "https://api.voyageai.com/v1/contextualizedembeddings",
+          "body": {
+            "model": "voyage-context-3",
+            "inputs": [
+              ["Old summary one: the river crossing.", "They camped by the lantern."],
+              ["Old summary three: copper coins traded.", "The harbor was silent."]
+            ],
+            "input_type": "document"
+          }
+        },
+        {
+          "url": "https://api.voyageai.com/v1/contextualizedembeddings",
+          "body": {
+            "inputs": [
+              ["Message 11: willow silent harbor river meadow gravel."],
+              [
+                "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river."
+              ],
+              ["Message 13: orchard ember lantern whisper saffron copper willow silent harbor."]
+            ],
+            "model": "voyage-context-3",
+            "input_type": "query"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": [
+        "Message 11: willow silent harbor river meadow gravel.|voyageContext3|voyageContext3",
+        "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.|voyageContext3|voyageContext3",
+        "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.|voyageContext3|voyageContext3",
+        "Old summary one: the river crossing.|voyageContext3|voyageContext3|ctx:1t4y9hp",
+        "Old summary three: copper coins traded.|voyageContext3|voyageContext3|ctx:shczrm",
+        "The harbor was silent.|voyageContext3|voyageContext3|ctx:shczrm",
+        "They camped by the lantern.|voyageContext3|voyageContext3|ctx:1t4y9hp"
+      ],
+      "progress": [
+        {
+          "open": false,
+          "miniMsg": "",
+          "msg": "",
+          "subMsg": ""
+        },
+        {
+          "open": true,
+          "miniMsg": "1",
+          "msg": "[HypaV3] Similarity searching...",
+          "subMsg": "1 queued"
+        },
+        {
+          "open": true,
+          "miniMsg": "0",
+          "msg": "[HypaV3] Similarity searching...",
+          "subMsg": "0 queued"
+        },
+        {
+          "open": false,
+          "miniMsg": "",
+          "msg": "",
+          "subMsg": ""
+        }
+      ],
+      "alerts": []
+    },
+    "v3exp-batch-partial-failure": {
+      "result": {
+        "currentTokens": 389,
+        "chats": [
+          {
+            "role": "user",
+            "content": "Message 0: river meadow gravel orchard ember lantern.",
+            "memo": "m0"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m1"
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          },
+          {
+            "role": "user",
+            "content": "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m12"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m13"
+          },
+          {
+            "role": "user",
+            "content": "Message 14: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow.",
+            "memo": "m14"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 15: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m15"
+          },
+          {
+            "role": "user",
+            "content": "Message 16: river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m16"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 17: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern.",
+            "memo": "m17"
+          }
+        ],
+        "error": "[HypaV3] Summarization failed: Error: the summary model is down",
+        "memory": {
+          "summaries": [
+            {
+              "text": "Batch summary one.",
+              "chatMemos": ["m0", "m1", "m2"],
+              "isImportant": false,
+              "tags": []
+            }
+          ]
+        }
+      },
+      "requests": [
+        [
+          {
+            "role": "user",
+            "content": "user: Message 0: river meadow gravel orchard ember lantern.\nassistant: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\nuser: Message 2: whisper saffron copper willow silent harbor river meadow gravel."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ],
+        [
+          {
+            "role": "user",
+            "content": "assistant: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\nuser: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\nassistant: Message 5: orchard ember lantern whisper saffron copper willow silent."
+          },
+          {
+            "role": "system",
+            "content": "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
+          }
+        ]
+      ],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [],
+      "cacheKeys": [],
+      "progress": [
+        {
+          "open": true,
+          "miniMsg": "1",
+          "msg": "[HypaV3] Summarizing...",
+          "subMsg": "1 queued"
+        },
+        {
+          "open": true,
+          "miniMsg": "0",
+          "msg": "[HypaV3] Summarizing...",
+          "subMsg": "0 queued"
+        },
+        {
+          "open": true,
+          "miniMsg": "1",
+          "msg": "[HypaV3] Summarizing...",
+          "subMsg": "1 queued"
+        },
+        {
+          "open": true,
+          "miniMsg": "0",
+          "msg": "[HypaV3] Summarizing...",
+          "subMsg": "0 queued"
+        },
+        {
+          "open": true,
+          "miniMsg": "0",
+          "msg": "[HypaV3] Summarizing...",
+          "subMsg": "0 queued"
+        },
+        {
+          "open": false,
+          "miniMsg": "",
+          "msg": "",
+          "subMsg": ""
+        }
+      ],
+      "alerts": []
+    },
+    "hanurai-plain": {
+      "result": {
+        "tokens": 509,
+        "chats": [
+          {
+            "role": "system",
+            "memo": "supaMemory",
+            "content": " Message 0: river meadow gravel orchard ember lantern.\n\n Message 5: orchard ember lantern whisper saffron copper willow silent.\n\n Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\n Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n Message 8: river meadow gravel orchard ember lantern whisper.\n\n Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\n Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\n Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron."
+          },
+          {
+            "role": "user",
+            "content": "Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "memo": "m2"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          }
+        ]
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [],
+      "embeds": [
+        {
+          "model": "Xenova/all-MiniLM-L6-v2",
+          "texts": [
+            "search_document: Message 0: river meadow gravel orchard ember lantern.",
+            "search_document: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "search_document: Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+            "search_document: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "search_document: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "search_document: Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "search_document: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "search_document: Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "search_document: Message 8: river meadow gravel orchard ember lantern whisper."
+          ]
+        },
+        {
+          "model": "Xenova/all-MiniLM-L6-v2",
+          "texts": ["search_query: Message 11: willow silent harbor river meadow gravel."]
+        },
+        {
+          "model": "Xenova/all-MiniLM-L6-v2",
+          "texts": [
+            "search_query: Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard."
+          ]
+        },
+        {
+          "model": "Xenova/all-MiniLM-L6-v2",
+          "texts": [
+            "search_query: Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember."
+          ]
+        }
+      ],
+      "cacheKeys": [
+        "search_document: Message 0: river meadow gravel orchard ember lantern.|MiniLM",
+        "search_document: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.|MiniLM",
+        "search_document: Message 2: whisper saffron copper willow silent harbor river meadow gravel.|MiniLM",
+        "search_document: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.|MiniLM",
+        "search_document: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.|MiniLM",
+        "search_document: Message 5: orchard ember lantern whisper saffron copper willow silent.|MiniLM",
+        "search_document: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.|MiniLM",
+        "search_document: Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.|MiniLM",
+        "search_document: Message 8: river meadow gravel orchard ember lantern whisper.|MiniLM"
+      ],
+      "progress": [],
+      "alerts": []
+    },
+    "hanurai-split-paragraphs": {
+      "result": {
+        "tokens": 514,
+        "chats": [
+          {
+            "role": "system",
+            "memo": "supaMemory",
+            "content": " Message 0: river meadow gravel orchard ember lantern.\n\n Message 5: orchard ember lantern whisper saffron copper willow silent.\n\n Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\n Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.\n\n Message 2: whisper saffron copper willow silent harbor river meadow gravel.\n\n Message 8: river meadow gravel orchard ember lantern whisper.\n\n Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.\n\n Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron."
+          },
+          {
+            "role": "assistant",
+            "content": "Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "memo": "m3"
+          },
+          {
+            "role": "user",
+            "content": "Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.\n\nSecond paragraph of 4: river meadow gravel orchard.",
+            "memo": "m4"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "memo": "m5"
+          },
+          {
+            "role": "user",
+            "content": "Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+            "memo": "m6"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+            "memo": "m7"
+          },
+          {
+            "role": "user",
+            "content": "Message 8: river meadow gravel orchard ember lantern whisper.",
+            "memo": "m8"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.\n\nSecond paragraph of 9: orchard ember lantern whisper.",
+            "memo": "m9"
+          },
+          {
+            "role": "user",
+            "content": "Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "memo": "m10"
+          },
+          {
+            "role": "assistant",
+            "content": "Message 11: willow silent harbor river meadow gravel.",
+            "memo": "m11"
+          }
+        ]
+      },
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": [
+              "search_document: Message 0: river meadow gravel orchard ember lantern.",
+              "search_document: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+              "search_document: Message 2: whisper saffron copper willow silent harbor river meadow gravel.",
+              "search_document: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+              "search_document: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+              "search_document: Second paragraph of 4: river meadow gravel orchard.",
+              "search_document: Message 5: orchard ember lantern whisper saffron copper willow silent.",
+              "search_document: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.",
+              "search_document: Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.",
+              "search_document: Message 8: river meadow gravel orchard ember lantern whisper."
+            ],
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 11: willow silent harbor river meadow gravel.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 10: whisper saffron copper willow silent harbor river meadow gravel orchard.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 9: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard ember.\n\nSecond paragraph of 9: orchard ember lantern whisper.",
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": [
+        "search_document: Message 0: river meadow gravel orchard ember lantern.|custom-em",
+        "search_document: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.|custom-em",
+        "search_document: Message 2: whisper saffron copper willow silent harbor river meadow gravel.|custom-em",
+        "search_document: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.|custom-em",
+        "search_document: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.|custom-em",
+        "search_document: Message 5: orchard ember lantern whisper saffron copper willow silent.|custom-em",
+        "search_document: Message 6: whisper saffron copper willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper.|custom-em",
+        "search_document: Message 7: willow silent harbor river meadow gravel orchard ember lantern whisper saffron.|custom-em",
+        "search_document: Message 8: river meadow gravel orchard ember lantern whisper.|custom-em",
+        "search_document: Second paragraph of 4: river meadow gravel orchard.|custom-em"
+      ],
+      "progress": [],
+      "alerts": []
+    },
+    "hanurai-exhaustion": {
+      "result": false,
+      "requests": [],
+      "summarizer": [],
+      "completions": [],
+      "http": [
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": [
+              "search_document: Message 0: river meadow gravel orchard ember lantern.",
+              "search_document: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.",
+              "search_document: Message 2: whisper saffron copper willow silent harbor river meadow gravel."
+            ],
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 5: orchard ember lantern whisper saffron copper willow silent.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 4: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor.",
+            "model": "em"
+          }
+        },
+        {
+          "url": "http://embed.test/v1/embeddings",
+          "body": {
+            "input": "search_query: Message 3: willow silent harbor river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.",
+            "model": "em"
+          }
+        }
+      ],
+      "embeds": [],
+      "cacheKeys": [
+        "search_document: Message 0: river meadow gravel orchard ember lantern.|custom-em",
+        "search_document: Message 1: orchard ember lantern whisper saffron copper willow silent harbor river meadow gravel orchard.|custom-em",
+        "search_document: Message 2: whisper saffron copper willow silent harbor river meadow gravel.|custom-em"
+      ],
+      "progress": [],
+      "alerts": ["Too many tokens for this chat.\n\nRequired Tokens: 440"]
+    }
+  }
+}

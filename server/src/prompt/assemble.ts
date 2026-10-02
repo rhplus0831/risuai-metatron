@@ -13,6 +13,12 @@ import type { LoreActivation } from "../../../shared/lore/activation.ts";
 import type { MultiModal, OpenAIChat } from "../../../shared/openai.ts";
 import type { PromptItem, PromptItemPlain, PromptItemTyped } from "../../../shared/prompt.ts";
 import type { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
+import { HypaProcesser } from "./embeddings.ts";
+import { hanuraiMemory } from "./memory/hanurai.ts";
+import type { MemoryHost } from "./memory/host.ts";
+import { hypaMemoryV2 } from "./memory/hypav2.ts";
+import { hypaMemoryV3 } from "./memory/hypav3.ts";
+import { supaMemory } from "./memory/supaMemory.ts";
 import type { ScriptProcessor } from "./scripts.ts";
 import { parseChatML, type TriggerResult } from "./triggers.ts";
 
@@ -20,10 +26,9 @@ import { parseChatML, type TriggerResult } from "./triggers.ts";
  * The prompt of one send, assembled on the server (Phase 5 slice 9): the body of `sendChatInner`
  * (`src/ts/process/index.svelte.ts`) from the prompt-info snapshot to `generationInfo`, for one
  * speaker, statement by statement with the client's order and quirks. Everything it reads of the
- * job comes through `AssemblyHost`. Recorded differences: the memory algorithms are not run (the
- * no-memory trim and its `lastMemory` write always apply, until `memory-on-server`);
- * `additionalInformations` (an embedding search over `additionalText`) gives nothing; an image inlay
- * for a model without image input gets no caption (`runImageEmbedding`).
+ * job comes through `AssemblyHost`. The memory step, `additionalInformations`, and the caption of an
+ * image a model cannot take run with the job's memory services (Phase 5 slice 10): the same gate,
+ * priority, and persistence as the client's, each result written before the provider request.
  */
 
 /** The English text of `language.errors.toomuchtoken`. */
@@ -77,6 +82,17 @@ export type AssemblyHost = {
     runCurrentChatFunction(): void;
     /** Sets or removes the chat's `lastMemory` (the no-memory trim). */
     setLastMemory(memo: string | undefined): void;
+    /** The memory algorithms' services of this run (`memory-on-server`). */
+    memory: MemoryHost;
+    /**
+     * `setChatMeta(chatTarget, set)` of the memory step: `build` gets the chat as stored now and
+     * returns the fields to set (nothing for null).
+     */
+    writeMemory(build: (chat: Chat) => Record<string, unknown> | null): void;
+    /** The memory step ended (a result, an error, an abort): a progress notice left open is closed. */
+    endMemoryProgress(): void;
+    /** `runImageEmbedding(dataUrl)[0].generated_text`: the caption of an image a model cannot take. */
+    captionImage(dataUrl: string): Promise<string>;
     tokenizer: ChatTokenCounter;
     getModelInfo(id: string): LLMModel;
     /** Raises after an abort or a latched failure (after every await). */
@@ -102,7 +118,47 @@ export type AssembledPrompt =
     /** The `start` trigger's `stopSending`: the send ends quietly. */
     | { type: "stopped" }
     /** `throwError(error)` and `return false`. */
-    | { type: "error"; error: string };
+    | { type: "error"; error: string }
+    /** `alertError(error)` and `return false` (Hanurai's): the send ends with the text, never as a chat message. */
+    | { type: "alert"; error: string };
+
+/**
+ * `additionalInformations` of `src/ts/process/embedding/addinfo.ts`: the three paragraphs of the
+ * character's `additionalText` nearest to the chat's first four messages.
+ */
+async function additionalInformations(host: AssemblyHost, char: character, chats: Chat): Promise<string> {
+    const processer = new HypaProcesser(host.memory.embeddings);
+
+    const info = char.additionalText;
+    if (info) {
+        const infos = info.split("\n\n");
+
+        await processer.addText(infos);
+        host.fence();
+        const filteredChat = chats.message
+            .slice(0, 4)
+            .map((chat) => {
+                let name = chat.saying ?? "";
+
+                if (!name) {
+                    if (chat.role === "user") {
+                        name = host.userName();
+                    } else {
+                        name = char.name;
+                    }
+                }
+
+                return `${name}: ${chat.data}`;
+            })
+            .join("\n\n");
+        const searched = await processer.similaritySearch(filteredChat);
+        host.fence();
+        const result = searched.slice(0, 3).join("\n\n");
+        return result;
+    }
+
+    return "";
+}
 
 /** `parseToggleSyntax` of `src/ts/util.ts` (the fields the prompt info reads). */
 export function parseToggleSyntax(
@@ -395,8 +451,12 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
             chatRef: chatTarget,
             chara: currentChar,
         });
-        // `additionalInformations` (an embedding search over `additionalText`) needs the embeddings
-        // service of `memory-on-server`: nothing until then.
+        const additionalInfo = await additionalInformations(host, currentChar, currentChat);
+
+        if (additionalInfo) {
+            description += "\n\n" + parse(additionalInfo, { chatRef: chatTarget, chara: currentChar });
+        }
+
         if (currentChar.personality) {
             description += parse("\n\nDescription of {{char}}: " + currentChar.personality, {
                 chatRef: chatTarget,
@@ -851,9 +911,11 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                             width: inlayData.width,
                             height: inlayData.height,
                         });
+                    } else {
+                        const caption = await host.captionImage(inlayData.data);
+                        host.fence();
+                        formatedChat += `[${caption}]`;
                     }
-                    // Without image input the client appends a caption (`runImageEmbedding`), which
-                    // needs `memory-on-server`: nothing until then.
                 }
                 if (inlayData?.type === "video" || inlayData?.type === "audio") {
                     if (multimodal.length === 0) {
@@ -950,18 +1012,123 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         currentTokens += await tokenizeChat(chat);
     }
 
-    // The memory algorithms (`supaMemory`, HypaV2/V3, Hanurai) are `memory-on-server`'s: the
-    // no-memory trim applies whatever the chat's memory settings say.
-    input.stageTimings.stage1Duration = Date.now() - stage1Start;
-    while (currentTokens > maxContextTokens) {
-        if (chats.length <= 1) {
-            return { type: "error", error: TOO_MUCH_TOKEN + "\n\nRequired Tokens: " + currentTokens };
+    if (nowChatroom.supaMemory && (db.supaModelType !== "none" || db.hanuraiEnable || db.hypav2 || db.hypaV3)) {
+        input.stageTimings.stage1Duration = Date.now() - stage1Start;
+        const stage2Start = Date.now();
+        // The algorithms count through the job's tokenizer and repair and extend the chat they are
+        // given: a detached copy (the result is saved below).
+        const memoryTokenizer = { tokenizeChat };
+        const detachedChat = () => structuredClone(currentChat);
+        const memory = host.memory;
+        try {
+            if (db.hanuraiEnable) {
+                const hn = await hanuraiMemory(memory, chats, {
+                    currentTokens,
+                    maxContextTokens,
+                    tokenizer: memoryTokenizer,
+                    tooMuchToken: TOO_MUCH_TOKEN,
+                });
+                host.fence();
+
+                if ("alert" in hn) {
+                    return { type: "alert", error: hn.alert };
+                }
+
+                chats = hn.chats;
+                currentTokens = hn.tokens;
+            } else if (db.hypav2) {
+                const sp = await hypaMemoryV2(
+                    memory,
+                    chats,
+                    currentTokens,
+                    maxContextTokens,
+                    detachedChat(),
+                    nowChatroom,
+                    memoryTokenizer,
+                );
+                host.fence();
+                if (sp.error) {
+                    return { type: "error", error: sp.error };
+                }
+                chats = sp.chats;
+                currentTokens = sp.currentTokens;
+                if (sp.memory) {
+                    const data = sp.memory;
+                    host.writeMemory(() => ({ hypaV2Data: data }));
+                }
+
+                currentChat = host.chat();
+            } else if (db.hypaV3) {
+                const sp = await hypaMemoryV3(
+                    memory,
+                    chats,
+                    currentTokens,
+                    maxContextTokens,
+                    detachedChat(),
+                    nowChatroom,
+                    memoryTokenizer,
+                );
+                host.fence();
+                if (sp.error) {
+                    // Save new summary
+                    if (sp.memory) {
+                        const data = sp.memory;
+                        host.writeMemory(() => ({ hypaV3Data: data }));
+                    }
+                    return { type: "error", error: sp.error };
+                }
+                chats = sp.chats;
+                currentTokens = sp.currentTokens;
+                if (sp.memory) {
+                    const data = sp.memory;
+                    host.writeMemory(() => ({ hypaV3Data: data }));
+                }
+
+                currentChat = host.chat();
+            } else {
+                const sp = await supaMemory(
+                    memory,
+                    chats,
+                    currentTokens,
+                    maxContextTokens,
+                    detachedChat(),
+                    nowChatroom,
+                    memoryTokenizer,
+                    {
+                        asHyper: db.hypaMemory,
+                    },
+                );
+                host.fence();
+                if (sp.error) {
+                    return { type: "error", error: sp.error };
+                }
+                chats = sp.chats;
+                currentTokens = sp.currentTokens;
+                if (sp.memory || sp.lastId) {
+                    // The client's fallbacks (`currentChat`'s fields), read from the chat as stored now.
+                    host.writeMemory((stored) => ({
+                        supaMemoryData: sp.memory ?? stored.supaMemoryData,
+                        lastMemory: sp.lastId ?? stored.lastMemory,
+                    }));
+                }
+                currentChat = host.chat();
+            }
+        } finally {
+            host.endMemoryProgress();
         }
-        currentTokens -= await tokenizeChat(chats[0]);
-        chats.splice(0, 1);
+        input.stageTimings.stage2Duration = Date.now() - stage2Start;
+    } else {
+        input.stageTimings.stage1Duration = Date.now() - stage1Start;
+        while (currentTokens > maxContextTokens) {
+            if (chats.length <= 1) {
+                return { type: "error", error: TOO_MUCH_TOKEN + "\n\nRequired Tokens: " + currentTokens };
+            }
+            currentTokens -= await tokenizeChat(chats[0]);
+            chats.splice(0, 1);
+        }
+        // The first kept message's memo, or none (a stale one would outlive the trim).
+        host.setLastMemory(chats[0]?.memo);
     }
-    // The first kept message's memo, or none (a stale one would outlive the trim).
-    host.setLastMemory(chats[0]?.memo);
 
     const biases: [string, number][] = db.bias.concat(currentChar.bias).map((v) => [
         parse(v[0].replaceAll("\\n", "\n").replaceAll("\\r", "\r").replaceAll("\\\\", "\\"), {

@@ -261,6 +261,11 @@ server is listed here before the browser path is removed:
 - Server CBS evaluation is limited (slice 9b): a job ends with an error when one template takes
   more than 10,000,000 work units or 5 s, or its templates together more than 60 s. In a tab the
   same template runs without a limit, as today.
+- Memory on the server (slice 10) uses the server's own vector cache and model files (downloaded
+  from `huggingface.co` on first use), not the tab's; the `GPU` embedding variants run on the CPU;
+  a ranking near a tie can differ from the tab's. An embedding provider's answer that is not the
+  expected vectors is an error. The Transformers.js generation models of the catalogue, which do
+  not load in a browser, run on the server with their default weights.
 - `header::` values in `additionalParams` and custom-model `params` stay readable user
   configuration, outside the credential criterion.
 - A downloaded backup archive carries no LLM credentials; restoring it means entering the keys

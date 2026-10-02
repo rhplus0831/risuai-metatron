@@ -702,3 +702,45 @@ describe("callbacks", () => {
         expect(listed.providers[0].model).not.toBe(deps.getModelInfo.mock.results[0].value);
     });
 });
+
+describe("the HypaV3 progress overlay", () => {
+    // Phase 5 slice 10: the overlay is owned by the job whose `progress` notice opened it. Another
+    // job's closing notice does not close it; the owner's does, and so does the owner's end (an abort
+    // closes the channel before the server's closing notice can arrive). A job that ends while
+    // another owns the overlay leaves it open.
+    const progress = (open: boolean, msg: string) => notice("progress", { open, miniMsg: "", msg, subMsg: "" });
+    const overlay = () => get(stores.hypaV3ProgressStore);
+    const closed = { open: false, miniMsg: "", msg: "", subMsg: "" };
+
+    it("ignores another job's closing notice while the opening job's overlay shows, and closes on the owner's", () => {
+        send(progress(true, "A works"), "A");
+        send(progress(true, "B works"), "B");
+        expect(overlay()).toMatchObject({ open: true, msg: "B works" });
+        send(progress(false, "A done"), "A");
+        expect(overlay()).toMatchObject({ open: true, msg: "B works" });
+        send(progress(false, ""), "B");
+        expect(overlay()).toEqual(closed);
+        // Nothing owns it now: a closing notice of any job applies, an opening one takes it.
+        send(progress(false, "late"), "A");
+        expect(overlay()).toMatchObject({ open: false, msg: "late" });
+        send(progress(true, "A again"), "A");
+        expect(overlay()).toMatchObject({ open: true, msg: "A again" });
+    });
+
+    it("closes the overlay when the owning job ends without a closing notice, and keeps it when another job ends", () => {
+        send(progress(true, "A works"), "A");
+        send(progress(true, "B works"), "B");
+        channel.endJobChannel("A");
+        expect(overlay()).toMatchObject({ open: true, msg: "B works" });
+        channel.endJobChannel("B");
+        expect(overlay()).toEqual(closed);
+        // A preview job owns it the same way.
+        send(progress(true, "preview works"), "P");
+        channel.endJobChannel("P");
+        expect(overlay()).toEqual(closed);
+        // The ended owner's late closing notice changes nothing.
+        send(progress(true, "C works"), "C");
+        send(progress(false, ""), "B");
+        expect(overlay()).toMatchObject({ open: true, msg: "C works" });
+    });
+});

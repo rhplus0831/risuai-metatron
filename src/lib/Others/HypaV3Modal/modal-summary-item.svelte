@@ -24,6 +24,8 @@
     import { translateHTML } from "src/ts/translator/translator";
     import { alertConfirm } from "src/ts/alert";
     import { DBState, selectedCharID } from "src/ts/stores.svelte";
+    import { currentChatRef } from "src/ts/storage/chatStore.svelte";
+    import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type {
         SummaryItemState,
         ExpandedMessageState,
@@ -157,6 +159,9 @@
 
         isRerolling = true;
         rerolled = "Loading...";
+        // The open chat when the reroll began: the summary request is that chat's.
+        const summarizeRef = currentChatRef();
+        const summarizeContext = { chatRef: summarizeRef, pluginContext: capturePluginContext(summarizeRef) };
 
         try {
             const toSummarize: OpenAIChat[] = await Promise.all(
@@ -170,7 +175,7 @@
                 }),
             );
 
-            const summarizeResult = await summarize(toSummarize);
+            const summarizeResult = await summarize(toSummarize, false, summarizeContext);
 
             rerolled = summarizeResult;
         } catch (error) {

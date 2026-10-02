@@ -3,7 +3,7 @@
 ## Scope
 
 - Owns: the summarization and retrieval memory algorithms (SupaMemory, HypaMemory V2, HypaMemory V3, Hanurai), the embedding processors, the rate limiter, local Transformers.js models, the HypaV3 editor modal, the progress overlay, and the embedding playground.
-- Paths: `src/ts/process/memory/*`, `src/ts/process/transformers.ts`, `src/lib/Others/HypaV3Modal.svelte`, `src/lib/Others/HypaV3Modal/*`, `src/lib/Others/HypaV3Progress.svelte`, `src/lib/Playground/PlaygroundEmbedding.svelte`.
+- Paths: `src/ts/process/memory/*`, `src/ts/process/transformers.ts`, `src/lib/Others/HypaV3Modal.svelte`, `src/lib/Others/HypaV3Modal/*`, `src/lib/Others/HypaV3Progress.svelte`, `src/lib/Playground/PlaygroundEmbedding.svelte`; the server copies in `server/src/prompt/memory/*`, `server/src/prompt/embeddings.ts`, `server/src/prompt/transformers.ts`, `server/src/prompt/transformersWorker.ts`, `server/src/data/vectorCache.ts`; `shared/taskRateLimiter.ts`.
 - Not here:
   - Where memory plugs into the prompt → `chat-pipeline.md` (`sendChat`, memory step).
   - Settings UI placement → `settings-i18n.md` (`OtherBotSettings.svelte`).
@@ -26,7 +26,7 @@ Algorithms:
   - `regenerateSummary` is an empty stub.
 - `memory/hypav3.ts`: the current V3 implementation.
   - Entry: `hypaMemoryV3`. Dispatches to `hypaMemoryV3Main`, or to `hypaMemoryV3MainExp` when the active preset has `useExperimentalImpl`.
-  - Exports: `summarize`, `getCurrentHypaV3Preset`, `createHypaV3Preset` (re-exported from `shared/hypaV3Presets.ts`; keeps a valid `id` or assigns one), `HypaV3Settings`, `SerializableHypaV3Data`, `SerializableSummary`.
+  - Exports: `summarize(oaiMessages, isResummarize?, context?)` (`context`: the `SummarizeContext` of the send or the modal action, its chat and plugin call context, passed to `requestChatData`), `getCurrentHypaV3Preset`, `createHypaV3Preset` (re-exported from `shared/hypaV3Presets.ts`; keeps a valid `id` or assigns one), `HypaV3Settings`, `SerializableHypaV3Data`, `SerializableSummary`.
   - Private: the processor subclass `HypaProcesserEx`.
 
 Embedding processors:
@@ -36,7 +36,7 @@ Embedding processors:
   - Also exports the `HypaModel` union, the `localModels` registry, and `similarity`/`cosineSimilarity`/`contextHash`.
 - `memory/hypamemoryv2.ts` `HypaProcessorV2`: the newer generic processor, used only by experimental V3. Supports batching, rate limits, and grouped contextual documents.
 - `memory/contextualEmbedding.ts`: `ContextualEmbeddingProvider`, `isContextModel`, `getContextProvider`. Voyage Context 3 (`voyageApiKey`) is the only provider.
-- `memory/taskRateLimiter.ts` `TaskRateLimiter`: per-minute and concurrency limits, `failFast`, `TaskCanceledError`.
+- `shared/taskRateLimiter.ts` `TaskRateLimiter` (re-exported by `memory/taskRateLimiter.ts`; the server's memory code uses the same file): per-minute and concurrency limits, `failFast`, `TaskCanceledError`.
 - `process/transformers.ts`: Transformers.js wrappers backed by Cache Storage `tfCache`.
   - `runEmbedding`: caches only the extractor, not the vectors.
   - `runSummarizer`, `runImageEmbedding` (captioning), `runVITS`, `runTransformers`.
@@ -44,6 +44,7 @@ Embedding processors:
 UI:
 
 - `HypaV3Modal.svelte` and its children in `HypaV3Modal/` edit a synced copy of the current chat's `hypaV3Data` (passed down as the `hypaV3Data` prop) and save every change with `setChatMeta`: search, filters, categories, tags, bulk edit, resummarize, reset, and V2→V3 conversion. `sendChat` saves the memory data the memory functions return the same way (they get a detached copy of the chat).
+- The modal's resummarize and reroll actions capture the open chat (`currentChatRef`) and its plugin context (`capturePluginContext`) when the action begins and pass them to `summarize`, so the request is that chat's whatever is selected when it runs.
 - `HypaV3Modal/utils.ts` `processRegexScript`: routes messages through `risuChatParser` and `processScriptFull(..., 'editprocess')`.
 - `HypaV3Progress.svelte` renders `hypaV3ProgressStore`.
 
@@ -75,6 +76,19 @@ Embedding routing:
 - `HypaProcesser.getEmbeds` tries, in order: contextual Voyage, then `localModels` (Transformers.js), then custom or OpenAI APIs through `globalFetch`.
 - Vector records are cached in LocalForage `hypaVector`.
 
+## Server (Phase 5 slice 10)
+
+With `risu.serverGeneration` on, a send's memory step runs in the job (`server/src/prompt/assemble.ts`, the same gate and priority as `sendChat`). The browser code above is unchanged and still serves the flag-off path, the modal, and the playground.
+
+- `server/src/prompt/memory/{supaMemory,hypav2,hypav3,hanurai}.ts`: the four algorithms, ported statement for statement. Each takes a `MemoryHost` (`memory/host.ts`) first: the job's settings projection, `tokenize`, `request` (the job's `memory` request with its `request` trigger and fallback models), `completions` (OpenAI's `/v1/completions` with the stored memory key; an answer that is not JSON is a failure, and a successful one that carries the key is refused, as the browser path's proxy refuses it), `summarizer`, the job's `EmbeddingEnv`, `parseChatML` with the job's CBS, the effective persona's name, `progress`, `random`, `redact`, `fence`, and the run's signal. The client's console output is not ported (it prints the chat).
+- Persistence: `assemblePrompt` writes what an algorithm returns as a `meta` operation on the chat as stored then (`AssemblyHost.writeMemory`): `hypaV2Data` on success; `hypaV3Data` on success and with a returned error; `supaMemoryData` and `lastMemory` with the stored values as fallbacks; nothing for Hanurai. The write happens before the provider request, as in the tab, and a preview makes it too. An algorithm's error is the send's `throwError`; Hanurai's "too many tokens" is the job's error without the inlay error message (the tab alerts).
+- `server/src/prompt/embeddings.ts`: `HypaProcesser`, `HypaProcessorV2`, and the Voyage provider on an `EmbeddingEnv` bound to one job (`createEmbeddings(...).forJob`). The cache keys are the client's. The providers are called from the server: OpenAI with `llmSecrets.supaMemoryKey`, Voyage and the custom URL with the keys in `secrets`. A provider's answer is checked before it is ranked or stored (the expected count, finite numbers, one length), and every error text is redacted of the three keys (a value of whitespace only is not a key). `HypaProcesser.testText` is not ported (nothing calls it). `HypaProcessorV2`'s local batch size is the server's core count (at most 10).
+- `server/src/data/vectorCache.ts`: the vectors, in `save/data/vectors.sqlite` (see `self-host-server.md`). One cache for all clients; browser vectors are not migrated.
+- `server/src/prompt/transformers.ts` and `transformersWorker.ts`: the local models in one child process (embeddings, the `distilbart` summarizer, the captioner, text generation), one task at a time. Model files come from `huggingface.co` into `save/models/transformers` (the browser's mirror is not used). The `GPU` embedding variants run the same model on the CPU.
+- HypaV3's local summarization models (`summarizationModel` other than `subModel`) need the browser's WebLLM engine: on the server a summary with such a preset fails with `Local summarization models are unsupported on the server`. A send that needs no new summary still works.
+- HypaV3's progress overlay is fed by `progress` notices; the tab closes an overlay a job left open when that job ends (`jobChannel.ts` `endJobChannel`), since an abort closes the job's channel before a closing notice can arrive. The random selection draws from the job's random source.
+- Other users of the server embeddings: `additionalInformations` and image captions in `assemblePrompt`, the dynamic-asset step of `server/src/prompt/scripts.ts` (never reached by the two server script modes yet), Lua `similarity` and `v2CheckSimilarity` (`LuaBindingServices.similarity`).
+
 ## State
 
 - DB settings:
@@ -87,7 +101,7 @@ Embedding routing:
 
 ## Coupling
 
-- Memory depends on `requestChatData`, `webllm`, `ChatTokenizer`, `parseChatML`, `processScriptFull`, `risuChatParser`, `inlayTokenRegex`, localforage, and Transformers.js.
+- Memory depends on `requestChatData`, `webllm`, `ChatTokenizer`, `parseChatML`, `processScriptFull`, `risuChatParser`, `inlayTokenRegex`, localforage, and Transformers.js. The server ports depend on `MemoryHost` only.
 - Users of `HypaProcesser`:
   - `scripts.ts`: dynamic assets.
   - `scriptings.ts`: the Lua similarity API.
@@ -100,6 +114,8 @@ Embedding routing:
 - `chatMemos` reference `Message.chatId` values. Rewriting chat IDs orphans summaries, which get cleaned unless `preserveOrphanedMemory` is set.
 - The memory card `memo` values `supaMemory` and `hypaMemory` are special-cased later in prompt assembly. Do not rename them.
 - V3 token accounting reserves memory tokens, subtracts `db.maxResponse`, and keeps `queryChatCount` recent chats. Behavioral changes must be applied to both `hypaMemoryV3Main` and `hypaMemoryV3MainExp`.
+- An algorithm or processor change is made in both copies: `src/ts/process/memory/` and `server/src/prompt/memory/` with `server/src/prompt/embeddings.ts`. The server copies keep the client's statements and texts.
+- The embedding keys stay inside `embeddings.ts` and the runner's `MemoryHost`: no CBS text, Lua value, notice, error, log line, or cache row carries one.
 - Embedding cache keys must include the model identity. Voyage contextual keys also include the group hash. `testText` caches by raw text only.
 - Adding a local embedding model means updating `HypaModel`, `localModels.models`, `localModels.gpuModels`, the narrower `EmbeddingModel` union in `transformers.ts`, and the options in both settings and the playground.
 - `TaskRateLimiter` rejects `maxConcurrentTasks > tasksPerMinute`.
@@ -116,10 +132,18 @@ Embedding routing:
 
 - `src/ts/process/memory/hypaV3Presets.test.ts`: `selectedHypaV3Preset` (by id, the first-preset fallback, no state write, undefined for an empty list).
 - `src/lib/Setting/Pages/OtherBotSettings.hypaV3Export.test.ts` (mounted under happy-dom): the HypaV3 preset export button writes exactly `{ type: "risu", ver: 1, data: { name, settings } }` without the id, and the import button gives that file a fresh id and selects it.
-- None cover the algorithms, processors, rate limiter, or modal.
+- `src/ts/process/memory/memoryOracle.test.ts` (Phase 5 slice 10): the browser oracle of the four algorithms. The flag-off client code runs the scenarios of `server/src/tests/fixtures/memory/scenarios.ts` (Supa plain and `asHyper`, V2, V3 standard and experimental, Hanurai: no-summary paths, overflow summarization, stored data and orphans, the preset by id, recent/similar/random selection, similarity correction, Voyage contextual groups, partial successes then a failure, repeated failures, the fallbacks and error texts, exhaustion) over fake dependencies (deterministic tokens and vectors, canned summaries and completions, a fixed random sequence, an in-memory vector store, `parseChatML` null), and each outcome must equal `server/src/tests/fixtures/memory/algorithms.json`. `CAPTURE_MEMORY_FIXTURE=1` records the fixture again after an intended client change; the server ports are held to the same fixture by `server/src/tests/memoryAlgorithms.test.ts`, and never recapture it. The same file pins P10: the summary requests of both V3 implementations and the similarity correction carry the `chatRef` and `pluginContext` given to `hypaMemoryV3`, and nothing without one.
+- `server/src/tests/embeddings.test.ts`, `vectorCache.test.ts`, `transformers.test.ts`, `memoryJobs.test.ts` (`self-host-server.md`): the server processors and cache, the model process, and memory on a real server job.
+- Not covered: the modal, the rate limiter on its own, the browser Transformers wrappers.
 - `scriptings.test.ts` only mocks `HypaProcesser`.
 
 ## Known Hazards
 
 - `memoryAlgorithmType` can disagree with the actual boolean flags on old saves.
+- `voyageApiKey` and `hypaCustomSettings.key` are in the client-readable `secrets` section (Phase 3): the tab reads them, and the job's settings projection holds them. Only `supaMemoryKey` is write-only.
+- The embedding cache key names the model, not the endpoint: a custom server changed under the same model name reuses the old vectors. The Voyage group hash is a 32-bit hash of the group's texts. Both are the client's rules, kept on the server, where the cache is shared by every client.
+- The server and the tab do not share vectors or model files, and their local models can differ in weights revision and kernels: a ranking near a tie can differ between the two paths.
+- In the tab, `parseChatML` evaluates a summary prompt's CBS without a chat context (the selection as it is when the summary runs), while the summary request carries the send's or the modal action's context. The server evaluates both for the job's chat.
+- On the server, HypaV3's `summaryChunkSeparator` regular expression, the dot products, and the sorts run on the main thread, outside the CBS limits.
+- The catalogue's Transformers.js generation models publish no 8-bit `model_quantized.onnx`: they do not load in the browser. The server loads their `fp32` weights, so a job can use `opt-350m` and `tiny-random-mistral`; `gpt2-large-conversational` has no usable file in either place.
 - The Transformers `EmbeddingModel` union names only MiniLM and nomic, while `localModels` lists more models.

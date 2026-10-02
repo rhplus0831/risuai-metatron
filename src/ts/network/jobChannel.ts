@@ -171,6 +171,12 @@ function showNotice(notice: GenerationNotice): boolean {
     }
 }
 
+/**
+ * The job whose `progress` notice left the HypaV3 overlay open. Its end closes the overlay: an abort
+ * closes the job's channel at once, so the server's closing notice may never arrive.
+ */
+let progressJobId: string | null = null;
+
 /** The effects that never touch the alert store run at once. */
 function applyEffect(notice: GenerationNotice) {
     switch (notice.kind) {
@@ -637,6 +643,16 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
                     showNotice(notice);
                 }
             } else {
+                if (notice.kind === "progress") {
+                    if (notice.payload.open) {
+                        progressJobId = jobId;
+                    } else if (progressJobId === jobId) {
+                        progressJobId = null;
+                    } else if (progressJobId !== null) {
+                        // Another job's overlay is showing: this job's closing notice is not for it.
+                        return;
+                    }
+                }
                 applyEffect(notice);
             }
             return;
@@ -689,6 +705,10 @@ export function endJobChannel(jobId: string) {
     // A cancel the socket lost (a disconnect) must not leave the job's question open.
     if (showing?.jobId === jobId) {
         cancelShowing();
+    }
+    if (progressJobId === jobId) {
+        progressJobId = null;
+        hypaV3ProgressStore.set({ open: false, miniMsg: "", msg: "", subMsg: "" });
     }
     for (let index = uiQueue.length - 1; index >= 0; index -= 1) {
         const item = uiQueue[index];

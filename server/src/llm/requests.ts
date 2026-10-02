@@ -54,6 +54,13 @@ export type LlmRequestsOptions = {
         callbackId: string,
         onSettled: () => void,
     ) => ParentCallback | null;
+    /** The server's local generation models (`transformers.runTextGeneration`), for a job's request. */
+    localGeneration?: (
+        text: string,
+        model: string,
+        config: Record<string, unknown>,
+        signal: AbortSignal,
+    ) => Promise<string>;
     fetchImpl?: typeof fetch;
     now?: () => number;
 };
@@ -407,6 +414,13 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             supportsInlayImage: p.supportsInlayImage,
             getModelInfo: modelInfo,
             intercept: p.intercept,
+            // A job's request only (`browserOnlyModels`): a tab runs its local models itself.
+            ...(p.browserOnlyModels && options.localGeneration
+                ? {
+                      localGeneration: (text: string, model: string, config: Record<string, unknown>) =>
+                          options.localGeneration!(text, model, config, p.controller.signal),
+                  }
+                : {}),
             vertexAccessToken: async (clientEmail, privateKey) => {
                 const token = await options.vertexTokens.get(clientEmail, privateKey, p.controller.signal);
                 p.redactor().add(token);

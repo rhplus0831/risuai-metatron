@@ -21,7 +21,10 @@ import { mainModelTakesImages, tokenScopeFor } from "../llm/settings.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import { readStorageFile } from "../routes/storage.ts";
 import { type AssembledPrompt, assemblePrompt, getGenerationModelString } from "./assemble.ts";
+import { postJson } from "./embeddings.ts";
+import type { MemoryHost } from "./memory/host.ts";
 import { createScriptProcessor } from "./scripts.ts";
+import { parseChatML } from "./triggers.ts";
 
 /** How often a streaming reply's raw text is checkpointed (the client's `CHECKPOINT_INTERVAL_MS`). */
 export const CHECKPOINT_INTERVAL_MS = 3000;
@@ -356,6 +359,7 @@ async function runSend(
                     scriptWorkers: deps.scriptWorkers,
                     lock: deps.lock,
                     cache: state.scriptCache,
+                    assetMatches: state.assetMatches,
                 });
                 data = (await processor.process(owner, data, "editinput")).data;
                 if (!setup.bindings.services.refresh()) {
@@ -616,8 +620,71 @@ async function runSpeaker(arg: {
             scriptWorkers: deps.scriptWorkers,
             lock: deps.lock,
             cache: state.scriptCache,
+            assetMatches: state.assetMatches,
         });
         const stageTimings = { stage1Duration: 0, stage2Duration: 0 };
+        // The memory algorithms' services of this run (`memory-on-server`): the job's settings, its
+        // own requests and embeddings, its chat's CBS, and its abort.
+        const embeddingEnv = services.embeddings(nativeCtx);
+        let memoryProgressOpen = false;
+        const memory: MemoryHost = {
+            db,
+            tokenize: (text) => services.tokenize(text),
+            request: async (memoryPrompt) => {
+                setup.check();
+                const response = await services.request(
+                    {
+                        formated: memoryPrompt,
+                        bias: {},
+                        useStreaming: false,
+                        noMultiGen: true,
+                        chatRef,
+                    } as Parameters<typeof services.request>[0],
+                    "memory",
+                    nativeCtx,
+                );
+                setup.check();
+                return response;
+            },
+            completions: async (body) => {
+                setup.check();
+                const response = await postJson(
+                    embeddingEnv,
+                    "https://api.openai.com/v1/completions",
+                    { headers: { Authorization: "Bearer " + embeddingEnv.supaMemoryKey }, body },
+                    { strictJson: true },
+                );
+                setup.check();
+                // The browser path's proxy refuses a successful answer that carries the stored key
+                // (`routes/proxy.ts`): a summary must not put it into the chat or the next request.
+                if (response.ok && embeddingEnv.carries(response.data)) {
+                    return {
+                        ok: false,
+                        data: { error: "The openai-completions answer carried the stored credential; it is not sent" },
+                    };
+                }
+                return response;
+            },
+            summarizer: async (text) => {
+                setup.check();
+                try {
+                    return await deps.transformers.runSummarizer(text, nativeCtx.signal);
+                } finally {
+                    setup.check();
+                }
+            },
+            embeddings: embeddingEnv,
+            parseChatML: (text) => parseChatML(text, (part) => services.parse(part, undefined)),
+            userName: () => scope.effectivePersona.name,
+            progress: (payload) => {
+                memoryProgressOpen = payload.open;
+                services.notice({ kind: "progress", payload });
+            },
+            random: deps.random ?? Math.random,
+            redact: (text) => embeddingEnv.redact(text),
+            fence: () => setup.check(),
+            signal: nativeCtx.signal,
+        };
         const assembled: AssembledPrompt = await assemblePrompt(
             {
                 db,
@@ -693,6 +760,37 @@ async function runSpeaker(arg: {
                             : [{ op: "meta", unset: ["lastMemory"] }];
                     }, nativeCtx);
                 },
+                memory,
+                writeMemory: (build) => {
+                    services.writeChat((chat) => {
+                        const fields = build(chat);
+                        if (!fields) {
+                            return null;
+                        }
+                        // A field without a value (no stored fallback either) is not written.
+                        const set = Object.fromEntries(
+                            Object.entries(fields).filter(([, value]) => value !== undefined),
+                        );
+                        return Object.keys(set).length > 0 ? [{ op: "meta", set }] : null;
+                    }, nativeCtx);
+                },
+                endMemoryProgress: () => {
+                    if (memoryProgressOpen) {
+                        memoryProgressOpen = false;
+                        services.notice({
+                            kind: "progress",
+                            payload: { open: false, miniMsg: "", msg: "", subMsg: "" },
+                        });
+                    }
+                },
+                captionImage: async (dataUrl) => {
+                    setup.check();
+                    try {
+                        return await deps.transformers.runImageCaption(dataUrl, nativeCtx.signal);
+                    } finally {
+                        setup.check();
+                    }
+                },
                 tokenizer: new ChatTokenCounter(
                     arg.chatAdditonalTokens,
                     db.aiModel.startsWith("gpt") ? "noName" : "name",
@@ -718,6 +816,10 @@ async function runSpeaker(arg: {
         }
         if (assembled.type === "error") {
             return throwError(assembled.error);
+        }
+        if (assembled.type === "alert") {
+            // The client's `alertError` and `return false`: the job's error, never an inlay error message.
+            throw new SendError(assembled.error);
         }
         const { formated, biases, promptInfo } = assembled;
         generationInfo = assembled.generationInfo;

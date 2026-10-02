@@ -9,6 +9,7 @@ import type { MessageGuard } from "../jobs/generationLock.ts";
 import { moduleTriggers, type RunSetup, untilAborted } from "../jobs/runSetup.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import type { ScriptWorkerPool } from "../scripts/workerPool.ts";
+import { HypaProcesser } from "./embeddings.ts";
 
 /** The script modes the server runs on a send (slice 11 adds `editoutput`). */
 export type ServerScriptMode = "editinput" | "editprocess";
@@ -18,6 +19,9 @@ const luaModeOf: Record<ServerScriptMode, string | null> = {
     // `runLuaEditTrigger` returns `editprocess` content untouched.
     editprocess: null,
 };
+
+/** `assetRegex` of `src/ts/parser/parser.svelte.ts`. */
+const assetRegex = /{{(raw|path|img|image|video|audio|bgm|bg|emotion|asset|video-img|source)::(.+?)}}/gms;
 
 /** `getModuleRegexScripts` of `src/ts/process/modules.ts` over the job's modules. */
 function moduleRegexScripts(setup: RunSetup): customscript[] {
@@ -56,8 +60,11 @@ export type ScriptProcessor = {
  * an `emotion` notice; `@@inject` writes the message at `chatID` (resolved to its id first), and is
  * skipped while any generation owns that message, this job's included (the client's `setMessageText`
  * without a capability is refused there). The result cache is the job's own, shared by its processors
- * (the client keeps one per tab; a server-wide one would share context-dependent results between tabs). Dynamic assets are not
- * applied until `memory-on-server`.
+ * (the client keeps one per tab; a server-wide one would share context-dependent results between tabs).
+ * The dynamic-asset step (`db.dynamicAssets`: an asset name the character does not have is replaced
+ * by the nearest one it has, by embedding) follows the regex scripts with the client's conditions. It
+ * never runs for `editinput` and `editprocess`, the two modes the server has until slice 11; its
+ * best-match cache is the job's (the client keeps one per tab).
  *
  * Failures: a Lua load failure returns the content as it came in (the client's catch), a failure
  * inside a handler is logged and the next trigger runs; a spent budget or a worker failure ends the
@@ -72,8 +79,10 @@ export function createScriptProcessor(deps: {
     lock: MessageGuard;
     /** The job's cache (`JobRunState.scriptCache`), shared by every processor of the job. */
     cache: ReturnType<typeof createScriptCache>;
+    /** The job's dynamic-asset matches (`JobRunState.assetMatches`): `<chaId>::<name>` to the asset chosen. */
+    assetMatches: Map<string, string>;
 }): ScriptProcessor {
-    const { job, setup, scriptWorkers, lock, cache } = deps;
+    const { job, setup, scriptWorkers, lock, cache, assetMatches } = deps;
     const { bindings, nativeCtx, scope } = setup;
     const { services, evaluator } = bindings;
     const chatRef = { chaId: scope.characterId, chatId: scope.chatId };
@@ -144,6 +153,62 @@ export function createScriptProcessor(deps: {
             default:
                 throw services.latch(new LuaJobFatalError(`The ${mode} callback ended: ${result.outcome}`));
         }
+    };
+
+    /**
+     * The client's dynamic-asset step of `processScriptFull`. `mode` is typed wide: the two server
+     * modes return at once, as on the client.
+     */
+    const applyDynamicAssets = async (char: character | groupChat, input: string, mode: string): Promise<string> => {
+        let data = input;
+        const db = scope.db;
+        if (!(
+            db.dynamicAssets &&
+            char.type === "character" &&
+            char.additionalAssets &&
+            char.additionalAssets.length > 0
+        )) {
+            return data;
+        }
+        if (
+            (!db.dynamicAssetsEditDisplay && mode === "editdisplay") ||
+            mode === "editinput" ||
+            mode === "editprocess"
+        ) {
+            return data;
+        }
+        const assetNames = char.additionalAssets.map((v) => v[0]);
+
+        for (const module of jobModules(scope)) {
+            for (const asset of module?.assets ?? []) {
+                assetNames.push(asset[0]);
+            }
+        }
+
+        const processer = new HypaProcesser(services.embeddings(nativeCtx));
+        await processer.addText(assetNames);
+        services.fence(nativeCtx);
+        const matches = data.matchAll(assetRegex);
+
+        for (const match of matches) {
+            const type = match[1];
+            const assetName = match[2];
+            const cacheKey = char.chaId + "::" + assetName;
+            if (type !== "emotion" && type !== "source") {
+                if (assetMatches.has(cacheKey)) {
+                    data = data.replaceAll(match[0], `{{${type}::${assetMatches.get(cacheKey)}}}`);
+                } else if (!assetNames.includes(assetName)) {
+                    const searched = await processer.similaritySearch(assetName);
+                    services.fence(nativeCtx);
+                    const bestMatch = searched[0];
+                    if (bestMatch) {
+                        data = data.replaceAll(match[0], `{{${type}::${bestMatch}}}`);
+                        assetMatches.set(cacheKey, bestMatch);
+                    }
+                }
+            }
+        }
+        return data;
     };
 
     return {
@@ -249,7 +314,7 @@ export function createScriptProcessor(deps: {
             if ("error" in result) {
                 throw new GenerationRunnerError(500, `Regex scripts: ${result.error}`);
             }
-            data = result.data;
+            data = await applyDynamicAssets(char, result.data, mode);
             cache.set(hash, data);
             return { data, emoChanged };
         },

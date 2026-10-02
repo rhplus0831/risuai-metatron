@@ -32,6 +32,7 @@
     import type { OpenAIChat } from "src/ts/process/index.svelte";
 
     import { currentChatRef, setChatMeta } from "src/ts/storage/chatStore.svelte";
+    import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
 
     /** The selected chat's memory data as the chat holds it (read-only). */
@@ -254,6 +255,9 @@
         if (bulkEditState.selectedSummaries.size < 2) return;
 
         const sortedIndices = Array.from(bulkEditState.selectedSummaries).sort((a, b) => a - b);
+        // The open chat when the action began: the summary request is that chat's, whatever is selected when it runs.
+        const summarizeRef = currentChatRef();
+        const summarizeContext = { chatRef: summarizeRef, pluginContext: capturePluginContext(summarizeRef) };
 
         try {
             bulkResummaryState = {
@@ -280,7 +284,7 @@
 
             const uniqueChatMemos = [...new Set(mergedChatMemos)];
 
-            const resummary = await summarize(oaiMessages, true);
+            const resummary = await summarize(oaiMessages, true, summarizeContext);
 
             bulkResummaryState = {
                 isProcessing: false,
@@ -325,6 +329,8 @@
         if (!bulkResummaryState) return;
 
         const sortedIndices = bulkResummaryState.selectedIndices;
+        const summarizeRef = currentChatRef();
+        const summarizeContext = { chatRef: summarizeRef, pluginContext: capturePluginContext(summarizeRef) };
 
         try {
             bulkResummaryState = {
@@ -342,7 +348,7 @@
                 content: text,
             }));
 
-            const resummary = await summarize(oaiMessages, true);
+            const resummary = await summarize(oaiMessages, true, summarizeContext);
 
             bulkResummaryState = {
                 ...bulkResummaryState,

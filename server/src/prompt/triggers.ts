@@ -25,8 +25,8 @@ import type { RegexMatch, RegexOp } from "../scripts/worker.ts";
  * 100,000-effect limit; a question that is not answered stops the run with an error; a nested
  * `v2RunTrigger` keeps the display mode, display data, and temporary variables; `v2Command` always
  * targets the job's chat; Lua character setters reach the native getters of the running triggers;
- * `v2CheckSimilarity` answers "null" until the embeddings service; `v2ConsoleLog` goes to the
- * server log.
+ * `v2CheckSimilarity` searches with the server's embeddings (a failure of the search is the run's
+ * error, as on the client); `v2ConsoleLog` goes to the server log.
  */
 
 export type TriggerMode = "start" | "manual" | "output" | "input" | "display" | "request";
@@ -917,11 +917,11 @@ export function createTriggerRuntime(host: TriggerHost) {
                         if (!trigger.lowLevelAccess) {
                             break;
                         }
-                        operand(effect.sourceType, effect.source);
-                        operand(effect.valueType, effect.value);
-                        // Until the embeddings service (slice 10): the failure value.
-                        console.warn("[Trigger] Similarity search is not available on the server yet");
-                        setVar(parse(effect.outputVar), "null");
+                        const source = operand(effect.sourceType, effect.source);
+                        const value = operand(effect.valueType, effect.value);
+                        const val = await services.similarity(source, value.split("§"), ctx);
+                        services.fence(ctx);
+                        setVar(parse(effect.outputVar), val.join("§"));
                         break;
                     }
                     case "v2RunLLM": {

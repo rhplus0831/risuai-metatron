@@ -298,18 +298,27 @@ function upsertLocalLoreBook(id, name, content, options)
     return upsertLocalLoreBookMain(id, name, content, json.encode(options))
 end
 
+-- A host answer that crosses as JSON, as a promise of its decoded value. A refused call answers nil,
+-- and nil stays nil for the awaiter: resolving a Lua-made promise with an explicit nil would hand the
+-- script a null userdata, which is not what the client's functions give.
+local function __decoded(promise)
+    return Promise.create(function(resolve, reject)
+        promise:next(function(result)
+            if result == nil then
+                resolve()
+            else
+                resolve(json.decode(result))
+            end
+        end, reject)
+    end)
+end
+
 function similarity(id, source, value)
-    return similarityMain(id, source, json.encode(value))
+    return __decoded(similarityMain(id, source, json.encode(value)))
 end
 
 function simpleLLM(id, prompt)
-    return async(function()
-        local result = simpleLLMMain(id, prompt):await()
-        if result == nil then
-            return nil
-        end
-        return json.decode(result)
-    end)()
+    return __decoded(simpleLLMMain(id, prompt))
 end
 
 function getPersonaImage(id)

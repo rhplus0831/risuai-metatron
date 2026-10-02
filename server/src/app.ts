@@ -10,6 +10,7 @@ import { HTTPException } from "hono/http-exception";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "./data/kinds.ts";
 import { createResourceStore, ResourceStoreClosedError } from "./data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
+import { createVectorCache } from "./data/vectorCache.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
 import { createGenerationRunner } from "./jobs/commandRunner.ts";
@@ -18,8 +19,10 @@ import { createGenerationLock } from "./jobs/generationLock.ts";
 import { createClaudeObserver } from "./llm/claudeObserver.ts";
 import { createLlmRequests } from "./llm/requests.ts";
 import { createVertexTokenCache } from "./llm/vertexToken.ts";
+import { createEmbeddings } from "./prompt/embeddings.ts";
 import { createTokenizers } from "./prompt/tokenizers/index.ts";
 import { createTokenCounter } from "./prompt/tokens.ts";
+import { createTransformers } from "./prompt/transformers.ts";
 import { createAuthStore } from "./routes/auth.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { registerGenerationRoutes } from "./routes/generations.ts";
@@ -95,12 +98,22 @@ export function createServerContext(options: {
     // The server request layer (`POST /api/llm/request`): its tokenizers load on first use.
     const tokenizers = createTokenizers({ rootDir: options.rootDir });
     const tokenCounter = createTokenCounter({ tokenizers });
+    // Memory on the server (Phase 5 slice 10): the embedding vectors are a cache in a file of their
+    // own (in no snapshot or archive; `save/data/` and `save/models/` are not storage namespaces), and
+    // the local models run in a child process that starts with the first task.
+    const vectorCache = createVectorCache({ file: path.join(savePath, "data", "vectors.sqlite") });
+    // The vectors of another database (a restore or an import while the server was down) are dropped.
+    vectorCache.sync(resources.epoch());
+    const transformers = createTransformers({ cacheDir: path.join(savePath, "models", "transformers") });
+    const embeddings = createEmbeddings({ cache: vectorCache, transformers });
     const llmRequests = createLlmRequests({
         store: resources,
         kinds: resourceKinds,
         tokens: tokenCounter,
         vertexTokens: createVertexTokenCache(),
         claudeObserver: createClaudeObserver(),
+        // A job's request to a local Transformers.js model (`LLMFormat.WebLLM`) runs in that process.
+        localGeneration: (text, model, config, signal) => transformers.runTextGeneration(text, model, config, signal),
         parentCallback: (jobId, clientId, callbackId, onSettled) =>
             generationJobs.parentCallback(jobId, clientId, callbackId, onSettled),
     });
@@ -109,6 +122,9 @@ export function createServerContext(options: {
         llmRequests.pause("The server data is being replaced");
         return () => llmRequests.resume();
     });
+    // The vectors belong to the data: when a maintenance replaced it (a new epoch), the cache is
+    // emptied as the maintenance ends, and a write of work that began before is dropped.
+    snapshots.onMaintenance(async () => () => vectorCache.sync(resources.epoch()));
     const llmSecretsKind = resourceKinds.get(RESOURCE_KIND.llmSecrets);
 
     /** The one `upgrade` listener per HTTP server (proxy stream jobs, then generation jobs). */
@@ -123,6 +139,8 @@ export function createServerContext(options: {
         scriptWorkers,
         llm: llmRequests,
         tokens: tokenCounter,
+        embeddings,
+        transformers,
         lock: generationLock,
         ...(options.generationRandom ? { random: options.generationRandom } : {}),
     });
@@ -323,6 +341,8 @@ export function createServerContext(options: {
                 .then(() => generationJobs.dispose())
                 .then(() => tokenizers.dispose())
                 .then(() => scriptWorkers.dispose())
+                .then(() => transformers.dispose())
+                .then(() => vectorCache.close())
                 .then(() => snapshots.stop())
                 .then(() => resources.close());
             return disposing;

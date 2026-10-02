@@ -27,6 +27,7 @@ import type { LlmRequests } from "../llm/requests.ts";
 import { mainModelTakesImages, tokenScopeFor } from "../llm/settings.ts";
 import type { TokenCounter } from "../prompt/tokens.ts";
 import { readStorageFile, storageFileExists, writeStorageFile } from "../routes/storage.ts";
+import { type EmbeddingEnv, type EmbeddingsService, HypaProcesser } from "../prompt/embeddings.ts";
 import type { HostContext, LuaHost } from "../scripts/workerPool.ts";
 import { createCbsEvaluator } from "../../../shared/cbs/evaluator.ts";
 
@@ -63,6 +64,8 @@ export type LuaBindingDeps = {
     triggerId?: string | null;
     /** The job's CBS evaluation time, shared by every run of it (`serverCbsLimits`); its own when absent. */
     cbsUsage?: CbsUsage;
+    /** The embeddings service (Phase 5 slice 10); without one, a similarity search fails with an error. */
+    embeddings?: EmbeddingsService;
     /** Called once with the first fatal failure: the runner aborts the run in progress with it. */
     onFatal?: (error: LuaJobFatalError) => void;
     /**
@@ -122,6 +125,16 @@ export type LuaBindingServices = {
     parse(text: string, chara: character | groupChat | null | undefined): string;
     /** `calcString` of `src/ts/process/infunctions.ts`, bound to the job's chat. */
     calc(text: string): number;
+    /**
+     * The job's embeddings with its settings and keys, ended by the job's or `ctx`'s abort. The keys
+     * stay inside the embeddings module: no script, CBS text, or notice gets the env.
+     */
+    embeddings(ctx: HostContext): EmbeddingEnv;
+    /**
+     * The client's similarity search (`new HypaProcesser()`, `addText(values)`,
+     * `similaritySearch(source)`): `values` ordered by their similarity to `source`.
+     */
+    similarity(source: string, values: string[], ctx: HostContext): Promise<string[]>;
 };
 
 export type LuaBindings = {
@@ -387,6 +400,30 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     };
     const parse = (text: string) =>
         evaluator.risuChatParser(text, { chara: engineCharacter() as character, chatRef: ref });
+
+    const embeddingEnv = (ctx: HostContext): EmbeddingEnv => {
+        if (!deps.embeddings) {
+            throw new Error("The embeddings service is not available");
+        }
+        return deps.embeddings.forJob({
+            db: scope.db,
+            // The write-only memory key is in the request projection, never in the job's `db`.
+            supaMemoryKey: scope.request.db.supaMemoryKey ?? "",
+            signal: AbortSignal.any([job.signal, ctx.signal]),
+        });
+    };
+    const similarity = async (source: string, values: string[], ctx: HostContext): Promise<string[]> => {
+        fence(ctx);
+        const processer = new HypaProcesser(embeddingEnv(ctx));
+        try {
+            await processer.addText(values);
+            fence(ctx);
+            return await processer.similaritySearch(source);
+        } finally {
+            // An abort inside the search is the job's end, whatever the caller does with the error.
+            fence(ctx);
+        }
+    };
 
     /** Patches the run's character (`updateCharacter`): the record read again on the one retry. */
     const patchCharacter = (patch: Record<string, unknown>, ctx: HostContext): boolean => {
@@ -1266,12 +1303,15 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             return await deps.tokens.count(value as string, tokenScopeFor(scope.request.db));
         },
-        similarityMain: async (_args, ctx) => {
+        similarityMain: async ([, source, value], ctx) => {
             if (!isLow(ctx)) {
                 return undefined;
             }
-            // Until the embeddings service (slice 10): an explicit failure, not an empty result.
-            throw new Error("similarity is not available on the server yet");
+            // The table crosses as JSON both ways (the prelude encodes the values and decodes the result).
+            const values = JSON.parse(value as string) as unknown;
+            return JSON.stringify(
+                await similarity(source as string, Array.isArray(values) ? (values as string[]) : [], ctx),
+            );
         },
         generateImage: async ([, value, negValue = ""], ctx) => {
             if (!isLow(ctx)) {
@@ -1411,6 +1451,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         parse: (text, chara) =>
             evaluator.risuChatParser(text, { chara: (chara ?? undefined) as character, chatRef: ref }),
         calc: (text) => cbsHost.calcString(text),
+        embeddings: embeddingEnv,
+        similarity,
     };
     return {
         host: { sync: guardedSync, async: guardedAsync },

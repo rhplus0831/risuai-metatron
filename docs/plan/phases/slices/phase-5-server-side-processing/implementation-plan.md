@@ -618,7 +618,11 @@ As described under Order and stops. Fable writes it. I may write the capture scr
 - `files/multisend.ts` stays client-side: it processes attachments before the POST. Recorded.
 - The local-model backend check runs in the image. WebLLM and Transformers.js are separate
   decisions (question 5).
-- The `testText` raw key: parity or a fix, decided in the slice and pinned.
+- The `testText` raw key: parity or a fix, decided in the slice and pinned. Decided: not ported
+  (nothing calls it).
+- Implemented on 2026-10-03; the decisions and deviations are in `memory-on-server.md` ("What
+  landed" and after). The local models run in a child process, and the vector cache follows the
+  resource database's epoch.
 
 ### Slice 11 (`post-generation-and-plugin-callbacks`)
 

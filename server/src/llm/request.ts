@@ -311,7 +311,9 @@ export function reformater(
 /**
  * `requestChatDataMain` on the server: the model of `mode` (or `arg.staticModel`), the argument
  * defaults, the reverse-proxy and custom-model overrides, `reformater`, then the format's function.
- * `Plugin` and `WebLLM` run in the client's tab (its transport never sends them); here they fail.
+ * `Plugin` runs in the client's tab (its transport never sends it); here it fails. `WebLLM` (a local
+ * Transformers.js model) runs on the server for a job's request (`ctx.localGeneration`); a tab's
+ * request never carries it.
  */
 export async function requestChatDataMain(
     arg: RequestArgs & { tools: ToolDescriptor[] },
@@ -334,7 +336,10 @@ export async function requestChatDataMain(
         }
     }
 
-    if (targ.modelInfo.format === LLMFormat.Plugin || targ.modelInfo.format === LLMFormat.WebLLM) {
+    if (
+        targ.modelInfo.format === LLMFormat.Plugin ||
+        (targ.modelInfo.format === LLMFormat.WebLLM && !ctx.localGeneration)
+    ) {
         return {
             type: "fail",
             result: `${targ.modelInfo.name} runs in the browser, not on the server.`,
@@ -409,11 +414,64 @@ export async function requestChatDataMain(
             return requestOpenAIResponseAPI(targ);
         case LLMFormat.Echo:
             return requestEcho(targ);
+        case LLMFormat.WebLLM:
+            return requestWebLLM(targ);
     }
 
     return {
         type: "fail",
         result: language.errors.unknownModel,
+    };
+}
+
+/**
+ * The client's `requestWebLLM`: a Transformers.js text-generation model (`hf:::<model>`), run by the
+ * server's local model process. The generated text is the pipeline's (the prompt included), trimmed
+ * by `unstringlizeChat` with the selected character's name, as on the client.
+ */
+async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
+    const formated = arg.formated;
+    const db = arg.ctx.db;
+    const aiModel = arg.aiModel;
+    const maxTokens = arg.maxTokens;
+    const temperature = arg.temperature;
+    const realModel = aiModel.split(":::")[1];
+    const prompt = applyChatTemplate(formated, arg.ctx);
+
+    if (arg.previewBody) {
+        return {
+            type: "success",
+            result: JSON.stringify({
+                error: "Preview body is not supported for WebLLM",
+            }),
+        };
+    }
+    const transformersParams = {
+        temperature: temperature,
+        max_new_tokens: maxTokens,
+        top_k: db.ooba.top_k,
+        top_p: db.ooba.top_p,
+        repetition_penalty: db.ooba.repetition_penalty,
+        typical_p: db.ooba.typical_p,
+    } as Record<string, unknown>;
+
+    const finalParams = applyAdditionalParameters(transformersParams, {}, getAdditionalParameters(db, arg.aiModel));
+
+    let generated: string;
+    try {
+        generated = await arg.ctx.localGeneration!(prompt, realModel, finalParams);
+    } catch (error) {
+        if (arg.ctx.signal.aborted) {
+            throw error;
+        }
+        return {
+            type: "fail",
+            result: `${error}`,
+        };
+    }
+    return {
+        type: "success",
+        result: unstringlizeChat(generated ?? "", formated, arg.ctx, arg.ctx.selectedCharacterName ?? ""),
     };
 }
 
