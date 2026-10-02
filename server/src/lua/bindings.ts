@@ -3,11 +3,16 @@ import type { CbsEvaluator, CbsHost } from "../../../shared/cbs/evaluator.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message, character, groupChat, loreBook } from "../../../shared/database.ts";
 import type { CallbackName, CallbackPayloads, CallbackResult, GenerationQuestion } from "../../../shared/jobs.ts";
-import type { InlaySignature, RequestArgs, StreamResponseChunk } from "../../../shared/llm/request.ts";
+import type {
+    InlaySignature,
+    ModelModeExtended,
+    RequestArgs,
+    StreamResponseChunk,
+} from "../../../shared/llm/request.ts";
 import { activateLore } from "../../../shared/lore/activation.ts";
 import type { MultiModal, OpenAIChat } from "../../../shared/openai.ts";
 import { pickHashRand } from "../../../shared/hashRand.ts";
-import { type InlayResource, RESOURCE_KIND } from "../../../shared/resources.ts";
+import { type InlayResource, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import { createJobCbsHost, jobModuleLorebooks } from "../jobs/cbsHost.ts";
@@ -58,11 +63,68 @@ export type LuaBindingDeps = {
     onFatal?: (error: LuaJobFatalError) => void;
 };
 
+/**
+ * A trigger's working copy while its `triggerlua` effect runs (Phase 5 slice 8b): the client's
+ * `runScripted` with `chat` given. The chat functions read and edit `chat` in place (the trigger
+ * reads it back afterwards); the chat-variable functions go through the trigger's own accessors.
+ */
+export type LuaWorkingCopy = {
+    chat: Chat;
+    getVar(key: string): string;
+    setVar(key: string, value: string): boolean;
+};
+
+/** The executing character's fields a Lua setter wrote (the trigger merges them into its copy). */
+export type CharacterPatchListener = (characterId: string, patch: Record<string, unknown>) => void;
+
+/**
+ * The bindings' job services for the native trigger runtime and the command executor (slice 8b),
+ * behind the same latch and fence as the host functions: one fatal policy for Lua and native work.
+ */
+export type LuaBindingServices = {
+    /** Raises a latched failure, or latches an abort of the job or of `ctx`. */
+    fence(ctx?: HostContext): void;
+    /** Latches `error` as the job's fatal failure and returns it. */
+    latch(error: unknown): LuaJobFatalError;
+    /** The job's chat as stored now (the last copy once it is gone). */
+    liveChat(): Chat;
+    /** Whether the job's chat is still stored. */
+    chatExists(): boolean;
+    /** Reads the job's chat and characters again; false when the chat is gone. */
+    refresh(): boolean;
+    writeChat(build: (chat: Chat) => ChatOp[] | null, ctx?: HostContext): void;
+    /** The stored-merge `setChatVarOf` of the job's chat: true when it changed. */
+    setChatVar(key: string, value: string, ctx?: HostContext): boolean;
+    getChatVar(key: string): string;
+    /** Patches the run's character; false when it is gone. */
+    patchCharacter(patch: Record<string, unknown>, ctx: HostContext): boolean;
+    /** Sets `personaPrompt` of the persona `personaId`; false when it is gone. */
+    patchPersonaPrompt(personaId: string, value: string, ctx: HostContext): boolean;
+    ask(question: GenerationQuestion, ctx: HostContext): Promise<unknown>;
+    notice(notice: Parameters<JobChannel["notice"]>[0]): void;
+    request(arg: RequestArgs, mode: ModelModeExtended, ctx: HostContext): Promise<requestDataResponse>;
+    collectStreamText(stream: ReadableStream<StreamResponseChunk>): Promise<string>;
+    /** The `generateImage` callback for `characterId`: the stored inlay's id, or null when the tab could not. */
+    generateImageInlay(prompt: string, negative: string, characterId: string, ctx: HostContext): Promise<string | null>;
+    tokenize(text: string): Promise<number>;
+    /** `loadLoreBookV3Prompt` of the job's chat (the live chat and the chat owner). */
+    activateLore(ctx: HostContext): ReturnType<typeof activateLore>;
+    /** The server CBS of the job's chat with `chara` (the chat's character when none). */
+    parse(text: string, chara: character | groupChat | null | undefined): string;
+    /** `calcString` of `src/ts/process/infunctions.ts`, bound to the job's chat. */
+    calc(text: string): number;
+};
+
 export type LuaBindings = {
     host: LuaHost;
     /** The latched fatal failure, if a host call hit one. */
     fatal(): LuaJobFatalError | null;
     evaluator: CbsEvaluator;
+    services: LuaBindingServices;
+    /** Runs `fn` with the chat functions on `working` (a trigger's copy); the previous slot is restored after. */
+    withWorking<T>(working: LuaWorkingCopy, fn: () => Promise<T>): Promise<T>;
+    /** Calls `listener` after every Lua setter that wrote the run's character; returns the unsubscribe. */
+    observeCharacterPatches(listener: CharacterPatchListener): () => void;
 };
 
 type ParsedPrompt = { role: string; content: string }[];
@@ -142,6 +204,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         return kind;
     };
     const charactersKind = kindOf(RESOURCE_KIND.characters);
+    const personasKind = kindOf(RESOURCE_KIND.personas);
     const inlaysKind = kindOf(RESOURCE_KIND.inlays);
     const ref = { chaId: scope.characterId, chatId: scope.chatId };
     let fatalError: LuaJobFatalError | null = null;
@@ -171,8 +234,21 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     };
 
     let lastChat: Chat | undefined = scopeChat(scope);
-    /** The run's chat as last read (the live chat; the last copy once it is gone, as the client keeps it). */
-    const engineChat = (): Chat => (scopeChat(scope) ?? lastChat) as Chat;
+    /** The job's chat as last read (the live chat; the last copy once it is gone, as the client keeps it). */
+    const liveChat = (): Chat => (scopeChat(scope) ?? lastChat) as Chat;
+    /** A trigger's working copy while its Lua runs (`withWorking`), else none. */
+    let working: LuaWorkingCopy | null = null;
+    /** The run's chat: the trigger's working copy, else the live chat (the client's `engineChat`). */
+    const engineChat = (): Chat => working?.chat ?? liveChat();
+    const characterListeners = new Set<CharacterPatchListener>();
+    /** After a Lua setter wrote the run's character: the active triggers merge the fields into their copies. */
+    const characterPatched = (patch: Record<string, unknown>) => {
+        if (deps.runCharacterId) {
+            for (const listener of [...characterListeners]) {
+                listener(deps.runCharacterId, patch);
+            }
+        }
+    };
     const engineCharacter = () => scope.db.characters.find((entry) => entry?.chaId === deps.engineCharacterId);
     const runCharacter = (): character | groupChat | undefined => {
         if (!deps.runCharacterId) {
@@ -288,6 +364,37 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         return applied;
     };
 
+    /**
+     * `updatePersona(id, { personaPrompt })`: the one entry of the personas list, the others kept,
+     * read again on the one retry; false when the persona is gone (never recreated).
+     */
+    const patchPersonaPrompt = (personaId: string, value: string, ctx: HostContext): boolean => {
+        fence(ctx);
+        let applied = false;
+        try {
+            job.write(() => {
+                const row = store.get(personasKind, SINGLETON_RESOURCE_ID);
+                const list = Array.isArray(row?.data) ? (row.data as Record<string, unknown>[]) : [];
+                const index = list.findIndex((entry) => entry?.id === personaId);
+                applied = !!row && index !== -1;
+                if (!row || index === -1) {
+                    return {};
+                }
+                const next = list.slice();
+                next[index] = { ...list[index], personaPrompt: value };
+                return {
+                    ops: [{ kind: personasKind, id: SINGLETON_RESOURCE_ID, baseRevision: row.revision, data: next }],
+                };
+            });
+        } catch (error) {
+            throw latch(error);
+        }
+        if (applied) {
+            job.emitRecords({ refs: [{ kind: RESOURCE_KIND.personas, id: SINGLETON_RESOURCE_ID }] });
+        }
+        return applied;
+    };
+
     const isSafe = (ctx: HostContext) => ctx.access === "safe" || ctx.access === "lowLevel";
     const isSafeOrEdit = (ctx: HostContext) => isSafe(ctx) || ctx.access === "editDisplay";
     const isLow = (ctx: HostContext) => ctx.access === "lowLevel";
@@ -295,6 +402,10 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     const project = (message: Message | undefined) =>
         message ? { role: message.role, data: message.data, time: message.time ?? 0 } : null;
     const roleOf = (role: unknown): "user" | "char" => (role === "user" ? "user" : "char");
+    /** The client's `replaceCopyMessage`: the copy's message objects may be shared, so they are replaced. */
+    const replaceCopyMessage = (chat: Chat, index: number, message: Message) => {
+        chat.message[index < 0 ? chat.message.length + index : index] = message;
+    };
 
     /** A channel question; a non-answered outcome raises in the script, a lost owner also ends the job. */
     const ask = async (question: GenerationQuestion, ctx: HostContext): Promise<unknown> => {
@@ -413,6 +524,17 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         return value === null ? null : await answeredInlayId(value, payload.id, ctx);
     };
 
+    /** The `generateImage` callback: the stored inlay's id, or null for an ordinary failure. */
+    const generateImageInlay = async (
+        prompt: string,
+        negative: string,
+        characterId: string,
+        ctx: HostContext,
+    ): Promise<string | null> => {
+        const answer = await callback("generateImage", { prompt, negative, characterId }, ctx);
+        return answer === null ? null : await answeredInlayId(answer, null, ctx);
+    };
+
     /** The job's channel for the request layer: a callback it makes (an interceptor) refreshes the view after. */
     const refreshingChannel: JobChannel = {
         notice: (notice) => job.channel.notice(notice),
@@ -429,7 +551,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     /** A request of the job: the client's outer `requestChatData` around the server request layer. */
     const request = async (
         arg: RequestArgs,
-        mode: "model" | "otherAx",
+        mode: ModelModeExtended,
         ctx: HostContext,
     ): Promise<requestDataResponse> => {
         const signal = AbortSignal.any([job.signal, ctx.signal]);
@@ -643,6 +765,38 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         return JSON.stringify({ success: true, result: result.result });
     };
 
+    /** `loadLoreBookV3Prompt` of the job's chat as stored now, for `selectedChar` (the chat owner). */
+    const activateJobLore = (selectedChar: character, ctx: HostContext) => {
+        return activateLore(
+            {
+                character: selectedChar,
+                chat: liveChat(),
+                moduleLorebooks: jobModuleLorebooks(scope, ref),
+                loreBookDepth: scope.db.loreBookDepth,
+                loreBookToken: scope.db.loreBookToken,
+                userName: cbsHost.getUserName(ref),
+            },
+            {
+                clone: (value) => structuredClone(value),
+                findCharacterName: (id) => cbsHost.findCharacterById(id)?.name,
+                getChatVar: (key) => cbsHost.getChatVar(key, ref),
+                setChatVar: (key, value) => {
+                    setChatVar(key, value, ctx);
+                },
+                pickHashRand,
+                parseCBS: (text) => evaluator.risuChatParser(text, { chara: selectedChar, chatRef: ref }),
+                tokenize: (text) => deps.tokens.count(text, tokenScopeFor(scope.request.db)),
+                testRegex: async (pattern, flags, text) => {
+                    const result = await ctx.regex({ op: "test", pattern, flags, input: text });
+                    if ("error" in result) {
+                        throw new Error(result.error);
+                    }
+                    return result.value === true;
+                },
+            },
+        );
+    };
+
     const lastMessageOf = (role: "char" | "user") => {
         const chat = engineChat();
         if (!chat) {
@@ -659,19 +813,26 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     };
 
     const sync: NonNullable<LuaHost["sync"]> = {
-        getChatVar: ([, key]) => cbsHost.getChatVar(key as string, ref),
+        getChatVar: ([, key]) => (working ? working.getVar(key as string) : cbsHost.getChatVar(key as string, ref)),
         setChatVar: ([, key, value], ctx) => {
             if (!isSafeOrEdit(ctx)) {
                 return undefined;
             }
-            setChatVar(key as string, value as string, ctx);
+            if (working) {
+                working.setVar(key as string, value as string);
+            } else {
+                setChatVar(key as string, value as string, ctx);
+            }
             return undefined;
         },
         setChatVarChanged: ([, key, value], ctx) => {
             if (!isSafeOrEdit(ctx)) {
                 return undefined;
             }
-            return setChatVar(key as string, value as string, ctx) === true ? true : undefined;
+            const changed = working
+                ? working.setVar(key as string, value as string)
+                : setChatVar(key as string, value as string, ctx);
+            return changed === true ? true : undefined;
         },
         getGlobalVar: ([, key]) => cbsHost.getGlobalChatVar(key as string, ref),
         alertError: ([, value], ctx) => {
@@ -699,6 +860,13 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (!isSafe(ctx)) {
                 return undefined;
             }
+            if (working) {
+                const message = working.chat.message?.at(index as number);
+                if (message) {
+                    replaceCopyMessage(working.chat, index as number, { ...message, data: (value as string) ?? "" });
+                }
+                return undefined;
+            }
             writeChat((chat) => {
                 const message = chat.message.at(index as number);
                 return message?.chatId ? [{ op: "setText", id: message.chatId, text: (value as string) ?? "" }] : null;
@@ -707,6 +875,13 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         },
         setChatRole: ([, index, value], ctx) => {
             if (!isSafe(ctx)) {
+                return undefined;
+            }
+            if (working) {
+                const message = working.chat.message?.at(index as number);
+                if (message) {
+                    replaceCopyMessage(working.chat, index as number, { ...message, role: roleOf(value) });
+                }
                 return undefined;
             }
             writeChat((chat) => {
@@ -721,6 +896,10 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (!isSafe(ctx)) {
                 return undefined;
             }
+            if (working) {
+                working.chat.message = working.chat.message.slice(start as number, end as number);
+                return undefined;
+            }
             writeChat((chat) => {
                 const kept = new Set(chat.message.slice(start as number, end as number));
                 const removed = chat.message.filter((message) => !kept.has(message)).map((message) => message.chatId!);
@@ -732,6 +911,10 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (!isSafe(ctx)) {
                 return undefined;
             }
+            if (working) {
+                working.chat.message.splice(index as number, 1);
+                return undefined;
+            }
             writeChat((chat) => {
                 const message = chat.message.at(index as number);
                 return message?.chatId ? [{ op: "remove", ids: [message.chatId] }] : null;
@@ -740,6 +923,10 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         },
         addChat: ([, role, value], ctx) => {
             if (!isSafe(ctx)) {
+                return undefined;
+            }
+            if (working) {
+                working.chat.message.push({ role: roleOf(role), data: (value as string) ?? "" });
                 return undefined;
             }
             writeChat(
@@ -756,6 +943,10 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         },
         insertChat: ([, index, role, value], ctx) => {
             if (!isSafe(ctx)) {
+                return undefined;
+            }
+            if (working) {
+                working.chat.message.splice(index as number, 0, { role: roleOf(role), data: (value as string) ?? "" });
                 return undefined;
             }
             writeChat((chat) => {
@@ -782,6 +973,14 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             const realValue = JSON.parse(value as string) as { role: unknown; data: unknown }[];
+            if (working) {
+                // The copy's list: the final application gives the messages new ids.
+                working.chat.message = realValue.map((v) => ({
+                    role: v.role as Message["role"],
+                    data: v.data as string,
+                }));
+                return undefined;
+            }
             // A whole-list replacement: the messages get new ids, as before.
             const replaced: Message[] = realValue.map((v) => ({
                 role: v.role as Message["role"],
@@ -801,7 +1000,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (!isSafe(ctx)) {
                 return undefined;
             }
-            const message = Number.isInteger(index) && (index as number) >= 0 ? messages()[index as number] : undefined;
+            // The displayed (live) chat's message at that position.
+            const live = liveChat().message;
+            const message = Number.isInteger(index) && (index as number) >= 0 ? live[index as number] : undefined;
             if (message?.chatId) {
                 job.channel.notice({
                     kind: "reloadChat",
@@ -821,7 +1022,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (typeof name !== "string") {
                 throw new Error("Invalid data type");
             }
-            patchCharacter({ name }, ctx);
+            if (patchCharacter({ name }, ctx)) {
+                characterPatched({ name });
+            }
             return undefined;
         },
         getDescription: (_args, ctx) => {
@@ -844,7 +1047,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (runCharacter()?.type === "group") {
                 throw new Error("Character is a group");
             }
-            patchCharacter({ desc }, ctx);
+            if (patchCharacter({ desc }, ctx)) {
+                characterPatched({ desc });
+            }
             return undefined;
         },
         getCharacterFirstMessage: () => {
@@ -858,7 +1063,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (typeof data !== "string") {
                 return false;
             }
-            return patchCharacter({ firstMessage: data }, ctx);
+            const applied = patchCharacter({ firstMessage: data }, ctx);
+            if (applied) {
+                characterPatched({ firstMessage: data });
+            }
+            return applied;
         },
         getPersonaName: () => cbsHost.getUserName(ref),
         getPersonaDescription: () => parse(cbsHost.getPersonaPrompt(ref)),
@@ -877,7 +1086,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (typeof data !== "string") {
                 return false;
             }
-            return patchCharacter({ backgroundHTML: data }, ctx);
+            const applied = patchCharacter({ backgroundHTML: data }, ctx);
+            if (applied) {
+                characterPatched({ backgroundHTML: data });
+            }
+            return applied;
         },
         getLoreBooksMain: ([, search]) => {
             const selectedChar = engineCharacter() as character | groupChat;
@@ -917,8 +1130,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 regex?: boolean;
             };
             const { alwaysActive = false, insertOrder = 100, key = "", regex = false, secondKey = "" } = options;
-            writeChat((chat) => {
-                const newLocalLoreBooks = (structuredClone(chat.localLore ?? []) as loreBook[]).filter(
+            const upserted = (localLore: loreBook[] | undefined): loreBook[] => {
+                const newLocalLoreBooks = (structuredClone(localLore ?? []) as loreBook[]).filter(
                     (book) => book.comment !== name,
                 );
                 newLocalLoreBooks.push({
@@ -932,8 +1145,13 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                     selective: !!secondKey,
                     useRegex: regex,
                 });
-                return [{ op: "meta", set: { localLore: newLocalLoreBooks } }];
-            }, ctx);
+                return newLocalLoreBooks;
+            };
+            if (working) {
+                working.chat.localLore = upserted(working.chat.localLore);
+                return undefined;
+            }
+            writeChat((chat) => [{ op: "meta", set: { localLore: upserted(chat.localLore) } }], ctx);
             return undefined;
         },
         getCharacterLastMessage: () => {
@@ -1000,15 +1218,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 // No character to generate for: refused without asking the tab.
                 return "Error: Image generation failed";
             }
-            const answer = await callback(
-                "generateImage",
-                { prompt: String(value ?? ""), negative: String(negValue ?? ""), characterId: deps.runCharacterId },
-                ctx,
-            );
-            if (answer === null) {
-                return "Error: Image generation failed";
-            }
-            return `{{inlay::${await answeredInlayId(answer, null, ctx)}}}`;
+            const id = await generateImageInlay(String(value ?? ""), String(negValue ?? ""), deps.runCharacterId, ctx);
+            return id === null ? "Error: Image generation failed" : `{{inlay::${id}}}`;
         },
         getCharacterImageMain: async (_args, ctx) => {
             const character = engineCharacter();
@@ -1068,34 +1279,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             const counter = (text: string) => deps.tokens.count(text, tokenScopeFor(scope.request.db));
-            const activation = await activateLore(
-                {
-                    character: selectedChar,
-                    chat: engineChat(),
-                    moduleLorebooks: jobModuleLorebooks(scope, ref),
-                    loreBookDepth: scope.db.loreBookDepth,
-                    loreBookToken: scope.db.loreBookToken,
-                    userName: cbsHost.getUserName(ref),
-                },
-                {
-                    clone: (value) => structuredClone(value),
-                    findCharacterName: (id) => cbsHost.findCharacterById(id)?.name,
-                    getChatVar: (key) => cbsHost.getChatVar(key, ref),
-                    setChatVar: (key, value) => {
-                        setChatVar(key, value, ctx);
-                    },
-                    pickHashRand,
-                    parseCBS: (text) => evaluator.risuChatParser(text, { chara: selectedChar, chatRef: ref }),
-                    tokenize: counter,
-                    testRegex: async (pattern, flags, text) => {
-                        const result = await ctx.regex({ op: "test", pattern, flags, input: text });
-                        if ("error" in result) {
-                            throw new Error(result.error);
-                        }
-                        return result.value === true;
-                    },
-                },
-            );
+            const activation = await activateJobLore(selectedChar, ctx);
             fence(ctx);
             // The prelude calls `loadLoreBooksMain(id)` with no reserve: `maxContext - undefined` is
             // NaN, which caps nothing, as on the client.
@@ -1139,5 +1323,48 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             return value;
         };
     }
-    return { host: { sync: guardedSync, async: guardedAsync }, fatal: () => fatalError, evaluator };
+    const services: LuaBindingServices = {
+        fence,
+        latch,
+        liveChat,
+        chatExists: () => scopeChat(scope) !== undefined,
+        refresh: () => {
+            refreshAll();
+            return scopeChat(scope) !== undefined;
+        },
+        writeChat,
+        setChatVar,
+        getChatVar: (key) => cbsHost.getChatVar(key, ref),
+        patchCharacter,
+        patchPersonaPrompt,
+        ask,
+        notice: (notice) => job.channel.notice(notice),
+        request,
+        collectStreamText,
+        generateImageInlay,
+        tokenize: (text) => deps.tokens.count(text, tokenScopeFor(scope.request.db)),
+        activateLore: (ctx) => activateJobLore(engineCharacter() as character, ctx),
+        parse: (text, chara) =>
+            evaluator.risuChatParser(text, { chara: (chara ?? undefined) as character, chatRef: ref }),
+        calc: (text) => cbsHost.calcString(text),
+    };
+    return {
+        host: { sync: guardedSync, async: guardedAsync },
+        fatal: () => fatalError,
+        evaluator,
+        services,
+        async withWorking(next, fn) {
+            const previous = working;
+            working = next;
+            try {
+                return await fn();
+            } finally {
+                working = previous;
+            }
+        },
+        observeCharacterPatches(listener) {
+            characterListeners.add(listener);
+            return () => characterListeners.delete(listener);
+        },
+    };
 }

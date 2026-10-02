@@ -289,3 +289,92 @@ describe("runServerButton", () => {
         expect(stubs.alertError).toHaveBeenCalledWith("generating");
     });
 });
+
+// Phase 5 slice 8b: a manual trigger through the same preflight and follow, with its typed outcome
+// and `onStart` (the tab sets `CurrentTriggerIdStore` there: only once the job exists).
+describe("runServerManualTrigger", () => {
+    const char = { chaId: "c", type: "character" } as never;
+
+    it("posts a manual command with the trigger id in the context, calls onStart once the job exists and before the follow, and reports `started`", async () => {
+        stubs.create.mockResolvedValue("j");
+        const onStart = vi.fn(() => {
+            expect(stubs.create).toHaveBeenCalledTimes(1);
+            expect(follows()).toHaveLength(0);
+        });
+        const run = commands.runServerManualTrigger(char, "greet", ref, { triggerId: "btn-1", onStart });
+        await flush();
+        const body = stubs.create.mock.calls[0][0] as {
+            kind: string;
+            command: unknown;
+            context: Record<string, unknown>;
+        };
+        expect(body.kind).toBe("command");
+        expect(body.command).toEqual({ type: "manual", name: "greet" });
+        expect(body.context).toMatchObject({
+            characterId: "c",
+            chatId: "k",
+            presetId: "preset",
+            personaId: "selected",
+            mode: "manual",
+            chatRevision: "e:1:1",
+            triggerId: "btn-1",
+        });
+        expect(onStart).toHaveBeenCalledTimes(1);
+        expect(follows()[0]?.jobId).toBe("j");
+        endWith(follows()[0], done);
+        expect(await run).toBe("started");
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it("omits an absent trigger id and reports `started` for an error terminal too (the follow alerts it)", async () => {
+        stubs.create.mockResolvedValue("j");
+        const run = commands.runServerManualTrigger(char, "greet", ref);
+        await flush();
+        const body = stubs.create.mock.calls[0][0] as { context: Record<string, unknown> };
+        expect("triggerId" in body.context).toBe(false);
+        endWith(follows()[0], failed);
+        expect(await run).toBe("started");
+        expect(stubs.alertError).toHaveBeenCalledWith("boom");
+    });
+
+    it("reports `refused` without onStart for a group, a discarding or rejected flush, a chat gone meanwhile, an unsaved chat, or another owner's busy job", async () => {
+        const onStart = vi.fn();
+        const outcomes: string[] = [];
+        outcomes.push(
+            await commands.runServerManualTrigger({ chaId: "g", type: "group" } as never, "greet", ref, { onStart }),
+        );
+        stubs.flush.mockResolvedValueOnce({ discarded: ["x"] });
+        outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
+        stubs.flush.mockRejectedValueOnce(new Error("offline"));
+        outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
+        stubs.findChat.mockReturnValueOnce(undefined as never);
+        outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
+        stubs.held.mockReturnValueOnce(null);
+        outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
+        stubs.create.mockRejectedValueOnce(new BusyError("theirs"));
+        stubs.read.mockResolvedValueOnce(null);
+        outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
+        expect(outcomes).toEqual(["refused", "refused", "refused", "refused", "refused", "refused"]);
+        expect(onStart).not.toHaveBeenCalled();
+        expect(follows()).toHaveLength(0);
+        expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
+            "A conflict discarded local changes; the trigger did not run",
+            expect.stringMatching(/offline/),
+            expect.stringMatching(/not saved/),
+            "generating",
+        ]);
+    });
+
+    it("reports `followed` without onStart when this tab's own job is busy", async () => {
+        const onStart = vi.fn();
+        stubs.create.mockRejectedValueOnce(new BusyError("mine"));
+        stubs.read.mockResolvedValueOnce(status);
+        const run = commands.runServerManualTrigger(char, "greet", ref, { triggerId: "btn-1", onStart });
+        await flush();
+        await flush();
+        expect(follows()[0]?.jobId).toBe("mine");
+        endWith(follows()[0], done);
+        expect(await run).toBe("followed");
+        expect(onStart).not.toHaveBeenCalled();
+    });
+});

@@ -1,3 +1,11 @@
+<script module lang="ts">
+    /**
+     * The server manual trigger whose id `CurrentTriggerIdStore` holds (Phase 5 slice 8b): only the
+     * invocation that set it clears it, so a refused click or an older timer leaves a newer one alone.
+     */
+    let serverTriggerIdOwner: object | null = null;
+</script>
+
 <script lang="ts">
     import {
         ArrowLeft,
@@ -30,7 +38,7 @@
     import { longpress } from "src/ts/gui/longtouch";
     import { getModelInfo } from "src/ts/model/modellist";
     import { runLuaButtonTrigger } from "src/ts/process/scriptings";
-    import { runServerButton } from "src/ts/process/serverCommands";
+    import { runServerButton, runServerManualTrigger } from "src/ts/process/serverCommands";
     import { readClientFlag } from "src/ts/storage/clientFlags";
     import { risuChatParser } from "src/ts/process/scripts";
     import { runTrigger } from "src/ts/process/triggers";
@@ -446,6 +454,36 @@
         // button works on the live chat and writes through the chat module as it runs.
         const ref = currentChatRef();
         const baseline = triggerName && ref ? captureChatBaseline(ref) : null;
+        if (triggerName && readClientFlag("risu.serverGeneration")) {
+            // The server runs the manual trigger (Phase 5 slice 8b). `{{trigger_id}}` reads the id as
+            // the browser path leaves it: set once the job exists, cleared 100 ms after it ends.
+            const owner = {};
+            try {
+                const outcome = await runServerManualTrigger(currentChar, triggerName, ref, {
+                    triggerId: triggerId || undefined,
+                    onStart: () => {
+                        serverTriggerIdOwner = owner;
+                        CurrentTriggerIdStore.set(triggerId || null);
+                    },
+                });
+                if (outcome === "started") {
+                    ReloadChatPointer.update((v) => {
+                        v[idx] = (v[idx] ?? 0) + 1;
+                        return v;
+                    });
+                }
+            } finally {
+                if (triggerId && serverTriggerIdOwner === owner) {
+                    setTimeout(() => {
+                        if (serverTriggerIdOwner === owner) {
+                            serverTriggerIdOwner = null;
+                            CurrentTriggerIdStore.set(null);
+                        }
+                    }, 100); // Small delay to allow display mode to complete
+                }
+            }
+            return;
+        }
         try {
             if (!triggerName && btnEvent && readClientFlag("risu.serverGeneration")) {
                 // The server runs the button (Phase 5 slice 8a); its changes arrive as the server's records.

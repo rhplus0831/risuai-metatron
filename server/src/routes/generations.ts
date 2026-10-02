@@ -6,6 +6,7 @@ import {
     type GenerationContext,
     type GenerationCreateBody,
     MAX_COMMAND_DATA_BYTES,
+    MAX_TRIGGER_NAME_BYTES,
 } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import { isValidResourceId } from "../data/resourceStore.ts";
@@ -47,8 +48,14 @@ function parseCommand(kind: string, value: unknown): GenerationCommand | undefin
     if (kind !== "command") {
         return value === undefined ? undefined : "command is only for a command job";
     }
+    if (isPlainObject(value) && value.type === "manual" && typeof value.name === "string") {
+        if (Buffer.byteLength(value.name, "utf8") > MAX_TRIGGER_NAME_BYTES) {
+            return `command.name must be at most ${MAX_TRIGGER_NAME_BYTES} bytes`;
+        }
+        return { type: "manual", name: value.name };
+    }
     if (!isPlainObject(value) || value.type !== "button" || typeof value.data !== "string") {
-        return 'command must be { type: "button", data: string }';
+        return 'command must be { type: "button", data: string } or { type: "manual", name: string }';
     }
     if (Buffer.byteLength(value.data, "utf8") > MAX_COMMAND_DATA_BYTES) {
         return `command.data must be at most ${MAX_COMMAND_DATA_BYTES} bytes`;
@@ -85,10 +92,19 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
     if (typeof context.chatRevision !== "string") {
         return "context.chatRevision must be a string";
     }
-    for (const field of ["continueMessageId", "speakerChaId", "triggerId"] as const) {
+    for (const field of ["continueMessageId", "speakerChaId"] as const) {
         if (context[field] !== undefined && !isValidResourceId(context[field])) {
             return `context.${field} must be an id when present`;
         }
+    }
+    // A `risu-id` attribute: any nonempty text (not a resource id), bounded.
+    if (
+        context.triggerId !== undefined &&
+        (typeof context.triggerId !== "string" ||
+            context.triggerId === "" ||
+            Buffer.byteLength(context.triggerId, "utf8") > MAX_TRIGGER_NAME_BYTES)
+    ) {
+        return `context.triggerId must be a nonempty string of at most ${MAX_TRIGGER_NAME_BYTES} bytes when present`;
     }
     if (
         context.selectedPersonaId !== undefined &&

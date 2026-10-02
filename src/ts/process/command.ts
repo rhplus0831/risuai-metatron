@@ -18,12 +18,20 @@ import { risuChatParser } from "../parser/parser.svelte";
 import { doingChat, sendChat } from "./index.svelte";
 import { loadLoreBookV3Prompt } from "./lorebook.svelte";
 import { runTrigger } from "./triggers";
+import { runServerManualTrigger } from "./serverCommands";
+import { readClientFlag } from "../storage/clientFlags";
 
 /**
  * Runs a command line. Every command writes to and reads (CBS arguments, lore) `ref`: a trigger's
- * chat, or by default the chat selected when the line started.
+ * chat, or by default the chat selected when the line started. `fromInput`: the line was typed in
+ * the chat input, so `/trigger` runs on the server when `risu.serverGeneration` is on (Phase 5
+ * slice 8b); a browser trigger's `v2Command` stays in the browser until its own cutover.
  */
-export async function processMultiCommand(command: string, ref: ChatRef | null = currentChatRef()) {
+export async function processMultiCommand(
+    command: string,
+    ref: ChatRef | null = currentChatRef(),
+    options: { fromInput?: boolean } = {},
+) {
     let pipe = "";
     const splited: string[] = [];
     let lastIndex = 0;
@@ -44,7 +52,7 @@ export async function processMultiCommand(command: string, ref: ChatRef | null =
             // The chat went away while an earlier command waited: the line is consumed, not sent.
             return "";
         }
-        const result = await processCommand(splited[i].trim(), pipe, ref);
+        const result = await processCommand(splited[i].trim(), pipe, ref, options);
         console.log(pipe);
         if (result === false) {
             return false;
@@ -55,7 +63,12 @@ export async function processMultiCommand(command: string, ref: ChatRef | null =
     return pipe;
 }
 
-async function processCommand(command: string, pipe: string, ref: ChatRef | null): Promise<false | string> {
+async function processCommand(
+    command: string,
+    pipe: string,
+    ref: ChatRef | null,
+    options: { fromInput?: boolean },
+): Promise<false | string> {
     const db = getDatabase();
     const currentChar = ref
         ? db.characters.find((character) => character?.chaId === ref.chaId)
@@ -247,6 +260,10 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
         }
         case "trigger": {
             if (currentChar.type === "group" || !ref) {
+                return;
+            }
+            if (options.fromInput && readClientFlag("risu.serverGeneration")) {
+                await runServerManualTrigger(currentChar, arg, ref);
                 return;
             }
             const baseline = captureChatBaseline(ref);

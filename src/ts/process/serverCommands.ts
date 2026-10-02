@@ -1,4 +1,4 @@
-import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import type { GenerationCommand, GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
 import { alertError } from "../alert";
 import {
@@ -127,17 +127,25 @@ export async function resumeServerJobs(): Promise<void> {
     await Promise.all(savedGenerationJobIds().map((jobId) => followJobToEnd(jobId)));
 }
 
+/** How a server command ended for the caller: it ran (`started`), this tab's busy job was followed, or it did not run. */
+export type ServerCommandOutcome = "started" | "followed" | "refused";
+
 /**
- * A Lua button (`risu-btn`) run by the server (Phase 5 slice 8a, behind `risu.serverGeneration`):
- * the target and the settings ids are taken before the first await (a selection change while the
- * save flushes does not move the button), every pending write is saved first (a refused or a
- * discarding flush runs nothing), then a `command` job runs it and its events are applied until it
- * ends. Its chat and character changes arrive as the server's records; its alerts and questions
- * through the job's channel. An error ends with `alertError`.
+ * A command job (Phase 5 slices 8a and 8b, behind `risu.serverGeneration`): the target and the
+ * settings ids are taken before the first await (a selection change while the save flushes does not
+ * move the command), every pending write is saved first (a refused or a discarding flush runs
+ * nothing), then the job runs and its events are applied until it ends. Its chat and record changes
+ * arrive as the server's records; its alerts and questions through the job's channel. An error ends
+ * with `alertError`. `onStart` runs once the job exists, before it is followed.
  */
-export async function runServerButton(char: character | groupChat, data: string, ref: ChatRef | null): Promise<void> {
+async function runServerCommand(
+    char: character | groupChat,
+    command: GenerationCommand,
+    ref: ChatRef | null,
+    options: { triggerId?: string; onStart?: () => void } = {},
+): Promise<ServerCommandOutcome> {
     if (!ref || char.type === "group") {
-        return;
+        return "refused";
     }
     const db = getDatabase();
     const presetId = selectedPreset(db)?.id ?? null;
@@ -151,20 +159,20 @@ export async function runServerButton(char: character | groupChat, data: string,
     try {
         const { discarded } = await flushResources();
         if (discarded.length > 0) {
-            alertError("A conflict discarded local changes; the button did not run");
-            return;
+            alertError(`A conflict discarded local changes; the ${commandLabel(command)} did not run`);
+            return "refused";
         }
     } catch (error) {
         alertError(`Local changes could not be saved: ${errorText(error)}`);
-        return;
+        return "refused";
     }
     if (!findChat(ref)) {
-        return;
+        return "refused";
     }
     const chatRevision = heldChatRevision(ref);
     if (chatRevision === null) {
         alertError("This chat is not saved on the server yet");
-        return;
+        return "refused";
     }
     let jobId: string;
     try {
@@ -176,12 +184,13 @@ export async function runServerButton(char: character | groupChat, data: string,
                 presetId,
                 personaId,
                 selectedPersonaId,
-                mode: "button",
+                mode: command.type === "button" ? "button" : "manual",
                 input: "",
                 chatRevision,
                 client,
+                ...(options.triggerId ? { triggerId: options.triggerId } : {}),
             },
-            command: { type: "button", data },
+            command,
         });
     } catch (error) {
         if (error instanceof GenerationBusyError) {
@@ -189,13 +198,37 @@ export async function runServerButton(char: character | groupChat, data: string,
             const owned = await readGenerationJob(error.jobId).catch(() => null);
             if (owned) {
                 await followJobToEnd(error.jobId, ref);
-                return;
+                return "followed";
             }
             alertError(language.chatGenerating);
-            return;
+            return "refused";
         }
         alertError(errorText(error));
-        return;
+        return "refused";
     }
+    options.onStart?.();
     await followJobToEnd(jobId, ref);
+    return "started";
+}
+
+function commandLabel(command: GenerationCommand): string {
+    return command.type === "button" ? "button" : "trigger";
+}
+
+/** A Lua button (`risu-btn`) run by the server (Phase 5 slice 8a). */
+export async function runServerButton(char: character | groupChat, data: string, ref: ChatRef | null): Promise<void> {
+    await runServerCommand(char, { type: "button", data }, ref);
+}
+
+/**
+ * A manual trigger (`risu-trigger`, `/trigger`) run by the server (Phase 5 slice 8b): its `risu-id`
+ * is the job's `triggerId` (`{{trigger_id}}`). `onStart` runs once the job exists.
+ */
+export async function runServerManualTrigger(
+    char: character | groupChat,
+    name: string,
+    ref: ChatRef | null,
+    options: { triggerId?: string; onStart?: () => void } = {},
+): Promise<ServerCommandOutcome> {
+    return await runServerCommand(char, { type: "manual", name }, ref, options);
 }

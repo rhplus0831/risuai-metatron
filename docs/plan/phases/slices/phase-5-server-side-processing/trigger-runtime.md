@@ -1,6 +1,6 @@
 # Slice: Trigger Runtime
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented (2026-10-02); see the implementation record at the end.
 
 Phase: [Phase 5](../../phase-5-server-side-processing.md), the trigger-runtime part of step 7
 (the trigger runtime with its UI effects through the channel, `v2Command` on the server) and the
@@ -81,3 +81,63 @@ on, a manual trigger from the chat menu runs through the endpoint.
 ## Residual risk
 
 Trigger lines are not atomic on the server either (Phase 2's known limit).
+
+## Implementation record (2026-10-02)
+
+Files: `shared/jobs.ts` (`GenerationCommand` gains `{ type: "manual", name }`, `MAX_TRIGGER_NAME_BYTES`);
+`server/src/routes/generations.ts` (the manual command; `context.triggerId` a nonempty string of at
+most 4096 bytes instead of a resource id, since a `risu-id` is free text); `server/src/prompt/triggers.ts`
+(the runtime); `server/src/prompt/commands.ts` (the command executor); `server/src/jobs/chatResult.ts`
+(`applyTriggerChat`); `server/src/jobs/commandRunner.ts` (the manual path, shared setup with buttons;
+the runner takes the generation lock); `server/src/lua/bindings.ts` (`withWorking`,
+`observeCharacterPatches`, `services`, `patchPersonaPrompt`, the request mode widened to
+`ModelModeExtended`, lore activation factored); `server/src/app.ts` (the lock to the runner); client
+`src/ts/process/serverCommands.ts` (`runServerCommand` shared by `runServerButton` and
+`runServerManualTrigger`, with a typed outcome and `onStart`), `src/lib/ChatScreens/Chat.svelte`,
+`src/ts/process/command.ts` (`fromInput`), `src/lib/ChatScreens/DefaultChatScreen.svelte` (passes
+`fromInput`); `util/playwright/checkServerTrigger.mjs`; the structure docs.
+
+Deviations from the scope above, all recorded:
+
+- Allowed files: `chatResult.ts`, `bindings.ts`, `commandRunner.ts`, `serverCommands.ts`,
+  `DefaultChatScreen.svelte`, and `app.ts` were added; `shared/triggers.ts` was not needed.
+- `/send` and `/sendas` only append on the client (only `/multisend` sends), so no follow-up
+  generation is enqueued; `/multisend` is refused with an `alertError` (owner question at Stop C).
+- Six native regex sites, not five: `v2GetLorebookByName` also compiles a user pattern. Its pattern is
+  compiled on an empty input first, as the client compiles it before the loop.
+- `/trigger` runs on the server only from the chat input (`fromInput`): a browser trigger's
+  `v2Command` must not post a job in the middle of a browser send.
+- A nested display-mode run cannot occur today (`v2RunTrigger` is outside both allowlists, and
+  only display and request runs set `displayMode`), so no separate read-only capability was added;
+  the display mode, display data, and temporary variables are passed to the nested run.
+
+Astra plan review (`p5s8b-plan-review.md`, ten points): all adopted, point 5 with a change.
+
+1. The working-copy mapping per host function (lookup reads the copy's local lore; activation,
+   CBS, and `getGlobalVar` stay live; `reloadChat` resolves on the live chat). 2. A dedicated final
+   applier with the lock check for reorders and an atomic group. 3. The replay of `scriptstate` and
+   the note by the final diff is kept and recorded. 4. Fences after every await, fatal errors
+   rethrown from every fallback catch, the native regex raced against the run signal. 5. Nested
+   runs take the temporary-variable map by reference and hand display data back; each recursion
+   level yields; the read-only capability was not added (see above). 6. The lore pattern compiled on
+   empty input; the replacer reproduced with its quirks. 7. Results `null | undefined`, the Lua mode
+   default `"manual"`. 8. Personas as the singleton list, one entry patched. 9. `triggerId` nonempty;
+   `CurrentTriggerIdStore` set only once the job exists (`onStart`). 10. Lua character patches reach
+   every running trigger of that character.
+
+Checks: `pnpm check`, `pnpm format:check`, `pnpm test` (135 files, 1617 passed), `pnpm build`,
+`pnpm test:e2e` (6 passed); the scratch smoke `p5s8b-smoke.ts` (23/23: variables, if, loops, CBS over
+the immediate writes and `{{trigger_id}}`, the alert and the questions, character and lore writes,
+commands with a nested `/trigger`, the six regex sites, the effect limit, an invalid regex, an abort
+during `v2Wait`, the persona write and the frozen getter, `v2CutChat`, Lua on the working copy with
+the native getter after `setDescription`, route validation); `node util/playwright/checkServerTrigger.mjs`
+(16/16: flag on, a `risu-trigger` with `risu-id` and `/trigger` from the input run as jobs, the
+alert and question in the UI, the edits shown, stored, and after a reload; flag off, no job).
+
+Review: Fable found no problem and wrote the regression suites `server/src/tests/triggerRuntime.test.ts`,
+`chatResult.test.ts`, `commandExecutor.test.ts`, and `manualTriggers.test.ts` (a real listening server),
+and extended `src/ts/process/command.test.ts` and `serverCommands.test.ts` (129 tests; 139 files, 1746
+passed). The `Chat.svelte` trigger-id owner token has no component test. Parity quirks confirmed and kept
+(inherited from the tab): a trigger's own new message is anchored after its predecessor in the copy, so it
+lands before messages its `v2Command`s appended meanwhile; `/addvar` on a missing variable stores `"NaN"`;
+`/cut -1` keeps only the first message; quote characters stay in a piped argument.

@@ -111,7 +111,7 @@ export function createServerContext(options: {
 
     /** The one `upgrade` listener per HTTP server (proxy stream jobs, then generation jobs). */
     const upgradeListeners = new Map<http.Server, (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void>();
-    // Workers start on the first task: Lua buttons (`command` jobs, Phase 5 slice 8a) run there.
+    // Workers start on the first task: Lua buttons and manual triggers (`command` jobs) run there.
     const scriptWorkers = createScriptWorkerPool({ rootDir: options.rootDir });
     const defaultRunner = createGenerationRunner({
         store: resources,
@@ -121,6 +121,7 @@ export function createServerContext(options: {
         scriptWorkers,
         llm: llmRequests,
         tokens: tokenCounter,
+        lock: generationLock,
     });
 
     const authenticatedRouteLimiter = createRateLimiter({

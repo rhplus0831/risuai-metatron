@@ -12,6 +12,9 @@ const hooks = vi.hoisted(() => ({
     sendResult: [] as boolean[],
     input: null as null | ((prompt: string) => Promise<string>),
     trigger: null as null | ((char: any, mode: string, arg: any) => Promise<any>),
+    /** The client flag `risu.serverGeneration` and the manual triggers handed to the server (slice 8b). */
+    serverFlag: false,
+    serverRuns: [] as { char: any; name: string; ref: any }[],
 }));
 
 vi.mock("../storage/database.svelte", async () => {
@@ -52,6 +55,13 @@ vi.mock("./modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("./serverCommands", () => ({
+    runServerManualTrigger: vi.fn(async (char: any, name: string, ref: any) => {
+        hooks.serverRuns.push({ char, name, ref });
+        return "started";
+    }),
+}));
+vi.mock("../storage/clientFlags", () => ({ readClientFlag: vi.fn(() => hooks.serverFlag) }));
 
 import { processMultiCommand } from "./command";
 import { doingChat, sendChat } from "./index.svelte";
@@ -140,6 +150,8 @@ beforeEach(() => {
     hooks.sendResult.length = 0;
     hooks.input = null;
     hooks.trigger = null;
+    hooks.serverFlag = false;
+    hooks.serverRuns.length = 0;
     doingChat.set(false);
     vi.spyOn(console, "log").mockImplementation(() => {});
 });
@@ -285,6 +297,37 @@ describe("the chat a line started in", () => {
         expect(work.groups[0].ops).toEqual([
             { op: "append", messages: [m("t", "from the trigger", "char")], anchor: { after: "d" } },
         ]);
+    });
+});
+
+describe("/trigger on the server (Phase 5 slice 8b)", () => {
+    it("runs on the server only for a line typed in the chat input with `risu.serverGeneration` on, with the CBS'd name, and answers undefined", async () => {
+        const ref = freshChat();
+        vi.mocked(runTrigger).mockClear();
+        hooks.serverFlag = true;
+        expect(await processMultiCommand("/trigger {{chat}} greet", undefined, { fromInput: true })).toBeUndefined();
+        expect(hooks.serverRuns).toEqual([
+            { char: expect.objectContaining({ chaId: "c" }), name: `${ref.chatId} greet`, ref },
+        ]);
+        expect(runTrigger).not.toHaveBeenCalled();
+        expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
+        expect(commit().work.groups).toEqual([]);
+    });
+
+    it("stays in the browser without the flag, and for a trigger's own command line (no `fromInput`) even with it", async () => {
+        const ref = freshChat();
+        vi.mocked(runTrigger).mockClear();
+        await processMultiCommand("/trigger greet", undefined, { fromInput: true });
+        hooks.serverFlag = true;
+        await processMultiCommand("/trigger greet", ref);
+        await processMultiCommand("/trigger greet");
+        expect(hooks.serverRuns).toEqual([]);
+        expect(runTrigger).toHaveBeenCalledTimes(3);
+        expect(runTrigger).toHaveBeenLastCalledWith(
+            expect.objectContaining({ chaId: "c" }),
+            "manual",
+            expect.objectContaining({ chatRef: ref, manualName: "greet" }),
+        );
     });
 });
 

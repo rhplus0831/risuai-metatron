@@ -195,7 +195,7 @@
         const characterOf = () => DBState.db.characters.find((character) => character?.chaId === ref.chaId);
 
         if (messageInput.startsWith("/")) {
-            const commandProcessed = await processMultiCommand(messageInput);
+            const commandProcessed = await processMultiCommand(messageInput, undefined, { fromInput: true });
             if (commandProcessed !== false) {
                 messageInput = "";
                 return;

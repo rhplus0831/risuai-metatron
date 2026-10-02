@@ -53,7 +53,7 @@
 - `group.ts`: `groupOrder` (name mentions, then shuffle and talkativeness), `addGroupChar`, `rmCharFromGroup`.
 - `exampleMessages.ts` `exampleMessage`: parses example dialogue into `OpenAIChat[]`.
 - `prereroll.ts`: `Prereroll`, `PreUnreroll`, `addRerolls`. In-memory swipe history keyed by `generationId`.
-- `command.ts` `processMultiCommand`: slash commands (`/send`, `/sendas`, `/cut`, `/del`, `/multisend`, `/trigger`, variables, TTS, `?` help).
+- `command.ts` `processMultiCommand`: slash commands (`/send`, `/sendas`, `/cut`, `/del`, `/multisend`, `/trigger`, variables, TTS, `?` help). With `{ fromInput: true }` (the chat input) and `risu.serverGeneration` on, `/trigger` runs on the server (Phase 5 slice 8b, `scripts-triggers.md`).
   - Pipes are `|`.
   - Unknown commands return `false` and fall through as ordinary text.
 - `infunctions.ts` `calcString`: calculator for the CBS calc function.

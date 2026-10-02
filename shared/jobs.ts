@@ -48,8 +48,14 @@ export type GenerationClientEnv = { viewport: { width: number; height: number };
 /** The largest `command.data`, in UTF-8 bytes (a `risu-btn` attribute). */
 export const MAX_COMMAND_DATA_BYTES = 64 * 1024;
 
-/** What a `command` job runs: a Lua button (`risu-btn`) with its attribute's text. */
-export type GenerationCommand = { type: "button"; data: string };
+/** The longest manual trigger name (a trigger's comment) and `context.triggerId`, in UTF-8 bytes. */
+export const MAX_TRIGGER_NAME_BYTES = 4096;
+
+/**
+ * What a `command` job runs: a Lua button (`risu-btn`) with its attribute's text, or a manual
+ * trigger (`risu-trigger`, `/trigger`) by name (Phase 5 slice 8b; its `risu-id` is `context.triggerId`).
+ */
+export type GenerationCommand = { type: "button"; data: string } | { type: "manual"; name: string };
 
 export type ScriptHookMode = "editinput" | "editprocess" | "editoutput" | "editdisplay";
 
