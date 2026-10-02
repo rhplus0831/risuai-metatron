@@ -520,3 +520,94 @@ describe("runServerJob", () => {
         expect(stubs.abort).not.toHaveBeenCalled();
     });
 });
+
+const followUpStubs = vi.hoisted(() => ({
+    runMultisend: vi.fn<(ref: unknown, clear: boolean, parts: readonly string[]) => Promise<boolean>>(),
+}));
+vi.mock("./command", () => ({ runMultisend: followUpStubs.runMultisend }));
+
+describe("`/multisend` follow-ups of a command job (slice 11b)", () => {
+    /** Lets the follow-up chain (a dynamic import, one await per part) run out. */
+    const settle = async () => {
+        for (let round = 0; round < 8; round += 1) {
+            await flush();
+        }
+    };
+    const withParts = (...followUps: { clear: boolean; parts: string[] }[]): GenerationTerminalEvent => ({
+        ...done,
+        followUps,
+    });
+
+    beforeEach(() => {
+        followUpStubs.runMultisend.mockReset().mockResolvedValue(true);
+    });
+
+    it("sends a done terminal's follow-ups through the tab's `/multisend` in order on the job's chat, stopping at the first that does not send, and hands the terminal to the caller unchanged", async () => {
+        const terminal = withParts(
+            { clear: false, parts: ["one", "two"] },
+            { clear: true, parts: ["three"] },
+            { clear: false, parts: ["never"] },
+        );
+        followUpStubs.runMultisend.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+        const end = commands.followJobToEnd("j", ref);
+        await flush();
+        endWith(follows()[0], terminal);
+        expect(await end).toEqual(terminal);
+        await settle();
+        expect(followUpStubs.runMultisend.mock.calls).toEqual([
+            [ref, false, ["one", "two"]],
+            [ref, true, ["three"]],
+        ]);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it("starts a job's follow-ups once per tab: the same terminal seen again (a later follow of the job) does not send them again, another job's do; none for a done without follow-ups", async () => {
+        const terminal = withParts({ clear: false, parts: ["a"] });
+        const first = commands.followJobToEnd("j", ref);
+        await flush();
+        endWith(follows()[0], terminal);
+        await first;
+        await settle();
+        // The job is followed again (its terminal is retained on the server): nothing is resent.
+        const again = commands.followJobToEnd("j", ref);
+        await flush();
+        endWith(follows()[1], terminal);
+        expect(await again).toEqual(terminal);
+        await settle();
+        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(1);
+        // Two callers of one follow share the one start.
+        const shared = commands.followJobToEnd("j2", ref);
+        const sharing = commands.followJobToEnd("j2", ref);
+        await flush();
+        endWith(follows()[2], withParts({ clear: true, parts: ["b"] }));
+        await Promise.all([shared, sharing]);
+        await settle();
+        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(2);
+        expect(followUpStubs.runMultisend).toHaveBeenLastCalledWith(ref, true, ["b"]);
+        const plain = commands.followJobToEnd("j3", ref);
+        await flush();
+        endWith(follows()[3], done);
+        await plain;
+        const errored = commands.followJobToEnd("j4", ref);
+        await flush();
+        endWith(follows()[4], failed);
+        await errored;
+        await settle();
+        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(2);
+    });
+
+    it("runs the follow-ups of a job discovered at boot on the chat its status names, and logs a send that throws", async () => {
+        stubs.read.mockResolvedValue(status);
+        followUpStubs.runMultisend.mockRejectedValueOnce(new Error("send broke"));
+        const end = commands.followJobToEnd("j");
+        await flush();
+        await flush();
+        endWith(follows()[0], withParts({ clear: false, parts: ["x"] }, { clear: false, parts: ["y"] }));
+        expect(await end).toMatchObject({ type: "done" });
+        await settle();
+        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(1);
+        expect(followUpStubs.runMultisend).toHaveBeenCalledWith({ chaId: "c", chatId: "k" }, false, ["x"]);
+        expect(console.error).toHaveBeenCalledWith("[Generation]", expect.any(Error));
+        expect(stubs.release).not.toHaveBeenCalled();
+    });
+});

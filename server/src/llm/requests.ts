@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
+import { isToolContentEntry } from "../../../shared/llm/validate.ts";
+import { MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
 import {
     LLM_CALLBACK_TIMEOUT_MS,
     type LlmCallbackAnswer,
@@ -19,7 +21,8 @@ import type { ResourceStore } from "../data/resourceStore.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import type { TokenCounter, TokenCountScope } from "../prompt/tokens.ts";
 import type { ClaudeObserver } from "./claudeObserver.ts";
-import type { RequestContext } from "./context.ts";
+import type { PluginProviderAnswer, RequestContext } from "./context.ts";
+import { messages } from "./messages.ts";
 import { collectSecrets, createRedactor, redactHeaderText, type Redactor } from "./redact.ts";
 import { requestChatDataMain, type requestDataResponse } from "./request.ts";
 import { type LoadedRequestDb, loadRequestDb, RequestTargetGoneError } from "./settings.ts";
@@ -172,19 +175,7 @@ function createStrongBan(cache: Map<string, string>) {
 
 /** Whether `value` is what the client's `callTool` returns: MCP content entries. */
 function isToolContent(value: unknown): value is RPCToolCallContent[] {
-    return (
-        Array.isArray(value) &&
-        value.every(
-            (entry) =>
-                !!entry &&
-                typeof entry === "object" &&
-                ((entry.type === "text" && typeof entry.text === "string") ||
-                    ((entry.type === "image" || entry.type === "audio") &&
-                        typeof entry.data === "string" &&
-                        typeof entry.mimeType === "string") ||
-                    (entry.type === "resource" && !!entry.resource && typeof entry.resource === "object")),
-        )
-    );
+    return Array.isArray(value) && value.every(isToolContentEntry);
 }
 
 /**
@@ -305,6 +296,14 @@ export type JobRequestSpec = {
     alertError: (text: string) => void;
     /** Ends the job: a barrier failure, a timeout, or a disconnect of an interceptor callback. */
     endJob: (message: string) => void;
+    /**
+     * The remembered tool calls of the job's chat (`chat.toolCalls`, slice 11b): read as stored now,
+     * and a new record written with the chat.
+     */
+    toolCalls: {
+        read(): Record<string, ToolCallRecord> | undefined;
+        write(record: ToolCallRecord): void;
+    };
     /** The job's and the calling host task's signal: the request ends with it. */
     signal: AbortSignal;
 };
@@ -354,6 +353,8 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         tools: RequestContext["tools"];
         inlays: RequestContext["inlays"];
         intercept: RequestContext["intercept"];
+        /** A job's request: its tab's plugin providers (`RequestContext.pluginProvider`). */
+        pluginProvider?: RequestContext["pluginProvider"];
         supportsInlayImage: () => boolean;
         /** A job's own request: models the server knows only through a tab (see `runInJob`). */
         browserOnlyModels?: boolean;
@@ -368,6 +369,9 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 customFlags: db.customFlags,
                 customModels: db.customModels,
                 extraModels: p.extraModels(modelId),
+                // A job's plugin provider descriptors, returned as registered (the tab's
+                // `pluginModels` branch: custom flags do not apply to them).
+                pluginModels: db.pluginModels,
             });
             // A plugin model or a tab's dynamic model reaches the server only as the tab's descriptor;
             // without one, the catalogue would read it as an OpenAI-compatible model and send it to
@@ -414,6 +418,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             supportsInlayImage: p.supportsInlayImage,
             getModelInfo: modelInfo,
             intercept: p.intercept,
+            ...(p.pluginProvider ? { pluginProvider: p.pluginProvider } : {}),
             // A job's request only (`browserOnlyModels`): a tab runs its local models itself.
             ...(p.browserOnlyModels && options.localGeneration
                 ? {
@@ -508,14 +513,185 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             alertError: (text) => spec.alertError(redactor.text(text)),
             parseCbs: async (text, chatRef) => spec.parseCbs(text, chatRef),
             tools: {
-                // Server-side scripts send no tools until slice 12 (recorded).
+                // Server-side requests send no tools until slice 12 (recorded): nothing calls a tool.
                 call: async () => {
                     throw fatal("Tools are not available to server-side requests yet");
                 },
-                encode: async () => {
-                    throw fatal("Tools are not available to server-side requests yet");
+                // A remembered call is conversation data, stored with the job's chat as it is: one
+                // that carries a stored credential is refused (the chat goes to the tab).
+                encode: async (record) => {
+                    record.call.id = record.call.id || randomUUID();
+                    if (redactor.carries(record)) {
+                        throw fatal("A remembered tool call carries a stored credential; it is not stored");
+                    }
+                    spec.toolCalls.write(record);
+                    return `<tool_call>${record.call.id}\uf100${record.call.name}</tool_call>\n\n`;
                 },
-                decode: async () => undefined,
+                decode: async (text) => decodeToolCall(text, spec.toolCalls.read()),
+            },
+            pluginProvider: (name, argument) => {
+                // The tab's plugin gets the prompt and the parameters, never a stored credential.
+                if (redactor.carries(argument) || redactor.carries(name)) {
+                    return Promise.resolve({
+                        success: false,
+                        content: "The request carries a stored credential; it is not sent to a plugin provider",
+                    });
+                }
+                return new Promise<PluginProviderAnswer>((resolve, reject) => {
+                    // Pending until the first message: a `chunk` makes it a stream, an answer a text.
+                    // The stream holds one value at most: the texts are cumulative, so a newer one
+                    // replaces one the reader has not taken yet (a slow reader keeps no backlog).
+                    let out: ReadableStreamDefaultController<StreamResponseChunk> | null = null;
+                    let ended = false;
+                    let latest: string | null = null;
+                    let waiting = false;
+                    let finished = false;
+                    const gaveUp = new AbortController();
+                    const deliver = () => {
+                        if (!out || !waiting) {
+                            return;
+                        }
+                        if (latest !== null) {
+                            waiting = false;
+                            const text = latest;
+                            latest = null;
+                            out.enqueue({ "0": text });
+                        } else if (finished) {
+                            waiting = false;
+                            out.close();
+                        }
+                    };
+                    const onChunk = (text: string) => {
+                        if (ended) {
+                            return;
+                        }
+                        if (!out) {
+                            const stream = new ReadableStream<StreamResponseChunk>(
+                                {
+                                    start(streamController) {
+                                        out = streamController;
+                                    },
+                                    pull() {
+                                        waiting = true;
+                                        deliver();
+                                    },
+                                    // The reader stopped: the callback ends and the tab stops the provider.
+                                    cancel() {
+                                        ended = true;
+                                        latest = null;
+                                        gaveUp.abort(new Error("The provider's stream was cancelled"));
+                                    },
+                                },
+                                { highWaterMark: 0 },
+                            );
+                            resolve({ success: true, stream });
+                            if (text === "") {
+                                // The first chunk only says "a stream": an empty one carries no text.
+                                return;
+                            }
+                        }
+                        latest = text;
+                        deliver();
+                    };
+                    /** The provider failed: the stream errors, or (before any chunk) the request does. */
+                    const fail = (error: Error) => {
+                        if (ended) {
+                            return;
+                        }
+                        ended = true;
+                        latest = null;
+                        if (out) {
+                            try {
+                                out.error(error);
+                            } catch {}
+                        } else {
+                            reject(error);
+                        }
+                    };
+                    void spec.channel
+                        .callback(
+                            "provider",
+                            { name, argument },
+                            {
+                                timeoutMs: PROVIDER_CALLBACK_TIMEOUT_MS,
+                                onChunk,
+                                signal: AbortSignal.any([controller.signal, gaveUp.signal]),
+                            },
+                        )
+                        .then((result) => {
+                            switch (result.outcome) {
+                                case "answered": {
+                                    const value = result.value as Record<string, unknown> | null;
+                                    const isObject = typeof value === "object" && value !== null;
+                                    if (
+                                        isObject &&
+                                        typeof value.content === "string" &&
+                                        value.content.length > MAX_PROVIDER_TEXT_CHARS
+                                    ) {
+                                        // The limit of a streamed text holds for an answer's text too.
+                                        fail(new Error("The provider's text is too long"));
+                                        return;
+                                    }
+                                    if (out) {
+                                        if (isObject && value.success === true) {
+                                            if (!ended) {
+                                                // The newest text still waiting goes out before the end.
+                                                ended = true;
+                                                finished = true;
+                                                deliver();
+                                            }
+                                        } else {
+                                            fail(
+                                                new Error(
+                                                    isObject && typeof value.content === "string"
+                                                        ? redactor.text(value.content)
+                                                        : "The provider failed",
+                                                ),
+                                            );
+                                        }
+                                    } else if (isObject && value.none === true) {
+                                        ended = true;
+                                        resolve({ none: true });
+                                    } else if (
+                                        isObject &&
+                                        typeof value.success === "boolean" &&
+                                        typeof value.content === "string"
+                                    ) {
+                                        ended = true;
+                                        resolve({ success: value.success, content: value.content });
+                                    } else {
+                                        fail(endWith("The provider callback answered a malformed value", true));
+                                    }
+                                    return;
+                                }
+                                case "refused":
+                                    if (result.refusal === "unregistered") {
+                                        // Not among the providers the tab registered for this job.
+                                        if (!ended && !out) {
+                                            ended = true;
+                                            resolve({ success: false, content: messages.pluginProviderNotFound });
+                                        }
+                                        return;
+                                    }
+                                    fail(endWith(`The provider callback was refused: ${result.error}`, true));
+                                    return;
+                                case "failed":
+                                    if (result.failure === "hook") {
+                                        // The provider threw or is unloaded: the request fails, as in the tab.
+                                        fail(new Error(redactor.text(result.error)));
+                                        return;
+                                    }
+                                    fail(endWith(`The provider callback failed: ${result.error}`, true));
+                                    return;
+                                case "aborted":
+                                    // The request ended, or its reader stopped: nothing left to tell.
+                                    fail(new Error(redactor.text(errorText(controller.signal.reason ?? result.error))));
+                                    return;
+                                default:
+                                    fail(endWith(`The provider callback ${result.outcome}: ${result.error}`, true));
+                            }
+                        });
+                });
             },
             inlays: spec.inlays,
             intercept: channelIntercept({
@@ -1113,6 +1289,28 @@ function errorText(error: unknown): string {
         return error.message;
     }
     return `${error}`;
+}
+
+/** A `provider` callback may take as long as a job may run (`JOB_MAX_DURATION_MS`). */
+const PROVIDER_CALLBACK_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * The client's `decodeToolCall` over a chat's `toolCalls`: the marker (whole, or its inner text
+ * `<id>\uf100<name>`) names the call by id.
+ */
+function decodeToolCall(text: string, calls: Record<string, ToolCallRecord> | undefined): ToolCallRecord | undefined {
+    text = text.trim();
+    if (text.startsWith("<tool_call>")) {
+        text = text.slice("<tool_call>".length).trim();
+    }
+    if (text.endsWith("</tool_call>")) {
+        text = text.slice(0, -"</tool_call>".length).trim();
+    }
+    const [callId] = text.split("\uf100");
+    if (!callId || !calls || !Object.hasOwn(calls, callId)) {
+        return undefined;
+    }
+    return structuredClone(calls[callId]);
 }
 
 /** The request's dynamic model, accepted only for the id it names and a format the server runs. */

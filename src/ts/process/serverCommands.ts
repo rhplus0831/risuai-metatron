@@ -1,6 +1,7 @@
 import type {
     GenerationCommand,
     GenerationContext,
+    GenerationFollowUp,
     GenerationKind,
     GenerationTerminalEvent,
 } from "../../../shared/jobs.ts";
@@ -32,6 +33,12 @@ function errorText(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * The jobs whose `/multisend` follow-ups this tab has started: a job's are started once, however
+ * often its terminal is seen. Kept for the tab's lifetime (only jobs that had follow-ups).
+ */
+const followedUp = new Set<string>();
+
 /** The one lifecycle of each job this tab follows to its end, shared by every caller. */
 const following = new Map<string, Promise<GenerationTerminalEvent | "lost">>();
 
@@ -62,6 +69,19 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                     releaseGenerationJob(jobId);
                 }
                 reportEnd(end);
+                if (
+                    end !== "lost" &&
+                    end.type === "done" &&
+                    end.followUps?.length &&
+                    target !== "lost" &&
+                    !followedUp.has(jobId)
+                ) {
+                    // `/multisend` of a command job: sent now, once per job in this tab (a job followed
+                    // again later gets the same terminal), not awaited by the job's caller. A reload
+                    // meanwhile drops what is left.
+                    followedUp.add(jobId);
+                    void runFollowUps(target, end.followUps).catch((error) => console.error("[Generation]", error));
+                }
                 return end;
             } finally {
                 following.delete(jobId);
@@ -70,6 +90,16 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
         following.set(jobId, shared);
     }
     return shared;
+}
+
+/** The parts a command job's `/multisend` queued, sent as the tab's own `/multisend` sends them. */
+async function runFollowUps(ref: ChatRef, followUps: readonly GenerationFollowUp[]): Promise<void> {
+    const { runMultisend } = await import("./command");
+    for (const followUp of followUps) {
+        if (!(await runMultisend(ref, followUp.clear, followUp.parts))) {
+            return;
+        }
+    }
 }
 
 /** The chat of a saved job from its status: `"gone"` when the server does not know it, `"lost"` after the retries. */

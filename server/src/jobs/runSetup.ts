@@ -1,4 +1,5 @@
 import type { CbsUsage } from "../../../shared/cbs/limits.ts";
+import { type GenerationFollowUp, MAX_FOLLOW_UP_PART_CHARS, MAX_FOLLOW_UP_PARTS } from "../../../shared/jobs.ts";
 import type { character, Chat, groupChat } from "../../../shared/database.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { createScriptCache } from "../../../shared/scripts/regex.ts";
@@ -89,6 +90,8 @@ export type JobRunState = {
      * `context.client.emotions`, plus every emotion the job showed since), oldest first.
      */
     emotions: Map<string, string[]>;
+    /** The `/multisend` commands a command job ran: its tab sends their parts after the job (slice 11b). */
+    followUps: GenerationFollowUp[];
     /** The auto-continue and resend rounds the job has run (slice 11a: at most `MAX_SEND_ROUNDS`). */
     rounds: { count: number; noticed?: boolean };
 };
@@ -130,6 +133,7 @@ export function createJobRunState(job: RunningJob): JobRunState {
         scriptCache: createScriptCache(),
         assetMatches: new Map(),
         emotions: new Map(Object.entries(job.context.client?.emotions ?? {}).map(([id, names]) => [id, [...names]])),
+        followUps: [],
         rounds: { count: 0 },
     };
 }
@@ -288,6 +292,24 @@ export function createRunSetup(
         ctx: nativeCtx,
         character: storedCharacter,
         runManualTrigger: runManual,
+        multisend: (clear, parts) => {
+            // In the tab `/multisend` does nothing while a send runs; a send job is that send.
+            if (job.kind !== "command") {
+                return;
+            }
+            const queued = state.followUps.reduce((count, entry) => count + entry.parts.length, 0);
+            if (
+                queued + parts.length > MAX_FOLLOW_UP_PARTS ||
+                parts.some((part) => part.length > MAX_FOLLOW_UP_PART_CHARS)
+            ) {
+                services.notice({
+                    kind: "alertError",
+                    payload: { message: "/multisend: too many or too long parts for one command" },
+                });
+                return;
+            }
+            state.followUps.push({ clear, parts: [...parts] });
+        },
     });
     const runtime = createTriggerRuntime({
         services,

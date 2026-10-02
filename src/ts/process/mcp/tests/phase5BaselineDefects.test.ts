@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Phase 5 baseline capture (`server/src/tests/fixtures/baseline/README.md`, "Defects pinned here"):
-// the current behavior of two confirmed defects in the MCP client code, recorded against the client
-// functions themselves (they are pure, so no browser capture is needed). These tests pin the defect,
-// not the intended behavior. FLIP THEM in the slice that fixes each one (implementation plan,
-// question 10): `decodeToolCall` in slice 11 (`post-generation-and-plugin-callbacks`), the OAuth
-// refresh in slice 12 (`mcp-on-server`).
+// the behavior of two confirmed defects in the MCP client code, recorded against the client
+// functions themselves (they are pure, so no browser capture is needed). Each test pins the defect
+// until the slice that fixes it FLIPS it to the intended behavior (implementation plan, question
+// 10): `decodeToolCall` was flipped in slice 11b (`post-generation-and-plugin-callbacks`); the OAuth
+// refresh flips in slice 12 (`mcp-on-server`).
 
 const { fetchCalls, fetchAnswers } = vi.hoisted(() => ({
     fetchCalls: [] as { url: string; init: RequestInit | undefined }[],
@@ -44,8 +44,8 @@ afterEach(() => {
     vi.clearAllMocks();
 });
 
-describe("Phase 5 baseline: decodeToolCall never decodes a remembered tool call (flip in slice 11)", () => {
-    it("returns undefined for the exact text encodeToolCall produced", async () => {
+describe("Phase 5 baseline, flipped in slice 11b: decodeToolCall decodes a remembered tool call", () => {
+    it("decodes the exact text encodeToolCall produced", async () => {
         const { decodeToolCall, encodeToolCall } = await import("../mcp");
         const call = {
             call: { id: "call-1", name: "lookup", arg: { q: "x" } },
@@ -54,8 +54,12 @@ describe("Phase 5 baseline: decodeToolCall never decodes a remembered tool call 
         const encoded = await encodeToolCall(call);
         expect(encoded).toBe("<tool_call>call-1lookup</tool_call>\n\n");
 
-        // `text.slice("<tool_call>".length, 0)` is the empty string: the id is lost before the lookup.
-        expect(await decodeToolCall(encoded)).toBeUndefined();
+        // Before slice 11b `text.slice("<tool_call>".length, 0)` emptied the text and lost the id;
+        // the opening tag is now cut off and the whole marker decodes to the record.
+        expect(await decodeToolCall(encoded)).toEqual({
+            call: { id: "call-1", name: "lookup", arg: { q: "x" } },
+            response: [{ type: "text", text: "found" }],
+        });
     });
 
     it("decodes the same call when the opening tag is absent (the lookup itself works)", async () => {

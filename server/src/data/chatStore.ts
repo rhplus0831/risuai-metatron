@@ -8,6 +8,7 @@ import type {
     ChatRecord,
     CheckpointOutcome,
 } from "../../../shared/chats.ts";
+import { CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { Chat } from "../../../shared/database.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
@@ -83,7 +84,7 @@ type PreparedOp =
     | { op: "create"; meta: string; messages: PreparedMessage[]; index: number | null }
     | { op: "delete" }
     | { op: "replace"; meta: string; messages: PreparedMessage[] }
-    | { op: "meta"; set: Record<string, unknown>; unset: string[] }
+    | { op: "meta"; set: Record<string, unknown>; unset: string[]; merge: Record<string, Record<string, unknown>> }
     | { op: "append"; messages: PreparedMessage[]; anchor: { start: true } | { end: true } | { after: string } }
     | { op: "setMessage"; message: PreparedMessage; generation: Generation | null }
     | { op: "setText"; id: string; text: string; generation: Generation | null }
@@ -209,7 +210,18 @@ function prepareOp(raw: unknown, chatId: string): PreparedOp {
             if (unset.some((key) => Object.hasOwn(set, key))) {
                 throw new ResourceValidationError("meta sets and unsets the same field");
             }
-            return { op: "meta", set, unset };
+            // `merge`: entries added to a map field as stored (only the fields that are maps).
+            const merge = raw.merge === undefined ? {} : raw.merge;
+            if (
+                !isPlainObject(merge) ||
+                !Object.keys(merge).every((key) => CHAT_META_MERGE_KEYS.includes(key) && isPlainObject(merge[key]))
+            ) {
+                throw new ResourceValidationError(`meta.merge takes entries for ${CHAT_META_MERGE_KEYS.join(", ")}`);
+            }
+            if (Object.keys(merge).some((key) => Object.hasOwn(set, key) || unset.includes(key))) {
+                throw new ResourceValidationError("meta merges a field it also sets or unsets");
+            }
+            return { op: "meta", set, unset, merge: merge as Record<string, Record<string, unknown>> };
         }
         case "append": {
             if (!Array.isArray(raw.messages) || raw.messages.length === 0) {
@@ -696,6 +708,20 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         delete current[key];
                     }
                     Object.assign(current, op.set);
+                    for (const [key, entries] of Object.entries(op.merge)) {
+                        // Onto the entries as stored now: another writer's entries stay.
+                        const stored = current[key];
+                        const map: Record<string, unknown> = Object.create(null);
+                        if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+                            for (const id of Object.keys(stored)) {
+                                map[id] = (stored as Record<string, unknown>)[id];
+                            }
+                        }
+                        for (const id of Object.keys(entries)) {
+                            map[id] = entries[id];
+                        }
+                        current[key] = { ...map };
+                    }
                     const meta = serialize(normalizeChatMeta(current, chatId)).text;
                     setChatMeta.run(meta, CHAT_SCHEMA_VERSION, chatSeq);
                     row = { ...row!, meta };

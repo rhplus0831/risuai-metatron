@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { CHAT_META_FORBIDDEN_KEYS } from "../../../shared/chats.ts";
+import { CHAT_META_FORBIDDEN_KEYS, MAX_TOOL_CALL_RECORD_BYTES } from "../../../shared/chats.ts";
+import { isToolContentEntry } from "../../../shared/llm/validate.ts";
 import { isValidResourceId, ResourceValidationError } from "./resourceStore.ts";
 
 /**
@@ -49,7 +50,46 @@ export function normalizeChatMeta(input: unknown, id: string): Record<string, un
     if (meta.fmIndex !== undefined && typeof meta.fmIndex !== "number") {
         throw new ResourceValidationError("chat.fmIndex must be a number");
     }
+    if (meta.toolCalls !== undefined) {
+        assertToolCalls(meta.toolCalls);
+    }
     return meta;
+}
+
+/**
+ * `chat.toolCalls`: a map of call id to `{ call: { id, name, arg }, response: [...] }`, each under
+ * its own call id (the request adapters read these fields without checking them).
+ */
+export function assertToolCalls(value: unknown): void {
+    if (!isPlainObject(value)) {
+        throw new ResourceValidationError("chat.toolCalls must be an object");
+    }
+    for (const id of Object.keys(value)) {
+        assertToolCallRecord(id, value[id]);
+    }
+}
+
+/** One entry of `chat.toolCalls`, and its size (`MAX_TOOL_CALL_RECORD_BYTES`). */
+export function assertToolCallRecord(id: string, record: unknown): void {
+    const call = isPlainObject(record) ? record.call : undefined;
+    if (
+        !isPlainObject(record) ||
+        !isPlainObject(call) ||
+        call.id !== id ||
+        id === "" ||
+        typeof call.name !== "string" ||
+        !Array.isArray(record.response) ||
+        // Each piece as the request adapters read it (text; an image or audio with data and MIME type;
+        // a resource). `call.arg` is whatever the provider sent: not checked.
+        !record.response.every(isToolContentEntry)
+    ) {
+        throw new ResourceValidationError(
+            "chat.toolCalls entries must be { call: { id, name, arg }, response: [tool content] }",
+        );
+    }
+    if (Buffer.byteLength(JSON.stringify(record), "utf8") > MAX_TOOL_CALL_RECORD_BYTES) {
+        throw new ResourceValidationError(`a chat.toolCalls entry must be at most ${MAX_TOOL_CALL_RECORD_BYTES} bytes`);
+    }
 }
 
 /** Checks a `meta` op's field names: no identity, messages, or streaming flags. */

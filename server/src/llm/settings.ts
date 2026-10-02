@@ -36,6 +36,11 @@ export type RequestDb = Pick<
 > & {
     /** The custom models, each with its key from `llmSecrets.customModels` (`""` for none). */
     customModels: (CustomModel & { key: string })[];
+    /**
+     * A job's plugin provider models (slice 11b): the descriptors its tab registered when it created
+     * the job (`hooks.providers`), by which `pluginmodel:::<name>` resolves. Never stored.
+     */
+    pluginModels?: LLMModel[];
 };
 
 export type RequestScopeIds = {
@@ -162,6 +167,7 @@ function mainModelOf(db: RequestDb): LLMModel {
         enableCustomFlags: db.enableCustomFlags,
         customFlags: db.customFlags,
         customModels: db.customModels,
+        pluginModels: db.pluginModels,
     });
 }
 

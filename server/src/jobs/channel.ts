@@ -10,6 +10,7 @@ import {
     type GenerationNotice,
     type GenerationQuestion,
     type HydrationReceipt,
+    MAX_PROVIDER_TEXT_CHARS,
     NO_GENERATION_HOOKS,
     type QuestionResult,
     SCRIPT_HOOK_MODES,
@@ -48,7 +49,14 @@ export type JobChannel = {
     callback<N extends CallbackName>(
         name: N,
         payload: CallbackPayloads[N],
-        options?: { timeoutMs?: number; parentId?: string },
+        options?: {
+            timeoutMs?: number;
+            parentId?: string;
+            /** A `provider` callback's streamed text so far (each `chunk` message of the owner). */
+            onChunk?: (text: string) => void;
+            /** Ends the callback (`aborted`, the tab told) when the caller's request ends first. */
+            signal?: AbortSignal;
+        },
     ): Promise<CallbackResult>;
 };
 
@@ -74,6 +82,8 @@ type Request = {
     timer: ReturnType<typeof setTimeout> | null;
     /** Called once when it settles (an aux request running inside this callback ends with it). */
     onSettled: Set<() => void>;
+    /** A streaming `provider` callback: the owner's `chunk` messages (the cumulative text) go here. */
+    onChunk?: (text: string) => void;
     resolve: (result: QuestionResult | CallbackResult) => void;
     /** When it was asked, against the notices kept before the first attach (`earlyOrder`). */
     order: number;
@@ -335,6 +345,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         build: (id: string, deadline: number) => (replay: boolean) => GenerationChannelEvent,
         timeoutMs: number,
         parentId: string | undefined,
+        extra: { onChunk?: (text: string) => void; signal?: AbortSignal } = {},
     ): Promise<QuestionResult | CallbackResult> {
         return new Promise((resolve) => {
             const { transport } = channel;
@@ -385,9 +396,21 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 onSettled: new Set(),
                 resolve,
                 order: ++earlyOrder,
+                ...(extra.onChunk ? { onChunk: extra.onChunk } : {}),
             };
             channel.requests.add(request);
             parent?.children.add(request);
+            if (extra.signal) {
+                // The caller gave up (its request ended): the callback ends and the tab is told.
+                const signal = extra.signal;
+                const onAbort = () => settle(request, { outcome: "aborted", error: "The request ended" }, true);
+                if (signal.aborted) {
+                    onAbort();
+                    return;
+                }
+                signal.addEventListener("abort", onAbort, { once: true });
+                request.onSettled.add(() => signal.removeEventListener("abort", onAbort));
+            }
             // A wakeup only: `expireIfDue` compares the clock, so a late timer and an early one agree.
             const wake = () => {
                 if (!expireIfDue(request)) {
@@ -471,6 +494,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                         }),
                         options.timeoutMs ?? CALLBACK_TIMEOUT_MS,
                         options.parentId,
+                        { onChunk: options.onChunk, signal: options.signal },
                     ) as Promise<CallbackResult>;
                 },
             };
@@ -480,13 +504,38 @@ export function createChannelHub(options: { now?: () => number } = {}) {
 
                 /** An owner message: an answer to an outstanding request of this job (anything else is ignored). */
                 handleMessage(message: unknown) {
-                    if (!isPlainObject(message) || message.type !== "answer" || typeof message.id !== "string") {
+                    if (
+                        !isPlainObject(message) ||
+                        (message.type !== "answer" && message.type !== "chunk") ||
+                        typeof message.id !== "string"
+                    ) {
                         return;
                     }
                     const request = [...state.requests].find(
                         (entry) => entry.id === message.id && entry.dispatched && !entry.settled,
                     );
                     if (!request || expireIfDue(request)) {
+                        return;
+                    }
+                    if (message.type === "chunk") {
+                        // A streaming provider's text so far: only for a callback that takes chunks,
+                        // and bounded (anything else is ignored; a text too long fails the callback).
+                        if (!request.onChunk || typeof message.text !== "string") {
+                            return;
+                        }
+                        if (message.text.length > MAX_PROVIDER_TEXT_CHARS) {
+                            settle(
+                                request,
+                                { outcome: "failed", failure: "protocol", error: "The provider's text is too long" },
+                                true,
+                            );
+                            return;
+                        }
+                        try {
+                            request.onChunk(message.text);
+                        } catch (error) {
+                            console.error("[Channel]", error);
+                        }
                         return;
                     }
                     const result = readAnswer(request.kind, message);

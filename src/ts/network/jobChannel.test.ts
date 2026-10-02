@@ -8,6 +8,7 @@ import type {
     GenerationNotice,
     GenerationQuestionEvent,
 } from "../../../shared/jobs.ts";
+import { MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
 
 // Phase 5 slice 6, the client dispatcher of the job channel (`jobChannel.ts`) with controlled
 // persistence and plugin dependencies and the real alert module over its polling store: the one UI
@@ -500,12 +501,12 @@ describe("callbacks", () => {
         });
     });
 
-    it("refuses an unavailable hook set and the provider callback slice 11b owns, answers chatOutput true with no listener; replacers stop at the first throw, interceptors continue per entry without the hook context", async () => {
+    it("refuses an unavailable hook set and a provider that is not loaded, answers chatOutput true with no listener; replacers stop at the first throw, interceptors continue per entry without the hook context", async () => {
         for (const event of [
             callback("u1", "editoutput"),
             callback("u2", "mcpTool", { identifier: "plugin:x", tool: "t", args: {} }),
             callback("u3", "chatOutput", { messageId: "m1", speakerId: "c" }),
-            callback("u4", "provider", { name: "p" }),
+            callback("u4", "provider", { name: "p", argument: {} }),
         ]) {
             send(event);
             await pump();
@@ -514,7 +515,9 @@ describe("callbacks", () => {
         expect(tx.answers[1]).toEqual(failed("protocol", "The mcpTool hook is not registered any more"));
         // `chatOutput` (slice 11a) runs the registered listeners in order; with none it answers `true`.
         expect(tx.answers[2]).toEqual({ type: "answer", id: "u3", outcome: "answered", value: true });
-        expect(tx.answers[3]).toEqual(failed("protocol", "The provider callback is not supported yet"));
+        // `provider` (slice 11b) runs the registered plugin provider; one that is not loaded fails
+        // the callback as a hook failure (the job's request fails), not a protocol one.
+        expect(tx.answers[3]).toEqual(failed("hook", "The plugin provider p is not loaded any more"));
         const second = vi.fn((messages: unknown) => messages);
         hooks.replacerbeforeRequest.add(() => {
             throw new Error("first replacer");
@@ -858,5 +861,252 @@ describe("the HypaV3 progress overlay", () => {
         send(progress(true, "C works"), "C");
         send(progress(false, ""), "B");
         expect(overlay()).toMatchObject({ open: true, msg: "C works" });
+    });
+});
+
+describe("the provider callback (slice 11b)", () => {
+    beforeEach(() => {
+        // The 50 ms chunk interval reads the clock: faked with the timers here.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    });
+    type Provider = Parameters<Hooks["pluginHooks"]["providers"]["set"]>[1];
+    const argument = { prompt_chat: [{ role: "user", content: "hi" }], mode: "model", bias: [], max_tokens: 10 };
+    const provider = (id: string) => callback(id, "provider", { name: "p", argument });
+    /** Every message the follow's transport took: chunks and answers, in order. */
+    const sent = () => tx.answers as unknown as ({ type: string; id: string } & Record<string, unknown>)[];
+    const chunk = (id: string, text: string) => ({ type: "chunk", id, text });
+    const answers = () => sent().filter((message) => message.type === "answer");
+    /** A stream the test feeds (`push`) that records its cancellation. */
+    function source<T>() {
+        let controller!: ReadableStreamDefaultController<T>;
+        const cancelled: unknown[] = [];
+        const stream = new ReadableStream<T>({
+            start(c) {
+                controller = c;
+            },
+            cancel(reason) {
+                cancelled.push(reason ?? "cancelled");
+            },
+        });
+        return { stream, push: (value: T) => controller.enqueue(value), close: () => controller.close(), cancelled };
+    }
+    /** A provider's byte stream (the tab's own path decodes it as `Response.text()` does). */
+    const bytes = (stream: ReadableStream<Uint8Array>) => stream as unknown as ReadableStream<string>;
+
+    it("calls the provider with the server's argument, the job's targets, and an abort signal; a text answers `{ success, content }`, no answer `{ none: true }`; a throw, a text over the cap, and an unloaded provider are hook failures", async () => {
+        const seen: { arg: unknown; signal: AbortSignal | undefined }[] = [];
+        let impl: Provider = async () => ({ success: true, content: "hello" });
+        hooks.providers.set("p", (arg, signal) => {
+            seen.push({ arg, signal });
+            return impl(arg, signal);
+        });
+        send(provider("t1"));
+        await pump(1);
+        expect(seen).toEqual([{ arg: argument, signal: expect.any(AbortSignal) }]);
+        expect(deps.contexts.at(-1)).toEqual(targets);
+        expect(sent()).toEqual([
+            { type: "answer", id: "t1", outcome: "answered", value: { success: true, content: "hello" } },
+        ]);
+        impl = async () => ({ success: false, content: "the plugin says no" });
+        send(provider("t2"));
+        await pump(1);
+        expect(sent()[1]).toEqual({
+            type: "answer",
+            id: "t2",
+            outcome: "answered",
+            value: { success: false, content: "the plugin says no" },
+        });
+        impl = (async () => undefined) as unknown as Provider;
+        send(provider("t3"));
+        await pump(1);
+        expect(sent()[2]).toEqual({ type: "answer", id: "t3", outcome: "answered", value: { none: true } });
+        impl = async () => {
+            throw new Error("plugin broke");
+        };
+        send(provider("t4"));
+        await pump(1);
+        expect(sent()[3]).toEqual(failed("hook", "plugin broke"));
+        impl = async () => ({ success: true, content: "x".repeat(MAX_PROVIDER_TEXT_CHARS + 1) });
+        send(provider("t5"));
+        await pump(1);
+        expect(sent()[4]).toEqual(failed("hook", "The provider's text is too long"));
+        impl = async () => ({ success: true, content: "x".repeat(MAX_PROVIDER_TEXT_CHARS) });
+        send(provider("t6"));
+        await pump(1);
+        expect((sent()[5].value as { content: string }).content).toHaveLength(MAX_PROVIDER_TEXT_CHARS);
+        hooks.providers.delete("p");
+        send(provider("t7"));
+        await pump(1);
+        expect(sent()[6]).toEqual(failed("hook", "The plugin provider p is not loaded any more"));
+        expect(seen).toHaveLength(6);
+        // Every callback settled its mutation scope (the barrier before, the scoped flush after).
+        expect(deps.flush).toHaveBeenCalledTimes(14);
+    });
+
+    it("streams a provider's text as cumulative chunks (the first at once, then the newest at most every 50 ms and at the end) before answering `{ success: true, streamed: true }`, and releases the stream", async () => {
+        const text = source<string>();
+        hooks.providers.set("p", async () => ({ success: true, content: text.stream }));
+        send(provider("s"));
+        await pump(1);
+        expect(sent()).toEqual([chunk("s", "")]);
+        text.push("Hel");
+        await pump(1);
+        text.push("lo");
+        await pump(1);
+        // Within the interval: the text waits for it, then goes out whether or not more arrives.
+        expect(sent()).toHaveLength(1);
+        await pump(49);
+        expect(sent()).toEqual([chunk("s", ""), chunk("s", "Hello")]);
+        text.push(" wor");
+        await pump(1);
+        text.push("ld");
+        await pump(1);
+        expect(sent()).toHaveLength(2);
+        text.close();
+        await pump(1);
+        expect(sent()).toEqual([
+            chunk("s", ""),
+            chunk("s", "Hello"),
+            chunk("s", "Hello world"),
+            { type: "answer", id: "s", outcome: "answered", value: { success: true, streamed: true } },
+        ]);
+        expect(text.stream.locked).toBe(false);
+        expect(text.cancelled).toEqual([]);
+        // An empty stream: the first chunk and the answer.
+        const empty = source<string>();
+        hooks.providers.set("p", async () => ({ success: true, content: empty.stream }));
+        send(provider("s2"));
+        await pump(1);
+        empty.close();
+        await pump(1);
+        expect(sent().slice(4)).toEqual([
+            chunk("s2", ""),
+            { type: "answer", id: "s2", outcome: "answered", value: { success: true, streamed: true } },
+        ]);
+        expect(empty.stream.locked).toBe(false);
+    });
+
+    it("reads a failed stream whole into the answer, decoding bytes as the tab's own path does (split and incomplete UTF-8), and fails either stream kind over the cap, cancelling its source", async () => {
+        const failing = source<Uint8Array>();
+        hooks.providers.set("p", async () => ({ success: false, content: bytes(failing.stream) }));
+        send(provider("f"));
+        await pump(1);
+        failing.push(new Uint8Array([0x61, 0xe2]));
+        failing.push(new Uint8Array([0x82, 0xac, 0xe2, 0x82]));
+        failing.close();
+        await pump(1);
+        expect(sent()).toEqual([
+            { type: "answer", id: "f", outcome: "answered", value: { success: false, content: "a€�" } },
+        ]);
+        expect(failing.stream.locked).toBe(false);
+        expect(failing.cancelled).toEqual([]);
+        // A successful byte stream decodes the same way, the pending sequence flushed at the end.
+        const okBytes = source<Uint8Array>();
+        hooks.providers.set("p", async () => ({ success: true, content: bytes(okBytes.stream) }));
+        send(provider("f1"));
+        await pump(1);
+        okBytes.push(new Uint8Array([0xe2, 0x82]));
+        okBytes.close();
+        await pump(1);
+        expect(sent().slice(1)).toEqual([
+            chunk("f1", ""),
+            chunk("f1", "�"),
+            { type: "answer", id: "f1", outcome: "answered", value: { success: true, streamed: true } },
+        ]);
+        // A failed stream over the cap: a hook failure, the source cancelled, the reader released.
+        const big = source<string>();
+        hooks.providers.set("p", async () => ({ success: false, content: big.stream }));
+        send(provider("f2"));
+        await pump(1);
+        big.push("x".repeat(MAX_PROVIDER_TEXT_CHARS));
+        big.push("x");
+        await pump(1);
+        expect(sent().at(-1)).toEqual(failed("hook", "The provider's text is too long"));
+        expect(big.cancelled).toHaveLength(1);
+        expect(big.stream.locked).toBe(false);
+        // A successful stream over the cap likewise; the chunks sent so far stay within the cap.
+        const bigOk = source<string>();
+        hooks.providers.set("p", async () => ({ success: true, content: bigOk.stream }));
+        send(provider("f3"));
+        await pump(1);
+        bigOk.push("x".repeat(MAX_PROVIDER_TEXT_CHARS));
+        await pump(60);
+        expect(sent().at(-1)?.text).toHaveLength(MAX_PROVIDER_TEXT_CHARS);
+        bigOk.push("x");
+        await pump(1);
+        expect(sent().at(-1)).toEqual(failed("hook", "The provider's text is too long"));
+        expect(bigOk.cancelled).toHaveLength(1);
+        expect(bigOk.stream.locked).toBe(false);
+    });
+
+    it("a cancel during the stream aborts the provider's signal, cancels the stream, answers nothing, and releases the reader; so does the job's end; a stream returned after the cancel is cancelled too", async () => {
+        const slow = source<string>();
+        let signal!: AbortSignal;
+        hooks.providers.set("p", async (_arg, abort) => {
+            signal = abort!;
+            return { success: true, content: slow.stream };
+        });
+        send(provider("c1"));
+        await pump(1);
+        slow.push("a");
+        await pump(1);
+        send(cancel("c1"));
+        await pump(1);
+        expect(signal.aborted).toBe(true);
+        expect(slow.cancelled).toHaveLength(1);
+        expect(slow.stream.locked).toBe(false);
+        expect(answers()).toEqual([]);
+        // A late chunk timer never fires a send after the cancel.
+        await pump(60);
+        expect(sent()).toEqual([chunk("c1", "")]);
+
+        const second = source<string>();
+        hooks.providers.set("p", async (_arg, abort) => {
+            signal = abort!;
+            return { success: true, content: second.stream };
+        });
+        send(provider("c2"));
+        await pump(1);
+        channel.endJobChannel("J");
+        await pump(1);
+        expect(signal.aborted).toBe(true);
+        expect(second.cancelled).toHaveLength(1);
+        expect(second.stream.locked).toBe(false);
+        expect(answers()).toEqual([]);
+
+        // A provider that ignores its signal and returns a stream after the cancel.
+        const late = source<string>();
+        const returning = deferred<void>();
+        hooks.providers.set("p", async () => {
+            await returning.promise;
+            return { success: true, content: late.stream };
+        });
+        send(provider("c3"));
+        await pump(1);
+        send(cancel("c3"));
+        await pump(1);
+        returning.resolve();
+        await pump(1);
+        expect(late.cancelled).toHaveLength(1);
+        expect(late.stream.locked).toBe(false);
+        expect(answers()).toEqual([]);
+        // A failed stream: cancelled on the server's cancel as well.
+        const failing = source<Uint8Array>();
+        hooks.providers.set("p", async () => ({ success: false, content: bytes(failing.stream) }));
+        send(provider("c4"));
+        await pump(1);
+        send(cancel("c4"));
+        await pump(1);
+        expect(failing.cancelled).toHaveLength(1);
+        expect(failing.stream.locked).toBe(false);
+        expect(answers()).toEqual([]);
+        // The lane is free: the next callback runs and answers.
+        hooks.providers.set("p", async () => ({ success: true, content: "fresh" }));
+        send(provider("c5"));
+        await pump(1);
+        expect(answers()).toEqual([
+            { type: "answer", id: "c5", outcome: "answered", value: { success: true, content: "fresh" } },
+        ]);
+        expect(channel.currentChannelCall()).toBeNull();
     });
 });

@@ -9,7 +9,7 @@ import type {
     MessageAnchor,
     MessageGeneration,
 } from "../../../shared/chats.ts";
-import { CHAT_META_FORBIDDEN_KEYS } from "../../../shared/chats.ts";
+import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { StreamingMessage } from "../../../shared/jobs.ts";
 import { compareRevision } from "../../../shared/resources.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
@@ -376,12 +376,34 @@ function coalesce(last: ChatOp, next: ChatOp): boolean {
             delete set[key];
             unset.add(key);
         }
+        // A map field's merged entries (`toolCalls`): a later set or unset of the field replaces them;
+        // a later merge joins them, or goes into the value an earlier op of this pair sets.
+        const merge: Record<string, Record<string, unknown>> = { ...(last.merge ?? {}) };
+        for (const key of next.unset ?? []) {
+            delete merge[key];
+        }
         for (const [key, value] of Object.entries(next.set ?? {})) {
             unset.delete(key);
+            delete merge[key];
             set[key] = value;
+        }
+        for (const [key, entries] of Object.entries(next.merge ?? {})) {
+            if (Object.hasOwn(set, key)) {
+                set[key] = { ...(set[key] as Record<string, unknown>), ...entries };
+            } else if (unset.has(key)) {
+                unset.delete(key);
+                set[key] = { ...entries };
+            } else {
+                merge[key] = { ...(merge[key] ?? {}), ...entries };
+            }
         }
         last.set = set;
         last.unset = [...unset];
+        if (Object.keys(merge).length > 0) {
+            last.merge = merge;
+        } else {
+            delete last.merge;
+        }
         return true;
     }
     if (last.op === "append" && next.op === "append" && "end" in last.anchor && "end" in next.anchor) {
@@ -1384,6 +1406,24 @@ export function setChatMeta(
     }
     changed(keyOf(ref.chaId, ref.chatId));
     enqueue(ref, { op: "meta", set: changes, unset: removals });
+}
+
+/**
+ * Adds entries to a chat field that is a map (`toolCalls`). The server merges them into the map as
+ * stored, so an entry another device added meanwhile is kept (a `meta` set would replace the map).
+ */
+export function mergeChatMeta(ref: ChatRef, key: string, entries: Record<string, unknown>) {
+    if (!CHAT_META_MERGE_KEYS.includes(key)) {
+        throw new Error(`mergeChatMeta cannot merge ${key}`);
+    }
+    if (Object.keys(entries).length === 0) {
+        return;
+    }
+    const chat = requireChat(ref) as unknown as Record<string, unknown>;
+    const added = clone(entries);
+    chat[key] = { ...((chat[key] as Record<string, unknown> | undefined) ?? {}), ...added };
+    changed(keyOf(ref.chaId, ref.chatId));
+    enqueue(ref, { op: "meta", merge: { [key]: clone(entries) } });
 }
 
 /**

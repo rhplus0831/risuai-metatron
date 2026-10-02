@@ -10,6 +10,7 @@ import type {
     SerializableHypaV2Data,
     SerializableHypaV3Data,
 } from "./memory.ts";
+import type { ToolCallRecord } from "./llm/request.ts";
 import type { RisuModule } from "./modules.ts";
 import type { DeepReadonly } from "./readonly.ts";
 import type { OpenAIChat } from "./openai.ts";
@@ -1075,6 +1076,12 @@ export interface Chat {
     bookmarkNames?: { [chatId: string]: string };
     useLocallySetGlobalVariables?: boolean;
     GLGlobalVariables?: { [key: string]: string };
+    /**
+     * The remembered tool calls of this chat (`rememberToolUsage`), by call id: what a
+     * `<tool_call>` marker in a message stands for (Phase 5 slice 11b). Conversation data: stored
+     * and deleted with the chat.
+     */
+    toolCalls?: { [id: string]: ToolCallRecord };
 }
 
 export interface ChatFolder {

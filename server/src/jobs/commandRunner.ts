@@ -3,7 +3,7 @@ import type { triggerscript } from "../../../shared/triggers.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import { runPromptJob } from "../prompt/runner.ts";
 import { type GenerationRunner, GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
-import { loadJobScope } from "./jobScope.ts";
+import { admitProviderModels, loadJobScope } from "./jobScope.ts";
 import {
     createJobRunState,
     createRunSetup,
@@ -40,6 +40,7 @@ function prepare(
 ): { setup: RunSetup; state: JobRunState; character: character } {
     const { characterId } = job.context;
     const scope = loadJobScope(deps.store, deps.kinds, job.context);
+    admitProviderModels(scope, job.hooks.providers);
     job.emit({ type: "accepted", jobId: job.id, revision: scope.chatRevision, text: "" });
 
     const found = scope.db.characters.find((entry) => entry?.chaId === characterId);
@@ -138,7 +139,11 @@ async function runButton(job: RunningJob, deps: GenerationRunnerDeps, data: stri
             console.error("[Lua]", result.error);
         }
     }
-    job.emit({ type: "done", revision: store.chatRevision(characterId, chatId) });
+    job.emit({
+        type: "done",
+        revision: store.chatRevision(characterId, chatId),
+        ...(state.followUps.length > 0 ? { followUps: state.followUps } : {}),
+    });
 }
 
 /**
@@ -153,7 +158,7 @@ async function runButton(job: RunningJob, deps: GenerationRunnerDeps, data: stri
  */
 async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, name: string): Promise<void> {
     const { characterId, chatId } = job.context;
-    const { setup, character } = prepare(job, deps);
+    const { setup, state, character } = prepare(job, deps);
     try {
         await setup.runOnCopy(character, "manual", { manualName: name });
     } catch (error) {
@@ -167,5 +172,9 @@ async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, nam
         throw new GenerationRunnerError(500, `Trigger: ${error instanceof Error ? error.message : String(error)}`);
     }
     setup.check();
-    job.emit({ type: "done", revision: deps.store.chatRevision(characterId, chatId) });
+    job.emit({
+        type: "done",
+        revision: deps.store.chatRevision(characterId, chatId),
+        ...(state.followUps.length > 0 ? { followUps: state.followUps } : {}),
+    });
 }

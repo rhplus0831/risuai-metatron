@@ -58,7 +58,10 @@ function selectedChatRef(): { chaId: string; chatId: string } | null {
 }
 
 /** `decodeToolCall(inner)` for every marker in the prompt, by inner text (the server looks them up). */
-async function collectToolRecords(formated: RequestArgs["formated"]): Promise<Record<string, ToolCallRecord>> {
+async function collectToolRecords(
+    formated: RequestArgs["formated"],
+    chatRef: { chaId: string; chatId: string } | null,
+): Promise<Record<string, ToolCallRecord>> {
     const records: Record<string, ToolCallRecord> = {};
     for (const message of formated) {
         if (typeof message.content !== "string" || !message.content.includes("<tool_call>")) {
@@ -70,7 +73,7 @@ async function collectToolRecords(formated: RequestArgs["formated"]): Promise<Re
                 continue;
             }
             try {
-                const record = await decodeToolCall(inner);
+                const record = await decodeToolCall(inner, chatRef);
                 if (record) {
                     records[inner] = JSON.parse(JSON.stringify(record));
                 }
@@ -182,7 +185,8 @@ export async function requestServer(
         detach();
         return fail("Aborted");
     }
-    const toolRecords = await collectToolRecords(requestArgs.formated);
+    // The request's chat as captured above (not the selection after the awaits).
+    const toolRecords = await collectToolRecords(requestArgs.formated, chatRef);
     if (controller.signal.aborted) {
         detach();
         return fail("Aborted");
@@ -230,6 +234,7 @@ export async function requestServer(
         detach,
         clientId: body.clientId,
         parseChatRef,
+        toolChatRef: chatRef,
         scope,
     });
 }
@@ -238,6 +243,8 @@ type ReadOptions = {
     controller: AbortController;
     detach: () => void;
     clientId: string;
+    /** The request's chat: a remembered tool call is stored with it (none: this browser's own store). */
+    toolChatRef: { chaId: string; chatId: string } | null;
     /** The chat a parse without its own target runs on (the request's, else the one selected at its start). */
     parseChatRef: { chaId: string; chatId: string } | null;
     scope: { presetId: string; personaId: string };
@@ -363,7 +370,8 @@ async function readEvents(body: ReadableStream<Uint8Array>, options: ReadOptions
                 return;
             }
             case "toolRecord":
-                await encodeToolCall(event.record);
+                // Stored with the request's chat (the server reads it there for a later request).
+                await encodeToolCall(event.record, options.toolChatRef);
                 return;
             case "callback":
                 // Not awaited: the server waits for the answer, and later events keep coming.

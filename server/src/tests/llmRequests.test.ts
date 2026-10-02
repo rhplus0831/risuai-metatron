@@ -1,21 +1,27 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
-import { LLMFormat } from "../../../shared/llm.ts";
-import type { LlmRequestBody, LlmRequestEvent, StreamResponseChunk } from "../../../shared/llm/request.ts";
+import { LLMFlags, LLMFormat, type LLMModel, LLMProvider, LLMTokenizer } from "../../../shared/llm.ts";
+import type {
+    LlmRequestBody,
+    LlmRequestEvent,
+    StreamResponseChunk,
+    ToolCallRecord,
+} from "../../../shared/llm/request.ts";
 import { normalizePersonas } from "../../../shared/personas.ts";
 import { normalizePresets } from "../../../shared/presets.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeProviders } from "../data/normalize/providers.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
-import type { CallbackResult } from "../../../shared/jobs.ts";
+import { type CallbackResult, MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
 import {
     createLlmRequests,
     type JobRequestSpec,
     MAX_REQUESTS_PER_CLIENT,
     type LlmRequestsOptions,
 } from "../llm/requests.ts";
+import { messages } from "../llm/messages.ts";
 import { loadRequestDb, tokenScopeFor } from "../llm/settings.ts";
 import { sleep, waitFor } from "./testSupport.ts";
 
@@ -918,6 +924,7 @@ describe("a job's in-process request (runInJob, slice 8a)", () => {
             log: (entry) => logs.push(entry),
             alertError: (text) => alerts.push(text),
             endJob: (message) => ended.push(message),
+            toolCalls: { read: () => undefined, write: () => {} },
             signal: options.signal ?? new AbortController().signal,
         };
         return { spec, logs, alerts, ended };
@@ -1162,5 +1169,352 @@ describe("the child interceptor of a job callback", () => {
             await registry.dispose();
             await parent.registry.dispose();
         }
+    });
+});
+
+describe("a job's plugin provider model (runInJob, slice 11b)", () => {
+    const ids = { presetId: "p", personaId: "u", selectedPersonaId: "u", selectedCharacterId: "c", speakerId: null };
+    /** A provider descriptor as the tab registers it (`hooks.providers`), admitted for the job. */
+    const descriptor = (name: string): LLMModel => ({
+        id: `pluginmodel:::${name}`,
+        name,
+        shortName: name,
+        fullName: name,
+        internalID: `pluginmodel:::${name}`,
+        provider: LLMProvider.AsIs,
+        format: LLMFormat.Plugin,
+        flags: [LLMFlags.hasFullSystemPrompt],
+        parameters: ["temperature"],
+        tokenizer: LLMTokenizer.Unknown,
+    });
+    type ProviderCall = {
+        payload: { name: string; argument: Record<string, unknown> };
+        options: { timeoutMs?: number; onChunk?: (text: string) => void; signal?: AbortSignal };
+        settle: (result: CallbackResult) => void;
+    };
+    /**
+     * A job spec whose channel hands every `provider` callback to the test (`calls`), refusing a
+     * provider the tab did not register (`registered`) as the hub does, and settling `aborted` when
+     * the callback's signal fires. `admitted` names the descriptors `admitProviderModels` would put
+     * on the request projection.
+     */
+    function providerSpec(
+        records: Records,
+        options: {
+            admitted?: string[];
+            registered?: string[];
+            currentPluginProvider?: string;
+            formated?: JobRequestSpec["arg"]["formated"];
+            toolCalls?: Record<string, ToolCallRecord>;
+            signal?: AbortSignal;
+        } = {},
+    ) {
+        const loaded = loadRequestDb(fakeStore(records), kinds, ids);
+        const db = {
+            ...loaded.db,
+            pluginModels: (options.admitted ?? ["prov"]).map(descriptor),
+            ...(options.currentPluginProvider !== undefined
+                ? { currentPluginProvider: options.currentPluginProvider }
+                : {}),
+        };
+        const registered = options.registered ?? ["prov"];
+        const calls: ProviderCall[] = [];
+        const ended: string[] = [];
+        const spec: JobRequestSpec = {
+            jobId: "job",
+            loaded: { ...loaded, db },
+            mode: "model",
+            arg: { formated: options.formated ?? [{ role: "user", content: "hi" }], bias: {}, useStreaming: false },
+            tokenScope: tokenScopeFor(db),
+            mainModelImageInput: false,
+            channel: {
+                notice() {},
+                ask: async () => ({ outcome: "aborted" }),
+                callback: (name, payload, callbackOptions) =>
+                    new Promise<CallbackResult>((resolve) => {
+                        if (name !== "provider") {
+                            resolve({ outcome: "refused", refusal: "unregistered", error: "none" });
+                            return;
+                        }
+                        const provider = payload as ProviderCall["payload"];
+                        if (!registered.includes(provider.name)) {
+                            resolve({ outcome: "refused", refusal: "unregistered", error: "not registered" });
+                            return;
+                        }
+                        const extra = (callbackOptions ?? {}) as ProviderCall["options"];
+                        extra.signal?.addEventListener(
+                            "abort",
+                            () => resolve({ outcome: "aborted", error: "The request ended" }),
+                            { once: true },
+                        );
+                        calls.push({ payload: provider, options: extra, settle: resolve });
+                    }),
+            },
+            parseCbs: (text) => text,
+            inlays: {
+                saveSignature: async (id) => id,
+                writeImage: async (image) => image.id,
+                setAsset: async () => {},
+            },
+            log: () => {},
+            alertError: () => {},
+            endJob: (message) => ended.push(message),
+            toolCalls: { read: () => options.toolCalls, write: () => {} },
+            signal: options.signal ?? new AbortController().signal,
+        };
+        return { spec, calls, ended };
+    }
+    const pluginRecords = (aiModel = "pluginmodel:::prov") => makeRecords({ preset: { aiModel } });
+    /** Starts the request and waits for its provider callback. */
+    async function startProvider(records: Records, options: Parameters<typeof providerSpec>[1] = {}) {
+        const { registry, calls: http } = harness(records, () => chat("never"));
+        const built = providerSpec(records, options);
+        const pending = registry.runInJob(built.spec);
+        await waitFor(() => built.calls.length === 1);
+        return { registry, http, pending, ...built, call: built.calls[0] };
+    }
+    type Streamed = { result: ReadableStream<StreamResponseChunk> };
+
+    it("calls the provider in the tab with the prompt and the parameters built here (no provider request, no credential), for 30 minutes and cancelled with the request, and takes a text answer as the model's", async () => {
+        const { registry, http, pending, call, calls } = await startProvider(pluginRecords());
+        expect(http).toHaveLength(0);
+        expect(call.payload.name).toBe("prov");
+        expect(call.payload.argument).toMatchObject({
+            prompt_chat: [{ role: "user", content: "hi" }],
+            mode: "model",
+            bias: [],
+            max_tokens: expect.any(Number),
+            temperature: expect.any(Number),
+        });
+        expect(JSON.stringify(call.payload)).not.toContain(SECRET);
+        expect(call.options.timeoutMs).toBe(30 * 60_000);
+        expect(call.options.signal?.aborted).toBe(false);
+        call.settle({ outcome: "answered", value: { success: true, content: "hello from the plugin" } });
+        expect(await pending).toMatchObject({
+            type: "success",
+            result: "hello from the plugin",
+            model: "pluginmodel:::prov",
+        });
+        expect(calls).toHaveLength(1);
+        expect(registry.liveIds()).toEqual([]);
+        await registry.dispose();
+    });
+
+    it("maps the other answers: a failure's text, no answer, a provider that threw (its message, recorded), a text over the cap, and a protocol failure, a disconnect, or a malformed value ending the job", async () => {
+        for (const [result, expected, ends] of [
+            [
+                { outcome: "answered", value: { success: false, content: "the plugin says no" } },
+                { type: "fail", result: "the plugin says no", model: "pluginmodel:::prov" },
+                0,
+            ],
+            [{ outcome: "answered", value: { none: true } }, { type: "fail", result: messages.errors.unknownModel }, 0],
+            [
+                { outcome: "failed", failure: "hook", error: "boom" },
+                { type: "fail", result: expect.stringMatching(/^Plugin Error from .*: boom$/) },
+                0,
+            ],
+            [
+                { outcome: "answered", value: { success: true, content: "x".repeat(MAX_PROVIDER_TEXT_CHARS + 1) } },
+                { type: "fail", result: expect.stringMatching(/too long/) },
+                0,
+            ],
+            [
+                { outcome: "failed", failure: "protocol", error: "malformed" },
+                { type: "fail", result: expect.stringMatching(/provider callback failed: malformed/) },
+                1,
+            ],
+            [
+                { outcome: "disconnected", error: "gone" },
+                { type: "fail", result: expect.stringMatching(/disconnected/) },
+                1,
+            ],
+            [
+                { outcome: "answered", value: { success: true } },
+                { type: "fail", result: expect.stringMatching(/malformed value/) },
+                1,
+            ],
+            [
+                { outcome: "answered", value: "text" },
+                { type: "fail", result: expect.stringMatching(/malformed value/) },
+                1,
+            ],
+        ] as [CallbackResult, Record<string, unknown>, number][]) {
+            const label = JSON.stringify(result).slice(0, 80);
+            const { registry, pending, call, ended } = await startProvider(pluginRecords());
+            call.settle(result);
+            expect(await pending, label).toMatchObject(expected);
+            expect(ended, label).toHaveLength(ends);
+            expect(registry.liveIds()).toEqual([]);
+            await registry.dispose();
+        }
+        // The cap itself passes.
+        const atCap = await startProvider(pluginRecords());
+        atCap.call.settle({
+            outcome: "answered",
+            value: { success: true, content: "x".repeat(MAX_PROVIDER_TEXT_CHARS) },
+        });
+        expect(((await atCap.pending) as { result: string }).result).toHaveLength(MAX_PROVIDER_TEXT_CHARS);
+        await atCap.registry.dispose();
+    });
+
+    it("refuses a provider the tab did not register as the unknown-plugin failure without a request or ending the job (admitted or not), a dynamic model without any callback, and reaches the legacy `custom` model's provider by `currentPluginProvider`", async () => {
+        for (const admitted of [["other"], []]) {
+            const records = pluginRecords("pluginmodel:::other");
+            const { registry, calls: http } = harness(records, () => chat("never"));
+            const built = providerSpec(records, { admitted });
+            expect(await registry.runInJob(built.spec)).toMatchObject({
+                type: "fail",
+                result: messages.pluginProviderNotFound,
+                model: "pluginmodel:::other",
+            });
+            expect(built.calls).toEqual([]);
+            expect(built.ended).toEqual([]);
+            expect(http).toHaveLength(0);
+            await registry.dispose();
+        }
+        const dynamicRecords = makeRecords({ preset: { aiModel: "dynamic_google_future-model" } });
+        const dynamic = harness(dynamicRecords, () => chat("never"));
+        const dynamicSpec = providerSpec(dynamicRecords, { registered: ["dynamic_google_future-model"] });
+        expect((await dynamic.registry.runInJob(dynamicSpec.spec)).type).toBe("fail");
+        expect(dynamicSpec.calls).toEqual([]);
+        expect(dynamic.calls).toHaveLength(0);
+        await dynamic.registry.dispose();
+
+        const legacy = await startProvider(makeRecords({ preset: { aiModel: "custom" } }), {
+            registered: ["legacy"],
+            currentPluginProvider: "legacy",
+        });
+        expect(legacy.http).toHaveLength(0);
+        expect(legacy.call.payload.name).toBe("legacy");
+        legacy.call.settle({ outcome: "answered", value: { success: true, content: "legacy text" } });
+        expect(await legacy.pending).toMatchObject({ type: "success", result: "legacy text", model: "custom" });
+        await legacy.registry.dispose();
+    });
+
+    it("turns the first `chunk` into a stream of the cumulative text that holds only the newest text not yet read, delivers the last text before the end, and closes on the answer", async () => {
+        const { registry, pending, call } = await startProvider(pluginRecords());
+        const onChunk = call.options.onChunk!;
+        expect(onChunk).toBeTypeOf("function");
+        // The first chunk (empty: it only says "a stream") answers the request.
+        onChunk("");
+        const response = await pending;
+        expect(response).toMatchObject({ type: "streaming", model: "pluginmodel:::prov" });
+        const reader = (response as Streamed).result.getReader();
+        // Three texts before any read: the reader gets the newest only.
+        onChunk("a");
+        onChunk("ab");
+        onChunk("abc");
+        expect(await reader.read()).toEqual({ done: false, value: { "0": "abc" } });
+        // A pending read takes the next text at once.
+        const waiting = reader.read();
+        onChunk("abcd");
+        expect(await waiting).toEqual({ done: false, value: { "0": "abcd" } });
+        // The text still waiting when the answer comes goes out before the end.
+        onChunk("abcde");
+        call.settle({ outcome: "answered", value: { success: true, streamed: true } });
+        expect(await reader.read()).toEqual({ done: false, value: { "0": "abcde" } });
+        expect(await reader.read()).toEqual({ done: true, value: undefined });
+        onChunk("late");
+        expect(registry.liveIds()).toEqual([]);
+        await registry.dispose();
+    });
+
+    it("ends an empty stream at once, errors the stream with a failure's (redacted) text after chunks, fails it for an answer over the cap, and aborts the callback when the reader cancels (later chunks dropped)", async () => {
+        const empty = await startProvider(pluginRecords());
+        empty.call.options.onChunk!("");
+        empty.call.settle({ outcome: "answered", value: { success: true, streamed: true } });
+        const emptyStream = (await empty.pending) as Streamed;
+        expect(await emptyStream.result.getReader().read()).toEqual({ done: true, value: undefined });
+        expect(empty.registry.liveIds()).toEqual([]);
+        await empty.registry.dispose();
+
+        const failing = await startProvider(pluginRecords());
+        failing.call.options.onChunk!("");
+        failing.call.options.onChunk!("partial");
+        const reader = ((await failing.pending) as Streamed).result.getReader();
+        expect(await reader.read()).toEqual({ done: false, value: { "0": "partial" } });
+        failing.call.settle({ outcome: "answered", value: { success: false, content: `broke with ${SECRET}` } });
+        const error = await reader.read().then(
+            () => "resolved",
+            (thrown: unknown) => String(thrown),
+        );
+        expect(error).toMatch(/broke with/);
+        expect(error).not.toContain(SECRET);
+        expect(failing.ended).toEqual([]);
+        expect(failing.registry.liveIds()).toEqual([]);
+        await failing.registry.dispose();
+
+        const over = await startProvider(pluginRecords());
+        over.call.options.onChunk!("");
+        const overStream = (await over.pending) as Streamed;
+        over.call.settle({
+            outcome: "answered",
+            value: { success: true, content: "x".repeat(MAX_PROVIDER_TEXT_CHARS + 1) },
+        });
+        await expect(overStream.result.getReader().read()).rejects.toThrow(/too long/);
+        await over.registry.dispose();
+
+        const cancelled = await startProvider(pluginRecords());
+        cancelled.call.options.onChunk!("");
+        const cancelReader = ((await cancelled.pending) as Streamed).result.getReader();
+        expect(cancelled.call.options.signal?.aborted).toBe(false);
+        await cancelReader.cancel();
+        expect(cancelled.call.options.signal?.aborted).toBe(true);
+        cancelled.call.options.onChunk!("after the cancel");
+        expect(cancelled.ended).toEqual([]);
+        expect(cancelled.registry.liveIds()).toEqual([]);
+        await cancelled.registry.dispose();
+    });
+
+    it("aborts the callback with the request while the provider runs, and sends nothing to a plugin when the prompt carries a stored credential", async () => {
+        const controller = new AbortController();
+        const aborted = await startProvider(pluginRecords(), { signal: controller.signal });
+        controller.abort(new Error("stop"));
+        expect(aborted.call.options.signal?.aborted).toBe(true);
+        const outcome = await aborted.pending.then(
+            (response) => ({ response }),
+            (thrown: unknown) => ({ thrown: String(thrown) }),
+        );
+        expect(JSON.stringify(outcome)).toMatch(/stop/);
+        expect(aborted.registry.liveIds()).toEqual([]);
+        await aborted.registry.dispose();
+
+        const records = pluginRecords();
+        const { registry, calls: http } = harness(records, () => chat("never"));
+        const built = providerSpec(records, { formated: [{ role: "user", content: `my key is ${SECRET}` }] });
+        const response = await registry.runInJob(built.spec);
+        expect(response).toMatchObject({ type: "fail", result: expect.stringMatching(/stored credential/) });
+        expect(JSON.stringify(response)).not.toContain(SECRET);
+        expect(built.calls).toEqual([]);
+        expect(http).toHaveLength(0);
+        await registry.dispose();
+    });
+
+    it("decodes a remembered tool call of the job's chat into the provider's tool messages, by the marker's inner text, and drops a marker the chat does not hold", async () => {
+        const record: ToolCallRecord = {
+            call: { id: "call_1", name: "rollDice", arg: '{"sides":6}' },
+            response: [{ type: "text", text: "4" }],
+        };
+        const records = makeRecords();
+        const { registry, calls } = harness(records, () => chat("done"));
+        const built = providerSpec(records, {
+            formated: [
+                { role: "user", content: "roll" },
+                { role: "assistant", content: "<tool_call>call_1rollDice</tool_call>\n\nI rolled." },
+                { role: "assistant", content: "<tool_call>missingrollDice</tool_call>" },
+            ],
+            toolCalls: { call_1: record },
+        });
+        expect((await registry.runInJob(built.spec)).type).toBe("success");
+        const sent = JSON.parse(calls[0].body).messages as Record<string, unknown>[];
+        expect(sent).toContainEqual({ role: "tool", content: "4", tool_call_id: "call_1" });
+        const withCall = sent.find((message) => Array.isArray(message.tool_calls)) as
+            { tool_calls: { id: string; function: { name: string; arguments: string } }[] } | undefined;
+        expect(withCall?.tool_calls).toEqual([
+            { id: "call_1", type: "function", function: { name: "rollDice", arguments: '{"sides":6}' } },
+        ]);
+        expect(JSON.stringify(sent)).not.toContain("missing");
+        expect(registry.liveIds()).toEqual([]);
+        await registry.dispose();
     });
 });

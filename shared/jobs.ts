@@ -195,8 +195,21 @@ export type GenerationTerminalEvent =
            * chat, nothing to continue): the tab's `sendChat` returns false (Phase 5 slice 9).
            */
           stopped?: true;
+          /**
+           * `/multisend` commands a command job ran (slice 11b), in order: the tab sends each part
+           * after the job (the user message appended, then a send), `clear` removing the chat's
+           * messages before each part, and stops at the first part that does not send.
+           */
+          followUps?: GenerationFollowUp[];
       }
     | { type: "error"; epoch: string; message: string; status: number; reason: GenerationErrorReason };
+
+/** One `/multisend` of a command job: the texts to send in turn. */
+export type GenerationFollowUp = { clear: boolean; parts: string[] };
+
+/** The most parts all the follow-ups of one job carry, and the longest part in characters. */
+export const MAX_FOLLOW_UP_PARTS = 64;
+export const MAX_FOLLOW_UP_PART_CHARS = 100_000;
 
 // ---------------------------------------------------------------------------------------------
 // The job channel (`job-channel`): notices one way; questions and plugin callbacks are requests
@@ -250,7 +263,15 @@ export type CallbackPayloads = {
      * answers `true`.
      */
     chatOutput: { messageId: string; speakerId: string };
-    provider: { name: string } & Record<string, unknown>;
+    /**
+     * A plugin provider model's request (slice 11b): the tab calls the provider `name` with
+     * `argument` (the prompt and the parameters, built on the server from the job's frozen settings).
+     * A provider that answers text: the callback's answer is `{ success, content }`. One that answers
+     * a stream: the tab sends `chunk` messages with the cumulative text (the first one, possibly
+     * empty, as soon as the stream exists) and then answers `{ success: true, streamed: true }`. No
+     * answer from the provider at all: `{ none: true }`.
+     */
+    provider: { name: string; argument: Record<string, unknown> };
     mcpTool: { identifier: string; tool: string; args: unknown };
     /** Lua `generateImage`: the client generates for `characterId`, writes the inlay, and answers `{ id }`. */
     generateImage: { prompt: string; negative: string; characterId: string };
@@ -327,6 +348,12 @@ export type CallbackResult =
     | { outcome: "failed"; failure: CallbackFailure; error: string; discarded?: string[] }
     | { outcome: "refused"; refusal?: CallbackRefusal; error?: string }
     | { outcome: "timedOut" | "disconnected" | "aborted"; error?: string };
+
+/** A streaming `provider` callback's text so far (client to server), before its answer. */
+export type ChannelChunk = { type: "chunk"; id: string; text: string };
+
+/** The longest cumulative text a `provider` callback may stream, in characters. */
+export const MAX_PROVIDER_TEXT_CHARS = 4 * 1024 * 1024;
 
 /** The owner's answer to a question or callback (client to server). */
 export type ChannelAnswer =

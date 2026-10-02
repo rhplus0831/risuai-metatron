@@ -1,5 +1,6 @@
 import { setChannelCallSource } from "./channelCallSource";
 import { get } from "svelte/store";
+import type { ChannelChunk } from "../../../shared/jobs.ts";
 import type {
     CallbackFailure,
     CallbackTargets,
@@ -12,7 +13,7 @@ import type {
     HydrationReceipt,
     ScriptHookMode,
 } from "../../../shared/jobs.ts";
-import { SCRIPT_HOOK_MODES } from "../../../shared/jobs.ts";
+import { MAX_PROVIDER_TEXT_CHARS, SCRIPT_HOOK_MODES } from "../../../shared/jobs.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { compareRevision } from "../../../shared/resources.ts";
 import {
@@ -73,9 +74,32 @@ import {
  */
 
 /** Where the dispatcher sends its answers for one job (the job's current follow). */
-export type ChannelTransport = { send(message: ChannelAnswer): boolean };
+export type ChannelTransport = { send(message: ChannelAnswer | ChannelChunk): boolean };
 
-type Outstanding = { jobId: string; id: string; targets: CallbackTargets; cancelled: boolean };
+type Outstanding = {
+    jobId: string;
+    id: string;
+    targets: CallbackTargets;
+    cancelled: boolean;
+    /** Called when the server cancels the callback or its job ends (a provider's request is aborted). */
+    onCancel?: () => void;
+};
+
+/** Marks a callback cancelled and tells its hook. */
+function cancelOutstanding(entry: Outstanding) {
+    if (entry.cancelled) {
+        return;
+    }
+    entry.cancelled = true;
+    try {
+        entry.onCancel?.();
+    } catch (error) {
+        console.error("[Channel]", error);
+    }
+}
+
+/** How often a streaming provider's text is sent at most (the newest text each time). */
+const PROVIDER_CHUNK_INTERVAL_MS = 50;
 
 type UiItem =
     | { type: "notice"; jobId: string; notice: GenerationNotice }
@@ -550,8 +574,134 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             });
             return shown !== false;
         }
-        case "provider":
-            throw new CallbackFailed("protocol", `The ${event.name} callback is not supported yet`);
+        case "provider": {
+            // A plugin provider model of a server job (slice 11b): the provider runs here with the
+            // argument the server built from the job's settings, as the tab's own `requestPlugin`
+            // calls it. An unloaded provider fails the callback (the job's request fails).
+            const name = String(payload.name);
+            const provider = pluginHooks.providers.get(name);
+            if (!provider) {
+                throw new CallbackFailed("hook", `The plugin provider ${name} is not loaded any more`);
+            }
+            const abort = new AbortController();
+            entry.onCancel = () => abort.abort();
+            stillWanted();
+            const answered = await invokeHook(
+                provider,
+                context,
+                payload.argument as Parameters<typeof provider>[0],
+                abort.signal,
+            );
+            const content = answered?.content;
+            if (!(content instanceof ReadableStream)) {
+                stillWanted();
+                if (!answered) {
+                    return { none: true };
+                }
+                const text = content ?? "";
+                if (text.length > MAX_PROVIDER_TEXT_CHARS) {
+                    throw new CallbackFailed("hook", "The provider's text is too long");
+                }
+                return { success: !!answered.success, content: text };
+            }
+            // A stream, of an answer or of a failure: read here, and released whenever the callback
+            // ends first (the server's cancel, the job's end, a text too long), also when the provider
+            // returned it after the cancel.
+            const reader = content.getReader();
+            let timer: ReturnType<typeof setTimeout> | null = null;
+            const release = () => {
+                if (timer !== null) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+                void reader.cancel().catch(() => {});
+            };
+            entry.onCancel = () => {
+                abort.abort();
+                release();
+            };
+            try {
+                stillWanted();
+                let fullText = "";
+                const decoder = new TextDecoder();
+                const add = (text: string) => {
+                    fullText += text;
+                    if (fullText.length > MAX_PROVIDER_TEXT_CHARS) {
+                        throw new CallbackFailed("hook", "The provider's text is too long");
+                    }
+                };
+                // A provider's stream carries text; bytes are decoded as `new Response(stream).text()`
+                // decodes them (the tab's own path for a failed stream), an unfinished sequence at the
+                // end included (`finish`).
+                const take = (value: unknown) =>
+                    add(typeof value === "string" ? value : decoder.decode(value as Uint8Array, { stream: true }));
+                const finish = () => add(decoder.decode());
+                if (!answered.success) {
+                    for (;;) {
+                        const read = await reader.read();
+                        stillWanted();
+                        if (read.value !== undefined) {
+                            take(read.value);
+                        }
+                        if (read.done) {
+                            break;
+                        }
+                    }
+                    finish();
+                    return { success: false, content: fullText };
+                }
+                // The text so far goes out as `chunk` messages: the first at once, so the server knows
+                // it is a stream; then the newest text at most every 50 ms and at the end.
+                let sent: string | null = null;
+                let lastSent = 0;
+                const flush = () => {
+                    if (timer !== null) {
+                        clearTimeout(timer);
+                        timer = null;
+                    }
+                    if (entry.cancelled || sent === fullText) {
+                        return;
+                    }
+                    sent = fullText;
+                    lastSent = Date.now();
+                    transports.get(entry.jobId)?.send({ type: "chunk", id: entry.id, text: fullText });
+                };
+                flush();
+                for (;;) {
+                    const read = await reader.read();
+                    stillWanted();
+                    if (read.value !== undefined) {
+                        take(read.value);
+                        const wait = PROVIDER_CHUNK_INTERVAL_MS - (Date.now() - lastSent);
+                        if (wait <= 0) {
+                            flush();
+                        } else if (timer === null) {
+                            // Text that waits for the interval goes out when it has passed, whether
+                            // or not the provider sends more.
+                            timer = setTimeout(flush, wait);
+                        }
+                    }
+                    if (read.done) {
+                        break;
+                    }
+                }
+                finish();
+                flush();
+                return { success: true, streamed: true };
+            } catch (error) {
+                release();
+                throw error;
+            } finally {
+                if (timer !== null) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+                // The reads are over: the stream is the provider's again.
+                try {
+                    reader.releaseLock();
+                } catch {}
+            }
+        }
     }
 }
 
@@ -761,7 +911,7 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
             }
             for (const entry of outstanding) {
                 if (entry.id === event.id) {
-                    entry.cancelled = true;
+                    cancelOutstanding(entry);
                 }
             }
             return;
@@ -787,7 +937,7 @@ export function endJobChannel(jobId: string) {
     }
     for (const entry of outstanding) {
         if (entry.jobId === jobId) {
-            entry.cancelled = true;
+            cancelOutstanding(entry);
         }
     }
     for (const [id, state] of requests) {

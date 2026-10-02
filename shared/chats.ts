@@ -9,6 +9,12 @@ import type { Chat, Message } from "./database.ts";
 /** Chat fields a `meta` op may not set or unset: identity, the messages, and client-only state. */
 export const CHAT_META_FORBIDDEN_KEYS = ["id", "message", "isStreaming", "activeStreamingDisplayOptimizationMode"];
 
+/** The chat fields a `meta` op may `merge` entries into. */
+export const CHAT_META_MERGE_KEYS = ["toolCalls"];
+
+/** The largest remembered tool call (`toolCalls[id]`), as serialized JSON, in UTF-8 bytes. */
+export const MAX_TOOL_CALL_RECORD_BYTES = 1024 * 1024;
+
 /** A chat as stored, without its messages and the client-only streaming flags. */
 export type ChatMeta = Omit<Chat, "message" | "isStreaming" | "activeStreamingDisplayOptimizationMode">;
 
@@ -32,7 +38,16 @@ export type ChatOp =
     | { op: "create"; chat: Chat; index?: number }
     | { op: "delete" }
     | { op: "replace"; chat: Chat }
-    | { op: "meta"; set?: Record<string, unknown>; unset?: string[] }
+    /**
+     * `merge` adds entries to a field that is a map (`toolCalls`): each named field keeps its other
+     * entries as stored, so two writers adding different entries do not replace each other's.
+     */
+    | {
+          op: "meta";
+          set?: Record<string, unknown>;
+          unset?: string[];
+          merge?: Record<string, Record<string, unknown>>;
+      }
     | { op: "append"; messages: Message[]; anchor: MessageAnchor }
     | { op: "setMessage"; message: Message; generation?: MessageGeneration }
     | { op: "setText"; id: string; text: string; generation?: MessageGeneration }

@@ -501,10 +501,14 @@ describe("the events", () => {
             width: 0,
             ext: "wav",
         });
-        expect(stubs.encodeToolCall).toHaveBeenCalledWith({
-            call: { id: "c1", name: "n", arg: "{}" },
-            response: [{ type: "text", text: "t" }],
-        });
+        // The record is remembered with the request's chat (slice 11b); this request has none.
+        expect(stubs.encodeToolCall).toHaveBeenCalledWith(
+            {
+                call: { id: "c1", name: "n", arg: "{}" },
+                response: [{ type: "text", text: "t" }],
+            },
+            null,
+        );
 
         stubs.encodeToolCall.mockRejectedValueOnce(new Error("storage full"));
         let postSignal: AbortSignal | undefined;

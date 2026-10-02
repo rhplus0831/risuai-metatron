@@ -10,7 +10,14 @@ import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { jobModules } from "../jobs/cbsHost.ts";
 import type { OwnedGeneration } from "../jobs/chatResult.ts";
 import { GenerationRunnerError, JobWriteConflictError, type RunningJob } from "../jobs/generationJobs.ts";
-import { type JobScope, loadJobScope, refreshCharacter, refreshChat, scopeChat } from "../jobs/jobScope.ts";
+import {
+    admitProviderModels,
+    type JobScope,
+    loadJobScope,
+    refreshCharacter,
+    refreshChat,
+    scopeChat,
+} from "../jobs/jobScope.ts";
 import {
     createJobRunState,
     createRunSetup,
@@ -307,6 +314,7 @@ async function runSend(
     const { characterId, chatId } = job.context;
     const random = deps.random ?? Math.random;
     let scope = loadJobScope(store, kinds, job.context);
+    admitProviderModels(scope, job.hooks.providers);
     job.emit({ type: "accepted", jobId: job.id, revision: scope.chatRevision, text: "" });
     const owner = scope.db.characters.find((entry) => entry?.chaId === characterId);
     if (!owner) {
@@ -325,6 +333,7 @@ async function runSend(
             chain = { missing: ele };
         } else {
             const picked = loadJobScope(store, kinds, { ...job.context, presetId: found.id });
+            admitProviderModels(picked, job.hooks.providers);
             applyPresetKeepRules(picked, scope.preset.id);
             chain = { scope: picked, presetId: found.id };
         }
@@ -889,6 +898,7 @@ async function runSpeaker(arg: {
                         enableCustomFlags: db.enableCustomFlags,
                         customFlags: db.customFlags,
                         customModels: db.customModels,
+                        pluginModels: requestDb.pluginModels,
                     }),
                 fence: () => setup.check(),
             },

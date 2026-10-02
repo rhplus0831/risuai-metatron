@@ -7,6 +7,7 @@ import { v4 } from "uuid";
 import type { MCPClientLike } from "./internalmcp";
 import localforage from "localforage";
 import { registeredCustomPluginMCPs } from "./pluginmcp";
+import { type ChatRef, findChat, mergeChatMeta } from "src/ts/storage/chatStore.svelte";
 
 export type MCPToolWithURL = MCPTool & {
     mcpURL: string;
@@ -267,16 +268,31 @@ const inst = localforage.createInstance({
     storeName: "mcp-tool-calls",
 });
 
-export async function encodeToolCall(call: toolCallData) {
+/**
+ * Remembers a tool call and gives its marker. With `chatRef` (the request's chat) it is stored with
+ * that chat (`chat.toolCalls`, Phase 5 slice 11b), where the server reads it too; a request without
+ * a chat, or whose chat is gone, keeps it in this browser's LocalForage store as before.
+ */
+export async function encodeToolCall(call: toolCallData, chatRef?: ChatRef | null) {
     call.call.id = call.call.id || v4();
-    await inst.setItem(call.call.id, call);
+    if (chatRef && findChat(chatRef)) {
+        mergeChatMeta(chatRef, "toolCalls", { [call.call.id]: call });
+    } else {
+        await inst.setItem(call.call.id, call);
+    }
     return `<tool_call>${call.call.id}\uf100${call.call.name}</tool_call>\n\n`;
 }
 
-export async function decodeToolCall(text: string): Promise<toolCallData | undefined> {
+/**
+ * The remembered call a marker (whole, or its inner text) stands for: the chat's own record first
+ * (`chatRef`), then this browser's LocalForage store (calls remembered before slice 11b, or without
+ * a chat).
+ */
+export async function decodeToolCall(text: string, chatRef?: ChatRef | null): Promise<toolCallData | undefined> {
     text = text.trim();
     if (text.startsWith("<tool_call>")) {
-        text = text.slice("<tool_call>".length, 0).trim();
+        // The opening tag is cut off (the end bound used to be 0, which emptied the text).
+        text = text.slice("<tool_call>".length).trim();
     }
     if (text.endsWith("</tool_call>")) {
         text = text.slice(0, -"</tool_call>".length).trim();
@@ -284,6 +300,10 @@ export async function decodeToolCall(text: string): Promise<toolCallData | undef
     const [callId, callName] = text.split("\uf100");
     if (!callId) {
         return undefined;
+    }
+    const stored = chatRef ? findChat(chatRef)?.toolCalls : undefined;
+    if (stored && Object.hasOwn(stored, callId)) {
+        return JSON.parse(JSON.stringify(stored[callId])) as toolCallData;
     }
     const call = await inst.getItem<toolCallData>(callId);
     if (!call) {

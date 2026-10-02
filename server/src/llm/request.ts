@@ -311,9 +311,10 @@ export function reformater(
 /**
  * `requestChatDataMain` on the server: the model of `mode` (or `arg.staticModel`), the argument
  * defaults, the reverse-proxy and custom-model overrides, `reformater`, then the format's function.
- * `Plugin` runs in the client's tab (its transport never sends it); here it fails. `WebLLM` (a local
- * Transformers.js model) runs on the server for a job's request (`ctx.localGeneration`); a tab's
- * request never carries it.
+ * `Plugin` (a plugin provider model) is called in the job's tab through `ctx.pluginProvider`, and
+ * `WebLLM` (a local Transformers.js model) runs on the server (`ctx.localGeneration`): both for a
+ * job's request only; a tab runs them itself and its transport never sends them. A tab's dynamic
+ * model the server has no descriptor for (`dynamic_`) is refused.
  */
 export async function requestChatDataMain(
     arg: RequestArgs & { tools: ToolDescriptor[] },
@@ -337,7 +338,7 @@ export async function requestChatDataMain(
     }
 
     if (
-        targ.modelInfo.format === LLMFormat.Plugin ||
+        (targ.modelInfo.format === LLMFormat.Plugin && (!ctx.pluginProvider || targ.aiModel.startsWith("dynamic_"))) ||
         (targ.modelInfo.format === LLMFormat.WebLLM && !ctx.localGeneration)
     ) {
         return {
@@ -416,12 +417,103 @@ export async function requestChatDataMain(
             return requestEcho(targ);
         case LLMFormat.WebLLM:
             return requestWebLLM(targ);
+        case LLMFormat.Plugin:
+            return requestPlugin(targ);
     }
 
     return {
         type: "fail",
         result: language.errors.unknownModel,
     };
+}
+
+/**
+ * The client's `requestPlugin`: a plugin provider (`pluginmodel:::<name>`, or the legacy `custom`
+ * model with `currentPluginProvider`), called in the job's tab with the prompt and the seven
+ * parameters applied from the job's settings. The provider's stream arrives as cumulative text.
+ */
+async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
+    const db = arg.ctx.db;
+    const isV3Model = arg.aiModel.startsWith("pluginmodel:::");
+    const responseModel = isV3Model ? arg.aiModel : "custom";
+    try {
+        const formated = arg.formated;
+        const maxTokens = arg.maxTokens;
+        const model = isV3Model ? arg.aiModel.replace("pluginmodel:::", "") : db.currentPluginProvider;
+
+        if (arg.previewBody) {
+            return {
+                type: "success",
+                result: JSON.stringify({
+                    error: "Plugin is not supported in preview mode",
+                }),
+            };
+        }
+
+        const d = await arg.ctx.pluginProvider!(
+            model,
+            applyParameters(
+                {
+                    prompt_chat: formated,
+                    mode: arg.mode,
+                    bias: [],
+                    max_tokens: maxTokens,
+                },
+                [
+                    "frequency_penalty",
+                    "min_p",
+                    "presence_penalty",
+                    "repetition_penalty",
+                    "top_k",
+                    "top_p",
+                    "temperature",
+                ],
+                {},
+                arg.mode,
+                {
+                    modelId: arg.aiModel,
+                },
+                db,
+            ),
+        );
+
+        if ("none" in d) {
+            return {
+                type: "fail",
+                result: language.errors.unknownModel,
+                model: responseModel,
+            };
+        } else if ("stream" in d) {
+            return {
+                type: "streaming",
+                result: d.stream,
+                model: responseModel,
+            };
+        } else if (!d.success) {
+            return {
+                type: "fail",
+                result: d.content,
+                model: responseModel,
+            };
+        } else {
+            return {
+                type: "success",
+                result: d.content ?? "",
+                model: responseModel,
+            };
+        }
+    } catch (error) {
+        if (arg.ctx.signal.aborted) {
+            throw error;
+        }
+        return {
+            type: "fail",
+            result:
+                `Plugin Error from ${db.currentPluginProvider}: ` +
+                (error instanceof Error ? error.message : JSON.stringify(error)),
+            model: responseModel,
+        };
+    }
 }
 
 /**

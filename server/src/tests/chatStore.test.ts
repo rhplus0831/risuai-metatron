@@ -1535,3 +1535,104 @@ describe("snapshots", () => {
         expect(CHAT_TABLES_SQL).toContain("CREATE TABLE chatOrders");
     });
 });
+
+describe("meta merge (slice 11b)", () => {
+    const record = (id: string, text = id) => ({
+        call: { id, name: "t", arg: {} },
+        response: [{ type: "text", text }],
+    });
+    const merge = (entries: Record<string, unknown>): ChatOp => ({ op: "meta", merge: { toolCalls: entries } });
+    const toolCalls = (store: ResourceStore) =>
+        (chat(store, "k")!.data as { toolCalls?: Record<string, unknown> }).toolCalls;
+    const current = (store: ResourceStore) => chat(store, "k")!.revision!;
+
+    it("adds entries to the stored map: two writers on the same base keep each other's, the later same-id entry wins, prototype names are plain ids, and a set or unset of the field replaces it", () => {
+        const store = memoryStore();
+        const tokens = seed(store);
+        const first = store.applyChanges({ chats: [group("k", tokens.chat, [merge({ a: record("a") })])] });
+        expect(toolCalls(store)).toEqual({ a: record("a") });
+        // The second writer still holds the base the first wrote on: a by-id op, it applies.
+        const second = store.applyChanges({ chats: [group("k", tokens.chat, [merge({ b: record("b") })])] });
+        expect(toolCalls(store)).toEqual({ a: record("a"), b: record("b") });
+        expect(second.chats[0].revision).not.toBe(first.chats[0].revision);
+        const protoNamed = JSON.parse(
+            `{"__proto__": ${JSON.stringify(record("__proto__"))}, "constructor": ${JSON.stringify(record("constructor"))}}`,
+        ) as Record<string, unknown>;
+        store.applyChanges({
+            chats: [group("k", current(store), [merge(protoNamed), merge({ a: record("a", "again") })])],
+        });
+        const stored = toolCalls(store)!;
+        expect(Object.keys(stored).sort()).toEqual(["__proto__", "a", "b", "constructor"]);
+        expect(stored.a).toEqual(record("a", "again"));
+        expect(Object.getPrototypeOf(stored)).toBe(Object.prototype);
+        // A set replaces the whole map; an unset removes it; a merge onto a missing map creates it.
+        store.applyChanges({
+            chats: [group("k", current(store), [{ op: "meta", set: { toolCalls: { z: record("z") } } }])],
+        });
+        expect(toolCalls(store)).toEqual({ z: record("z") });
+        store.applyChanges({ chats: [group("k", current(store), [{ op: "meta", unset: ["toolCalls"] }])] });
+        expect(toolCalls(store)).toBeUndefined();
+        store.applyChanges({ chats: [group("k", current(store), [merge({ n: record("n") })])] });
+        expect(toolCalls(store)).toEqual({ n: record("n") });
+        // The map survives a reopen of the same rows (the stored JSON holds the own entries).
+        expect(JSON.parse(JSON.stringify(toolCalls(store)))).toEqual({ n: record("n") });
+    });
+
+    it("refuses a malformed entry wherever the chat is written (a merge, a set, a create, a replace) and rolls the batch back", () => {
+        const store = memoryStore();
+        const tokens = seed(store);
+        store.applyChanges({ chats: [group("k", tokens.chat, [merge({ a: record("a") })])] });
+        const before = snapshotState(store);
+        const writes = store.writeCount();
+        const bad = { call: { id: "x", name: "t" }, response: [{ type: "text" }] };
+        const entries = "chat.toolCalls entries must be { call: { id, name, arg }, response: [tool content] }";
+        rejects(
+            () =>
+                store.applyChanges({
+                    chats: [
+                        group("k", current(store), [{ op: "setText", id: "a", text: "changed" }, merge({ x: bad })]),
+                    ],
+                }),
+            `chats[0].ops[1]: ${entries}`,
+        );
+        rejects(
+            () =>
+                store.applyChanges({
+                    chats: [group("k", current(store), [{ op: "meta", set: { toolCalls: { x: bad } } }])],
+                }),
+            `chats[0].ops[0]: ${entries}`,
+        );
+        rejects(
+            () =>
+                store.applyChanges({
+                    chats: [
+                        group("n", null, [
+                            { op: "create", chat: { name: "N", message: [], toolCalls: { x: bad } } as never },
+                        ]),
+                    ],
+                }),
+            `chats[0].ops[0]: ${entries}`,
+        );
+        rejects(
+            () =>
+                store.applyChanges({
+                    chats: [
+                        group("k", current(store), [
+                            {
+                                op: "replace",
+                                chat: { id: "k", name: "K", message: [], toolCalls: { y: record("not-y") } } as never,
+                            },
+                        ]),
+                    ],
+                }),
+            `chats[0].ops[0]: ${entries}`,
+        );
+        rejects(
+            () => store.applyChanges({ chats: [group("k", current(store), [merge({ a: 5 })])] }),
+            `chats[0].ops[0]: ${entries}`,
+        );
+        expect(snapshotState(store)).toBe(before);
+        expect(store.writeCount()).toBe(writes);
+        expect(text(store, "k", "a")).toBe("A");
+    });
+});

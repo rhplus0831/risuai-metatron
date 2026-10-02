@@ -20,8 +20,8 @@ import type { HostContext } from "../scripts/workerPool.ts";
 // consumes the rest of the line), the append-only `/send` and `/sendas`, `/comment` on the last
 // message, the `/cut` and `/del` index rules, the alerts and questions as notices and questions
 // (`/speak` a `tts` notice, `/?` an `alertMd`), `/trigger` handed to the job's manual run (refused
-// for a group), `/multisend` refused, an unknown command `false`, and a question not answered
-// ending the line with its error.
+// for a group), `/multisend` handed to the host with the tab's `clear` mode and parts (slice 11b),
+// an unknown command `false`, and a question not answered ending the line with its error.
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const kind = (name: string) => kinds.get(name)!;
@@ -143,6 +143,7 @@ function setup(options: { type?: "character" | "group" } = {}) {
         regex: async () => ({ value: false }),
     };
     const manualRuns: string[] = [];
+    const multisends: { clear: boolean; parts: string[] }[] = [];
     const storedCharacter = () =>
         store.get(kind(RESOURCE_KIND.characters), "c")?.data as character | groupChat | undefined;
     const executor = createCommandExecutor({
@@ -151,6 +152,9 @@ function setup(options: { type?: "character" | "group" } = {}) {
         character: storedCharacter,
         runManualTrigger: async (name) => {
             manualRuns.push(name);
+        },
+        multisend: (clear, parts) => {
+            multisends.push({ clear, parts });
         },
     });
     const read = () => store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0];
@@ -161,7 +165,7 @@ function setup(options: { type?: "character" | "group" } = {}) {
             chats: [{ characterId: "c", chatId: "k", baseRevision: store.chatRevision("c", "k"), ops }],
         });
     const run = (line: string) => executor.processMultiCommand(line);
-    return { store, run, notices, questions, state, manualRuns, read, chat, texts, external };
+    return { store, run, notices, questions, state, manualRuns, multisends, read, chat, texts, external };
 }
 
 describe("the command executor", () => {
@@ -287,10 +291,20 @@ describe("the command executor", () => {
         expect(group.manualRuns).toEqual([]);
     });
 
-    it("refuses `/multisend` with an alertError notice and `setinput`/unknown commands with false", async () => {
+    it("hands `/multisend` to the host split on `|||` with a leading `clear` as the mode, and refuses `setinput`/unknown commands with false", async () => {
         const s = setup();
+        // The parts go to the host as the tab splits them (the quotes stay, as in the tab); the
+        // executor itself sends nothing and shows nothing. An unquoted `|` splits the command line,
+        // so the second line's separators come out of CBS (`{{u::7c}}` is `|`), as the argument
+        // is parsed before the split.
+        const sep = "{{u::7c}}".repeat(3);
         expect(await s.run('/multisend "one|||two"')).toBe("");
-        expect(s.notices).toEqual([{ kind: "alertError", payload: { message: expect.stringMatching(/multisend/) } }]);
+        expect(await s.run(`/multisend clear ${sep} first ${sep} second`)).toBe("");
+        expect(s.multisends).toEqual([
+            { clear: false, parts: ['"one', 'two"'] },
+            { clear: true, parts: [" first ", " second"] },
+        ]);
+        expect(s.notices).toEqual([]);
         expect(s.texts()).toHaveLength(3);
         expect(await s.run("/setinput x")).toBe(false);
         expect(await s.run("/nosuchcommand x")).toBe(false);

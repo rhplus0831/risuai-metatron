@@ -1,5 +1,6 @@
 import type { Chat, Database, RisuPersona, botPreset, character, groupChat } from "../../../shared/database.ts";
 import type { GenerationContext } from "../../../shared/jobs.ts";
+import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import { FLAT_SECRET_FIELDS, llmSecretSiblings, NESTED_SECRET_FIELDS } from "../../../shared/llmSecrets.ts";
 import { PERSONA_DEFAULTS } from "../../../shared/personas.ts";
 import {
@@ -190,6 +191,19 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
         selectedPersona,
         request,
     };
+}
+
+/**
+ * Admits the job's plugin provider models (slice 11b): the descriptors the tab registered when it
+ * created the job, each under its own id `pluginmodel:::<name>` and as a plugin model whatever
+ * format it claims. Model resolution of the job's requests, counts, and assembly reads them from the
+ * request projection.
+ */
+export function admitProviderModels(scope: JobScope, providers: readonly { name: string; model: LLMModel }[]): void {
+    const pluginModels = providers
+        .filter((entry) => entry.model.id === `pluginmodel:::${entry.name}`)
+        .map((entry) => ({ ...structuredClone(entry.model), format: LLMFormat.Plugin }));
+    scope.request = { ...scope.request, db: { ...scope.request.db, pluginModels } };
 }
 
 /** A projection character's chats (a group's are typed read-only; the projection is the job's own copy). */

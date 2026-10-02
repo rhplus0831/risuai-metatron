@@ -1088,3 +1088,79 @@ describe("new characters", () => {
         expect(chat.takeChatWork(new Set()).groups).toEqual([]);
     });
 });
+
+describe("map merges (slice 11b)", () => {
+    const record = (id: string) => ({ call: { id, name: "tool", arg: {} }, response: [{ type: "text", text: id }] });
+    const stored = (server: Awaited<ReturnType<typeof boot>>["server"]) =>
+        (server.chat("c", "k")!.data as { toolCalls?: Record<string, unknown> }).toolCalls;
+
+    it("mergeChatMeta adds entries to the mirror and sends a `merge` the server applies onto the stored map, so another writer's entries are kept", async () => {
+        const { server, chat, ref, commit } = await boot();
+        // Nothing to merge: no work; a field that is not a map is refused.
+        chat.mergeChatMeta(ref, "toolCalls", {});
+        expect(chat.hasChatWork()).toBe(false);
+        expect(() => chat.mergeChatMeta(ref, "note", { x: 1 })).toThrow(/cannot merge note/);
+        chat.mergeChatMeta(ref, "toolCalls", { a: record("a") });
+        chat.mergeChatMeta(ref, "toolCalls", { b: record("b") });
+        chat.setChatMeta(ref, { note: "n" });
+        expect(chat.findChat(ref)!.toolCalls).toEqual({ a: record("a"), b: record("b") });
+        const { work } = commit();
+        expect(work.groups[0].ops).toEqual([
+            { op: "meta", set: { note: "n" }, unset: [], merge: { toolCalls: { a: record("a"), b: record("b") } } },
+        ]);
+        expect(stored(server)).toEqual({ a: record("a"), b: record("b") });
+        // Another device adds `x` meanwhile; this tab's base is older: the merge keeps `x`.
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "meta", merge: { toolCalls: { x: record("x") } } }],
+            },
+        ]);
+        chat.mergeChatMeta(ref, "toolCalls", { c: record("c") });
+        commit();
+        expect(stored(server)).toEqual({ a: record("a"), b: record("b"), x: record("x"), c: record("c") });
+        // The entries are detached copies of the input.
+        const input = { d: record("d") };
+        chat.mergeChatMeta(ref, "toolCalls", input);
+        input.d.response[0].text = "mutated after the call";
+        // A lone merge op carries only its entries (set and unset appear once it coalesces).
+        expect(commit().work.groups[0].ops).toEqual([{ op: "meta", merge: { toolCalls: { d: record("d") } } }]);
+        expect(chat.findChat(ref)!.toolCalls!.d).toEqual(record("d"));
+    });
+
+    it("coalesces a merge with the meta ops around it: a later set or unset of the field replaces the entries, a merge after a set or unset goes into the set value", async () => {
+        const { server, chat, ref, commit } = await boot();
+        chat.mergeChatMeta(ref, "toolCalls", { d: record("d") });
+        chat.setChatMeta(ref, { toolCalls: { e: record("e") } });
+        chat.mergeChatMeta(ref, "toolCalls", { f: record("f") });
+        expect(commit().work.groups[0].ops).toEqual([
+            { op: "meta", set: { toolCalls: { e: record("e"), f: record("f") } }, unset: [] },
+        ]);
+        expect(stored(server)).toEqual({ e: record("e"), f: record("f") });
+        chat.setChatMeta(ref, {}, ["toolCalls"]);
+        chat.mergeChatMeta(ref, "toolCalls", { g: record("g") });
+        expect(commit().work.groups[0].ops).toEqual([
+            { op: "meta", set: { toolCalls: { g: record("g") } }, unset: [] },
+        ]);
+        expect(stored(server)).toEqual({ g: record("g") });
+        chat.mergeChatMeta(ref, "toolCalls", { h: record("h") });
+        chat.setChatMeta(ref, {}, ["toolCalls"]);
+        expect(commit().work.groups[0].ops).toEqual([{ op: "meta", set: {}, unset: ["toolCalls"] }]);
+        expect(stored(server)).toBeUndefined();
+        expect(chat.findChat(ref)!.toolCalls).toBeUndefined();
+        // Two merges of the same id: the later entry wins, as on the server.
+        chat.mergeChatMeta(ref, "toolCalls", { i: record("i") });
+        chat.mergeChatMeta(ref, "toolCalls", { i: { ...record("i"), response: [{ type: "text", text: "newer" }] } });
+        expect(commit().work.groups[0].ops).toEqual([
+            {
+                op: "meta",
+                set: {},
+                unset: [],
+                merge: { toolCalls: { i: { ...record("i"), response: [{ type: "text", text: "newer" }] } } },
+            },
+        ]);
+        expect(stored(server)).toEqual({ i: { ...record("i"), response: [{ type: "text", text: "newer" }] } });
+    });
+});

@@ -11,6 +11,12 @@ export type CommandHost = {
     character(): character | groupChat | undefined;
     /** `/trigger`: a manual trigger on the job's chat as stored now, its result applied after. */
     runManualTrigger(name: string): Promise<void>;
+    /**
+     * `/multisend`: the parts to send in turn, with the tab's `clear` mode. A command job queues them
+     * for its tab to send after the job; inside a send nothing happens, as in the tab while a send
+     * runs.
+     */
+    multisend(clear: boolean, parts: string[]): void;
 };
 
 /** The client's `/?` text. */
@@ -74,8 +80,8 @@ const HELP_TEXT = `
  * `processMultiCommand` of `src/ts/process/command.ts` on the job's chat (Phase 5 slice 8b): the
  * same pipe and quote splitting, argument parsing, and CBS of the arguments, each command reading
  * and writing the job's chat as stored when it runs. Alerts and questions go through the job's
- * channel (`/speak` as a `tts` notice, `/?` as `alertMd`). `/multisend` does not run in a server job
- * (recorded); `/send` and `/sendas` only append, as on the client. A question that is not answered
+ * channel (`/speak` as a `tts` notice, `/?` as `alertMd`). `/multisend` queues its parts for the tab
+ * to send after a command job (`host.multisend`); `/send` and `/sendas` only append, as on the client. A question that is not answered
  * ends the line with its error.
  */
 export function createCommandExecutor(host: CommandHost) {
@@ -264,11 +270,13 @@ export function createCommandExecutor(host: CommandHost) {
                 return pipe;
             }
             case "multisend": {
-                // A send from inside a server job is not supported (recorded; the client sends each part).
-                services.notice({
-                    kind: "alertError",
-                    payload: { message: "/multisend does not run in a server job" },
-                });
+                const splited = arg.split("|||");
+                let clearMode = false;
+                if (splited[0] && splited[0].trim() === "clear") {
+                    clearMode = true;
+                    splited.shift();
+                }
+                host.multisend(clearMode, splited);
                 return "";
             }
             case "setvar": {

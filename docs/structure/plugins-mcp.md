@@ -54,7 +54,7 @@ MCP:
   - `MCPs`, `callOnlyMCPs`.
   - `getMCPTools`, `getTools`, `callTool`, `callMCPTool`.
   - `importMCPModule`.
-  - `encodeToolCall`/`decodeToolCall`: remembered calls in LocalForage `mcp-tool-calls`.
+  - `encodeToolCall(call, chatRef?)`/`decodeToolCall(text, chatRef?)`: remembered calls. With the request's chat they live in `chat.toolCalls` (Phase 5 slice 11b; written with `mergeChatMeta`, so two devices adding calls keep each other's; the server reads and writes the same field for a job's request). Without a chat, with a chat that is gone when the call is remembered, and for calls remembered before, LocalForage `mcp-tool-calls`; decoding reads the chat first. `transport.ts` passes the request's chat for both.
 - `mcp/mcplib.ts` `MCPClient`: remote JSON-RPC over streamable HTTP or SSE, OAuth, sessions, pagination. Protocol versions `2025-03-26`/`2024-11-05`.
 - `mcp/internalmcp.ts` `MCPClientLike`: base class for local clients.
 - Local clients:
@@ -137,6 +137,7 @@ MCP:
 - `src/ts/process/mcp/risuaccess/tests/modules.test.ts`: property-based and snapshot tests of the module read tools.
 - `risuaccess/tests/characters.test.ts` and `moduleWriters.test.ts`: every character and module write tool over the real save adapter and server store: the target by id when not selected, denial, refused patches, the consent gap (a replacement, a type change, or a removal while the prompt is open), and the module info field types. `mcp/tests/mcpWriters.test.ts`: `importMCPModule`, the OAuth refresh registration, and the Google credential prompt.
 - `requests.responses.test.ts`: the tool loop, with `callTool` mocked.
+- `src/ts/process/mcp/tests/toolCallStore.test.ts` (Phase 5 slice 11b): `encodeToolCall` storing with the request's chat (`mergeChatMeta`) or, without one, in LocalForage; `decodeToolCall` reading the chat first (a copy), both marker forms, the LocalForage fallback, and prototype names not found.
 - `src/ts/plugins/apiV3/pluginStorage.test.ts`: v3 `pluginStorage` isolation under `pluginCustomStorage._pluginStorage`, JSON normalization, and the BigInt rejection. It captures the API object by mocking `SandboxHost`.
 - `src/ts/plugins/plugins.test.ts`: `importPlugin` acceptance/rejection by `//@api` tokens, and `loadPlugins` clearing the hook registries before loading only enabled `'3.0'` plugins.
 - `src/ts/plugins/apiV3/hostApi.test.ts`: `setDatabase`/`setDatabaseLite` into `pluginCustomStorage`, the per-key refusals, the `personas` normalization, and the `_*SafeLocalStorage` aliases called detached. `hostApiRouting.test.ts`: every routed key to its mutation, the per-key refusal warnings, the late keys, the installed plugins kept. `v3SavedWrites.test.ts`: the routed writes reach the server. `v3SetDatabase.test.ts` and `v3SetPersonas.test.ts`: the setters' writes into the selected preset and persona, the install prompt awaited first, and `selectedPersona` applied after `personas`.

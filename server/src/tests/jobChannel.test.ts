@@ -10,7 +10,7 @@ import type {
     HydrationReceipt,
     QuestionResult,
 } from "../../../shared/jobs.ts";
-import { NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import { MAX_PROVIDER_TEXT_CHARS, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import {
     CALLBACK_TIMEOUT_MS,
     type ChannelHub,
@@ -381,7 +381,7 @@ describe("the hub: callbacks and nesting", () => {
             link.channel.callback("editoutput", { text: "t" }),
             link.channel.callback("bodyIntercepter", { body: {}, type: "x" }),
             link.channel.callback("chatOutput", { messageId: "m", speakerId: "c" }),
-            link.channel.callback("provider", { name: "other" }),
+            link.channel.callback("provider", { name: "other", argument: {} }),
             link.channel.callback("mcpTool", { identifier: "plugin:other", tool: "t", args: {} }),
         ]);
         expect(refusals.every((result) => result.outcome === "refused")).toBe(true);
@@ -392,7 +392,7 @@ describe("the hub: callbacks and nesting", () => {
         h.answer(link, h.last("callback").id);
         allowed.push(link.channel.callback("editinput", { text: "t" }));
         h.answer(link, h.last("callback").id);
-        allowed.push(link.channel.callback("provider", { name: "prov" }));
+        allowed.push(link.channel.callback("provider", { name: "prov", argument: {} }));
         h.answer(link, h.last("callback").id);
         allowed.push(link.channel.callback("mcpTool", { identifier: "plugin:tool", tool: "t", args: {} }));
         h.answer(link, h.last("callback").id);
@@ -918,5 +918,107 @@ describe("the registry over a real socket", () => {
         expect(outcome.callback).toMatchObject({ outcome: "aborted" });
         expect(types(next.events)).toEqual(["resource", "resource", "callback", "cancel", "resource", "done"]);
         expect((next.events[3] as { id: string }).id).toBe(callback.id);
+    });
+});
+
+describe("the hub: provider chunks and the caller's signal (slice 11b)", () => {
+    const hooks = { providers: validHooks.providers };
+    const payload = { name: "prov", argument: { prompt_chat: [], mode: "model" } };
+
+    it("routes an owner's `chunk` to the outstanding provider callback that takes chunks, ignores every other chunk, and fails the callback with a cancel when a text is too long", async () => {
+        const h = harness();
+        const link = h.open("a", { hooks });
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        const chunks: string[] = [];
+        const streamed = link.channel.callback("provider", payload, {
+            onChunk: (text) => {
+                chunks.push(text);
+                if (text === "throws") {
+                    throw new Error("handler broke");
+                }
+            },
+        });
+        const dispatched = h.last("callback");
+        expect(dispatched).toMatchObject({ name: "provider", payload });
+        const { id } = dispatched;
+        // Ignored: another id, a text that is not a string, no text, a wrong message type.
+        link.handleMessage({ type: "chunk", id: "nope", text: "x" });
+        link.handleMessage({ type: "chunk", id, text: 5 });
+        link.handleMessage({ type: "chunk", id });
+        link.handleMessage({ type: "chunks", id, text: "x" });
+        link.handleMessage({ type: "chunk", id, text: "" });
+        link.handleMessage({ type: "chunk", id, text: "He" });
+        // At the cap: taken.
+        link.handleMessage({ type: "chunk", id, text: "x".repeat(MAX_PROVIDER_TEXT_CHARS) });
+        // A handler that throws is logged; the callback goes on.
+        link.handleMessage({ type: "chunk", id, text: "throws" });
+        link.handleMessage({ type: "chunk", id, text: "Hello" });
+        expect(chunks.map((text) => (text.length > 100 ? text.length : text))).toEqual([
+            "",
+            "He",
+            MAX_PROVIDER_TEXT_CHARS,
+            "throws",
+            "Hello",
+        ]);
+        expect(errors).toHaveBeenCalledTimes(1);
+        expect(await h.state(streamed)).toBe("pending");
+        h.answer(link, id, { success: true, streamed: true });
+        expect(await streamed).toEqual({ outcome: "answered", value: { success: true, streamed: true } });
+        // A late chunk for the settled callback changes nothing; no cancel for an answered one.
+        link.handleMessage({ type: "chunk", id, text: "late" });
+        expect(chunks).toHaveLength(5);
+        expect(h.ofType("cancel")).toHaveLength(0);
+
+        // A callback that takes no chunks ignores them.
+        const plain = link.channel.callback("editoutput", { text: "t" });
+        const plainId = h.last("callback").id;
+        link.handleMessage({ type: "chunk", id: plainId, text: "x" });
+        expect(await h.state(plain)).toBe("pending");
+        h.answer(link, plainId, "edited");
+        expect(await plain).toEqual({ outcome: "answered", value: "edited" });
+
+        // A text over the cap fails the callback as a protocol failure and tells the tab.
+        const big = link.channel.callback("provider", payload, { onChunk: (text) => chunks.push(text) });
+        const bigId = h.last("callback").id;
+        link.handleMessage({ type: "chunk", id: bigId, text: "x".repeat(MAX_PROVIDER_TEXT_CHARS + 1) });
+        expect(await big).toEqual({ outcome: "failed", failure: "protocol", error: "The provider's text is too long" });
+        expect(h.last("cancel")).toMatchObject({ id: bigId });
+        expect(chunks).toHaveLength(5);
+        // The lane is free again.
+        void link.channel.callback("editoutput", { text: "t" });
+        expect(h.last("callback").name).toBe("editoutput");
+        errors.mockRestore();
+    });
+
+    it("ends a callback when the caller's signal aborts (a cancel to the tab), settles one whose signal already aborted without dispatching it, and ignores an abort after the answer", async () => {
+        const h = harness();
+        const link = h.open("a", { hooks });
+        const controller = new AbortController();
+        const pending = link.channel.callback("provider", payload, { signal: controller.signal });
+        const { id } = h.last("callback");
+        expect(await h.state(pending)).toBe("pending");
+        controller.abort();
+        expect(await pending).toEqual({ outcome: "aborted", error: "The request ended" });
+        expect(h.ofType("cancel").map((event) => event.id)).toEqual([id]);
+
+        const dispatched = h.ofType("callback").length;
+        const aborted = new AbortController();
+        aborted.abort();
+        expect(await link.channel.callback("provider", payload, { signal: aborted.signal })).toEqual({
+            outcome: "aborted",
+            error: "The request ended",
+        });
+        expect(h.ofType("callback")).toHaveLength(dispatched);
+        expect(h.ofType("cancel")).toHaveLength(1);
+
+        const later = new AbortController();
+        const answered = link.channel.callback("provider", payload, { signal: later.signal });
+        h.answer(link, h.last("callback").id, { success: true, content: "x" });
+        expect(await answered).toEqual({ outcome: "answered", value: { success: true, content: "x" } });
+        later.abort();
+        expect(h.ofType("cancel")).toHaveLength(1);
+        // Nothing is left on the lane: the next root callback is dispatched at once.
+        void link.channel.callback("editoutput", { text: "t" });
+        expect(h.ofType("callback")).toHaveLength(dispatched + 2);
     });
 });

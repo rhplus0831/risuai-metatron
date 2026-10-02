@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { CHAT_META_FORBIDDEN_KEYS } from "../../../shared/chats.ts";
+import { CHAT_META_FORBIDDEN_KEYS, MAX_TOOL_CALL_RECORD_BYTES } from "../../../shared/chats.ts";
 import { assertPatchableMetaKeys, normalizeChatMeta, normalizeMessage, normalizeMessageList } from "../data/chats.ts";
 import {
     countChatOperations,
@@ -210,7 +210,7 @@ describe("prepareChatGroups", () => {
         expect(JSON.parse(create.meta)).toEqual({ name: "n", id: "k", note: "", localLore: [] });
         expect(create.messages[0]).toEqual({ id: "a", text: JSON.stringify(message("a", "x")) });
         expect(create.messages[1].id).toMatch(uuid);
-        expect(created.ops[1]).toEqual({ op: "meta", set: { note: "n" }, unset: [] });
+        expect(created.ops[1]).toEqual({ op: "meta", set: { note: "n" }, unset: [], merge: {} });
         expect(created.ops[2]).toEqual({ op: "begin", id: "a", generationId: "g" });
 
         expect(edited.needsCurrent).toBe(false);
@@ -224,7 +224,7 @@ describe("prepareChatGroups", () => {
             "setText",
             "remove",
         ]);
-        expect(edited.ops[0]).toEqual({ op: "meta", set: {}, unset: ["note"] });
+        expect(edited.ops[0]).toEqual({ op: "meta", set: {}, unset: ["note"], merge: {} });
         expect(edited.ops[1]).toMatchObject({ anchor: { end: true } });
         expect(edited.ops[2]).toMatchObject({ anchor: { start: true } });
         expect(edited.ops[3]).toMatchObject({ anchor: { after: "a" } });
@@ -400,5 +400,99 @@ describe("prepareChatOrders and countChatOperations", () => {
         const orders = prepareChatOrders([{ characterId: "c", baseRevision: "e:1:1", ids: ["k"] }]);
         expect(countChatOperations(groups, orders)).toBe(4);
         expect(countChatOperations([], [])).toBe(0);
+    });
+});
+
+describe("chat.toolCalls (slice 11b)", () => {
+    const record = (id: string, response: unknown[] = [{ type: "text", text: "4" }]) => ({
+        call: { id, name: "rollDice", arg: '{"sides":6}' },
+        response,
+    });
+    const withCalls = (toolCalls: unknown) => normalizeChatMeta({ id: "k", toolCalls }, "k");
+    /** A map with prototype names as own entries (an object literal would set the prototype). */
+    const protoNamed = JSON.parse(
+        `{"__proto__": ${JSON.stringify(record("__proto__"))}, "constructor": ${JSON.stringify(record("constructor"))}}`,
+    ) as Record<string, unknown>;
+
+    it("accepts every tool content the request adapters read under the call's own id, an omitted argument, an empty answer, and prototype names as ids", () => {
+        const toolCalls = {
+            text: record("text"),
+            image: record("image", [{ type: "image", data: "aGk=", mimeType: "image/png" }]),
+            audio: record("audio", [{ type: "audio", data: "aGk=", mimeType: "audio/wav" }]),
+            resource: record("resource", [{ type: "resource", resource: { uri: "x://y", text: "t" } }]),
+            mixed: record("mixed", [
+                { type: "text", text: "a" },
+                { type: "image", data: "aGk=", mimeType: "image/png" },
+            ]),
+            empty: record("empty", []),
+            noArg: { call: { id: "noArg", name: "tool" }, response: [{ type: "text", text: "" }] },
+        };
+        expect(withCalls(toolCalls).toolCalls).toEqual(toolCalls);
+        expect(withCalls({}).toolCalls).toEqual({});
+        expect(Object.keys(withCalls(protoNamed).toolCalls as object)).toEqual(["__proto__", "constructor"]);
+        // Absent: nothing is added.
+        expect(normalizeChatMeta({ id: "k" }, "k")).not.toHaveProperty("toolCalls");
+    });
+
+    it("refuses a map that is not an object, an entry under another or an empty id, a missing name, a response that is not a list, a malformed piece, and an entry over 1 MiB", () => {
+        const refused = (toolCalls: unknown, label: string) =>
+            expect(() => withCalls(toolCalls), label).toThrow(ResourceValidationError);
+        refused([], "a list");
+        refused("x", "a string");
+        refused(null, "null");
+        refused({ a: null }, "a null entry");
+        refused({ a: record("b") }, "another id");
+        refused({ "": record("") }, "an empty id");
+        refused({ a: { call: { id: "a" }, response: [] } }, "no name");
+        refused({ a: { call: { id: "a", name: 5 }, response: [] } }, "a name that is not a string");
+        refused({ a: { call: "a", response: [] } }, "a call that is not an object");
+        refused({ a: { call: { id: "a", name: "t" }, response: {} } }, "a response that is not a list");
+        refused({ a: { call: { id: "a", name: "t" } } }, "no response");
+        refused({ a: record("a", [{ type: "text" }]) }, "text without its text");
+        refused({ a: record("a", [{ type: "image", data: "x" }]) }, "an image without a MIME type");
+        refused({ a: record("a", [{ type: "audio", mimeType: "audio/wav" }]) }, "audio without data");
+        refused({ a: record("a", [{ type: "resource" }]) }, "a resource without its resource");
+        refused({ a: record("a", [{ type: "video", data: "x", mimeType: "video/mp4" }]) }, "an unknown type");
+        refused({ a: record("a", [null]) }, "a null piece");
+        refused({ a: record("a", ["text"]) }, "a piece that is a string");
+        // The cap is on the serialized entry: at the cap it passes, one byte over it does not, and
+        // multi-byte text counts in UTF-8 bytes.
+        const base = record("big", [{ type: "text", text: "" }]);
+        const room = MAX_TOOL_CALL_RECORD_BYTES - Buffer.byteLength(JSON.stringify(base), "utf8");
+        expect(() => withCalls({ big: record("big", [{ type: "text", text: "x".repeat(room) }]) })).not.toThrow();
+        refused({ big: record("big", [{ type: "text", text: "x".repeat(room + 1) }]) }, "over the cap");
+        refused(
+            { big: record("big", [{ type: "text", text: "가".repeat(Math.floor(room / 3) + 1) }]) },
+            "over in UTF-8",
+        );
+    });
+
+    it("prepares a meta op's `merge` for the map fields only, apart from the fields the op sets or unsets", () => {
+        const group = (ops: unknown[]) => ({ characterId: "c", chatId: "k", baseRevision: "e:1:1", ops });
+        const [prepared] = prepareChatGroups([
+            group([
+                { op: "meta", merge: { toolCalls: { a: record("a") } } },
+                { op: "meta", set: { note: "n" } },
+            ]),
+        ]);
+        expect(prepared.ops[0]).toEqual({ op: "meta", set: {}, unset: [], merge: { toolCalls: { a: record("a") } } });
+        expect(prepared.ops[1]).toEqual({ op: "meta", set: { note: "n" }, unset: [], merge: {} });
+        expect(prepared.needsCurrent).toBe(false);
+        const groupRejects = (op: unknown, error: string) =>
+            rejects(() => prepareChatGroups([group([op])]), `chats[0].ops[0]: ${error}`);
+        groupRejects({ op: "meta", merge: { note: { a: 1 } } }, "meta.merge takes entries for toolCalls");
+        groupRejects({ op: "meta", merge: { toolCalls: "x" } }, "meta.merge takes entries for toolCalls");
+        groupRejects({ op: "meta", merge: { toolCalls: [] } }, "meta.merge takes entries for toolCalls");
+        groupRejects({ op: "meta", merge: { toolCalls: null } }, "meta.merge takes entries for toolCalls");
+        groupRejects({ op: "meta", merge: 5 }, "meta.merge takes entries for toolCalls");
+        groupRejects({ op: "meta", merge: [] }, "meta.merge takes entries for toolCalls");
+        groupRejects(
+            { op: "meta", merge: { toolCalls: {} }, set: { toolCalls: {} } },
+            "meta merges a field it also sets or unsets",
+        );
+        groupRejects(
+            { op: "meta", merge: { toolCalls: {} }, unset: ["toolCalls"] },
+            "meta merges a field it also sets or unsets",
+        );
     });
 });

@@ -1486,6 +1486,7 @@ describe("recursion and the effect limit", () => {
             runManualTrigger: async (name) => {
                 await h.runtime.runTrigger(h.stored, "manual", { chat: structuredClone(h.live), manualName: name });
             },
+            multisend: () => {},
         });
         h.state.command = (line) => executor.processMultiCommand(line);
         await expect(h.run()).rejects.toThrow(`more than ${MAX_TRIGGER_EFFECTS} trigger effects`);

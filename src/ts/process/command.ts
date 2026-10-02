@@ -27,6 +27,42 @@ import { readClientFlag } from "../storage/clientFlags";
  * the chat input, so `/trigger` runs on the server when `risu.serverGeneration` is on (Phase 5
  * slice 8b); a browser trigger's `v2Command` stays in the browser until its own cutover.
  */
+/**
+ * `/multisend`: each part appended as a user message and sent, one after the other, in the chat
+ * `ref`; with `clearMode` the chat's messages are removed before each part. Nothing happens while a
+ * send runs. Stops at the first part that does not send or when the chat is gone; false then.
+ * A server command job's `/multisend` runs it too, after the job (`serverCommands.ts`).
+ */
+export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: readonly string[]): Promise<boolean> {
+    if (get(doingChat)) {
+        return false;
+    }
+    for (const e of parts) {
+        const chat = findChat(ref);
+        if (!chat) {
+            return false;
+        }
+        if (clearMode) {
+            removeMessages(
+                ref,
+                chat.message.map((message) => message.chatId),
+            );
+        }
+        appendMessage(ref, { role: "user", data: e });
+        let sent = false;
+        try {
+            sent = await sendChat(-1, { target: ref });
+        } finally {
+            // Each send is its own action; the next one needs the flag clear.
+            doingChat.set(false);
+        }
+        if (!sent) {
+            return false;
+        }
+    }
+    return true;
+}
+
 export async function processMultiCommand(
     command: string,
     ref: ChatRef | null = currentChatRef(),
@@ -206,32 +242,7 @@ async function processCommand(
                 clearMode = true;
                 splited.shift();
             }
-            if (get(doingChat)) {
-                return "";
-            }
-            for (const e of splited) {
-                const chat = findChat(ref);
-                if (!chat) {
-                    break;
-                }
-                if (clearMode) {
-                    removeMessages(
-                        ref,
-                        chat.message.map((message) => message.chatId),
-                    );
-                }
-                appendMessage(ref, { role: "user", data: e });
-                let sent = false;
-                try {
-                    sent = await sendChat(-1, { target: ref });
-                } finally {
-                    // Each send is its own action; the next one needs the flag clear.
-                    doingChat.set(false);
-                }
-                if (!sent) {
-                    break;
-                }
-            }
+            await runMultisend(ref, clearMode, splited);
             return "";
         }
         case "setvar": {

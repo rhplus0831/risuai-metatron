@@ -743,6 +743,15 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                     endJob: (message) => {
                         latch(new LuaJobFatalError(message));
                     },
+                    toolCalls: {
+                        read: () => {
+                            refreshAll();
+                            return scopeChat(scope)?.toolCalls;
+                        },
+                        // Added to the map as stored (another writer's entries stay).
+                        write: (record) =>
+                            writeChat(() => [{ op: "meta", merge: { toolCalls: { [record.call.id]: record } } }], ctx),
+                    },
                     signal,
                 }),
             ...(job.hooks.replacers.beforeRequest

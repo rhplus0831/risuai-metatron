@@ -673,3 +673,48 @@ describe("a manual trigger job", () => {
         SLOW,
     );
 });
+
+describe("`/multisend` in a command job (slice 11b)", () => {
+    // An unquoted `|` splits the command line, so the separators of the `clear` form come out of
+    // the executor's CBS of the argument (`{{u::7c}}` is `|`), as `commandExecutor.test.ts` does;
+    // the trigger evaluates its value's CBS first, so the braces are escaped once more for it. The
+    // quoted form keeps its quotes in the parts, as the tab's own `/multisend` does.
+    const sep = "{{u::7b}}{{u::7b}}u::7c}}".repeat(3);
+    it(
+        "queues the parts for the tab (`done.followUps`: the clear mode, in order) instead of sending, and refuses too many parts with an alertError and no follow-ups",
+        async () => {
+            const chaId = await seedCharacter({
+                triggers: [
+                    trig("ms", [
+                        ef("v2Command", v('/multisend "one|||two"')),
+                        ef("v2Command", v(`/multisend clear ${sep} three`)),
+                        say("char", "after"),
+                    ]),
+                    trig("many", [
+                        ef("v2Command", v(`/multisend ${Array.from({ length: 65 }, (_, i) => `p${i}`).join(sep)}`)),
+                        say("char", "still ran"),
+                    ]),
+                ],
+            });
+            const { events, terminal } = await runManual(chaId, "ms");
+            expect(terminal).toMatchObject({
+                type: "done",
+                followUps: [
+                    { clear: false, parts: ['"one', 'two"'] },
+                    { clear: true, parts: [" three"] },
+                ],
+            });
+            // Nothing was sent inside the job: the trigger's own effects landed, no user message.
+            expect(texts(await readChat(chaId))).toEqual(["char:greeting", "user:second", "char:after"]);
+            expect(notices(events, "alertError")).toEqual([]);
+            const many = await runManual(chaId, "many");
+            expect(many.terminal?.type).toBe("done");
+            expect((many.terminal as { followUps?: unknown }).followUps).toBeUndefined();
+            expect(notices(many.events, "alertError").map((event) => event.payload.message)).toEqual([
+                expect.stringMatching(/multisend/),
+            ]);
+            expect(texts(await readChat(chaId)).at(-1)).toBe("char:still ran");
+        },
+        SLOW,
+    );
+});

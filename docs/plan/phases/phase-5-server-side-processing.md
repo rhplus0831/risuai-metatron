@@ -232,7 +232,15 @@ server is listed here before the browser path is removed:
 - The generating message cannot be edited until its job finishes.
 - A button or manual trigger during a send is refused: a command job takes the chat's one job
   slot.
-- `/multisend` inside a trigger is refused on the server.
+- `/multisend` in a server command job (a manual trigger, a button) does not send inside the job:
+  its parts are queued, and the job's tab sends them after the job ends, so the trigger's later
+  effects run before the sends. A reload or a closed tab meanwhile drops the parts not sent yet.
+  Inside a send job it does nothing, as in the tab while a send runs.
+- A plugin provider model answers a server job through a callback to the job's tab: the providers
+  are the ones registered when the job was created, the argument is built on the server from the
+  job's settings, and a request that carries a stored credential is not handed to a plugin.
+- Remembered tool calls are stored with their chat (`chat.toolCalls`); a call remembered without a
+  chat, or before this change, stays in the browser's own store.
 - The resend and auto-continue loop is capped: a job runs at most 8 such rounds (all its speakers
   together); past that the reply is finished as it stands. The rounds keep the job's preset (a
   tab's recursive send picks `presetChain` again).

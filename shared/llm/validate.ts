@@ -22,3 +22,22 @@ export function isModelDescriptor(model: unknown): model is LLMModel {
         model.parameters.every((parameter) => typeof parameter === "string")
     );
 }
+
+/**
+ * Whether `entry` is one piece of a tool's answer as the request adapters read it (the MCP content
+ * the client's `callTool` returns): text, an image or audio with its data and MIME type, or a
+ * resource.
+ */
+export function isToolContentEntry(entry: unknown): boolean {
+    if (!entry || typeof entry !== "object") {
+        return false;
+    }
+    const content = entry as Record<string, unknown>;
+    return (
+        (content.type === "text" && typeof content.text === "string") ||
+        ((content.type === "image" || content.type === "audio") &&
+            typeof content.data === "string" &&
+            typeof content.mimeType === "string") ||
+        (content.type === "resource" && !!content.resource && typeof content.resource === "object")
+    );
+}

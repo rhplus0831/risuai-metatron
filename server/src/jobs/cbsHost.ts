@@ -205,6 +205,7 @@ export function createJobCbsHost(scope: JobScope, options: JobCbsOptions): CbsHo
                 enableCustomFlags: db.enableCustomFlags,
                 customFlags: db.customFlags,
                 customModels: db.customModels,
+                pluginModels: scope.request.db.pluginModels,
             }),
         callInternalFunction: () => "",
         isMobile: false,

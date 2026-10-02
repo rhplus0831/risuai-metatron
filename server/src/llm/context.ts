@@ -1,7 +1,19 @@
 import type { LLMModel } from "../../../shared/llm.ts";
-import type { InlaySignature, LlmInlayEvent, RPCToolCallContent, ToolCallRecord } from "../../../shared/llm/request.ts";
+import type {
+    InlaySignature,
+    LlmInlayEvent,
+    RPCToolCallContent,
+    StreamResponseChunk,
+    ToolCallRecord,
+} from "../../../shared/llm/request.ts";
 import type { RequestDb } from "./settings.ts";
 import type { Transport } from "./transport.ts";
+
+/** What a plugin provider answered (`pluginHooks.providers` in the tab). */
+export type PluginProviderAnswer =
+    | { success: boolean; content: string }
+    | { success: true; stream: ReadableStream<StreamResponseChunk> }
+    | { none: true };
 
 /**
  * Everything the ported request layer reads or calls outside its own arguments. The client
@@ -64,6 +76,12 @@ export type RequestContext = {
      * text. Present for a job's request only; a tab's request never names such a model.
      */
     localGeneration?: (text: string, model: string, config: Record<string, unknown>) => Promise<string>;
+    /**
+     * A plugin provider model (`LLMFormat.Plugin`, slice 11b): the provider `name` called in the job's
+     * tab with `argument`. Text, a stream of the cumulative text, or `none` (the provider answered
+     * nothing). Present for a job's request only; a tab runs its providers itself.
+     */
+    pluginProvider?: (name: string, argument: Record<string, unknown>) => Promise<PluginProviderAnswer>;
     /** `registerClaudeObserver`. */
     registerClaudeObserver: (arg: { url: string; body: any; headers: { [key: string]: string } }) => void;
 };

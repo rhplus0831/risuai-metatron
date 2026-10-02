@@ -1,8 +1,9 @@
 # Slice: Post-Generation And Plugin Callbacks
 
-Status: 11a (the reply tail) implemented on 2026-10-03; 11b (provider plugins, stored tool calls,
-`/multisend`) open. The sections from "Scope" to "Residual risk" are the plan as drafted; the
-amendments in `implementation-plan.md` win over them, and "11a: what landed" records what was built.
+Status: implemented on 2026-10-03 as two commits: 11a (the reply tail) and 11b (provider plugins,
+stored tool calls, `/multisend`). The sections from "Scope" to "Residual risk" are the plan as drafted; the
+amendments in `implementation-plan.md` win over them, and "11a: what landed" and "11b: what
+landed" record what was built.
 
 Phase: [Phase 5](../../phase-5-server-side-processing.md), step 9 (post-generation effects) and
 the plugin, `chatOutput`, and provider-plugin parts of step 7; PLAN.md Decision 4 (the reply
@@ -179,3 +180,53 @@ answers and a two-speaker group through the tail, an abort at each tail stage (n
 stage), and an unmatched `special.emotion`. Note: the channel decides "no tab attached" at a
 callback's deadline, so a reply that completes while its tab is away waits up to 60 s for the
 listeners and 5 minutes per image before they are skipped.
+
+## 11b: what landed
+
+As `docs/structure/self-host-server.md` ("Slice 11b"), `plugins-mcp.md`, `persistence.md`, and
+`global-api.md` describe it. Files beyond the drafted list: `server/src/jobs/{jobScope,runSetup,
+commandRunner,cbsHost}.ts`, `server/src/llm/settings.ts`, `server/src/lua/bindings.ts`,
+`server/src/prompt/commands.ts`, `server/src/data/chats.ts`, `shared/{database,jobs}.ts`,
+`shared/llm/validate.ts`, `src/ts/storage/chatStore.svelte.ts`, `src/ts/process/request/transport.ts`,
+`src/ts/process/{command,serverCommands}.ts`.
+
+- **Provider plugins.** A job's request to a plugin provider model is a `provider` callback to the
+  job's tab. The first owner message decides: a `chunk` (the cumulative text) makes the answer a
+  stream, an answer makes it text. The server's stream holds only the newest text not yet read; the
+  tab sends at most one chunk every 50 ms; a text over 4 MiB characters fails the request; the
+  request's abort or the reader's cancel reaches the plugin as its abort signal and cancels its
+  stream. The providers are the ones registered when the job was created (their descriptors, as
+  registered); the argument is built on the server and is not sent when it carries a stored
+  credential.
+- **Tool calls.** `chat.toolCalls` holds the remembered calls; a `meta` op's `merge` adds entries
+  to the map as stored, so writers on a stale revision keep each other's; entries are validated
+  wherever a chat is written. The tab stores a call with the request's chat and reads the chat
+  first; the `decodeToolCall` defect (question 10) is fixed. A job decodes from its chat; it calls
+  no tool until slice 12.
+- **`/multisend`.** A command job queues the parts (`done.followUps`), and its tab sends them after
+  the job, once per job in a tab; in a send job the command does nothing, as in the tab while a
+  send runs. A reload or a closed tab drops the parts not sent.
+
+Challenge (two rounds, ten findings; nine fixed, one kept): a provider's stream was not cancelled
+on every ending; the server kept every cumulative chunk; the text limit skipped answers; an admitted
+plugin model took custom flags the tab does not apply to it; a job followed again sent its
+follow-ups again; a tool record's response pieces were not validated; a byte stream's last
+incomplete character was dropped; the stream's reader lock was kept; the follow-up marker was
+evicted after 500 jobs. Kept: a provider that throws is reported with its message
+(`Plugin Error from <provider>: <message>`), where the tab's own path prints `{}` for an `Error`.
+
+Live check (a fresh server, 21 checks): a text and a streaming provider as the job's main model,
+a provider that fails, one that throws, a model without a provider, an abort during a slow stream;
+a `meta` merge, a second one on a stale revision, a malformed record refused, a remembered call
+sent as tool messages by a job; a manual trigger's `/multisend` sent by the tab in order.
+
+Review: no problem found; the reviewer added `server/src/tests/providerModels.test.ts`,
+`src/ts/process/mcp/tests/toolCallStore.test.ts`, and cases in `llmRequests.test.ts`,
+`jobChannel.test.ts` (both), `chats.test.ts`, `chatStore.test.ts` (both), `manualTriggers.test.ts`,
+and `serverCommands.test.ts`. Not pinned: the credential check of a job's remembered record (a job
+calls no tool until slice 12, so `tools.encode` is unreachable), and a `presetChain` pick's or a
+group speaker's admitted providers (read in `runner.ts`). Residuals: a provider answering a
+`content` that is neither text nor a stream ends the job as a malformed answer (the tab's own path
+passes it on); a socket lost between the first `chunk` and the replayed `streamed` answer ends the
+job the same way; an unloaded provider is reported as `Plugin Error from <provider>: ...`, not as
+the unknown-plugin message; a provider callback holds the tab's callback lane while it streams.
