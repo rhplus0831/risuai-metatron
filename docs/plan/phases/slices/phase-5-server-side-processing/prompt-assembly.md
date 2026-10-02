@@ -154,8 +154,8 @@ rejected.
    rules over the admitted snapshot, none for the selected preset; callbacks retargeted; the tab applies
    the event once per job and page, the reload residual recorded). 6. Isolation: rejected (above). 7. The
    continue fence: adopted (checkpoint writes for the owned message from `runCurrentChatFunction`, the
-   start trigger, and `throwError`; `accepted` when it is locked; the prefix read after the hooks).
-2. `@@inject`: adopted (any owner). 9. The request trigger: adopted. 10. The worker contract: adopted
+   start trigger, and `throwError`; `accepted` when it is locked; the prefix read after the hooks). 8.
+   `@@inject`: adopted (any owner). 9. The request trigger: adopted. 10. The worker contract: adopted
    (effects applied once, at their points; a host failure latched and the run aborted). 11. The script
    cache: adopted (per job). 12. Checkpoints: adopted (separate write and chunk counters, the abort write
    as the job, one terminal). 13. Non-streaming replies: adopted (the role kept, a continue's metadata
@@ -212,3 +212,14 @@ round 4 confirmed the per-chat map. C2: after a size failure no further host cal
 is dispatched. C3: the worker and the pool count results and host arguments as JSON. Checks after round
 4: `pnpm check`, `pnpm format:check`, `pnpm test` (139 files, 1746 passed), `pnpm build`, `pnpm test:e2e`
 (6 passed), the golden, the smokes, `checkServerSend.mjs` (21/21), `checkServerTrigger.mjs` (16/16).
+
+Stop C Docker smoke (2026-10-02, image `risuai-metatron:p5-stopc` on `416145ac`, fresh volume, port 6197,
+`risu.serverGeneration` on, a mock streaming provider on the host through `host.docker.internal`, a proxy
+key written through `/api/llm-secrets`): 13/13. A send from the chat input posted one `send` job with the
+input and its `userMessageId`; the server made the streamed provider request with the stored key and the
+browser none; a reload 4.5 s into a slow stream found the checkpoint stored (`Slow one. Slow two.`) and then
+showed the whole reply; after a final reload the store held both user messages and both replies once each;
+no request, response, or socket frame carried the key; no page errors. Observed, not a defect: with no
+trigger scripts the server logs `Error: Invalid return` from the request trigger on every provider attempt
+(the trigger runtime returns `null`); the browser path logs a `TypeError` at the same point, and in both
+the prompt goes out unchanged.
