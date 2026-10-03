@@ -21,6 +21,7 @@ import {
     getGlobalChatVarOf,
 } from "./chatVar.svelte";
 import { processScriptFull } from "../process/scripts";
+import { type CapturedTransform, captureTransform, serverProcessScript } from "./transformClient";
 import { get } from "svelte/store";
 import css, { type CssAtRuleAST } from "@adobe/css-tools";
 import { selectedCharID } from "../stores.svelte";
@@ -755,10 +756,14 @@ export async function ParseMarkdown(
     mode: "normal" | "back" | "pretranslate" | "notrim" = "normal",
     chatID = -1,
     cbsConditions: CbsConditions = {},
+    /** A render that captured its transform context earlier (`ChatBody`); null: the browser path. */
+    capturedTransform?: CapturedTransform | null,
 ) {
     let firstParsed = "";
     const additionalAssetMode = mode === "back" ? "back" : "normal";
     let char = typeof charArg === "string" ? findCharacterbyId(charArg) : charArg;
+    // The server transform's context (the flag on): the caller's, or captured before the first await.
+    const transform = char ? (capturedTransform === undefined ? captureTransform(chatID) : capturedTransform) : null;
 
     if (char && char.type !== "group") {
         data = await parseAdditionalAssets(data, char, additionalAssetMode, {
@@ -768,7 +773,19 @@ export async function ParseMarkdown(
     }
 
     if (char) {
-        data = (await processScriptFull(char, data, "editdisplay", chatID, cbsConditions)).data;
+        data = transform
+            ? (
+                  await serverProcessScript(
+                      char,
+                      data,
+                      "editdisplay",
+                      chatID,
+                      cbsConditions,
+                      transform,
+                      mode === "back" ? "background" : "message",
+                  )
+              ).data
+            : (await processScriptFull(char, data, "editdisplay", chatID, cbsConditions)).data;
     }
 
     if (firstParsed !== data && char && char.type !== "group") {

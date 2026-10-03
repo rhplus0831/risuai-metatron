@@ -1,5 +1,6 @@
 import { get } from "svelte/store";
 import { processScriptFull, risuChatParser } from "src/ts/process/scripts";
+import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
 import { type DeepReadonly, type Message } from "src/ts/storage/database.svelte";
 import { alertConfirm } from "src/ts/alert";
 import { DBState, selectedCharID } from "src/ts/stores.svelte";
@@ -92,16 +93,22 @@ export async function processRegexScript(
     msgIndex: number = -1,
 ): Promise<DeepReadonly<Message>> {
     const char = DBState.db.characters[get(selectedCharID)];
+    const transform = captureTransform(msgIndex);
+    const source = risuChatParser(msg.data, { chara: char, role: msg.role });
     const newData: string = (
-        await processScriptFull(
-            char,
-            risuChatParser(msg.data, { chara: char, role: msg.role }),
-            "editprocess",
-            msgIndex,
-            {
-                chatRole: msg.role,
-            },
-        )
+        transform
+            ? await serverProcessScript(
+                  char,
+                  source,
+                  "editprocess",
+                  msgIndex,
+                  { chatRole: msg.role },
+                  transform,
+                  "message",
+              )
+            : await processScriptFull(char, source, "editprocess", msgIndex, {
+                  chatRole: msg.role,
+              })
     ).data;
 
     return {

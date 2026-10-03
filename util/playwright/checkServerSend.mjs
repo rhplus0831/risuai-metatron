@@ -6,12 +6,26 @@
 // reload in the middle of a slow stream shows the checkpointed text and then the whole reply. With the
 // flag off, a send runs in the browser as before (no job).
 //
-// Usage: node util/playwright/checkServerSend.mjs
+// Usage:
+//   node util/playwright/checkServerSend.mjs
+//       dev: starts an isolated stack (`stack.mjs`).
+//   node util/playwright/checkServerSend.mjs --base http://localhost:6197 --password docker-pw \
+//       --provider-host host.docker.internal [--transform]
+//       production: a server already running the built app (e.g. the Docker image; a fresh volume's
+//       password is set by the check). The mock provider listens on every interface and the preset
+//       names it by `--provider-host`. The continue, preview, and abort steps need the dev modules
+//       and are skipped. `--transform` also turns `risu.serverTransform` on (rendering on the server).
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
 import { chromePath, startStack } from "./stack.mjs";
 
+const args = process.argv.slice(2);
+const option = (name) => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+};
+const withTransform = args.includes("--transform");
 const results = [];
 const check = (name, ok, detail) => {
     results.push(ok);
@@ -40,20 +54,31 @@ const provider = http.createServer(async (req, res) => {
     res.write("data: [DONE]\n\n");
     res.end();
 });
-await new Promise((r) => provider.listen(0, "127.0.0.1", () => r()));
-const providerUrl = `http://127.0.0.1:${provider.address().port}/v1/chat/completions`;
+const providerHost = option("--provider-host");
+await new Promise((r) => provider.listen(0, providerHost ? "0.0.0.0" : "127.0.0.1", () => r()));
+const providerUrl = `http://${providerHost ?? "127.0.0.1"}:${provider.address().port}/v1/chat/completions`;
 
-const stack = await startStack({
-    serverPort: 6201,
-    vitePort: 5301,
-    log: process.env.DEBUG ? (text) => /\[(Lua|Generation|LLM)\]/.test(text) && process.stderr.write(text) : undefined,
-});
+const stack = option("--base")
+    ? null
+    : await startStack({
+          serverPort: 6201,
+          vitePort: 5301,
+          log: process.env.DEBUG
+              ? (text) => /\[(Lua|Generation|LLM)\]/.test(text) && process.stderr.write(text)
+              : undefined,
+      });
+const base = option("--base") ?? stack.baseURL;
+const password = option("--password") ?? "playwright";
+console.log(`mode: ${stack ? "dev" : "production"} at ${base}${withTransform ? ", server transform on" : ""}`);
 const browser = await chromium.launch({ executablePath: chromePath, headless: true });
 try {
     const run = async (flagOn) => {
         const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
         if (flagOn) {
-            await context.addInitScript(() => localStorage.setItem("risu.serverGeneration", "1"));
+            await context.addInitScript((transform) => {
+                localStorage.setItem("risu.serverGeneration", "1");
+                if (transform) localStorage.setItem("risu.serverTransform", "1");
+            }, withTransform);
         }
         const page = await context.newPage();
         const pageErrors = [];
@@ -73,12 +98,12 @@ try {
         });
         const open = async () => {
             auth = null;
-            await page.goto(stack.baseURL);
+            await page.goto(base);
             for (let i = 0; i < 240; i++) {
                 const input = page.locator("input:visible").first();
                 const ok = page.getByRole("button", { name: "OK", exact: true });
                 if ((await ok.count()) > 0 && (await input.count()) > 0) {
-                    await input.fill("playwright");
+                    await input.fill(password);
                     await ok.first().click();
                 }
                 if (auth && (await ok.count()) === 0) {
@@ -90,7 +115,7 @@ try {
             throw new Error("the app did not load");
         };
         const api = async (p, init = {}) => {
-            const r = await fetch(stack.baseURL + p, {
+            const r = await fetch(base + p, {
                 ...init,
                 headers: { "risu-auth": auth, "x-resource-epoch": epoch, "content-type": "application/json" },
             });
@@ -224,7 +249,13 @@ try {
             check("flag off: no job was posted", jobPosts().length === 0, jobPosts());
         }
 
-        if (flagOn) {
+        if (flagOn && withTransform) {
+            check(
+                "flag on: the messages were rendered through the server transform",
+                requests.some((r) => r.method === "POST" && new URL(r.url).pathname === "/api/transform"),
+            );
+        }
+        if (flagOn && stack) {
             // A continue (the browser's `sendChat(-1, { continue })`, as `sendMain(true)` makes it).
             requests.length = 0;
             mode = { chunks: [" And", " more."], delayMs: 50 };
@@ -282,7 +313,8 @@ try {
                 aborted === false && last.startsWith("Slow one.") && !last.includes("Slow four."),
                 [aborted, last],
             );
-
+        }
+        if (flagOn) {
             // A reload in the middle of a slow stream: the checkpointed text, then the whole reply.
             mode = { chunks: ["Part A. ", "Part B. ", "Part C. ", "Part D. ", "Part E. ", "Part F."], delayMs: 900 };
             await input.fill("Tell me slowly");
@@ -321,7 +353,7 @@ try {
     await run(false);
 } finally {
     await browser.close();
-    await stack.stop();
+    await stack?.stop();
     provider.close();
     console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 }

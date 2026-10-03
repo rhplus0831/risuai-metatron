@@ -13,6 +13,7 @@
         type simpleCharacterArgument,
     } from "../../ts/parser/parser.svelte";
     import { getLLMCache, translateHTML } from "../../ts/translator/translator";
+    import { type CapturedTransform, captureTransform } from "../../ts/parser/transformClient";
     import { getModuleAssets } from "src/ts/process/modules";
     import { getCurrentCharacter } from "src/ts/storage/database.svelte";
     import { getFileSrc } from "src/ts/globalApi.svelte";
@@ -79,10 +80,14 @@
         chatID: number,
         requestedRevision: number,
         tries?: number,
+        /** A retry's: the operation's own capture (a retry keeps the chat, preset, and persona it began with). */
+        retryTransform?: CapturedTransform | null,
     ) => {
         // track 'translated' and 'retranslate' state
         translated;
         retranslate;
+        // The server transform's context, captured once for every stage and retry of this render (flag on).
+        const transform = retryTransform !== undefined ? retryTransform : captureTransform(chatID);
         const preservePendingContent = lastRenderedRevision !== null && requestedRevision !== lastRenderedRevision;
         let lastParsedQueue = "";
         let mode = "notrim" as const;
@@ -99,10 +104,17 @@
                                 ? await getLLMCache(data)
                                 : !DBState.db.legacyTranslation
                                   ? await getLLMCache(
-                                        await ParseMarkdown(data, charArg, "pretranslate", chatID, getCbsCondition()),
+                                        await ParseMarkdown(
+                                            data,
+                                            charArg,
+                                            "pretranslate",
+                                            chatID,
+                                            getCbsCondition(),
+                                            transform,
+                                        ),
                                     )
                                   : await getLLMCache(
-                                        await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition()),
+                                        await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform),
                                     );
 
                             translateText = cache !== null;
@@ -136,26 +148,33 @@
                 if (DBState.db.translatorType === "llm" && DBState.db.translateBeforeHTMLFormatting) {
                     await sleep(100);
                     translating = true;
-                    data = await translateHTML(data, false, charArg, chatID, retranslate);
+                    data = await translateHTML(data, false, charArg, chatID, retranslate, transform);
                     translating = false;
-                    const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition());
+                    const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform);
                     lastParsedQueue = marked;
                     lastCharArg = charArg;
                     transResult = marked;
                 } else if (!DBState.db.legacyTranslation) {
-                    const marked = await ParseMarkdown(data, charArg, "pretranslate", chatID, getCbsCondition());
+                    const marked = await ParseMarkdown(
+                        data,
+                        charArg,
+                        "pretranslate",
+                        chatID,
+                        getCbsCondition(),
+                        transform,
+                    );
                     translating = true;
                     const translated = await postTranslationParse(
-                        await translateHTML(marked, false, charArg, chatID, retranslate),
+                        await translateHTML(marked, false, charArg, chatID, retranslate, transform),
                     );
                     translating = false;
                     lastParsedQueue = translated;
                     lastCharArg = charArg;
                     transResult = translated;
                 } else {
-                    const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition());
+                    const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform);
                     translating = true;
-                    const translated = await translateHTML(marked, false, charArg, chatID, retranslate);
+                    const translated = await translateHTML(marked, false, charArg, chatID, retranslate, transform);
                     translating = false;
                     lastParsedQueue = translated;
                     lastCharArg = charArg;
@@ -168,7 +187,7 @@
 
                 return transResult;
             } else {
-                const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition());
+                const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform);
                 lastParsedQueue = marked;
                 lastCharArg = charArg;
                 return marked;
@@ -179,7 +198,7 @@
                 alertError(`Error while parsing chat message: ${translated}, ${error.message}, ${error.stack}`);
                 return data;
             }
-            const retried = await markParsing(data, charArg, chatID, requestedRevision, (tries ?? 0) + 1);
+            const retried = await markParsing(data, charArg, chatID, requestedRevision, (tries ?? 0) + 1, transform);
             if (retried !== undefined) {
                 lastParsedQueue = retried;
             }

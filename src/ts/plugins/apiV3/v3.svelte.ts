@@ -83,6 +83,7 @@ import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat, doingChat } from "src/ts/process/index.svelte";
 import { processScriptFull } from "src/ts/process/scripts";
+import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
 import { getModelInfo } from "src/ts/model/modellist";
 import type { ModelModeExtended } from "src/ts/process/request/shared";
 import type { ScriptMode } from "src/ts/process/scripts";
@@ -1431,8 +1432,31 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 return parsed;
             }
 
+            // The server transform (the flag on), for the hook's chat, preset, and persona when inside one.
+            const transform = captureTransform(chatID, {
+                chatRef: context?.chatRef ?? (target ? { chaId: char.chaId, chatId: chat.id } : null),
+                pluginContext: context,
+            });
             return (
-                await processScriptFull(char, parsed, "editprocess", chatID, cbsConditions, context?.chatRef, context)
+                transform
+                    ? await serverProcessScript(
+                          char,
+                          parsed,
+                          "editprocess",
+                          chatID,
+                          cbsConditions,
+                          transform,
+                          "message",
+                      )
+                    : await processScriptFull(
+                          char,
+                          parsed,
+                          "editprocess",
+                          chatID,
+                          cbsConditions,
+                          context?.chatRef,
+                          context,
+                      )
             ).data;
         },
         setChatToIndex: (characterIndex: number, chatIndex: number, chat: any) => {

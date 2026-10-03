@@ -45,7 +45,7 @@ UI:
 
 - `HypaV3Modal.svelte` and its children in `HypaV3Modal/` edit a synced copy of the current chat's `hypaV3Data` (passed down as the `hypaV3Data` prop) and save every change with `setChatMeta`: search, filters, categories, tags, bulk edit, resummarize, reset, and V2→V3 conversion. `sendChat` saves the memory data the memory functions return the same way (they get a detached copy of the chat).
 - The modal's resummarize and reroll actions capture the open chat (`currentChatRef`) and its plugin context (`capturePluginContext`) when the action begins and pass them to `summarize`, so the request is that chat's whatever is selected when it runs.
-- `HypaV3Modal/utils.ts` `processRegexScript`: routes messages through `risuChatParser` and `processScriptFull(..., 'editprocess')`.
+- `HypaV3Modal/utils.ts` `processRegexScript`: routes messages through `risuChatParser` and `processScriptFull(..., 'editprocess')` (with `risu.serverTransform` on, the server transform's `serverProcessScript`; `scripts-triggers.md`).
 - `HypaV3Progress.svelte` renders `hypaV3ProgressStore`.
 
 ## Flows

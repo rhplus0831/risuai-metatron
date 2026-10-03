@@ -120,7 +120,7 @@ Settings:
 - TTS hooks apply only on paths through `playAudio`. The GPT-SoVITS gain path must still call `runPostprocessorPipeline`.
 - `generateAIImage(..., 'inlay')` does not persist its result. The caller must persist it.
 - Keep the `.risutl` format constants and legacy-field syncing stable.
-- `translateHTML` must preserve markup boundaries and the `translate=no`/`script`/`style` skips. It applies `edittrans` after translating.
+- `translateHTML` must preserve markup boundaries and the `translate=no`/`script`/`style` skips. It applies `edittrans` after translating. With `risu.serverTransform` on, its `editdisplay` call runs on the server (`serverProcessScript`, target kind `translation`), with the context captured when `translateHTML` starts.
 - Aux-model keys use the persisted misspelling `seperate*`. `submodel` is not a `seperateModels` key.
 
 ## Recipes

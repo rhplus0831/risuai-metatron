@@ -28,6 +28,7 @@
 
     // The Phase 5 server pipeline's client-local switch (removed at the cutover).
     let serverGeneration = $state(readClientFlag("risu.serverGeneration"));
+    let serverTransform = $state(readClientFlag("risu.serverTransform"));
 
     let previewMode = $state("chat");
     let previewJoin = $state("yes");
@@ -132,6 +133,11 @@
         bind:check={serverGeneration}
         name={language.serverGenerationExperimental}
         onChange={(check) => writeClientFlag("risu.serverGeneration", check)}
+    />
+    <CheckInput
+        bind:check={serverTransform}
+        name={language.serverTransformExperimental}
+        onChange={(check) => writeClientFlag("risu.serverTransform", check)}
     />
 </div>
 

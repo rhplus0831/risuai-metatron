@@ -23,6 +23,7 @@ import { HypaProcesser } from "./memory/hypamemory";
 import { runLuaEditTrigger } from "./scriptings";
 import { capturePluginContext, invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../plugins/pluginHooks";
+import { resetTransformEffects } from "../parser/transformClient";
 import { runTrigger } from "./triggers";
 import { type ChatRef, currentChatRef, findChat, setMessageText } from "../storage/chatStore.svelte";
 import {
@@ -90,6 +91,7 @@ const processScriptCache = createScriptCache();
 
 export function resetScriptCache() {
     processScriptCache.reset();
+    resetTransformEffects();
 }
 
 export async function processScriptFull(

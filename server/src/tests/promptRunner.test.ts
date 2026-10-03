@@ -482,7 +482,7 @@ describe("a send", () => {
                     ]),
                 ],
             });
-            mode = { chunks: [" More", " text."], delayMs: 0 };
+            mode = { chunks: [" More", " text."], delayMs: 40 };
             const { events, terminal } = await job("continue", chaId);
             expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
             expect(
@@ -490,8 +490,17 @@ describe("a send", () => {
                     .filter((event) => event.type === "accepted" && event.messageId)
                     .map((event) => [event.messageId, event.text]),
             ).toEqual([["r1", "Again."]]);
+            // Each chunk is the whole text so far, the old reply included. The provider's two events may
+            // still coalesce on the wire under load (as in the send test above), so the chunks are
+            // checked as a growing sequence that ends with the whole reply, not as an exact list.
             const chunks = events.filter((event) => event.type === "chunk").map((event) => event.text);
-            expect(chunks.filter((text, i) => text !== chunks[i - 1])).toEqual(["Again. More", "Again. More text."]);
+            const distinct = chunks.filter((text, i) => text !== chunks[i - 1]);
+            expect(distinct.length).toBeGreaterThanOrEqual(1);
+            expect(distinct.every((text) => text.startsWith("Again. More"))).toBe(true);
+            for (let i = 1; i < distinct.length; i++) {
+                expect(distinct[i].startsWith(distinct[i - 1])).toBe(true);
+            }
+            expect(distinct.at(-1)).toBe("Again. More text.");
             const chat = await readChat(chaId);
             expect(texts(chat)).toEqual(["user:q", "char:Again. More text."]);
             expect(chat.data.message[1].chatId).toBe("r1");

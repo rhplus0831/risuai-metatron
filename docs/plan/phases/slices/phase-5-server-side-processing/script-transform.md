@@ -1,6 +1,6 @@
 # Slice: Script Transform
 
-Status: in progress (13a, the server, implemented 2026-10-03; 13b, the client, next).
+Status: landed (13a, the server, and 13b, the client, 2026-10-03).
 
 Phase: [Phase 5](../../phase-5-server-side-processing.md), step 8 (the read-only batch transform
 endpoint, the cache, the client integration, "Re-render"); PLAN.md Decision 5 (the display
@@ -171,3 +171,38 @@ over held workers and the cache alone), as `docs/structure/self-host-server.md` 
 tested separately: `GLGlobalVariables` (hashed with the variables), the preset and persona ids, and
 the greeting and background kinds (literal key parts); a handler reload and a hanging plugin are
 13b's (they happen in the tab).
+
+## 13b: what landed
+
+As `docs/structure/cbs-rendering.md` and `scripts-triggers.md` describe it
+(`src/ts/parser/transformClient.ts`):
+
+- Callers: `ParseMarkdown`'s `editdisplay` (kind `background` for `mode:'back'`, else `message`),
+  the translator's `editdisplay` (`translateHTML`, kind `translation`), the HypaV3 modal's and
+  the plugin `parseRisuChat`'s `editprocess` (kind `message`; `parseRisuChat` inside a hook
+  renders for the hook's chat, preset, and persona). Each captures its context before its first await; a message's render in `ChatBody.svelte` (`markParsing`) captures once at its start and passes the capture to every `ParseMarkdown` and `translateHTML` stage and to its own retries, so a chat, preset, or persona switch during the translation or asset awaits cannot give a later stage another context (challenge 1). Without a context (the flag off, no chat, a chat the server has not stored yet, no preset or persona) the caller keeps `processScriptFull`. The capture is untracked (`untrack`, as `capturePluginContext`): read inside a row's `$derived`, a tracked read of the lock version or the selection re-rendered every mounted row on any message's lock begin or end (found at the review).
+- Batching: calls are batched per context, mode, and handler set on the next animation frame, or after 16 ms when frames are withheld (a hidden tab; challenge 4); identical targets share one entry; a batch is split at the server's 64 targets and 4 MiB, and a text over 512 KiB fails alone. Each target is answered as soon as its result is known (a cached result does not wait for another target's plugin handlers). A failed target or request leaves its text as it came in; a batch, its chunks included, shows one toast on its first failure, target errors included (challenge 6); there is no browser fallback on the server path.
+- Plugin handlers: each pending text's handlers run in order with the captured plugin context, the texts side by side (as the tab renders messages). A chunk has 28 s for both calls and the handlers, within the server's 30 s, each call bounded as a whole (authentication included). The handlers end 5 s before that deadline: a handler still running then fails its own target, and the finished texts go out in the second call with its error (the handler is not stopped, plugin code cannot be cancelled, but no later handler of that text is started and its late result is ignored) (challenge 2, round 2).
+- Streaming: a message locked by a generation skips the transform (the browser steps run on the raw
+  text), and `Chat.svelte` renders it again when the lock ends.
+- "Re-render": an item of the message menu, shown with the flag on; the message's next render skips
+  the server cache (`noCache`) and bumps `ReloadChatPointer[idx]`. The bypass is taken by the first transform actually sent at the new generation (not by a render that captured and then returned early, or a locked one), so an older render still in flight cannot take it (challenge 3, round 2); an answer of an older render applies no emotions.
+- Emotions: applied once per tab and result key (forgotten on `resetScriptCache`, and when 4,096 keys were applied: a bounded ledger), never for a
+  `simple` character argument (as `applyScriptEffect`), never from an answer older than a
+  Re-render.
+- Handler set: a per-document nonce, the mode, and a version that changes when the mode's ordered hook list changes (bounded, within the server's 256 characters; challenge 5); results with handlers are not shared between tabs or reloads.
+- The client flag `risu.serverTransform` gets a toggle in `DevTool.svelte` next to the generation
+  one (not in the plan; the flag had no switch but the console).
+- No client cache beyond the server's: a rendered message stays rendered in its row, and a new
+  render asks the server, which answers from its cache.
+
+Browser check: `node util/playwright/checkServerTransform.mjs` (a chat with `editdisplay` regex
+scripts, a Lua `editDisplay` listener that sets a chat variable, and a display trigger; a mock
+provider): with the flag on the greeting and a message are transformed through `/api/transform`,
+the Lua variable is not stored, Re-render changes a server-evaluated `{{random}}`, a plugin
+`editdisplay` handler makes the second call and its text is rendered, the HypaV3 `editprocess`
+runs on the server, a streaming reply shows raw text and the completed one is transformed, and no
+page error; with the flag off no transform request is made and the variable is stored as today;
+the greeting and the message render the same on both paths. 21/21 on 2026-10-03.
+
+Tests (written at the review): `src/ts/parser/tests/transformClient.test.ts`, `e2e/serverTransform.spec.ts`, and the script-transform golden `e2e/transformGolden.spec.ts` (the whole of `markdown.json` on the flag-off and the server path, the server-evaluated random and clock messages by format; a v2 `display` trigger and both asset passes, flag on against flag off; inlays and dynamic assets not covered, they need stored inlays and an embedding model).

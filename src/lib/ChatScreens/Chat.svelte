@@ -21,12 +21,14 @@
         MenuIcon,
         PencilIcon,
         RefreshCcwIcon,
+        RotateCwIcon,
         SplitIcon,
         TrashIcon,
         UserIcon,
         Volume2Icon,
         Scissors,
     } from "@lucide/svelte";
+    import { rerenderMessage, serverTransformEnabled } from "src/ts/parser/transformClient";
     import {
         aiLawApplies,
         changeChatTo,
@@ -45,7 +47,7 @@
     import { sayTTS } from "src/ts/process/tts";
     import { DBState, ReloadChatPointer, CurrentTriggerIdStore, popupStore } from "src/ts/stores.svelte";
     import { capitalize, getUserIcon, getUserName, sleep } from "src/ts/util";
-    import { onDestroy, onMount } from "svelte";
+    import { onDestroy, onMount, untrack } from "svelte";
     import { type Unsubscriber } from "svelte/store";
     import { v4 as uuidv4, v4 } from "uuid";
     import { language } from "../../lang";
@@ -96,6 +98,8 @@
     let editTranslationText = $state("");
     let editTranslationKey: string | null = null;
     let chatBodyRevision = $state(0);
+    /** Whether this message was locked when last seen (the server transform skips a locked message). */
+    let wasLocked = false;
     let bodyRoot: HTMLElement | null = $state(null);
     interface Props {
         message?: string;
@@ -177,6 +181,17 @@
         streamingOptimizationMode = state.streamingOptimizationMode;
         rawStreamingText = state.rawStreamingText;
     }
+
+    // The server transform shows a locked (streaming) message raw: it renders again once the lock ends.
+    $effect(() => {
+        const now = locked;
+        if (wasLocked && !now && serverTransformEnabled()) {
+            untrack(() => {
+                chatBodyRevision += 1;
+            });
+        }
+        wasLocked = now;
+    });
 
     /** The chat this message belongs to, captured before any await (a later chat switch cannot redirect a write). */
     function messageTarget(): { ref: ChatRef; id: string } | null {
@@ -1213,6 +1228,29 @@
 {/snippet}
 
 {#snippet minorIconButtonsBody(showNames: boolean)}
+    {#if messageId && serverTransformEnabled()}
+        <!-- The server transform keeps a message as first rendered: this renders it again, bypassing the cache. -->
+        <button
+            class="flex items-center hover:text-blue-500 transition-colors button-icon-rerender"
+            title={language.rerender}
+            onclick={() => {
+                const target = messageTarget();
+                if (!target) {
+                    return;
+                }
+                rerenderMessage(target.ref, target.id);
+                ReloadChatPointer.update((v) => {
+                    v[idx] = (v[idx] ?? 0) + 1;
+                    return v;
+                });
+            }}
+        >
+            <RotateCwIcon size={20} />
+            {#if showNames}
+                <span class="ml-1">{language.rerender}</span>
+            {/if}
+        </button>
+    {/if}
     {#if DBState.db.enableBookmark}
         <button
             class="flex items-center hover:text-blue-500 transition-colors button-icon-bookmark {isBookmarked

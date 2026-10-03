@@ -76,7 +76,7 @@ Plugins:
 1. `bootstrap.ts:loadData` → `loadPlugins` → `clearPluginHooks` → `loadV3Plugins`.
 2. `executePluginV3` builds a hidden iframe, then `new SandboxHost(makeRisuaiAPIV3(...))`, then `host.run(code)`.
 3. Hook entry points in the host. The runners of the hooks that have a chat capture the call context (`capturePluginContext` of their chat) before their first await, or take the one they were given, and call each hook through `invokeHook`:
-   - `processScriptFull` iterates `pluginHooks.edit*`.
+   - `processScriptFull` iterates `pluginHooks.edit*`. With `risu.serverTransform` on (Phase 5 slice 13b, `parser/transformClient.ts`), a render's `editdisplay` and `editprocess` handlers run between the transform's two calls: the server answers the texts before the handlers and keeps the rest; the tab runs the mode's handlers in order on each text with the captured context (`invokeHook`; the texts side by side), and sends the results, or a handler's error per target, to `/api/transform/continue`; the handlers end 23 s after the first call (5 s before the chunk's 28 s, kept for the second call): a handler still running then fails its own target, and the other texts go out in the second call (it is not stopped, but no later handler of that text is started). The handler set's identity is per document (a nonce, the mode, and a version that changes with the mode's ordered hook list), so a reload or a plugin change does not reuse a cached result made with other handlers.
    - `requestChatData` runs the before/after replacers, and `requestPlugin` for providers.
    - `sendChat:runChatOutputListeners` (the send passes its context down to its scripts, requests, and recursions).
 
