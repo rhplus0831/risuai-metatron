@@ -3,13 +3,14 @@
 // provider (an OpenAI-compatible SSE stream; a non-streamed request is a memory summary) and a mock
 // image service (OpenAI-compatible images): a send and a reroll, a group send (one reply per active
 // member, in order), a send that summarizes with SupaMemory, a Lua button that generates an image
-// (the inlay stored), two tabs of one chat (the second refused while the first generates, then
-// showing the reply), and a backup restore during a slow send (the job ends, the data is the
+// (the inlay stored), two tabs of one chat (a send after the other tab's open is not a conflict and
+// keeps the local edit; with the flags on the second tab shows the running reply's checkpoint and
+// the final reply without a reload, and its own send is refused with `chatGenerating`), and a backup restore during a slow send (the job ends, the data is the
 // backup's, the tab reloads). The send, continue, abort, and reload-mid-stream cases are
 // `checkServerSend.mjs`'s; buttons, alerts, and manual triggers `checkServerButton.mjs`'s and
 // `checkServerTrigger.mjs`'s; rendering `checkServerTransform.mjs`'s.
 //
-// Usage: node util/playwright/checkStopDMatrix.mjs
+// Usage: node util/playwright/checkStopDMatrix.mjs (FLAGS=off: the browser path; the server-job checks are skipped)
 import http from "node:http";
 import path from "node:path";
 import { mkdirSync } from "node:fs";
@@ -113,7 +114,8 @@ const longText = (i) =>
 
 try {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-    if (process.env.FLAGS !== "off") {
+    const flagsOn = process.env.FLAGS !== "off";
+    if (flagsOn) {
         await context.addInitScript(() => {
             localStorage.setItem("risu.serverGeneration", "1");
             localStorage.setItem("risu.serverTransform", "1");
@@ -357,7 +359,7 @@ try {
             JSON.stringify(["user:Hello there", "char:Second reply."]),
         chat?.message.map((m) => `${m.role}:${m.data}`),
     );
-    check("reroll: it ran as a server job", jobPosts().length === 1, jobPosts());
+    if (flagsOn) check("reroll: it ran as a server job", jobPosts().length === 1, jobPosts());
     await page
         .getByText("Second reply.")
         .first()
@@ -377,7 +379,7 @@ try {
         sayings,
         messages: chat?.message,
     });
-    check("group: a group job", jobPosts()[0]?.kind === "group", jobPosts());
+    if (flagsOn) check("group: a group job", jobPosts()[0]?.kind === "group", jobPosts());
 
     // A send that summarizes with SupaMemory.
     await openChar(page, memId, "Message number 23");
@@ -411,76 +413,145 @@ try {
     check("image: the inlay token is stored in the chat", !!inlayToken, chat?.message.at(-1));
     const inlay = inlayToken ? await api(`/api/resources/inlays/${encodeURIComponent(inlayToken)}`) : null;
     check("image: the inlay record is stored", inlay?.status === 200 && inlay.body?.data?.type === "image", inlay);
-    check("image: a command job", jobPosts()[0]?.kind === "command", jobPosts());
+    if (flagsOn) check("image: a command job", jobPosts()[0]?.kind === "command", jobPosts());
 
     // Two tabs of one chat.
+    const characterOf = async (chaId) => (await api(`/api/resources/characters/${chaId}`)).body?.data ?? null;
     await openChar(page, tabsId);
     const pageB = await context.newPage();
     watch(pageB, "B");
     await openApp(pageB, stack.baseURL);
     await pageB.waitForTimeout(1500);
+    // Tab B's open stamps the character's `lastInteraction` (a write on tab A's base). Tab A then
+    // edits the character and sends: the stamp-only remote change is rebased, not a conflict.
     await openChar(pageB, tabsId);
-    // Observed (not counted): tab B's open wrote the character's `lastInteraction`, so tab A's next
-    // send conflicts on it (both paths show the "another tab" alert); what becomes of the send.
+    const stampB = (await characterOf(tabsId))?.lastInteraction ?? 0;
     await page.bringToFront();
+    await page.evaluate(async (id) => {
+        const { DBState } = await import("/src/ts/stores.svelte.ts");
+        DBState.db.characters.find((c) => c?.chaId === id).desc = "Edited in tab A";
+    }, tabsId);
     requests.length = 0;
-    mode = { chunks: ["Conflict reply."], delayMs: 50 };
-    await send(page, "Conflicted send");
-    await page.waitForTimeout(5000);
-    const conflictChat = await chatOf(tabsId);
-    console.log(
-        "observed: a send right after the other tab's open:",
-        JSON.stringify({
-            alert: /Another tab or device changed this data/.test(await bodyText()),
-            jobs: jobPosts().length,
-            stored: conflictChat?.message.map((m) => `${m.role}:${m.data}`),
-            input: await page.locator("textarea.input-text").first().inputValue(),
-        }),
-    );
-    const okA = page.getByRole("button", { name: "OK", exact: true });
-    if ((await okA.count()) > 0) await okA.first().click();
-    await page.waitForTimeout(8000);
-    // Then from a fresh tab A (the latest data), while tab B is open on the chat.
-    await openApp(page, stack.baseURL);
-    await page.waitForTimeout(1500);
-    await openChar(page, tabsId);
-    const baseCount = (await chatOf(tabsId))?.message.length ?? 0;
-    requests.length = 0;
-    mode = { chunks: ["Tab one. ", "Tab two. ", "Tab three. ", "Tab four."], delayMs: 700 };
-    await send(page, "From tab A");
-    await page.getByText("Tab one.").first().waitFor({ timeout: 20000 });
-    await send(pageB, "From tab B");
-    const refusal = /This chat is generating a reply|A character is still being generated/;
-    await pageB
-        .getByText(refusal)
-        .first()
-        .waitFor({ timeout: 10000 })
-        .catch(() => {});
-    const refusedText = (await bodyText(pageB)).match(refusal)?.[0] ?? null;
-    console.log("observed: tab B's refusal:", refusedText, "jobs posted by B:", jobPosts("B").length);
-    check("two tabs: the second tab is refused while the first generates", refusedText !== null, {
-        posts: jobPosts("B"),
-        tail: (await bodyText(pageB)).slice(-400),
-    });
-    const okB = pageB.getByRole("button", { name: "OK", exact: true });
-    if ((await okB.count()) > 0) await okB.first().click();
-    chat = await waitStored(tabsId, (c) => c.message.at(-1)?.data === "Tab one. Tab two. Tab three. Tab four.", 20000);
+    mode = { chunks: ["Rebased reply."], delayMs: 50 };
+    await send(page, "Send after the other tab's open");
+    chat = await waitStored(tabsId, (c) => c.message.at(-1)?.data === "Rebased reply.", 20000);
     check(
-        "two tabs: only tab A's send is stored",
-        JSON.stringify(chat?.message.slice(baseCount).map((m) => m.data)) ===
-            JSON.stringify(["From tab A", "Tab one. Tab two. Tab three. Tab four."]),
-        chat?.message.map((m) => m.data),
+        "two tabs: a send after the other tab's open is not a conflict",
+        chat?.message.at(-1)?.data === "Rebased reply.",
+        {
+            alert: /Another tab or device changed this data|A conflict discarded/.test(await bodyText()),
+            jobs: jobPosts().length,
+            stored: chat?.message.map((m) => `${m.role}:${m.data}`),
+        },
     );
-    await pageB.bringToFront();
-    await pageB.waitForTimeout(5000);
-    console.log("observed: tab B shows the reply without a reload:", (await pageB.getByText("Tab four.").count()) > 0);
-    await openApp(pageB, stack.baseURL);
-    await pageB.waitForTimeout(1500);
-    await openChar(pageB, tabsId);
-    check("two tabs: the second tab shows the reply after a reload", (await pageB.getByText("Tab four.").count()) > 0, {
-        tail: (await bodyText(pageB)).slice(-400),
-    });
+    check(
+        "two tabs: no conflict notice",
+        !/Another tab or device changed this data|A conflict discarded/.test(await bodyText()),
+        (await bodyText()).slice(-400),
+    );
+    await page.waitForTimeout(3000);
+    const stored = await characterOf(tabsId);
+    check(
+        "two tabs: tab A's edit and the later stamp are both stored",
+        stored?.desc === "Edited in tab A" && (stored?.lastInteraction ?? 0) >= stampB,
+        { desc: stored?.desc, lastInteraction: stored?.lastInteraction, stampB },
+    );
+    if (flagsOn) {
+        // A job whose stream stalls past the server's 3 s checkpoint: tab B, with the chat open,
+        // shows the checkpoint and then the final reply without a reload.
+        const baseCount = chat?.message.length ?? 0;
+        requests.length = 0;
+        mode = { chunks: ["Tab one. ", "Tab two. ", "Tab three. ", "Tab four."], delayMs: 4500 };
+        await send(page, "From tab A");
+        await page.getByText("Tab one.").first().waitFor({ timeout: 20000 });
+        await pageB.bringToFront();
+        const live = await pageB
+            .getByText("Tab one.")
+            .first()
+            .waitFor({ timeout: 9000 })
+            .then(() => true)
+            .catch(() => false);
+        // Still running: tab A's send has not ended and the stored reply is not the final text.
+        const runningAtLive =
+            (await page.evaluate(async () => {
+                const { doingChat } = await import("/src/ts/process/index.svelte.ts");
+                let value = false;
+                doingChat.subscribe((current) => (value = current))();
+                return value;
+            })) && (await chatOf(tabsId))?.message.at(-1)?.data !== "Tab one. Tab two. Tab three. Tab four.";
+        check("two tabs: the second tab shows a checkpoint of the running reply, no reload", live && runningAtLive, {
+            live,
+            runningAtLive,
+            tail: (await bodyText(pageB)).slice(-300),
+        });
+        // Every alert node that appears is counted, so a second alert after the first is seen too.
+        await pageB.evaluate(() => {
+            window.__generatingAlerts = 0;
+            new MutationObserver((records) => {
+                for (const record of records) {
+                    for (const node of record.addedNodes) {
+                        if (node.textContent?.includes("This chat is generating a reply"))
+                            window.__generatingAlerts += 1;
+                    }
+                }
+            }).observe(document.body, { childList: true, subtree: true });
+        });
+        await send(pageB, "From tab B");
+        const generating = pageB.getByText("This chat is generating a reply");
+        await generating
+            .first()
+            .waitFor({ timeout: 10000 })
+            .catch(() => {});
+        await pageB.waitForTimeout(3000);
+        const tailB = await bodyText(pageB);
+        const alerts = await pageB.evaluate(() => window.__generatingAlerts);
+        check(
+            "two tabs: the second tab's send shows chatGenerating once, not a save error",
+            alerts === 1 && !/Local changes could not be saved/.test(tailB),
+            { alerts, tail: tailB.slice(-400) },
+        );
+        check(
+            "two tabs: the second tab keeps its input",
+            (await pageB.locator("textarea.input-text").first().inputValue()) === "From tab B",
+            await pageB.locator("textarea.input-text").first().inputValue(),
+        );
+        const okB = pageB.getByRole("button", { name: "OK", exact: true });
+        if ((await okB.count()) > 0) await okB.first().click();
+        await pageB.locator("textarea.input-text").first().fill("");
+        chat = await waitStored(
+            tabsId,
+            (c) => c.message.at(-1)?.data === "Tab one. Tab two. Tab three. Tab four.",
+            40000,
+        );
+        check(
+            "two tabs: only tab A's send is stored",
+            JSON.stringify(chat?.message.slice(baseCount).map((m) => m.data)) ===
+                JSON.stringify(["From tab A", "Tab one. Tab two. Tab three. Tab four."]),
+            chat?.message.map((m) => m.data),
+        );
+        const final = await pageB
+            .getByText("Tab four.")
+            .first()
+            .waitFor({ timeout: 20000 })
+            .then(() => true)
+            .catch(() => false);
+        check("two tabs: the second tab shows the final reply without a reload", final, {
+            tail: (await bodyText(pageB)).slice(-400),
+        });
+    }
     await pageB.close();
+    await page.bringToFront();
+    // Tab A's send ends after its reply is stored (the job's tail); a character switch waits for it.
+    for (let until = Date.now() + 30000; Date.now() < until;) {
+        const busy = await page.evaluate(async () => {
+            const { doingChat } = await import("/src/ts/process/index.svelte.ts");
+            let value = true;
+            doingChat.subscribe((current) => (value = current))();
+            return value;
+        });
+        if (!busy) break;
+        await page.waitForTimeout(250);
+    }
 
     // A restore during a slow send. The snapshot is a copy of the database now (no route takes one).
     await openChar(page, restoreId);

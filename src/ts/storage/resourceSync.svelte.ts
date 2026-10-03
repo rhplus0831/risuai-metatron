@@ -1,3 +1,4 @@
+import isEqual from "lodash/isEqual";
 import { tick, untrack } from "svelte";
 import { get } from "svelte/store";
 import { v4 as uuidv4 } from "uuid";
@@ -39,6 +40,8 @@ import {
     type SecretPath,
 } from "../../../shared/llmSecrets.ts";
 import { alertError, alertNormal, alertNormalWait } from "../alert";
+import { startChatChangeNotices } from "./chatChangeNotices";
+import { assignsInherited } from "./mutationValidation";
 import { DBState, selectedCharID } from "../stores.svelte";
 import type { character, Chat, Database, groupChat } from "./database.svelte";
 import {
@@ -73,6 +76,7 @@ import {
     deferredReloads,
     finishDeferredReload,
     idleChatRefreshes,
+    chatNoticeSeq,
     finishIdleChatRefresh,
     settleUnloadCheckpoint,
     takeChatWork,
@@ -1215,6 +1219,190 @@ function showReloadedNotice() {
     }, 10_000);
 }
 
+/** A record's own fields in a null-prototype dictionary (no client-only character keys), or null when it is not an object. */
+function storedFields(data: unknown): Record<string, unknown> | null {
+    if (typeof data !== "object" || data === null || Array.isArray(data)) {
+        return null;
+    }
+    const copy = Object.create(null) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(data)) {
+        if (!CHARACTER_LOCAL_KEYS.has(key)) {
+            copy[key] = value;
+        }
+    }
+    return copy;
+}
+
+const ABSENT = Symbol("absent");
+const fieldOf = (record: Record<string, unknown>, field: string): unknown =>
+    Object.hasOwn(record, field) ? record[field] : ABSENT;
+const isStamp = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+/** The `statics` counts (`incrementStatic`). */
+const STATIC_COUNTS = new Set(["imports", "messages"]);
+/**
+ * Values the character screen fills in for an absent field when it opens a character (the
+ * `Toggles.svelte` checkbox binding): the only absent-field values taken while a generation runs on
+ * the character.
+ */
+const OPEN_DEFAULTS: Readonly<Record<string, unknown>> = { supaMemory: false };
+
+/**
+ * What a conflicting record's server copy changed against the saved base, if every change is one
+ * this client can take without losing or reinterpreting anything, else null. The changes are the
+ * values the mirror must take (ABSENT: delete the field). Allowed, field by field (top level):
+ * - a field the server holds as this client does (both made the same change);
+ * - a field the base did not have and this client does not have either (another tab filled it in,
+ *   such as a default its character screen binds); the server's value is taken. While a generation
+ *   runs on the character (`generating`), only an `OPEN_DEFAULTS` value: anything else waits for
+ *   the generation's deferral, so the running generation never sees a new setting;
+ * - a character's `lastInteraction`: the later of two finite stamps (another tab opened or sent to
+ *   the character);
+ * - a `statics` count: best effort, the server's count plus this client's increments since the
+ *   base (`imports`, `messages`; a count both tabs raised to the same value, or one a lost answer
+ *   already holds, may be off by those increments).
+ * Anything else (a substantive remote edit, even of a field this client did not touch) is a
+ * conflict as before, so related fields (a group's member arrays) and a running generation's
+ * character are never combined from two sources.
+ */
+function benignChanges(
+    kind: string,
+    saved: Record<string, unknown>,
+    remote: Record<string, unknown>,
+    local: Record<string, unknown>,
+    generating: boolean,
+): Map<string, unknown> | null {
+    const changes = new Map<string, unknown>();
+    for (const field of new Set([...Object.keys(saved), ...Object.keys(remote), ...Object.keys(local)])) {
+        const [base, theirs, ours] = [fieldOf(saved, field), fieldOf(remote, field), fieldOf(local, field)];
+        if (kind === RESOURCE_KIND.characters && field === "lastInteraction") {
+            if (isEqual(theirs, ours) || (isStamp(theirs) && ours === ABSENT)) {
+                if (!isEqual(theirs, ours)) {
+                    changes.set(field, theirs);
+                }
+                continue;
+            }
+            if (!isStamp(theirs) && theirs === base) {
+                continue;
+            }
+            if (!isStamp(theirs) || !isStamp(ours)) {
+                return null;
+            }
+            if (theirs > ours) {
+                changes.set(field, theirs);
+            }
+            continue;
+        }
+        if (kind === COLLECTION_KIND.statics && STATIC_COUNTS.has(field)) {
+            const counted = (value: unknown) => (value === ABSENT ? 0 : value);
+            const [b, t, o] = [counted(base), counted(theirs), counted(ours)];
+            if (!isStamp(b) || !isStamp(t) || !isStamp(o)) {
+                return null;
+            }
+            const merged = t + o - b;
+            const value = Number.isSafeInteger(merged) && merged >= 0 ? merged : Math.max(t, o);
+            if (value !== o) {
+                changes.set(field, value);
+            }
+            continue;
+        }
+        if (isEqual(theirs, base) || isEqual(theirs, ours)) {
+            continue;
+        }
+        if (
+            base === ABSENT &&
+            ours === ABSENT &&
+            field !== "__proto__" &&
+            (!generating || (Object.hasOwn(OPEN_DEFAULTS, field) && isEqual(theirs, OPEN_DEFAULTS[field])))
+        ) {
+            changes.set(field, theirs);
+            continue;
+        }
+        return null;
+    }
+    return changes;
+}
+
+/**
+ * A conflicting character or `statics` record whose server change this client can take
+ * (`benignChanges`): another tab opened the character (its `lastInteraction` stamp and the
+ * defaults its screen fills in) or counted a send. The changes go into the mirror, the base moves
+ * to the server's revision, and the key stays dirty, so the next cycle writes the merged record.
+ * Nothing is discarded and no reload notice is shown; a field taken from the server is announced to
+ * the remote-change listeners (caches derived from the record). Not for a create, a delete, another
+ * kind, a character whose reload already waits for its generation, or a taken field the mirror object
+ * only inherits (`assignsInherited`).
+ */
+function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
+    const isCharacter = item.kind === RESOURCE_KIND.characters;
+    if (!(isCharacter || item.kind === COLLECTION_KIND.statics) || item.revision === null) {
+        return false;
+    }
+    if (isCharacter && deferredCharacters.has(item.id)) {
+        return false;
+    }
+    const base = persisted.get(key);
+    const projected = projectRecord(item.kind, item.id);
+    if (!base || projected === undefined) {
+        return false;
+    }
+    let saved: Record<string, unknown> | null;
+    try {
+        saved = storedFields(JSON.parse(base.text));
+    } catch {
+        return false;
+    }
+    const remote = storedFields(item.data);
+    const local = storedFields(JSON.parse(projected));
+    const generating = isCharacter && generatingCharacter() === item.id;
+    const changes = remote && saved && local ? benignChanges(item.kind, saved, remote, local, generating) : null;
+    if (!changes) {
+        return false;
+    }
+    const target = (isCharacter ? findMirrorCharacter(item.id) : (DBState.db.statics ??= {} as Database["statics"])) as
+        Record<string, unknown> | undefined;
+    if (!target) {
+        return false;
+    }
+    // A field the mirror object only inherits (`toString`, `constructor`, ...) cannot be assigned in
+    // place on a Svelte proxy (`assignsInherited`): the merge would drop it and the next write would
+    // remove it from the server. Such a record conflicts as before.
+    if ([...changes].some(([field, value]) => value !== ABSENT && assignsInherited(target, field))) {
+        return false;
+    }
+    // Every value is prepared before the mirror changes, so a value that cannot be copied applies nothing.
+    let prepared: [string, unknown][];
+    try {
+        prepared = [...changes].map(([field, value]) => [field, value === ABSENT ? ABSENT : structuredClone(value)]);
+    } catch {
+        return false;
+    }
+    for (const [field, value] of prepared) {
+        if (value === ABSENT) {
+            delete target[field];
+        } else {
+            target[field] = value;
+        }
+    }
+    // The saved base is the server's record. The local projection stands for it when the two are
+    // equal (no echo write for a key-order difference); otherwise the next cycle writes the merge.
+    const merged = projectRecord(item.kind, item.id)!;
+    persisted.set(key, {
+        revision: item.revision,
+        text: isEqual(JSON.parse(merged), item.data) ? merged : recordText(item.kind, item.data),
+    });
+    markKey(key);
+    if (prepared.some(([field]) => !(isCharacter && field === "lastInteraction"))) {
+        for (const listener of remoteChangeListeners) {
+            try {
+                listener(item.kind, item.id);
+            } catch (error) {
+                console.error("[Save]", error);
+            }
+        }
+    }
+    return true;
+}
+
 /**
  * Another tab or device wrote records this batch was based on. Reads them back and puts the server
  * version into the mirror, unless the server already holds exactly what this client sent (a retry
@@ -1263,9 +1451,8 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
         (read.chats ?? []) as RemoteChat[],
         generatingChats,
     );
-    if ((generating || recovered.blocked) && !generatingNoticeShown) {
-        generatingNoticeShown = true;
-        alertNormal(language.chatGenerating);
+    if (generating || recovered.blocked) {
+        showGeneratingNotice();
     }
     let reloaded = recovered.reloaded;
     for (const characterId of recovered.refresh) {
@@ -1277,6 +1464,9 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
         const text = item.revision === null ? null : recordText(item.kind, item.data);
         if (text !== null && sent.get(key) === text) {
             persisted.set(key, { revision: item.revision!, text });
+            continue;
+        }
+        if (mergeConcurrentChange(item, key)) {
             continue;
         }
         if (item.kind === RESOURCE_KIND.characters && generatingCharacter() === item.id) {
@@ -1359,11 +1549,14 @@ async function refreshIdleChats() {
     if (refs.length === 0) {
         return;
     }
+    // Taken before the read: a notice that arrives while the read is in flight keeps its mark.
+    const notices = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, chatNoticeSeq(ref)]));
     const read = await readRefs([], {
         chats: refs.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
     });
     for (const chat of read.chats ?? []) {
-        if (finishIdleChatRefresh(chat as RemoteChat) && chat.revision === null) {
+        const notice = notices.get(`${chat.characterId}\u0000${chat.id}`) ?? 0;
+        if (finishIdleChatRefresh(chat as RemoteChat, notice) && chat.revision === null) {
             hydrate.add(chat.characterId);
         }
     }
@@ -1604,6 +1797,31 @@ export function beginMutationScope(): MutationScope {
     return { resource: discardSequence, chat: chatDiscardSequence() };
 }
 
+/** `flushResources` refused: a change it must save waits for a generation (this tab's or a server job's). */
+export class GenerationBlockedError extends Error {
+    constructor() {
+        super("A character is still being generated; try again when it finishes");
+        this.name = "GenerationBlockedError";
+    }
+}
+
+/** How many times `chatGenerating` was shown by the save adapter (a caller tells whether its flush showed it). */
+let generatingNotices = 0;
+
+export function generatingNoticeCount(): number {
+    return generatingNotices;
+}
+
+/** Shows `chatGenerating` once per refusal episode (until no saved work waits for a job any more). */
+function showGeneratingNotice() {
+    if (generatingNoticeShown) {
+        return;
+    }
+    generatingNoticeShown = true;
+    generatingNotices += 1;
+    alertNormal(language.chatGenerating);
+}
+
 /**
  * Saves everything that was changed before this call. Resolves once it is on the server, with the
  * keys whose local edits a conflict replaced since the call (with `scope`, since the scope began);
@@ -1647,7 +1865,7 @@ export async function flushResources(options: { scope?: MutationScope } = {}): P
             unsettledChatObligations(chatObligations).some(isChatDeferred) ||
             [...jobBlockedRecords.keys()].some(isRecordJobBlocked)
         ) {
-            throw new Error("A character is still being generated; try again when it finishes");
+            throw new GenerationBlockedError();
         }
         if (timer) {
             clearTimeout(timer);
@@ -1716,6 +1934,7 @@ export function startResourceSync() {
     setChatWorkListener(() => {
         schedule();
     });
+    startChatChangeNotices();
     document.addEventListener("visibilitychange", () => {
         if (document.visibilityState !== "hidden" || halted) {
             return;

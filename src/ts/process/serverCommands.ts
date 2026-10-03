@@ -22,7 +22,7 @@ import { type ChatRef, findChat, heldChatRevision } from "../storage/chatStore.s
 import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 import { getDatabase, type character, type groupChat } from "../storage/database.svelte";
 import { selectedPersona, selectedPreset } from "../storage/forwarding.svelte";
-import { flushResources } from "../storage/resourceSync.svelte";
+import { flushResources, GenerationBlockedError, generatingNoticeCount } from "../storage/resourceSync.svelte";
 import { checkPersonaBinded, sleep } from "../util";
 
 /** How often a follow whose socket closed before the job's end attaches again. */
@@ -215,6 +215,7 @@ export async function runServerJob(
         viewport: { width: window.innerWidth, height: window.innerHeight },
         browserLanguage: navigator.language,
     };
+    const notices = generatingNoticeCount();
     try {
         const { discarded } = await flushResources();
         if (discarded.length > 0) {
@@ -222,6 +223,14 @@ export async function runServerJob(
             return refused;
         }
     } catch (error) {
+        if (error instanceof GenerationBlockedError) {
+            // The chat or character is being generated (another tab's job): the same notice as a
+            // busy chat, unless this flush's conflict recovery has just shown it.
+            if (generatingNoticeCount() === notices) {
+                alertError(language.chatGenerating);
+            }
+            return refused;
+        }
         alertError(`Local changes could not be saved: ${errorText(error)}`);
         return refused;
     }

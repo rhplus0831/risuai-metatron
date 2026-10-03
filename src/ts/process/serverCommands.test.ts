@@ -31,6 +31,8 @@ const stubs = vi.hoisted(() => ({
     apply: vi.fn(),
     alertError: vi.fn(),
     flush: vi.fn<() => Promise<{ discarded: string[] }>>(),
+    /** `generatingNoticeCount`: how many times the save adapter showed `chatGenerating`. */
+    notices: vi.fn<() => number>(() => 0),
     findChat: vi.fn(() => ({})),
     held: vi.fn<() => string | null>(() => "e:1:1"),
     bound: vi.fn<() => { id: string } | null>(() => null),
@@ -39,6 +41,13 @@ const stubs = vi.hoisted(() => ({
 class BusyError extends Error {
     constructor(readonly jobId: string) {
         super("busy");
+    }
+}
+/** `flushResources` refused because a change it must save waits for a generation. */
+class BlockedError extends Error {
+    constructor() {
+        super("A character is still being generated; try again when it finishes");
+        this.name = "GenerationBlockedError";
     }
 }
 /** The resource client's error: `status` 0 is a request without an answer. */
@@ -77,7 +86,11 @@ vi.mock("../storage/forwarding.svelte", () => ({
     selectedPersona: () => ({ id: "selected" }),
     selectedPreset: () => ({ id: "preset" }),
 }));
-vi.mock("../storage/resourceSync.svelte", () => ({ flushResources: stubs.flush }));
+vi.mock("../storage/resourceSync.svelte", () => ({
+    flushResources: stubs.flush,
+    GenerationBlockedError: BlockedError,
+    generatingNoticeCount: stubs.notices,
+}));
 vi.mock("../util", () => ({ checkPersonaBinded: stubs.bound, sleep: async () => {} }));
 
 type Module = typeof import("./serverCommands");
@@ -103,6 +116,7 @@ beforeEach(async () => {
     stubs.held.mockReset().mockReturnValue("e:1:1");
     stubs.bound.mockReset().mockReturnValue(null);
     stubs.flush.mockReset().mockResolvedValue({ discarded: [] });
+    stubs.notices.mockReset().mockReturnValue(0);
     stubs.abort.mockReset().mockResolvedValue(undefined);
     vi.spyOn(console, "error").mockImplementation(() => {});
     commands = await import("./serverCommands");
@@ -518,6 +532,64 @@ describe("runServerJob", () => {
         });
         expect(stubs.create).not.toHaveBeenCalled();
         expect(stubs.abort).not.toHaveBeenCalled();
+    });
+
+    // Stop D fixes (C2): a flush refused because a change waits for a generation (another tab's
+    // job) is reported as `chatGenerating`, not as a save error, and only once with the adapter's.
+    it("shows chatGenerating for a flush refused for a generation unless the adapter's recovery showed it during the flush, and posts nothing", async () => {
+        // Refused at once (no recovery during this flush): the send shows the notice itself.
+        stubs.flush.mockRejectedValueOnce(new BlockedError());
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(stubs.alertError.mock.calls).toEqual([["generating"]]);
+        // The flush's conflict recovery showed it (the count moved during the flush): no second alert.
+        let count = 0;
+        stubs.notices.mockImplementation(() => count);
+        stubs.flush.mockImplementationOnce(async () => {
+            count += 1;
+            throw new BlockedError();
+        });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(stubs.alertError).toHaveBeenCalledTimes(1);
+        // Another explicit send in the same episode (the adapter does not show it again): feedback again.
+        stubs.flush.mockRejectedValueOnce(new BlockedError());
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(stubs.alertError.mock.calls).toEqual([["generating"], ["generating"]]);
+        expect(stubs.create).not.toHaveBeenCalled();
+        expect(follows()).toHaveLength(0);
+    });
+
+    it("keeps a plain Error with the generation text, and any other flush error, on the save-error path", async () => {
+        stubs.flush.mockRejectedValueOnce(
+            new Error("A character is still being generated; try again when it finishes"),
+        );
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        stubs.flush.mockRejectedValueOnce(new Error("offline"));
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
+            "Local changes could not be saved: A character is still being generated; try again when it finishes",
+            "Local changes could not be saved: offline",
+        ]);
+        expect(stubs.create).not.toHaveBeenCalled();
+    });
+
+    it("reads the notice count before the flush: a count moved before this send started does not hide its notice", async () => {
+        let count = 3;
+        stubs.notices.mockImplementation(() => count);
+        stubs.flush.mockRejectedValueOnce(new BlockedError());
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(stubs.alertError.mock.calls).toEqual([["generating"]]);
+        count = 4;
+        stubs.flush.mockRejectedValueOnce(new BlockedError());
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(stubs.alertError.mock.calls).toEqual([["generating"], ["generating"]]);
+    });
+
+    it("still reports another tab's busy job at the create as chatGenerating after a successful flush", async () => {
+        stubs.create.mockRejectedValueOnce(new BusyError("theirs"));
+        stubs.read.mockResolvedValueOnce(null);
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(stubs.alertError.mock.calls).toEqual([["generating"]]);
+        expect(follows()).toHaveLength(0);
     });
 });
 

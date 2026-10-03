@@ -144,6 +144,12 @@ const quarantinedOrders = new Map<string, string>();
 const deferred = new Set<string>();
 /** Chats acknowledged on an older base, awaiting an idle read of the server's complete state. */
 const staleChats = new Set<string>();
+/**
+ * Chats another tab of this browser announced as changed on the server (`chatChangeNotices.ts`) →
+ * the sequence of the latest notice. Only an idle read that began after that notice clears it.
+ */
+const noticedChats = new Map<string, number>();
+let noticeSeq = 0;
 /** Locked messages (`messageKeyOf`) → their running generation. */
 const generations = new Map<string, Generation>();
 /** Finals in producer order, including generations superseded by auto-continue before their ack. */
@@ -1656,6 +1662,7 @@ export function seedChats(chats: readonly ChatRecord[], orders: readonly ChatOrd
     chatRevisions.clear();
     orderRevisions.clear();
     staleChats.clear();
+    noticedChats.clear();
     for (const chat of chats) {
         chatRevisions.set(keyOf(chat.characterId, chat.id), chat.revision);
     }
@@ -1861,9 +1868,10 @@ export function adoptCharacter(chaId: string) {
 /** Drops all chat state of a character that is deleted (the server deletes its chats with it). */
 export function forgetCharacter(chaId: string) {
     const prefix = `${chaId}\u0000`;
-    for (const key of [...staleChats, ...deferred]) {
+    for (const key of [...staleChats, ...deferred, ...noticedChats.keys()]) {
         if (key.startsWith(prefix)) {
             staleChats.delete(key);
+            noticedChats.delete(key);
             deferred.delete(key);
             dropGenerations(key);
         }
@@ -2166,6 +2174,7 @@ export function ackChatWork(
             if (result.revision === null) {
                 chatRevisions.delete(group.key);
                 staleChats.delete(group.key);
+                noticedChats.delete(group.key);
             } else if (!result.stale || !chatRevisions.has(group.key)) {
                 // A group applied on an older revision leaves the older base: this client has not
                 // seen every change up to the new revision.
@@ -2548,13 +2557,18 @@ function applyRemoteChat(server: RemoteChat) {
 function canRefreshChat(ref: ChatRef): boolean {
     const key = keyOf(ref.chaId, ref.chatId);
     return (
-        !pending.has(key) && !inflight.has(key) && !isChatGenerating(ref) && !deferred.has(key) && !quarantined.has(key)
+        !pending.has(key) &&
+        !inflight.has(key) &&
+        !isChatGenerating(ref) &&
+        !deferred.has(key) &&
+        !quarantined.has(key) &&
+        !isJobBlocked(key)
     );
 }
 
-/** Stale chats eligible for a read inside the save cycle, never alongside a batch. */
+/** Stale and noticed chats eligible for a read inside the save cycle, never alongside a batch. */
 export function idleChatRefreshes(): ChatRef[] {
-    return [...staleChats]
+    return [...new Set([...staleChats, ...noticedChats.keys()])]
         .map((key) => {
             const [chaId, chatId] = key.split("\u0000");
             return { chaId, chatId };
@@ -2562,10 +2576,22 @@ export function idleChatRefreshes(): ChatRef[] {
         .filter(canRefreshChat);
 }
 
-/** Rechecks eligibility after the read's await; busy chats retain their refresh mark for later. */
-export function finishIdleChatRefresh(server: RemoteChat): boolean {
+/** The sequence of a chat's latest notice (0 without one), taken before its read for `finishIdleChatRefresh`. */
+export function chatNoticeSeq(ref: ChatRef): number {
+    return noticedChats.get(keyOf(ref.chaId, ref.chatId)) ?? 0;
+}
+
+/**
+ * Rechecks eligibility after the read's await; busy chats retain their refresh mark for later. A
+ * notice that arrived during the read (a later sequence than `notice`) keeps its mark: the read
+ * may predate the change it announced.
+ */
+export function finishIdleChatRefresh(server: RemoteChat, notice = 0): boolean {
     const key = keyOf(server.characterId, server.id);
-    if (!staleChats.has(key) || !canRefreshChat({ chaId: server.characterId, chatId: server.id })) {
+    if (
+        (!staleChats.has(key) && !noticedChats.has(key)) ||
+        !canRefreshChat({ chaId: server.characterId, chatId: server.id })
+    ) {
         return false;
     }
     const held = chatRevisions.get(key);
@@ -2573,7 +2599,26 @@ export function finishIdleChatRefresh(server: RemoteChat): boolean {
         // A read older than a hydration that arrived meanwhile.
         return false;
     }
+    if ((noticedChats.get(key) ?? 0) <= notice || server.revision === null) {
+        noticedChats.delete(key);
+    }
     applyRemoteChat(server);
+    return true;
+}
+
+/**
+ * Another tab of this browser announced that a server job changed this chat: the chat is read
+ * again once it is idle here (no local work, generation, retry block, deferral, or quarantine).
+ * Ignored for a chat the mirror does not hold. Nothing is written and no job is owned.
+ */
+export function markChatNoticed(ref: ChatRef): boolean {
+    const key = keyOf(ref.chaId, ref.chatId);
+    if (!mirrorChat(ref) || !chatRevisions.has(key)) {
+        return false;
+    }
+    noticeSeq += 1;
+    noticedChats.set(key, noticeSeq);
+    notifyWork();
     return true;
 }
 

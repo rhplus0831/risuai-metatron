@@ -134,7 +134,7 @@ slice re-derives its Identifiers paragraph when it is implemented. The substanti
 
 ```
 step 0 ─→ 1 → 2 [A] → baseline capture → 3 → 4 → 5 → 6 → 7a ─(parity gate)→ 7b [B]
-        → 8a → 8b → 9 [C] → 9b → 10 → 11 → 12 → 13 [D] → 14 [E]
+        → 8a → 8b → 9 [C] → 9b → 10 → 11 → 12 → 13 [D] → fixes → 14 [E]
 ```
 
 - **Step 0** applies the phase-file edits with your answers to the owner questions. Docs only,
@@ -198,6 +198,17 @@ step 0 ─→ 1 → 2 [A] → baseline capture → 3 → 4 → 5 → 6 → 7a �
     trigger scripts stays (it matches the browser).
 - **Stop D** is the parity gate before the cutover. Every slice is in, the flag-on matrix
   passes, and both golden tests are green.
+- **Stop D decisions** (owner, 2026-10-03):
+  - a pre-cutover fix segment before slice 14 (`stop-d-fixes.md`) takes five Stop D defects: the
+    two-tab `lastInteraction` conflict that blocks a flag-on send; a second tab not showing a
+    running server job's reply until a reload; the second tab's refusal shown as the pre-send flush
+    error instead of `chatGenerating`; graph memory's `writeMemory` on a fresh chat and its empty
+    `readMemory`; the MCP clients' `\r\n` event separators, the session id of an event-stream
+    `initialize` answer, and the rotated refresh token;
+  - the MCP tool-call budget stays at 64 calls per job;
+  - a server job may reach any MCP server URL for now (no allowlist);
+  - deferred: the `getFileSrc` hang on a repeated asset read (both paths, its own task) and the
+    Re-render's duplicate target (one wasted render, the result is right).
 - **Stop E** is the cutover and closeout.
 - Between stops I report and continue. A review problem or a slice stopping condition is always a
   stop.

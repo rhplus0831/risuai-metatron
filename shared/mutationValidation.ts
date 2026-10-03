@@ -134,7 +134,7 @@ export function detachPatch(
  * prototype) and any key `target` only inherits (`constructor`, `toString`, `hasOwnProperty`, ...),
  * which Svelte's `$state` proxy accepts without storing.
  */
-function assignsInherited(target: object, key: string): boolean {
+export function assignsInherited(target: object, key: string): boolean {
     return key === "__proto__" || (!Object.hasOwn(target, key) && key in target);
 }
 
