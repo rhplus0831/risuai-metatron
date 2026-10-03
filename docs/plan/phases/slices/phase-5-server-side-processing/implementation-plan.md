@@ -210,6 +210,17 @@ step 0 ─→ 1 → 2 [A] → baseline capture → 3 → 4 → 5 → 6 → 7a �
   - deferred: the `getFileSrc` hang on a repeated asset read (both paths, its own task) and the
     Re-render's duplicate target (one wasted render, the result is right).
 - **Stop E** is the cutover and closeout.
+- **Stop E decisions** (owner, 2026-10-03), on the cutover at `12ed3bae`:
+  - the translator's `edittrans` regex stays in the tab as the recorded client exception;
+  - the credential capture's gaps (the other provider families' sends, the OpenRouter, NanoGPT,
+    and Ollama account and discovery calls, previews, Whisper through its component) stay recorded
+    in the phase file's validation record; the phase closes with them;
+  - the chat module's dead browser generation producers, the `proxyStreamJobs` route, and the
+    test-only provider oracles go to Phase 6's closeout (`closeout-and-docs.md`);
+  - Phase 6 keeps the workflow exception of Phases 3 to 5 (a test adapter per slice, one commit
+    per slice, user stops);
+  - carried unchanged: the `getFileSrc` hang (its own task), and a Continue from an empty input
+    with "say nothing" on appending "_says nothing_" first (as before the cutover).
 - Between stops I report and continue. A review problem or a slice stopping condition is always a
   stop.
 

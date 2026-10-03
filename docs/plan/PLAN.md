@@ -4,8 +4,8 @@ Date: 2026-09-28
 
 Status: decisions confirmed on 2026-09-28. Phase 0 done on 2026-09-29, Phases 1 and 2 implemented
 on 2026-09-29, Phase 3 on 2026-09-30, Phase 4 on 2026-10-01 (see their phase files). Phase 5
-planned on 2026-10-01, implemented through its cutover on 2026-10-03 (generation, scripts, and
-provider calls on the server; the browser generation path removed).
+planned on 2026-10-01, implemented and closed on 2026-10-03 (generation, scripts, and provider
+calls on the server; the browser generation path removed).
 
 ## Goal
 

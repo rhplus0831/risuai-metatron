@@ -64,7 +64,7 @@ and reports which criterion fails and why, instead of documenting around it.
 
 - Phase 5 cutover deleted `fetchViaProxyJobWs`, `proxyJobWs.ts`, and its test, and left the
   server kind one phase; no client calls `/proxy-stream-jobs` (`rg 'proxy-stream-jobs' src`
-  empty). If the owner chose to delete it in Phase 5, this item is already done.
+  empty). The owner kept it for this phase at Phase 5's Stop E.
 - Phase 5 recorded the transform's per-request Lua cost as a Phase 6 concern without a number.
 - Phase 5 kept `hypaVector` and `tfCache` for the three browser Transformers users and moved
   the memory vectors to `save/data/vectors.sqlite`.
@@ -73,14 +73,14 @@ and reports which criterion fails and why, instead of documenting around it.
 
 ## Proposed decisions
 
-- `proxyStreamJobs` (proposed): deleted with its test, registration, GC, dispose, dispatcher
+- `proxyStreamJobs` (confirmed at Phase 5's Stop E): deleted with its test, registration, GC, dispose, dispatcher
   prefix (the `vite.config.ts` entry already went at the Phase 5 cutover); `self-host-server.md`'s routes table, Flows
   ("Proxying"), Invariants ("Streaming job protocol"), and Tests lose their entries. The
   local-network policy on `/proxy2` is unchanged.
 - Browser caches (proposed): kept and listed in `persistence.md` as device caches of
   browser-side features, not user data (`mcp-tool-calls` was already removed at the Phase 5
   cutover: tool calls live only with their chat). No cleanup.
-- Left by the Phase 5 cutover for this closeout (recorded in its slice file): the chat module's
+- Left by the Phase 5 cutover for this closeout (recorded in its slice file, confirmed at Stop E): the chat module's
   browser generation producers with no caller (`beginGeneration`, `checkpointGeneration`,
   `endGeneration`, `checkpointAllGenerations`, `setStreamingState`, `hasRunningGenerations`, the
   `generations`/`generationFinals` maps and the generation branches of the write and unload

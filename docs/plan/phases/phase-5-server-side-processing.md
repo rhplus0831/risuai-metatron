@@ -1,7 +1,7 @@
 # Phase 5: Server-Side Processing
 
-Status: planned on 2026-10-01; implemented through the cutover on 2026-10-03 (slice 14; Stop E
-follows). The execution plan, the slice amendments, and the owner's answers are in
+Status: planned on 2026-10-01; implemented on 2026-10-03 (the cutover is slice 14, `12ed3bae`);
+closed at Stop E on 2026-10-03. The execution plan, the slice amendments, and the owner's answers are in
 [`slices/phase-5-server-side-processing/implementation-plan.md`](slices/phase-5-server-side-processing/implementation-plan.md).
 
 Depends on: Phase 4. Implements Decisions 5 and 6 and the Phase 5 parts of Decisions 3 and 4 in
