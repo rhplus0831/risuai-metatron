@@ -1735,6 +1735,101 @@ describe("createJobTools", () => {
         expect(fake.log.questions[0].signal!.aborted).toBe(true);
         store.close();
     });
+
+    it("stores a rotated refresh token with the job's write, keeping the client data, and a recreated client refreshes with it and stores the next (Stop D fixes)", async () => {
+        const store = memoryStore();
+        const refreshKind = kind(RESOURCE_KIND.authRefreshes);
+        const row = store.get(refreshKind, SINGLETON_RESOURCE_ID)!;
+        const other = { url: "http://other.test/mcp", refreshToken: "keep", tokenUrl: "http://other.test/token" };
+        store.applyChanges({
+            ops: [
+                {
+                    kind: refreshKind,
+                    id: SINGLETON_RESOURCE_ID,
+                    baseRevision: row.revision,
+                    data: [
+                        {
+                            url: "http://mcp.test/mcp",
+                            clientId: "c1",
+                            clientSecret: "s1",
+                            refreshToken: "r1",
+                            tokenUrl: "http://mcp.test/token",
+                        },
+                        other,
+                    ],
+                },
+            ],
+        });
+        // A token endpoint that rotates: each grant spends its token and issues the next.
+        const auth = { current: "r1", issued: 0, valid: null as string | null, grants: [] as Record<string, string>[] };
+        const handler: Handler = (call, index) => {
+            if (call.url === "http://mcp.test/token") {
+                const form = Object.fromEntries(new URLSearchParams(call.raw));
+                auth.grants.push(form);
+                if (form.refresh_token !== auth.current) {
+                    return json({ error: "invalid_grant" }, 400);
+                }
+                auth.issued++;
+                auth.valid = `a${auth.issued}`;
+                auth.current = `r${auth.issued + 1}`;
+                return json({ access_token: auth.valid, refresh_token: auth.current });
+            }
+            if (call.url.startsWith("http://mcp.test/.well-known/")) {
+                throw new Error("no full login in this test");
+            }
+            return auth.valid && call.headers.authorization === `Bearer ${auth.valid}`
+                ? streamable()(call, index)
+                : json({ error: "unauthorized" }, 401);
+        };
+        const listOnce = async () => {
+            const { registry } = registryOver(handler, store);
+            const tools = createJobTools({
+                job: fakeJob({ write: (build) => store.applyChanges(build() as never, { epoch: store.epoch() }) }),
+                scope: fakeScope(["http://mcp.test/mcp"]),
+                state: createJobToolState(),
+                registry,
+                store,
+                kinds,
+                services: fakeServices().services,
+            });
+            const set = await tools.list(ctxOf());
+            registry.dispose();
+            return set.descriptors.map((d) => d.name);
+        };
+        const stored = () => store.get(refreshKind, SINGLETON_RESOURCE_ID)!.data;
+
+        expect(await listOnce()).toEqual(["echo"]);
+        expect(auth.grants).toEqual([
+            { grant_type: "refresh_token", refresh_token: "r1", client_id: "c1", client_secret: "s1" },
+        ]);
+        expect(stored()).toEqual([
+            {
+                url: "http://mcp.test/mcp",
+                clientId: "c1",
+                clientSecret: "s1",
+                refreshToken: "r2",
+                tokenUrl: "http://mcp.test/token",
+            },
+            other,
+        ]);
+
+        // A new registry (a restart: a new client, no access token) reads the stored record.
+        auth.valid = null;
+        expect(await listOnce()).toEqual(["echo"]);
+        expect(auth.grants.map((grant) => grant.refresh_token)).toEqual(["r1", "r2"]);
+        expect(auth.grants[1]).toMatchObject({ client_id: "c1", client_secret: "s1" });
+        expect(stored()).toEqual([
+            {
+                url: "http://mcp.test/mcp",
+                clientId: "c1",
+                clientSecret: "s1",
+                refreshToken: "r3",
+                tokenUrl: "http://mcp.test/token",
+            },
+            other,
+        ]);
+        store.close();
+    });
 });
 
 describe("internal:dice on the server", () => {
@@ -1944,6 +2039,174 @@ describe("the bindings' ask with a withdrawing signal", () => {
             ).rejects.toBeInstanceOf(LuaJobFatalError);
             expect(lost.bindings.fatal()?.message).toContain(outcome);
             lost.store.close();
+        }
+    });
+});
+
+describe("McpClient: the Stop D fixes (slice 13d)", () => {
+    /** An event-stream response whose body is `chunks`, as given. */
+    const eventStream = (chunks: string[], headers: Record<string, string> = {}) =>
+        new Response(
+            new ReadableStream<Uint8Array>({
+                start(controller) {
+                    for (const chunk of chunks) {
+                        controller.enqueue(enc.encode(chunk));
+                    }
+                    controller.close();
+                },
+            }),
+            { status: 200, headers: { "content-type": "text/event-stream", ...headers } },
+        );
+
+    it("reads CRLF, CR, and space-less events, takes the session id of an event-stream initialize answer, and sends it on every later request; a later answer's id does not replace it", async () => {
+        const server = recorder((call) => {
+            const rpc = call.rpc;
+            if (rpc?.id === undefined) {
+                return accepted();
+            }
+            const message = (result: unknown) => JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result });
+            switch (rpc.method) {
+                case "initialize": {
+                    // CRLF line ends, `data:` without the space, the answer split inside a CRLF.
+                    const text = `: hello\r\nevent:message\r\ndata:${message(INFO)}\r\n\r\n`;
+                    const cut = text.lastIndexOf("\r\n\r\n") + 1;
+                    return eventStream([text.slice(0, cut), text.slice(cut)], { "Mcp-Session-Id": "s-1" });
+                }
+                case "tools/list": {
+                    // The JSON split over two data lines, CRLF line ends; another session id on the answer.
+                    const body = message({ tools: [tool("echo")] });
+                    const half = body.indexOf(',"result"');
+                    return eventStream([`data:${body.slice(0, half)}\r\ndata:${body.slice(half)}\r\n\r\n`], {
+                        "Mcp-Session-Id": "other",
+                    });
+                }
+                case "tools/call":
+                    // CR line ends only.
+                    return eventStream([
+                        `event: message\rdata: ${message({ content: [{ type: "text", text: "cr" }] })}\r\r`,
+                    ]);
+                default:
+                    return eventStream([`data:${message({})}\n\n`]);
+            }
+        });
+        const mcp = client(server.fetchImpl);
+        expect((await mcp.checkHandshake(ioOf())).serverInfo.name).toBe("mock");
+        expect(priv(mcp).sessionId).toBe("s-1");
+        expect((await mcp.getToolList(ioOf())).map((d) => d.name)).toEqual(["echo"]);
+        expect(await mcp.callTool("echo", {}, ioOf())).toEqual([{ type: "text", text: "cr" }]);
+        expect(methods(server.calls)).toEqual(["initialize", "notifications/initialized", "tools/list", "tools/call"]);
+        expect(server.calls[0].headers["mcp-session-id"]).toBeUndefined();
+        expect(server.calls.slice(1).map((call) => call.headers["mcp-session-id"])).toEqual(["s-1", "s-1", "s-1"]);
+        expect(priv(mcp).sessionId).toBe("s-1");
+        mcp.destroy();
+    });
+
+    /** A server that answers 401 until the refresh grant `answer` gives a token, then serves. */
+    function refreshServer(answer: () => Response | Promise<Response>) {
+        const refreshes: Record<string, string>[] = [];
+        let token: string | null = null;
+        const server = recorder(async (call, index) => {
+            if (call.url === "http://mcp.test/token") {
+                const form = Object.fromEntries(new URLSearchParams(call.raw));
+                if (form.grant_type === "refresh_token") {
+                    refreshes.push(form);
+                    const response = await answer();
+                    const body = (await response
+                        .clone()
+                        .json()
+                        .catch(() => null)) as { access_token?: unknown } | null;
+                    if (response.status === 200 && typeof body?.access_token === "string") {
+                        token = body.access_token;
+                    }
+                    return response;
+                }
+                token = "logged-in";
+                return json({ access_token: "logged-in", refresh_token: "from-login" });
+            }
+            if (call.url === "http://mcp.test/.well-known/oauth-authorization-server") {
+                return json({ error: "not found" }, 404);
+            }
+            if (call.url === "http://mcp.test/register") {
+                return json({ client_id: "cid", client_secret: "csec" }, 201);
+            }
+            if (call.url === "https://account.sionyw.com/oauthhelper/api") {
+                return json({ success: true, payload: { code: "code" } });
+            }
+            return token && call.headers.authorization === `Bearer ${token}`
+                ? streamable()(call, index)
+                : json({ error: "unauthorized" }, 401);
+        });
+        return { ...server, refreshes };
+    }
+    const stored = { clientId: "c", clientSecret: "s", refreshToken: "r1", tokenUrl: "http://mcp.test/token" };
+
+    it("writes nothing for a refresh answer whose new refresh token is missing, empty, or not a string (the stored one stays)", async () => {
+        for (const rotated of [undefined, "", 42, null, { token: "x" }]) {
+            const server = refreshServer(() => json({ access_token: "a1", refresh_token: rotated }));
+            const mcp = client(server.fetchImpl, { refresh: stored });
+            const writeRefresh = vi.fn();
+            await mcp.checkHandshake(ioOf({ writeRefresh }));
+            expect(server.refreshes.map((form) => form.refresh_token)).toEqual(["r1"]);
+            expect(priv(mcp).accessToken).toBe("a1");
+            expect(writeRefresh).not.toHaveBeenCalled();
+            mcp.destroy();
+        }
+    });
+
+    it("never stores the refresh token of an answer that gives no usable access token or fails: the full login writes its own record", async () => {
+        const answers = [
+            () => json({ refresh_token: "r2" }),
+            () => json({ access_token: "", refresh_token: "r2" }),
+            () => json({ access_token: 7, refresh_token: "r2" }),
+            () => json({ access_token: "a1", refresh_token: "r2" }, 400),
+        ];
+        for (const answer of answers) {
+            const server = refreshServer(answer);
+            const mcp = client(server.fetchImpl, { refresh: stored });
+            const written: unknown[] = [];
+            await mcp.checkHandshake(ioOf({ writeRefresh: (entry) => written.push(entry) }));
+            expect(written).toEqual([
+                {
+                    clientId: "cid",
+                    clientSecret: "csec",
+                    refreshToken: "from-login",
+                    tokenUrl: "http://mcp.test/token",
+                },
+            ]);
+            expect(priv(mcp).accessToken).toBe("logged-in");
+            mcp.destroy();
+        }
+    });
+
+    it("writes no rotated token and publishes no access token when the job ends or the client closes while the refresh answer is out", async () => {
+        for (const end of ["abort", "close"] as const) {
+            let release!: () => void;
+            const server = refreshServer(
+                () =>
+                    new Promise<Response>((resolve) => {
+                        release = () => resolve(json({ access_token: "late", refresh_token: "r2" }));
+                    }),
+            );
+            const mcp = client(server.fetchImpl, { refresh: stored });
+            const controller = new AbortController();
+            const writeRefresh = vi.fn();
+            const handshake = mcp.checkHandshake(ioOf({ writeRefresh }, controller.signal));
+            await waitFor(() => server.refreshes.length === 1);
+            if (end === "abort") {
+                controller.abort(new Error("job ended"));
+            } else {
+                mcp.destroy();
+            }
+            release();
+            if (end === "abort") {
+                await expect(handshake).rejects.toThrow("job ended");
+            } else {
+                await expect(handshake).rejects.toBeInstanceOf(McpClientClosedError);
+            }
+            await sleep(20);
+            expect(writeRefresh).not.toHaveBeenCalled();
+            expect(priv(mcp).accessToken).toBeNull();
+            mcp.destroy();
         }
     });
 });

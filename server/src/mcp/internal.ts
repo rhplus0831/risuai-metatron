@@ -366,7 +366,8 @@ export function createInternalMcps(deps: InternalToolDeps): Record<string, Inter
                         },
                         search: async (names) => {
                             const processer = new HypaProcesser(services.embeddings(ctx));
-                            await processer.embedDocuments(names);
+                            // `addText` stores the vectors `similaritySearch` ranks (`embedDocuments` only returns them).
+                            await processer.addText(names);
                             services.fence(ctx);
                             return async (term) => {
                                 const found = await processer.similaritySearch(term);

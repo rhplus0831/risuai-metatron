@@ -2,6 +2,7 @@ import { v4 } from "uuid";
 import { fetchNative, openURL } from "../../globalApi.svelte";
 import { alertInput } from "../../alert";
 import { type MCPTool, MCPToolHandler } from "../../../../shared/mcp/risuaccess/host.ts";
+import { parseSseEvent, SseFramer } from "../../../../shared/mcp/sse.ts";
 
 export { type MCPTool, MCPToolHandler };
 
@@ -89,6 +90,11 @@ export class MCPClient {
         removeListener: (callback: (message: JsonRPC) => void | Promise<void>) => void;
     };
     onDestroy: (() => void) | null = null;
+    /**
+     * Set by `destroy()`: the client starts no request, handshake, or login step, and an answer that
+     * arrives later publishes nothing (`assertOpen`).
+     */
+    private closed = false;
     serverInfo: {
         protocolVersion: string;
         capabilities: {
@@ -134,9 +140,15 @@ export class MCPClient {
     }
 
     async connectSSE(stream: ReadableStream, abortController?: AbortController) {
+        if (this.closed) {
+            // A retired client reads no stream (its `destroy()` could not abort this one).
+            stream.cancel().catch(() => {});
+            return;
+        }
         const reader = stream.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let buffer = "";
+        // Events are framed in bytes (`shared/mcp/sse.ts`: CRLF, LF, or CR line ends) and handled in order.
+        const events: string[] = [];
+        const framer = new SseFramer((event) => events.push(event));
         this.sses.push({
             stream: stream,
             abortController: abortController,
@@ -146,83 +158,76 @@ export class MCPClient {
             const { done, value } = await reader.read();
             if (done) break;
 
-            buffer += decoder.decode(value, { stream: true });
-
-            let parts = buffer.split("\n\n");
-            buffer = parts.pop() || "";
-
-            for (const part of parts) {
-                let lines = part.split("\n");
-                let data = "";
-                let eventName = "";
-                for (const line of lines) {
-                    if (line.startsWith("data: ")) {
-                        data += line.slice(6) + "\n";
-                    } else if (line.startsWith("event: ")) {
-                        eventName = line.slice(7).trim();
-                    }
-                }
-
-                data = data.trim();
-                if (data) {
-                    console.log("MCP SSE Data", {
-                        eventName: eventName,
-                        data: data,
-                    });
-
-                    if (eventName === "endpoint") {
-                        const sseEventDetail: SseEventDetail = {
-                            mcpClientObjectId: this.mcpClientObjectId,
-                            data: {
-                                jsonrpc: "2.0",
-                                id: "connected",
-                                result: {
-                                    endpoint: data,
-                                },
-                            },
-                        };
-                        document.dispatchEvent(
-                            new CustomEvent("mcp-sse", {
-                                detail: sseEventDetail,
-                            }),
-                        );
-                    } else {
-                        try {
-                            const jsonData = JSON.parse(data) as JsonRPC | JsonPing;
-                            if (this.sseIdDone.has(jsonData.id)) {
-                                continue;
-                            }
-
-                            //@ts-expect-error JsonRPC type doesn't have method property, but JsonPing does
-                            if (jsonData.method === "ping") {
-                                await this.request(
-                                    "response",
-                                    {},
-                                    {
-                                        notifications: true,
-                                        initMethod: "none",
-                                        id: jsonData.id,
-                                    },
-                                );
-                                this.sseIdDone.add(jsonData.id);
-                                continue;
-                            }
-
-                            const sseEventDetail: SseEventDetail = {
-                                mcpClientObjectId: this.mcpClientObjectId,
-                                data: jsonData,
-                            };
-                            document.dispatchEvent(
-                                new CustomEvent("mcp-sse", {
-                                    detail: sseEventDetail,
-                                }),
-                            );
-                            this.sseIdDone.add(jsonData.id);
-                        } catch (error) {}
-                    }
-                }
+            framer.push(value);
+            for (let i = 0; i < events.length; i++) {
+                await this.handleSseEvent(events[i]);
             }
+            events.length = 0;
         }
+    }
+
+    private async handleSseEvent(text: string) {
+        const parsed = parseSseEvent(text);
+        const data = parsed.data.trim();
+        const eventName = parsed.event.trim();
+        if (!data) {
+            return;
+        }
+        console.log("MCP SSE Data", {
+            eventName: eventName,
+            data: data,
+        });
+
+        if (eventName === "endpoint") {
+            const sseEventDetail: SseEventDetail = {
+                mcpClientObjectId: this.mcpClientObjectId,
+                data: {
+                    jsonrpc: "2.0",
+                    id: "connected",
+                    result: {
+                        endpoint: data,
+                    },
+                },
+            };
+            document.dispatchEvent(
+                new CustomEvent("mcp-sse", {
+                    detail: sseEventDetail,
+                }),
+            );
+            return;
+        }
+        try {
+            const jsonData = JSON.parse(data) as JsonRPC | JsonPing;
+            if (this.sseIdDone.has(jsonData.id)) {
+                return;
+            }
+
+            //@ts-expect-error JsonRPC type doesn't have method property, but JsonPing does
+            if (jsonData.method === "ping") {
+                await this.request(
+                    "response",
+                    {},
+                    {
+                        notifications: true,
+                        initMethod: "none",
+                        id: jsonData.id,
+                    },
+                );
+                this.sseIdDone.add(jsonData.id);
+                return;
+            }
+
+            const sseEventDetail: SseEventDetail = {
+                mcpClientObjectId: this.mcpClientObjectId,
+                data: jsonData,
+            };
+            document.dispatchEvent(
+                new CustomEvent("mcp-sse", {
+                    detail: sseEventDetail,
+                }),
+            );
+            this.sseIdDone.add(jsonData.id);
+        } catch (error) {}
     }
 
     async request(
@@ -234,6 +239,7 @@ export class MCPClient {
             id?: string | number;
         } = {},
     ): Promise<RPCRequestResult> {
+        this.assertOpen();
         options ??= {};
         const initMethod = options.initMethod || "none";
         let httpStatus = 500;
@@ -341,6 +347,11 @@ export class MCPClient {
             }
 
             const response = await fetchNative(url, requestParams);
+            if (this.closed) {
+                // The client was retired while the request was out: its answer is not read.
+                response.body?.cancel().catch(() => {});
+                this.assertOpen();
+            }
 
             if (this.sseEndpoint && options.notifications) {
                 return {
@@ -382,17 +393,24 @@ export class MCPClient {
             }
 
             if (responsePromise) {
-                return responsePromise;
+                // An answer that arrives after the client was retired is not taken.
+                return responsePromise.then((answer) => {
+                    this.assertOpen();
+                    return answer;
+                });
             }
 
             if ((this.sessionId && response.status === 404) || (this.accessToken && response.status === 401)) {
-                this.destroy();
+                this.reset();
                 return this.request(method, params, options);
             }
 
             const contentType = response.headers.get("Content-Type") || "";
 
             if (contentType.includes("text/event-stream")) {
+                if (response.headers.has("Mcp-Session-Id") && initMethod !== "none") {
+                    this.sessionId = response.headers.get("Mcp-Session-Id");
+                }
                 this.connectSSE(response.body, abortController);
 
                 const v = new Promise<RPCRequestResult>((resolve) => {
@@ -412,7 +430,10 @@ export class MCPClient {
                     };
                     document.addEventListener("mcp-sse", sseListener);
                 });
-                return v;
+                return v.then((answer) => {
+                    this.assertOpen();
+                    return answer;
+                });
             }
 
             if (!contentType.includes("application/json")) {
@@ -438,14 +459,19 @@ export class MCPClient {
             if (response.headers.has("Mcp-Session-Id") && initMethod !== "none") {
                 this.sessionId = response.headers.get("Mcp-Session-Id");
             }
+            const rpc = await response.json();
+            this.assertOpen();
             return {
-                rpc: await response.json(),
+                rpc,
                 http: {
                     status: response.status,
                     headers: Object.fromEntries(response.headers.entries()),
                 },
             };
         } catch (error) {
+            if (this.closed) {
+                throw error;
+            }
             return {
                 rpc: {
                     jsonrpc: "2.0",
@@ -478,6 +504,7 @@ export class MCPClient {
     }
 
     checkHandshake() {
+        this.assertOpen();
         if (this.initialized) {
             return this.serverInfo;
         } else {
@@ -486,6 +513,7 @@ export class MCPClient {
     }
 
     async handshake() {
+        this.assertOpen();
         console.log("MCP Handshake", this.url, this.mcpClientObjectId);
         this.protocolVersion = "2025-03-26"; //default to latest version
         let { rpc: d, http } = await this.request(
@@ -504,6 +532,7 @@ export class MCPClient {
         );
 
         if (http.status === 404) {
+            this.assertOpen();
             console.warn("MCP: Streamed transport not supported, falling back to SSE");
             this.protocolVersion = "2024-11-05";
 
@@ -523,6 +552,10 @@ export class MCPClient {
                 method: "GET",
                 headers: headers,
             });
+            if (this.closed) {
+                connection.body?.cancel().catch(() => {});
+                this.assertOpen();
+            }
 
             if (connection.status !== 200) {
                 throw new Error(`Failed to connect to MCP server: ${connection.status} ${connection.statusText}`);
@@ -548,6 +581,7 @@ export class MCPClient {
                 document.addEventListener("mcp-sse", sseListener);
             });
 
+            this.assertOpen();
             const endpoint = connectionResult.rpc.result.endpoint;
 
             if (!endpoint) {
@@ -577,6 +611,7 @@ export class MCPClient {
             http = r.http;
         }
 
+        this.assertOpen();
         if (http.status === 401) {
             await this.oauthLogin();
             return this.handshake();
@@ -588,6 +623,7 @@ export class MCPClient {
             await this.request("notifications/initialized", null, {
                 notifications: true,
             });
+            this.assertOpen();
 
             if (d?.result?.protocolVersion !== "2025-03-26" && d?.result?.protocolVersion !== "2024-11-05") {
                 console.warn("MCP Server is using an unsupported protocol version", d.result.protocolVersion);
@@ -605,8 +641,11 @@ export class MCPClient {
     }
 
     async oauthLogin() {
+        // A retired client starts no login step: a refresh would spend the token a newer client holds.
+        this.assertOpen();
         if (this.getRefreshToken) {
             const refreshTokenData = await this.getRefreshToken();
+            this.assertOpen();
             if (refreshTokenData) {
                 //get access token using refresh token
                 const tokenResponse = await fetchNative(refreshTokenData.tokenUrl, {
@@ -626,6 +665,17 @@ export class MCPClient {
                 if (tokenResponse.status === 200) {
                     const tokenData = await tokenResponse.json().catch((): null => null);
                     if (typeof tokenData?.access_token === "string" && tokenData.access_token !== "") {
+                        // A rotated refresh token replaces the stored one (the old one may be spent).
+                        const rotated = tokenData.refresh_token;
+                        this.assertOpen();
+                        if (typeof rotated === "string" && rotated !== "" && this.registerRefreshToken) {
+                            this.registerRefreshToken({
+                                clientId: refreshTokenData.clientId,
+                                clientSecret: refreshTokenData.clientSecret,
+                                refreshToken: rotated,
+                                tokenUrl: refreshTokenData.tokenUrl,
+                            });
+                        }
                         this.accessToken = tokenData.access_token;
                         return;
                     }
@@ -633,6 +683,7 @@ export class MCPClient {
             }
         }
 
+        this.assertOpen();
         const OauthDiscovery = new URL(this.url);
         OauthDiscovery.pathname = "/.well-known/oauth-authorization-server";
         const oauthResponse = await fetchNative(OauthDiscovery.toString(), {
@@ -655,6 +706,7 @@ export class MCPClient {
 
         const redirectURL = "https://account.sionyw.com/oauthhelper"; //Just a placeholder, should be replaced with actual redirect URL
 
+        this.assertOpen();
         const registerResponse = await fetchNative(discoveryURLS.registration_endpoint, {
             method: "POST",
             headers: {
@@ -697,8 +749,10 @@ export class MCPClient {
         authUrl.searchParams.set("code_challenge", code_challenge);
         authUrl.searchParams.set("code_challenge_method", "S256");
 
+        this.assertOpen();
         openURL(authUrl.toString());
         const code = await alertInput("Input Authorization Code");
+        this.assertOpen();
 
         const authHelperResponse = await fetchNative("https://account.sionyw.com/oauthhelper/api", {
             method: "POST",
@@ -717,6 +771,8 @@ export class MCPClient {
         }
 
         const payload = authHelperResponseJson.payload;
+
+        this.assertOpen();
 
         const tokenResponse = await fetchNative(discoveryURLS.token_endpoint, {
             method: "POST",
@@ -739,6 +795,7 @@ export class MCPClient {
 
         const tokenData = await tokenResponse.json();
 
+        this.assertOpen();
         if (this.registerRefreshToken) {
             this.registerRefreshToken({
                 clientId: clientData.client_id,
@@ -752,6 +809,7 @@ export class MCPClient {
 
     async getPromptList(): Promise<MCPPrompt[]> {
         await this.checkHandshake();
+        this.assertOpen();
         if (!this.serverInfo.capabilities?.prompts) {
             return [];
         }
@@ -782,6 +840,7 @@ export class MCPClient {
             }
         }
 
+        this.assertOpen();
         this.cached.prompts = prompts;
 
         return prompts;
@@ -789,6 +848,7 @@ export class MCPClient {
 
     async getToolList(): Promise<MCPTool[]> {
         await this.checkHandshake();
+        this.assertOpen();
         if (!this.serverInfo.capabilities?.tools) {
             return [];
         }
@@ -820,6 +880,7 @@ export class MCPClient {
             }
         }
 
+        this.assertOpen();
         this.cached.tools = tools;
 
         return tools;
@@ -827,6 +888,7 @@ export class MCPClient {
 
     async callTool(toolName: string, args: any): Promise<RPCToolCallContent[]> {
         await this.checkHandshake();
+        this.assertOpen();
         if (!this.serverInfo.capabilities?.tools) {
             throw new Error("MCP Server does not support tools");
         }
@@ -848,7 +910,18 @@ export class MCPClient {
         return response.rpc?.result?.content;
     }
 
+    /**
+     * Retires the client (the registry dropped it): it starts nothing afterwards, and requests, logins,
+     * and lists it started refuse their late answers (a stream reader already running and the custom
+     * transport are not fenced).
+     */
     destroy() {
+        this.closed = true;
+        this.reset();
+    }
+
+    /** Drops the session, the token, and the streams (a session reset keeps the client usable). */
+    private reset() {
         this.initialized = false;
         this.sessionId = null;
         this.accessToken = null;
@@ -864,5 +937,12 @@ export class MCPClient {
 
     ping() {
         return this.request("ping");
+    }
+
+    /** Throws for a client `destroy()` retired (its credentials or session could replace a newer client's). */
+    private assertOpen() {
+        if (this.closed) {
+            throw new Error("The MCP client was closed");
+        }
     }
 }

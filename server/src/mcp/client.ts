@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { RPCToolCallContent, ToolDescriptor } from "../../../shared/llm/request.ts";
+import { parseSseEvent, SseFramer } from "../../../shared/mcp/sse.ts";
 
 /**
  * The Node port of `MCPClient` (`src/ts/process/mcp/mcplib.ts`, Phase 5 slice 12): a remote MCP
@@ -27,11 +28,12 @@ import type { RPCToolCallContent, ToolDescriptor } from "../../../shared/llm/req
  * - OAuth refresh uses a 200 answer's token (the tab client read it only from a failed answer), the
  *   endpoints a server names must be `http:` or `https:`, and one handshake logs in at most once.
  *
- * Kept as the tab client has it (recorded hazards): events are split on a blank `\n\n` line and read
- * from `data: ` and `event: ` with the space; a session id is taken only from a JSON `initialize`
- * answer; a 404 with a session or a 401 with a token resets the session and repeats the request once
- * without them; a refresh answer's new refresh token is not stored. Prompts, the custom transport,
- * and `debug` are not ported (no server caller).
+ * Events are framed by `shared/mcp/sse.ts` (CRLF, LF, or CR line ends; `data:` with or without the
+ * space), a session id is taken from an `initialize` answer in JSON or as an event stream, and a
+ * refresh answer's new refresh token replaces the stored one (Phase 5 Stop D fixes; the tab client
+ * does the same). Kept as the tab client has it: a 404 with a session or a 401 with a token resets
+ * the session and repeats the request once without them. Prompts, the custom transport, and
+ * `debug` are not ported (no server caller).
  */
 
 export const MCP_REQUEST_TIMEOUT_MS = 5 * 60_000;
@@ -274,56 +276,16 @@ export class McpClient {
      */
     private async readSse(stream: ReadableStream<Uint8Array>): Promise<void> {
         const reader = stream.getReader();
-        // The unfinished event's bytes, as they came. The blank line is found in the bytes (a line
-        // feed is never part of a longer UTF-8 sequence), so an event is measured and decoded whole.
-        let held: Buffer[] = [];
-        let heldBytes = 0;
-        let endsWithLineFeed = false;
-        const finish = (last: Buffer) => {
-            const size = heldBytes + last.length;
-            if (size > MAX_MCP_MESSAGE_BYTES) {
-                throw new Error("An MCP event is too large");
-            }
-            const event = heldBytes === 0 ? last : Buffer.concat([...held, last], size);
-            held = [];
-            heldBytes = 0;
-            endsWithLineFeed = false;
-            this.handleEvent(new TextDecoder("utf-8").decode(event));
-        };
+        // Events are framed in bytes (`shared/mcp/sse.ts`: CRLF, LF, or CR line ends), so an event is
+        // measured and decoded whole.
+        const framer = new SseFramer((event) => this.handleEvent(event), MAX_MCP_MESSAGE_BYTES);
         try {
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) {
                     return;
                 }
-                const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-                let start = 0;
-                if (endsWithLineFeed && chunk.length > 0 && chunk[0] === 10) {
-                    // The blank line spans the two chunks: the held bytes end with its first half.
-                    const whole = Buffer.concat(held, heldBytes);
-                    held = [];
-                    heldBytes = 0;
-                    finish(whole.subarray(0, whole.length - 1));
-                    start = 1;
-                }
-                while (true) {
-                    const at = chunk.indexOf("\n\n", start);
-                    if (at === -1) {
-                        break;
-                    }
-                    finish(chunk.subarray(start, at));
-                    start = at + 2;
-                }
-                if (start < chunk.length) {
-                    const rest = chunk.subarray(start);
-                    held.push(rest);
-                    heldBytes += rest.length;
-                    endsWithLineFeed = rest[rest.length - 1] === 10;
-                    // One byte more than an event may hold: a last line feed can be half of the blank line.
-                    if (heldBytes > MAX_MCP_MESSAGE_BYTES + 1) {
-                        throw new Error("An MCP event is too large");
-                    }
-                }
+                framer.push(value);
             }
         } finally {
             reader.cancel().catch(() => {});
@@ -336,16 +298,9 @@ export class McpClient {
     }
 
     private handleEvent(part: string): void {
-        let data = "";
-        let eventName = "";
-        for (const line of part.split("\n")) {
-            if (line.startsWith("data: ")) {
-                data += line.slice(6) + "\n";
-            } else if (line.startsWith("event: ")) {
-                eventName = line.slice(7).trim();
-            }
-        }
-        data = data.trim();
+        const parsed = parseSseEvent(part);
+        const data = parsed.data.trim();
+        const eventName = parsed.event.trim();
         if (!data) {
             return;
         }
@@ -461,6 +416,9 @@ export class McpClient {
 
             const contentType = response.headers.get("Content-Type") || "";
             if (contentType.includes("text/event-stream") && response.body && waiting) {
+                if (options.init && response.headers.has("Mcp-Session-Id")) {
+                    this.sessionId = response.headers.get("Mcp-Session-Id");
+                }
                 // This stream belongs to this request: its end without the answer settles it.
                 void this.readSse(response.body).then(
                     () => waiting.fail("The MCP stream ended without an answer"),
@@ -748,6 +706,17 @@ export class McpClient {
             );
             const token = answer.status === 200 ? answer.json?.access_token : undefined;
             if (typeof token === "string" && token !== "") {
+                // A rotated refresh token replaces the stored one (the old one may be spent).
+                const rotated = answer.json?.refresh_token;
+                if (typeof rotated === "string" && rotated !== "") {
+                    this.fenceIo(io);
+                    io.writeRefresh({
+                        ...(stored.clientId !== undefined ? { clientId: stored.clientId } : {}),
+                        ...(stored.clientSecret !== undefined ? { clientSecret: stored.clientSecret } : {}),
+                        refreshToken: rotated,
+                        tokenUrl: stored.tokenUrl,
+                    });
+                }
                 this.publishToken(token);
                 return;
             }

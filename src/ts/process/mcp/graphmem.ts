@@ -10,7 +10,8 @@ const tabGraphMemHost: GraphMemHost = {
     setVar: (key, value) => setChatVar(key, value),
     search: async (names) => {
         const processer = new HypaProcesser();
-        await processer.embedDocuments(names);
+        // `addText` stores the vectors `similaritySearch` ranks (`embedDocuments` only returns them).
+        await processer.addText(names);
         return (term) => processer.similaritySearch(term);
     },
 };

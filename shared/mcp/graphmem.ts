@@ -16,7 +16,7 @@ export type GraphMemHost = {
     setVar(key: string, value: string): void;
     /**
      * A similarity search prepared for the entry `names`: the client's `new HypaProcesser()` with
-     * `embedDocuments(names)`, answering `similaritySearch(term)` for each term asked.
+     * `addText(names)` (which stores the vectors), answering `similaritySearch(term)` for each term asked.
      */
     search(names: string[]): Promise<(term: string) => Promise<string[]>>;
     /** Whether a failure is not the tool's own (a job's end): it is thrown on instead of answered. */
@@ -108,7 +108,11 @@ async function writeMemory(host: GraphMemHost, args: any): Promise<RPCToolCallCo
     let graph: GraphIndex[] = [];
 
     try {
-        graph = JSON.parse(host.getVar("graphmem_graph")) as GraphIndex[];
+        // An unset chat variable reads as "null": a chat without a graph starts with an empty one.
+        const parsed: unknown = JSON.parse(host.getVar("graphmem_graph"));
+        if (Array.isArray(parsed)) {
+            graph = parsed as GraphIndex[];
+        }
     } catch (error) {}
 
     graph.push({ name, summary, connections });

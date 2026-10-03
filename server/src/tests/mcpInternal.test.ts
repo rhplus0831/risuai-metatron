@@ -719,22 +719,27 @@ describe("internal:aiaccess on the server", () => {
 });
 
 describe("internal:graphmem on the server", () => {
-    it("writes the graph into the job chat's variable; a chat that never held it fails as the tab's does (inherited)", async () => {
+    it("writes the graph into the job chat's variable; a chat that never held it starts with an empty graph", async () => {
         const s = setup();
-        // Inherited (Stop D): an unset chat variable reads as the text "null", so the push fails.
-        expect(s.text(await s.tool("writeMemory", { name: "n1", summary: "s1" }))).toMatch(/^Error: .*null/);
+        const jobChatGraph = () => {
+            const chat = s.store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data as {
+                scriptstate?: Record<string, unknown>;
+            };
+            return JSON.parse(String(chat.scriptstate?.["$graphmem_graph"]));
+        };
+        // An unset chat variable reads as the text "null" (Stop D fix D1): the write starts a graph of one entry.
+        expect(s.text(await s.tool("writeMemory", { name: "n1", summary: "s1" }))).toBe(
+            'Memory entry "n1" written successfully.',
+        );
         expect(s.bindings.fatal()).toBeNull();
+        expect(jobChatGraph()).toEqual([{ name: "n1", summary: "s1", connections: [] }]);
 
+        // A graph set to an empty array is used as it is.
         s.bindings.services.setChatVar("graphmem_graph", "[]", s.ctx);
         expect(s.text(await s.tool("writeMemory", { name: "n1", summary: "s1", connections: ["n2"] }))).toBe(
             'Memory entry "n1" written successfully.',
         );
-        const chat = s.store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data as {
-            scriptstate?: Record<string, unknown>;
-        };
-        expect(JSON.parse(String(chat.scriptstate?.["$graphmem_graph"]))).toEqual([
-            { name: "n1", summary: "s1", connections: ["n2"] },
-        ]);
+        expect(jobChatGraph()).toEqual([{ name: "n1", summary: "s1", connections: ["n2"] }]);
         // Only the job's chat holds it.
         const other = s.store.readRefs([], { chats: [{ characterId: "o", id: "o2" }] }).chats[0].data as {
             scriptstate?: Record<string, unknown>;
@@ -742,7 +747,7 @@ describe("internal:graphmem on the server", () => {
         expect(other.scriptstate?.["$graphmem_graph"]).toBeUndefined();
     });
 
-    it("reads with the job's embeddings and finds nothing, the processor's vectors never being filled (inherited); no embeddings is a tool error", async () => {
+    it("reads with the job's embeddings and finds the stored entry; no embeddings is a tool error", async () => {
         const embeddings = fakeEmbeddings();
         const s = setup({ embeddings: embeddings.service });
         s.bindings.services.setChatVar(
@@ -751,8 +756,10 @@ describe("internal:graphmem on the server", () => {
             s.ctx,
         );
         const read = s.text(await s.tool("readMemory", { query: ["n1"], search_depth: 1e12 }));
-        expect(JSON.parse(read)).toEqual([{ queryTerm: "n1", entries: [] }]);
-        // The entry names were embedded as documents, and the query once.
+        expect(JSON.parse(read)).toEqual([
+            { queryTerm: "n1", entries: [{ name: "n1", summary: "s1", connections: [] }] },
+        ]);
+        // On a cold cache the entry names were embedded as documents (and stored for the search), and the query once.
         expect(embeddings.embedded).toEqual([["n1"], ["n1"]]);
 
         const without = setup();
@@ -788,6 +795,103 @@ describe("internal:graphmem on the server", () => {
         onEmbed = () => s.controller.abort();
         await expect(s.tool("readMemory", { query: ["n1"] })).rejects.toBeInstanceOf(LuaJobFatalError);
         expect(s.bindings.fatal()).toBeInstanceOf(LuaJobFatalError);
+    });
+
+    it("writes then reads on a fresh chat; a later read's new processor takes the names' vectors from the cache and embeds only its query (Stop D fixes)", async () => {
+        const embeddings = fakeEmbeddings();
+        const s = setup({ embeddings: embeddings.service });
+        expect(s.text(await s.tool("writeMemory", { name: "Alice", summary: "likes tea", connections: ["Bob"] }))).toBe(
+            'Memory entry "Alice" written successfully.',
+        );
+        expect(s.text(await s.tool("writeMemory", { name: "Bob", summary: "likes coffee" }))).toBe(
+            'Memory entry "Bob" written successfully.',
+        );
+        const entries = [
+            { name: "Alice", summary: "likes tea", connections: ["Bob"] },
+            { name: "Bob", summary: "likes coffee", connections: [] },
+        ];
+        const cold = JSON.parse(s.text(await s.tool("readMemory", { query: ["who"] })));
+        expect(cold).toEqual([{ queryTerm: "who", entries }]);
+        // The names as documents once, then the query; the connection `Bob` is searched at depth 2.
+        expect(embeddings.embedded).toEqual([["Alice", "Bob"], ["who"], ["Bob"]]);
+
+        embeddings.embedded.length = 0;
+        const warm = JSON.parse(s.text(await s.tool("readMemory", { query: ["tea"], search_depth: 1 })));
+        expect(warm).toEqual([{ queryTerm: "tea", entries }]);
+        expect(embeddings.embedded).toEqual([["tea"]]);
+        expect(s.bindings.fatal()).toBeNull();
+    });
+
+    it("ends the job, not the tool, when the job ends during the query's embedding after the names came from the cache", async () => {
+        const env = fakeEmbeddings();
+        let onEmbed = (_input: string[]) => {};
+        const service: EmbeddingsService = {
+            ...env.service,
+            forJob: (arg) => {
+                const inner = env.service.forJob(arg);
+                return {
+                    ...inner,
+                    fetchImpl: (async (...request: Parameters<typeof fetch>) => {
+                        onEmbed(JSON.parse(String(request[1]?.body)).input);
+                        return inner.fetchImpl(...request);
+                    }) as typeof fetch,
+                };
+            },
+        };
+        const s = setup({ embeddings: service });
+        s.bindings.services.setChatVar("graphmem_graph", JSON.stringify([{ name: "n1", summary: "s1" }]), s.ctx);
+        // Warm the cache with the names.
+        await s.tool("readMemory", { query: ["first"], search_depth: 1 });
+        env.embedded.length = 0;
+        const seen: unknown[] = [];
+        onEmbed = (input) => {
+            seen.push(input);
+            s.controller.abort();
+        };
+        await expect(s.tool("readMemory", { query: ["second"] })).rejects.toBeInstanceOf(LuaJobFatalError);
+        // The only embedding asked for was the query's: the names were not embedded again.
+        expect(seen).toEqual(["second"]);
+        expect(s.bindings.fatal()).toBeInstanceOf(LuaJobFatalError);
+    });
+});
+
+describe("graph memory's write (shared/mcp/graphmem.ts, Stop D fixes)", () => {
+    function host(stored: string) {
+        const vars: Record<string, string> = { graphmem_graph: stored };
+        return {
+            vars,
+            host: {
+                getVar: (key: string) => vars[key] ?? "null",
+                setVar: (key: string, value: string) => {
+                    vars[key] = value;
+                },
+                search: async () => async () => [],
+            },
+        };
+    }
+    const entry = { name: "n", summary: "s", connections: [] };
+
+    it("starts an empty graph when the variable is unset (the text null), malformed, or not an array", async () => {
+        for (const stored of ["null", "", "{not json", '{"0":{"name":"x"}}', "42", '"text"', "true"]) {
+            const h = host(stored);
+            expect(await callGraphMemTool(h.host, "writeMemory", { name: "n", summary: "s" })).toEqual([
+                { type: "text", text: 'Memory entry "n" written successfully.' },
+            ]);
+            expect(JSON.parse(h.vars.graphmem_graph)).toEqual([entry]);
+        }
+    });
+
+    it("appends to a stored array, keeping its entries, and reads nothing from a graph that is not an array", async () => {
+        const first = { name: "a", summary: "x", connections: ["n"] };
+        const h = host(JSON.stringify([first]));
+        await callGraphMemTool(h.host, "writeMemory", { name: "n", summary: "s" });
+        expect(JSON.parse(h.vars.graphmem_graph)).toEqual([first, entry]);
+
+        for (const stored of ["null", '{"name":"a"}']) {
+            expect(await callGraphMemTool(host(stored).host, "readMemory", { query: ["q"] })).toEqual([
+                { type: "text", text: "No memory entries found in the graph database." },
+            ]);
+        }
     });
 });
 

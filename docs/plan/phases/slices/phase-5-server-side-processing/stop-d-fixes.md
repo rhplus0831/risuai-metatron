@@ -1,6 +1,6 @@
 # Slice: Stop D Fixes
 
-Status: 13c implemented (2026-10-03); 13d planned.
+Status: implemented (2026-10-03): 13c and 13d.
 
 Phase: [Phase 5](../../phase-5-server-side-processing.md). Owner decisions at Stop D
 (`implementation-plan.md`, "Stop D decisions"): five defects found at Stop D are fixed before the
@@ -164,3 +164,36 @@ In both the server client (`server/src/mcp/client.ts`) and the browser client
 The gates; a scratchpad Playwright check with a mock MCP server answering with CRLF events, an
 event-stream `initialize` with a session id, and a rotating refresh token (server job and tab
 paths); graph memory write then read on a fresh chat with a mock embedding model.
+
+### 13d as implemented (after the challenge)
+
+- D1 as planned. The host contract comment in `shared/mcp/graphmem.ts` names `addText(names)`.
+- D2 framing: `shared/mcp/sse.ts` `SseFramer` delivers each event through a callback as it
+  completes, so an event before an oversized one in the same chunk is still handled. A CR ends its
+  line at once, and an LF first in the next non-empty chunk completes that CRLF. An empty chunk
+  changes nothing (first challenge round: an empty chunk used to break a split CRLF). The browser
+  drains a chunk's events by index, not with `shift()` (first round: quadratic for many small
+  events).
+- D2 session id and refresh rotation as planned. The server fences (`fenceIo`) before
+  `writeRefresh`.
+- Browser client lifecycle (rounds 1–4). `destroy()` now retires the client: a `closed` flag and
+  `assertOpen()` at each request, handshake, and login entry and after each await. From then on
+  the client starts nothing, and its late answers are refused: a session, server info, a list, a
+  tool result, or a token or rotated refresh token. The 404/401 session reset is a private
+  `reset()` that keeps the client usable and does not drop a valid pending refresh. Not covered
+  (recorded in `plugins-mcp.md`):
+  - a request already sent is not aborted;
+  - a stream reader already running still dispatches;
+  - the unused custom transport;
+  - the inherited browser stream cleanup.
+- Recorded hazard: a rotated refresh token is a whole-collection `authRefreshes` edit, which a
+  concurrent writer can make conflict and be discarded.
+- Check: `util/playwright/checkMcpFixes.mjs`, 16/16 with flags on (the server job) and 16/16
+  with `FLAGS=off` (the tab). It fails with a non-zero exit when a check fails, and covers:
+  - CRLF events, `data:` without the space, and an event split inside the CRLF;
+  - the session id carried by later requests;
+  - r1 → r2 → r3 rotation stored with the client id, secret, and token URL;
+  - a graph write then read on a fresh chat, with the names and the query embedded;
+  - a later read that embeds only its query (the cache).
+
+  It observes, without failing on, the recorded first-401 hazard.
