@@ -197,6 +197,8 @@ export function createRunSetup(
     state: JobRunState,
     scope: JobScope,
     ids: { runCharacterId: string; engineCharacterId: string },
+    /** `frozen`: a render's snapshot (the script transform; `LuaBindingDeps.frozen`). */
+    options: { frozen?: boolean } = {},
 ): RunSetup {
     const { store, kinds } = deps;
     const { characterId, chatId } = job.context;
@@ -217,6 +219,7 @@ export function createRunSetup(
         ...(deps.mcp ? { mcp: { registry: deps.mcp, state: state.tools } } : {}),
         lock: deps.lock,
         onFatal: (error) => state.fatalAbort.abort(error),
+        ...(options.frozen ? { frozen: true } : {}),
     });
     const { services } = bindings;
     const identity = { characterId, chatId, presetId: scope.preset.id, personaId: scope.effectivePersona.id };

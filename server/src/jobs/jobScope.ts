@@ -51,6 +51,11 @@ export type JobScope = {
     /** The tab's selected persona (the forwarded `db.username`). */
     selectedPersona: RisuPersona;
     request: LoadedRequestDb;
+    /**
+     * The revision of every record the load read, by `<kind>/<id>` (the chat's is `chatRevision`),
+     * from the same synchronous read as the data: the script transform's cache key (slice 13).
+     */
+    revisions?: ReadonlyMap<string, string>;
 };
 
 function kindOf(kinds: ResourceKindRegistry, name: string): ResourceKind {
@@ -181,11 +186,19 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
         speakerId: context.speakerChaId ?? null,
     });
 
+    const revisions = new Map<string, string>();
+    for (const [kindName, records] of Object.entries(read.kinds)) {
+        for (const record of records) {
+            revisions.set(`${kindName}/${record.id}`, record.revision);
+        }
+    }
+
     return {
         db: db as unknown as Database,
         characterId: context.characterId,
         chatId: context.chatId,
         chatRevision: chatRecord.revision,
+        revisions,
         preset,
         effectivePersona,
         selectedPersona,

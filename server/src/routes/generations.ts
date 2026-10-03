@@ -28,7 +28,7 @@ const MAX_VIEWPORT_PX = 1_000_000;
 const MAX_CLIENT_EMOTION_CHARACTERS = 256;
 
 /** `context.client`: a viewport of finite, non-negative sizes and a short language tag. */
-function parseClientEnv(value: unknown): GenerationClientEnv | string {
+export function parseClientEnv(value: unknown): GenerationClientEnv | string {
     if (!isPlainObject(value) || !isPlainObject(value.viewport)) {
         return "context.client must be { viewport: { width, height }, browserLanguage }";
     }

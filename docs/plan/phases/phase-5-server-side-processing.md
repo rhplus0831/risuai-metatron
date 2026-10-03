@@ -225,7 +225,10 @@ server is listed here before the browser path is removed:
   today, are discarded, and `@@inject` does not change message text in display mode. Browser
   plugin display handlers keep today's capabilities.
 - Displayed CBS that depends on time, randomness, the viewport, other messages, or the persona stays
-  as first rendered until a keyed revision changes or the user re-renders the message.
+  as first rendered until a keyed revision changes or the user re-renders the message. This holds
+  for the CBS the server evaluates (the text Lua, the display trigger, and the regex scripts
+  produce); the CBS pre-pass stays in the browser before the first asset pass and evaluates as
+  today (slice 13).
 - A streaming message shows raw text until it completes.
 - `editoutput` applies to completed text, not per chunk; a crash mid-stream leaves raw text.
 - Plugin tokenizers are not used for server-side token counting.
@@ -262,8 +265,8 @@ server is listed here before the browser path is removed:
   projection.
 - `v2ImgGen`'s image size comes from the callback answer.
 - An image callback with no owner leaves the reply without the image.
-- The CBS pre-pass and the server display stages run with the viewport and language the client
-  reports.
+- The server display stages run with the viewport and language the client reports; the CBS
+  pre-pass stays in the browser (slice 13).
 - Every message re-renders after any chat variable changes.
 - Plugins see masked LLM credentials through `getDatabase`.
 - `bodyIntercepter` registrations are not applied to calls without a job.

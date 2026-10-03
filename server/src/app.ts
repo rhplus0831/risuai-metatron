@@ -14,6 +14,7 @@ import { createVectorCache } from "./data/vectorCache.ts";
 import { compileTrust, getClientIp, parseTrustProxyEnv } from "./http/clientIp.ts";
 import { createRateLimiter } from "./http/rateLimit.ts";
 import { createGenerationRunner } from "./jobs/commandRunner.ts";
+import type { GenerationRunnerDeps } from "./jobs/runSetup.ts";
 import { createGenerationJobs, type GenerationRunner } from "./jobs/generationJobs.ts";
 import { createGenerationLock } from "./jobs/generationLock.ts";
 import { createClaudeObserver } from "./llm/claudeObserver.ts";
@@ -27,6 +28,8 @@ import { createTransformers } from "./prompt/transformers.ts";
 import { createAuthStore } from "./routes/auth.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { registerGenerationRoutes } from "./routes/generations.ts";
+import { registerTransformRoutes, TRANSFORM_PATHS } from "./routes/transform.ts";
+import { createTransformService } from "./prompt/transform.ts";
 import { registerLlmRoutes } from "./routes/llm.ts";
 import { registerLlmSecretRoutes } from "./routes/llmSecrets.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
@@ -137,7 +140,7 @@ export function createServerContext(options: {
     const upgradeListeners = new Map<http.Server, (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void>();
     // Workers start on the first task: Lua buttons and manual triggers (`command` jobs) run there.
     const scriptWorkers = createScriptWorkerPool({ rootDir: options.rootDir });
-    const defaultRunner = createGenerationRunner({
+    const runnerDeps: GenerationRunnerDeps = {
         store: resources,
         kinds: resourceKinds,
         rootDir: options.rootDir,
@@ -150,7 +153,12 @@ export function createServerContext(options: {
         mcp: mcpRegistry,
         lock: generationLock,
         ...(options.generationRandom ? { random: options.generationRandom } : {}),
-    });
+    };
+    const defaultRunner = createGenerationRunner(runnerDeps);
+    // The script transform (Phase 5 slice 13): read-only renders on the runner's services. A restore
+    // or an import stops every render and empties its cache (the data it was made from is gone).
+    const transforms = createTransformService(runnerDeps);
+    snapshots.onMaintenance(async () => transforms.pause("The server data is being replaced"));
 
     const authenticatedRouteLimiter = createRateLimiter({
         windowMs: 60 * 1000,
@@ -238,9 +246,13 @@ export function createServerContext(options: {
         maxSize: MAX_BODY_BYTES,
         onError: (c) => c.json({ error: "Request body too large" }, 413),
     });
-    app.use((c, next) =>
-        c.req.method === "POST" && c.req.path.replace(/\/+$/, "") === BACKUP_IMPORT_PATH ? next() : limitBody(c, next),
-    );
+    // The script transform's routes authenticate first and cap their bodies themselves (8 MiB).
+    app.use((c, next) => {
+        const route = c.req.path.replace(/\/+$/, "");
+        return c.req.method === "POST" && (route === BACKUP_IMPORT_PATH || TRANSFORM_PATHS.includes(route))
+            ? next()
+            : limitBody(c, next);
+    });
 
     // Serves the client with the flag that makes `isNodeServer` true. Without it the client shows only a
     // "self-host server required" notice, so `/index.html` must not fall through to the raw static file.
@@ -272,6 +284,12 @@ export function createServerContext(options: {
     });
     proxyStreamJobs.registerRoutes(app, { limiter: authenticatedRouteLimiter.middleware, clientIp });
     registerGenerationRoutes(app, { jobs: generationJobs, auth, limiter: authenticatedRouteLimiter.middleware });
+    registerTransformRoutes(app, {
+        transforms,
+        store: resources,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+    });
     registerLlmRoutes(app, {
         requests: llmRequests,
         store: resources,
@@ -344,7 +362,7 @@ export function createServerContext(options: {
          */
         dispose: () => {
             beginShutdown();
-            disposing ??= Promise.all([generationJobs.drain(), llmRequests.dispose()])
+            disposing ??= Promise.all([generationJobs.drain(), llmRequests.dispose(), transforms.close()])
                 .then(() => generationJobs.dispose())
                 .then(() => tokenizers.dispose())
                 .then(() => scriptWorkers.dispose())

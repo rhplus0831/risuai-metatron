@@ -86,6 +86,13 @@ export type LuaBindingDeps = {
      * included, is skipped (the client's `liveWrite` has no generation capability either).
      */
     lock?: MessageGuard;
+    /**
+     * A render's snapshot (the script transform, Phase 5 slice 13): `scope` is the target's own copy
+     * and is never read again from the store; a chat-variable write changes that copy's `scriptstate`
+     * only (the target's later stages see it, nothing persists); any other chat write is refused (a
+     * fatal failure of the target), and the run's character is the scope's.
+     */
+    frozen?: boolean;
 };
 
 /**
@@ -307,9 +314,15 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         if (!deps.runCharacterId) {
             return undefined;
         }
+        if (deps.frozen) {
+            return scope.db.characters.find((entry) => entry?.chaId === deps.runCharacterId);
+        }
         return (store.get(charactersKind, deps.runCharacterId)?.data ?? undefined) as character | groupChat | undefined;
     };
     const refreshAll = () => {
+        if (deps.frozen) {
+            return;
+        }
         if (refreshChat(store, scope)) {
             lastChat = scopeChat(scope);
         }
@@ -326,6 +339,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
      */
     const writeChat = (build: (chat: Chat) => ChatOp[] | null, ctx?: HostContext): void => {
         fence(ctx);
+        if (deps.frozen) {
+            throw latch(new LuaJobFatalError("A render does not write the chat"));
+        }
         refreshAll();
         const current = scopeChat(scope);
         if (!current) {
@@ -382,6 +398,16 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     /** `setChatVarOf` for the job's chat: the whole `scriptstate` as stored now, true when it changed. */
     const setChatVar = (key: string, value: string, ctx?: HostContext): boolean => {
         const stateKey = "$" + key;
+        if (deps.frozen) {
+            // The render's own copy: the target's later stages read it, nothing is stored.
+            fence(ctx);
+            const chat = scopeChat(scope);
+            if (!chat || chat.scriptstate?.[stateKey] === value) {
+                return false;
+            }
+            chat.scriptstate = { ...(chat.scriptstate ?? {}), [stateKey]: value };
+            return true;
+        }
         let changed = false;
         writeChat((chat) => {
             if (chat.scriptstate?.[stateKey] === value) {

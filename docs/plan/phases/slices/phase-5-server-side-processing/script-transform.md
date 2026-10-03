@@ -1,6 +1,6 @@
 # Slice: Script Transform
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: in progress (13a, the server, implemented 2026-10-03; 13b, the client, next).
 
 Phase: [Phase 5](../../phase-5-server-side-processing.md), step 8 (the read-only batch transform
 endpoint, the cache, the client integration, "Re-render"); PLAN.md Decision 5 (the display
@@ -118,3 +118,56 @@ Time-, random-, viewport-, history-, and persona-dependent CBS stays as first re
 keyed revision changes or the user re-renders (recorded). A background HTML target keyed by the
 character revision re-renders on every character edit. Every message re-renders after any chat
 variable changes (the variable hash covers the whole chat, not the variables a target reads).
+
+## 13a: what landed
+
+As `docs/structure/self-host-server.md` describes it (`server/src/routes/transform.ts`,
+`server/src/prompt/transform.ts`, `server/src/prompt/transformCache.ts`, `shared/transform.ts`).
+The plan's decisions, with the changes the 2026-10-03 plan review made:
+
+- The isolated run is a job's setup (`createRunSetup`) on a job that cannot write, ask, or call the
+  tab, with frozen bindings (`LuaBindingDeps.frozen`: no store re-read, a chat-variable write changes
+  the snapshot's copy only, any other chat write a fatal failure of the target). Each target has its
+  own chat object (`scriptstate` copied), owner object, and regex and dynamic-asset caches; the
+  messages are shared and never written. The targets of a request share one Lua budget and CBS
+  time.
+- The run character (the source: Lua `editDisplay`, regex `customscript`, emotions) and the engine
+  character (the chat owner: the chat, modules, the display trigger) are separate; the display
+  trigger runs on the target's chat owner and chat, groups included (the recorded change).
+- The two-call protocol keeps the script-state delta on the server in the snapshot (the slice
+  text sent it to the tab and back): the second call sends only the texts after the plugin
+  handlers, or a handler's failure per target; it must name every pending target once and claims the
+  snapshot before it runs.
+- Cache key amendments: no `triggerId` (no display caller has one; the target type has no field);
+  `GLGlobalVariables`, `useLocallySetGlobalVariables`, the author's note, the local lore, and the
+  chat's name with `scriptstate` (what a render reads of the chat besides its messages); every section and
+  collection revision (a broad initial policy: a settings change re-renders); the handler set is the
+  tab's per-document value (13b), so entries with handlers are not shared between tabs (hooks are
+  anonymous functions; the plugin digest of the amendment cannot be computed).
+- Emotions: every `@@emo` of a target in order, kept with a cached result; the tab applies a key's
+  once (13b).
+- Lifecycle: a request is registered at admission (before it waits for one of 4 slots; 32 may
+  wait); a maintenance aborts every request, queued or running, and every snapshot and empties the
+  cache, and a request admitted before it never runs after it; one deadline (30 s from the first
+  call's admission, the queue included) covers both calls; shutdown waits for the runs before the
+  workers go.
+- Bounds: a text before the plugin handlers is at most 512 KiB (the second call's limit); a
+  snapshot keeps at most 4 MiB of pending texts and 8 MiB of texts plus the variables its targets'
+  Lua wrote; 4 snapshots per client and 16 in all. The final text is not bounded beyond the
+  cache's 512 KiB entry cap (a larger one is answered, not kept).
+- Recorded difference: a Lua image getter of an image that is not an inlay answers `""` in a render
+  (no tab is asked).
+
+Deviation (decided at the plan review, for 13b): the CBS pre-pass stays in the browser
+(`Chat.svelte`), before the first additional-asset pass, as today. Moving it would need a second
+round trip per render or would reorder the asset pass after Lua and regex (their input changes).
+The cache is keyed on the text the server receives, so a pre-pass that expands `{{random}}` again
+renders afresh, as today; the Safety Contract's "stays as first rendered" applies to the CBS the
+server evaluates.
+
+Tests (the review step, 2026-10-03): `server/src/tests/transform.test.ts` (15, the endpoint in
+process with the real workers) and `server/src/tests/transformService.test.ts` (12, the lifecycle
+over held workers and the cache alone), as `docs/structure/self-host-server.md` lists them. Not
+tested separately: `GLGlobalVariables` (hashed with the variables), the preset and persona ids, and
+the greeting and background kinds (literal key parts); a handler reload and a hanging plugin are
+13b's (they happen in the tab).

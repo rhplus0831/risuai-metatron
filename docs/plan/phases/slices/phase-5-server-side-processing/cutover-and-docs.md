@@ -70,9 +70,10 @@ recorded and routed here only if it is a one-line change, otherwise reported.
   settings changed during a job do not affect it; a server restart clears the generation lock; the
   request log for server calls comes from the `requestLog` notice through the secret-free
   projection; `v2ImgGen`'s image size comes from the callback answer; an image callback with no
-  owner leaves the reply without the image; a CBS pre-pass and every display hook run on the
-  server with the viewport and language the client reports; every message re-renders after any
-  chat variable changes; plugins see masked LLM credentials through `getDatabase`; `bodyIntercepter`
+  owner leaves the reply without the image; the server display stages (Lua `editDisplay`, the
+  display trigger, CBS, regex) run with the viewport and language the client reports, the CBS
+  pre-pass and the plugin display handlers stay in the browser (slice 13); every message
+  re-renders after any chat variable changes; plugins see masked LLM credentials through `getDatabase`; `bodyIntercepter`
   registrations are not applied to browser-path calls without a job.
 - Docs: `chat-pipeline.md` becomes the client-side description of the job client plus a pointer
   to the server runner; `llm-requests.md` moves under the server guide's ownership for
