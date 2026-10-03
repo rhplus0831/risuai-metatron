@@ -39,8 +39,7 @@ Phase 5 cutover with `src/ts/network/proxyJobWs.ts` and its test), and the guide
 `self-host-server.md` (16 mentions), `global-api.md` (9), `build-test-platforms.md` (2),
 `backup-sync-hub.md` (2). Browser caches: `hypaVector` (`hypamemory.ts:41`, `hypamemoryv2.ts:36`),
 `tfCache` (`transformers.ts:14-39`), `LLMTranslateCache` (`translator.ts:25`),
-`firefox-translations-models` (`bergamotTranslator.ts:82-152`), `mcp-tool-calls` (`mcp.ts:268-269`,
-Phase 5 persists new tool calls with the chat), `strongBan_*` (`tokenizer.ts:542-587`),
+`firefox-translations-models` (`bergamotTranslator.ts:82-152`), `strongBan_*` (`tokenizer.ts:542-587`),
 `nightlyWarned` (`bootstrap.ts:87-90`); their remaining users after Phase 5 per its cutover
 slice: `PlaygroundEmbedding.svelte`, `CharConfig.svelte` `registerOnnxModel`, `tts.ts` `runVITS`.
 Guide mention counts of the identifiers this phase removes (`DBState.db`, `getDatabase`,
@@ -75,11 +74,20 @@ and reports which criterion fails and why, instead of documenting around it.
 ## Proposed decisions
 
 - `proxyStreamJobs` (proposed): deleted with its test, registration, GC, dispose, dispatcher
-  prefix, and the `vite.config.ts` entry; `self-host-server.md`'s routes table, Flows
+  prefix (the `vite.config.ts` entry already went at the Phase 5 cutover); `self-host-server.md`'s routes table, Flows
   ("Proxying"), Invariants ("Streaming job protocol"), and Tests lose their entries. The
   local-network policy on `/proxy2` is unchanged.
 - Browser caches (proposed): kept and listed in `persistence.md` as device caches of
-  browser-side features, not user data; `mcp-tool-calls` only for entries created before Phase 5. No cleanup.
+  browser-side features, not user data (`mcp-tool-calls` was already removed at the Phase 5
+  cutover: tool calls live only with their chat). No cleanup.
+- Left by the Phase 5 cutover for this closeout (recorded in its slice file): the chat module's
+  browser generation producers with no caller (`beginGeneration`, `checkpointGeneration`,
+  `endGeneration`, `checkpointAllGenerations`, `setStreamingState`, `hasRunningGenerations`, the
+  `generations`/`generationFinals` maps and the generation branches of the write and unload
+  functions; their tests in `chatStore.test.ts` and `resourceSyncChats.test.ts` go with them, the
+  server-lock and ordinary unload cases stay), and the browser provider adapters kept as test
+  oracles (`src/ts/process/request/tests/oracle/`, with `serverParity.test.ts` and
+  `requests.responses.test.ts`).
 - Transform Lua cost (proposed): measured once in headless Chrome against a fixture chat of 200
   messages with a Lua `editDisplay` module: server time per batch and per target, recorded in
   the phase file; a number above 50 ms per target on the reference machine opens a follow-up

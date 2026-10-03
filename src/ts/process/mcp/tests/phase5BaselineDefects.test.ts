@@ -7,10 +7,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // 10): `decodeToolCall` was flipped in slice 11b (`post-generation-and-plugin-callbacks`); the OAuth
 // refresh was flipped in slice 12a (`mcp-on-server`).
 
-const { fetchCalls, fetchAnswers } = vi.hoisted(() => ({
+const { fetchCalls, fetchAnswers, chats } = vi.hoisted(() => ({
     fetchCalls: [] as { url: string; init: RequestInit | undefined }[],
     /** The next `fetchNative` answers, in order; a function answer is called and may throw. */
     fetchAnswers: [] as (Response | (() => Response))[],
+    /** The chat module's chats by `chaId/chatId`: a remembered call is stored with its chat. */
+    chats: new Map<string, { toolCalls?: Record<string, unknown> }>(),
+}));
+
+vi.mock("src/ts/storage/chatStore.svelte", () => ({
+    findChat: (ref: { chaId: string; chatId: string }) => chats.get(`${ref.chaId}/${ref.chatId}`),
+    mergeChatMeta: (ref: { chaId: string; chatId: string }, field: "toolCalls", value: Record<string, unknown>) => {
+        const chat = chats.get(`${ref.chaId}/${ref.chatId}`)!;
+        chat[field] = { ...chat[field], ...value };
+    },
 }));
 
 vi.mock("src/ts/globalApi.svelte", () => ({
@@ -35,9 +45,13 @@ vi.mock("src/ts/stores.svelte", () => ({ DBState: { db: { mcpURLs: [], modules: 
 vi.mock("src/ts/process/modules", () => ({ getModuleMcps: vi.fn(() => []) }));
 vi.mock("src/ts/process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: [] }));
 
+const ref = { chaId: "c", chatId: "k" };
+
 beforeEach(() => {
     fetchCalls.length = 0;
     fetchAnswers.length = 0;
+    chats.clear();
+    chats.set("c/k", {});
 });
 
 afterEach(() => {
@@ -51,12 +65,12 @@ describe("Phase 5 baseline, flipped in slice 11b: decodeToolCall decodes a remem
             call: { id: "call-1", name: "lookup", arg: { q: "x" } },
             response: [{ type: "text", text: "found" }],
         } as unknown as Parameters<typeof encodeToolCall>[0];
-        const encoded = await encodeToolCall(call);
+        const encoded = await encodeToolCall(call, ref);
         expect(encoded).toBe("<tool_call>call-1lookup</tool_call>\n\n");
 
         // Before slice 11b `text.slice("<tool_call>".length, 0)` emptied the text and lost the id;
         // the opening tag is now cut off and the whole marker decodes to the record.
-        expect(await decodeToolCall(encoded)).toEqual({
+        expect(await decodeToolCall(encoded, ref)).toEqual({
             call: { id: "call-1", name: "lookup", arg: { q: "x" } },
             response: [{ type: "text", text: "found" }],
         });
@@ -68,8 +82,8 @@ describe("Phase 5 baseline, flipped in slice 11b: decodeToolCall decodes a remem
             call: { id: "call-2", name: "lookup", arg: {} },
             response: [],
         } as unknown as Parameters<typeof encodeToolCall>[0];
-        await encodeToolCall(call);
-        expect(await decodeToolCall("call-2lookup</tool_call>")).toMatchObject({ call: { id: "call-2" } });
+        await encodeToolCall(call, ref);
+        expect(await decodeToolCall("call-2lookup</tool_call>", ref)).toMatchObject({ call: { id: "call-2" } });
     });
 });
 

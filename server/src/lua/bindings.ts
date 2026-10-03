@@ -241,7 +241,7 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 /**
  * The 50 Lua host functions the runtime does not own (it owns `stopChat`, `logMain`, `sleep`, and
  * `request`), served on the main thread for one job (Phase 5 slice 8a, ported from
- * `src/ts/process/scriptings.ts`). Each one keeps the client's exposure (synchronous, or a promise
+ * the former `src/ts/process/scriptings.ts`). Each one keeps the client's exposure (synchronous, or a promise
  * the script awaits), its guard (the run's key, through `HostContext.access`: Safe is `safe` or
  * `lowLevel`, Safe|Edit adds `editDisplay`, Low is `lowLevel`; a refused key returns nil), and its
  * results. The table-taking functions cross as JSON through the prelude's wrappers

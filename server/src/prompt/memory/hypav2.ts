@@ -4,7 +4,7 @@ import type { OpenAIChat } from "../../../../shared/openai.ts";
 import { HypaProcesser } from "../embeddings.ts";
 import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 
-// `hypaMemoryV2` of `src/ts/process/memory/hypav2.ts`, statement for statement, on a `MemoryHost`.
+// `hypaMemoryV2` of the former `src/ts/process/memory/hypav2.ts`, statement for statement, on a `MemoryHost`.
 // A provider's answer in an error text is redacted.
 
 async function summary(host: MemoryHost, stringlizedChat: string): Promise<{ success: boolean; data: string }> {

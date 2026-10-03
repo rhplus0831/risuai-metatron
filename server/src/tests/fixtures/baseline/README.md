@@ -30,8 +30,8 @@ Contract changes) are separate reviewed expected-delta files, as the implementat
 The capture files above stay as captured. An approved behavior change (a defect fix, a Safety
 Contract change) gets a reviewed expected-delta file here, which names the scenarios it changes,
 the value after the change, and why the change produces it; a test takes the delta where it has an
-entry and the capture everywhere else. The re-capture (`node util/playwright/capturePhase5Baseline.mjs`)
-does not write this folder.
+entry and the capture everywhere else. The re-capture (`node util/playwright/capturePhase5Baseline.mjs`,
+at `219dfb51` or earlier; see "Re-capture") does not write this folder.
 
 | File                               | What it holds                                                                                                                                                                                                                                                                                                                                                                   | Consumer                                                                                                                                          |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -150,6 +150,9 @@ does not write this folder.
 - The `@@repeat_back` null dereference: slice 3's own fixture.
 
 ## Re-capture
+
+The capture drives the browser path the Phase 5 cutover (slice 14) removed: it imports
+`src/ts/process/scripts.ts`. It runs only on a checkout at `219dfb51` or earlier.
 
 `node util/playwright/capturePhase5Baseline.mjs` writes this folder (an `outDir` argument writes
 elsewhere, for example to compare two runs). A difference from the checked-in files after a client

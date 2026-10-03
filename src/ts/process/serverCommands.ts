@@ -22,7 +22,12 @@ import { type ChatRef, findChat, heldChatRevision } from "../storage/chatStore.s
 import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 import { getDatabase, type character, type groupChat } from "../storage/database.svelte";
 import { selectedPersona, selectedPreset } from "../storage/forwarding.svelte";
-import { flushResources, GenerationBlockedError, generatingNoticeCount } from "../storage/resourceSync.svelte";
+import {
+    flushResources,
+    GenerationBlockedError,
+    generatingNoticeCount,
+    watchForRestore,
+} from "../storage/resourceSync.svelte";
 import { checkPersonaBinded, sleep } from "../util";
 
 /** How often a follow whose socket closed before the job's end attaches again. */
@@ -149,10 +154,20 @@ async function followOnce(jobId: string, ref: ChatRef): Promise<GenerationTermin
     return "lost";
 }
 
-/** What the tab shows at a server job's end: its error, or that it was lost. */
+/**
+ * What the tab shows at a server job's end: its error, or that it was lost. A job a restore or
+ * import ended (`maintenance`) shows the restore notice once the data is replaced
+ * (`watchForRestore`), or its error when nothing was replaced.
+ */
 function reportEnd(end: GenerationTerminalEvent | "lost") {
     if (end === "lost") {
         alertError("The connection to the server job was lost; reload the chat to see its changes");
+    } else if (end.type === "error" && end.reason === "maintenance") {
+        void watchForRestore().then((restored) => {
+            if (!restored) {
+                alertError(end.message);
+            }
+        });
     } else if (end.type === "error" && end.reason !== "aborted") {
         alertError(end.message);
     }
@@ -180,7 +195,7 @@ export type ServerJobRequest = {
 };
 
 /**
- * A server job of this tab (Phase 5 slices 8a, 8b, 9, behind `risu.serverGeneration`): the target
+ * A server job of this tab (Phase 5 slices 8a, 8b, 9): the target
  * and the settings ids are taken before the first await (a selection change while the save flushes
  * does not move the job; `identity` gives a plugin call's own preset and effective persona), every
  * pending write is saved first (a refused or a discarding flush runs nothing), then the job runs and
@@ -298,7 +313,7 @@ export async function runServerJob(
 }
 
 /**
- * A command job (Phase 5 slices 8a and 8b, behind `risu.serverGeneration`): `runServerJob` with the
+ * A command job (Phase 5 slices 8a and 8b): `runServerJob` with the
  * command; a group chat refuses it.
  */
 async function runServerCommand(

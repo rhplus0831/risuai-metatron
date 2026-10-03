@@ -10,7 +10,6 @@ import { applyMarkdownToNode, risuChatParser, type simpleCharacterArgument } fro
 import { selectedCharID } from "../stores.svelte";
 import { getModuleRegexScripts } from "../process/modules";
 import { getNodetextToSentence, sleep } from "../util";
-import { processScriptFull } from "../process/scripts";
 import { type CapturedTransform, captureTransform, serverProcessScript } from "../parser/transformClient";
 import localforage from "localforage";
 import sendSound from "../../etc/send.mp3";
@@ -255,13 +254,13 @@ export async function translateHTML(
     charArg: simpleCharacterArgument | string = "",
     chatID: number,
     regenerate = false,
-    /** A render that captured its transform context earlier (`ChatBody`); null: the browser path. */
+    /** A render that captured its transform context earlier (`ChatBody`); null: no context (the script stage is skipped). */
     capturedTransform?: CapturedTransform | null,
 ): Promise<string> {
     if (!html) {
         return html;
     }
-    // The server transform's context (the flag on): the caller's, or captured before the first await.
+    // The server transform's context: the caller's, or captured before the first await.
     const transform = capturedTransform === undefined ? captureTransform(chatID) : capturedTransform;
     let alwaysExistChar: character | groupChat | simpleCharacterArgument;
     if (charArg !== "") {
@@ -402,7 +401,7 @@ export async function translateHTML(
                       transform,
                       "translation",
                   )
-                : await processScriptFull(alwaysExistChar, translated, "editdisplay", chatID);
+                : { data: translated };
             // If the translation is the same, don't replace the node
             if (translated == processedTranslated) {
                 node.textContent = processedTranslated;

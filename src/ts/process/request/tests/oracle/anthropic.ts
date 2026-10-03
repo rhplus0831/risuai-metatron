@@ -7,11 +7,11 @@ import { registerClaudeObserver } from "src/ts/observer.svelte";
 import { getDatabase } from "src/ts/storage/database.svelte";
 import { replaceAsync, simplifySchema, sleep } from "src/ts/util";
 import { v4 } from "uuid";
-import type { MultiModal } from "../index.svelte";
-import { extractJSON } from "../templates/jsonSchema";
-import { callTool, decodeToolCall, encodeToolCall } from "../mcp/mcp";
-import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "./request";
-import { applyAdditionalParameters, applyParameters, getAdditionalParameters } from "./shared";
+import type { MultiModal } from "../../../index.svelte";
+import { extractJSON } from "../../../templates/jsonSchema";
+import { callTool, decodeToolCall, encodeToolCall } from "../../../mcp/mcp";
+import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "../../request";
+import { applyAdditionalParameters, applyParameters, getAdditionalParameters } from "../../shared";
 
 interface Claude3TextBlock {
     type: "text";

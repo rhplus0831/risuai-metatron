@@ -82,11 +82,10 @@ import { hasher, risuChatParser, risuChatParserScoped, type CbsConditions } from
 import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./permissionStore";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat, doingChat } from "src/ts/process/index.svelte";
-import { processScriptFull } from "src/ts/process/scripts";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
 import { getModelInfo } from "src/ts/model/modellist";
 import type { ModelModeExtended } from "src/ts/process/request/shared";
-import type { ScriptMode } from "src/ts/process/scripts";
+import type { RegexScriptMode as ScriptMode } from "../../../../shared/scripts/regex.ts";
 import { requestChatDataMain } from "src/ts/process/request/request";
 import { getModuleLorebooks } from "src/ts/process/modules";
 import {
@@ -1432,32 +1431,17 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 return parsed;
             }
 
-            // The server transform (the flag on), for the hook's chat, preset, and persona when inside one.
+            // The server transform, for the hook's chat, preset, and persona when inside one. Without a
+            // context (no chat, a chat not saved on the server yet) the regex stage is skipped.
             const transform = captureTransform(chatID, {
                 chatRef: context?.chatRef ?? (target ? { chaId: char.chaId, chatId: chat.id } : null),
                 pluginContext: context,
             });
-            return (
-                transform
-                    ? await serverProcessScript(
-                          char,
-                          parsed,
-                          "editprocess",
-                          chatID,
-                          cbsConditions,
-                          transform,
-                          "message",
-                      )
-                    : await processScriptFull(
-                          char,
-                          parsed,
-                          "editprocess",
-                          chatID,
-                          cbsConditions,
-                          context?.chatRef,
-                          context,
-                      )
-            ).data;
+            if (!transform) {
+                return parsed;
+            }
+            return (await serverProcessScript(char, parsed, "editprocess", chatID, cbsConditions, transform, "message"))
+                .data;
         },
         setChatToIndex: (characterIndex: number, chatIndex: number, chat: any) => {
             const db = DBState.db;

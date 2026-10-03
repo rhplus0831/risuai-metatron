@@ -10,8 +10,8 @@ import { readJsonBody } from "../http/body.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
-// Contract shared with src/ts/network/proxyJobWs.ts and fetchViaProxyJobWs in
-// src/ts/globalApi.svelte.ts: event names, base64 chunks, WS auth, and these limits.
+// The route's contract: event names, base64 chunks, WS auth, and these limits. Its client (the browser's
+// local-network OpenAI streaming adapter) was removed at the Phase 5 cutover; the route goes in Phase 6.
 const PROXY_STREAM_DEFAULT_TIMEOUT_MS = 600000;
 const PROXY_STREAM_MAX_TIMEOUT_MS = 3600000;
 const PROXY_STREAM_DEFAULT_HEARTBEAT_SEC = 15;

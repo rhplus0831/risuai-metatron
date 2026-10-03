@@ -3,26 +3,22 @@
 ## Scope
 
 - Owns:
-  - the send path from the input box to the stored reply,
-  - prompt assembly (the prompt template, legacy formatting order, lorebook placement, example messages, author note, persona),
-  - token trimming,
-  - streaming writes into the chat,
-  - post-processing,
-  - group speaker selection,
+  - the tab's side of a send since the Phase 5 cutover: the input box to the server job (`sendChat` is the job client) and the reply as the job's events and records bring it,
+  - the prompt editor's helpers (`prompt.ts`, the templates, `templateCheck`), the lorebook codecs and the DevTool lore preview,
+  - group membership (`group.ts`),
   - reroll,
   - slash commands,
-  - inlays,
-  - Jinja/instruct chat templates.
+  - inlays.
 - Paths:
-  - `src/ts/process/index.svelte.ts`
-  - `src/ts/process/{prompt,stringlize,group,exampleMessages,prereroll,command,infunctions,inlayScreen}.ts`
+  - `src/ts/process/index.svelte.ts`, `src/ts/process/serverGeneration.ts`
+  - `src/ts/process/{prompt,stringlize,group,prereroll,command,infunctions,inlayScreen}.ts`
   - `src/ts/process/lorebook.svelte.ts`, `shared/lore/activation.ts`
   - `src/ts/process/templates/*`, `shared/prompt/{chatTemplate,templateCheck}.ts`
   - `src/ts/process/files/{inlays,multisend}.ts`
   - `src/ts/process/dynamicutils/pdf.ts`
-  - `src/ts/process/embedding/addinfo.ts`
   - The send handlers in `src/lib/ChatScreens/DefaultChatScreen.svelte`
 - Not here:
+  - Prompt assembly, token trimming, the request, streaming, and the post-processing tail run in the server job → `self-host-server.md` (`runPromptJob`, `assemblePrompt`).
   - Memory algorithms → `memory.md`.
   - `requestChatData` internals → `llm-requests.md`.
   - Token counting (`shared/tokenizerChoice.ts`, `shared/prompt/chatTokens.ts`) → `llm-requests.md`.
@@ -32,9 +28,9 @@
 
 ## Files
 
-- `index.svelte.ts`: the core pipeline.
-  - Exports `sendChat(chatProcessIndex, {signal, continue, preview, ...})`, `OpenAIChat` and `MultiModal` (declared in `shared/openai.ts`), `doingChat`, `chatProcessStage`, `abortChat`, `requestTokenPart`.
-  - Internal: `runCurrentChatFunction`, `positionParser`, `resolvePosition`, `systemizeChat`, `runChatOutputListeners`.
+- `index.svelte.ts`: the send's job client (Phase 5 cutover; the browser assembly path was removed).
+  - Exports `sendChat(chatProcessIndex, arg)` (`arg`: `serverGeneration.ts` `ServerSendArg` plus `onServerRefused`; `chatProcessIndex` is kept for the plugin API's signature and not read), `doingChat` (the tab's busy flag: set by `sendChat`, cleared by its callers), `previewFormated`/`previewBody` (a preview's result), and the `OpenAIChat`/`MultiModal` types (declared in `shared/openai.ts`).
+- `serverGeneration.ts` `sendChatOnServer(arg)`: the send as a server job (below).
 - `prompt.ts`: `tokenizePreset` and legacy-preset conversion; re-exports the prompt types declared in `shared/prompt.ts`.
   - Types: `PromptItem` (discriminated union), `PromptSettings`, `PromptRole`.
   - `tokenizePreset`.
@@ -51,9 +47,8 @@
   - `stringlizeChat`, `stringlizeAINChat`, `unstringlizeChat`, `getStopStrings`.
   - `stringlizeChatOba` is unreferenced. `multiChatReplacer` is empty.
 - `group.ts`: `groupOrder` (name mentions, then shuffle and talkativeness), `addGroupChar`, `rmCharFromGroup`.
-- `exampleMessages.ts` `exampleMessage`: parses example dialogue into `OpenAIChat[]`.
 - `prereroll.ts`: `Prereroll`, `PreUnreroll`, `addRerolls`. In-memory swipe history keyed by `generationId`.
-- `command.ts` `processMultiCommand`: slash commands (`/send`, `/sendas`, `/cut`, `/del`, `/multisend`, `/trigger`, variables, TTS, `?` help). With `{ fromInput: true }` (the chat input) and `risu.serverGeneration` on, `/trigger` runs on the server (Phase 5 slice 8b, `scripts-triggers.md`).
+- `command.ts` `processMultiCommand(line, ref?)`: the chat input's slash commands (`/send`, `/sendas`, `/cut`, `/del`, `/multisend`, `/trigger`, variables, TTS, `?` help). `/trigger` runs on the server (`runServerManualTrigger`, Phase 5 slice 8b, `scripts-triggers.md`); a trigger's `v2Command` runs the server's command executor.
   - Pipes are `|`.
   - Unknown commands return `false` and fall through as ordinary text.
 - `infunctions.ts` `calcString`: calculator for the CBS calc function.
@@ -66,7 +61,6 @@
   - Caches: metadata seeded at boot (`seedInlays`) plus a GET on a miss, a negative cache for unknown ids that expires after 30 s, a 64 MiB blob cache (content-addressed, so never stale), and in-flight de-duplication. Metadata is only as fresh as this tab's own writes plus `invalidateInlayCaches`, which `bootstrap.ts` runs whenever the save adapter brought another tab's records into the mirror (`onRemoteRecordApplied`). Every public write to one id (preparation, upload, and metadata) runs after the previous one; a conflict with another tab re-reads once and writes over it (last writer wins, as before).
   - `supportsInlayImage`.
 - `files/multisend.ts` `postChatFile`: file attachments (PO, TXT, XML retrieval, media → inlays). The PDF branch is unreachable from the picker.
-- `embedding/addinfo.ts` `additionalInformations`: picks the top 3 `additionalText` paragraphs by embedding similarity.
 - `dynamicutils/pdf.ts`: `convertPdfToImages`, `extractPdfText`. Not used by `sendChat`.
 
 ## Flows
@@ -77,59 +71,14 @@ Send, in `DefaultChatScreen.svelte`:
    1. Reject if `$doingChat`.
    2. `processMultiCommand`.
    3. Append queued `{{inlayed::id}}` tags.
-   4. `runTrigger(...,'input')`.
-   5. `processScript(...,'editinput')`.
-   6. Append the user `Message` (`appendMessage`; the input trigger's changes to the messages are applied with `applyChatResult`).
-   7. `sendChatMain`.
-2. `sendChatMain` creates an `AbortController` and calls `sendChat(-1, {target, signal, continue})`, where `target` is the chat `sendMain` captured before the input trigger's awaits (commands and multisend capture theirs the same way).
-   With `risu.serverGeneration` on (Phase 5 slice 9), steps 4 to 6 move to the server job: a nonempty input goes to `sendChatMain` with a new `userMessageId`, and the "says nothing" append stays here. A send the server refused before creating the job puts the input back in the box; the reroll bundle starts after the user message.
-3. `reroll`/`unReroll` refuse with the `chatGenerating` alert while the chat holds a lock (the last reply stays locked until its final write is acknowledged, after the send returned; the buttons are disabled meanwhile). They use `Prereroll`/`PreUnreroll` (`setMessageText`) and swap stored rerolls with `editChatSync`. If those have nothing, they remove the replies after the last user message (`editChatSync`) and call `sendChatMain` again.
+   4. A nonempty input becomes the job's input with a new `userMessageId` (the job runs the input trigger, `editinput`, and appends the user message); an empty input appends "_says nothing_" when `useSayNothing` is on and the last message is not the user's (a continue from an empty input does it too).
+   5. `sendChatMain`.
+2. `sendChatMain` creates an `AbortController` and calls `sendChat(-1, {target, signal, continue, input, userMessageId})`, where `target` is the chat `sendMain` captured before any await (commands and multisend capture theirs the same way). A send the server refused before creating the job puts the input back in the box; after an unknown send (the create request got no answer) `sendMain` keeps the text's `userMessageId` for that chat and sends the same text again under it, which the job skips if it already appended it. The reroll bundle starts after the user message.
+3. `reroll`/`unReroll` refuse with the `chatGenerating` alert while the chat holds a lock (the reply stays locked until the job's last write lands; the buttons are disabled meanwhile). They use `Prereroll`/`PreUnreroll` (`setMessageText`) and swap stored rerolls with `editChatSync`. If those have nothing, they remove the replies after the last user message (`editChatSync`) and call `sendChatMain` again.
 
-`sendChat` in `index.svelte.ts`:
+`sendChat` in `index.svelte.ts` (Phase 5 slice 9; the only path since the cutover): the `doingChat` guard and the deleted-target check, then `serverGeneration.ts` `sendChatOnServer`, which writes `statics.messages` (`incrementStatic`) and the target's `lastInteraction`, and calls `serverCommands.ts` `runServerJob` (the ids and the client environment taken before the first await, `flushResources()` with a refusal on a rejection or a discarded change (a `GenerationBlockedError`, the chat or character waiting for another tab's job, alerts `chatGenerating` unless the adapter's conflict recovery has just shown it), the job posted as `preview`, `previewPrompt`, `group` for a group chat, `continue`, or `send` with `input`, `userMessageId`, and an explicit `continueMessageId`, an abort of `arg.signal` sent as `DELETE` also while the job is created, and the job followed to its end through `followJobToEnd`). `runServerJob` takes a plugin call's preset and effective persona from `arg.pluginContext`; a busy job of this tab is followed (and aborted with the signal) but does not count as this send; a create request without an answer is `unknown` (the job may exist). `sendChat` returns false for a refused, followed, or unknown send and for a `done` with `stopped`; `onServerRefused(ambiguous)` puts the input back. A preview's `done.result` becomes `previewFormated` or `previewBody`; a reply's `done.alternatives` go to `addRerolls` under its generation (none for a continue). The job's `preset` event switches the tab's selection once per job (`generationJobs.ts` `applyGenerationEvent`).
 
-`sendChat` wraps `sendChatInner` with a `GenerationScope` and ends the scope's generation whatever happens (return, throw, abort).
-
-With the client-local flag `risu.serverGeneration` on (`src/ts/storage/clientFlags.ts`, the toggle in `DevTool.svelte`; Phase 5 slice 9), a top-level `sendChat` (`chatProcessIndex === -1`, no speaker) runs `sendChatServerBranch` instead: the `doingChat` guard and the deleted-target check, then `serverGeneration.ts` `sendChatOnServer`, which writes `statics.messages` (`incrementStatic`) and the target's `lastInteraction`, and calls `serverCommands.ts` `runServerJob` (the ids and the client environment taken before the first await, `flushResources()` with a refusal on a rejection or a discarded change (a `GenerationBlockedError`, the chat or character waiting for another tab's job, alerts `chatGenerating` unless the adapter's conflict recovery has just shown it), the job posted as `preview`, `previewPrompt`, `group` for a group chat, `continue`, or `send` with `input`, `userMessageId`, and an explicit `continueMessageId`, an abort of `arg.signal` sent as `DELETE` also while the job is created, and the job followed to its end through `followJobToEnd`). `runServerJob` takes a plugin call's preset and effective persona from `arg.pluginContext`; a busy job of this tab is followed (and aborted with the signal) but does not count as this send; a create request without an answer is `unknown` (the job may exist). `sendChat` returns false for a refused, followed, or unknown send and for a `done` with `stopped`; `onServerRefused(ambiguous)` puts the input back, and after an unknown send `sendMain` keeps the text's `userMessageId` for that chat (across later refusals, until the chat holds the message) and sends the same text again under it, which the job skips if it already appended it; a refusal after the chat holds it puts nothing back. A preview's `done.result` becomes `previewFormated` or `previewBody`; a reply's `done.alternatives` go to `addRerolls` under its generation (none for a continue). The job (`self-host-server.md` `runPromptJob`, `assemblePrompt`) runs the input stage, `presetChain`, the group order, and the prompt assembly below on the server and streams the raw reply; The tail runs in the job too (slice 11a; `self-host-server.md` `runPromptJob`): `editoutput` once on the completed reply (not per chunk), the output trigger, inlays, the `chatOutput` listeners (a callback to the tab; each listener gets a fresh copy of the character and chat), TTS and notification as notices, auto-continue and a trigger's resend as rounds of the same job (at most 8 extra), `igp` on the last reply only, the emotion modes on the server with an `emotion` notice (the tab sends the emotions it showed last with the job), and the image view as an `imggen` callback. A plugin provider model answers through a `provider` callback to the tab (slice 11b: the text, or its stream as cumulative chunks); remembered tool calls are read from and written to `chat.toolCalls`; a `/multisend` of a server command job is sent by the tab after the job (`done.followUps`, `runMultisend`). The memory algorithms, `additionalInformations`, and image captions run in the job (slice 10; `memory.md`, "Server"): the same gate, priority, and persistence, with the server's embeddings, vector cache, and local models; HypaV3's WebLLM summarization models are refused there. The job's `preset` event switches the tab's selection once per job (`generationJobs.ts` `applyGenerationEvent`). With the flag off nothing changes.
-
-1. Setup:
-   1. Stages and abort.
-   2. Optional random preset from `presetChain`.
-   3. Capture the chat this send runs on as `chatTarget` (a `ChatRef`): `arg.target`, or the selected chat. Every later read (`chatNow`) and write resolves the chat and its messages by id, whatever is selected, reordered, or deleted meanwhile. The code the send calls gets it too: every `risuChatParser` call (`chatRef`: CBS chat variables, per-chat global-variable overrides, `#if` variable and toggle conditions, and chat/history, persona, and module macros read that chat), `processScript`/`processScriptFull` (regex scripts and their cache key, `@@inject`, `@@repeat_back`, Lua edit hooks), triggers (`runTrigger`'s `chatRef`: the CBS in their effects, their Lua, and their `v2Command` lines; display and request runs read it but never write it), `loadLoreBookV3Prompt`, the enabled modules (`getModules(chatRef)` and its lore, trigger, regex, asset, and toggle getters), the bound persona (`getUserName`, `getPersonaPrompt`, `additionalInformations`), the `editRequest` hook and the request trigger (`requestChatData`'s `chatRef`), and output listeners (indices resolved from it before each listener). Recursive sends (group speakers by `speakerChaId`, auto-continue with `continueMessageId`, trigger resends) pass it on. A send whose chat disappears while the provider answers stops before any output hook. The reply is appended with `chatId: generationId`; other messages get their ids from the chat module.
-   4. A continue locks the message it extends (`continueMessageId`, or the chat's last message) at once, before any await; the finally of `sendChat` releases it on failure or abort.
-2. Groups: `sendChat(-1)` computes `groupOrder`, then recursively calls `sendChat(index)` once per selected speaker.
-3. `runCurrentChatFunction` runs CBS with `runVar: true` over the history and writes changed texts with `setMessageText` (the reply with its generation's capability). The prompt buckets are `main`, `jailbreak`, `chats`, `lorebook`, `globalNote`, `authorNote`, `lastChat`, `description`, `postEverything`, and `personaPrompt`.
-4. Lore: `loadLoreBookV3Prompt` returns the active entries, placed by position:
-   - default → `lorebook`,
-   - `before_desc`/`after_desc`/personality/scenario → description,
-   - depth 0 → `postEverything`,
-   - `@@inject*` → `positionParser`,
-   - `{{position::name}}` expands up to 5 passes.
-5. First template pass: tokenize the `PromptItem`s. Then build the history:
-   1. `exampleMessage`.
-   2. `[Start a new chat]`, unless NovelAI or `trimStartNewChat`.
-   3. The first greeting, run through `editprocess`.
-   4. Messages, skipping `disabled`, converted to `OpenAIChat` and marked `removable`.
-   5. Depth lore spliced in.
-6. Memory: the first enabled of `hanuraiMemory` → `hypaMemoryV2` → `hypaMemoryV3` → `supaMemory` (see `memory.md`), each given a detached copy of the chat; the memory data they return is saved with `setChatMeta` (`hypaV2Data`, `hypaV3Data` incl. the error-summary path, `supaMemoryData`, `lastMemory`). Without memory, drop the oldest chats until under `maxContext`.
-7. Final template pass:
-   1. Materialize the cards in order.
-   2. `systemizeChat` when `sendChatAsSystem`.
-   3. Merge system messages for some providers.
-   4. Cache points.
-   5. `depth_prompt` and trigger-added prompts.
-   6. `runLuaEditTrigger(...,'editRequest')`.
-   7. Retokenize and blank `removable` entries until the prompt fits.
-   8. Reduce `outputTokens` to fit.
-8. `requestChatData(..., 'model', abortSignal)` returns `success | fail | streaming | multiline`.
-9. Streaming:
-   1. Append the reply `Message` (id = the generation id), or for continue use the message locked at the start and keep its id. `startGeneration` locks it (`beginGeneration`: the server fences the message for this generation) and sets `streamingState`.
-   2. For each chunk: apply `processScriptFull(...,'editoutput')` and write the cumulative text with `setMessageText(..., { generationId })` on the 125 ms display coalescer. The chat module checkpoints the text every three seconds.
-   3. Then: `runTrigger('output')` (applied with `applyChatResult` and the generation's capability), `runInlayScreen`, `runChatOutputListeners` (plugins), `generationInfo`, and `sayTTS` if `ttsAutoSpeech`. The generation ends (its final text queued; the lock stays until the server acknowledges it) before the send recurses and when it returns.
-   4. Non-streaming replies: inlays run before the reply is appended; then the same tail. Extra `multiline` outputs become reroll alternatives.
-   5. Abort or a read failure keeps the text reached (the final write carries it; the strong display mode's deferred `editoutput` runs only on a completed stream); a tab killed mid-stream keeps the last acknowledged checkpoint, plus the best-effort `pagehide` request (see `persistence.md`).
-10. Tail:
-    - Trigger `sendAIprompt` can recurse into a resend. Short or incomplete replies can auto-continue.
-    - Emotion/IGP or image generation (`viewScreen === 'imggen'` → `stableDiff`), notifications. `igp` appends the request's text by its type: a `success` result, the first of a `multiline`, nothing for a failure (which is alerted).
+The job (`self-host-server.md` `runPromptJob`, `assemblePrompt`) runs the input stage, `presetChain`, the group order (one reply per active member), lore, memory, the prompt assembly and trimming, the request, and the tail on the server: `editoutput` once on the completed reply (not per chunk), the output trigger, inlays, the `chatOutput` listeners (a callback to the tab; each listener gets a fresh copy of the character and chat), TTS and notification as notices, auto-continue and a trigger's resend as rounds of the same job (at most 8 extra), `igp` on the last reply only, the emotion modes on the server with an `emotion` notice (the tab sends the emotions it showed last with the job), and the image view as an `imggen` callback. A plugin provider model answers through a `provider` callback to the tab (slice 11b); remembered tool calls are read from and written to `chat.toolCalls`; a `/multisend` of a server command job is sent by the tab after the job (`done.followUps`, `runMultisend`). The tab shows the streamed reply from the job's `chunk` events (`applyServerGeneration`, raw while the message is locked) and the stored copies from its `resource` events.
 
 Not in `sendChat`:
 
@@ -142,22 +91,21 @@ Not in `sendChat`:
 - `OpenAIChat` has `role`, `content`, `memo`, `removable`, `attr`, `multimodals`, `thoughts`, and `cachePoint`.
   - `memo` values `supaMemory`/`hypaMemory` mark memory cards.
 - `PromptItem` types: `plain|jailbreak|cot`, `chatML`, typed `persona|description|lorebook|postEverything|memory`, `authornote`, `chat` (with a range), and `cache`.
-- Reactive singletons: `DBState.db`, `selectedCharID`, `doingChat`, `chatProcessStage`, `CharEmotion`.
-- The pipeline never mutates the chat in place: `chats` are read-only mirror fields, and every write goes through `src/ts/storage/chatStore.svelte.ts` (see `persistence.md`), addressed by chat and message id. Autosave does not see chats.
-- Streaming display: `streamingState` (`chatStore.svelte.ts`: `chaId`, `chatId`, `messageId`, `mode`) drives `Chats.svelte`; `Chat.svelte` disables the controls of a message `isMessageLocked` reports.
+- Reactive singletons: `DBState.db`, `selectedCharID`, `doingChat`, `CharEmotion`.
+- The tab never mutates the chat in place: `chats` are read-only mirror fields, and every write goes through `src/ts/storage/chatStore.svelte.ts` (see `persistence.md`), addressed by chat and message id. Autosave does not see chats.
+- Streaming display: a server job's message is locked while it streams (`isMessageLocked`); `Chat.svelte` disables its controls and renders it raw until the lock ends. `streamingState` is set by no producer since the cutover (the browser generation path set it; recorded in `persistence.md`).
 
 ## Coupling
 
-- Imports: tokenizer, parser (`risuChatParser`), `lorebook`, `scripts`, `triggers`, memory, `request`, `tts`, `stableDiff`, inlays, modules, plugins, model info.
-- Callers: `DefaultChatScreen.svelte`, `command.ts` (`/send`, `/multisend`), `DevTool.svelte` (preview), `plugins/apiV3` (`sendChat` permission).
+- `sendChat` imports `serverGeneration.ts` (and through it `serverCommands.ts`, the job channel) and the chat module.
+- Callers: `DefaultChatScreen.svelte`, `command.ts` (`/send`, `/multisend`), `files/multisend.ts`, `hotkey.ts`, `DevTool.svelte` (preview, autopilot), `plugins/apiV3` (`sendChat` permission).
 
 ## Invariants
 
-- `chatId` is the identity used to relocate a reply after triggers and inlays run, and the address of every message write. Never address a message by index after an await; resolve the id again.
-- Triggers run on a copy (`runTrigger` clones the chat; a display or request run copies only the chat and its message list and replaces messages instead of editing them). The caller captures a baseline before and applies the returned chat with `applyChatResult`. Lua outside triggers (edit hooks, buttons) writes the live chat through the module, resolving an index to an id when called.
-- The send captures its plugin call context (`capturePluginContext(chatTarget)`: the chat, the selected preset, the effective persona) right after it resolves `chatTarget`, or takes the one it was given (`SendChatArg.pluginContext`, for a plugin's `sendChat` inside a hook), and passes it to every `processScript`/`processScriptFull` call, to the main, image-prompt, and emotion `requestChatData` calls, to `runChatOutputListeners` (which calls each listener through `invokeHook`), and to the group, auto-continue, and resend recursions. A plugin hook then acts on the sending chat and preset even after the user switched character or preset mid-send (`plugins-mcp.md`). A new hook call site passes the context too.
-- The reply being generated is locked: only writes carrying its generation id change it. Other writers (UI, triggers, commands) skip it or get an error from the module.
-- Script modes are distinct:
+- `chatId` is the address of every message write. Never address a message by index after an await; resolve the id again.
+- A send captures its target chat before any await and passes it to the job; the job's preset and effective persona are fixed at its creation (a plugin's `sendChat` inside a hook passes `pluginContext`, so the job acts on the hook's chat and preset).
+- The reply being generated is locked by its server job: the tab's writes to it are refused by the server and skipped by the chat module.
+- Script modes (run by the server since the cutover):
 
   | Mode          | Stage                       |
   | ------------- | --------------------------- |
@@ -166,43 +114,43 @@ Not in `sendChat`:
   | `editoutput`  | model output                |
   | `editdisplay` | render                      |
 
-  Lua edit triggers skip `editprocess`. Request triggers run inside `requestChatData`.
+  Lua edit triggers skip `editprocess`. The `request` trigger runs on the server job's requests only; the tab's own requests (translation, suggestions, the HypaV3 modal, plugins) go out without it (Phase 5 cutover).
 
-- A new `PromptItem` type needs handling in both template switches in `sendChat`, plus `tokenizePreset`, `templateCheck`, import conversion, `PromptDataItem.svelte`, and `normalizePromptTemplate` (`shared/presets.ts`).
-- `formatingOrder` is the legacy fallback. `postEverything` is auto-appended when missing.
-- Trimming happens in layers: the lore token budget, then memory or oldest-first dropping, then a final `removable`-only blanking. Custom Lua `editRequest` edits happen before the final recount.
-- Lore matching:
+- A new `PromptItem` type needs handling in both template switches of the server's `assemblePrompt`, plus `tokenizePreset`, `templateCheck`, import conversion, `PromptDataItem.svelte`, and `normalizePromptTemplate` (`shared/presets.ts`).
+- Lore matching (`shared/lore/activation.ts`):
   - Only the last `scanDepth` messages are scanned.
   - Keys starting with `/` are regex.
   - Supports selective secondary keys, negative keys, and all-key mode.
   - Recursion is controlled by `recursiveScanning` and `@@recursive`/`@@unrecursive`/`@@no_recursive_search`, with no explicit depth counter.
   - Decorators are parsed with `CCardLib.decorator.parse`.
 - Inlays are not stored in chat text. Removing an inlay (`removeInlayAsset`, the Inlay Explorer) breaks the `{{inlay::id}}` tags that name it; deleting messages never removes inlays.
-- Images become `MultiModal` input only when the model has `LLMFlags.hasImageInput`. Otherwise `runImageEmbedding` generates a caption instead.
+- Images become `MultiModal` input only when the model has `LLMFlags.hasImageInput`. Otherwise the job captions them (`captionImage`, `memory.md`).
 - Built-in Jinja templates enforce role rules: Gemma has no system role, and Mistral requires alternating roles.
 
 ## Recipes
 
-- Add a prompt card type: `shared/prompt.ts` (`PromptItem`), both `sendChat` switches, `tokenizePreset`, `templateCheck`, `PromptDataItem.svelte`, `normalizePromptTemplate` (`shared/presets.ts`). Verify the prompt preview (DevTool), token counts, and a preset reload.
-- Change input processing: `DefaultChatScreen.sendMain`, plus `scripts.ts` or `triggers.ts` input handling. Verify character and group chats and slash-command fallthrough.
-- Add a response command or inlay: `inlayScreen.ts:runInlayScreen`, both the streaming and non-streaming branches in `sendChat`, and `files/inlays.ts` or the parser.
-- Change lore activation: `lorebook.svelte.ts` (search, decorators, budget) and the position mapping in `sendChat`.
+- Add a prompt card type: `shared/prompt.ts` (`PromptItem`), both template switches in `server/src/prompt/assemble.ts`, `tokenizePreset`, `templateCheck`, `PromptDataItem.svelte`, `normalizePromptTemplate` (`shared/presets.ts`). Verify the prompt preview (DevTool), token counts, and a preset reload.
+- Change input processing: `DefaultChatScreen.sendMain` and the job's input stage (`server/src/prompt/runner.ts`). Verify character and group chats and slash-command fallthrough.
+- Add a response command or inlay: the job's tail (`server/src/prompt/postProcess.ts` `runInlayScreen`) and `files/inlays.ts` or the parser.
+- Change lore activation: `shared/lore/activation.ts` (search, decorators, budget) and the position mapping in `assemblePrompt`.
 - Add a slash command: `command.ts:processCommand`, plus its `?` help text.
-- Change backend prompt serialization: `templates/chatTemplate.ts` or `stringlize.ts`, plus the matching `request.ts` branch.
+- Change backend prompt serialization: `shared/prompt/chatTemplate.ts` or the server's request layer (`llm-requests.md`).
 
 ## Tests
 
 - `src/ts/process/files/tests/inlays.test.ts`: over the fake resource server (`src/ts/storage/tests/fakeResourceServer.ts`) and an in-memory asset store, one fresh module per test: content-hash naming and de-duplicated uploads, the data-URI and Blob shapes with MIME reconstruction, signatures, the seeded, negative (with expiry), and in-flight caches, `invalidateInlayCaches` and the replacing `listInlayAssets`, the per-id write order, last-writer-wins after a conflict, 412 propagation, removal, `verifyInlay`, `repairInlayMedia`, `postInlayAsset` routing, the `writeInlayImage` size properties, and its `check` (a server job's cancelled callback): stopped before anything, after hashing (no upload), or after the upload (no metadata).
-- Adjacent: `scriptings.test.ts`, `request/openAI/requests.responses.test.ts`, `ttsHooks.test.ts`.
+- Adjacent: `ttsHooks.test.ts`.
 - The chat module and the save loop's chat paths: `src/ts/storage/tests/chatStore.test.ts`, `resourceSyncChats.test.ts` (see `persistence.md`).
 - A second tab's send during another tab's job (`chatGenerating`, Phase 5 Stop D fixes) and the job's chat announcements: `src/ts/storage/tests/resourceSyncNotices.test.ts` (see `persistence.md`); the refusal's cases in `serverCommands.test.ts` (`scripts-triggers.md`).
 - `src/ts/process/command.test.ts`: `/cut`, `/del`, `/send`/`/sendas`/`/comment`, the variable commands, the captured target across an await and a deleted target, `/trigger`, and `/multisend`'s busy flag, over the real chat module and server store.
 - `src/ts/process/serverGeneration.test.ts` (Phase 5 slice 9): `sendChatOnServer` over a stubbed `runServerJob`: the kind (`send` with the input and its user message id; `continue` with an explicit target or with input; `group` for a group chat; the previews without input, their `result` returned), the per-send fields before the job (`incrementStatic("messages")`, the target's `lastInteraction` marked dirty at its index), the selected chat without a target, a missing target or chat refused before anything is written, the signal and a plugin call's identity handed on, the outcome mapping (`refused` and `followed` definite, `unknown` ambiguous, an error or lost terminal neither, `done { stopped }` false), and a reply's `alternatives` registered under its generation but not a continue's. `src/ts/process/serverCommands.test.ts` covers `runServerJob` itself (`scripts-triggers.md`).
-- The server side of a flagged send (the input stage, the streamed reply, continue, abort, group, `presetChain`, the previews) is `server/src/tests/promptRunner.test.ts`, and the assembled prompt's parity with the browser capture `server/src/tests/assemble.test.ts` (`self-host-server.md`).
-- Not tested: the browser path's `sendChat` assembly and trimming, lore activation, group order, `runInlayScreen`, Jinja rendering, reroll; `sendMain`'s per-chat pending `userMessageId` map after an ambiguous send (component logic; checked by hand in `util/playwright/checkServerSend.mjs` runs).
+- The server side of a send (the input stage, the streamed reply, continue, abort, group, `presetChain`, the previews) is `server/src/tests/promptRunner.test.ts`, and the assembled prompt's parity with the browser capture made before the cutover `server/src/tests/assemble.test.ts` (`self-host-server.md`).
+- Browser checks (`util/playwright/`): `checkServerSend.mjs` (send, continue, abort, preview, reload mid-stream; `--base` against the built app) and `checkStopDMatrix.mjs` (reroll, group, memory, an image button, two tabs, a restore during a send; `--base` too).
+- Not tested: reroll's swap logic, Jinja rendering in the tab; `sendMain`'s per-chat pending `userMessageId` map after an ambiguous send (component logic; checked by hand in `util/playwright/checkServerSend.mjs` runs).
 
 ## Known Hazards
 
 - `disable_ui_prompt` lore decorators are collected into `disabledUIPrompts`, but that array is never consumed.
 - `prereroll.ts` history is in memory only, and `DefaultChatScreen` keeps a second reroll array of its own.
-- A whole-chat result (trigger, plugin) is applied with last-writer semantics per message and field: a message another writer changed after the baseline keeps that change unless the result changed it too.
+- A whole-chat result (a plugin's `setChat`) is applied with last-writer semantics per message and field: a message another writer changed after the baseline keeps that change unless the result changed it too.
+- `DevTool.svelte`'s autopilot sends each line as a job in the chat selected when it started; a group's speakers are chosen by the server (the browser path used the loop index).

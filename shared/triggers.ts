@@ -928,3 +928,55 @@ export type triggerV2DeclareLocalVar = {
     valueType: "var" | "value";
     indent: number;
 };
+
+/** The effects a trigger without side effects may run (the display and request modes add their state effects). */
+const safeSubset = [
+    "v2SetVar",
+    "v2If",
+    "v2IfAdvanced",
+    "v2Else",
+    "v2EndIndent",
+    "v2LoopNTimes",
+    "v2BreakLoop",
+    "v2ConsoleLog",
+    "v2StopTrigger",
+    "v2Random",
+    "v2ExtractRegex",
+    "v2RegexTest",
+    "v2GetCharAt",
+    "v2GetCharCount",
+    "v2ToLowerCase",
+    "v2ToUpperCase",
+    "v2SetCharAt",
+    "v2SplitString",
+    "v2JoinArrayVar",
+    "v2ConcatString",
+    "v2MakeArrayVar",
+    "v2GetArrayVarLength",
+    "v2GetArrayVar",
+    "v2SetArrayVar",
+    "v2PushArrayVar",
+    "v2PopArrayVar",
+    "v2ShiftArrayVar",
+    "v2UnshiftArrayVar",
+    "v2SpliceArrayVar",
+    "v2SliceArrayVar",
+    "v2GetIndexOfValueInArrayVar",
+    "v2RemoveIndexFromArrayVar",
+    "v2Calculate",
+    "v2Comment",
+    "v2DeclareLocalVar",
+];
+
+/** The effects a display-mode trigger runs (`TriggerV2List.svelte` filters the editor by it too). */
+export const displayAllowList = ["v2GetDisplayState", "v2SetDisplayState", ...safeSubset];
+
+/** The effects a request-mode trigger runs. */
+export const requestAllowList = [
+    "v2GetRequestState",
+    "v2SetRequestState",
+    "v2GetRequestStateRole",
+    "v2SetRequestStateRole",
+    "v2GetRequestStateLength",
+    ...safeSubset,
+];

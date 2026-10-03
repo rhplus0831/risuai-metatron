@@ -2,8 +2,6 @@ import { get } from "svelte/store";
 import { getDatabase } from "../storage/database.svelte";
 import {
     appendMessage,
-    applyChatResult,
-    captureChatBaseline,
     type ChatRef,
     currentChatRef,
     findChat,
@@ -17,16 +15,8 @@ import { sayTTS } from "./tts";
 import { risuChatParser } from "../parser/parser.svelte";
 import { doingChat, sendChat } from "./index.svelte";
 import { loadLoreBookV3Prompt } from "./lorebook.svelte";
-import { runTrigger } from "./triggers";
 import { runServerManualTrigger } from "./serverCommands";
-import { readClientFlag } from "../storage/clientFlags";
 
-/**
- * Runs a command line. Every command writes to and reads (CBS arguments, lore) `ref`: a trigger's
- * chat, or by default the chat selected when the line started. `fromInput`: the line was typed in
- * the chat input, so `/trigger` runs on the server when `risu.serverGeneration` is on (Phase 5
- * slice 8b); a browser trigger's `v2Command` stays in the browser until its own cutover.
- */
 /**
  * `/multisend`: each part appended as a user message and sent, one after the other, in the chat
  * `ref`; with `clearMode` the chat's messages are removed before each part. Nothing happens while a
@@ -63,11 +53,12 @@ export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: read
     return true;
 }
 
-export async function processMultiCommand(
-    command: string,
-    ref: ChatRef | null = currentChatRef(),
-    options: { fromInput?: boolean } = {},
-) {
+/**
+ * Runs a command line typed in the chat input. Every command writes to and reads (CBS arguments,
+ * lore) `ref`: by default the chat selected when the line started. `/trigger` runs on the server
+ * (Phase 5 slice 8b; a server trigger's `v2Command` runs on the server too).
+ */
+export async function processMultiCommand(command: string, ref: ChatRef | null = currentChatRef()) {
     let pipe = "";
     const splited: string[] = [];
     let lastIndex = 0;
@@ -88,7 +79,7 @@ export async function processMultiCommand(
             // The chat went away while an earlier command waited: the line is consumed, not sent.
             return "";
         }
-        const result = await processCommand(splited[i].trim(), pipe, ref, options);
+        const result = await processCommand(splited[i].trim(), pipe, ref);
         console.log(pipe);
         if (result === false) {
             return false;
@@ -99,12 +90,7 @@ export async function processMultiCommand(
     return pipe;
 }
 
-async function processCommand(
-    command: string,
-    pipe: string,
-    ref: ChatRef | null,
-    options: { fromInput?: boolean },
-): Promise<false | string> {
+async function processCommand(command: string, pipe: string, ref: ChatRef | null): Promise<false | string> {
     const db = getDatabase();
     const currentChar = ref
         ? db.characters.find((character) => character?.chaId === ref.chaId)
@@ -273,20 +259,7 @@ async function processCommand(
             if (currentChar.type === "group" || !ref) {
                 return;
             }
-            if (options.fromInput && readClientFlag("risu.serverGeneration")) {
-                await runServerManualTrigger(currentChar, arg, ref);
-                return;
-            }
-            const baseline = captureChatBaseline(ref);
-            const triggerResult = await runTrigger(currentChar, "manual", {
-                chat: findChat(ref),
-                chatRef: ref,
-                manualName: arg,
-            });
-
-            if (triggerResult) {
-                applyChatResult(baseline, triggerResult.chat);
-            }
+            await runServerManualTrigger(currentChar, arg, ref);
             return;
         }
         case "?": {

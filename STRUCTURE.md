@@ -7,7 +7,7 @@ no standalone browser build (the client without the server shows only a notice),
 they drift. Grep the identifier instead.
 
 Last full audited: 2026-09-27.
-Last scoped updated: 2026-09-29 (Phase 1: server resources).
+Last scoped updated: 2026-10-03 (Phase 5 cutover: generation, scripts, and provider calls on the server).
 
 ## Agent Read Protocol
 
@@ -33,7 +33,10 @@ Tooling
 - T2. Import alias `src/...` resolves to `/src` in both Vite and Vitest (`vite.config.ts` and
   `vitest.config.ts` `resolve.alias`). Both alias imports and relative imports are used; match the
   surrounding file. The root `shared/` folder has no alias: import it by a relative path with the
-  `.ts` extension (`tsconfig.json` sets `allowImportingTsExtensions`).
+  `.ts` extension (`tsconfig.json` sets `allowImportingTsExtensions`). It holds the shapes and the
+  runtime modules both sides compile (`shared/cbs/`, `shared/scripts/`, `shared/lore/`,
+  `shared/prompt/`, `shared/llm/`, `shared/mcp/`, `shared/triggers.ts`); the server runs them for
+  generation, the tab for its editors, previews, and rendering pre-pass.
 - T3. Svelte 5 runes (`$state`, `$derived`, `$effect`) may appear only in `*.svelte` and
   `*.svelte.ts` files. Legacy `writable` stores coexist with runes, so follow the local file's
   pattern and do not convert store boundaries casually.
@@ -63,8 +66,8 @@ Data and persistence (details: `docs/structure/persistence.md`)
   functions (`appendMessage`, `setMessageText`, `setChatMeta`, `applyChatResult`, ...), addressed by
   chat id and message id (`Message.chatId`), never by index after an await. Svelte `bind:` on a
   chat field bypasses the type check: bind a getter/setter pair or a synced editing copy. Beside
-  it, the mutation modules own the other records for the external contracts (plugins, MCP, Lua,
-  triggers, imports): `characterStore.svelte.ts` (characters by `chaId`), `collectionStore.svelte.ts`
+  it, the mutation modules own the other records for the external contracts (plugins, MCP,
+  imports; since the Phase 5 cutover Lua and triggers run on the server and write through their job): `characterStore.svelte.ts` (characters by `chaId`), `collectionStore.svelte.ts`
   (settings sections, collections, presets, modules, plugins), and `pluginStorageStore.svelte.ts`.
   A contract never assigns into `DBState.db`; the core-app UI still does until Phase 6.
 - D2. A new persisted field needs a type entry and a place in `shared/sections.ts`. A section or
@@ -108,9 +111,14 @@ Platform and network (details: `docs/structure/global-api.md`)
   once: when false it mounts `NodeServerRequired.svelte` and never imports the app (`src/boot.ts`).
   Do not add browser-only storage or network branches; everything past `main.ts` may assume the
   server is present. `isMobile` is user-agent based.
-- P2. Outbound HTTP goes through `globalFetch` (buffered) or `fetchNative` (streaming/bytes) in
-  `src/ts/globalApi.svelte.ts`. They handle proxying (same-origin `/proxy2`), the userscript transport,
-  local-network policy, and request logs. Do not call raw `fetch` for provider or remote calls.
+- P2. LLM provider calls run on the server (Phase 5): a send is a server job, and the tab's own
+  requests (`requestChatData`) go to `POST /api/llm/request`, except a plugin provider model and a
+  browser WebLLM model, which run in the tab by design; a call that needs a stored credential
+  goes through `auxFetch` (`/proxy2` auxiliary operations). The tab never holds an LLM credential
+  (`llmSecrets` is write-only). Other outbound HTTP goes through `globalFetch` (buffered) or
+  `fetchNative` (streaming/bytes) in `src/ts/globalApi.svelte.ts`. They handle proxying (same-origin
+  `/proxy2`), the userscript transport, local-network policy, and request logs. Do not call raw
+  `fetch` for provider or remote calls.
 
 Security
 
@@ -118,8 +126,9 @@ Security
   `ParseMarkdown` and `trimMarkdown` (DOMPurify) in `src/ts/parser/parser.svelte.ts` before
   `{@html}`. CSS stays scoped (`.chattext` and the `x-risu-` class prefix). Custom CSS is
   suppressed in safe mode (`SafeModeStore`).
-- S2. Low-level capabilities (Lua network/LLM calls, low-level trigger effects) are gated by
-  `lowLevelAccess` on characters, modules, and triggers. Do not widen these gates.
+- S2. Low-level capabilities (Lua network/LLM calls, low-level trigger effects; run by the server's
+  Lua and trigger runtime) are gated by `lowLevelAccess` on characters, modules, and triggers. Do not
+  widen these gates.
 
 UI conventions (details: `docs/structure/ui-theming.md`, `docs/structure/settings-i18n.md`)
 
@@ -144,24 +153,24 @@ Release
 
 ## Choose By Task
 
-| Task                                                                                                                       | Guide                                    |
-| -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| Startup order, top-level screen selection, global stores, platform flags, hotkeys                                          | `docs/structure/app-shell.md`            |
-| `globalFetch`/`fetchNative`, proxy routing, assets (`saveAsset`/`loadAsset`), alerts, `util.ts` helpers                    | `docs/structure/global-api.md`           |
-| Add or migrate a DB field, save format, storage backends, autosave                                                         | `docs/structure/persistence.md`          |
-| Sending a message, prompt assembly, prompt template items, lorebook activation, slash commands, inlays, group chat, reroll | `docs/structure/chat-pipeline.md`        |
-| Long-term memory (SupaMemory, HypaV2/V3, Hanurai), embeddings, HypaV3 modal                                                | `docs/structure/memory.md`               |
-| Add a model or provider, request/stream parsing, tool calls, parameters, tokenizers, aux-model routing                     | `docs/structure/llm-requests.md`         |
-| CBS `{{...}}` functions, message rendering/markdown/sanitization, chat variables, partial edit, editor highlighting        | `docs/structure/cbs-rendering.md`        |
-| Regex scripts, triggers v2, Lua scripting                                                                                  | `docs/structure/scripts-triggers.md`     |
-| Plugin API (v3 iframe sandbox), plugin providers/hooks, MCP tools                                                          | `docs/structure/plugins-mcp.md`          |
-| Character cards import/export, characters/groups CRUD, modules, personas, lorebook editor UI                               | `docs/structure/characters-modules.md`   |
-| Chat screen components, sidebar, GUI primitives, popups/portals, theme/colors                                              | `docs/structure/ui-theming.md`           |
-| Settings pages, declarative settings registry, bot presets, prompt template editor, i18n                                   | `docs/structure/settings-i18n.md`        |
-| TTS, image generation, translation, media compression, playground tools                                                    | `docs/structure/media-aux.md`            |
-| Local backups, Realm hub browse, settings report export                                                                    | `docs/structure/backup-sync-hub.md`      |
-| Self-host server (Hono on Node) routes/auth/storage/proxies, Docker                                                        | `docs/structure/self-host-server.md`     |
-| Scripts, Vite/Vitest config, test inventory, service worker, version bump                                                  | `docs/structure/build-test-platforms.md` |
+| Task                                                                                                                                 | Guide                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- |
+| Startup order, top-level screen selection, global stores, platform flags, hotkeys                                                    | `docs/structure/app-shell.md`            |
+| `globalFetch`/`fetchNative`, proxy routing, assets (`saveAsset`/`loadAsset`), alerts, `util.ts` helpers                              | `docs/structure/global-api.md`           |
+| Add or migrate a DB field, save format, storage backends, autosave                                                                   | `docs/structure/persistence.md`          |
+| Sending a message (the tab's job client), prompt template items, lorebook activation, slash commands, inlays, group chat, reroll     | `docs/structure/chat-pipeline.md`        |
+| Long-term memory (SupaMemory, HypaV2/V3, Hanurai), embeddings, HypaV3 modal                                                          | `docs/structure/memory.md`               |
+| Add a model or provider, request/stream parsing, tool calls, parameters, tokenizers, aux-model routing                               | `docs/structure/llm-requests.md`         |
+| CBS `{{...}}` functions, message rendering/markdown/sanitization, chat variables, partial edit, editor highlighting                  | `docs/structure/cbs-rendering.md`        |
+| Regex scripts, triggers v2, Lua scripting (the editors and the shared engine; the runtime is the server's)                           | `docs/structure/scripts-triggers.md`     |
+| Plugin API (v3 iframe sandbox), plugin providers/hooks, MCP tools                                                                    | `docs/structure/plugins-mcp.md`          |
+| Character cards import/export, characters/groups CRUD, modules, personas, lorebook editor UI                                         | `docs/structure/characters-modules.md`   |
+| Chat screen components, sidebar, GUI primitives, popups/portals, theme/colors                                                        | `docs/structure/ui-theming.md`           |
+| Settings pages, declarative settings registry, bot presets, prompt template editor, i18n                                             | `docs/structure/settings-i18n.md`        |
+| TTS, image generation, translation, media compression, playground tools                                                              | `docs/structure/media-aux.md`            |
+| Local backups, Realm hub browse, settings report export                                                                              | `docs/structure/backup-sync-hub.md`      |
+| Self-host server (Hono on Node) routes/auth/storage/proxies, generation jobs, prompt assembly, the Lua/trigger/regex runtime, Docker | `docs/structure/self-host-server.md`     |
+| Scripts, Vite/Vitest config, test inventory, service worker, version bump                                                            | `docs/structure/build-test-platforms.md` |
 
 ## Path Ownership
 
@@ -170,9 +179,9 @@ The first matching row wins. Scan from the top.
 | Path                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Guide                                   |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
 | `src/ts/process/memory/`, `src/ts/process/transformers.ts`, `src/lib/Others/HypaV3*`, `src/lib/Playground/PlaygroundEmbedding.svelte`                                                                                                                                                                                                                                                                                                                                 | memory                                  |
-| `src/ts/process/request/`, `src/ts/process/models/`, `src/ts/process/webllm.ts`, `src/ts/model/`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`, `src/ts/horde/`, `src/ts/tokenizer.ts`, `shared/tokenizerChoice.ts`, `shared/prompt/chatTokens.ts`, `src/lib/UI/Model*.svelte`, `src/lib/UI/NanoGPT*`, `src/lib/UI/OpenrouterProviderList.svelte`, `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte`                                       | llm-requests                            |
+| `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`, `src/ts/horde/`, `src/ts/tokenizer.ts`, `shared/tokenizerChoice.ts`, `shared/prompt/chatTokens.ts`, `src/lib/UI/Model*.svelte`, `src/lib/UI/NanoGPT*`, `src/lib/UI/OpenrouterProviderList.svelte`, `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte`                                                                 | llm-requests                            |
 | `src/ts/process/mcp/`, `server/src/mcp/`, `shared/mcp/`, `src/ts/plugins/`, `plugins.md`, `src/lib/Setting/Pages/PluginSettings.svelte`, `src/lib/Others/Plugin*.svelte`, `src/lib/Playground/PlaygroundMCP.svelte`                                                                                                                                                                                                                                                   | plugins-mcp                             |
-| `shared/scripts/`, `src/ts/process/scripts.ts`, `src/ts/process/triggers.ts`, `src/ts/process/scriptings.ts`, `src/lib/SideBars/Scripts/`, `src/lib/Setting/Pages/GlobalRegex.svelte`, `src/lib/Playground/Playground{Regex,Syntax,Parser}.svelte`, `public/lua/`                                                                                                                                                                                                     | scripts-triggers                        |
+| `shared/scripts/`, `shared/triggers.ts`, `src/ts/process/regexFiles.ts`, `src/ts/process/serverCommands.ts`, `src/lib/SideBars/Scripts/`, `src/lib/Setting/Pages/GlobalRegex.svelte`, `src/lib/Playground/Playground{Regex,Syntax,Parser}.svelte`, `public/lua/`                                                                                                                                                                                                      | scripts-triggers                        |
 | `src/ts/storage/`, `src/ts/chatLoadPages.ts`, `shared/` (shapes; semantics stay with the original module's guide)                                                                                                                                                                                                                                                                                                                                                     | persistence                             |
 | `src/ts/process/processzip.ts`, `src/ts/process/modules.ts`, `src/ts/characterCards.ts`, `src/ts/characters.ts`, `src/ts/persona.ts`, `src/ts/pngChunk.ts`, `src/ts/interchangeability.ts`, `src/lib/SideBars/CharConfig.svelte`, `src/lib/SideBars/LoreBook/`, `src/lib/Setting/Pages/Module/`, `src/lib/Setting/Pages/PersonaSettings.svelte`, `src/lib/Setting/listedPersona.svelte`, `src/lib/Others/GridCatalog.svelte`, `src/lib/ChatScreens/AssetInput.svelte` | characters-modules                      |
 | `src/lib/Playground/PlaygroundMenu.svelte`                                                                                                                                                                                                                                                                                                                                                                                                                            | ui-theming                              |

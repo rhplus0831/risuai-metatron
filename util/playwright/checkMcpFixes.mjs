@@ -1,5 +1,6 @@
 // Browser check for Phase 5's Stop D fixes to the MCP clients and graph memory (slice 13d), on the
-// server-job path (both client flags on) or the browser path (`FLAGS=off`), against a mock provider
+// server-job path (the only one since the cutover; the tab client's fixes are pinned by
+// `src/ts/process/mcp/tests/mcplib.test.ts`), against a mock provider
 // (an OpenAI-compatible SSE stream that calls the offered tools), a mock MCP server, and a mock
 // embedding server:
 // - a remote MCP server whose every answer is an event stream with CRLF line ends and `data:`
@@ -11,18 +12,17 @@
 //   the entry through the embedding server.
 // No public service is contacted: the OAuth refresh goes to the mock's token endpoint.
 //
-// Usage: node util/playwright/checkMcpFixes.mjs (FLAGS=off: the browser path)
+// Usage: node util/playwright/checkMcpFixes.mjs
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, openApp, startStack } from "./stack.mjs";
+import { chromePath, openApp, isolateContext, startStack, unexpectedEgress } from "./stack.mjs";
 
 const results = [];
 const check = (name, ok, detail) => {
     results.push(ok);
     console.log(`${ok ? "PASS" : "FAIL"} ${name}${ok ? "" : ` ${JSON.stringify(detail)?.slice(0, 1500)}`}`);
 };
-const flagsOn = process.env.FLAGS !== "off";
 
 const cors = (res) => {
     res.setHeader("access-control-allow-origin", "*");
@@ -196,7 +196,7 @@ const provider = http.createServer(async (req, res) => {
 await new Promise((r) => provider.listen(0, "127.0.0.1", r));
 const providerBase = `http://127.0.0.1:${provider.address().port}`;
 
-const stack = await startStack({ serverPort: flagsOn ? 6241 : 6242, vitePort: flagsOn ? 5341 : 5342 });
+const stack = await startStack({ serverPort: 6241, vitePort: 5341 });
 const browser = await chromium.launch({ executablePath: chromePath, headless: true });
 
 const blank = (chaId, name, extra = {}) => ({
@@ -233,12 +233,8 @@ const blank = (chaId, name, extra = {}) => ({
 
 try {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-    if (flagsOn) {
-        await context.addInitScript(() => {
-            localStorage.setItem("risu.serverGeneration", "1");
-            localStorage.setItem("risu.serverTransform", "1");
-        });
-    }
+    // Only the app and the local mocks: anything else is refused and counted (`stack.mjs`).
+    const blocked = await isolateContext(context);
     const page = await context.newPage();
     const pageErrors = [];
     page.on("pageerror", (e) => pageErrors.push(String(e).slice(0, 300)));
@@ -553,6 +549,8 @@ try {
         warmEmbedded,
     );
     check("no page errors", pageErrors.length === 0, pageErrors);
+    const egress = unexpectedEgress(blocked, stack ? await stack.deniedEgress() : []);
+    check("no unexpected intercepted outbound attempt", egress.length === 0, egress);
     await context.close();
 } finally {
     await browser.close();

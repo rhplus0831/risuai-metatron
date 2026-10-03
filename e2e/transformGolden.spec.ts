@@ -5,10 +5,10 @@ import { openApp, repoRoot } from "../util/playwright/stack.mjs";
 
 // Phase 5 slice 13 golden test (`docs/plan/phases/slices/phase-5-server-side-processing/script-transform.md`;
 // `server/src/tests/fixtures/baseline/README.md`): the final browser HTML of `ParseMarkdown` and the
-// `editprocess` text with the client flag `risu.serverTransform` on (the display and process
-// transform on the server, both asset passes, inlays, Markdown, and sanitization in the browser)
-// against `markdown.json`, which the browser path captured before slice 3, with and without plugin
-// hooks. The fixture files are read, never written.
+// `editprocess` text (the display and process transform on the server, the only script path since the
+// Phase 5 cutover; both asset passes, inlays, Markdown, and sanitization in the browser) against
+// `markdown.json`, which the browser path captured before slice 3, with and without plugin hooks.
+// The fixture files are read, never written.
 //
 // The baseline's nondeterminism is reproduced where the browser evaluates it: the same seeded
 // `Math.random` (re-seeded before every value), viewport, timezone, and locale. Two things cannot be:
@@ -19,17 +19,21 @@ import { openApp, repoRoot } from "../util/playwright/stack.mjs";
 // - The browser clock cannot be frozen as the capture froze it: the server refuses an auth token
 //   whose expiry is in the past. `Date` is fixed only while the browser pre-pass runs (it is
 //   synchronous), so `prePass` reads the captured time.
-// The flag-off path of the current client is captured in the same run and compared too, so a
-// difference is attributed to the server path or to the client since the capture.
+// Until the cutover the browser path of the current client was captured in the same run and held to
+// `markdown.json` too; it is gone, so the capture is the only oracle.
 //
-// The README's "Not captured" items get independent cases below, flag on against flag off on the
-// current client: a v2 `display` trigger, and additional assets (the first asset pass, and a regex
-// output that the second pass turns into an asset). Inlays (they need stored inlay records) and
-// dynamic assets (they need an embedding model) are not covered here.
+// The README's "Not captured" items get independent cases below: a v2 `display` trigger, and
+// additional assets (the first asset pass, and a regex output that the second pass turns into an
+// asset), against `fixtures/transform/display-trigger-assets.json`, which the browser path recorded
+// at 219dfb51 (before the cutover; its `capturedFrom` gives the provenance). Inlays (they need stored
+// inlay records) and dynamic assets (they need an embedding model) are not covered here.
 
 const baselineDir = path.join(repoRoot, "server/src/tests/fixtures/baseline");
 const scenario = JSON.parse(readFileSync(path.join(baselineDir, "scenario.json"), "utf8"));
 const baseline = JSON.parse(readFileSync(path.join(baselineDir, "markdown.json"), "utf8"));
+const extra = JSON.parse(
+    readFileSync(path.join(repoRoot, "server/src/tests/fixtures/transform/display-trigger-assets.json"), "utf8"),
+);
 const env = scenario.environment;
 
 test.use({ viewport: env.viewport, timezoneId: env.timezoneId, locale: env.locale });
@@ -85,22 +89,19 @@ async function waitSaved(page: Page, chaId: string, chatId: string) {
     });
 }
 
-/** The capture's markdown unit, on the flag-off or the flag-on path (`markdown.json`'s shape). */
-const captureMarkdown = (page: Page, serverPath: boolean) =>
+/** The capture's markdown unit on the server path (`markdown.json`'s shape). */
+const captureMarkdown = (page: Page) =>
     page.evaluate(
-        async ({ md, baseSettings, fixedTime, serverPath }) => {
+        async ({ md, baseSettings, fixedTime }) => {
             const stores = await import("/src/ts/stores.svelte.ts");
             const dbm = await import("/src/ts/storage/database.svelte.ts");
             const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
             const parser = await import("/src/ts/parser/parser.svelte.ts");
-            const scripts = await import("/src/ts/process/scripts.ts");
             const transform = await import("/src/ts/parser/transformClient.ts");
             const hooks = await import("/src/ts/plugins/pluginHooks.ts");
             const DBState = stores.DBState;
             const clone = (v: unknown) => JSON.parse(JSON.stringify(v));
             const w = window as any;
-            if (serverPath) localStorage.setItem("risu.serverTransform", "1");
-            else localStorage.removeItem("risu.serverTransform");
             dbm.changeToPreset(DBState.db.botPresets[0].id, true);
             for (const [key, value] of Object.entries(baseSettings)) {
                 (DBState.db as any)[key] = clone(value);
@@ -136,7 +137,6 @@ const captureMarkdown = (page: Page, serverPath: boolean) =>
                 }
             };
             const editprocess = async (data: string, cbsConditions: object) => {
-                if (!serverPath) return await scripts.processScript(char, data, "editprocess", cbsConditions, ref);
                 const captured = transform.captureTransform(-1);
                 if (!captured) throw new Error("the server path does not apply");
                 return (
@@ -190,10 +190,9 @@ const captureMarkdown = (page: Page, serverPath: boolean) =>
                 hooks.pluginHooks.editdisplay.delete(display);
                 hooks.pluginHooks.editprocess.delete(process);
             }
-            localStorage.removeItem("risu.serverTransform");
             return result;
         },
-        { md: scenario.markdown, baseSettings: scenario.baseSettings, fixedTime: env.fixedTime, serverPath },
+        { md: scenario.markdown, baseSettings: scenario.baseSettings, fixedTime: env.fixedTime },
     );
 
 /** Masks what the server's random and clock produce (they cannot be seeded or frozen). */
@@ -274,25 +273,9 @@ test("the server transform reproduces markdown.json (final HTML and editprocess 
         }
     });
 
-    const browserPath = await captureMarkdown(page, false);
-    expect(transformPosts, "the flag-off path makes no transform request").toEqual([]);
-    const serverPath = await captureMarkdown(page, true);
+    const serverPath = await captureMarkdown(page);
     expect(transformPosts).toContain("/api/transform");
     expect(transformPosts, "the hooks made the second call").toContain("/api/transform/continue");
-
-    // The flag-off path of today's client still equals the capture (m-m4's clock masked: the
-    // browser clock flows here), so the baseline is a valid oracle for this client.
-    const clockOnly = (capture: any) => {
-        const copy = JSON.parse(JSON.stringify(capture));
-        for (const variant of ["withoutHooks", "withHooks"]) {
-            const entry = copy[variant].messages["m-m4"];
-            for (const field of SERVER_EVALUATED) {
-                entry[field] = entry[field].replace(CLOCK, "Date <D> time <T> unix <U>");
-            }
-        }
-        return copy;
-    };
-    expect(differences(clockOnly(baseline), clockOnly(browserPath))).toEqual([]);
 
     // The server path: equal to the capture, the server-evaluated random and clock by form.
     for (const variant of ["withoutHooks", "withHooks"]) {
@@ -310,7 +293,7 @@ test("the server transform reproduces markdown.json (final HTML and editprocess 
     expect(unexpected(errors)).toEqual([]);
 });
 
-test("a display trigger and additional assets render the same on the server path as on the browser path", async ({
+test("a display trigger and additional assets render on the server path as the browser path recorded them", async ({
     page,
     baseURL,
 }) => {
@@ -404,17 +387,15 @@ test("a display trigger and additional assets render the same on the server path
 
     // `getFileSrc` answers a path once per page in this stack and waits forever on a second read of
     // it (its service-worker check fails and the path stays "loading": a browser-path defect outside
-    // this slice), so each path renders in a fresh page and reads each asset once.
-    const render = async (serverPath: boolean) => {
+    // this slice), so the render runs in a fresh page and reads each asset once.
+    const render = async () => {
         await page.reload();
         await openApp(page, baseURL!);
         return await page.evaluate(
-            async ({ chaId, chatId, serverPath }) => {
+            async ({ chaId, chatId }) => {
                 const stores = await import("/src/ts/stores.svelte.ts");
                 const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
                 const parser = await import("/src/ts/parser/parser.svelte.ts");
-                if (serverPath) localStorage.setItem("risu.serverTransform", "1");
-                else localStorage.removeItem("risu.serverTransform");
                 const index = stores.DBState.db.characters.findIndex((c: any) => c?.chaId === chaId);
                 stores.selectedCharID.set(index);
                 chatStore.selectChat(chaId, chatId);
@@ -434,10 +415,9 @@ test("a display trigger and additional assets render the same on the server path
                         out[`${id}:back`] = await parser.ParseMarkdown(data, char, "back", idx, cbs);
                     }
                 }
-                localStorage.removeItem("risu.serverTransform");
                 return out;
             },
-            { chaId, chatId, serverPath },
+            { chaId, chatId },
         );
     };
 
@@ -447,19 +427,19 @@ test("a display trigger and additional assets render the same on the server path
             transformPosts.push(request.postData() ?? "");
         }
     });
-    const browserPath = await render(false);
-    expect(transformPosts).toEqual([]);
-    const serverPath = await render(true);
+    const serverPath = await render();
     expect(transformPosts.length).toBeGreaterThan(0);
 
-    // The trigger appended its text before the regex scripts (the `em` script ran on it), on every
-    // message and the greeting.
-    expect(browserPath["x-2"]).toContain("[trigger <em>appended</em>");
-    expect(browserPath["x-2:back"]).toContain("[trigger <em>appended</em>");
-    expect(browserPath["greeting"]).toContain("[trigger <em>appended</em>");
-    // Both asset passes ran: the message's own asset (first pass) and the regex output (second pass).
-    expect(browserPath["x-1"].match(/<img /g)).toHaveLength(2);
-    expect(browserPath["x-1"]).not.toContain("{{img::");
-    expect(differences(browserPath, serverPath)).toEqual([]);
+    // The recorded browser path: the trigger appended its text before the regex scripts (the `em`
+    // script ran on it), on every message and the greeting, and both asset passes ran (the message's
+    // own asset, first pass, and the regex output, second pass).
+    const recorded = extra.cases;
+    expect(recorded["x-2"]).toContain("[trigger <em>appended</em>");
+    expect(recorded["x-2:back"]).toContain("[trigger <em>appended</em>");
+    expect(recorded["greeting"]).toContain("[trigger <em>appended</em>");
+    expect(recorded["x-1"].match(/<img /g)).toHaveLength(2);
+    expect(recorded["x-1"]).not.toContain("{{img::");
+    // The server path renders the same.
+    expect(differences(recorded, serverPath)).toEqual([]);
     expect(unexpected(errors)).toEqual([]);
 });

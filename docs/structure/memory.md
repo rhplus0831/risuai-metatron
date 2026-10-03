@@ -12,19 +12,8 @@
 
 Algorithms:
 
-- `memory/supaMemory.ts` `supaMemory`: the older summarizer and the fallback branch. It persists `Chat.supaMemoryData` in one of two formats:
-  - `lastId + '\n' + text`, or
-  - `hypa:\n` followed by JSON `HypaData[]`, used when `arg.asHyper` is set.
-- `memory/hanuraiMemory.ts` `hanuraiMemory`: pure retrieval with no summaries.
-  1. Embeds the recent chats.
-  2. Scores the last 3 chats as queries.
-  3. Trims the history.
-  4. Prepends a `memo:'supaMemory'` card.
-- `memory/hypav2.ts` `hypaMemoryV2`: the active V2 algorithm.
-  - Chunked summaries plus `HypaProcesser` retrieval, wrapped in `<Past Events Summary>`/`<Past Events Details>`.
-  - Types (declared in `shared/memory.ts`, re-exported): `HypaV2Data` (runtime, uses `Set`), `SerializableHypaV2Data` (arrays). `convertOldToNewHypaV2Data` converts the legacy shape.
-  - `regenerateSummary` is an empty stub.
-- `memory/hypav3.ts`: the current V3 implementation.
+- SupaMemory, HypaV2, and Hanurai run only in the server job since the Phase 5 cutover (`server/src/prompt/memory/`, below); their browser copies were removed with the browser generation path. Their data shapes stay in `shared/memory.ts` (`HypaV2Data`, `SerializableHypaV2Data`, `convertOldToNewHypaV2Data`); `Chat.supaMemoryData` is `lastId + '\n' + text`, or `hypa:\n` followed by JSON `HypaData[]` (`asHyper`).
+- `memory/hypav3.ts`: the V3 implementation the tab keeps for the modal (resummarize, reroll); a send's V3 step is the server's port.
   - Entry: `hypaMemoryV3`. Dispatches to `hypaMemoryV3Main`, or to `hypaMemoryV3MainExp` when the active preset has `useExperimentalImpl`.
   - Exports: `summarize(oaiMessages, isResummarize?, context?)` (`context`: the `SummarizeContext` of the send or the modal action, its chat and plugin call context, passed to `requestChatData`), `getCurrentHypaV3Preset`, `createHypaV3Preset` (re-exported from `shared/hypaV3Presets.ts`; keeps a valid `id` or assigns one), `HypaV3Settings`, `SerializableHypaV3Data`, `SerializableSummary`.
   - Private: the processor subclass `HypaProcesserEx`.
@@ -43,9 +32,9 @@ Embedding processors:
 
 UI:
 
-- `HypaV3Modal.svelte` and its children in `HypaV3Modal/` edit a synced copy of the current chat's `hypaV3Data` (passed down as the `hypaV3Data` prop) and save every change with `setChatMeta`: search, filters, categories, tags, bulk edit, resummarize, reset, and V2→V3 conversion. `sendChat` saves the memory data the memory functions return the same way (they get a detached copy of the chat).
+- `HypaV3Modal.svelte` and its children in `HypaV3Modal/` edit a synced copy of the current chat's `hypaV3Data` (passed down as the `hypaV3Data` prop) and save every change with `setChatMeta`: search, filters, categories, tags, bulk edit, resummarize, reset, and V2→V3 conversion. A send's memory data is written by the job (below).
 - The modal's resummarize and reroll actions capture the open chat (`currentChatRef`) and its plugin context (`capturePluginContext`) when the action begins and pass them to `summarize`, so the request is that chat's whatever is selected when it runs.
-- `HypaV3Modal/utils.ts` `processRegexScript`: routes messages through `risuChatParser` and `processScriptFull(..., 'editprocess')` (with `risu.serverTransform` on, the server transform's `serverProcessScript`; `scripts-triggers.md`).
+- `HypaV3Modal/utils.ts` `processRegexScript`: routes messages through `risuChatParser` and the server transform's `editprocess` (`serverProcessScript`; `scripts-triggers.md`); without a context (a chat not saved on the server yet) the CBS-parsed text stays.
 - `HypaV3Progress.svelte` renders `hypaV3ProgressStore`.
 
 ## Flows
@@ -78,7 +67,7 @@ Embedding routing:
 
 ## Server (Phase 5 slice 10)
 
-With `risu.serverGeneration` on, a send's memory step runs in the job (`server/src/prompt/assemble.ts`, the same gate and priority as `sendChat`). The browser code above is unchanged and still serves the flag-off path, the modal, and the playground.
+A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate and priority of the former browser `sendChat`). The browser code above serves the HypaV3 modal and the playground.
 
 - `server/src/prompt/memory/{supaMemory,hypav2,hypav3,hanurai}.ts`: the four algorithms, ported statement for statement. Each takes a `MemoryHost` (`memory/host.ts`) first: the job's settings projection, `tokenize`, `request` (the job's `memory` request with its `request` trigger and fallback models), `completions` (OpenAI's `/v1/completions` with the stored memory key; an answer that is not JSON is a failure, and a successful one that carries the key is refused, as the browser path's proxy refuses it), `summarizer`, the job's `EmbeddingEnv`, `parseChatML` with the job's CBS, the effective persona's name, `progress`, `random`, `redact`, `fence`, and the run's signal. The client's console output is not ported (it prints the chat).
 - Persistence: `assemblePrompt` writes what an algorithm returns as a `meta` operation on the chat as stored then (`AssemblyHost.writeMemory`): `hypaV2Data` on success; `hypaV3Data` on success and with a returned error; `supaMemoryData` and `lastMemory` with the stored values as fallbacks; nothing for Hanurai. The write happens before the provider request, as in the tab, and a preview makes it too. An algorithm's error is the send's `throwError`; Hanurai's "too many tokens" is the job's error without the inlay error message (the tab alerts).
@@ -101,20 +90,16 @@ With `risu.serverGeneration` on, a send's memory step runs in the job (`server/s
 
 ## Coupling
 
-- Memory depends on `requestChatData`, `webllm`, `ChatTokenizer`, `parseChatML`, `processScriptFull`, `risuChatParser`, `inlayTokenRegex`, localforage, and Transformers.js. The server ports depend on `MemoryHost` only.
-- Users of `HypaProcesser`:
-  - `scripts.ts`: dynamic assets.
-  - `scriptings.ts`: the Lua similarity API.
-  - `triggers.ts`: similarity effects.
-  - `files/multisend.ts`, `embedding/addinfo.ts`, `mcp/graphmem.ts`, the main pipeline, and the playground.
+- The tab's HypaV3 depends on `requestChatData`, `webllm`, `ChatTokenizer`, `parseChatML`, `risuChatParser`, `inlayTokenRegex`, localforage, and Transformers.js. The server ports depend on `MemoryHost` only.
+- Users of the tab's `HypaProcesser`: `files/multisend.ts`, `mcp/graphmem.ts` (the tab's graph memory host), HypaV3, and the playground. Dynamic assets, Lua `similarity`, and the similarity effects use the server's (`server/src/prompt/embeddings.ts`).
 
 ## Invariants
 
 - Never persist a runtime `Set`. Use the `toSerializable*` and `to*Data` converters in both directions.
 - `chatMemos` reference `Message.chatId` values. Rewriting chat IDs orphans summaries, which get cleaned unless `preserveOrphanedMemory` is set.
-- The memory card `memo` values `supaMemory` and `hypaMemory` are special-cased later in prompt assembly. Do not rename them.
+- The memory card `memo` values `supaMemory` and `hypaMemory` are special-cased later in prompt assembly (`assemblePrompt`). Do not rename them.
 - V3 token accounting reserves memory tokens, subtracts `db.maxResponse`, and keeps `queryChatCount` recent chats. Behavioral changes must be applied to both `hypaMemoryV3Main` and `hypaMemoryV3MainExp`.
-- An algorithm or processor change is made in both copies: `src/ts/process/memory/` and `server/src/prompt/memory/` with `server/src/prompt/embeddings.ts`. The server copies keep the client's statements and texts.
+- A HypaV3 or processor change is made in both copies: `src/ts/process/memory/` (HypaV3, `HypaProcesser`) and `server/src/prompt/memory/` with `server/src/prompt/embeddings.ts`; SupaMemory, HypaV2, and Hanurai exist only on the server. The server copies keep the former client statements and texts.
 - The embedding keys stay inside `embeddings.ts` and the runner's `MemoryHost`: no CBS text, Lua value, notice, error, log line, or cache row carries one.
 - Embedding cache keys must include the model identity. Voyage contextual keys also include the group hash. `testText` caches by raw text only.
 - Adding a local embedding model means updating `HypaModel`, `localModels.models`, `localModels.gpuModels`, the narrower `EmbeddingModel` union in `transformers.ts`, and the options in both settings and the playground.
@@ -122,7 +107,7 @@ With `risu.serverGeneration` on, a send's memory step runs in the job (`server/s
 
 ## Recipes
 
-- Add or change a top-level algorithm: the selector in `OtherBotSettings.svelte`, the DB fields and defaults in `setDatabase`, and the branch plus persistence in `sendChat`. Verify the `supaMemory` gate and the priority order.
+- Add or change a top-level algorithm: the selector in `OtherBotSettings.svelte`, the DB fields and defaults in `setDatabase`, and the branch plus persistence in the server's `assemblePrompt`. Verify the `supaMemory` gate and the priority order.
 - Add an embedding model: `hypamemory.ts` (`HypaModel`, `localModels`, `getEmbeds`), `hypamemoryv2.ts:getAPIEmbeds`, `transformers.ts` `EmbeddingModel`, and the UI options.
 - Add a contextual provider: `contextualEmbedding.ts`, the grouped paths in `HypaProcessorV2`, and `HypaProcesserEx.addSummaryChunksContextual`.
 - Change V3 behavior: both V3 mains, `HypaV3Settings`, `createHypaV3Preset`, and the settings bindings.
@@ -132,10 +117,9 @@ With `risu.serverGeneration` on, a send's memory step runs in the job (`server/s
 
 - `src/ts/process/memory/hypaV3Presets.test.ts`: `selectedHypaV3Preset` (by id, the first-preset fallback, no state write, undefined for an empty list).
 - `src/lib/Setting/Pages/OtherBotSettings.hypaV3Export.test.ts` (mounted under happy-dom): the HypaV3 preset export button writes exactly `{ type: "risu", ver: 1, data: { name, settings } }` without the id, and the import button gives that file a fresh id and selects it.
-- `src/ts/process/memory/memoryOracle.test.ts` (Phase 5 slice 10): the browser oracle of the four algorithms. The flag-off client code runs the scenarios of `server/src/tests/fixtures/memory/scenarios.ts` (Supa plain and `asHyper`, V2, V3 standard and experimental, Hanurai: no-summary paths, overflow summarization, stored data and orphans, the preset by id, recent/similar/random selection, similarity correction, Voyage contextual groups, partial successes then a failure, repeated failures, the fallbacks and error texts, exhaustion) over fake dependencies (deterministic tokens and vectors, canned summaries and completions, a fixed random sequence, an in-memory vector store, `parseChatML` null), and each outcome must equal `server/src/tests/fixtures/memory/algorithms.json`. `CAPTURE_MEMORY_FIXTURE=1` records the fixture again after an intended client change; the server ports are held to the same fixture by `server/src/tests/memoryAlgorithms.test.ts`, and never recapture it. The same file pins P10: the summary requests of both V3 implementations and the similarity correction carry the `chatRef` and `pluginContext` given to `hypaMemoryV3`, and nothing without one.
+- `src/ts/process/memory/memoryOracle.test.ts` (Phase 5 slice 10; narrowed at the cutover to the client copy that stays): the tab's HypaV3 (standard and experimental) runs the V3 scenarios of `server/src/tests/fixtures/memory/scenarios.ts` over fake dependencies, and each outcome must equal `server/src/tests/fixtures/memory/algorithms.json` (recorded from the browser path before the cutover; the server ports of all four algorithms are held to the whole fixture by `server/src/tests/memoryAlgorithms.test.ts`, and nothing recaptures it from the server). It also pins the summary requests' `chatRef` and `pluginContext`.
 - `server/src/tests/embeddings.test.ts`, `vectorCache.test.ts`, `transformers.test.ts`, `memoryJobs.test.ts` (`self-host-server.md`): the server processors and cache, the model process, and memory on a real server job.
 - Not covered: the modal, the rate limiter on its own, the browser Transformers wrappers.
-- `scriptings.test.ts` only mocks `HypaProcesser`.
 
 ## Known Hazards
 

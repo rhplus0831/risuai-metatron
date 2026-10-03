@@ -1,5 +1,5 @@
 import { get } from "svelte/store";
-import { processScriptFull, risuChatParser } from "src/ts/process/scripts";
+import { risuChatParser } from "src/ts/parser/parser.svelte";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
 import { type DeepReadonly, type Message } from "src/ts/storage/database.svelte";
 import { alertConfirm } from "src/ts/alert";
@@ -95,9 +95,10 @@ export async function processRegexScript(
     const char = DBState.db.characters[get(selectedCharID)];
     const transform = captureTransform(msgIndex);
     const source = risuChatParser(msg.data, { chara: char, role: msg.role });
-    const newData: string = (
-        transform
-            ? await serverProcessScript(
+    // Without a context the regex stage is skipped (Phase 5 cutover): the CBS-parsed text stays.
+    const newData: string = transform
+        ? (
+              await serverProcessScript(
                   char,
                   source,
                   "editprocess",
@@ -106,10 +107,8 @@ export async function processRegexScript(
                   transform,
                   "message",
               )
-            : await processScriptFull(char, source, "editprocess", msgIndex, {
-                  chatRole: msg.role,
-              })
-    ).data;
+          ).data
+        : source;
 
     return {
         ...msg,

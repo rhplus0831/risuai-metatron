@@ -111,7 +111,7 @@ Settings:
 
 - TTS depends on `database.svelte.ts`, `globalFetch`, `runTranslator` (Hugging Face non-English), `transformers.ts:runVITS`, and plugin v3 (hook registration).
 - `stableDiff` depends on `requestChatData`, `CharEmotion`, `processZip`, and inlays.
-- The translator depends on the parser (`ParseMarkdown`, `applyMarkdownToNode`, `postTranslationParse`, `risuChatParser`), `requestChatData`, `processScriptFull`, platform flags, and localforage.
+- The translator depends on the parser (`ParseMarkdown`, `applyMarkdownToNode`, `postTranslationParse`, `risuChatParser`), `requestChatData`, the script transform (`serverProcessScript`), platform flags, and localforage.
 - The media utilities are used by card import/export, modules, and inlays.
 
 ## Invariants
@@ -120,7 +120,7 @@ Settings:
 - TTS hooks apply only on paths through `playAudio`. The GPT-SoVITS gain path must still call `runPostprocessorPipeline`.
 - `generateAIImage(..., 'inlay')` does not persist its result. The caller must persist it.
 - Keep the `.risutl` format constants and legacy-field syncing stable.
-- `translateHTML` must preserve markup boundaries and the `translate=no`/`script`/`style` skips. It applies `edittrans` after translating. With `risu.serverTransform` on, its `editdisplay` call runs on the server (`serverProcessScript`, target kind `translation`), with the context captured when `translateHTML` starts.
+- `translateHTML` must preserve markup boundaries and the `translate=no`/`script`/`style` skips. It applies `edittrans` after translating (`applyEdittransRegex`: the one regex the tab still runs since the Phase 5 cutover, plain `RegExp` replacement with no Lua or trigger). Its `editdisplay` call runs on the server (`serverProcessScript`, target kind `translation`), with the context captured when `translateHTML` starts; without a context (a chat not saved on the server yet) the translated text stays as it is.
 - Aux-model keys use the persisted misspelling `seperate*`. `submodel` is not a `seperateModels` key.
 
 ## Recipes

@@ -5,7 +5,7 @@ import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 const maxRecentChatQuery = 4;
 
 /**
- * `hanuraiMemory` of `src/ts/process/memory/hanuraiMemory.ts`, statement for statement, on a
+ * `hanuraiMemory` of the former `src/ts/process/memory/hanuraiMemory.ts`, statement for statement, on a
  * `MemoryHost`. Where the client alerts and returns `false` (no chat left to drop), this returns the
  * alert's text as `alert`: the caller ends the send with it, without the inlay error message.
  */

@@ -49,23 +49,20 @@
     import { editChatSync } from "../../ts/storage/chatEdits";
     import { DBState } from "src/ts/stores.svelte";
     import { getCharImage } from "../../ts/characters";
-    import { chatProcessStage, doingChat, sendChat } from "../../ts/process/index.svelte";
+    import { doingChat, sendChat } from "../../ts/process/index.svelte";
     import { sleep } from "../../ts/util";
     import { language } from "../../lang";
     import { isExpTranslator, translate } from "../../ts/translator/translator";
     import { alertError, alertNormal, alertWait, showHypaV2Alert } from "../../ts/alert";
     import sendSound from "../../etc/send.mp3";
-    import { processScript } from "src/ts/process/scripts";
     import CreatorQuote from "./CreatorQuote.svelte";
     import { stopTTS } from "src/ts/process/tts";
     import MainMenu from "../UI/MainMenu.svelte";
     import AssetInput from "./AssetInput.svelte";
     import { aiLawApplies, chatFoldedState, chatFoldedStateMessageIndex, downloadFile } from "src/ts/globalApi.svelte";
-    import { runTrigger } from "src/ts/process/triggers";
     import { v4 } from "uuid";
     import { PreUnreroll, Prereroll } from "src/ts/process/prereroll";
     import { processMultiCommand } from "src/ts/process/command";
-    import { readClientFlag } from "src/ts/storage/clientFlags";
     import { postChatFile } from "src/ts/process/files/multisend";
     import { getInlayAsset } from "src/ts/process/files/inlays";
     import Chats from "./Chats.svelte";
@@ -196,7 +193,7 @@
         const characterOf = () => DBState.db.characters.find((character) => character?.chaId === ref.chaId);
 
         if (messageInput.startsWith("/")) {
-            const commandProcessed = await processMultiCommand(messageInput, undefined, { fromInput: true });
+            const commandProcessed = await processMultiCommand(messageInput);
             if (commandProcessed !== false) {
                 messageInput = "";
                 return;
@@ -215,7 +212,7 @@
             fileInput = [];
         }
 
-        // Behind the server flag the job runs the input stage and appends the user message (Phase 5 slice 9).
+        // The job runs the input stage and appends the user message (Phase 5 slice 9).
         let serverInput: { input: string; userMessageId: string } | null = null;
         if (messageInput === "") {
             if (char.type !== "group") {
@@ -226,30 +223,11 @@
                 }
             }
         } else {
-            if (readClientFlag("risu.serverGeneration")) {
-                // The same text after a send that got no answer keeps its id: the server skips an input
-                // it already appended under it.
-                const unresolved = pendingServerInputs.get(chatKeyOf(ref));
-                const pending = unresolved?.input === messageInput ? unresolved : null;
-                serverInput = { input: messageInput, userMessageId: pending?.userMessageId ?? v4() };
-            } else if (char.type === "character") {
-                const baseline = captureChatBaseline(ref);
-                let triggerResult = await runTrigger(char, "input", { chat: findChat(ref), chatRef: ref });
-                if (!findChat(ref)) {
-                    // The chat went away while the trigger ran: the send is cancelled.
-                    return;
-                }
-                if (triggerResult) {
-                    applyChatResult(baseline, triggerResult.chat);
-                }
-                const data = await processScript(char, messageInput, "editinput", {}, ref);
-                if (!findChat(ref)) {
-                    return;
-                }
-                appendMessage(ref, { role: "user", data, time: Date.now() });
-            } else {
-                appendMessage(ref, { role: "user", data: messageInput, time: Date.now() });
-            }
+            // The same text after a send that got no answer keeps its id: the server skips an input it
+            // already appended under it.
+            const unresolved = pendingServerInputs.get(chatKeyOf(ref));
+            const pending = unresolved?.input === messageInput ? unresolved : null;
+            serverInput = { input: messageInput, userMessageId: pending?.userMessageId ?? v4() };
         }
         messageInput = "";
         messageInputTranslate = "";
@@ -835,7 +813,7 @@
                         onclick={abortChat}
                         style:height={inputHeight}
                     >
-                        <div class="loadmove chat-process-stage-{$chatProcessStage}" class:autoload={autoMode}></div>
+                        <div class="loadmove chat-process-stage-0" class:autoload={autoMode}></div>
                     </button>
                 {:else}
                     <button

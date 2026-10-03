@@ -24,7 +24,7 @@ import { parseChatML, type TriggerResult } from "./triggers.ts";
 
 /**
  * The prompt of one send, assembled on the server (Phase 5 slice 9): the body of `sendChatInner`
- * (`src/ts/process/index.svelte.ts`) from the prompt-info snapshot to `generationInfo`, for one
+ * (the former `src/ts/process/index.svelte.ts`) from the prompt-info snapshot to `generationInfo`, for one
  * speaker, statement by statement with the client's order and quirks. Everything it reads of the
  * job comes through `AssemblyHost`. The memory step, `additionalInformations`, and the caption of an
  * image a model cannot take run with the job's memory services (Phase 5 slice 10): the same gate,
@@ -229,7 +229,7 @@ export function getGenerationModelString(db: Database, name?: string): string {
     }
 }
 
-/** `exampleMessage` of `src/ts/process/exampleMessages.ts`. */
+/** `exampleMessage` of the former `src/ts/process/exampleMessages.ts`. */
 function exampleMessage(char: character, parse: AssemblyHost["parse"]): OpenAIChat[] {
     if (char.exampleMessage === "") {
         return [];
@@ -279,7 +279,7 @@ function exampleMessage(char: character, parse: AssemblyHost["parse"]): OpenAICh
     return result;
 }
 
-/** `systemizeChat` of `src/ts/process/index.svelte.ts`. */
+/** `systemizeChat` of the former `src/ts/process/index.svelte.ts`. */
 function systemizeChat(chat: OpenAIChat[]) {
     for (let i = 0; i < chat.length; i++) {
         if (chat[i].role === "user" || chat[i].role === "assistant") {

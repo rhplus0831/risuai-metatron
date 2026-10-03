@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // calls inside the hook act on the hook's chat and preset instead of the tab's selection. Two fake
 // plugins are registered through the real API object (`SandboxHost` mocked, as in
 // `hostApiRouting.test.ts`), and the hooks are invoked as the runners invoke them: through
-// `invokeHook` (the output-listener runner), `processScriptFull` (the script-handler runner), and
-// `requestChatData` (the replacer and provider runners). Pinned here:
+// `invokeHook` (the output-listener runner), the server transform's continuation
+// (`serverProcessScript`, the script-handler runner of the tab since the Phase 5 cutover; the server
+// is a stand-in), and `requestChatData` (the replacer and provider runners). Pinned here:
 // - the capture: the chat ref, the selected preset, and the chat's bound persona (else the selected one);
 // - a `chatOutput` listener for a chat that is not selected reads and writes its own character and
 //   chat (`getChar`/`getCharacter` report the hook's chat as `chatPage`; a `setChar` round trip does
@@ -23,10 +24,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //   preset applies nothing, and a custom key that shares a forwarded name (`aiModel`) still lands in
 //   the custom storage;
 // - the runners: a script handler and the replacers and provider of a request get the context the
-//   send passes (a preset selected later is not recaptured), else one captured at entry;
+//   caller passes (a preset selected later is not recaptured), else one captured at entry;
 // - the forwarding host functions: `parseRisuChat` parses with the hook's character and chat, scoped
 //   to the hook's preset and persona (`risuChatParserScoped`), and, with `processRegex`, its script
-//   path runs with the hook's context; `runLLMModel` sends the
+//   stage is the server transform for the hook's chat, preset, and persona, whose plugin handlers run
+//   with the hook's context (without a saved chat the stage is skipped); `runLLMModel` sends the
 //   request for the hook's chat with the hook's context (a plugin model blocked unless allowed);
 //   `getCurrentLorebookEntries` answers the hook's character, chat, and module lore. Another plugin
 //   instance observes the forwarded context, since the calling plugin's own hooks would see it
@@ -39,11 +41,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type CapturedApi = Record<string, (...args: any[]) => any>;
 
-const { captured, alerts, grants, sends } = vi.hoisted(() => ({
+const { captured, alerts, grants, sends, transforms } = vi.hoisted(() => ({
     captured: { apis: [] as CapturedApi[] },
     alerts: { confirm: vi.fn(async (_text: string) => true) },
     grants: { value: true },
     sends: [] as { index: number; arg: any }[],
+    /** The calls to the server transform stand-in (`/api/transform` and its continuation). */
+    transforms: [] as { path: string; body: any }[],
 }));
 
 vi.mock("./factory", () => ({
@@ -142,16 +146,56 @@ vi.mock("src/ts/process/index.svelte", async () => {
     };
 });
 
-// The request trigger and the tools of `requestChatData` are stand-ins; the plugin provider is real.
-vi.mock("src/ts/process/triggers", () => ({
-    runTrigger: vi.fn(async (_char: unknown, _mode: string, arg: any) => ({ displayData: arg.displayData })),
-}));
+// The tools of `requestChatData` are stand-ins; the plugin provider is real.
 vi.mock("src/ts/process/mcp/mcp", () => ({ getTools: vi.fn(async () => []) }));
 
 // `requestChatDataMain` is spied on so a refused `runLLMModel` can be shown not to dispatch.
 vi.mock("src/ts/process/request/request", async (importOriginal) => {
     const actual = await importOriginal<typeof import("src/ts/process/request/request")>();
     return { ...actual, requestChatDataMain: vi.fn(actual.requestChatDataMain) };
+});
+
+// The server transform is a stand-in: with the tab's plugin handlers every text is pending as it came
+// (the server's stages before the handlers leave it alone here), and the continuation answers the
+// handlers' texts; without handlers a text is answered as it came.
+vi.mock("src/ts/storage/nodeStorage", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("src/ts/storage/nodeStorage")>();
+    const answer = (id: string, text: string) => ({
+        id,
+        ok: true,
+        text,
+        emotions: [],
+        key: `key:${text}`,
+        cached: false,
+    });
+    return {
+        ...actual,
+        authFetch: vi.fn(async (path: string, init: { body: string }) => {
+            const body = JSON.parse(init.body);
+            transforms.push({ path, body });
+            let reply: unknown;
+            if (path === "/api/transform/continue") {
+                reply = {
+                    results: body.texts.map((entry: any) =>
+                        "error" in entry
+                            ? { id: entry.id, ok: false, error: entry.error }
+                            : answer(entry.id, entry.text),
+                    ),
+                };
+            } else if (path === "/api/transform" && body.handlers) {
+                reply = {
+                    results: [],
+                    snapshotId: "snapshot-1",
+                    pending: body.targets.map((target: any) => ({ id: target.id, text: target.source })),
+                };
+            } else if (path === "/api/transform") {
+                reply = { results: body.targets.map((target: any) => answer(target.id, target.source)) };
+            } else {
+                throw new Error(`No stand-in for ${path}`);
+            }
+            return { status: 200, ok: true, json: async () => reply };
+        }),
+    };
 });
 
 import { DBState, selectedCharID } from "src/ts/stores.svelte";
@@ -161,7 +205,7 @@ import { installForwarding } from "src/ts/storage/forwarding.svelte";
 import { selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { doingChat } from "src/ts/process/index.svelte";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
-import { processScriptFull } from "src/ts/process/scripts";
+import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
 import { getModuleLorebooks } from "src/ts/process/modules";
 import { risuChatParser, risuChatParserScoped } from "src/ts/parser/parser.svelte";
 import { clearPluginHooks, pluginHooks } from "../pluginHooks";
@@ -179,6 +223,12 @@ const preset = (id: string) => db().botPresets.find((entry: { id: string }) => e
 const characterOf = (chaId: string) => db().characters.find((entry: any) => entry?.chaId === chaId);
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const texts = (ref: chatStore.ChatRef) => chatStore.findChat(ref)!.message.map((message) => message.data);
+/** Marks chats as saved on the server (a held revision): the server transform applies to them. */
+const saved = (...refs: chatStore.ChatRef[]) =>
+    chatStore.seedChats(
+        refs.map((ref) => ({ characterId: ref.chaId, id: ref.chatId, revision: "rev-1" })) as never,
+        [],
+    );
 
 const refB1 = { chaId: "b", chatId: "b1" };
 const refA1 = { chaId: "a", chatId: "a1" };
@@ -284,6 +334,9 @@ beforeEach(() => {
     selectedCharID.set(0);
     doingChat.set(false);
     sends.length = 0;
+    transforms.length = 0;
+    // No chat is saved on the server unless a test says so.
+    chatStore.seedChats([], []);
     grants.value = true;
     alerts.confirm.mockReset();
     alerts.confirm.mockResolvedValue(true);
@@ -623,23 +676,26 @@ describe("gone targets", () => {
 });
 
 describe("the runners", () => {
-    it("a script handler gets the context the send passes to processScriptFull, else one captured at entry", async () => {
+    it("a script handler run by the server transform's continuation gets the context the caller passes, else one captured at entry", async () => {
         const api = await makeApi();
-        api.addRisuScriptHandler("output", async (data: string) => {
+        api.addRisuScriptHandler("process", async (data: string) => {
             const { temperature } = await api.getDatabase(["temperature"]);
             api.setDatabaseLite({ temperature: temperature + 1 });
             return `${data}:${temperature}:${where(api).join("/")}`;
         });
+        saved(refB1);
         const beta = db().characters[1];
         const context = capturePluginContext(refB1);
         selectPreset("b");
 
-        const passed = await processScriptFull(beta, "t", "editoutput", -1, {}, refB1, context);
+        const withContext = captureTransform(-1, { chatRef: refB1, pluginContext: context })!;
+        const passed = await serverProcessScript(beta, "t", "editprocess", -1, {}, withContext, "text");
         expect(passed.data).toBe("t:10:1/1");
         expect(preset("a").temperature).toBe(11);
         expect(preset("b").temperature).toBe(20);
 
-        const captured = await processScriptFull(beta, "t", "editoutput", -1, {}, refB1);
+        const atEntry = captureTransform(-1, { chatRef: refB1 })!;
+        const captured = await serverProcessScript(beta, "t", "editprocess", -1, {}, atEntry, "text");
         expect(captured.data).toBe("t:20:1/1");
         expect(preset("b").temperature).toBe(21);
         expect(preset("a").temperature).toBe(11);
@@ -700,7 +756,7 @@ describe("the runners", () => {
 });
 
 describe("the host functions that forward the hook's target", () => {
-    it("parseRisuChat parses with the hook's character and chat, and with processRegex its script handlers run with the hook's context", async () => {
+    it("parseRisuChat parses with the hook's character and chat, and with processRegex its server transform and script handlers run with the hook's context", async () => {
         const api = await makeApi();
         const other = await makeApi();
         const seen: string[] = [];
@@ -715,6 +771,7 @@ describe("the host functions that forward the hook's target", () => {
             results.push(await api.parseRisuChat("plain", { messageIndex: 0, role: "char" }));
             results.push(await api.parseRisuChat("scripted", { processRegex: true }));
         });
+        saved(refB1);
         const context = capturePluginContext(refB1);
         selectedCharID.set(0);
         chatStore.selectChat("b", 2);
@@ -741,18 +798,23 @@ describe("the host functions that forward the hook's target", () => {
             cbsConditions: { chatRole: "char" },
         });
         expect(scoped[0][2]).toEqual(scope);
-        // The script path: the scoped parse before the handlers, then the one `processScriptFull`
-        // does after them, which still goes through `risuChatParser`.
+        // The script path: the scoped parse before the stage, then the server transform of the hook's
+        // chat with the hook's preset and persona (the persona bound to `b1`), whose continuation ran
+        // the handlers above.
         expect(scoped[1][0]).toBe("scripted");
         expect((scoped[1][1] as any).chara.chaId).toBe("b");
         expect(scoped[1][1]).toMatchObject({ chatRef: refB1, chatID: -1 });
         expect(scoped[1][2]).toEqual(scope);
-        const parses = vi.mocked(risuChatParser).mock.calls;
-        expect(parses.length).toBeGreaterThanOrEqual(1);
-        expect(parses[0][0]).toBe("scripted+");
-        expect(parses[0][1]).toMatchObject({ chatRef: refB1 });
-        // No parse of this hook fell back to the selected chat.
-        expect([...scoped, ...parses].every((call) => (call[1] as any)?.chatRef?.chatId === "b1")).toBe(true);
+        expect(transforms.map((call) => call.path)).toEqual(["/api/transform", "/api/transform/continue"]);
+        expect(transforms[0].body).toMatchObject({
+            mode: "editprocess",
+            context: { characterId: "b", chatId: "b1", presetId: "a", personaId: "q", selectedPersonaId: "p" },
+            targets: [{ kind: "text", sourceId: "b", chatIndex: -1, source: "scripted" }],
+        });
+        expect(transforms[0].body.handlers).toEqual(expect.any(String));
+        // No parse of this hook fell back to the selected chat, and none ran unscoped.
+        expect(scoped.every((call) => (call[1] as any)?.chatRef?.chatId === "b1")).toBe(true);
+        expect(vi.mocked(risuChatParser)).not.toHaveBeenCalled();
         expect(where(other)).toEqual([0, 0]);
         expect(where(api)).toEqual([0, 0]);
 
@@ -763,6 +825,14 @@ describe("the host functions that forward the hook's target", () => {
         expect(vi.mocked(risuChatParserScoped)).not.toHaveBeenCalled();
         expect((vi.mocked(risuChatParser).mock.calls[0][1] as any).chara.chaId).toBe("a");
         expect(vi.mocked(risuChatParser).mock.calls[0][1]).not.toHaveProperty("chatRef");
+
+        // Without a transform context (the selected chat `a0` is not saved on the server) the script
+        // stage is skipped: the parsed text comes back, and no handler and no transform run.
+        transforms.length = 0;
+        seen.length = 0;
+        expect(await api.parseRisuChat("unsaved", { processRegex: true })).toBe("unsaved");
+        expect(seen).toEqual([]);
+        expect(transforms).toEqual([]);
     });
 
     it("runLLMModel requests for the hook's chat with the hook's context, and blocks a plugin model unless allowed", async () => {

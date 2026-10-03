@@ -1,7 +1,13 @@
 import type { Chat, character } from "../../../shared/database.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { RequestArgs, StreamResponseChunk } from "../../../shared/llm/request.ts";
-import type { triggerEffect, triggerEffectV2, triggerscript } from "../../../shared/triggers.ts";
+import {
+    displayAllowList,
+    requestAllowList,
+    type triggerEffect,
+    type triggerEffectV2,
+    type triggerscript,
+} from "../../../shared/triggers.ts";
 import {
     type CharacterPatchListener,
     type LuaBindingServices,
@@ -11,8 +17,10 @@ import {
 import type { HostContext } from "../scripts/workerPool.ts";
 import type { RegexMatch, RegexOp } from "../scripts/worker.ts";
 
+export { displayAllowList, requestAllowList };
+
 /**
- * The server trigger runtime (Phase 5 slice 8b): `runTrigger` of `src/ts/process/triggers.ts`,
+ * The server trigger runtime (Phase 5 slice 8b): `runTrigger` of the former `src/ts/process/triggers.ts`,
  * ported with the same effect switch. The client reaches its chat, records, alerts, and services
  * through globals; here they come from the job (`TriggerHost`): CBS over the job's scope, chat
  * variables and the author's note written to the job's chat as the run goes (never in display or
@@ -97,55 +105,6 @@ export class TriggerEffectLimitError extends Error {
         this.name = "TriggerEffectLimitError";
     }
 }
-
-const safeSubset = [
-    "v2SetVar",
-    "v2If",
-    "v2IfAdvanced",
-    "v2Else",
-    "v2EndIndent",
-    "v2LoopNTimes",
-    "v2BreakLoop",
-    "v2ConsoleLog",
-    "v2StopTrigger",
-    "v2Random",
-    "v2ExtractRegex",
-    "v2RegexTest",
-    "v2GetCharAt",
-    "v2GetCharCount",
-    "v2ToLowerCase",
-    "v2ToUpperCase",
-    "v2SetCharAt",
-    "v2SplitString",
-    "v2JoinArrayVar",
-    "v2ConcatString",
-    "v2MakeArrayVar",
-    "v2GetArrayVarLength",
-    "v2GetArrayVar",
-    "v2SetArrayVar",
-    "v2PushArrayVar",
-    "v2PopArrayVar",
-    "v2ShiftArrayVar",
-    "v2UnshiftArrayVar",
-    "v2SpliceArrayVar",
-    "v2SliceArrayVar",
-    "v2GetIndexOfValueInArrayVar",
-    "v2RemoveIndexFromArrayVar",
-    "v2Calculate",
-    "v2Comment",
-    "v2DeclareLocalVar",
-];
-
-export const displayAllowList = ["v2GetDisplayState", "v2SetDisplayState", ...safeSubset];
-
-export const requestAllowList = [
-    "v2GetRequestState",
-    "v2SetRequestState",
-    "v2GetRequestStateRole",
-    "v2SetRequestStateRole",
-    "v2GetRequestStateLength",
-    ...safeSubset,
-];
 
 /** `parseKeyValue` of `src/ts/util.ts`: `key=value` lines. */
 export function parseKeyValue(template: string | undefined): [string, string][] {

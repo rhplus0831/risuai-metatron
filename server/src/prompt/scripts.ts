@@ -248,7 +248,7 @@ export async function runScriptTail(
 }
 
 /**
- * The server's `processScriptFull` (`src/ts/process/scripts.ts`; Phase 5 slice 9) for one run's
+ * The server's `processScriptFull` (the former `src/ts/process/scripts.ts`; Phase 5 slice 9) for one run's
  * setup, in the client's order: the Lua edit hook (`runLuaEdit`; none for `editprocess`), the plugin
  * hook as a channel callback named the mode when the owner registered one, then `runScriptTail`.
  * `@@emo` becomes an `emotion` notice; `@@inject` writes the message at `chatID` (resolved to its id

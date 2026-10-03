@@ -7,17 +7,17 @@ import { simplifySchema } from "src/ts/util";
 import {
     NANOGPT_RESPONSES_ENDPOINT,
     NANOGPT_SUBSCRIPTION_RESPONSES_ENDPOINT,
-} from "../../../../../shared/llm/providers/nanogpt.ts";
+} from "../../../../../../../shared/llm/providers/nanogpt.ts";
 
-import { extractJSON, getOpenAIJSONSchema } from "../../templates/jsonSchema";
-import { callTool, decodeToolCall, encodeToolCall } from "../../mcp/mcp";
-import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "../request";
+import { extractJSON, getOpenAIJSONSchema } from "../../../../templates/jsonSchema";
+import { callTool, decodeToolCall, encodeToolCall } from "../../../../mcp/mcp";
+import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "../../../request";
 import {
     applyAdditionalParameters,
     applyParameters,
     getAdditionalParameters,
     isReasoningCapabilityParameter,
-} from "../shared";
+} from "../../../shared";
 
 import type {
     OpenAIChatExtra,

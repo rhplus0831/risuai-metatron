@@ -1,7 +1,7 @@
 # Phase 5: Server-Side Processing
 
-Status: planned on 2026-10-01; not started. The execution plan, the slice amendments, and the
-owner's answers are in
+Status: planned on 2026-10-01; implemented through the cutover on 2026-10-03 (slice 14; Stop E
+follows). The execution plan, the slice amendments, and the owner's answers are in
 [`slices/phase-5-server-side-processing/implementation-plan.md`](slices/phase-5-server-side-processing/implementation-plan.md).
 
 Depends on: Phase 4. Implements Decisions 5 and 6 and the Phase 5 parts of Decisions 3 and 4 in
@@ -213,8 +213,8 @@ first, because its first stages are hooks.
 
 ## Safety Contract
 
-The browser pipeline remains selectable until every scenario below passes on the server. The plugin
-API does not change shape. Every effect, Lua function, or hook that behaves differently on the
+The browser pipeline stayed selectable until every scenario below passed on the server (Stop D); the
+cutover (slice 14, 2026-10-03) removed it. The plugin API does not change shape. Every effect, Lua function, or hook that behaves differently on the
 server is listed here before the browser path is removed:
 
 - Channel questions (`alertInput`, `alertSelect`, `alertConfirm`, `v2GetAlertInput`,
@@ -242,8 +242,10 @@ server is listed here before the browser path is removed:
 - A plugin provider model answers a server job through a callback to the job's tab: the providers
   are the ones registered when the job was created, the argument is built on the server from the
   job's settings, and a request that carries a stored credential is not handed to a plugin.
-- Remembered tool calls are stored with their chat (`chat.toolCalls`); a call remembered without a
-  chat, or before this change, stays in the browser's own store.
+- Remembered tool calls are stored with their chat (`chat.toolCalls`). Since the cutover a call
+  without a chat (or whose chat is gone) is not remembered, and a call remembered in the browser's
+  former LocalForage store (before slice 11b, or without a chat) no longer resolves; its marker still
+  displays (alpha, no migration).
 - The resend and auto-continue loop is capped: a job runs at most 8 such rounds (all its speakers
   together); past that the reply is finished as it stands. The rounds keep the job's preset (a
   tab's recursive send picks `presetChain` again).
@@ -269,7 +271,9 @@ server is listed here before the browser path is removed:
   pre-pass stays in the browser (slice 13).
 - Every message re-renders after any chat variable changes.
 - Plugins see masked LLM credentials through `getDatabase`.
-- `bodyIntercepter` registrations are not applied to calls without a job.
+- `bodyIntercepter` registrations are not applied to the tab's own LLM requests
+  (`/api/llm/request` without a job); a job's requests call them back in the tab, and the tab's
+  auxiliary calls (`auxFetch`) still run them.
 - Inside a callback, the selection-dependent plugin functions mean the job's chat and preset
   (Phase 4's rule), except the index-based getters and setters, which keep the tab.
 - The server display trigger runs on the target's character and chat, groups included. Today it
@@ -326,6 +330,21 @@ server is listed here before the browser path is removed:
   configuration, outside the credential criterion.
 - A downloaded backup archive carries no LLM credentials; restoring it means entering the keys
   again.
+- The cutover's own differences (slice 14, owner decisions of 2026-10-03):
+  - The tab's own LLM requests (translation, suggestions, the HypaV3 modal's summaries, the image
+    prompt, Iris, the playground, MCP `aiaccess`, the plugin `runLLM` API) no longer run the
+    character's `request` trigger; a server job's requests still do. Plugin replacers still apply.
+  - A render without a server context (no chat, a chat not yet saved on the server, no preset or
+    persona) skips the script stage: the text shows as the CBS pre-pass and the assets leave it,
+    and a new chat's rows render again once its first save lands. The same holds for the
+    translator's `editdisplay`, the HypaV3 modal's `editprocess`, and `parseRisuChat` with
+    `processRegex`.
+  - The translator's `edittrans` regex is the one regex the tab still runs (plain `RegExp`
+    replacement on translation text; no Lua or trigger).
+  - Memory on the server is a send's memory step; the tab keeps HypaV3 for the modal's summaries
+    and `HypaProcesser` for the playground and the tab-resident tools.
+  - DevTool's autopilot sends each line as a job in the chat selected when it started; a group's
+    speakers are chosen by the server.
 - Pre-existing defects fixed by this phase, each recorded by its slice:
   - `igp` appended the response object to the reply;
   - remembered tool calls never decoded;
@@ -356,3 +375,59 @@ server is listed here before the browser path is removed:
 - `pnpm check`, `pnpm test`, `pnpm format:check`, `pnpm build`, and `pnpm test:e2e`.
 - A Docker smoke at each stop from the llmSecrets flip on, and the full scenario matrix in Docker
   at cutover.
+
+## Implementation Record
+
+Slices and commits, in order (`slices/phase-5-server-side-processing/`):
+
+- Spikes (Stop A): `9cee7fe9` tokenizers under Node, `70083414` script workers.
+- Baseline capture: `50f581d4` (browser-path fixtures before slice 3).
+- Shared modules: `fb434571` CBS and the regex engine, `76a14160` lore, chat templates, token routing.
+- Jobs and channel: `9b41aa28` generation jobs and the server-side lock, `250c0f96` the job channel.
+- Requests (Stop B): `911dfa00` `/api/llm/request`, `f0da8963` write-only `llmSecrets`; `7a185214`
+  Lua's `glue.wasm` from the app's origin.
+- Lua and triggers: `167d03ed` Lua buttons, `71390b49` manual triggers.
+- Sends (Stop C): `416145ac` prompt assembly on the server (`d6ab16de` the Stop C smoke),
+  `3f5416d5` the CBS limits.
+- `26a2e385` memory on the server, `b8fd14c8` the reply tail, `c6720142` plugin providers, tool
+  records, `/multisend`, `0919e2f2` and `6495f524` MCP for jobs.
+- Transform (Stop D): `312a2384` the server transform, `e0b19ba2` its client.
+- Stop D fixes: `f2b8fcae` two tabs, `219dfb51` graph memory and the MCP clients.
+- Cutover (slice 14): the browser generation path, the client Lua, trigger, and regex runtimes
+  (`scriptings.ts`, `triggers.ts`, `scripts.ts`; no wasmoon in the client bundle), the client flags,
+  `fetchViaProxyJobWs`/`proxyJobWs.ts`, and the LocalForage tool-call store removed; the browser's
+  provider adapters kept only as test oracles (`src/ts/process/request/tests/oracle/`). Deferred to
+  Phase 6's closeout: the chat module's dead browser generation producers (`beginGeneration` and
+  its maps), the `proxyStreamJobs` route, and the test oracles.
+
+### Cutover validation (slice 14, 2026-10-03)
+
+Candidate: the slice 14 tree on `219dfb51` as it was before this record was written (git tree
+`a498dfbd`; only documentation changed after it); Docker image `sha256:21cfb87e9339` built from it.
+
+- Gates: `pnpm check` 0 errors; `pnpm test` 162 files, 2185 passed, 3 skipped; `pnpm format:check`;
+  `pnpm build` (a fresh `dist/assets` holds no `wasmoon`, `scriptings`, or `glue.wasm`;
+  `dist/lua/json.lua` is there); `pnpm test:e2e` 13/13. With the review's 11 tests: `pnpm test` 162
+  files, 2196 passed, 3 skipped.
+- Dev stack, in `util/playwright/offline.sh` (a network namespace with loopback only): send 16/16,
+  button 8/8, trigger 9/9, transform 14/14, MCP 17/17, transport 17/17, the matrix 35/35 (send,
+  reroll, group, memory, an image button, two tabs, a restore during a send by archive import and
+  by snapshot id), and the credential capture 26/26: sends (plain, a provider 401 echoing the key,
+  an attachment), the translator, the suggestion's submodel call, a key replaced in the tab,
+  `registerModelDynamic`, DALL-E and Imagen through `generateAIImage`, OpenAI TTS through `sayTTS`,
+  Whisper's transport call, `HypaProcesser` embeddings, and the Google token count; no sentinel in
+  any browser request, response, or WebSocket frame but the replacement key's own PUT body. Not
+  exercised there: the other provider families' sends, the OpenRouter, NanoGPT, and Ollama account
+  and discovery calls, previews, and Whisper through its component.
+- Docker image on a fresh volume (`--dns 127.0.0.254`: no external name resolves in the container;
+  the host-side browser and runner were not namespaced): send 15/15 (continue and abort through the
+  chat screen; the preview needs the dev modules), button 8/8, trigger 9/9 (alerts included), the
+  matrix 35/35 (both restore rows: the tab is told and reloads without a request of its own).
+- Rollback rehearsal of this candidate: a provisional commit in a disposable worktree, `git revert`
+  (the tree equals `219dfb51`), the pre-cutover checks in both flag modes (send 21/21: no job with
+  the flags off, a send job with them on; button 14/14; transform 21/21), and the pre-cutover image
+  opening the volume the cutover image wrote (send 18/18 in both modes).
+- Found and fixed on the way: a job ended by a restore or import now makes its tab watch for the
+  replacement (`watchForRestore`); a server reply is locked from the job's first chat event
+  (`hydrateChat`), so it is not transformed empty before its stream. Found, not changed: a Continue
+  from an empty input with "say nothing" on appends "_says nothing_" first (as before the cutover).

@@ -4,7 +4,8 @@ Date: 2026-09-28
 
 Status: decisions confirmed on 2026-09-28. Phase 0 done on 2026-09-29, Phases 1 and 2 implemented
 on 2026-09-29, Phase 3 on 2026-09-30, Phase 4 on 2026-10-01 (see their phase files). Phase 5
-planned on 2026-10-01.
+planned on 2026-10-01, implemented through its cutover on 2026-10-03 (generation, scripts, and
+provider calls on the server; the browser generation path removed).
 
 ## Goal
 
@@ -183,6 +184,8 @@ follow-up that cleans up `botPreset` and the separate-model concept after this p
 - From Phase 5, `shared/` also holds the pure runtime modules both runtimes execute: the CBS
   registry and evaluator, the regex engine, lore activation, the Jinja templates, and the model
   catalogue. Their host access goes only through an injected object (owner decision, 2026-10-01).
+  Since the cutover (2026-10-03) the server runs them for every generation; the client keeps them
+  for its editors, previews, the rendering pre-pass, and token counts.
 - The `runtime` stage of the `Dockerfile` copies only `server` and `dist`; it gains a copy of
   `shared`, or the image fails at the first import.
 

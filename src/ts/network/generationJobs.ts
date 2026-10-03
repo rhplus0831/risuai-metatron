@@ -33,8 +33,8 @@ function onChannel(work: (channel: typeof import("./jobChannel")) => void) {
  * create, status, abort, and the owner socket, plus `applyGenerationEvent`, which mirrors a job's
  * events into the chat module and the save loop without any outgoing write. The tab's `clientId`
  * and its jobs (one per chat) are kept in `sessionStorage`, so a reloaded tab can attach again
- * (`resumeSavedGenerations`, at boot). Its first caller is the Lua button behind the client flag
- * (`process/serverCommands.ts`, slice 8a); prompt assembly (slice 9) wires the send path.
+ * (`resumeSavedGenerations`). Its callers are the server command and send jobs of
+ * `process/serverCommands.ts` (slices 8a and 9; the only generation path since the cutover).
  */
 
 const CLIENT_ID_KEY = "risu-generation-client";

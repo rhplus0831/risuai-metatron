@@ -125,6 +125,27 @@ type GenerationFinal = {
 };
 
 const chatRevisions = new Map<string, string>();
+/**
+ * Per chat (`keyOf`): bumped when this client first holds a revision for a chat it did not hold one
+ * for (its first save landed or a landed create was recognized; not the boot seed or a restore), so
+ * the rows rendered before it without a server transform context render again (Phase 5 cutover).
+ */
+const savedVersions = $state<Record<string, number>>({});
+
+/** Records a chat's held revision (every runtime install but the seed): see `savedVersions`. */
+function holdChatRevision(key: string, revision: string) {
+    const first = !chatRevisions.has(key);
+    chatRevisions.set(key, revision);
+    if (first) {
+        savedVersions[key] = (savedVersions[key] ?? 0) + 1;
+    }
+}
+
+/** How many times the chat gained its first held revision (reactive; `savedVersions`). */
+export function chatSaveVersion(ref: ChatRef): number {
+    return savedVersions[keyOf(ref.chaId, ref.chatId)] ?? 0;
+}
+
 const orderRevisions = new Map<string, string>();
 const pending = new Map<string, Pending>();
 const inflight = new Map<string, SentChatGroup>();
@@ -624,6 +645,7 @@ export function hydrateChat(
         return false;
     }
     let released = false;
+    let locked = false;
     const metadataHeld = jobMetadataRevisions.get(key);
     const metadataCurrent = !metadataHeld || (compareRevision(server.revision, metadataHeld) ?? -1) >= 0;
     if (job && metadataCurrent) {
@@ -654,6 +676,28 @@ export function hydrateChat(
                 // Only a copy in the mirror holds those chunks.
                 serverWatermarks.set(messageKey, { generationId: entry.generationId, seq: entry.seq });
             }
+            // The job's chat event can come before its `accepted`/`chunk` (a reply appended with
+            // `begin`): the message is locked from here, so it is not rendered (or edited) as a
+            // finished message before its stream starts. No stream update was received yet: the
+            // sequence is below every protocol sequence (the first `accepted`/`chunk` fills the raw
+            // buffer whatever its claim; the watermark above keeps a covering copy shown), and the
+            // buffer starts as the mirror's text.
+            const message = mirrorChat({ chaId: server.characterId, chatId: server.id })?.message.find(
+                (candidate) => candidate.chatId === entry.messageId,
+            );
+            if (
+                message &&
+                serverGenerations.get(messageKey)?.generationId !== entry.generationId &&
+                !retiredGenerations.has(entry.generationId)
+            ) {
+                serverGenerations.set(messageKey, {
+                    jobId: job.jobId,
+                    generationId: entry.generationId,
+                    seq: -1,
+                    text: message.data,
+                });
+                locked = true;
+            }
         }
     }
     if (outcome === "applied") {
@@ -673,6 +717,9 @@ export function hydrateChat(
                 message.data = entry.text;
             }
         }
+    }
+    if (locked && !released) {
+        lockState.version += 1;
     }
     if (released) {
         lockState.version += 1;
@@ -717,7 +764,7 @@ function applyChatHydration(server: {
     const chats = chatsOf(character);
     const index = chats.findIndex((chat) => chat.id === server.id);
     chats[index] = clone<Chat>(server.data);
-    chatRevisions.set(key, server.revision);
+    holdChatRevision(key, server.revision);
     staleChats.delete(key);
     changed(key);
     syncChatPage(server.characterId);
@@ -901,7 +948,7 @@ export function settleUnloadCheckpoint(work: ChatWork, results: readonly ChatGro
             return;
         }
         if (result.revision !== null && (!result.stale || !chatRevisions.has(group.key))) {
-            chatRevisions.set(group.key, result.revision);
+            holdChatRevision(group.key, result.revision);
         }
         if (result.stale) {
             staleChats.add(group.key);
@@ -2178,7 +2225,7 @@ export function ackChatWork(
             } else if (!result.stale || !chatRevisions.has(group.key)) {
                 // A group applied on an older revision leaves the older base: this client has not
                 // seen every change up to the new revision.
-                chatRevisions.set(group.key, result.revision);
+                holdChatRevision(group.key, result.revision);
             }
             if (result.stale && result.revision !== null) {
                 staleChats.add(group.key);
@@ -2411,7 +2458,7 @@ export function recoverChatConflicts(
         const create = group.ops[0]?.op === "create";
         if (create && server.revision !== null && server.data && group.expected === canonicalChat(server.data)) {
             // Our create (and the rest of its group) landed before the answer was lost.
-            chatRevisions.set(group.key, server.revision);
+            holdChatRevision(group.key, server.revision);
             const rest = group.ops.slice(1);
             if (rest.length > 0 || pending.has(group.key)) {
                 retry.push({ ...group, baseRevision: server.revision, ops: rest });
@@ -2450,7 +2497,7 @@ export function recoverChatConflicts(
             // Deleted here but kept on the server (the delete conflicted): the character's list is
             // read again, which puts the chat back at its server position.
             discardChatWork(group.key, group.seq);
-            chatRevisions.set(group.key, server.revision);
+            holdChatRevision(group.key, server.revision);
             refresh.add(group.characterId);
             reloaded = true;
             continue;
@@ -2549,7 +2596,7 @@ function applyRemoteChat(server: RemoteChat) {
     if (server.revision === null) {
         chatRevisions.delete(key);
     } else {
-        chatRevisions.set(key, server.revision);
+        holdChatRevision(key, server.revision);
     }
     remoteListener?.({ chaId: server.characterId, chatId: server.id });
 }
@@ -2666,7 +2713,7 @@ export function acceptRemoteCollection(collection: {
             entry.seq = Math.max(entry.seq, entry.resend?.seq ?? 0);
             entry.resend = null;
             entry.create = false;
-            chatRevisions.set(key, record.revision);
+            holdChatRevision(key, record.revision);
         }
         if (entry?.ops.some((op) => op.op === "delete")) {
             // Deleted here, not yet on the server: stays out of the mirror. The delete keeps its
@@ -2677,11 +2724,11 @@ export function acceptRemoteCollection(collection: {
         if (mine && busy) {
             next.push(mine);
             if (!chatRevisions.has(key)) {
-                chatRevisions.set(key, record.revision);
+                holdChatRevision(key, record.revision);
             }
         } else {
             next.push(record.data);
-            chatRevisions.set(key, record.revision);
+            holdChatRevision(key, record.revision);
             staleChats.delete(key);
             changed(key);
         }

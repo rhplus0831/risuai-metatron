@@ -75,7 +75,7 @@ async function runCommand(job: RunningJob, deps: GenerationRunnerDeps): Promise<
 }
 
 /**
- * A Lua button (`runLuaButtonTrigger` of `src/ts/process/scriptings.ts`) as a command job: each Lua
+ * A Lua button (`runLuaButtonTrigger` of the former `src/ts/process/scriptings.ts`) as a command job: each Lua
  * trigger of the character and of its modules, in the client's order, runs `onButtonClick` with the
  * button's data on a fresh engine (no Lua global survives between runs), all under one aggregate
  * budget. A trigger stops the loop when the chat is gone. A load failure ends the job with its error

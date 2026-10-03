@@ -33,6 +33,8 @@ const stubs = vi.hoisted(() => ({
     flush: vi.fn<() => Promise<{ discarded: string[] }>>(),
     /** `generatingNoticeCount`: how many times the save adapter showed `chatGenerating`. */
     notices: vi.fn<() => number>(() => 0),
+    /** `watchForRestore`: whether a restore replaced the data (a job ended by `maintenance` waits on it). */
+    restored: vi.fn<() => Promise<boolean>>(async () => false),
     findChat: vi.fn(() => ({})),
     held: vi.fn<() => string | null>(() => "e:1:1"),
     bound: vi.fn<() => { id: string } | null>(() => null),
@@ -90,6 +92,7 @@ vi.mock("../storage/resourceSync.svelte", () => ({
     flushResources: stubs.flush,
     GenerationBlockedError: BlockedError,
     generatingNoticeCount: stubs.notices,
+    watchForRestore: stubs.restored,
 }));
 vi.mock("../util", () => ({ checkPersonaBinded: stubs.bound, sleep: async () => {} }));
 
@@ -117,6 +120,7 @@ beforeEach(async () => {
     stubs.bound.mockReset().mockReturnValue(null);
     stubs.flush.mockReset().mockResolvedValue({ discarded: [] });
     stubs.notices.mockReset().mockReturnValue(0);
+    stubs.restored.mockReset().mockResolvedValue(false);
     stubs.abort.mockReset().mockResolvedValue(undefined);
     vi.spyOn(console, "error").mockImplementation(() => {});
     commands = await import("./serverCommands");
@@ -200,6 +204,42 @@ describe("followJobToEnd", () => {
         expect(await end).toBe("lost");
         expect(follows()).toHaveLength(5);
         expect(stubs.release).toHaveBeenCalledWith("j");
+    });
+
+    it("leaves a job a restore or import ended (`maintenance`) to the restore watch: no alert when the data was replaced, its error once when nothing was", async () => {
+        const maintenance: GenerationTerminalEvent = {
+            type: "error",
+            epoch: EPOCH,
+            message: "The server is under maintenance",
+            status: 503,
+            reason: "maintenance",
+        };
+        let answer!: (replaced: boolean) => void;
+        stubs.restored.mockReturnValueOnce(
+            new Promise<boolean>((resolve) => {
+                answer = resolve;
+            }),
+        );
+        const replaced = commands.followJobToEnd("j", ref);
+        await flush();
+        endWith(follows()[0], maintenance);
+        expect(await replaced).toEqual(maintenance);
+        expect(stubs.restored).toHaveBeenCalledTimes(1);
+        // The watch is still reading: nothing is shown yet, and nothing once the data was replaced.
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        answer(true);
+        await flush();
+        expect(stubs.alertError).not.toHaveBeenCalled();
+
+        stubs.restored.mockResolvedValueOnce(false);
+        const unchanged = commands.followJobToEnd("j2", ref);
+        await flush();
+        endWith(follows()[1], maintenance);
+        await unchanged;
+        await flush();
+        expect(stubs.restored).toHaveBeenCalledTimes(2);
+        expect(stubs.alertError).toHaveBeenCalledTimes(1);
+        expect(stubs.alertError).toHaveBeenCalledWith("The server is under maintenance");
     });
 });
 

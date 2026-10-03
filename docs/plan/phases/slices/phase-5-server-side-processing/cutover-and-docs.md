@@ -1,6 +1,6 @@
 # Slice: Cutover And Docs
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented 2026-10-03 (see "As implemented").
 
 Phase: [Phase 5](../../phase-5-server-side-processing.md), the exit criteria (the browser
 generation path removed, no wasmoon in the bundle, no LLM credential in client traffic), the
@@ -97,3 +97,48 @@ that exist (`rg`).
 
 Two clients still converge only on reload until Phase 6's live updates. The auxiliary providers
 keep the proxy and client-readable keys by Decision 6.
+
+## As implemented (2026-10-03)
+
+- Owner decisions at the stopping condition (two unrouted runtime callers):
+  - the transform fallback (`captureTransform` null: no chat, a chat not saved yet, no preset or
+    persona) skips the script stage, and a new chat's rows render again after its first save
+    (`chatStore.svelte.ts` `chatSaveVersion`, bumped where a chat first gains a held revision;
+    `Chat.svelte` bumps `chatBodyRevision` for its chat);
+  - the tab's own LLM requests no longer run the `request` trigger (`request.ts`).
+- Plan review (Astra) decisions:
+  - the translator's `edittrans` is a recorded client exception, not a stop: plain `RegExp` on
+    translation text, not the Lua, trigger, or generation path;
+  - the browser provider adapters moved to the test-only `src/ts/process/request/tests/oracle/` so
+    the parity tests keep their differential cases (removed in Phase 6);
+  - the browser-only memory copies (SupaMemory, HypaV2, Hanurai), `exampleMessages.ts`,
+    `embedding/addinfo.ts`, `models/modelString.ts`, and `models/nai.ts` were deleted;
+    `memoryOracle.test.ts` keeps the HypaV3 cases (the server fixture suite holds the rest);
+  - the chat module's browser generation producers stay as dead code (no production producer),
+    recorded for Phase 6's closeout with their tests (option (b), a scoped deviation from this
+    file's "kept only for `applyServerGeneration`");
+  - DevTool's autopilot: one job per line in the chat selected when it started, the busy flag
+    cleared after each send, stopping at a send that did not go.
+- `/trigger` always runs on the server (`processMultiCommand` lost its `fromInput` option); the
+  `allowLists` moved to `shared/triggers.ts`; `exportRegex`/`importRegex` to
+  `src/ts/process/regexFiles.ts`.
+- Found by the matrix, the Challenge, and the test adapter, and fixed in the slice: a job a restore or
+  import ends makes its tab watch for the replacement (`resourceSync.svelte.ts` `watchForRestore`,
+  started by `serverCommands.ts` `reportEnd`; each read bounded to 5 s, two minutes in all); a server
+  reply is locked from the job's first chat event (`chatStore.svelte.ts` `hydrateChat`, the holder's
+  sequence below every protocol sequence), so it is not transformed empty before its stream.
+- Tests (test adapter): the browser runtime tests, `proxyJobWs.test.ts`, and `e2e/luaWasmOrigin.spec.ts`
+  deleted; the parity tests import the oracle; `memoryOracle.test.ts` runs the HypaV3 scenarios;
+  `e2e/transformGolden.spec.ts`'s second test compares with
+  `server/src/tests/fixtures/transform/display-trigger-assets.json`, recorded from the browser path at
+  `219dfb51`; the command, transform client, plugin context, tool-call store, baseline, and
+  serverCommands harnesses adapted.
+- Tools: the Playwright checks lost their flag modes; `checkServerSend.mjs` drives continue and
+  abort through the chat screen; `checkServerButton.mjs`, `checkServerTrigger.mjs`, and
+  `checkStopDMatrix.mjs` gained a production mode (`--base`, no dev modules; the matrix's restore
+  imports an exported archive there); `checkCutoverCredentials.mjs` is the credential capture
+  (a sentinel per credential leaf, a server preload that routes the fixed provider origins to a
+  local responder and refuses other egress, every browser request, response, and WebSocket frame
+  searched); `offline.sh` runs a check with loopback only (`unshare -rn`); every runner fails its
+  exit status on a failed check; `checkLuaWasmOrigin.mjs` was removed. The validation record is in
+  the phase file ("Cutover validation").

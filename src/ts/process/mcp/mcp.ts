@@ -5,7 +5,6 @@ import { getModuleMcps } from "../modules";
 import { alertError, alertInput, alertNormal } from "src/ts/alert";
 import { v4 } from "uuid";
 import type { MCPClientLike } from "./internalmcp";
-import localforage from "localforage";
 import { registeredCustomPluginMCPs } from "./pluginmcp";
 import { type ChatRef, findChat, mergeChatMeta } from "src/ts/storage/chatStore.svelte";
 import { TAB_MCP_IDENTIFIERS } from "../../../../shared/jobs.ts";
@@ -297,30 +296,28 @@ export type toolCallData = {
     response: RPCToolCallContent[];
 };
 
-const inst = localforage.createInstance({
-    name: "mcp-tool-calls",
-    storeName: "mcp-tool-calls",
-});
+let droppedLogged = false;
 
 /**
- * Remembers a tool call and gives its marker. With `chatRef` (the request's chat) it is stored with
- * that chat (`chat.toolCalls`, Phase 5 slice 11b), where the server reads it too; a request without
- * a chat, or whose chat is gone, keeps it in this browser's LocalForage store as before.
+ * Remembers a tool call and gives its marker. It is stored with the request's chat (`chat.toolCalls`,
+ * Phase 5 slice 11b), where the server reads it too; a request without a chat, or whose chat is
+ * gone, remembers nothing (the browser's own LocalForage store was removed at the cutover).
  */
 export async function encodeToolCall(call: toolCallData, chatRef?: ChatRef | null) {
     call.call.id = call.call.id || v4();
     if (chatRef && findChat(chatRef)) {
         mergeChatMeta(chatRef, "toolCalls", { [call.call.id]: call });
-    } else {
-        await inst.setItem(call.call.id, call);
+    } else if (!droppedLogged) {
+        droppedLogged = true;
+        console.warn("[MCP] A tool call without a chat is not remembered");
     }
     return `<tool_call>${call.call.id}\uf100${call.call.name}</tool_call>\n\n`;
 }
 
 /**
- * The remembered call a marker (whole, or its inner text) stands for: the chat's own record first
- * (`chatRef`), then this browser's LocalForage store (calls remembered before slice 11b, or without
- * a chat).
+ * The remembered call a marker (whole, or its inner text) stands for, from the chat's own record
+ * (`chatRef`). A marker remembered in the browser's former LocalForage store (before slice 11b, or
+ * without a chat) no longer resolves.
  */
 export async function decodeToolCall(text: string, chatRef?: ChatRef | null): Promise<toolCallData | undefined> {
     text = text.trim();
@@ -331,7 +328,7 @@ export async function decodeToolCall(text: string, chatRef?: ChatRef | null): Pr
     if (text.endsWith("</tool_call>")) {
         text = text.slice(0, -"</tool_call>".length).trim();
     }
-    const [callId, callName] = text.split("\uf100");
+    const [callId] = text.split("\uf100");
     if (!callId) {
         return undefined;
     }
@@ -339,9 +336,5 @@ export async function decodeToolCall(text: string, chatRef?: ChatRef | null): Pr
     if (stored && Object.hasOwn(stored, callId)) {
         return JSON.parse(JSON.stringify(stored[callId])) as toolCallData;
     }
-    const call = await inst.getItem<toolCallData>(callId);
-    if (!call) {
-        return undefined;
-    }
-    return call;
+    return undefined;
 }

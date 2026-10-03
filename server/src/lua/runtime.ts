@@ -214,7 +214,7 @@ end
 `;
 
 /**
- * The client's `luaCodeWrapper` (`src/ts/process/scriptings.ts`) without the trailing user code,
+ * The client's `luaCodeWrapper` (the former `src/ts/process/scriptings.ts`) without the trailing user code,
  * plus the server's JSON wrappers of the table-taking functions.
  */
 export const LUA_PRELUDE = `

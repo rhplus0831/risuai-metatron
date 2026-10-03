@@ -3,9 +3,8 @@ import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/mo
 import { risuEscape, risuUnescape } from "../../parser/parser.svelte";
 import { capturePluginContext, invokeHook, type PluginCallContext } from "../../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../../plugins/pluginHooks";
-import { getCurrentCharacter, getCurrentChat, getDatabase, type character } from "../../storage/database.svelte";
-import { type ChatRef, findChat } from "../../storage/chatStore.svelte";
-import { DBState } from "../../stores.svelte";
+import { getCurrentCharacter, getDatabase, type character } from "../../storage/database.svelte";
+import type { ChatRef } from "../../storage/chatStore.svelte";
 import { sleep } from "../../util";
 import type { OpenAIChat } from "../index.svelte";
 import { getTools } from "../mcp/mcp";
@@ -13,7 +12,6 @@ import type { MCPTool } from "../mcp/mcplib";
 import { unstringlizeChat } from "../stringlize";
 import { applyChatTemplate } from "../templates/chatTemplate";
 import { runTransformers } from "../transformers";
-import { runTrigger } from "../triggers";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters, type ModelModeExtended } from "./shared";
 import { requestServer } from "./transport";
 
@@ -145,31 +143,8 @@ export async function requestChatData(
                 }
             }
 
-            try {
-                const currentChar = arg.chatRef
-                    ? DBState.db.characters.find((entry) => entry?.chaId === arg.chatRef.chaId)
-                    : getCurrentCharacter();
-                const requestChat = arg.chatRef ? findChat(arg.chatRef) : getCurrentChat();
-                if (currentChar && requestChat && currentChar.type !== "group") {
-                    const perf = performance.now();
-                    const d = await runTrigger(currentChar, "request", {
-                        chat: requestChat,
-                        chatRef: arg.chatRef ?? null,
-                        displayMode: true,
-                        displayData: JSON.stringify(arg.formated),
-                    });
-
-                    const got = JSON.parse(d.displayData);
-                    if (!got || !Array.isArray(got)) {
-                        throw new Error("Invalid return");
-                    }
-                    arg.formated = got;
-                    console.log("Trigger time", performance.now() - perf);
-                }
-            } catch (e) {
-                console.error(e);
-            }
-
+            // The character's `request` trigger runs only in server jobs (Phase 5 cutover): the tab's own
+            // requests (translation, suggestions, the HypaV3 modal, plugins) go out without it.
             da = await requestChatDataMain(
                 {
                     ...arg,

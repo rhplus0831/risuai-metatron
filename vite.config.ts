@@ -42,7 +42,7 @@ export default defineConfig(({ command, mode }) => {
             strictPort: true,
             // hmr: false,
             proxy: {
-                "^/(api|proxy|proxy2|hub-proxy|proxy-stream-jobs)(/|\\?|$)": {
+                "^/(api|proxy|proxy2|hub-proxy)(/|\\?|$)": {
                     target: devServerTarget,
                     changeOrigin: true,
                     secure: false,

@@ -4,16 +4,14 @@ import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 // Slash commands (`command.ts`) over the real chat module and the real server store: every chat
 // write goes through the module by id, addressed to the chat captured when the line started, and
-// the CBS parser gets that chat too. The send pipeline, the parser, alerts, TTS, lore, and triggers
-// are stand-ins here (their own tests cover them).
+// the CBS parser gets that chat too. The send pipeline, the parser, alerts, TTS, lore, and the
+// server's manual trigger are stand-ins here (their own tests cover them).
 
 const hooks = vi.hoisted(() => ({
     sends: [] as { index: number; arg: any }[],
     sendResult: [] as boolean[],
     input: null as null | ((prompt: string) => Promise<string>),
-    trigger: null as null | ((char: any, mode: string, arg: any) => Promise<any>),
-    /** The client flag `risu.serverGeneration` and the manual triggers handed to the server (slice 8b). */
-    serverFlag: false,
+    /** The manual triggers handed to the server (slice 8b; since the Phase 5 cutover, every `/trigger`). */
     serverRuns: [] as { char: any; name: string; ref: any }[],
 }));
 
@@ -45,9 +43,6 @@ vi.mock("./index.svelte", async () => {
     };
 });
 vi.mock("./lorebook.svelte", () => ({ loadLoreBookV3Prompt: vi.fn(async () => ({ actives: [] })) }));
-vi.mock("./triggers", () => ({
-    runTrigger: vi.fn((char: any, mode: string, arg: any) => hooks.trigger?.(char, mode, arg) ?? Promise.resolve(null)),
-}));
 vi.mock("./modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),
@@ -61,11 +56,9 @@ vi.mock("./serverCommands", () => ({
         return "started";
     }),
 }));
-vi.mock("../storage/clientFlags", () => ({ readClientFlag: vi.fn(() => hooks.serverFlag) }));
 
 import { processMultiCommand } from "./command";
 import { doingChat, sendChat } from "./index.svelte";
-import { runTrigger } from "./triggers";
 import * as chat from "../storage/chatStore.svelte";
 import { DBState, selectedCharID } from "../stores.svelte";
 
@@ -149,8 +142,6 @@ beforeEach(() => {
     hooks.sends.length = 0;
     hooks.sendResult.length = 0;
     hooks.input = null;
-    hooks.trigger = null;
-    hooks.serverFlag = false;
     hooks.serverRuns.length = 0;
     doingChat.set(false);
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -281,53 +272,36 @@ describe("the chat a line started in", () => {
         expect(chat.currentChatRef()).not.toBeNull();
     });
 
-    it("/trigger runs the manual trigger on the line's chat and applies its result as a diff", async () => {
+    it("/trigger runs the manual trigger on the server for the line's chat and writes nothing in the tab", async () => {
         const ref = freshChat();
-        hooks.trigger = async (_char, _mode, arg) => ({
-            chat: { ...arg.chat, message: [...arg.chat.message, m("t", "from the trigger", "char")] },
-        });
         expect(await processMultiCommand("/trigger greet")).toBeUndefined();
-        expect(runTrigger).toHaveBeenCalledWith(
-            expect.objectContaining({ chaId: "c" }),
-            "manual",
-            expect.objectContaining({ chatRef: ref, manualName: "greet" }),
-        );
-        expect(texts(ref).at(-1)).toBe("from the trigger");
-        const { work } = commit();
-        expect(work.groups[0].ops).toEqual([
-            { op: "append", messages: [m("t", "from the trigger", "char")], anchor: { after: "d" } },
-        ]);
+        expect(hooks.serverRuns).toEqual([{ char: expect.objectContaining({ chaId: "c" }), name: "greet", ref }]);
+        expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
+        expect(commit().work.groups).toEqual([]);
     });
 });
 
 describe("/trigger on the server (Phase 5 slice 8b)", () => {
-    it("runs on the server only for a line typed in the chat input with `risu.serverGeneration` on, with the CBS'd name, and answers undefined", async () => {
+    it("runs on the server with the CBS'd name, and answers undefined", async () => {
         const ref = freshChat();
-        vi.mocked(runTrigger).mockClear();
-        hooks.serverFlag = true;
-        expect(await processMultiCommand("/trigger {{chat}} greet", undefined, { fromInput: true })).toBeUndefined();
+        expect(await processMultiCommand("/trigger {{chat}} greet")).toBeUndefined();
         expect(hooks.serverRuns).toEqual([
             { char: expect.objectContaining({ chaId: "c" }), name: `${ref.chatId} greet`, ref },
         ]);
-        expect(runTrigger).not.toHaveBeenCalled();
         expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
         expect(commit().work.groups).toEqual([]);
     });
 
-    it("stays in the browser without the flag, and for a trigger's own command line (no `fromInput`) even with it", async () => {
+    it("runs on the server for a line given its chat and for a line on the selected chat alike (there is no browser path)", async () => {
         const ref = freshChat();
-        vi.mocked(runTrigger).mockClear();
-        await processMultiCommand("/trigger greet", undefined, { fromInput: true });
-        hooks.serverFlag = true;
         await processMultiCommand("/trigger greet", ref);
         await processMultiCommand("/trigger greet");
-        expect(hooks.serverRuns).toEqual([]);
-        expect(runTrigger).toHaveBeenCalledTimes(3);
-        expect(runTrigger).toHaveBeenLastCalledWith(
-            expect.objectContaining({ chaId: "c" }),
-            "manual",
-            expect.objectContaining({ chatRef: ref, manualName: "greet" }),
-        );
+        expect(hooks.serverRuns).toEqual([
+            { char: expect.objectContaining({ chaId: "c" }), name: "greet", ref },
+            { char: expect.objectContaining({ chaId: "c" }), name: "greet", ref },
+        ]);
+        expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
+        expect(commit().work.groups).toEqual([]);
     });
 });
 

@@ -10,7 +10,7 @@
     import { tokenizePreset } from "src/ts/process/prompt";
 
     import { DBState } from "src/ts/stores.svelte";
-    import { appendMessage, currentChatRef } from "src/ts/storage/chatStore.svelte";
+    import { appendMessage, currentChatRef, findChat } from "src/ts/storage/chatStore.svelte";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import { getCurrentChat } from "src/ts/storage/database.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
@@ -22,13 +22,6 @@
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import { loadLoreBookV3Prompt } from "src/ts/process/lorebook.svelte";
     import { getModules } from "src/ts/process/modules";
-    import CheckInput from "../UI/GUI/CheckInput.svelte";
-    import { language } from "src/lang";
-    import { readClientFlag, writeClientFlag } from "src/ts/storage/clientFlags";
-
-    // The Phase 5 server pipeline's client-local switch (removed at the cutover).
-    let serverGeneration = $state(readClientFlag("risu.serverGeneration"));
-    let serverTransform = $state(readClientFlag("risu.serverTransform"));
 
     let previewMode = $state("chat");
     let previewJoin = $state("yes");
@@ -127,19 +120,6 @@
         }
     }
 </script>
-
-<div class="mb-2">
-    <CheckInput
-        bind:check={serverGeneration}
-        name={language.serverGenerationExperimental}
-        onChange={(check) => writeClientFlag("risu.serverGeneration", check)}
-    />
-    <CheckInput
-        bind:check={serverTransform}
-        name={language.serverTransformExperimental}
-        onChange={(check) => writeClientFlag("risu.serverTransform", check)}
-    />
-</div>
 
 <Accordion styled name={"Variables"}>
     <div class="rounded-md border border-darkborderc grid grid-cols-2 gap-2 p-2">
@@ -266,21 +246,27 @@
     <Button
         className="mt-2"
         onclick={async () => {
-            if ($doingChat) {
+            // Each line is appended to the chat selected at the start and sent as a server job (a
+            // group's speakers are chosen by the server); the run stops at a send that did not go.
+            const ref = currentChatRef();
+            if (!ref) {
                 return;
             }
-            for (let i = 0; i < autopilot.length; i++) {
-                const ref = currentChatRef();
-                if (ref) {
-                    appendMessage(ref, { role: "user", data: autopilot[i] });
-                }
-                if ($doingChat) {
+            for (const line of autopilot) {
+                if ($doingChat || !findChat(ref)) {
                     return;
                 }
-                doingChat.set(false);
-                await sendChat(i);
+                appendMessage(ref, { role: "user", data: line });
+                let sent = false;
+                try {
+                    sent = await sendChat(-1, { target: ref });
+                } finally {
+                    doingChat.set(false);
+                }
+                if (!sent) {
+                    return;
+                }
             }
-            doingChat.set(false);
         }}>Run</Button
     >
 </Accordion>

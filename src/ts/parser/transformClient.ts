@@ -21,7 +21,6 @@ import { generationClientId } from "../network/generationJobs";
 import { capturePluginContext, invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../plugins/pluginHooks";
 import { type ChatRef, currentChatRef, findChat, heldChatRevision, isMessageLocked } from "../storage/chatStore.svelte";
-import { readClientFlag } from "../storage/clientFlags";
 import { CharEmotion, DBState } from "../stores.svelte";
 import { selectedPersona, selectedPreset } from "../storage/forwarding.svelte";
 import { authFetch } from "../storage/nodeStorage";
@@ -29,10 +28,13 @@ import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 import { checkPersonaBinded } from "../util";
 
 /**
- * The client of the script transform (Phase 5 slice 13; `shared/transform.ts`): with the client flag
- * `risu.serverTransform` on, `processScriptFull`'s `editdisplay` call in `ParseMarkdown` and the
- * direct callers (the translator's `editdisplay`, the HypaV3 modal's and `parseRisuChat`'s
- * `editprocess`) run on the server. The browser keeps both additional-asset passes, inlays,
+ * The client of the script transform (Phase 5 slice 13; `shared/transform.ts`): the `editdisplay`
+ * stage of `ParseMarkdown` and the direct callers (the translator's `editdisplay`, the HypaV3
+ * modal's and `parseRisuChat`'s `editprocess`) run on the server; since the cutover (slice 14)
+ * there is no browser regex, Lua, or trigger stage. Without a context (`captureTransform` null: no
+ * chat, a chat not saved on the server yet, no preset or persona) a caller skips the stage and shows
+ * the text as the CBS pre-pass and the assets leave it; a new chat's rows render again once its
+ * first save lands (`chatSaveVersion`). The browser keeps both additional-asset passes, inlays,
  * thoughts, style, Markdown, and sanitization, and the CBS pre-pass of `Chat.svelte`.
  *
  * A render captures its context before its first await (`captureTransform`; `ChatBody` once for all
@@ -95,21 +97,17 @@ export type CapturedTransform = {
     locked: boolean;
 };
 
-/** Whether the server transform is on (the client flag). */
-export function serverTransformEnabled(): boolean {
-    return readClientFlag("risu.serverTransform");
-}
-
 const generations = new Map<string, number>();
 /** The generation a "Re-render" asked to bypass the cache for: the first transform sent at it takes the bypass. */
 const noCacheNext = new Map<string, number>();
 const messageKey = (ref: ChatRef, messageId: string) => JSON.stringify([ref.chaId, ref.chatId, messageId]);
 
 /**
- * The context of a call, read now (before any await): null when the server path does not apply (the
- * flag off, no chat, a chat not saved on the server yet, no preset or persona). Untracked: a row's
- * render must not depend on the lock version, the selection, or other rows (a lock change on one
- * message would re-render every mounted row); a locked row re-renders through `chatBodyRevision`.
+ * The context of a call, read now (before any await): null when the server path does not apply (no
+ * chat, a chat not saved on the server yet, no preset or persona). Untracked: a row's render must not
+ * depend on the lock version, the selection, or other rows (a lock change on one message would
+ * re-render every mounted row); a locked row, and a row of a chat whose first save landed, re-render
+ * through `chatBodyRevision`.
  */
 export function captureTransform(
     chatID: number,
@@ -122,9 +120,6 @@ function readTransformContext(
     chatID: number,
     options: { chatRef?: ChatRef | null; pluginContext?: PluginCallContext },
 ): CapturedTransform | null {
-    if (!serverTransformEnabled()) {
-        return null;
-    }
     const chatRef = options.pluginContext?.chatRef ?? options.chatRef ?? currentChatRef();
     if (!chatRef) {
         return null;

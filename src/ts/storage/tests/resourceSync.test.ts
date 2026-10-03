@@ -523,6 +523,90 @@ describe("restore (412) and errors", () => {
     });
 });
 
+// Phase 5 cutover: a job a restore or import ended (its `maintenance` terminal comes before the
+// replacement) makes the tab read until the server answers with another epoch (`watchForRestore`).
+describe("the restore watch of a job ended by maintenance", () => {
+    const watchReads = (fake: FakeResourceServer) =>
+        fake.requests.filter((request) => request.method === "GET" && request.path === "/api/resources/ui/main").length;
+
+    it("keeps waiting through old-epoch answers, a 503, and a network failure, then halts with the notice and the reload once the epoch changes", async () => {
+        const { fake, sync, db } = await boot();
+        let settled: boolean | undefined;
+        const watch = sync.watchForRestore().then((replaced) => (settled = replaced));
+        const onWatchRead = (path: string) => path === "/api/resources/ui/main";
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(watchReads(fake)).toBe(1);
+        fake.failNext = { status: 503, times: 1, match: onWatchRead };
+        await vi.advanceTimersByTimeAsync(1000);
+        fake.failNext = { status: 0, times: 1, match: onWatchRead };
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(watchReads(fake)).toBe(3);
+        expect(settled).toBeUndefined();
+        expect(alerts.normalWait).not.toHaveBeenCalled();
+        fake.restore("epoch-2");
+        await vi.advanceTimersByTimeAsync(1000);
+        await watch;
+        expect(settled).toBe(true);
+        expect(alerts.normalWait).toHaveBeenCalledWith("restored");
+        await vi.waitFor(() => expect((location as any).reload).toHaveBeenCalled());
+        db().theme = "never saved";
+        await expect(sync.flushResources()).rejects.toThrow(/restored/);
+        expect(fake.batchCount()).toBe(0);
+    });
+
+    it("reads again after a read that hangs for 5 s, ends after two minutes when nothing was replaced, and frees its slot for the next watch", async () => {
+        // `Date` too: the watch's two-minute deadline compares `Date.now()`.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+        const { fake, sync } = await boot();
+        let hang = true;
+        let hung = 0;
+        server.current = {
+            fetch: (path: string, init?: RequestInit) => {
+                if (hang && path === "/api/resources/ui/main") {
+                    hung += 1;
+                    return new Promise<Response>(() => {});
+                }
+                return fake.fetch(path, init);
+            },
+        };
+        let settled: boolean | undefined;
+        void sync.watchForRestore().then((replaced) => (settled = replaced));
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(hung).toBe(1);
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(hung).toBe(1);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(hung).toBe(2);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(settled).toBe(false);
+        expect(alerts.normalWait).not.toHaveBeenCalled();
+        // A new watch starts its own reads (the slot was freed) and sees a later replacement.
+        hang = false;
+        fake.restore("epoch-2");
+        const again = sync.watchForRestore();
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect(again).resolves.toBe(true);
+        expect(alerts.normalWait).toHaveBeenCalledWith("restored");
+    });
+
+    it("runs one watch at a time for every caller, and answers true at once when saving already halted for a restore", async () => {
+        const { fake, sync } = await boot();
+        const first = sync.watchForRestore();
+        const second = sync.watchForRestore();
+        expect(second).toBe(first);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(watchReads(fake)).toBe(1);
+        fake.restore("epoch-2");
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect(first).resolves.toBe(true);
+        const reads = watchReads(fake);
+        await expect(sync.watchForRestore()).resolves.toBe(true);
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(watchReads(fake)).toBe(reads);
+        expect(alerts.normalWait).toHaveBeenCalledTimes(1);
+    });
+});
+
 describe("batch sizing", () => {
     it("measures UTF-8 bytes", async () => {
         const { sync } = await boot();

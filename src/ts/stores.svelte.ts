@@ -3,7 +3,7 @@ import type { character, Database, groupChat } from "./storage/database.svelte";
 import { type simpleCharacterArgument } from "./parser/parser.svelte";
 import type { alertData } from "./alert";
 import { moduleUpdate } from "./process/modules";
-import { resetScriptCache } from "./process/scripts";
+import { resetTransformEffects } from "./parser/transformClient";
 import type { hubType } from "./characterCards";
 import { selectedHypaV3Preset } from "../../shared/hypaV3Presets.ts";
 
@@ -163,7 +163,7 @@ export const hotReloading = $state<string[]>([]);
 
 ReloadGUIPointer.subscribe(() => {
     ReloadChatPointer.set({});
-    resetScriptCache();
+    resetTransformEffects();
 });
 
 $effect.root(() => {

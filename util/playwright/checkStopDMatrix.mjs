@@ -1,23 +1,34 @@
-// Browser check for Phase 5 Stop D: the parts of the flag-on matrix the slice checks do not cover,
-// with both client flags on (`risu.serverGeneration`, `risu.serverTransform`), against a mock
-// provider (an OpenAI-compatible SSE stream; a non-streamed request is a memory summary) and a mock
+// Browser check for Phase 5 Stop D (and the cutover's matrix): the parts of the server matrix the
+// slice checks do not cover, against a mock provider (an OpenAI-compatible SSE stream; a non-streamed request is a memory summary) and a mock
 // image service (OpenAI-compatible images): a send and a reroll, a group send (one reply per active
 // member, in order), a send that summarizes with SupaMemory, a Lua button that generates an image
 // (the inlay stored), two tabs of one chat (a send after the other tab's open is not a conflict and
-// keeps the local edit; with the flags on the second tab shows the running reply's checkpoint and
-// the final reply without a reload, and its own send is refused with `chatGenerating`), and a backup restore during a slow send (the job ends, the data is the
-// backup's, the tab reloads). The send, continue, abort, and reload-mid-stream cases are
+// keeps the local edit; the second tab shows the running reply's checkpoint and the final reply
+// without a reload, and its own send is refused with `chatGenerating`), and a backup restore during
+// a slow send (the job ends, the data is the backup's, the tab reloads). The send, continue, abort, and reload-mid-stream cases are
 // `checkServerSend.mjs`'s; buttons, alerts, and manual triggers `checkServerButton.mjs`'s and
 // `checkServerTrigger.mjs`'s; rendering `checkServerTransform.mjs`'s.
 //
-// Usage: node util/playwright/checkStopDMatrix.mjs (FLAGS=off: the browser path; the server-job checks are skipped)
+// Usage:
+//   node util/playwright/checkStopDMatrix.mjs
+//       dev: starts an isolated stack (`stack.mjs`).
+//   node util/playwright/checkStopDMatrix.mjs --base http://localhost:6231 --password docker-pw \
+//       --provider-host host.docker.internal
+//       production: a server already running the built app (the Docker image on a fresh volume;
+//       the check sets its password). The mocks listen on every interface and are named by
+//       `--provider-host`. Every step runs through the UI and the public API (no dev modules), in
+//       both modes.
 import http from "node:http";
-import path from "node:path";
-import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
 import { chromium } from "playwright-core";
-import { chromePath, openApp, startStack } from "./stack.mjs";
+import { chromePath, isolateContext, startStack, unexpectedEgress } from "./stack.mjs";
+
+const args = process.argv.slice(2);
+const option = (name) => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+};
+const providerHost = option("--provider-host");
 
 const results = [];
 const check = (name, ok, detail) => {
@@ -67,14 +78,19 @@ const provider = http.createServer(async (req, res) => {
     res.write("data: [DONE]\n\n");
     res.end();
 });
-await new Promise((r) => provider.listen(0, "127.0.0.1", () => r()));
-const providerBase = `http://127.0.0.1:${provider.address().port}`;
+await new Promise((r) => provider.listen(0, providerHost ? "0.0.0.0" : "127.0.0.1", () => r()));
+const providerBase = `http://${providerHost ?? "127.0.0.1"}:${provider.address().port}`;
 
-const stack = await startStack({
-    serverPort: 6221,
-    vitePort: 5321,
-    log: process.env.DEBUG ? (text) => process.stderr.write(text) : undefined,
-});
+const stack = option("--base")
+    ? null
+    : await startStack({
+          serverPort: 6221,
+          vitePort: 5321,
+          log: process.env.DEBUG ? (text) => process.stderr.write(text) : undefined,
+      });
+const base = option("--base") ?? stack.baseURL;
+const password = option("--password") ?? "playwright";
+console.log(`mode: ${stack ? "dev" : "production"} at ${base}`);
 const browser = await chromium.launch({ executablePath: chromePath, headless: true });
 
 const blank = (chaId, name, extra = {}) => ({
@@ -114,13 +130,8 @@ const longText = (i) =>
 
 try {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-    const flagsOn = process.env.FLAGS !== "off";
-    if (flagsOn) {
-        await context.addInitScript(() => {
-            localStorage.setItem("risu.serverGeneration", "1");
-            localStorage.setItem("risu.serverTransform", "1");
-        });
-    }
+    // Only the app and the local mocks: anything else is refused and counted (`stack.mjs`).
+    const blocked = await isolateContext(context);
     const page = await context.newPage();
     const pageErrors = [];
     const watch = (p, label) => {
@@ -144,7 +155,7 @@ try {
     let epoch = null;
     watch(page, "A");
     const api = async (p, init = {}) => {
-        const r = await fetch(stack.baseURL + p, {
+        const r = await fetch(base + p, {
             ...init,
             headers: { "risu-auth": auth, "x-resource-epoch": epoch, "content-type": "application/json" },
         });
@@ -186,7 +197,33 @@ try {
         return chat;
     };
 
-    await openApp(page, stack.baseURL);
+    // Opens the app in `p` (the password prompt of a fresh volume answered) until it has signed in.
+    const openApp = async (p) => {
+        await p.goto(base);
+        await waitReady(p);
+    };
+    // Waits for the app in `p` to sign in (answering the password prompt of a fresh volume), without
+    // navigating: after the app's own reload too.
+    const waitReady = async (p) => {
+        for (let i = 0; i < 240; i++) {
+            const input = p.locator("input:visible").first();
+            const ok = p.getByRole("button", { name: "OK", exact: true });
+            if ((await ok.count()) > 0 && (await input.count()) > 0) {
+                await input.fill(password);
+                await ok.first().click();
+            }
+            if (auth && (await ok.count()) === 0) {
+                await p.waitForTimeout(2500);
+                return;
+            }
+            await p.waitForTimeout(500);
+        }
+        throw new Error("the app did not load");
+    };
+    // Whether `p`'s send is running (`doingChat`): the chat input shows the cancel button meanwhile.
+    const busy = async (p = page) => (await p.locator('button[aria-labelledby="cancel"]').count()) > 0;
+
+    await openApp(page);
     await page.waitForTimeout(1500);
     const ui = await single("ui");
     epoch = ui.epoch ?? epoch;
@@ -338,7 +375,7 @@ try {
         }),
     });
     check("seeded", seeded.status === 200, seeded);
-    await openApp(page, stack.baseURL);
+    await openApp(page);
     await page.waitForTimeout(1500);
 
     // A send, then a reroll of its reply.
@@ -359,7 +396,7 @@ try {
             JSON.stringify(["user:Hello there", "char:Second reply."]),
         chat?.message.map((m) => `${m.role}:${m.data}`),
     );
-    if (flagsOn) check("reroll: it ran as a server job", jobPosts().length === 1, jobPosts());
+    check("reroll: it ran as a server job", jobPosts().length === 1, jobPosts());
     await page
         .getByText("Second reply.")
         .first()
@@ -379,7 +416,7 @@ try {
         sayings,
         messages: chat?.message,
     });
-    if (flagsOn) check("group: a group job", jobPosts()[0]?.kind === "group", jobPosts());
+    check("group: a group job", jobPosts()[0]?.kind === "group", jobPosts());
 
     // A send that summarizes with SupaMemory.
     await openChar(page, memId, "Message number 23");
@@ -413,24 +450,27 @@ try {
     check("image: the inlay token is stored in the chat", !!inlayToken, chat?.message.at(-1));
     const inlay = inlayToken ? await api(`/api/resources/inlays/${encodeURIComponent(inlayToken)}`) : null;
     check("image: the inlay record is stored", inlay?.status === 200 && inlay.body?.data?.type === "image", inlay);
-    if (flagsOn) check("image: a command job", jobPosts()[0]?.kind === "command", jobPosts());
+    check("image: a command job", jobPosts()[0]?.kind === "command", jobPosts());
 
     // Two tabs of one chat.
     const characterOf = async (chaId) => (await api(`/api/resources/characters/${chaId}`)).body?.data ?? null;
     await openChar(page, tabsId);
     const pageB = await context.newPage();
     watch(pageB, "B");
-    await openApp(pageB, stack.baseURL);
+    await openApp(pageB);
     await pageB.waitForTimeout(1500);
     // Tab B's open stamps the character's `lastInteraction` (a write on tab A's base). Tab A then
     // edits the character and sends: the stamp-only remote change is rebased, not a conflict.
     await openChar(pageB, tabsId);
     const stampB = (await characterOf(tabsId))?.lastInteraction ?? 0;
     await page.bringToFront();
-    await page.evaluate(async (id) => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        DBState.db.characters.find((c) => c?.chaId === id).desc = "Edited in tab A";
-    }, tabsId);
+    // A local edit of the character in tab A (its description in the character panel), not saved yet.
+    await page.getByRole("button", { name: "Character", exact: true }).first().click();
+    await page
+        .locator("xpath=//span[starts-with(normalize-space(.), 'Description')]/following::textarea[1]")
+        .first()
+        .fill("Edited in tab A");
+    await page.getByRole("button", { name: "Chat", exact: true }).first().click();
     requests.length = 0;
     mode = { chunks: ["Rebased reply."], delayMs: 50 };
     await send(page, "Send after the other tab's open");
@@ -456,139 +496,206 @@ try {
         stored?.desc === "Edited in tab A" && (stored?.lastInteraction ?? 0) >= stampB,
         { desc: stored?.desc, lastInteraction: stored?.lastInteraction, stampB },
     );
-    if (flagsOn) {
-        // A job whose stream stalls past the server's 3 s checkpoint: tab B, with the chat open,
-        // shows the checkpoint and then the final reply without a reload.
-        const baseCount = chat?.message.length ?? 0;
-        requests.length = 0;
-        mode = { chunks: ["Tab one. ", "Tab two. ", "Tab three. ", "Tab four."], delayMs: 4500 };
-        await send(page, "From tab A");
-        await page.getByText("Tab one.").first().waitFor({ timeout: 20000 });
-        await pageB.bringToFront();
-        const live = await pageB
-            .getByText("Tab one.")
-            .first()
-            .waitFor({ timeout: 9000 })
-            .then(() => true)
-            .catch(() => false);
-        // Still running: tab A's send has not ended and the stored reply is not the final text.
-        const runningAtLive =
-            (await page.evaluate(async () => {
-                const { doingChat } = await import("/src/ts/process/index.svelte.ts");
-                let value = false;
-                doingChat.subscribe((current) => (value = current))();
-                return value;
-            })) && (await chatOf(tabsId))?.message.at(-1)?.data !== "Tab one. Tab two. Tab three. Tab four.";
-        check("two tabs: the second tab shows a checkpoint of the running reply, no reload", live && runningAtLive, {
-            live,
-            runningAtLive,
-            tail: (await bodyText(pageB)).slice(-300),
-        });
-        // Every alert node that appears is counted, so a second alert after the first is seen too.
-        await pageB.evaluate(() => {
-            window.__generatingAlerts = 0;
-            new MutationObserver((records) => {
-                for (const record of records) {
-                    for (const node of record.addedNodes) {
-                        if (node.textContent?.includes("This chat is generating a reply"))
-                            window.__generatingAlerts += 1;
-                    }
+    // A job whose stream stalls past the server's 3 s checkpoint: tab B, with the chat open,
+    // shows the checkpoint and then the final reply without a reload.
+    const baseCount = chat?.message.length ?? 0;
+    requests.length = 0;
+    mode = { chunks: ["Tab one. ", "Tab two. ", "Tab three. ", "Tab four."], delayMs: 4500 };
+    await send(page, "From tab A");
+    await page.getByText("Tab one.").first().waitFor({ timeout: 20000 });
+    await pageB.bringToFront();
+    const live = await pageB
+        .getByText("Tab one.")
+        .first()
+        .waitFor({ timeout: 9000 })
+        .then(() => true)
+        .catch(() => false);
+    // Still running: tab A's send has not ended and the stored reply is not the final text.
+    const runningAtLive =
+        (await busy(page)) && (await chatOf(tabsId))?.message.at(-1)?.data !== "Tab one. Tab two. Tab three. Tab four.";
+    check("two tabs: the second tab shows a checkpoint of the running reply, no reload", live && runningAtLive, {
+        live,
+        runningAtLive,
+        tail: (await bodyText(pageB)).slice(-300),
+    });
+    // Every alert node that appears is counted, so a second alert after the first is seen too.
+    await pageB.evaluate(() => {
+        window.__generatingAlerts = 0;
+        new MutationObserver((records) => {
+            for (const record of records) {
+                for (const node of record.addedNodes) {
+                    if (node.textContent?.includes("This chat is generating a reply")) window.__generatingAlerts += 1;
                 }
-            }).observe(document.body, { childList: true, subtree: true });
-        });
-        await send(pageB, "From tab B");
-        const generating = pageB.getByText("This chat is generating a reply");
-        await generating
-            .first()
-            .waitFor({ timeout: 10000 })
-            .catch(() => {});
-        await pageB.waitForTimeout(3000);
-        const tailB = await bodyText(pageB);
-        const alerts = await pageB.evaluate(() => window.__generatingAlerts);
-        check(
-            "two tabs: the second tab's send shows chatGenerating once, not a save error",
-            alerts === 1 && !/Local changes could not be saved/.test(tailB),
-            { alerts, tail: tailB.slice(-400) },
-        );
-        check(
-            "two tabs: the second tab keeps its input",
-            (await pageB.locator("textarea.input-text").first().inputValue()) === "From tab B",
-            await pageB.locator("textarea.input-text").first().inputValue(),
-        );
-        const okB = pageB.getByRole("button", { name: "OK", exact: true });
-        if ((await okB.count()) > 0) await okB.first().click();
-        await pageB.locator("textarea.input-text").first().fill("");
-        chat = await waitStored(
-            tabsId,
-            (c) => c.message.at(-1)?.data === "Tab one. Tab two. Tab three. Tab four.",
-            40000,
-        );
-        check(
-            "two tabs: only tab A's send is stored",
-            JSON.stringify(chat?.message.slice(baseCount).map((m) => m.data)) ===
-                JSON.stringify(["From tab A", "Tab one. Tab two. Tab three. Tab four."]),
-            chat?.message.map((m) => m.data),
-        );
-        const final = await pageB
-            .getByText("Tab four.")
-            .first()
-            .waitFor({ timeout: 20000 })
-            .then(() => true)
-            .catch(() => false);
-        check("two tabs: the second tab shows the final reply without a reload", final, {
-            tail: (await bodyText(pageB)).slice(-400),
-        });
-    }
+            }
+        }).observe(document.body, { childList: true, subtree: true });
+    });
+    await send(pageB, "From tab B");
+    const generating = pageB.getByText("This chat is generating a reply");
+    await generating
+        .first()
+        .waitFor({ timeout: 10000 })
+        .catch(() => {});
+    await pageB.waitForTimeout(3000);
+    const tailB = await bodyText(pageB);
+    const alerts = await pageB.evaluate(() => window.__generatingAlerts);
+    check(
+        "two tabs: the second tab's send shows chatGenerating once, not a save error",
+        alerts === 1 && !/Local changes could not be saved/.test(tailB),
+        { alerts, tail: tailB.slice(-400) },
+    );
+    check(
+        "two tabs: the second tab keeps its input",
+        (await pageB.locator("textarea.input-text").first().inputValue()) === "From tab B",
+        await pageB.locator("textarea.input-text").first().inputValue(),
+    );
+    const okB = pageB.getByRole("button", { name: "OK", exact: true });
+    if ((await okB.count()) > 0) await okB.first().click();
+    await pageB.locator("textarea.input-text").first().fill("");
+    chat = await waitStored(tabsId, (c) => c.message.at(-1)?.data === "Tab one. Tab two. Tab three. Tab four.", 40000);
+    check(
+        "two tabs: only tab A's send is stored",
+        JSON.stringify(chat?.message.slice(baseCount).map((m) => m.data)) ===
+            JSON.stringify(["From tab A", "Tab one. Tab two. Tab three. Tab four."]),
+        chat?.message.map((m) => m.data),
+    );
+    const final = await pageB
+        .getByText("Tab four.")
+        .first()
+        .waitFor({ timeout: 20000 })
+        .then(() => true)
+        .catch(() => false);
+    check("two tabs: the second tab shows the final reply without a reload", final, {
+        tail: (await bodyText(pageB)).slice(-400),
+    });
     await pageB.close();
     await page.bringToFront();
     // Tab A's send ends after its reply is stored (the job's tail); a character switch waits for it.
     for (let until = Date.now() + 30000; Date.now() < until;) {
-        const busy = await page.evaluate(async () => {
-            const { doingChat } = await import("/src/ts/process/index.svelte.ts");
-            let value = true;
-            doingChat.subscribe((current) => (value = current))();
-            return value;
-        });
-        if (!busy) break;
+        if (!(await busy(page))) break;
         await page.waitForTimeout(250);
     }
 
-    // A restore during a slow send. The snapshot is a copy of the database now (no route takes one).
+    // A restore during a slow send, through both routes, in dev and in production alike: an archive
+    // (exported before the send) imported during it, and a retained snapshot restored by id during
+    // it (the safety snapshot an idle import of the same archive takes first). Each time the job
+    // ends, the data is exactly the chat as it was before the send, and the tab is told on its own
+    // (no request is made from the page meanwhile), acknowledges, reloads, and shows that chat.
     await openChar(page, restoreId);
     await page.waitForTimeout(1500);
-    const backups = path.join(stack.workDir, "save", "backups");
-    mkdirSync(backups, { recursive: true });
-    const name = `resources-${new Date().toISOString().replace(/[-:.]/g, "")}-${randomUUID().slice(0, 8)}.sqlite`;
-    const live = new DatabaseSync(path.join(stack.workDir, "save", "data", "resources.sqlite"), { readOnly: true });
-    live.exec(`VACUUM INTO '${path.join(backups, name)}'`);
-    live.close();
+    // The baseline: a distinctive message and its reply, stored before the archive is exported.
+    mode = { chunks: ["Baseline reply."], delayMs: 50 };
+    await send(page, "Baseline message");
+    await waitStored(restoreId, (c) => c.message.at(-1)?.data === "Baseline reply.", 20000);
+    for (let until = Date.now() + 30000; Date.now() < until && (await busy(page));) await page.waitForTimeout(250);
+    const exported = await fetch(base + "/api/backups/export", {
+        method: "POST",
+        headers: { "risu-auth": auth, "x-resource-epoch": epoch, "content-type": "application/json" },
+        body: "{}",
+    });
+    const archive = Buffer.from(await exported.arrayBuffer());
+    check("restore: an archive is exported", exported.status === 200 && archive.length > 0, exported.status);
+    const importArchive = async () => {
+        const r = await fetch(base + "/api/backups/import", {
+            method: "POST",
+            headers: { "risu-auth": auth, "x-resource-epoch": epoch, "content-type": "application/octet-stream" },
+            body: archive,
+        });
+        return { status: r.status, body: await r.json().catch(() => null) };
+    };
+    // The restore chat as stored: its id and messages, or a thrown error for a failed read.
+    const storedChat = async () => {
+        const r = await api("/api/resources/read", {
+            method: "POST",
+            body: JSON.stringify({ chatCollections: [restoreId] }),
+        });
+        const entry = r.status === 200 ? r.body?.chatCollections?.[0]?.chats?.[0] : undefined;
+        if (!entry?.data || !Array.isArray(entry.data.message)) {
+            throw new Error(`the restore chat could not be read (${r.status})`);
+        }
+        return { id: entry.data.id ?? entry.id, messages: entry.data.message.map((m) => [m.role, m.data]) };
+    };
+    const restoreDuringSend = async (route, restoreNow) => {
+        const before = await storedChat();
+        check(
+            `restore (${route}): the baseline holds its distinctive message`,
+            JSON.stringify(before.messages).includes("Baseline message"),
+            before,
+        );
+        // Told: the restore notice shows (acknowledged here), or the tab reloads on its own; the
+        // observer is on before the restore, and the whole wait is 30 s.
+        let reloaded = false;
+        const onNavigated = (frame) => {
+            if (frame === page.mainFrame()) reloaded = true;
+        };
+        page.on("framenavigated", onNavigated);
+        mode = { chunks: ["Slow A. ", "Slow B. ", "Slow C. ", "Slow D. ", "Slow E."], delayMs: 900 };
+        await send(page, `Before the restore (${route})`);
+        await page.getByText("Slow A.").first().waitFor({ timeout: 20000 });
+        const restored = await restoreNow();
+        check(
+            `restore (${route}): succeeds during the send`,
+            restored.status === 200 && !!restored.body?.epoch,
+            restored,
+        );
+        epoch = restored.body?.epoch ?? epoch;
+        const notice = page.getByText("restored from a backup");
+        let told = false;
+        let acknowledged = false;
+        for (const until = Date.now() + 30000; Date.now() < until && !reloaded;) {
+            if (!acknowledged && (await notice.count()) > 0) {
+                told = true;
+                acknowledged = true;
+                await page.getByRole("button", { name: "OK", exact: true }).first().click();
+            }
+            await page.waitForTimeout(200);
+        }
+        page.off("framenavigated", onNavigated);
+        check(`restore (${route}): the tab is told and reloads without a request of its own`, reloaded, {
+            told,
+            reloaded,
+            tail: (await bodyText()).slice(-300),
+        });
+        // The app's own reload: wait for it to sign in again, then select the chat (no navigation).
+        await waitReady(page);
+        await page.waitForTimeout(3000);
+        const after = await storedChat();
+        check(
+            `restore (${route}): the same chat holds exactly its messages before the send`,
+            after.id === before.id && JSON.stringify(after.messages) === JSON.stringify(before.messages),
+            { before, after },
+        );
+        await openChar(page, restoreId, "Baseline message");
+        const shown = await bodyText();
+        check(
+            `restore (${route}): the reloaded tab shows that chat`,
+            shown.includes("Baseline message") && !shown.includes(`Before the restore (${route})`),
+            shown.slice(-400),
+        );
+    };
+    await restoreDuringSend("import", importArchive);
+    // The snapshot route: an idle import takes a safety snapshot of the data as it is now (the
+    // archive's), which is then restored by id during a send. The idle import's own reload is the
+    // runner's (an idle tab learns of it on its next request: `persistence.md`).
+    const prepared = await importArchive();
+    epoch = prepared.body?.epoch ?? epoch;
+    await openApp(page);
+    await openChar(page, restoreId);
     const listed = await api("/api/backups");
-    const snapshotId = listed.body?.items?.find((item) => `${item.id}.sqlite` === name)?.id;
-    check("restore: the snapshot is listed", !!snapshotId, listed);
-    mode = { chunks: ["Slow A. ", "Slow B. ", "Slow C. ", "Slow D. ", "Slow E."], delayMs: 900 };
-    await send(page, "Before the restore");
-    await page.getByText("Slow A.").first().waitFor({ timeout: 20000 });
-    const restored = await api(`/api/backups/${encodeURIComponent(snapshotId ?? "none")}/restore`, { method: "POST" });
-    check("restore: the restore succeeds during the send", restored.status === 200 && !!restored.body?.epoch, restored);
-    await page.waitForTimeout(6000);
-    epoch = restored.body?.epoch ?? epoch;
-    chat = await chatOf(restoreId);
-    check(
-        "restore: the data is the snapshot's (no message of the send)",
-        chat === null || !(chat.message ?? []).some((m) => /Before the restore|Slow/.test(m.data)),
-        chat?.message,
-    );
-    const tail = await bodyText();
-    check(
-        "restore: the tab was told and reloaded",
-        /restored from a backup/.test(tail) || !tail.includes("Before the restore"),
-        tail.slice(-500),
+    const snapshotId = listed.body?.items?.[0]?.id;
+    check("restore: the safety snapshot is listed", prepared.status === 200 && !!snapshotId, listed.body);
+    await restoreDuringSend("snapshot", () =>
+        api(`/api/backups/${encodeURIComponent(snapshotId ?? "none")}/restore`, { method: "POST" }),
     );
     check("no page errors", pageErrors.length === 0, pageErrors);
+    const egress = unexpectedEgress(blocked, stack ? await stack.deniedEgress() : []);
+    check("no unexpected intercepted outbound attempt", egress.length === 0, egress);
     await context.close();
 } finally {
     await browser.close();
-    await stack.stop();
+    await stack?.stop();
     provider.close();
     console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
+    if (results.some((ok) => !ok)) {
+        process.exitCode = 1;
+    }
 }

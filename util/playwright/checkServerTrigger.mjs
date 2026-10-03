@@ -1,14 +1,14 @@
 // Browser check for Phase 5 slice 8b: a manual trigger (`risu-trigger` with `risu-id`) in a
-// character's greeting, with the client flag `risu.serverGeneration` on, runs on the server as a
-// `command` job: the browser posts the job, the trigger's alert and question appear and are
-// answered in the UI, its chat changes (with `{{trigger_id}}`) show and are stored, and they survive
-// a reload; `/trigger name` typed in the chat input runs on the server too. With the flag off, both
-// run in the browser as before (no job).
+// character's greeting runs on the server as a `command` job: the browser posts the job, the
+// trigger's alert and question appear and are answered in the UI, its chat changes (with
+// `{{trigger_id}}`) show and are stored, and they survive a reload; `/trigger name` typed in the
+// chat input runs on the server too.
 //
-// Usage: node util/playwright/checkServerTrigger.mjs
+// Usage: node util/playwright/checkServerTrigger.mjs [--base <url> --password <pw>] (production: the built app,
+// e.g. the Docker image on a fresh volume; the check sets its password)
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, startStack } from "./stack.mjs";
+import { chromePath, isolateContext, startStack, unexpectedEgress } from "./stack.mjs";
 
 const results = [];
 const check = (name, ok, detail) => {
@@ -37,19 +37,30 @@ const TRIGGERS = [
     },
 ];
 
-const stack = await startStack({
-    serverPort: 6199,
-    vitePort: 5299,
-    // `DEBUG=1`: the server's script and generation lines.
-    log: process.env.DEBUG ? (text) => /\[(Lua|Generation|LLM)\]/.test(text) && process.stderr.write(text) : undefined,
-});
+const args = process.argv.slice(2);
+const option = (name) => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+};
+// `--base <url> --password <pw>`: a server already running the built app (e.g. the Docker image).
+const stack = option("--base")
+    ? null
+    : await startStack({
+          serverPort: 6199,
+          vitePort: 5299,
+          // `DEBUG=1`: the server's script and generation lines.
+          log: process.env.DEBUG
+              ? (text) => /\[(Lua|Generation|LLM)\]/.test(text) && process.stderr.write(text)
+              : undefined,
+      });
+const base = option("--base") ?? stack.baseURL;
+const password = option("--password") ?? "playwright";
 const browser = await chromium.launch({ executablePath: chromePath, headless: true });
 try {
-    const run = async (flagOn) => {
+    const run = async () => {
         const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-        if (flagOn) {
-            await context.addInitScript(() => localStorage.setItem("risu.serverGeneration", "1"));
-        }
+        // Only the app and the local mocks: anything else is refused and counted (`stack.mjs`).
+        const blocked = await isolateContext(context);
         const page = await context.newPage();
         const pageErrors = [];
         page.on("pageerror", (e) => pageErrors.push(String(e).slice(0, 300)));
@@ -78,12 +89,12 @@ try {
         });
         const open = async () => {
             auth = null;
-            await page.goto(stack.baseURL);
+            await page.goto(base);
             for (let i = 0; i < 240; i++) {
                 const input = page.locator("input:visible").first();
                 const ok = page.getByRole("button", { name: "OK", exact: true });
                 if ((await ok.count()) > 0 && (await input.count()) > 0) {
-                    await input.fill("playwright");
+                    await input.fill(password);
                     await ok.first().click();
                 }
                 if (auth && (await ok.count()) === 0) {
@@ -95,14 +106,14 @@ try {
             throw new Error("the app did not load");
         };
         const api = async (p, init = {}) => {
-            const r = await fetch(stack.baseURL + p, {
+            const r = await fetch(base + p, {
                 ...init,
                 headers: { "risu-auth": auth, "x-resource-epoch": epoch, "content-type": "application/json" },
             });
             return { status: r.status, body: await r.json().catch(() => null) };
         };
         await open();
-        const label = flagOn ? "flag on" : "flag off";
+        const label = "server";
         // Seed a character whose greeting carries the button and whose Lua handles it.
         const ui = (await api("/api/resources/ui/main")).body;
         epoch = ui.epoch ?? epoch;
@@ -162,30 +173,28 @@ try {
         // The alert, then the question, through the UI.
         // Through the job channel the alert and the question are queued and shown one at a time;
         // in the browser path `alertNormal` does not wait, so the question replaces it at once.
-        if (flagOn) {
-            await page
-                .getByText("hello from the trigger")
-                .first()
-                .waitFor({ timeout: 20000 })
-                .catch(async (error) => {
-                    console.log(
-                        "requests:",
-                        JSON.stringify(
-                            requests
-                                .filter((r) => r.url.includes("/api/"))
-                                .map((r) => `${r.method} ${new URL(r.url).pathname}`),
-                        ),
-                    );
-                    console.log("console:", consoleLines.slice(clickedAt).join("\n"));
-                    console.log("errors:", pageErrors);
-                    if (process.env.SHOT) {
-                        await page.screenshot({ path: process.env.SHOT });
-                    }
-                    console.log("frames:", frames.join("\n"));
-                    throw error;
-                });
-            await page.getByRole("button", { name: "OK", exact: true }).first().click();
-        }
+        await page
+            .getByText("hello from the trigger")
+            .first()
+            .waitFor({ timeout: 20000 })
+            .catch(async (error) => {
+                console.log(
+                    "requests:",
+                    JSON.stringify(
+                        requests
+                            .filter((r) => r.url.includes("/api/"))
+                            .map((r) => `${r.method} ${new URL(r.url).pathname}`),
+                    ),
+                );
+                console.log("console:", consoleLines.slice(clickedAt).join("\n"));
+                console.log("errors:", pageErrors);
+                if (process.env.SHOT) {
+                    await page.screenshot({ path: process.env.SHOT });
+                }
+                console.log("frames:", frames.join("\n"));
+                throw error;
+            });
+        await page.getByRole("button", { name: "OK", exact: true }).first().click();
         await page.getByText("Who clicked?").first().waitFor({ timeout: 20000 });
         await page.locator("#alert-input").fill("Ada");
         await page.getByRole("button", { name: "OK", exact: true }).first().click();
@@ -216,22 +225,18 @@ try {
             .catch(() => {});
         check(`${label}: /trigger from the chat input ran`, (await page.getByText("typed trigger ran").count()) > 0);
         const jobPosts = requests.filter((r) => r.method === "POST" && new URL(r.url).pathname === "/api/generations");
-        if (flagOn) {
-            const bodies = jobPosts.map((r) => JSON.parse(r.body));
-            check(
-                "flag on: two command jobs, the button's with its risu-id, the typed one by name",
-                bodies.length === 2 &&
-                    bodies[0].kind === "command" &&
-                    bodies[0].command?.type === "manual" &&
-                    bodies[0].command?.name === "go" &&
-                    bodies[0].context?.triggerId === "t-77" &&
-                    bodies[1].command?.name === "typed" &&
-                    bodies[1].context?.triggerId === undefined,
-                jobPosts.map((r) => r.body.slice(0, 400)),
-            );
-        } else {
-            check("flag off: no job was posted", jobPosts.length === 0, jobPosts);
-        }
+        const bodies = jobPosts.map((r) => JSON.parse(r.body));
+        check(
+            "server: two command jobs, the button's with its risu-id, the typed one by name",
+            bodies.length === 2 &&
+                bodies[0].kind === "command" &&
+                bodies[0].command?.type === "manual" &&
+                bodies[0].command?.name === "go" &&
+                bodies[0].context?.triggerId === "t-77" &&
+                bodies[1].command?.name === "typed" &&
+                bodies[1].context?.triggerId === undefined,
+            jobPosts.map((r) => r.body.slice(0, 400)),
+        );
         await page.waitForTimeout(2500);
         // Stored, and shown after a reload.
         const stored = (
@@ -254,12 +259,16 @@ try {
             .catch(() => {});
         check(`${label}: shown after a reload`, (await page.getByText(reply).count()) > 0);
         check(`${label}: no page errors`, pageErrors.length === 0, pageErrors);
+        const egress = unexpectedEgress(blocked, stack ? await stack.deniedEgress() : []);
+        check(`${label}: no unexpected intercepted outbound attempt`, egress.length === 0, egress);
         await context.close();
     };
-    await run(true);
-    await run(false);
+    await run();
 } finally {
     await browser.close();
-    await stack.stop();
+    await stack?.stop();
     console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
+    if (results.some((ok) => !ok)) {
+        process.exitCode = 1;
+    }
 }

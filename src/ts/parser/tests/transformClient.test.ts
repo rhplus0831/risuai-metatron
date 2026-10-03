@@ -15,7 +15,6 @@ type Reply = { status?: number; body: unknown };
 type Handler = (path: string, body: any) => Reply | Promise<Reply>;
 
 const state = vi.hoisted(() => ({
-    flag: true,
     current: null as { chaId: string; chatId: string } | null,
     chats: new Map<string, { message: { chatId: string }[]; bindedPersona?: string }>(),
     held: new Set<string>(),
@@ -57,7 +56,6 @@ vi.mock("../../storage/chatStore.svelte", async () => {
         },
     };
 });
-vi.mock("../../storage/clientFlags", () => ({ readClientFlag: () => state.flag }));
 vi.mock("../../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
     return { CharEmotion: writable({}), DBState: { db: {} } };
@@ -156,7 +154,6 @@ let frames: FrameRequestCallback[] = [];
 
 beforeEach(() => {
     vi.useFakeTimers();
-    state.flag = true;
     state.preset = "preset-1";
     state.persona = "persona-1";
     state.bound = undefined;
@@ -182,11 +179,8 @@ afterEach(() => {
 });
 
 describe("captureTransform", () => {
-    it("answers null with the flag off, for a chat the server has not stored, and without a preset or persona", () => {
+    it("answers null for a chat the server has not stored, and without a preset or persona", () => {
         const ref = newChat();
-        state.flag = false;
-        expect(captureTransform(0)).toBeNull();
-        state.flag = true;
         state.held.delete(key(ref));
         expect(captureTransform(0)).toBeNull();
         state.held.add(key(ref));

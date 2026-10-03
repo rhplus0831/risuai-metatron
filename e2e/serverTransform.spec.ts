@@ -4,7 +4,7 @@ import { expect, test, type BrowserContext, type Page, type Route } from "@playw
 import { openApp } from "../util/playwright/stack.mjs";
 
 // Phase 5 slice 13b (`docs/plan/phases/slices/phase-5-server-side-processing/script-transform.md`):
-// the server script transform with the client flag `risu.serverTransform` on, in the mounted chat
+// the server script transform (the only script path since the Phase 5 cutover), in the mounted chat
 // screen of the real app, against the isolated stack of `playwright.config.ts`. What only the whole
 // stack shows:
 // - a send renders its reply raw while it streams and transforms it once when the lock ends, in each
@@ -64,7 +64,6 @@ interface Session {
 }
 
 async function session(context: BrowserContext, baseURL: string): Promise<Session> {
-    await context.addInitScript(() => localStorage.setItem("risu.serverTransform", "1"));
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(String(error).slice(0, 300)));

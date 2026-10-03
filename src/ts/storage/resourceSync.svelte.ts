@@ -1176,6 +1176,55 @@ async function haltForRestore() {
     location.reload();
 }
 
+/** How long `watchForRestore` reads, how often, and how long one read may take. */
+const RESTORE_WATCH_MS = 120_000;
+const RESTORE_POLL_MS = 1_000;
+const RESTORE_READ_MS = 5_000;
+let restoreWatch: Promise<boolean> | null = null;
+
+/**
+ * A server job of this tab ended because a restore or import is replacing the data (its
+ * `maintenance` terminal, which comes before the replacement): reads one small record every second
+ * until the server answers with another epoch, which `getResource`'s epoch check turns into
+ * `haltForRestore` (the restore notice and a reload). An answer with the old epoch, the maintenance
+ * 503, a network failure, and a read that takes over 5 s keep it waiting (a late answer with the
+ * new epoch still halts through the same check); a maintenance that replaced nothing ends the watch
+ * after two minutes, however its reads hang. Writes need no pause meanwhile: each names the epoch it was based on, so one
+ * after the replacement is refused (412) and halts too. One watch at a time; resolves true when the
+ * data was replaced (or saving had already halted).
+ */
+export function watchForRestore(): Promise<boolean> {
+    if (halted) {
+        return Promise.resolve(true);
+    }
+    restoreWatch ??= (async () => {
+        try {
+            const until = Date.now() + RESTORE_WATCH_MS;
+            while (Date.now() < until && !halted) {
+                await new Promise((resolve) => setTimeout(resolve, RESTORE_POLL_MS));
+                const read = getResource(SECTION_KIND.ui, "main").then(
+                    () => false,
+                    (error) => error instanceof ResourceEpochMismatchError,
+                );
+                const budget = Math.max(0, Math.min(RESTORE_READ_MS, until - Date.now()));
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                const timedOut = new Promise<false>((resolve) => {
+                    timer = setTimeout(() => resolve(false), budget);
+                });
+                const replaced = await Promise.race([read, timedOut]);
+                clearTimeout(timer);
+                if (replaced) {
+                    return true;
+                }
+            }
+            return halted;
+        } finally {
+            restoreWatch = null;
+        }
+    })();
+    return restoreWatch;
+}
+
 type RemoteItem = { kind: string; id: string; revision: string | null; data: unknown };
 
 /**

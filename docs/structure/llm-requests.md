@@ -12,11 +12,10 @@
   - auxiliary-model routing,
   - the model-picker UI.
 - Paths:
-  - `src/ts/process/request/*` (including `openAI/`, `tests/`)
+  - `src/ts/process/request/*` (including `openAI/` and `tests/`, with the test-only `tests/oracle/`)
   - `server/src/llm/**`, `server/src/routes/llm.ts` (the server request layer, Phase 5)
   - `shared/llm/**` (the static catalogue and the `/api/llm/request` contract)
   - `src/ts/model/*`
-  - `src/ts/process/models/{nai,local,modelString}.ts`
   - `src/ts/process/webllm.ts`
   - `src/ts/horde/getModels.ts`
   - `src/ts/tokenizer.ts`, `shared/tokenizerChoice.ts`, `shared/prompt/chatTokens.ts`
@@ -45,10 +44,10 @@
 - `model/ooba.ts`: re-exports `OobaChatCompletionRequestParams` from `shared/settings.ts`.
 - `model/modelGrid.ts`: UI types.
 - `request/request.ts`: request entry points.
-  - `requestChatData(arg, mode, abortSignal)`: the public entry. Handles fallback models, retries, plugin before/after replacers, `runTrigger('request')`, escaping, blank-response fallback, and attribution, in the tab.
+  - `requestChatData(arg, mode, abortSignal)`: the public entry. Handles fallback models, retries, plugin before/after replacers, escaping, blank-response fallback, and attribution, in the tab. The character's `request` trigger runs only for a server job's requests (Phase 5 cutover): the tab's own requests go out without it.
   - `requestChatDataMain`: picks the model; `LLMFormat.Plugin` and `LLMFormat.WebLLM` run here (`requestPlugin`, `requestWebLLM`, after `reformater`), every other format goes to the server through `requestServer`.
 - `request/transport.ts` `requestServer(arg, mode, abortSignal, modelInfo)` (Phase 5 slice 7a): the client half of `POST /api/llm/request`. It reads the context ids before any await (the preset and persona of `arg.pluginContext` or the selection, the persona `getUserName()` reads, the selected character, the replying character, the main model's tokenizer and image input, the legacy plugin tokenizer), awaits `flushResources()` (a refused flush fails the request), collects the remembered tool calls the prompt names (`decodeToolCall` per `<tool_call>` marker), and posts the caller's serializable arguments (`REQUEST_ARG_KEYS`), the tool descriptors, a dynamic model's descriptor, and `channelCall` (the job callback running in this tab, `channelCallSource.ts`). It reads the SSE events in order: `log` → the request log (`appendFetchLog`), `notice` → `alertError`, `inlay` and `toolRecord` → the inlay helpers and `encodeToolCall`, finished before any later event; `callback` (`mcpTool` → `callTool`, `cbs` → `risuChatParserScoped` with the request's preset and persona) answered without holding the stream, a computed answer resent rather than rerun; `result`, or `streaming` with `chunk` deltas rebuilt into cumulative snapshots (`chunkText` for OobaLegacy's string chunks) and `end`/`error`. A stream that ends without a terminal is a failure; cancelling the returned stream aborts the request.
-- The client provider modules (`request/{anthropic,google}.ts`, `request/openAI/*`, `process/models/nai.ts`, `process/stringlize.ts`) are no longer on the send path; they stay, with their tests, until `cutover-and-docs`.
+- The former client provider modules are kept only as test oracles in `request/tests/oracle/` (`anthropic.ts`, `google.ts`, `openAI/*`; no production importer; `serverParity.test.ts` and `requests.responses.test.ts` compare the server port with them; removed in Phase 6). `process/models/nai.ts` was removed at the cutover; `process/stringlize.ts` stays (`unstringlizeChat` for the tab's plugin provider path).
 - `server/src/llm/` (Phase 5 slice 7a): the Node port of the request layer. `request.ts` `requestChatDataMain(arg, mode, ctx)` (the model, the argument defaults, the reverse-proxy and custom-model overrides, `reformater`, the per-format functions; `Plugin`, a plugin provider model, is called in the job's tab for a job's request (`RequestContext.pluginProvider`, slice 11b: `requestPlugin` builds the argument with `applyParameters` from the job's settings; the answer is text, a stream of cumulative text, or a failure); `WebLLM`, a local Transformers.js generation model, runs in the server's model process for a job's request (`RequestContext.localGeneration`, slice 10); both fail for a tab's request, which never sends them, and a tab's `dynamic_` model is refused for a job), `shared.ts`, `additionalParams.ts`, `anthropic.ts`, `google.ts`, `openAI/*`, `nai.ts`, `stringlize.ts`, `jsonSchema.ts`, `chatTemplate.ts`, `openrouter.ts` (`getFreeOpenRouterModels`), `messages.ts` (the English `language` strings), `util.ts`. Each function reads its database, names, transport, tokenizer, CBS parser, tool seam, inlay writers, and interceptor from the request's `RequestContext` (`context.ts`), threaded as `arg.ctx`.
   - `settings.ts` `loadRequestDb(store, kinds, ids)`: `RequestDb` (the `providers` and `llmSecrets` sections, the preset's fields under their root names through `presetFieldValue`, its `proxyKey`, the selected persona's `username`/`personaPrompt`, `ui.autoSuggestPrefix`, `customModels` with each model's `key` merged from `llmSecrets.customModels` (slice 7b; the stored custom models carry no key)) and the names of the two characters and the effective persona, from one store read. A missing preset or persona throws `RequestTargetGoneError` (never a redirect).
   - `transport.ts`: `globalFetch` (`fetchBuffered`, answering as `fetchWithProxy` does) and `fetchNative` (`fetchStream`) without the browser routing: every fetch goes from the server to the provider; the local-network timeout and the interceptor hook stay; log entries are built as the client builds them.
@@ -63,17 +62,7 @@
   - `applyParameters`: global parameters, or per-mode `seperateParameters` when enabled.
   - `getAdditionalParameters`/`applyAdditionalParameters`: user body/header overrides.
 - `request/additionalParams.ts`: relaxed JSON parser.
-- `request/openAI/requests.ts`: `requestOpenAI` (chat completions, Mistral, NanoGPT), `requestOpenAILegacyInstruct`, `getTranStream` (SSE), and `wrapToolStream`.
-- `request/openAI/responses.ts`: `requestOpenAIResponseAPI`, `buildResponsesBody`, `buildResponseInputItems`, and `getResponsesTranStream`.
-- `request/openAI/types.ts`: wire types.
-- `request/openAI/shared.ts`: `getLocalNetworkRequestOptions`.
-- `request/openAI/index.ts`: barrel.
-- `request/anthropic.ts`:
-  - `requestClaude`: Anthropic, Ollama-Anthropic, and AWS Bedrock with signing.
-  - `requestClaudeHTTP`: SSE parsing, thinking → `<Thoughts>`, and the tool loop.
-- `request/google.ts`: `requestGoogleCloudVertex` (Gemini and Vertex, with OAuth refresh), `getTranStream`, and handling of thought signatures and tools.
-- `process/models/nai.ts`: NovelAI serialization and `NovelAIBadWordIds`.
-- `process/models/modelString.ts`: display labels.
+- `request/tests/oracle/` (test only): the former client adapters `openAI/requests.ts` (`requestOpenAI`, `requestOpenAILegacyInstruct`, `getTranStream`, `wrapToolStream`), `openAI/responses.ts` (`requestOpenAIResponseAPI` and its builders), `anthropic.ts` (`requestClaude`, Bedrock signing), and `google.ts` (`requestGoogleCloudVertex`). The live copies are the server's (`server/src/llm/`).
 - `process/webllm.ts`: MLC WebLLM engine, used by Hypa summarization.
 - `shared/tokenizerChoice.ts` `selectTokenizer({ aiModel, customTokenizer, pluginTokenizer, modelTokenizer, googleClaudeTokenizing })`: which tokenizer family counts a model's text (`openrouter`/`reverse_proxy` by `customTokenizer`, a legacy plugin `custom` model by its declared tokenizer, else the catalogue family; `Llama3`, `Local`, and `Unknown` count with `cl100k_base`), shared by the client's `encode` and the server counter (`server/src/prompt/tokens.ts`), so the two route alike.
 - `shared/prompt/chatTokens.ts` `ChatTokenCounter`: a prompt's token arithmetic (message text plus `chatAdditionalTokens`, the name, thoughts, and the image tile formula) over an injected encoder.
@@ -85,8 +74,8 @@
 
 ## Flows
 
-0. Every provider call except a plugin provider and WebLLM runs on the server: the tab's `requestChatData` loop calls `requestChatDataMain`, which hands the request to `requestServer`; the server reads the settings and credentials by the ids it is sent, runs its `requestChatDataMain`, and streams the answer back. The steps below describe both copies.
-1. Callers invoke `requestChatData`. They include `sendChat`, the translator (`'translate'`), memory (`'memory'`), emotion, triggers and Lua (`runLLM`), `Suggestion.svelte`, MCP `aiaccess`, `IrisModal` (`'otherAx'`), and the playground. Plugin v3 `runLLMModel` calls `requestChatDataMain` directly.
+0. Every provider call except a plugin provider and WebLLM runs on the server: the tab's `requestChatData` loop calls `requestChatDataMain`, which hands the request to `requestServer`; the server reads the settings and credentials by the ids it is sent, runs its `requestChatDataMain`, and streams the answer back. A server job calls the server's outer loop directly (`outer.ts`). The steps below describe the server copy.
+1. The tab's callers invoke `requestChatData`: the translator (`'translate'`), the HypaV3 modal's summaries (`'memory'`), `Suggestion.svelte`, MCP `aiaccess`, `IrisModal` (`'otherAx'`), image prompts (`stableDiff.ts`), and the playground. Plugin v3 `runLLMModel` calls `requestChatDataMain` directly. A send, memory, emotion, triggers, and Lua (`runLLM`) request from the server job.
 2. `requestChatDataMain` resolves the model:
    1. `staticModel`.
    2. Mode `model` → `db.aiModel`.
@@ -132,7 +121,7 @@
   - Treat these as trusted user configuration.
 - Configured provider URLs are fetched from the server, so `localhost` is the server's (in Docker, the container's: use `host.docker.internal` or the host's address).
 - `requestChatDataMain` mutates its argument object. Do not reuse it after the call.
-- A provider change goes into the server copy (`server/src/llm/`); the client copies are frozen until cutover. The server copy reads nothing outside `arg.ctx` and its arguments.
+- A provider change goes into the server copy (`server/src/llm/`); the former client copies are test oracles only. The server copy reads nothing outside `arg.ctx` and its arguments.
 - Nothing the tab receives from `/api/llm/request` but a model's answer (results, chunks) skips `redact.ts`; a model's answer is not redacted (it would rewrite URLs in the text).
 - On the server an unhandled promise rejection ends the process: a fire-and-forget promise in a ported adapter (a `pipeTo`, a `fetch`) must catch.
 

@@ -31,8 +31,8 @@
   - `startObserveDom`: idempotent. Adds one `document` `contextmenu` delegate (Copy/Download menu for `x-hl-lang` code blocks) and a `MutationObserver` on `document.body` that syncs BGM from `risu-ctrl="bgm___<volume|auto>___<src>"` markers.
   - BGM: one track at a time. When nothing is playing, it starts the first marker in document order (the newest message, since the chat body is column-reversed). A playing track keeps playing while its marker stays in the DOM, even if a newer marker appears, and replays on `ended`. It stops `BGM_STOP_GRACE_MS` (1 s) after its marker is gone.
   - BGM failures: an autoplay block (`NotAllowedError`) pauses all BGM until the next activating `pointerup`/`keydown` (touch grants activation only on release). A source or media error skips only that marker, so another marker can still play; it is not retried on gestures, only after the marker has been missing from the DOM for more than 1 s and appears again.
-  - `registerClaudeObserver`: Claude cache keep-alive pings, called from `process/request/anthropic.ts`.
-- `src/ts/mutex.ts` `Mutex`: FIFO lock used by the scripting engines. `runExclusive` must keep its `finally` release.
+  - `registerClaudeObserver`: Claude cache keep-alive pings. Since the Phase 5 cutover no production code calls it: the server's Claude adapter keeps its own observer (`server/src/llm/claudeObserver.ts`), and the browser function stays for the parity tests (`process/request/tests/serverParity.test.ts`).
+- `src/ts/mutex.ts` `Mutex`: FIFO lock. Its users were the browser scripting engines, removed at the Phase 5 cutover, so nothing in production imports it now. `runExclusive` must keep its `finally` release.
 - `src/lib/UI/MainMenu.svelte`: home screen. Switches to `RealmMain` via `OpenRealmStore`. Renders `hubAdditionalHTML` with `{@html}`.
 - `src/lib/UI/Title.svelte`: seasonal logo and mini-game. Only used by MainMenu.
 
@@ -78,7 +78,7 @@ All of these live in `src/ts/stores.svelte.ts`.
   - `PlaygroundStore`, `OpenRealmStore`, `RealmInitialOpenChar`.
   - `CharConfigSubMenu`, `botMakerMode`.
 - Reload signals:
-  - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetScriptCache`.
+  - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetTransformEffects` (the script transform's applied emotions, `cbs-rendering.md`).
   - `ReloadChatPointer`.
   - `selIdState`: rune mirror of `selectedCharID`.
 - Overlays: `alertStore`, `popupStore`, `popUpEditorStore`, `easyPanelStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, `customSideBarConfigDialogStore`, `QuickSettings`.
@@ -126,7 +126,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 - None cover boot, screen precedence, platform detection, hotkeys, `registerClaudeObserver`, or `Mutex`.
 - `src/ts/observer.test.ts` covers `startObserveDom` under happy-dom with an `Audio` stub and fake timers: BGM marker parsing, selection, grace stop, failure and autoplay retry policy, and the delegated code-block menu. Mutation records are delivered with `takeRecords()` because happy-dom's own timer is not faked.
-- Some tests mock `stores.svelte` and `platform` (parser tests, `scriptings.test.ts`, `requests.responses.test.ts`). They exercise consumers, not these modules.
+- Some tests mock `stores.svelte` and `platform` (parser tests, `requests.responses.test.ts`). They exercise consumers, not these modules.
 
 ## Known Hazards
 

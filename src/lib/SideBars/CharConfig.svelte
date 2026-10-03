@@ -69,7 +69,7 @@
     import { registerOnnxModel } from "src/ts/process/transformers";
     import MultiLangInput from "../UI/GUI/MultiLangInput.svelte";
     import { applyModule } from "src/ts/process/modules";
-    import { exportRegex, importRegex } from "src/ts/process/scripts";
+    import { exportRegex, importRegex } from "src/ts/process/regexFiles";
     import { markCharactersDirty } from "src/ts/storage/resourceSync.svelte";
     import SliderInput from "../UI/GUI/SliderInput.svelte";
     import Toggles from "./Toggles.svelte";

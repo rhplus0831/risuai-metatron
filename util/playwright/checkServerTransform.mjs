@@ -1,17 +1,16 @@
-// Browser check for Phase 5 slice 13: with the client flag `risu.serverTransform` on, the display
-// transform of a chat runs through `POST /api/transform`: the rendered messages equal the browser
-// path's (flag off) for a chat with `editdisplay` regex scripts, a Lua `editDisplay` listener that
-// sets a chat variable, and a display trigger; the variable is not stored (rendering is read-only);
+// Browser check for Phase 5 slice 13: the display transform of a chat runs through
+// `POST /api/transform` for a chat with `editdisplay` regex scripts, a Lua `editDisplay` listener
+// that sets a chat variable, and a display trigger (the expected text is checked; since the cutover
+// there is no browser path to compare with): the variable is not stored (rendering is read-only);
 // a streamed reply renders raw while it streams and transformed after; "Re-render" bypasses the
 // cache (a server-evaluated `{{random}}` changes); a tab plugin `editdisplay` handler runs between the
-// two calls; the HypaV3 modal's `editprocess` runs on the server. With the flag off, no transform
-// request is made.
+// two calls; the HypaV3 modal's `editprocess` runs on the server.
 //
 // Usage: node util/playwright/checkServerTransform.mjs
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, startStack } from "./stack.mjs";
+import { chromePath, isolateContext, startStack, unexpectedEgress } from "./stack.mjs";
 
 const results = [];
 const check = (name, ok, detail) => {
@@ -50,13 +49,11 @@ const stack = await startStack({
     log: process.env.DEBUG ? (text) => process.stderr.write(text) : undefined,
 });
 const browser = await chromium.launch({ executablePath: chromePath, headless: true });
-const rendered = {};
 try {
-    const run = async (flagOn) => {
+    const run = async () => {
         const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-        if (flagOn) {
-            await context.addInitScript(() => localStorage.setItem("risu.serverTransform", "1"));
-        }
+        // Only the app and the local mocks: anything else is refused and counted (`stack.mjs`).
+        const blocked = await isolateContext(context);
         const page = await context.newPage();
         const pageErrors = [];
         page.on("pageerror", (e) => pageErrors.push(String(e).slice(0, 300)));
@@ -102,7 +99,7 @@ try {
             requests
                 .filter((r) => r.method === "POST" && new URL(r.url).pathname.startsWith("/api/transform"))
                 .map((r) => ({ path: new URL(r.url).pathname, body: JSON.parse(r.body) }));
-        const label = flagOn ? "flag on" : "flag off";
+        const label = "server";
         await open();
         const ui = (await api("/api/resources/ui/main")).body;
         epoch = ui.epoch ?? epoch;
@@ -229,10 +226,6 @@ try {
         const bodyText = () => page.evaluate(() => document.body.innerText);
         const text = await bodyText();
         const lines = (needle) => text.split("\n").filter((line) => line.includes(needle));
-        rendered[label] = {
-            greeting: lines("greeting"),
-            user: lines("user"),
-        };
         check(`${label}: the greeting is transformed`, text.includes("HELLO greeting EMO [lua-1]"), lines("greeting"));
         check(
             `${label}: a message is transformed`,
@@ -248,76 +241,69 @@ try {
             ).body?.chats?.[0]?.data;
         await page.waitForTimeout(1500);
         const state = (await storedChat())?.scriptstate ?? {};
-        if (flagOn) {
-            check("flag on: transform requests were made", transformPosts().length > 0, transformPosts().length);
-            check("flag on: the Lua variable was not stored", state.$lv === undefined, state);
-        } else {
-            check("flag off: no transform request", transformPosts().length === 0, transformPosts());
-            check("flag off: the Lua variable was stored, as today", state.$lv === "7", state);
-        }
+        check("server: transform requests were made", transformPosts().length > 0, transformPosts().length);
+        check("server: the Lua variable was not stored", state.$lv === undefined, state);
 
-        if (flagOn) {
-            // "Re-render" bypasses the cache: the server-evaluated {{random}} changes in a few tries.
-            const before = lines("Plain");
-            const values = new Set(before);
-            const menuItem = async () => {
-                // The item is in the row's popup menu.
-                const row = page.locator(".risu-chat").filter({ hasText: "Plain" }).last();
-                await row.hover();
-                await row.locator(".button-icon-menu").first().click();
-                const button = page.locator(".button-icon-rerender").last();
-                await button.waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
-                if ((await button.count()) === 0) {
-                    return false;
-                }
-                await button.click({ force: true });
-                return true;
-            };
-            let clicked = false;
-            for (let i = 0; i < 4; i++) {
-                requests.length = 0;
-                clicked = (await menuItem()) || clicked;
-                await page.waitForTimeout(1500);
-                const now = (await bodyText()).split("\n").filter((line) => line.includes("Plain"));
-                now.forEach((line) => values.add(line));
+        // "Re-render" bypasses the cache: the server-evaluated {{random}} changes in a few tries.
+        const before = lines("Plain");
+        const values = new Set(before);
+        const menuItem = async () => {
+            // The item is in the row's popup menu.
+            const row = page.locator(".risu-chat").filter({ hasText: "Plain" }).last();
+            await row.hover();
+            await row.locator(".button-icon-menu").first().click();
+            const button = page.locator(".button-icon-rerender").last();
+            await button.waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
+            if ((await button.count()) === 0) {
+                return false;
             }
-            check("flag on: the Re-render item exists", clicked);
-            check("flag on: Re-render changes a server-evaluated {{random}}", values.size > 1, [...values]);
-
-            // A tab plugin editdisplay handler runs between the two calls.
+            await button.click({ force: true });
+            return true;
+        };
+        let clicked = false;
+        for (let i = 0; i < 4; i++) {
             requests.length = 0;
-            await page.evaluate(async () => {
-                const { pluginHooks } = await import("/src/ts/plugins/pluginHooks.ts");
-                pluginHooks.editdisplay.add((text) => text + " +plugin");
-                const { ReloadGUIPointer } = await import("/src/ts/stores.svelte.ts");
-                ReloadGUIPointer.update((v) => v + 1);
-            });
-            await page.waitForTimeout(2500);
-            const posts = transformPosts();
-            check(
-                "flag on: a plugin handler makes two calls",
-                posts.some((p) => p.path === "/api/transform" && p.body.handlers) &&
-                    posts.some((p) => p.path === "/api/transform/continue"),
-                posts.map((p) => p.path),
-            );
-            check("flag on: the handler's text is rendered", (await bodyText()).includes("+plugin"), lines("+plugin"));
-            await page.evaluate(async () => {
-                const { pluginHooks } = await import("/src/ts/plugins/pluginHooks.ts");
-                pluginHooks.editdisplay.clear();
-            });
-
-            // HypaV3's editprocess runs on the server.
-            requests.length = 0;
-            const processed = await page.evaluate(async () => {
-                const { processRegexScript } = await import("/src/lib/Others/HypaV3Modal/utils.ts");
-                return (await processRegexScript({ role: "char", data: "PROC here", chatId: "x" }, 1)).data;
-            });
-            check(
-                "flag on: HypaV3 editprocess on the server",
-                processed === "PROCESSED here" && transformPosts().some((p) => p.body.mode === "editprocess"),
-                [processed, transformPosts().map((p) => p.body.mode)],
-            );
+            clicked = (await menuItem()) || clicked;
+            await page.waitForTimeout(1500);
+            const now = (await bodyText()).split("\n").filter((line) => line.includes("Plain"));
+            now.forEach((line) => values.add(line));
         }
+        check("server: the Re-render item exists", clicked);
+        check("server: Re-render changes a server-evaluated {{random}}", values.size > 1, [...values]);
+
+        // A tab plugin editdisplay handler runs between the two calls.
+        requests.length = 0;
+        await page.evaluate(async () => {
+            const { pluginHooks } = await import("/src/ts/plugins/pluginHooks.ts");
+            pluginHooks.editdisplay.add((text) => text + " +plugin");
+            const { ReloadGUIPointer } = await import("/src/ts/stores.svelte.ts");
+            ReloadGUIPointer.update((v) => v + 1);
+        });
+        await page.waitForTimeout(2500);
+        const posts = transformPosts();
+        check(
+            "server: a plugin handler makes two calls",
+            posts.some((p) => p.path === "/api/transform" && p.body.handlers) &&
+                posts.some((p) => p.path === "/api/transform/continue"),
+            posts.map((p) => p.path),
+        );
+        check("server: the handler's text is rendered", (await bodyText()).includes("+plugin"), lines("+plugin"));
+        await page.evaluate(async () => {
+            const { pluginHooks } = await import("/src/ts/plugins/pluginHooks.ts");
+            pluginHooks.editdisplay.clear();
+        });
+
+        // HypaV3's editprocess runs on the server.
+        requests.length = 0;
+        const processed = await page.evaluate(async () => {
+            const { processRegexScript } = await import("/src/lib/Others/HypaV3Modal/utils.ts");
+            return (await processRegexScript({ role: "char", data: "PROC here", chatId: "x" }, 1)).data;
+        });
+        check(
+            "server: HypaV3 editprocess on the server",
+            processed === "PROCESSED here" && transformPosts().some((p) => p.body.mode === "editprocess"),
+            [processed, transformPosts().map((p) => p.body.mode)],
+        );
 
         // A streamed reply: raw while it streams (flag on), the transform after.
         requests.length = 0;
@@ -331,13 +317,11 @@ try {
             .waitFor({ timeout: 20000 })
             .catch(() => {});
         const mid = (await bodyText()).split("\n").filter((line) => line.includes("slow"));
-        if (flagOn) {
-            check(
-                "flag on: a streaming reply shows raw text",
-                mid.some((line) => line.includes("Hello slow") && !line.includes("HELLO")),
-                mid,
-            );
-        }
+        check(
+            "server: a streaming reply shows raw text",
+            mid.some((line) => line.includes("Hello slow") && !line.includes("HELLO")),
+            mid,
+        );
         await page
             .getByText("reply.")
             .first()
@@ -352,18 +336,19 @@ try {
         );
 
         check(`${label}: no page errors`, pageErrors.length === 0, pageErrors);
+
+        const egress = unexpectedEgress(blocked, stack ? await stack.deniedEgress() : []);
+
+        check(`${label}: no unexpected intercepted outbound attempt`, egress.length === 0, egress);
         await context.close();
     };
-    await run(true);
-    await run(false);
-    check(
-        "the greeting and the message render the same on both paths",
-        JSON.stringify(rendered["flag on"]) === JSON.stringify(rendered["flag off"]),
-        rendered,
-    );
+    await run();
 } finally {
     await browser.close();
     await stack.stop();
     provider.close();
     console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
+    if (results.some((ok) => !ok)) {
+        process.exitCode = 1;
+    }
 }

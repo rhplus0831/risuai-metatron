@@ -1,31 +1,29 @@
-// Browser check for Phase 5 slice 9: with the client flag `risu.serverGeneration` on, a send from the
-// chat input runs as a server job against a mock provider (an OpenAI-compatible SSE stream): the
+// Browser check for Phase 5 slice 9: a send from the chat input runs as a server job against a mock provider (an OpenAI-compatible SSE stream): the
 // browser posts the job with the input and its user message id, the user message and the streamed
 // reply show and are stored, a continue extends the reply, a settings edit made right before a
 // preview reaches the assembled prompt (the pre-send flush), an abort keeps the text so far, and a
-// reload in the middle of a slow stream shows the checkpointed text and then the whole reply. With the
-// flag off, a send runs in the browser as before (no job).
+// reload in the middle of a slow stream shows the checkpointed text and then the whole reply; the
+// messages render through the server transform.
 //
 // Usage:
 //   node util/playwright/checkServerSend.mjs
 //       dev: starts an isolated stack (`stack.mjs`).
 //   node util/playwright/checkServerSend.mjs --base http://localhost:6197 --password docker-pw \
-//       --provider-host host.docker.internal [--transform]
+//       --provider-host host.docker.internal
 //       production: a server already running the built app (e.g. the Docker image; a fresh volume's
 //       password is set by the check). The mock provider listens on every interface and the preset
-//       names it by `--provider-host`. The continue, preview, and abort steps need the dev modules
-//       and are skipped. `--transform` also turns `risu.serverTransform` on (rendering on the server).
+//       names it by `--provider-host`. The preview step needs the dev modules (a DevTool function)
+//       and is skipped; the continue and the abort go through the chat screen in both modes.
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, startStack } from "./stack.mjs";
+import { chromePath, isolateContext, startStack, unexpectedEgress } from "./stack.mjs";
 
 const args = process.argv.slice(2);
 const option = (name) => {
     const i = args.indexOf(name);
     return i >= 0 ? args[i + 1] : undefined;
 };
-const withTransform = args.includes("--transform");
 const results = [];
 const check = (name, ok, detail) => {
     results.push(ok);
@@ -69,17 +67,13 @@ const stack = option("--base")
       });
 const base = option("--base") ?? stack.baseURL;
 const password = option("--password") ?? "playwright";
-console.log(`mode: ${stack ? "dev" : "production"} at ${base}${withTransform ? ", server transform on" : ""}`);
+console.log(`mode: ${stack ? "dev" : "production"} at ${base}`);
 const browser = await chromium.launch({ executablePath: chromePath, headless: true });
 try {
-    const run = async (flagOn) => {
+    const run = async () => {
         const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-        if (flagOn) {
-            await context.addInitScript((transform) => {
-                localStorage.setItem("risu.serverGeneration", "1");
-                if (transform) localStorage.setItem("risu.serverTransform", "1");
-            }, withTransform);
-        }
+        // Only the app and the local mocks: anything else is refused and counted (`stack.mjs`).
+        const blocked = await isolateContext(context);
         const page = await context.newPage();
         const pageErrors = [];
         page.on("pageerror", (e) => pageErrors.push(String(e).slice(0, 300)));
@@ -121,7 +115,7 @@ try {
             });
             return { status: r.status, body: await r.json().catch(() => null) };
         };
-        const label = flagOn ? "flag on" : "flag off";
+        const label = "server";
         await open();
         const ui = (await api("/api/resources/ui/main")).body;
         epoch = ui.epoch ?? epoch;
@@ -171,7 +165,13 @@ try {
             method: "POST",
             body: JSON.stringify({
                 ops: [
-                    { kind: "ui", id: "main", baseRevision: ui.revision, data: { ...ui.data, didFirstSetup: true } },
+                    {
+                        kind: "ui",
+                        id: "main",
+                        baseRevision: ui.revision,
+                        // "Say nothing" off: a continue from an empty input appends "*says nothing*" first otherwise.
+                        data: { ...ui.data, didFirstSetup: true, useSayNothing: false },
+                    },
                     {
                         kind: "presets",
                         id: "main",
@@ -206,6 +206,14 @@ try {
             requests
                 .filter((r) => r.method === "POST" && new URL(r.url).pathname === "/api/generations")
                 .map((r) => JSON.parse(r.body));
+        // The tab's send has ended: the cancel button (shown while `doingChat`) is gone.
+        const waitIdle = async (ms = 30000) => {
+            for (const until = Date.now() + ms; Date.now() < until;) {
+                if ((await page.locator('button[aria-labelledby="cancel"]').count()) === 0) return true;
+                await page.waitForTimeout(250);
+            }
+            return false;
+        };
 
         // A send from the chat input.
         requests.length = 0;
@@ -235,49 +243,38 @@ try {
             JSON.stringify(upstream.at(-1)?.messages ?? []).includes("Hello there"),
             upstream.at(-1)?.messages,
         );
-        if (flagOn) {
-            const posts = jobPosts();
-            check(
-                "flag on: a send job with the input and its user message id",
-                posts.length === 1 &&
-                    posts[0].kind === "send" &&
-                    posts[0].context.input === "Hello there" &&
-                    stored[0]?.chatId === posts[0].context.userMessageId,
-                posts,
-            );
-        } else {
-            check("flag off: no job was posted", jobPosts().length === 0, jobPosts());
-        }
+        const posts = jobPosts();
+        check(
+            "server: a send job with the input and its user message id",
+            posts.length === 1 &&
+                posts[0].kind === "send" &&
+                posts[0].context.input === "Hello there" &&
+                stored[0]?.chatId === posts[0].context.userMessageId,
+            posts,
+        );
 
-        if (flagOn && withTransform) {
-            check(
-                "flag on: the messages were rendered through the server transform",
-                requests.some((r) => r.method === "POST" && new URL(r.url).pathname === "/api/transform"),
-            );
-        }
-        if (flagOn && stack) {
-            // A continue (the browser's `sendChat(-1, { continue })`, as `sendMain(true)` makes it).
-            requests.length = 0;
-            mode = { chunks: [" And", " more."], delayMs: 50 };
-            const continued = await page.evaluate(
-                async (target) => {
-                    const proc = await import("/src/ts/process/index.svelte.ts");
-                    const ok = await proc.sendChat(-1, { target, continue: true });
-                    proc.doingChat.set(false);
-                    return ok;
-                },
-                { chaId, chatId: await storedChatId() },
-            );
-            await page.waitForTimeout(1500);
-            stored = await storedMessages();
-            check(
-                "flag on: continue extends the reply",
-                continued && stored.at(-1)?.data === "Mock reply. And more." && stored.length === 2,
-                [continued, stored.map((m) => m.data)],
-            );
-            check("flag on: continue ran as a job", jobPosts()[0]?.kind === "continue", jobPosts());
+        check(
+            "server: the messages were rendered through the server transform",
+            requests.some((r) => r.method === "POST" && new URL(r.url).pathname === "/api/transform"),
+        );
+        // A continue from the chat menu ("Continue Response", `sendMain(true)`).
+        requests.length = 0;
+        mode = { chunks: [" And", " more."], delayMs: 50 };
+        await page.locator(".button-icon-send + button").first().click();
+        await page.getByText("Continue Response", { exact: true }).first().click();
+        await waitIdle();
+        await page.waitForTimeout(1500);
+        stored = await storedMessages();
+        check(
+            "server: continue extends the reply",
+            stored.at(-1)?.data === "Mock reply. And more." && stored.length === 2,
+            stored.map((m) => m.data),
+        );
+        check("server: continue ran as a job", jobPosts()[0]?.kind === "continue", jobPosts());
 
-            // A settings edit right before a preview reaches the prompt (the flush comes first).
+        if (stack) {
+            // A settings edit right before a preview reaches the prompt (the flush comes first). The
+            // preview is a DevTool function: it needs the dev modules.
             const previewHead = await page.evaluate(async () => {
                 const stores = await import("/src/ts/stores.svelte.ts");
                 const proc = await import("/src/ts/process/index.svelte.ts");
@@ -287,60 +284,54 @@ try {
                 return ok ? proc.previewFormated[0]?.content : null;
             });
             check(
-                "flag on: an edit right before the preview is in its prompt",
+                "server: an edit right before the preview is in its prompt",
                 typeof previewHead === "string" && previewHead.startsWith("Edited main for Send Char"),
                 previewHead,
             );
+        }
 
-            // An abort keeps the text so far.
-            mode = { chunks: ["Slow one. ", "Slow two. ", "Slow three. ", "Slow four."], delayMs: 700 };
-            const aborted = await page.evaluate(
-                async (target) => {
-                    const proc = await import("/src/ts/process/index.svelte.ts");
-                    const controller = new AbortController();
-                    setTimeout(() => controller.abort(), 1800);
-                    const ok = await proc.sendChat(-1, { target, signal: controller.signal });
-                    proc.doingChat.set(false);
-                    return ok;
-                },
-                { chaId, chatId: await storedChatId() },
-            );
-            await page.waitForTimeout(1500);
-            stored = await storedMessages();
-            const last = stored.at(-1)?.data ?? "";
-            check(
-                "flag on: an abort keeps the text so far",
-                aborted === false && last.startsWith("Slow one.") && !last.includes("Slow four."),
-                [aborted, last],
-            );
-        }
-        if (flagOn) {
-            // A reload in the middle of a slow stream: the checkpointed text, then the whole reply.
-            mode = { chunks: ["Part A. ", "Part B. ", "Part C. ", "Part D. ", "Part E. ", "Part F."], delayMs: 900 };
-            await input.fill("Tell me slowly");
-            await input.press("Enter");
-            await page.getByText("Part A.").first().waitFor({ timeout: 20000 });
-            await page.waitForTimeout(3500);
-            await open();
-            await page.locator(`[data-char-id="${chaId}"]`).first().click();
-            await page.getByText("Tell me slowly").first().waitFor({ timeout: 15000 });
-            const midText = (await page.evaluate(() => document.body.innerText)).includes("Part A.");
-            check("flag on: after a reload mid-stream the text so far shows", midText);
-            await page
-                .getByText("Part F.")
-                .first()
-                .waitFor({ timeout: 20000 })
-                .catch(() => {});
-            check("flag on: the reply completes after the reload", (await page.getByText("Part F.").count()) > 0);
-            await page.waitForTimeout(1500);
-            stored = await storedMessages();
-            check(
-                "flag on: the whole reply is stored",
-                stored.at(-1)?.data === "Part A. Part B. Part C. Part D. Part E. Part F.",
-                stored.at(-1)?.data,
-            );
-        }
+        // An abort (the cancel button while the reply streams) keeps the text so far.
+        mode = { chunks: ["Slow one. ", "Slow two. ", "Slow three. ", "Slow four."], delayMs: 700 };
+        await input.fill("Stop me");
+        await input.press("Enter");
+        await page.getByText("Slow one.").first().waitFor({ timeout: 20000 });
+        await page.locator('button[aria-labelledby="cancel"]').first().click();
+        await waitIdle();
+        await page.waitForTimeout(1500);
+        stored = await storedMessages();
+        const last = stored.at(-1)?.data ?? "";
+        check(
+            "server: an abort keeps the text so far",
+            last.startsWith("Slow one.") && !last.includes("Slow four."),
+            last,
+        );
+        // A reload in the middle of a slow stream: the checkpointed text, then the whole reply.
+        mode = { chunks: ["Part A. ", "Part B. ", "Part C. ", "Part D. ", "Part E. ", "Part F."], delayMs: 900 };
+        await input.fill("Tell me slowly");
+        await input.press("Enter");
+        await page.getByText("Part A.").first().waitFor({ timeout: 20000 });
+        await page.waitForTimeout(3500);
+        await open();
+        await page.locator(`[data-char-id="${chaId}"]`).first().click();
+        await page.getByText("Tell me slowly").first().waitFor({ timeout: 15000 });
+        const midText = (await page.evaluate(() => document.body.innerText)).includes("Part A.");
+        check("server: after a reload mid-stream the text so far shows", midText);
+        await page
+            .getByText("Part F.")
+            .first()
+            .waitFor({ timeout: 20000 })
+            .catch(() => {});
+        check("server: the reply completes after the reload", (await page.getByText("Part F.").count()) > 0);
+        await page.waitForTimeout(1500);
+        stored = await storedMessages();
+        check(
+            "server: the whole reply is stored",
+            stored.at(-1)?.data === "Part A. Part B. Part C. Part D. Part E. Part F.",
+            stored.at(-1)?.data,
+        );
         check(`${label}: no page errors`, pageErrors.length === 0, pageErrors);
+        const egress = unexpectedEgress(blocked, stack ? await stack.deniedEgress() : []);
+        check(`${label}: no unexpected intercepted outbound attempt`, egress.length === 0, egress);
         await context.close();
 
         async function storedChatId() {
@@ -349,11 +340,13 @@ try {
             ).body?.chatCollections?.[0]?.chats?.[0]?.id;
         }
     };
-    await run(true);
-    await run(false);
+    await run();
 } finally {
     await browser.close();
     await stack?.stop();
     provider.close();
     console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
+    if (results.some((ok) => !ok)) {
+        process.exitCode = 1;
+    }
 }

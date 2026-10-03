@@ -3,13 +3,69 @@
 // `version.json` are linked and copied in) and the Vite
 // dev server proxying to it. Used by `playwright.config.ts` and the `util/playwright/` scripts.
 import { spawn } from "node:child_process";
-import { copyFile, mkdtemp, rm, symlink } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const chromePath = process.env.RISU_CHROME ?? "/usr/bin/google-chrome";
+
+/** Hosts a check may reach: the app, its server, and the checks' local mocks. */
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0", "host.docker.internal"]);
+
+/**
+ * The server's egress guard for the dev stack (an `--import` preload, the harness only): `fetch` to
+ * a non-local host is refused and the URL appended to `denied`. It is a tripwire, not a boundary: it
+ * sees `fetch` (every provider, hub, and auxiliary call of the server) but not a redirect a local
+ * answer gives, nor Node `http`/`https` requests (the local-network streaming route, Lua's `request`).
+ * The boundary is `offline.sh` (no network but loopback); the checks count the attempts the guard
+ * and `isolateContext` intercepted.
+ */
+function egressGuard(denied) {
+    return `const local = new Set(${JSON.stringify([...LOCAL_HOSTS])});
+const realFetch = globalThis.fetch;
+const { appendFileSync } = await import("node:fs");
+globalThis.fetch = async (input, init) => {
+    const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = new URL(href);
+    if (url.protocol === "data:" || url.protocol === "blob:" || local.has(url.hostname)) return realFetch(input, init);
+    try { appendFileSync(${JSON.stringify(denied)}, url.href + "\\n"); } catch {}
+    throw new TypeError("egress denied by the check harness: " + url.origin);
+};
+`;
+}
+
+/** Refused on purpose, not a failure: the CDN stylesheets the page loads, the home screen's hub listing. */
+const EXPECTED_BLOCKED = new Set(["cdn.jsdelivr.net", "fonts.googleapis.com", "fonts.gstatic.com"]);
+const EXPECTED_DENIED = new Set(["sv.risuai.xyz"]);
+
+/** The refused requests that were not expected (`isolateContext`'s list and the server's `deniedEgress()`). */
+export function unexpectedEgress(blocked, denied = []) {
+    return [
+        ...blocked.filter((href) => !EXPECTED_BLOCKED.has(new URL(href).hostname)),
+        ...denied.filter((href) => !EXPECTED_DENIED.has(new URL(href).hostname)),
+    ];
+}
+
+/**
+ * Keeps a browser context's HTTP requests on local hosts (the app and the checks' mocks): any other
+ * is aborted and recorded in the returned list (fonts and CDN stylesheets are expected there).
+ * WebSockets are not routed (the app opens its own only), and the app's own service worker is not
+ * blocked: the built app needs it at boot (`/sw/init`) and reloads without it.
+ */
+export async function isolateContext(context) {
+    const blocked = [];
+    await context.route("**/*", (route) => {
+        const url = new URL(route.request().url());
+        if (url.protocol === "data:" || url.protocol === "blob:" || LOCAL_HOSTS.has(url.hostname)) {
+            return route.continue();
+        }
+        blocked.push(url.href);
+        return route.abort();
+    });
+    return blocked;
+}
 
 async function waitForHttp(url, child, timeoutMs) {
     const deadline = Date.now() + timeoutMs;
@@ -62,22 +118,32 @@ function stop(child) {
  * the same `save/`, leaving the dev server running: for checks of what a server start does to
  * stored data.
  *
- * @param {{ serverPort?: number, vitePort?: number, log?: (text: string) => void }} [options]
- * @returns {Promise<{ baseURL: string, serverURL: string, workDir: string, restartServer: () => Promise<void>, stop: () => Promise<void> }>}
+ * `serverEnv` adds variables to the server's environment only (e.g. `NODE_OPTIONS` with an `--import`
+ * preload for a check's harness). Without its own `NODE_OPTIONS` the server gets the egress guard:
+ * no public service is reached (`deniedEgress()` lists what was refused).
+ *
+ * @param {{ serverPort?: number, vitePort?: number, log?: (text: string) => void, serverEnv?: Record<string, string> }} [options]
+ * @returns {Promise<{ baseURL: string, serverURL: string, workDir: string, deniedEgress: () => Promise<string[]>, restartServer: () => Promise<void>, stop: () => Promise<void> }>}
  */
-export async function startStack({ serverPort = 6101, vitePort = 5201, log } = {}) {
+export async function startStack({ serverPort = 6101, vitePort = 5201, log, serverEnv = {} } = {}) {
     const workDir = await mkdtemp(path.join(os.tmpdir(), "risu-playwright-"));
     // What the server reads from its root besides `save/` (the script workers' `public/lua/json.lua`,
     // the tokenizer payloads, the app version), as in the repository; `rm` removes the link only.
     await symlink(path.join(repoRoot, "public"), path.join(workDir, "public"), "dir");
     await copyFile(path.join(repoRoot, "version.json"), path.join(workDir, "version.json"));
+    const deniedFile = path.join(workDir, "denied-egress.log");
+    if (!serverEnv.NODE_OPTIONS) {
+        const guard = path.join(workDir, "egress-guard.mjs");
+        await writeFile(guard, egressGuard(deniedFile));
+        serverEnv = { ...serverEnv, NODE_OPTIONS: `--import=${guard}` };
+    }
     const serverURL = `http://localhost:${serverPort}`;
     const baseURL = `http://localhost:${vitePort}`;
     const startServer = () =>
         run(
             process.execPath,
             [path.join(repoRoot, "server/src/main.ts")],
-            { cwd: workDir, env: { ...process.env, PORT: String(serverPort) } },
+            { cwd: workDir, env: { ...process.env, ...serverEnv, PORT: String(serverPort) } },
             log,
         );
     let server = startServer();
@@ -101,6 +167,9 @@ export async function startStack({ serverPort = 6101, vitePort = 5201, log } = {
         baseURL,
         serverURL,
         workDir,
+        async deniedEgress() {
+            return (await readFile(deniedFile, "utf8").catch(() => "")).split("\n").filter(Boolean);
+        },
         async restartServer() {
             await stop(server);
             server = startServer();

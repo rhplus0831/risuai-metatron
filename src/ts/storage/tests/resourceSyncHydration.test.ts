@@ -578,6 +578,138 @@ describe("a job's reply in the mirror", () => {
     });
 });
 
+// Phase 5 cutover: the job's chat event can come before its `accepted` (a reply appended with
+// `begin`), and the reply is locked from that event on (`hydrateChat`), holding no stream update yet.
+describe("a reply locked by its job's chat event, before its stream", () => {
+    /** The `accepted` snapshot carrying the text the job had streamed so far. */
+    const withText = (event: GenerationEvent, text: string): GenerationEvent => ({ ...event, text }) as GenerationEvent;
+
+    it("locks the reply at the chat event (a reactive change), then the first accepted and chunk stream into it, and the terminal copy unlocks it", async () => {
+        const { fake, sync, chat, text, locked, chatEvent, copyWith, apply, chunk, accepted } = await boot();
+        // Loaded after the boot's module reset, so the probe and the chat module share one Svelte runtime.
+        const { createProbe } = await import("./reactiveProbe.svelte");
+        const { flushSync } = await import("svelte");
+        const probe = createProbe(() => chat.isMessageLocked(refK, "b"));
+        let revision = bumped(fake.chat("c", "k")!.revision, 1);
+        apply(
+            "J",
+            chatEvent("J", [{ messageId: "b", generationId: "g1", seq: 0 }], { revision, data: copyWith("b", "") }),
+        );
+        flushSync();
+        expect(probe.seen).toEqual([false, true]);
+        expect(locked("a")).toBe(false);
+        expect(text("b")).toBe("");
+        expect(() => chat.setMessageText(refK, "b", "mine")).toThrow(/being generated/);
+        apply("J", accepted("J", "g1", "b", 0));
+        expect(locked("b")).toBe(true);
+        apply("J", chunk("g1", 1, "RAW ONE"));
+        expect(text("b")).toBe("RAW ONE");
+        revision = bumped(revision, 1);
+        apply("J", chatEvent("J", [], { revision, data: copyWith("b", "FINAL") }));
+        flushSync();
+        expect(text("b")).toBe("FINAL");
+        expect(locked("b")).toBe(false);
+        expect(probe.seen).toEqual([false, true, false]);
+        probe.dispose();
+        await tick();
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(0);
+    });
+
+    it("locks a reply whose copy local work keeps out without claiming its text: the accepted snapshot at the copy's claim shows, and the local work saves alone", async () => {
+        const { fake, sync, chat, text, locked, chatEvent, copyWith, apply, accepted } = await boot();
+        chat.setChatMeta(refK, { note: "local note" });
+        const revision = bumped(fake.chat("c", "k")!.revision, 1);
+        apply(
+            "J",
+            chatEvent("J", [{ messageId: "b", generationId: "g1", seq: 3 }], {
+                revision,
+                data: copyWith("b", "SERVER THREE"),
+            }),
+        );
+        // Busy: the mirror keeps its copy, and the reply is locked all the same.
+        expect(text("b")).toBe("B");
+        expect(locked("b")).toBe(true);
+        apply("J", withText(accepted("J", "g1", "b", 3), "RAW THREE"));
+        expect(text("b")).toBe("RAW THREE");
+        await sync.flushResources();
+        expect(fake.chat("c", "k")!.data.note).toBe("local note");
+        // The streamed text is not written back as this tab's change.
+        expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
+        expect(locked("b")).toBe(true);
+    });
+
+    it("keeps a covering processed copy shown over the first accepted snapshot at its claim, and shows that raw text when a later copy claims less", async () => {
+        const { fake, text, locked, chatEvent, copyWith, apply, accepted } = await boot();
+        let revision = bumped(fake.chat("c", "k")!.revision, 1);
+        apply(
+            "J",
+            chatEvent("J", [{ messageId: "b", generationId: "g1", seq: 5 }], {
+                revision,
+                data: copyWith("b", "PROCESSED FIVE"),
+            }),
+        );
+        expect(text("b")).toBe("PROCESSED FIVE");
+        expect(locked("b")).toBe(true);
+        apply("J", withText(accepted("J", "g1", "b", 5), "RAW FIVE"));
+        expect(text("b")).toBe("PROCESSED FIVE");
+        revision = bumped(revision, 1);
+        apply(
+            "J",
+            chatEvent("J", [{ messageId: "b", generationId: "g1", seq: 2 }], {
+                revision,
+                data: copyWith("b", "STORED TWO"),
+            }),
+        );
+        expect(text("b")).toBe("RAW FIVE");
+        expect(locked("b")).toBe(true);
+    });
+
+    it("does not lock again for a generation the terminal ended (a delayed copy still listing it), or for a chat copy without a job", async () => {
+        const { fake, sync, text, locked, chatEvent, copyWith, apply, accepted } = await boot();
+        apply("J", accepted("J", "g1"));
+        expect(locked("b")).toBe(true);
+        apply("J", { type: "error", epoch: fake.store.epoch(), message: "x", status: 499, reason: "aborted" });
+        expect(locked("b")).toBe(false);
+        apply("J", chatEvent("J", [{ messageId: "b", generationId: "g1", seq: 0 }]));
+        expect(locked("b")).toBe(false);
+        // Another tab's view: the same copy without the job's metadata applies and locks nothing.
+        const revision = bumped(fake.chat("c", "k")!.revision, 1);
+        expect(
+            sync.applyHydration({
+                ...chatEvent("J", [{ messageId: "c", generationId: "g2", seq: 0 }], {
+                    revision,
+                    data: copyWith("c", "OTHER TAB"),
+                }),
+                job: undefined,
+            } as any),
+        ).toBe(true);
+        expect(text("c")).toBe("OTHER TAB");
+        expect(locked("c")).toBe(false);
+    });
+
+    it("hands the message to a continue's new generation at its chat event, dropping the old generation's late chunks", async () => {
+        const { fake, text, locked, chatEvent, copyWith, apply, chunk, accepted } = await boot();
+        apply("J", accepted("J", "g1"));
+        apply("J", chunk("g1", 2, "FIRST REPLY"));
+        const revision = bumped(fake.chat("c", "k")!.revision, 1);
+        apply(
+            "J",
+            chatEvent("J", [{ messageId: "b", generationId: "g2", seq: 0 }], {
+                revision,
+                data: copyWith("b", "FIRST REPLY"),
+            }),
+        );
+        expect(locked("b")).toBe(true);
+        apply("J", chunk("g1", 3, "OLD GENERATION"));
+        expect(text("b")).toBe("FIRST REPLY");
+        apply("J", withText(accepted("J", "g2", "b", 0), "FIRST REPLY"));
+        apply("J", chunk("g2", 1, "FIRST REPLY, CONTINUED"));
+        expect(text("b")).toBe("FIRST REPLY, CONTINUED");
+        expect(locked("b")).toBe(true);
+    });
+});
+
 describe("a refusal for a generating message", () => {
     const lockB = (fake: StoreBackedServer) => {
         fake.lock!.addToken("T");

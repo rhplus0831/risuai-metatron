@@ -198,9 +198,9 @@ vi.mock("../../mcp/mcp", () => ({
     decodeToolCall: async (inner: string) => clientState.known.get(inner),
 }));
 
-import { requestClaude } from "../anthropic";
-import { requestGoogleCloudVertex } from "../google";
-import { requestOpenAI, requestOpenAILegacyInstruct, requestOpenAIResponseAPI } from "../openAI/requests";
+import { requestClaude } from "./oracle/anthropic";
+import { requestGoogleCloudVertex } from "./oracle/google";
+import { requestOpenAI, requestOpenAILegacyInstruct, requestOpenAIResponseAPI } from "./oracle/openAI/requests";
 
 const tokenize = (text: string) => Array.from(text).map((char) => char.codePointAt(0) ?? 0);
 

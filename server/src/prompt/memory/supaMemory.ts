@@ -7,7 +7,7 @@ import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 type SupaResult = { currentTokens: number; chats: OpenAIChat[]; error?: string; memory?: string; lastId?: string };
 
 /**
- * `supaMemory` of `src/ts/process/memory/supaMemory.ts` (SupaMemory, and HypaMemory with `asHyper`),
+ * `supaMemory` of the former `src/ts/process/memory/supaMemory.ts` (SupaMemory, and HypaMemory with `asHyper`),
  * statement for statement, on a `MemoryHost`. A provider's answer in an error text is redacted.
  */
 export async function supaMemory(

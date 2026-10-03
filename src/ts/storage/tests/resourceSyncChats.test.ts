@@ -565,3 +565,60 @@ describe("pagehide", () => {
         expect(chat.isMessageLocked(refK, "a")).toBe(false);
     });
 });
+
+// Phase 5 cutover: a row rendered before its chat's first save had no transform context, so the
+// chat module counts the first revision it holds for a chat (`chatSaveVersion`, reactive), and
+// `Chat.svelte` renders the chat's rows again when that count moves.
+describe("a chat's first save (chatSaveVersion)", () => {
+    const refN = { chaId: "c", chatId: "n" };
+
+    it("moves once when a new chat's create is acknowledged (a reactive change), never for the boot seed, a later save, or another chat", async () => {
+        const { fake, sync, chat } = await boot();
+        // Loaded after the boot's module reset, so the probe and the chat module share one Svelte runtime.
+        const { createProbe } = await import("./reactiveProbe.svelte");
+        const { flushSync } = await import("svelte");
+        expect(chat.chatSaveVersion(refK)).toBe(0);
+        chat.setChatMeta(refK, { note: "saved again" });
+        await sync.flushResources();
+        expect(chat.chatSaveVersion(refK)).toBe(0);
+
+        const probe = createProbe(() => chat.chatSaveVersion(refN));
+        fake.holdNextBatch = true;
+        chat.createChat("c", { id: "n", name: "N", message: [m("x", "X")] } as any);
+        const first = sync.flushResources();
+        await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
+        expect(chat.heldChatRevision(refN)).toBeNull();
+        expect(chat.chatSaveVersion(refN)).toBe(0);
+        fake.releaseBatch!();
+        await first;
+        flushSync();
+        expect(chat.heldChatRevision(refN)).not.toBeNull();
+        expect(probe.seen).toEqual([0, 1]);
+
+        chat.setMessageText(refN, "x", "Y");
+        chat.setChatMeta(refK, { note: "and again" });
+        await sync.flushResources();
+        flushSync();
+        expect(fake.texts("c", "n")).toEqual(["Y"]);
+        expect(probe.seen).toEqual([0, 1]);
+        expect(chat.chatSaveVersion(refK)).toBe(0);
+        expect(chat.chatSaveVersion({ chaId: "c", chatId: "j" })).toBe(0);
+        probe.dispose();
+    });
+
+    it("moves once for a create whose answer was lost, when the next flush recognizes it as landed", async () => {
+        const { fake, sync, chat } = await boot();
+        fake.dropNextBatchResponse = true;
+        chat.createChat("c", { id: "n", name: "N", message: [m("x", "X")] } as any);
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        expect(fake.chat("c", "n")).not.toBeNull();
+        expect(chat.chatSaveVersion(refN)).toBe(0);
+        chat.setMessageText(refN, "x", "after the lost answer");
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(fake.texts("c", "n")).toEqual(["after the lost answer"]);
+        expect(chat.chatSaveVersion(refN)).toBe(1);
+        chat.setMessageText(refN, "x", "later");
+        await sync.flushResources();
+        expect(chat.chatSaveVersion(refN)).toBe(1);
+    });
+});

@@ -28,7 +28,7 @@
         Volume2Icon,
         Scissors,
     } from "@lucide/svelte";
-    import { rerenderMessage, serverTransformEnabled } from "src/ts/parser/transformClient";
+    import { rerenderMessage } from "src/ts/parser/transformClient";
     import {
         aiLawApplies,
         changeChatTo,
@@ -39,11 +39,7 @@
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
     import { longpress } from "src/ts/gui/longtouch";
     import { getModelInfo } from "src/ts/model/modellist";
-    import { runLuaButtonTrigger } from "src/ts/process/scriptings";
     import { runServerButton, runServerManualTrigger } from "src/ts/process/serverCommands";
-    import { readClientFlag } from "src/ts/storage/clientFlags";
-    import { risuChatParser } from "src/ts/process/scripts";
-    import { runTrigger } from "src/ts/process/triggers";
     import { sayTTS } from "src/ts/process/tts";
     import { DBState, ReloadChatPointer, CurrentTriggerIdStore, popupStore } from "src/ts/stores.svelte";
     import { capitalize, getUserIcon, getUserName, sleep } from "src/ts/util";
@@ -60,18 +56,21 @@
         alertRequestData,
         alertWait,
     } from "../../ts/alert";
-    import { ParseMarkdown, type CbsConditions, type simpleCharacterArgument } from "../../ts/parser/parser.svelte";
+    import {
+        ParseMarkdown,
+        risuChatParser,
+        type CbsConditions,
+        type simpleCharacterArgument,
+    } from "../../ts/parser/parser.svelte";
     import {
         getCurrentCharacter,
-        getCurrentChat,
         type Message,
         type MessageGenerationInfo,
         type StreamingDisplayOptimizationMode,
     } from "../../ts/storage/database.svelte";
     import {
-        applyChatResult,
-        captureChatBaseline,
         type ChatRef,
+        chatSaveVersion,
         createChat,
         currentChatRef,
         findChat,
@@ -182,10 +181,25 @@
         rawStreamingText = state.rawStreamingText;
     }
 
+    // A row rendered before its chat's first save had no transform context (the script stage was
+    // skipped): it renders again once the save lands (Phase 5 cutover).
+    let seenSave: { chat: string; version: number } | null = null;
+    $effect(() => {
+        const chat = displayedChat;
+        const key = chat ? JSON.stringify([chat.chaId, chat.chatId]) : "";
+        const version = chat ? chatSaveVersion(chat) : 0;
+        if (seenSave && seenSave.chat === key && seenSave.version !== version) {
+            untrack(() => {
+                chatBodyRevision += 1;
+            });
+        }
+        seenSave = { chat: key, version };
+    });
+
     // The server transform shows a locked (streaming) message raw: it renders again once the lock ends.
     $effect(() => {
         const now = locked;
-        if (wasLocked && !now && serverTransformEnabled()) {
+        if (wasLocked && !now) {
             untrack(() => {
                 chatBodyRevision += 1;
             });
@@ -465,13 +479,12 @@
         const triggerId = origin.getAttribute("risu-id");
         const btnEvent = origin.getAttribute("risu-btn");
 
-        // A manual trigger works on a copy of the chat and its changes are applied afterwards; a Lua
-        // button works on the live chat and writes through the chat module as it runs.
+        // The server runs manual triggers and Lua buttons (Phase 5 slices 8a, 8b); their changes arrive
+        // as the server's records.
         const ref = currentChatRef();
-        const baseline = triggerName && ref ? captureChatBaseline(ref) : null;
-        if (triggerName && readClientFlag("risu.serverGeneration")) {
-            // The server runs the manual trigger (Phase 5 slice 8b). `{{trigger_id}}` reads the id as
-            // the browser path leaves it: set once the job exists, cleared 100 ms after it ends.
+        if (triggerName) {
+            // `{{trigger_id}}` reads the id as the browser path left it: set once the job exists,
+            // cleared 100 ms after it ends.
             const owner = {};
             try {
                 const outcome = await runServerManualTrigger(currentChar, triggerName, ref, {
@@ -499,43 +512,12 @@
             }
             return;
         }
-        try {
-            if (!triggerName && btnEvent && readClientFlag("risu.serverGeneration")) {
-                // The server runs the button (Phase 5 slice 8a); its changes arrive as the server's records.
-                await runServerButton(currentChar, btnEvent, ref);
-                ReloadChatPointer.update((v) => {
-                    v[idx] = (v[idx] ?? 0) + 1;
-                    return v;
-                });
-                return;
-            }
-            const triggerResult = triggerName
-                ? await runTrigger(currentChar, "manual", {
-                      chat: ref ? findChat(ref) : getCurrentChat(),
-                      chatRef: ref,
-                      manualName: triggerName,
-                      triggerId: triggerId || undefined,
-                  })
-                : btnEvent
-                  ? await runLuaButtonTrigger(currentChar, btnEvent, ref)
-                  : null;
-
-            if (triggerResult) {
-                if (baseline) {
-                    // Throws (shown by the global error alert) when the trigger changed a locked message.
-                    applyChatResult(baseline, triggerResult.chat);
-                }
-                ReloadChatPointer.update((v) => {
-                    v[idx] = (v[idx] ?? 0) + 1;
-                    return v;
-                });
-            }
-        } finally {
-            if (triggerName && triggerId) {
-                setTimeout(() => {
-                    CurrentTriggerIdStore.set(null);
-                }, 100); // Small delay to allow display mode to complete
-            }
+        if (btnEvent) {
+            await runServerButton(currentChar, btnEvent, ref);
+            ReloadChatPointer.update((v) => {
+                v[idx] = (v[idx] ?? 0) + 1;
+                return v;
+            });
         }
     }
 
@@ -1228,7 +1210,7 @@
 {/snippet}
 
 {#snippet minorIconButtonsBody(showNames: boolean)}
-    {#if messageId && serverTransformEnabled()}
+    {#if messageId}
         <!-- The server transform keeps a message as first rendered: this renders it again, bypassing the cache. -->
         <button
             class="flex items-center hover:text-blue-500 transition-colors button-icon-rerender"

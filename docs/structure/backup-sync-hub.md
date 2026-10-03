@@ -15,7 +15,7 @@
   - The archive format, snapshots, and the backup routes → `self-host-server.md`.
   - Hub URL and card codecs → `characters-modules.md` (`characterCards.ts`).
   - Node `/hub-proxy` → `self-host-server.md`.
-  - `localNetwork.ts`/`proxyJobWs.ts` → `global-api.md`.
+  - `localNetwork.ts` → `global-api.md`.
 
 ## Files
 
@@ -62,7 +62,7 @@
 ## Tests
 
 - `src/ts/drive/backuplocal.test.ts`: over a fake `authFetch` and a fake `LocalWriter`: the flush before an export, the archive streamed to the file with the manifest read across chunk boundaries, the missing-asset report by character and role, no export when the flush fails, response cancelled when the writer cannot open, stream cancelled and writer aborted on a write failure, writer aborted on a broken download, a refused export reported; the partial backup's two confirmations and key list; `LoadLocalBackup` posting the file with the epoch header and reloading, the server's refusal shown, and a 412 reloading without an error.
-- Adjacent: `src/ts/network/localNetwork.test.ts`, `src/ts/network/proxyJobWs.test.ts`.
+- Adjacent: `src/ts/network/localNetwork.test.ts`.
 - Not tested: `LocalWriter` itself (streamSaver), Realm, settings redaction.
 
 ## Known Hazards

@@ -16,7 +16,7 @@
         displayAllowList,
         requestAllowList,
         type triggerV2IfAdvanced,
-    } from "src/ts/process/triggers";
+    } from "../../../../shared/triggers.ts";
     import { onDestroy, onMount } from "svelte";
     import { DBState } from "src/ts/stores.svelte";
     import { RISU_EFFECT_DRAG_TYPE, RISU_TRIGGER_DRAG_TYPE } from "src/ts/dragTypes";

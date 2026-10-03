@@ -1344,8 +1344,9 @@ interface RisuaiPluginAPI {
     /**
      * Parses Risu CBS macros using the currently selected character and active chat.
      * Set processRegex to also run the editprocess script pipeline after CBS parsing.
-     * The editprocess pipeline can invoke plugin script handlers and action scripts,
-     * which may modify the active chat.
+     * The pipeline runs on the server (regex scripts and Lua; it writes nothing to the chat)
+     * with the tab's plugin editprocess handlers between its two calls; for a chat not yet
+     * saved on the server it is skipped and the CBS-parsed text is returned.
      * @param text - Text containing CBS macros
      * @param options - Parser context options
      * @returns Parsed text
@@ -1364,8 +1365,8 @@ interface RisuaiPluginAPI {
         /** Message role used by role-aware CBS macros. */
         role?: string;
         /**
-         * Run the editprocess script pipeline after CBS parsing.
-         * This can invoke plugin handlers and action scripts that modify the active chat.
+         * Run the editprocess script pipeline after CBS parsing (on the server, with the
+         * plugin handlers; skipped for a chat not yet saved on the server).
          */
         processRegex?: boolean;
         /** Enable chat variable writes from CBS macros. */

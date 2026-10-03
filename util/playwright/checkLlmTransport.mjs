@@ -1,8 +1,9 @@
-// Browser check for Phase 5 slice 7a (`request-layer-and-llm-secrets`, transport): with the browser
-// assembly path, a send, a translation-style aux call (no chat), a suggestion-style submodel call,
-// an edit followed at once by a send, and a streaming send all reach the provider through the
-// server (`POST /api/llm/request`), and the browser makes no request to the provider's origin and
-// sends no stored credential anywhere but the settings writes.
+// Browser check for Phase 5 slice 7a (`request-layer-and-llm-secrets`, transport): a send, a
+// translation-style aux call (no chat), a suggestion-style submodel call, an edit followed at once by
+// a model call, and a streaming send all reach the provider through the server (the tab's own calls
+// through `POST /api/llm/request`, the two sends as server jobs since the Phase 5 cutover), and the
+// browser makes no request to the provider's origin and sends no stored credential anywhere but the
+// settings writes.
 //
 // Slice 7b (write-only `llmSecrets`): the sentinel proxy key is typed into the settings page's
 // credential input, and the send right after it reaches the provider with that key. Only the
@@ -263,7 +264,15 @@ try {
         toProvider.map((r) => r.url),
     );
     const llmRequests = browserRequests.filter((r) => r.url.includes("/api/llm/request"));
-    check("network: the provider calls went through /api/llm/request", llmRequests.length >= 5, llmRequests.length);
+    // The tab's three own requests go through `/api/llm/request`; the two sends are server jobs.
+    const jobPosts = browserRequests.filter(
+        (r) => r.method === "POST" && new URL(r.url).pathname === "/api/generations",
+    );
+    check(
+        "network: the tab's requests went through /api/llm/request, the sends ran as jobs",
+        llmRequests.length >= 3 && jobPosts.length === 2,
+        { llmRequests: llmRequests.length, jobPosts: jobPosts.length },
+    );
     const carrying = browserRequests.filter(
         (r) => r.body.includes(SENTINEL) || JSON.stringify(r.headers).includes(SENTINEL) || r.url.includes(SENTINEL),
     );

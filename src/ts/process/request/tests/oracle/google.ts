@@ -3,13 +3,13 @@ import { LLMFlags, LLMFormat, type LLMModel } from "src/ts/model/modellist";
 import { getDatabase } from "src/ts/storage/database.svelte";
 import { base64url, simplifySchema } from "src/ts/util";
 import { v4 } from "uuid";
-import { saveInlayedSignature, setInlayAsset, writeInlayImage, type InlaySignature } from "../files/inlays";
-import { extractJSON, getGeneralJSONSchema } from "../templates/jsonSchema";
-import { callTool, decodeToolCall, encodeToolCall } from "../mcp/mcp";
+import { saveInlayedSignature, setInlayAsset, writeInlayImage, type InlaySignature } from "../../../files/inlays";
+import { extractJSON, getGeneralJSONSchema } from "../../../templates/jsonSchema";
+import { callTool, decodeToolCall, encodeToolCall } from "../../../mcp/mcp";
 import { alertError } from "src/ts/alert";
 import { addFetchLog } from "src/ts/globalApi.svelte";
-import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "./request";
-import { applyAdditionalParameters, applyParameters, getAdditionalParameters, type LLMParameter } from "./shared";
+import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "../../request";
+import { applyAdditionalParameters, applyParameters, getAdditionalParameters, type LLMParameter } from "../../shared";
 import { bodyIntercepterStore } from "src/ts/stores.svelte";
 
 type GeminiFunctionCall = {

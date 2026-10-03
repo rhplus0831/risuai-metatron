@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer } from "src/ts/model/types";
 import { fetchNative } from "src/ts/globalApi.svelte";
 import { callTool } from "../../mcp/mcp";
-import { __testResponsesAPI, requestOpenAIResponseAPI } from "./requests";
+import { __testResponsesAPI, requestOpenAIResponseAPI } from "../tests/oracle/openAI/requests";
 
 const mocks = vi.hoisted(() => ({
     db: {

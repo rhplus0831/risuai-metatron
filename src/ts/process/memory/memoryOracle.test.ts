@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
@@ -14,24 +14,24 @@ import {
     USER_NAME,
 } from "../../../../server/src/tests/fixtures/memory/scenarios.ts";
 
-// Phase 5 slice 10: the browser oracle of the memory algorithms. The flag-off client code
-// (`supaMemory.ts`, `hypav2.ts`, `hypav3.ts`, `hanuraiMemory.ts`, with `hypamemory.ts`,
-// `hypamemoryv2.ts`, `contextualEmbedding.ts`, and the rate limiter as they are) runs each scenario
-// of `server/src/tests/fixtures/memory/scenarios.ts` over fake dependencies (deterministic tokens,
-// vectors, canned summaries and completions, a fixed random sequence, an in-memory vector store,
-// `parseChatML` answering null: the prompts are plain), and the outcome (the result or the thrown
-// message, the ordered summary requests, summarizer inputs, completions bodies, embedding requests,
-// local model runs, cache keys written, progress payloads, alerts) must equal the recorded fixture
-// `algorithms.json`. The server ports are held to the same fixture by
+// Phase 5 slice 10: the browser oracle of the memory algorithms. The client code that remains after
+// the Phase 5 cutover (`hypav3.ts`, with `hypamemory.ts`, `hypamemoryv2.ts`,
+// `contextualEmbedding.ts`, and the rate limiter as they are) runs each HypaV3 scenario (`v3`,
+// `v3exp`) of `server/src/tests/fixtures/memory/scenarios.ts` over fake dependencies (deterministic
+// tokens, vectors, canned summaries and completions, a fixed random sequence, an in-memory vector
+// store, `parseChatML` answering null: the prompts are plain), and the outcome (the result or the
+// thrown message, the ordered summary requests, summarizer inputs, completions bodies, embedding
+// requests, local model runs, cache keys written, progress payloads, alerts) must equal the recorded
+// fixture `algorithms.json`. The server ports are held to the whole fixture by
 // `server/src/tests/memoryAlgorithms.test.ts`: the fixture is the client's behavior, never derived
 // from server code.
 //
-// To record it again after an intended client change: `CAPTURE_MEMORY_FIXTURE=1 pnpm exec vitest run
-// src/ts/process/memory/memoryOracle.test.ts`, then `pnpm format` (the fixture is checked by Prettier)
-// and review the diff of `algorithms.json`.
+// The fixture was recorded from the flag-off client algorithms before the cutover deleted the
+// browser SupaMemory, HypaV2, and Hanurai copies; its `supa`, `hyper`, `v2`, and `hanurai` cases now
+// have no client runner here, and the fixture is not recorded again from this file (a re-recording
+// would lose those cases).
 
 const FIXTURE = path.resolve(import.meta.dirname, "../../../../server/src/tests/fixtures/memory/algorithms.json");
-const CAPTURE = process.env.CAPTURE_MEMORY_FIXTURE === "1";
 
 type World = ReturnType<typeof createWorld>;
 let current: World;
@@ -88,7 +88,8 @@ vi.mock("src/ts/process/index.svelte", () => ({}));
 
 type Fixture = { capturedFrom: string; cases: Record<string, Outcome> };
 const fixture: Fixture | null = existsSync(FIXTURE) ? (JSON.parse(readFileSync(FIXTURE, "utf8")) as Fixture) : null;
-const captured: Record<string, Outcome> = {};
+/** The scenarios whose client algorithm is still in the tab (HypaV3 and its experimental mode). */
+const clientScenarios = scenarios.filter((scenario) => scenario.algorithm === "v3" || scenario.algorithm === "v3exp");
 
 /** The settings with the HypaV3 presets of the scenario (selected by id, after any `presetsBefore`). */
 function settingsOf(scenario: Scenario): Record<string, unknown> {
@@ -102,39 +103,14 @@ async function runClient(scenario: Scenario): Promise<Outcome> {
     Object.assign(world.db, settingsOf(scenario));
     current = world;
     vi.spyOn(Math, "random").mockImplementation(() => world.random());
-    const { supaMemory } = await import("./supaMemory");
-    const { hypaMemoryV2 } = await import("./hypav2");
     const { hypaMemoryV3 } = await import("./hypav3");
-    const { hanuraiMemory } = await import("./hanuraiMemory");
     const chats = structuredClone(scenario.chats);
     const currentTokens = scenario.currentTokens ?? (await defaultCurrentTokens(chats));
     const tokenizer = { tokenizeChat } as never;
     const room = structuredClone(scenario.room) as never;
     const char = { ...scenario.char } as never;
     try {
-        let result: unknown;
-        switch (scenario.algorithm) {
-            case "supa":
-            case "hyper":
-                result = await supaMemory(chats, currentTokens, scenario.maxContextTokens, room, char, tokenizer, {
-                    asHyper: scenario.algorithm === "hyper",
-                });
-                break;
-            case "v2":
-                result = await hypaMemoryV2(chats, currentTokens, scenario.maxContextTokens, room, char, tokenizer);
-                break;
-            case "v3":
-            case "v3exp":
-                result = await hypaMemoryV3(chats, currentTokens, scenario.maxContextTokens, room, char, tokenizer);
-                break;
-            case "hanurai":
-                result = await hanuraiMemory(chats, {
-                    currentTokens,
-                    maxContextTokens: scenario.maxContextTokens,
-                    tokenizer,
-                });
-                break;
-        }
+        const result = await hypaMemoryV3(chats, currentTokens, scenario.maxContextTokens, room, char, tokenizer);
         return world.snapshot(result);
     } catch (error) {
         return world.snapshot(undefined, error);
@@ -154,45 +130,17 @@ afterEach(() => {
 describe("the browser memory algorithms against the recorded fixture", () => {
     it("names every scenario once", () => {
         expect(new Set(scenarios.map((scenario) => scenario.name)).size).toBe(scenarios.length);
-        if (!CAPTURE) {
-            expect(fixture, "the fixture exists (capture it with CAPTURE_MEMORY_FIXTURE=1)").not.toBeNull();
-            expect(Object.keys(fixture!.cases).sort()).toEqual(scenarios.map((scenario) => scenario.name).sort());
-        }
+        expect(fixture, "the fixture exists").not.toBeNull();
+        expect(Object.keys(fixture!.cases).sort()).toEqual(scenarios.map((scenario) => scenario.name).sort());
+        expect(clientScenarios.length).toBeGreaterThan(0);
     });
 
-    for (const scenario of scenarios) {
+    for (const scenario of clientScenarios) {
         it(`${scenario.name}: the client's outcome is the fixture's`, async () => {
             const outcome = await runClient(scenario);
-            captured[scenario.name] = outcome;
-            if (CAPTURE) {
-                return;
-            }
             expect(outcome).toEqual(fixture!.cases[scenario.name]);
         });
     }
-
-    it("writes the fixture when capturing", () => {
-        if (!CAPTURE) {
-            return;
-        }
-        expect(Object.keys(captured)).toHaveLength(scenarios.length);
-        const ordered: Record<string, Outcome> = {};
-        for (const scenario of scenarios) {
-            ordered[scenario.name] = captured[scenario.name];
-        }
-        writeFileSync(
-            FIXTURE,
-            JSON.stringify(
-                {
-                    capturedFrom:
-                        "the flag-off client algorithms (src/ts/process/memory) as committed at 3f5416d5, run by memoryOracle.test.ts with CAPTURE_MEMORY_FIXTURE=1 on 2026-10-03",
-                    cases: ordered,
-                },
-                null,
-                2,
-            ) + "\n",
-        );
-    });
 });
 
 describe("P10: the summary requests carry the send's or the action's context", () => {

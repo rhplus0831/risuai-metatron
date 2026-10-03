@@ -7,12 +7,12 @@ import { getFreeOpenRouterModels } from "src/ts/model/openrouter";
 import { addFetchLog, fetchNative, globalFetch, textifyReadableStream } from "src/ts/globalApi.svelte";
 import { simplifySchema } from "src/ts/util";
 
-import { extractJSON, getOpenAIJSONSchema } from "../../templates/jsonSchema";
-import { applyChatTemplate } from "../../templates/chatTemplate";
-import { supportsInlayImage } from "../../files/inlays";
-import { callTool, decodeToolCall, encodeToolCall } from "../../mcp/mcp";
-import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "../request";
-import { applyAdditionalParameters, applyParameters, getAdditionalParameters } from "../shared";
+import { extractJSON, getOpenAIJSONSchema } from "../../../../templates/jsonSchema";
+import { applyChatTemplate } from "../../../../templates/chatTemplate";
+import { supportsInlayImage } from "../../../../files/inlays";
+import { callTool, decodeToolCall, encodeToolCall } from "../../../../mcp/mcp";
+import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "../../../request";
+import { applyAdditionalParameters, applyParameters, getAdditionalParameters } from "../../../shared";
 
 import type { Contents, OpenAIChatExtra, OpenAIChatFull, ToolCall } from "./types";
 

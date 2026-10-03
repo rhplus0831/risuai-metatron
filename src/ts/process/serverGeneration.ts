@@ -30,7 +30,7 @@ export type ServerSendArg = {
 export type ServerSendRefusal = "definite" | "ambiguous";
 
 /**
- * `sendChat` as a server job (Phase 5 slice 9, behind `risu.serverGeneration`): the tab writes the
+ * `sendChat` as a server job (Phase 5 slice 9; the only send path since the cutover): the tab writes the
  * two per-send fields (`statics.messages`, the target's `lastInteraction`), then `runServerJob`
  * flushes, creates the job (`preview`, `previewPrompt`, `continue`, `group` for a group chat, else
  * `send`) with the input and the message ids, and follows it to its end. A preview's `done.result` is
