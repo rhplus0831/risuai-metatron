@@ -822,6 +822,34 @@ describe("the reply tail's callbacks (slice 11a)", () => {
     });
 });
 
+describe("the selectedChat callback (slice 12b)", () => {
+    it("answers the chat this tab has selected for a character (its chatPage), or null for a character or chat it does not have", async () => {
+        const characters = stores.DBState.db.characters as unknown[];
+        characters.push(
+            { chaId: "o", type: "character", chatPage: 1, chats: [{ id: "o1" }, { id: "o2" }] },
+            { chaId: "e", type: "character", chatPage: 0, chats: [] },
+        );
+        try {
+            send(callback("s1", "selectedChat", { characterId: "c" }));
+            await pump();
+            send(callback("s2", "selectedChat", { characterId: "o" }));
+            await pump();
+            send(callback("s3", "selectedChat", { characterId: "e" }));
+            await pump();
+            send(callback("s4", "selectedChat", { characterId: "nobody" }));
+            await pump();
+        } finally {
+            characters.splice(-2);
+        }
+        expect(tx.answers).toEqual([
+            { type: "answer", id: "s1", outcome: "answered", value: { chatId: "k" } },
+            { type: "answer", id: "s2", outcome: "answered", value: { chatId: "o2" } },
+            { type: "answer", id: "s3", outcome: "answered", value: null },
+            { type: "answer", id: "s4", outcome: "answered", value: null },
+        ]);
+    });
+});
+
 describe("the HypaV3 progress overlay", () => {
     // Phase 5 slice 10: the overlay is owned by the job whose `progress` notice opened it. Another
     // job's closing notice does not close it; the owner's does, and so does the owner's end (an abort

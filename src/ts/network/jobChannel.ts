@@ -510,6 +510,12 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             stillWanted();
             return content;
         }
+        case "selectedChat": {
+            // The chat of a character this tab has selected (the selection is the tab's own).
+            const target = DBState.db.characters.find((entry) => entry?.chaId === String(payload.characterId));
+            const chatId = target?.chats?.[target.chatPage]?.id;
+            return typeof chatId === "string" ? { chatId } : null;
+        }
         case "generateImage": {
             // Lua `generateImage` on the server (Phase 5 slice 8a): generated here with the tab's
             // image settings and keys, written as an inlay, answered with its id.

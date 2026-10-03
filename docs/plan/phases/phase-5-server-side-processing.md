@@ -310,6 +310,13 @@ server is listed here before the browser path is removed:
     with that old copy loses its new entry (the server asks again later).
   - A module that names an `internal:` MCP the server does not know offers nothing; in a tab it
     fails the request.
+  - RisuAccess in a job: an empty id means the job's character (in a tab, the selected one), and
+    its chat history is the job's chat; another character's history is the chat the job's tab has
+    selected, so it needs that tab; the consent prompt is in English and ends the job when nobody
+    answers it; the tools read what is stored at that moment, not the job's frozen settings; the
+    character list is in the store's order.
+  - `runLLM` in a job runs one at a time: a `runLLM` asked for while another of the job runs is
+    refused.
   - Tools are offered in the job's module order; the tab's registry keeps the order in which its
     clients were first made.
 - `header::` values in `additionalParams` and custom-model `params` stay readable user

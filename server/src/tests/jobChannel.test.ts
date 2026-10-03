@@ -399,6 +399,8 @@ describe("the hub: callbacks and nesting", () => {
         // A client capability, always allowed.
         allowed.push(link.channel.callback("generateImage", { prompt: "p", negative: "", characterId: "c" }));
         h.answer(link, h.last("callback").id);
+        allowed.push(link.channel.callback("selectedChat", { characterId: "c" }));
+        h.answer(link, h.last("callback").id);
         expect((await Promise.all(allowed)).every((result) => result.outcome === "answered")).toBe(true);
         expect(h.ofType("callback").map((event) => event.name)).toEqual([
             "replacerbeforeRequest",
@@ -406,6 +408,7 @@ describe("the hub: callbacks and nesting", () => {
             "provider",
             "mcpTool",
             "generateImage",
+            "selectedChat",
         ]);
     });
 

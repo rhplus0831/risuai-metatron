@@ -1250,6 +1250,16 @@ describe("createJobTools", () => {
                 }
                 return answer as { ok: true; value: unknown } | { ok: false; error: string };
             },
+            // The internal MCPs' services: inert, no test here calls an internal tool other than dice.
+            refresh: () => false,
+            request: async () => {
+                throw new Error("no request in this test");
+            },
+            getChatVar: () => "",
+            setChatVar: () => false,
+            embeddings: () => {
+                throw new Error("no embeddings in this test");
+            },
         };
         return { services, log, fatal: () => fatal };
     }
@@ -1265,7 +1275,7 @@ describe("createJobTools", () => {
 
     it("offers dice, the remotes, and a stdio URL in module order, each identifier once, routes a name to its first MCP, and warns for what it does not serve", async () => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-        const { registry, server } = registryOver(twoServers);
+        const { registry, server, store } = registryOver(twoServers);
         const urls = [
             "internal:dice",
             "http://mcp.test/mcp",
@@ -1283,11 +1293,14 @@ describe("createJobTools", () => {
             scope: fakeScope(urls),
             state,
             registry,
+            store,
+            kinds,
             services: fakeServices().services,
         });
         const set = await tools.list(ctxOf());
-        expect(set.descriptors.map((d) => d.name)).toEqual(["rollDice", "echo", "echo", "other"]);
+        expect(set.descriptors.map((d) => d.name)).toEqual(["rollDice", "echo", "runLLM", "echo", "other"]);
         expect(set.routes.get("rollDice")).toMatchObject({ kind: "local", identifier: "internal:dice" });
+        expect(set.routes.get("runLLM")).toMatchObject({ kind: "local", identifier: "internal:aiaccess" });
         expect(set.routes.get("echo")).toMatchObject({
             kind: "remote",
             identifier: "http://mcp.test/mcp",
@@ -1305,7 +1318,7 @@ describe("createJobTools", () => {
         ]);
         const warned = warn.mock.calls.map((call) => String(call[1]));
         expect(warned).toEqual([
-            "internal:aiaccess does not run on the server yet; it offers no tools to this job",
+            "internal:unknown is not a known internal MCP",
             "MCP: Failed to initialize ftp://nowhere.test: Invalid MCP URL",
             "MCP: Failed to initialize plugin:unlisted: Invalid MCP URL",
         ]);
@@ -1316,7 +1329,7 @@ describe("createJobTools", () => {
     it("skips a server whose handshake fails with a warning that names only the origin, while a tool list that fails after the handshake fails the build, which is not kept", async () => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
         let listing: "ok" | "repeat" = "repeat";
-        const { registry, server } = registryOver((call, index) => {
+        const { registry, server, store } = registryOver((call, index) => {
             if (call.url.startsWith("http://down.test/")) {
                 return json({ error: "boom" }, 500);
             }
@@ -1332,6 +1345,8 @@ describe("createJobTools", () => {
             scope: fakeScope(urls),
             state,
             registry,
+            store,
+            kinds,
             services: fakeServices().services,
         });
         await expect(tools.list(ctxOf())).rejects.toThrow("repeats a cursor");
@@ -1352,13 +1367,15 @@ describe("createJobTools", () => {
             scope: fakeScope(['stdio:{"command":"npx","args":["x"]}']),
             state: createJobToolState(),
             registry,
+            store,
+            kinds,
             services: fakeServices().services,
         });
         await expect(command.list(ctxOf())).rejects.toThrow(/Failed to parse MCP JSON: .*stdio MCPs are not supported/);
     });
 
     it("builds the set once per identifier list for the job, shared by concurrent requests, with distinct keys for distinct lists", async () => {
-        const { registry, server } = registryOver(twoServers);
+        const { registry, server, store } = registryOver(twoServers);
         const state = createJobToolState();
         const services = fakeServices().services;
         const tools = createJobTools({
@@ -1366,6 +1383,8 @@ describe("createJobTools", () => {
             scope: fakeScope(["http://mcp.test/mcp"]),
             state,
             registry,
+            store,
+            kinds,
             services,
         });
         const [a, b] = await Promise.all([tools.list(ctxOf()), tools.list(ctxOf())]);
@@ -1381,6 +1400,8 @@ describe("createJobTools", () => {
             scope: fakeScope(["internal:dice\nhttp://mcp.test/mcp"]),
             state,
             registry,
+            store,
+            kinds,
             services,
         });
         const split = createJobTools({
@@ -1388,6 +1409,8 @@ describe("createJobTools", () => {
             scope: fakeScope(["internal:dice", "http://mcp.test/mcp"]),
             state,
             registry,
+            store,
+            kinds,
             services,
         });
         expect((await joined.list(ctxOf())).descriptors).toEqual([]);
@@ -1401,6 +1424,8 @@ describe("createJobTools", () => {
             scope: fakeScope(["http://second.test/mcp"]),
             state,
             registry,
+            store,
+            kinds,
             services: fakeServices().services,
         });
         const listing = other.list(ctxOf(waiting.signal));
@@ -1414,7 +1439,7 @@ describe("createJobTools", () => {
     it("call: an unknown name, a tool's own failures as text results, a credential never sent, and a fatal outcome thrown", async () => {
         const secret = "sk-SECRET-7777";
         let answer: "ok" | "error" | "junk" = "ok";
-        const { registry, server } = registryOver((call, index) =>
+        const { registry, server, store } = registryOver((call, index) =>
             streamable({
                 onCall: (c) =>
                     answer === "error"
@@ -1431,6 +1456,8 @@ describe("createJobTools", () => {
             scope: fakeScope(["internal:dice", "http://mcp.test/mcp"], { secret }),
             state: createJobToolState(),
             registry,
+            store,
+            kinds,
             services: fake.services,
         });
         const ctx = ctxOf();
@@ -1487,13 +1514,15 @@ describe("createJobTools", () => {
     it("tab kinds: no tab within the grace offers nothing, an attached tab answers mcpList and mcpTool, and a callback's outcomes are classified", async () => {
         vi.useFakeTimers();
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-        const { registry } = registryOver(() => accepted());
+        const { registry, store } = registryOver(() => accepted());
         const detached = fakeServices();
         const away = createJobTools({
             job: fakeJob({ attached: () => false }),
             scope: fakeScope(["internal:fs", "plugin:p"]),
             state: createJobToolState(),
             registry,
+            store,
+            kinds,
             services: detached.services,
         });
         const listing = away.list(ctxOf());
@@ -1533,6 +1562,8 @@ describe("createJobTools", () => {
             scope: fakeScope(["internal:fs", "plugin:p", "plugin:q", "internal:googlesearch"]),
             state: createJobToolState(),
             registry,
+            store,
+            kinds,
             services: fake.services,
         });
         const ctx = ctxOf();
@@ -1584,6 +1615,8 @@ describe("createJobTools", () => {
             scope: fakeScope(["internal:fs"]),
             state: createJobToolState(),
             registry,
+            store,
+            kinds,
             services: fakeServices({ callbacks: () => ({ ok: false, error: "picker dismissed" }) }).services,
         });
         await expect(failing.list(ctxOf())).rejects.toThrow("MCP internal:fs: picker dismissed");
@@ -1592,6 +1625,8 @@ describe("createJobTools", () => {
             scope: fakeScope(["internal:fs"]),
             state: createJobToolState(),
             registry,
+            store,
+            kinds,
             services: fakeServices({
                 callbacks: () => ({
                     ok: true,
@@ -1605,12 +1640,14 @@ describe("createJobTools", () => {
 
     it("charges the job's budget for every attempt across the tool sets of its runs", () => {
         const state = createJobToolState();
-        const { registry } = registryOver(() => accepted());
+        const { registry, store } = registryOver(() => accepted());
         const first = createJobTools({
             job: fakeJob(),
             scope: fakeScope([]),
             state,
             registry,
+            store,
+            kinds,
             services: fakeServices().services,
         });
         const second = createJobTools({
@@ -1618,6 +1655,8 @@ describe("createJobTools", () => {
             scope: fakeScope([]),
             state,
             registry,
+            store,
+            kinds,
             services: fakeServices().services,
         });
         for (let i = 0; i < MAX_JOB_TOOL_CALLS; i++) {
@@ -1660,6 +1699,8 @@ describe("createJobTools", () => {
             scope: fakeScope(["http://mcp.test/mcp"]),
             state: createJobToolState(),
             registry,
+            store,
+            kinds,
             services: fake.services,
         });
         const set = await tools.list(ctxOf());

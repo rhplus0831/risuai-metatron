@@ -1557,9 +1557,22 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         jobTools = createJobTools({
             job,
             scope,
+            store,
+            kinds,
             state: deps.mcp.state,
             registry: deps.mcp.registry,
-            services: { fence, latch, ask, notice: services.notice, tryCallback },
+            services: {
+                fence,
+                latch,
+                refresh: services.refresh,
+                ask,
+                notice: services.notice,
+                tryCallback,
+                request,
+                getChatVar: services.getChatVar,
+                setChatVar,
+                embeddings: embeddingEnv,
+            },
         });
     }
     return {

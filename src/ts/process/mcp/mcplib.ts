@@ -1,6 +1,9 @@
 import { v4 } from "uuid";
 import { fetchNative, openURL } from "../../globalApi.svelte";
 import { alertInput } from "../../alert";
+import { type MCPTool, MCPToolHandler } from "../../../../shared/mcp/risuaccess/host.ts";
+
+export { type MCPTool, MCPToolHandler };
 
 export type MCPPrompt = {
     name: string; // Unique identifier for the prompt
@@ -12,13 +15,6 @@ export type MCPPrompt = {
         required?: boolean; // Whether argument is required
     }[];
     url?: string;
-};
-
-export type MCPTool = {
-    name: string;
-    description: string;
-    inputSchema: any; // JSON schema for input validation
-    annotations?: any; // Annotations for the tool, can be used for documentation or metadata
 };
 
 export type JsonRPC = {
@@ -72,11 +68,6 @@ export type RPCToolCallContentResource = {
 };
 
 export type RPCToolCallContent = RPCToolCallTextContent | RPCToolCallImageAudioContent | RPCToolCallContentResource;
-
-export abstract class MCPToolHandler {
-    abstract getTools(): MCPTool[];
-    abstract handle(toolName: string, args: any): Promise<RPCToolCallContent[] | null>;
-}
 
 export class MCPClient {
     mcpClientObjectId: string = v4();

@@ -253,6 +253,7 @@ export type CallbackName =
     | "provider"
     | "mcpList"
     | "mcpTool"
+    | "selectedChat"
     | "generateImage"
     | "inlayImage"
     | "imggen";
@@ -289,6 +290,12 @@ export type CallbackPayloads = {
     mcpList: { identifier: string };
     /** A call of one of those tools: answered with the tool's content. */
     mcpTool: { identifier: string; tool: string; args: unknown };
+    /**
+     * The chat of `characterId` this tab has selected (slice 12b: RisuAccess's chat history of a
+     * character other than the job's; the selection is per tab), answered `{ chatId }`, or `null`
+     * when the tab has no such character or chat.
+     */
+    selectedChat: { characterId: string };
     /** Lua `generateImage`: the client generates for `characterId`, writes the inlay, and answers `{ id }`. */
     generateImage: { prompt: string; negative: string; characterId: string };
     /**

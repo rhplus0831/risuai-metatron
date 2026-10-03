@@ -198,6 +198,7 @@ function hasHook(hooks: GenerationHooks, name: CallbackName, payload: unknown): 
         case "generateImage":
         case "inlayImage":
         case "imggen":
+        case "selectedChat":
             // A client capability, not a plugin hook.
             return true;
         default:

@@ -6,6 +6,7 @@ import { DBState, selectedCharID } from "../stores.svelte";
 import { isCharacterGenerating, normalizeNewCharacter } from "./chatStore.svelte";
 import { checkCharOrder } from "./characterOrder";
 import {
+    CHARACTER_FIXED_FIELDS,
     detach,
     detachPatch,
     MutationValidationError,
@@ -28,8 +29,8 @@ import { markCharactersDirty } from "./resourceSync.svelte";
 
 type AnyCharacter = character | groupChat;
 
-/** Fields a character patch may not set: the chats and their selection are the chat module's, the id and kind are fixed. */
-const FIXED_FIELDS = new Set(["chats", "chatPage", "reloadKeys", "chaId", "type", "__proto__"]);
+/** Fields a character patch may not set (`CHARACTER_FIXED_FIELDS`, shared with the server's RisuAccess host). */
+const FIXED_FIELDS = CHARACTER_FIXED_FIELDS;
 /** Fields the mirror keeps when a character's own fields are replaced (chats are written only through the chat module). */
 const LOCAL_FIELDS = new Set(["chats", "chatPage", "reloadKeys"]);
 

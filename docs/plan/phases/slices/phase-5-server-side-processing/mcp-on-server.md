@@ -1,6 +1,6 @@
 # Slice: MCP On The Server
 
-Status: 12a implemented (2026-10-03); 12b (`aiaccess`, `risuaccess`, `graphmem` on the server) not started.
+Status: implemented (12a and 12b, 2026-10-03).
 
 Phase: [Phase 5](../../phase-5-server-side-processing.md), the MCP part of step 7 (remote MCP
 servers and internal tools through server adapters; plugin and browser-file tools as channel
@@ -123,3 +123,58 @@ head; the OpenAI-compatible adapter is driven, buffered and streaming), a cancel
 tab's module import (no harness for the tab's dispatcher), and a tab that reconnects inside the
 attach grace. Residual: the OAuth code question is withdrawn when the client closes, not when its
 caller alone is aborted (it then ends with the job's channel or its timeout, as every question).
+
+## 12b: what landed
+
+As `docs/structure/self-host-server.md` (`server/src/mcp/internal.ts`) and `plugins-mcp.md`
+describe it. The three internal MCPs run on the server for a job, with the tab's tools and logic:
+
+- The handlers moved to `shared/mcp/` (`risuaccess/`, `graphmem.ts`, `aiaccess.ts`), each over a
+  host interface; the files under `src/ts/process/mcp/` are the tab's hosts and keep their class
+  names, so Phase 4's tests run unchanged. `src/ts/storage/mutationValidation.ts` moved to
+  `shared/mutationValidation.ts` (re-exported) with `CHARACTER_FIXED_FIELDS`. Files outside the
+  slice's drafted list: `src/ts/process/mcp/{aiaccess,graphmem,mcplib}.ts`,
+  `src/ts/process/mcp/risuaccess/*`, `src/ts/storage/{mutationValidation,characterStore.svelte}.ts`,
+  `shared/jobs.ts` (the `selectedChat` callback), `server/src/llm/messages.ts`.
+- RisuAccess on the server ports Phase 4's semantics (the amendment): consent, the record found
+  again by its id, a synchronous write applied to the record the handler read at that revision (a
+  record changed in between conflicts and is refused, never rebased), the tab's validation. The
+  selection a tab has is not stored, so an empty id is the job's character and chat, and another
+  character's chat history asks the job's tab which chat it has selected (the character is checked
+  again after the answer: a group or a deleted one is refused).
+- `internal:risuai` is call-only as in the tab: reached only through an adapter that dispatches a
+  name it did not offer (Anthropic); OpenAI Chat, OpenAI Responses, and Google do not dispatch
+  unoffered names, as the tab's adapters do not.
+- `readMemory` stops when its search frontier is empty (shared with the tab): a huge
+  `search_depth` was a synchronous loop on the server's thread. For a fixed graph it visits at
+  most `graph.length + 1` depth levels per query; the total work is not otherwise bounded (entries
+  found twice in one level are not deduplicated, inherited), to revisit if the vector search is
+  repaired.
+- `graphmem` writes `scriptstate` through the job's chat `meta` op and searches with the job's
+  embeddings; `runLLM` is the job's own request, one at a time.
+
+Suspected defects kept as they are (both paths), for Stop D: `writeMemory` fails on a chat that
+never held the graph variable, and `readMemory` finds nothing (the processor's vectors are never
+filled).
+
+Live check (a fresh server, 11 checks): `runLLM` as a nested request of the job with the job's
+tools offered again; RisuAccess reading the job's character by an empty id and another character's
+history through the tab's selection, a confirmed write of another character stored and shown in
+the tab, a refused field, a denied write changing nothing; graph memory failing on a fresh chat as
+the tab's does, then writing the chat variable and reading with the job's embeddings.
+
+Tests (12b review; the reviewer role ran on Opus in this session): `server/src/tests/mcpInternal.test.ts`
+(the real bindings and job tools over an in-memory store: call-only RisuAccess, reads of the live
+store, same-name resolution, the job's own history without a callback, another character's history
+through `selectedChat` with its ordinary and fatal outcomes and the recheck after the answer, the
+English consent prompt, confirmed, denied, and raced writes, a forced second conflict refused with
+the concurrent entry kept, module fields and enabled state in one batch, consent lost or cancelled;
+`runLLM` modes, the nested request's tools and budget, the one-at-a-time refusal and counter, a job
+failure inside it; graph memory's chat-bound writes, the two inherited defects pinned, the empty
+frontier stop); the tab's `selectedChat` handler in `src/ts/network/jobChannel.test.ts`; the
+capability list in `server/src/tests/jobChannel.test.ts`. The test-adapter moved the `createJobTools`
+harness of `mcp.test.ts` to the store and kinds (one assertion: `runLLM` offered and the unknown
+internal identifier warned). Not pinned: the `prepare` and `ResourceValidationError` refusals of
+`internal.ts` (not reachable through the tools: the handlers whitelist fields, arguments are JSON),
+a tab without the `selectedChat` case (accepted policy), the call-only names through the OpenAI
+and Google adapters (they do not dispatch an unoffered name, as in the tab).

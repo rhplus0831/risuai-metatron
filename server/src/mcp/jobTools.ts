@@ -1,14 +1,16 @@
-import type { GenerationQuestion, CallbackName, CallbackPayloads } from "../../../shared/jobs.ts";
 import { TAB_MCP_IDENTIFIERS } from "../../../shared/jobs.ts";
 import type { RPCToolCallContent, ToolDescriptor } from "../../../shared/llm/request.ts";
 import { isToolContentEntry } from "../../../shared/llm/validate.ts";
 import { jobModules } from "../jobs/cbsHost.ts";
+import type { ResourceKindRegistry } from "../data/kinds.ts";
+import type { ResourceStore } from "../data/resourceStore.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
 import type { JobScope } from "../jobs/jobScope.ts";
 import { collectSecrets, createRedactor } from "../llm/redact.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 import { MAX_TOOL_LIST_BYTES, MAX_TOOL_LIST_TOOLS, type McpIo, type McpRefresh } from "./client.ts";
 import { callDiceTool, DICE_TOOLS } from "./dice.ts";
+import { createInternalMcps, type InternalToolServices } from "./internal.ts";
 import type { McpRegistry } from "./registry.ts";
 
 /** The tool calls the models of one job may ask for, across its requests and speakers. */
@@ -21,11 +23,15 @@ export const TAB_MCP_TIMEOUT_MS = 5 * 60_000;
  */
 export const TAB_ATTACH_GRACE_MS = 10_000;
 
-/** The server-side kinds slice 12b adds; until then a module naming one offers no tools to a job. */
-const PENDING_INTERNAL = ["internal:aiaccess", "internal:risuai", "internal:graphmem"];
+/** The MCP a job may call although no module names it (the tab's `callOnlyMCPUrls`): its tools are not offered. */
+const CALL_ONLY_IDENTIFIER = "internal:risuai";
 
 type Route =
-    | { kind: "local"; identifier: string; call: (tool: string, args: unknown) => Promise<RPCToolCallContent[]> }
+    | {
+          kind: "local";
+          identifier: string;
+          call: (tool: string, args: unknown, ctx: HostContext) => Promise<RPCToolCallContent[]>;
+      }
     | { kind: "remote"; identifier: string; url: string }
     | { kind: "tab"; identifier: string };
 
@@ -38,26 +44,21 @@ export type JobToolState = {
     sets: Map<string, Promise<JobToolSet>>;
     attempts: number;
     warned: boolean;
+    /** The `runLLM` calls of `internal:aiaccess` in progress (one at a time). */
+    llm: { active: number };
 };
 
 export function createJobToolState(): JobToolState {
-    return { sets: new Map(), attempts: 0, warned: false };
+    return { sets: new Map(), attempts: 0, warned: false, llm: { active: 0 } };
 }
 
-/** The bindings' services the tools use, under the job's one fatal policy. */
-export type JobToolServices = {
-    fence(ctx?: HostContext): void;
-    latch(error: unknown): Error;
-    /** A channel question; `signal` withdraws it (an ordinary failure, not the job's). */
-    ask(question: GenerationQuestion, ctx: HostContext, options?: { signal?: AbortSignal }): Promise<unknown>;
+/**
+ * The bindings' services the tools use, under the job's one fatal policy: `ask` (a channel question;
+ * its `signal` withdraws it, an ordinary failure) and `tryCallback` (a client callback: the value, or
+ * an ordinary failure's text; a fatal outcome throws, latched) among them.
+ */
+export type JobToolServices = InternalToolServices & {
     notice(notice: Parameters<RunningJob["channel"]["notice"]>[0]): void;
-    /** A client callback: the value, or an ordinary failure's text; a fatal outcome throws (latched). */
-    tryCallback<N extends CallbackName>(
-        name: N,
-        payload: CallbackPayloads[N],
-        ctx: HostContext,
-        options?: { timeoutMs?: number },
-    ): Promise<{ ok: true; value: unknown } | { ok: false; error: string }>;
 };
 
 export type JobTools = {
@@ -126,8 +127,10 @@ function tabDescriptors(value: unknown): ToolDescriptor[] {
  *
  * The identifiers are the `mcp.url` of the job's modules, each once, in module order. A remote
  * server (`http(s)://`, or `stdio:` JSON with a `url`) goes through the process's registry;
- * `internal:dice` runs here; `internal:fs`, `internal:googlesearch`, and a `plugin:` MCP the tab
- * registered when the job was created run in the owner's tab (`mcpList`, `mcpTool`).
+ * `internal:dice`, `internal:aiaccess`, `internal:risuai`, and `internal:graphmem` run here
+ * (`internal.ts`); `internal:fs`, `internal:googlesearch`, and a `plugin:` MCP the tab registered
+ * when the job was created run in the owner's tab (`mcpList`, `mcpTool`). `internal:risuai` can be
+ * called although no module names it; its tools are then not offered (the tab's call-only rule).
  *
  * The set is built once per job and identifier list, at the first request that needs it, and kept
  * for the job: a remote server that cannot be reached or initialized offers no tools (a warning), as
@@ -138,6 +141,8 @@ function tabDescriptors(value: unknown): ToolDescriptor[] {
 export function createJobTools(deps: {
     job: RunningJob;
     scope: JobScope;
+    store: ResourceStore;
+    kinds: ResourceKindRegistry;
     state: JobToolState;
     registry: McpRegistry;
     services: JobToolServices;
@@ -185,6 +190,16 @@ export function createJobTools(deps: {
         return true;
     };
 
+    const internal = createInternalMcps({
+        job,
+        scope,
+        store: deps.store,
+        kinds: deps.kinds,
+        services,
+        ownerAttached,
+        llm: state.llm,
+    });
+
     const identifiers = (): string[] => {
         const seen = new Set<string>();
         for (const module of jobModules(scope)) {
@@ -217,6 +232,10 @@ export function createJobTools(deps: {
                 offer({ kind: "local", identifier, call: callDiceTool }, DICE_TOOLS);
                 continue;
             }
+            if (Object.hasOwn(internal, identifier)) {
+                offer({ kind: "local", identifier, call: internal[identifier].call }, internal[identifier].tools);
+                continue;
+            }
             const tabKind =
                 TAB_MCP_IDENTIFIERS.includes(identifier) ||
                 (identifier.startsWith("plugin:") && job.hooks.mcpTools.includes(identifier));
@@ -237,11 +256,7 @@ export function createJobTools(deps: {
             if (identifier.startsWith("internal:")) {
                 if (!state.warned) {
                     state.warned = true;
-                    warn(
-                        PENDING_INTERNAL.includes(identifier)
-                            ? `${identifier} does not run on the server yet; it offers no tools to this job`
-                            : `${identifier} is not a known internal MCP`,
-                    );
+                    warn(`${identifier} is not a known internal MCP`);
                 }
                 continue;
             }
@@ -287,6 +302,15 @@ export function createJobTools(deps: {
             services.fence(ctx);
             if (tools) {
                 offer({ kind: "remote", identifier, url: remote }, tools);
+            }
+        }
+        // Call-only: routes for an adapter that dispatches a name it did not offer (Anthropic, as in the tab).
+        if (!ids.includes(CALL_ONLY_IDENTIFIER)) {
+            const callOnly = internal[CALL_ONLY_IDENTIFIER];
+            for (const tool of callOnly.tools) {
+                if (!routes.has(tool.name)) {
+                    routes.set(tool.name, { kind: "local", identifier: CALL_ONLY_IDENTIFIER, call: callOnly.call });
+                }
             }
         }
         return { descriptors, routes };
@@ -354,7 +378,7 @@ export function createJobTools(deps: {
             let content: unknown;
             try {
                 if (route.kind === "local") {
-                    content = await route.call(name, args);
+                    content = await route.call(name, args, ctx);
                 } else if (route.kind === "remote") {
                     content = await registry.use(route.identifier, route.url, (client) =>
                         client.callTool(name, args, ioFor(route.identifier, ctx)),
