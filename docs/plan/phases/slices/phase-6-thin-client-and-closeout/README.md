@@ -11,6 +11,11 @@ Phases 3 to 5 change the tree under most, so it is expected to be re-planned at 
 every slice's Assumptions section names the Phase 3, 4, or 5 decisions it rests on, and
 re-verification is a diff against those lines. Every slice is `planned`.
 
+Re-planned on 2026-10-03 at `ee57e2e9`: [`implementation-plan.md`](implementation-plan.md) records the
+execution order (a new slice for the browser generation remnants, the chat slice split into 9a
+and 9b, four stops), the amendments to every slice, the owner's answers, and the decision on
+every review point; the reviews are verbatim in [`plan-review.md`](plan-review.md).
+
 The value of this draft is the dependency picture: what each projection needs from the earlier
 phases, the transitional state of `DBState.db` between slices (a facade of accessors over the
 records, so every slice ships on its own), and how live updates fit the Phase 5 socket rather

@@ -71,7 +71,7 @@ pnpm runserver
 pnpm dev
 ```
 
-Open `http://localhost:5174/`. The dev server injects the server flag and forwards `/api`, `/proxy`, `/proxy2`, `/hub-proxy`, and `/proxy-stream-jobs` to `http://localhost:6001`. Set `RISU_DEV_SERVER` (for example `RISU_DEV_SERVER=https://localhost:6001 pnpm dev`) when the server uses HTTPS or another port. The dev origin keeps its own login key, so you sign in once there as well.
+Open `http://localhost:5174/`. The dev server injects the server flag and forwards `/api`, `/proxy`, `/proxy2`, and `/hub-proxy` to `http://localhost:6001`. Set `RISU_DEV_SERVER` (for example `RISU_DEV_SERVER=https://localhost:6001 pnpm dev`) when the server uses HTTPS or another port. The dev origin keeps its own login key, so you sign in once there as well.
 
 ### Docker Installation
 
