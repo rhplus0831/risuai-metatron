@@ -11,7 +11,12 @@ import { materialize } from "./serverKinds";
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
-    alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
+    alerts: {
+        error: vi.fn(),
+        normal: vi.fn(),
+        normalWait: vi.fn(async () => undefined),
+        terminal: vi.fn(async () => undefined),
+    },
 }));
 
 vi.mock("../nodeStorage", () => ({
@@ -22,6 +27,7 @@ vi.mock("../../alert", () => ({
     alertError: alerts.error,
     alertNormal: alerts.normal,
     alertNormalWait: alerts.normalWait,
+    alertTerminal: alerts.terminal,
 }));
 
 vi.mock("src/lang", () => ({
@@ -419,7 +425,7 @@ describe("restore (412) and errors", () => {
         fake.restore("epoch-2");
         db().theme = "after restore";
         await expect(sync.flushResources()).rejects.toThrow();
-        expect(alerts.normalWait).toHaveBeenCalledWith("restored");
+        expect(alerts.terminal).toHaveBeenCalledWith("restored");
         await vi.waitFor(() => expect((location as any).reload).toHaveBeenCalled());
         expect(fake.data("ui", "main").theme).toBe("");
         await expect(sync.flushResources()).rejects.toThrow(/restored/);
@@ -431,7 +437,7 @@ describe("restore (412) and errors", () => {
         fake.readEpoch = "epoch-from-a-restore";
         db().theme = "local";
         await expect(sync.flushResources()).rejects.toThrow();
-        expect(alerts.normalWait).toHaveBeenCalledWith("restored");
+        expect(alerts.terminal).toHaveBeenCalledWith("restored");
         expect(db().theme).toBe("local");
     });
 
@@ -441,10 +447,41 @@ describe("restore (412) and errors", () => {
         await expect(
             client.putResource("inlays", "x", { name: "x", ext: "json", type: "signature" }, null),
         ).rejects.toBeInstanceOf(client.ResourceEpochMismatchError);
-        expect(alerts.normalWait).toHaveBeenCalledWith("restored");
+        expect(alerts.terminal).toHaveBeenCalledWith("restored");
         db().theme = "never saved";
         await expect(sync.flushResources()).rejects.toThrow(/restored/);
         expect(fake.batchCount()).toBe(0);
+    });
+
+    it("shows one notice for several epoch refusals and reloads only after it is acknowledged, once", async () => {
+        // The restore-notice fix after Phase 6 slice 2: the reload waits for the notice's own
+        // acknowledgement (here a deferred `alertTerminal`), however long it takes.
+        let acknowledge: () => void = () => {};
+        alerts.terminal.mockImplementationOnce(
+            () => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))),
+        );
+        const { fake, sync, client, db } = await boot();
+        const reload = (location as any).reload;
+        fake.restore("epoch-2");
+        db().theme = "after restore";
+        await expect(sync.flushResources()).rejects.toThrow();
+        await expect(
+            client.putResource("inlays", "x", { name: "x", ext: "json", type: "signature" }, null),
+        ).rejects.toBeInstanceOf(client.ResourceEpochMismatchError);
+        client.epochMismatch("epoch-2");
+        await expect(sync.watchForRestore()).resolves.toBe(true);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(alerts.terminal).toHaveBeenCalledTimes(1);
+        expect(alerts.terminal).toHaveBeenCalledWith("restored");
+        expect(reload).not.toHaveBeenCalled();
+        acknowledge();
+        await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+        // A refusal after the acknowledgement neither shows the notice again nor reloads again.
+        client.epochMismatch("epoch-2");
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(alerts.terminal).toHaveBeenCalledTimes(1);
+        expect(reload).toHaveBeenCalledTimes(1);
+        expect(fake.data("ui", "main").theme).toBe("");
     });
 
     it("quarantines a record the server refuses as too large, keeps saving the rest, and retries it once it changes", async () => {
@@ -542,12 +579,12 @@ describe("the restore watch of a job ended by maintenance", () => {
         await vi.advanceTimersByTimeAsync(1000);
         expect(watchReads(fake)).toBe(3);
         expect(settled).toBeUndefined();
-        expect(alerts.normalWait).not.toHaveBeenCalled();
+        expect(alerts.terminal).not.toHaveBeenCalled();
         fake.restore("epoch-2");
         await vi.advanceTimersByTimeAsync(1000);
         await watch;
         expect(settled).toBe(true);
-        expect(alerts.normalWait).toHaveBeenCalledWith("restored");
+        expect(alerts.terminal).toHaveBeenCalledWith("restored");
         await vi.waitFor(() => expect((location as any).reload).toHaveBeenCalled());
         db().theme = "never saved";
         await expect(sync.flushResources()).rejects.toThrow(/restored/);
@@ -579,14 +616,14 @@ describe("the restore watch of a job ended by maintenance", () => {
         expect(hung).toBe(2);
         await vi.advanceTimersByTimeAsync(120_000);
         expect(settled).toBe(false);
-        expect(alerts.normalWait).not.toHaveBeenCalled();
+        expect(alerts.terminal).not.toHaveBeenCalled();
         // A new watch starts its own reads (the slot was freed) and sees a later replacement.
         hang = false;
         fake.restore("epoch-2");
         const again = sync.watchForRestore();
         await vi.advanceTimersByTimeAsync(1000);
         await expect(again).resolves.toBe(true);
-        expect(alerts.normalWait).toHaveBeenCalledWith("restored");
+        expect(alerts.terminal).toHaveBeenCalledWith("restored");
     });
 
     it("runs one watch at a time for every caller, and answers true at once when saving already halted for a restore", async () => {
@@ -603,7 +640,7 @@ describe("the restore watch of a job ended by maintenance", () => {
         await expect(sync.watchForRestore()).resolves.toBe(true);
         await vi.advanceTimersByTimeAsync(3000);
         expect(watchReads(fake)).toBe(reads);
-        expect(alerts.normalWait).toHaveBeenCalledTimes(1);
+        expect(alerts.terminal).toHaveBeenCalledTimes(1);
     });
 });
 

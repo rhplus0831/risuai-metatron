@@ -1,5 +1,5 @@
 import { get } from "svelte/store";
-import { alertMd, alertSelect, alertToast, alertWait, doingAlert, alertRequestLogs } from "./alert";
+import { alertMd, alertSelect, alertToast, alertWait, doingAlert, alertRequestLogs, terminalNotice } from "./alert";
 import { changeToPreset as changeToPreset2, getDatabase } from "./storage/database.svelte";
 import {
     alertStore,
@@ -22,6 +22,10 @@ import { RISU_SIDEBAR_DRAG_TYPE } from "./dragTypes";
 
 export function initHotkey() {
     document.addEventListener("keydown", async (ev) => {
+        // The terminal notice is a modal dialog with its own keys: no shortcut runs behind it.
+        if (get(terminalNotice) !== null) {
+            return;
+        }
         if (
             !ev.ctrlKey &&
             !ev.altKey &&

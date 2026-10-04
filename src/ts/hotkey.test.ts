@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import type { Writable } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Phase 3, slice 5: the preset hotkeys (Ctrl+1 to Ctrl+9) map their index to the preset's id and
@@ -8,7 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // closes, and with a forwarded preset field that is the selected preset (Astra challenge point 2).
 
 vi.mock("./globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("./alert", () => ({
+vi.mock("./alert", async () => ({
+    // No terminal notice is shown unless a test sets one (a writable here; read-only in `alert.ts`).
+    terminalNotice: (await import("svelte/store")).writable<string | null>(null),
     alertMd: vi.fn(),
     alertSelect: vi.fn(),
     alertToast: vi.fn(),
@@ -31,7 +34,7 @@ vi.mock("./process/index.svelte", () => ({
     doingChat: { set: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }));
 
-import { alertToast, doingAlert } from "./alert";
+import { alertToast, doingAlert, terminalNotice } from "./alert";
 import { initHotkey } from "./hotkey";
 import { setDatabase, type Database } from "./storage/database.svelte";
 import { llmSecretState, setMaskedSecrets } from "./storage/llmSecrets.svelte";
@@ -70,6 +73,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    (terminalNotice as unknown as Writable<string | null>).set(null);
     popUpEditorStore.open = false;
     DBState.db = {} as Database;
 });
@@ -116,6 +120,15 @@ describe("preset hotkeys", () => {
 
     it("do nothing while an alert is open", async () => {
         vi.mocked(doingAlert).mockReturnValueOnce(true);
+        press("2");
+        await Promise.resolve();
+        expect(selection.presetId).toBe("a");
+        expect(alertToast).not.toHaveBeenCalled();
+    });
+
+    it("do nothing while the terminal (restore) notice is shown", async () => {
+        // The restore-notice fix after Phase 6 slice 2: no shortcut runs behind the notice.
+        (terminalNotice as unknown as Writable<string | null>).set("restored");
         press("2");
         await Promise.resolve();
         expect(selection.presetId).toBe("a");

@@ -42,7 +42,7 @@ import {
     type SecretEntryMap,
     type SecretPath,
 } from "../../../shared/llmSecrets.ts";
-import { alertError, alertNormal, alertNormalWait } from "../alert";
+import { alertError, alertNormal, alertTerminal } from "../alert";
 import { assignsInherited } from "./mutationValidation";
 import { DBState, selectedCharID } from "../stores.svelte";
 import { reconcileSelection } from "./forwarding.svelte";
@@ -1221,7 +1221,9 @@ async function haltForRestore() {
         clearTimeout(timer);
         timer = null;
     }
-    await alertNormalWait(language.resourceRestored);
+    // The terminal notice: no other alert replaces or clears it, so the page reloads only after the
+    // user acknowledged it.
+    await alertTerminal(language.resourceRestored);
     location.reload();
 }
 

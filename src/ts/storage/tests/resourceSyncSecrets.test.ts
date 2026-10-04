@@ -18,7 +18,12 @@ import { materialize, serverNormalizer } from "./serverKinds";
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
-    alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
+    alerts: {
+        error: vi.fn(),
+        normal: vi.fn(),
+        normalWait: vi.fn(async () => undefined),
+        terminal: vi.fn(async () => undefined),
+    },
 }));
 
 vi.mock("../nodeStorage", () => ({
@@ -28,6 +33,7 @@ vi.mock("../../alert", () => ({
     alertError: alerts.error,
     alertNormal: alerts.normal,
     alertNormalWait: alerts.normalWait,
+    alertTerminal: alerts.terminal,
 }));
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", resourceRecordRefused: "refused" },
@@ -336,7 +342,7 @@ describe("a queued credential write", () => {
         };
         secrets.setSecret(flat("openrouterKey"), "or-1");
         await expect(sync.flushResources()).rejects.toThrow();
-        expect(alerts.normalWait).toHaveBeenCalledWith("restored");
+        expect(alerts.terminal).toHaveBeenCalledWith("restored");
         expect(secrets.llmSecretState.queue).toHaveLength(1);
         expect(secrets.secretStatus(flat("openrouterKey")).pending).toBe(true);
         expect(fake.data("llmSecrets", "main").openrouterKey ?? "").toBe("");

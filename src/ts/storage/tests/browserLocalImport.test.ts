@@ -13,7 +13,12 @@ const { server, assets, forage, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
     assets: new Map<string, Uint8Array>(),
     forage: new Map<string, Map<string, unknown>>(),
-    alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
+    alerts: {
+        error: vi.fn(),
+        normal: vi.fn(),
+        normalWait: vi.fn(async () => undefined),
+        terminal: vi.fn(async () => undefined),
+    },
 }));
 
 vi.mock("localforage", () => {
@@ -98,6 +103,7 @@ vi.mock("../../alert", () => ({
     alertError: alerts.error,
     alertNormal: alerts.normal,
     alertNormalWait: alerts.normalWait,
+    alertTerminal: alerts.terminal,
 }));
 vi.mock("src/lang", () => ({ language: { resourceReloaded: "reloaded", resourceRestored: "restored" } }));
 vi.mock("../../process/modules", () => ({
@@ -353,7 +359,7 @@ describe("the run as a whole", () => {
         await expect(importer.importBrowserLocalData()).rejects.toBeInstanceOf(client.ResourceEpochMismatchError);
         expect(table(INLAY).has("broken")).toBe(true);
         expect(table(IRIS).size).toBe(1);
-        expect(alerts.normalWait).toHaveBeenCalledWith("restored");
+        expect(alerts.terminal).toHaveBeenCalledWith("restored");
     });
 });
 

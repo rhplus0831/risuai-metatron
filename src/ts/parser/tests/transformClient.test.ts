@@ -785,3 +785,68 @@ describe("emotion effects", () => {
         expect(get(CharEmotion)).toEqual({});
     });
 });
+
+// A restore during a send (the restore-notice fix after Phase 6 slice 2): a transform the server
+// refuses with a 412 EpochMismatch answers its targets raw and shows no failure toast, on either
+// call and across a batch's chunks, since the terminal restore notice tells the user. Any other
+// failure still toasts.
+describe("a request a restore refused (412 EpochMismatch)", () => {
+    const refused: Reply = { status: 412, body: { error: "EpochMismatch", epoch: "epoch-2" } };
+
+    it("answers every target raw on the first call, across the batch's chunks, with no toast", async () => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        state.handler = () => refused;
+        const calls = Array.from({ length: 65 }, (_, i) =>
+            serverProcessScript(char(ref.chaId), `r${i}`, "editdisplay", 0, {}, captured, "message"),
+        );
+        await flush();
+        const answers = await Promise.all(calls);
+        expect(answers).toEqual(Array.from({ length: 65 }, (_, i) => ({ data: `r${i}`, emoChanged: false })));
+        expect(transformPosts()).toHaveLength(2);
+        expect(state.epochs).toEqual(["epoch-2", "epoch-2"]);
+        expect(state.toasts).toEqual([]);
+    });
+
+    it("answers raw with no toast when the second call (after the plugin handlers) is refused", async () => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        state.hooks.editdisplay.add((text) => `${text}+h`);
+        state.handler = (path, body) => (path === "/api/transform/continue" ? refused : defaultHandler(path, body));
+        const a = serverProcessScript(char(ref.chaId), "A", "editdisplay", 0, {}, captured, "message");
+        const b = serverProcessScript(char(ref.chaId), "B", "editdisplay", 2, {}, captured, "text");
+        await flush();
+        expect(await a).toEqual({ data: "A", emoChanged: false });
+        expect(await b).toEqual({ data: "B", emoChanged: false });
+        expect(continuePosts()).toHaveLength(1);
+        expect(state.epochs).toEqual(["epoch-2"]);
+        expect(state.toasts).toEqual([]);
+    });
+
+    it("still toasts an ordinary failure of another batch sent alongside a refused one", async () => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        state.handler = (_path, body) =>
+            body.mode === "editdisplay" ? refused : { status: 500, body: { error: "Boom" } };
+        const refusedCall = serverProcessScript(char(ref.chaId), "D", "editdisplay", 0, {}, captured, "message");
+        const failedCall = serverProcessScript(char(ref.chaId), "P", "editprocess", 0, {}, captured, "message");
+        await flush();
+        expect((await refusedCall).data).toBe("D");
+        expect((await failedCall).data).toBe("P");
+        expect(transformPosts()).toHaveLength(2);
+        expect(state.toasts).toEqual(["Render failed: Boom"]);
+    });
+
+    it("still toasts a later ordinary failure once a refused batch is done", async () => {
+        const ref = newChat();
+        state.handler = () => refused;
+        const first = serverProcessScript(char(ref.chaId), "X", "editdisplay", 0, {}, captureTransform(0)!, "message");
+        await flush();
+        expect((await first).data).toBe("X");
+        state.handler = () => ({ status: 503, body: { error: "Unavailable" } });
+        const second = serverProcessScript(char(ref.chaId), "Y", "editdisplay", 0, {}, captureTransform(0)!, "message");
+        await flush();
+        expect((await second).data).toBe("Y");
+        expect(state.toasts).toEqual(["Render failed: Unavailable"]);
+    });
+});

@@ -1,4 +1,4 @@
-import { get, writable } from "svelte/store";
+import { get, readonly, writable } from "svelte/store";
 import { sleep } from "./util";
 import { language } from "../lang";
 import { getDatabase, type MessageGenerationInfo } from "./storage/database.svelte";
@@ -95,6 +95,38 @@ export async function waitAlert() {
         }
         await sleep(10);
     }
+}
+
+/**
+ * The notice the page ends on (a restore replaced the server data, and the page reloads once it is
+ * acknowledged): a modal dialog (`TerminalNotice.svelte`) above every other alert and overlay. No
+ * other alert replaces or clears it, and Escape does not close it; only its own OK acknowledges it.
+ */
+const terminalNoticeStore = writable<string | null>(null);
+export const terminalNotice = readonly(terminalNoticeStore);
+let terminalPending: Promise<void> | null = null;
+let acknowledgeTerminal: (() => void) | null = null;
+
+/**
+ * Shows `msg` as the terminal notice; resolves once the user acknowledges it. Single-flight: while a
+ * notice is shown, another call keeps it and returns the same promise.
+ */
+export function alertTerminal(msg: string): Promise<void> {
+    terminalPending ??= new Promise((resolve) => {
+        acknowledgeTerminal = () => {
+            acknowledgeTerminal = null;
+            terminalPending = null;
+            terminalNoticeStore.set(null);
+            resolve();
+        };
+        terminalNoticeStore.set(msg);
+    });
+    return terminalPending;
+}
+
+/** Acknowledges the terminal notice (its OK button); nothing when none is shown. */
+export function acknowledgeTerminalNotice() {
+    acknowledgeTerminal?.();
 }
 
 export function alertNormal(msg: string) {

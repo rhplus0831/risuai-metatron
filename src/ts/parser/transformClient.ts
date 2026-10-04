@@ -176,7 +176,10 @@ type Batch = {
     pending: Pending[];
     /** Identical targets share one entry (by their inputs). */
     shared: Map<string, Promise<TransformResult>>;
-    /** Whether this batch showed its failure toast (one per batch, its chunks included). */
+    /**
+     * Whether this batch's failure toast was shown (one per batch, its chunks included) or is
+     * suppressed (a restore refused it: the terminal notice tells the user).
+     */
     reported: boolean;
 };
 
@@ -252,6 +255,9 @@ function post(path: string, body: unknown, deadline: number): Promise<TransformR
     return beforeDeadline(postOnce(path, body, deadline), deadline, "The render took too long");
 }
 
+/** Errors of a request the server refused for another epoch (a restore replaced the data). */
+const epochRefusals = new WeakSet<object>();
+
 async function postOnce(path: string, body: unknown, deadline: number): Promise<TransformResponse> {
     const response = await authFetch(path, {
         method: "POST",
@@ -265,7 +271,9 @@ async function postOnce(path: string, body: unknown, deadline: number): Promise<
         answer = await response.json();
     } catch {}
     if (response.status === 412 && answer.error === "EpochMismatch") {
-        throw epochMismatch(answer.epoch ?? "");
+        const error = epochMismatch(answer.epoch ?? "");
+        epochRefusals.add(error);
+        throw error;
     }
     if (!response.ok) {
         throw new Error(answer.error ?? `The render failed (${response.status})`);
@@ -400,6 +408,10 @@ async function sendChunk(batch: Batch, entries: Pending[]): Promise<void> {
             answer(second.results);
         }
     } catch (error) {
+        if (typeof error === "object" && error !== null && epochRefusals.has(error)) {
+            // A restore replaced the data: its notice tells the user and the page reloads, so no toast.
+            batch.reported = true;
+        }
         const message = error instanceof Error ? error.message : String(error);
         answer([...open.keys()].map((id) => ({ id, ok: false as const, error: message })));
     }

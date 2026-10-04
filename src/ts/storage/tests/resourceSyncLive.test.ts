@@ -15,7 +15,12 @@ import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
 const { server, alerts, dispatch } = vi.hoisted(() => ({
     server: { current: null as any },
-    alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
+    alerts: {
+        error: vi.fn(),
+        normal: vi.fn(),
+        normalWait: vi.fn(async () => undefined),
+        terminal: vi.fn(async () => undefined),
+    },
     /** When set, a request waits here after authentication and before `beforeDispatch`. */
     dispatch: { gate: null as Promise<void> | null },
 }));
@@ -35,6 +40,7 @@ vi.mock("../../alert", () => ({
     alertError: alerts.error,
     alertNormal: alerts.normal,
     alertNormalWait: alerts.normalWait,
+    alertTerminal: alerts.terminal,
 }));
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
@@ -873,7 +879,7 @@ describe("halting for a restore", () => {
         expect(fake.batchCount()).toBe(0);
         expect(db().zoomsize).not.toBe(190);
         expect(fake.record("characters", "c")!.data.name).toBe("C");
-        expect(alerts.normalWait).toHaveBeenCalledWith("restored");
+        expect(alerts.terminal).toHaveBeenCalledWith("restored");
     });
 
     it("refuses a batch at dispatch when saving halted after it was captured (finding 9)", async () => {
