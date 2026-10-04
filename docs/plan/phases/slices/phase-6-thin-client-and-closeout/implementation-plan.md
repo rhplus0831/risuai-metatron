@@ -658,3 +658,15 @@ slice's reviewer with this plan's amendments, and the reviewer judges again.
   [`spike-projection-bindings.md`](spike-projection-bindings.md) ("Verdict"). Slice 2 (live updates)
   was reported with the two-tab matrix on the flat mirror (`util/playwright/checkLiveUpdates.mjs`,
   49/49), and slice 3 started.
+- **Stop B (2026-10-05, reported; awaiting the owner).** Slices 3 (`51dd50f8`), 4 (`3ea20656`), 5a
+  (`139fc73b`), and 5b (`d7c75749`) are committed, with the restore-notice fix (`35678fd4`) between 3
+  and 4. The gates hold: no `$effect` in `resourceSync.svelte.ts` or `bootstrap.ts`, no mark helper in
+  production `src`, the facade refuses structural character writes (membership through
+  `characterStore`), and server copies go into the records raw (no queued write). Docker
+  (`risu-metatron:p6-stopb`, a fresh volume per run, `--dns 127.0.0.254`): `checkServerSend.mjs`
+  15/15, `checkServerButton.mjs` 8/8, `checkServerTrigger.mjs` 9/9, `checkStopDMatrix.mjs` 35/35, and
+  `checkStopBSmoke.mjs` 12/12 (a character and a settings edit typed in the UI: saved, shown in a
+  second client without a reload, kept across a reload, and the reload writes nothing). Found on the
+  way, older than Phase 6 (reproduced on `35678fd4`): `hotkeyMatches` writes a hotkey's missing
+  modifier flags into the stored list on a key press, which the server's hotkey normalizer undoes, so
+  the first key press of a session saves `hotkeys`.
