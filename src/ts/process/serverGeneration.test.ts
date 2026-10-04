@@ -5,7 +5,8 @@ import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 // from the send (`preview`, `previewPrompt`, `group` for a group chat, `continue`, else `send`), the
 // context (the input with its user message id, an explicit continue target; a preview carries no
 // input), a plugin call's identity, the two per-send fields written before the job (`statics.messages`
-// through `incrementStatic`, the target's `lastInteraction` marked dirty at its index), and the result
+// through `incrementStatic`, the target's `lastInteraction` through `updateCharacter` by its id, which
+// queues the save of a character whether or not it is selected, Phase 6 slice 5), and the result
 // mapping (`refused` and `followed` are a definite refusal, `unknown` an ambiguous one, an error or
 // lost terminal neither; `done` is ok unless `stopped`; a reply's alternatives go to `addRerolls`
 // under its generation, none for a continue; a preview's `result` comes back).
@@ -18,7 +19,7 @@ const stubs = vi.hoisted(() => ({
     findChat: vi.fn<() => unknown>(),
     currentChatRef: vi.fn<() => unknown>(() => null),
     incrementStatic: vi.fn(),
-    markCharacterDirtyAt: vi.fn(),
+    updateCharacter: vi.fn<(chaId: string, patch: Record<string, unknown>) => boolean>(),
     addRerolls: vi.fn(),
     db: { characters: [] as Record<string, unknown>[] },
 }));
@@ -26,7 +27,7 @@ const stubs = vi.hoisted(() => ({
 vi.mock("./serverCommands", () => ({ runServerJob: stubs.run }));
 vi.mock("../storage/chatStore.svelte", () => ({ findChat: stubs.findChat, currentChatRef: stubs.currentChatRef }));
 vi.mock("../storage/collectionStore.svelte", () => ({ incrementStatic: stubs.incrementStatic }));
-vi.mock("../storage/resourceSync.svelte", () => ({ markCharacterDirtyAt: stubs.markCharacterDirtyAt }));
+vi.mock("../storage/characterStore.svelte", () => ({ updateCharacter: stubs.updateCharacter }));
 vi.mock("../stores.svelte", () => ({ DBState: { db: stubs.db } }));
 vi.mock("./prereroll", () => ({ addRerolls: stubs.addRerolls }));
 
@@ -48,6 +49,15 @@ beforeEach(async () => {
     stubs.run.mockReset();
     stubs.findChat.mockReset().mockReturnValue({ message: [] });
     stubs.currentChatRef.mockReset().mockReturnValue(null);
+    // The character module's write by id, applied to the stub list as the real one applies it to the record.
+    stubs.updateCharacter.mockReset().mockImplementation((chaId, patch) => {
+        const char = stubs.db.characters.find((entry) => entry.chaId === chaId);
+        if (!char) {
+            return false;
+        }
+        Object.assign(char, patch);
+        return true;
+    });
     stubs.db.characters = [
         { chaId: "other", type: "character" },
         { chaId: "c", type: "character", lastInteraction: 1 },
@@ -73,7 +83,10 @@ describe("sendChatOnServer", () => {
         expect(options).toEqual({ signal: undefined });
         expect(stubs.incrementStatic).toHaveBeenCalledWith("messages");
         expect(stubs.db.characters[1].lastInteraction as number).toBeGreaterThanOrEqual(before);
-        expect(stubs.markCharacterDirtyAt).toHaveBeenCalledWith(1);
+        expect(stubs.updateCharacter).toHaveBeenCalledTimes(1);
+        expect(stubs.updateCharacter).toHaveBeenCalledWith("c", {
+            lastInteraction: stubs.db.characters[1].lastInteraction,
+        });
         expect(stubs.addRerolls).not.toHaveBeenCalled();
     });
 
@@ -91,7 +104,7 @@ describe("sendChatOnServer", () => {
         started(done());
         await send({ target: { chaId: "g", chatId: "k" }, input: "all", userMessageId: "u3", continue: true });
         expect(lastRequest()).toMatchObject({ kind: "group", context: { input: "all", userMessageId: "u3" } });
-        expect(stubs.markCharacterDirtyAt).toHaveBeenLastCalledWith(2);
+        expect(stubs.updateCharacter).toHaveBeenLastCalledWith("g", { lastInteraction: expect.any(Number) });
 
         for (const [arg, kind] of [
             [{ preview: true }, "preview"],

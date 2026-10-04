@@ -10,6 +10,7 @@
     import { characterFormatUpdate, createBlankChar } from "src/ts/characters";
     import { type character } from "src/ts/storage/database.svelte";
     import { DBState } from "src/ts/stores.svelte";
+    import { addCharacter } from "src/ts/storage/characterStore.svelte";
     import PlaygroundImageGen from "./PlaygroundImageGen.svelte";
     import PlaygroundParser from "./PlaygroundParser.svelte";
     import ToolConversion from "./ToolConversion.svelte";
@@ -31,7 +32,6 @@
             char.utilityBot = true;
             char.name = "assistant";
             char.firstMessage = "{{none}}";
-            DBState.db.characters[charIndex] = char;
             characterFormatUpdate(charIndex);
 
             selectedCharID.set(charIndex);
@@ -41,7 +41,7 @@
         const character = createBlankChar();
         character.chaId = "§playground";
 
-        DBState.db.characters.push(character);
+        addCharacter(character);
 
         playgroundChat();
     };

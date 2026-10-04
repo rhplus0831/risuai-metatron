@@ -362,7 +362,8 @@ describe("v3 character setters and the generation lock", () => {
     let job = 0;
 
     beforeEach(() => {
-        DBState.db = { characters: liveCharacters(), pluginCustomStorage: undefined } as any;
+        // The characters are records since Phase 6 slice 5: installed as `setDatabaseLite` installs them.
+        DBState.db = forwardedDatabase({ characters: liveCharacters(), pluginCustomStorage: undefined });
         vi.spyOn(console, "warn").mockImplementation(() => {});
         job += 1;
         chatStore.applyServerGeneration(refK, {
@@ -434,7 +435,8 @@ describe("v3 character setters and the generation lock", () => {
 
 describe("v3 character setters normalize new characters", () => {
     beforeEach(() => {
-        DBState.db = {
+        // The characters are records since Phase 6 slice 5: installed as `setDatabaseLite` installs them.
+        DBState.db = forwardedDatabase({
             characters: [
                 {
                     chaId: "c",
@@ -452,7 +454,7 @@ describe("v3 character setters normalize new characters", () => {
                 },
             ],
             pluginCustomStorage: undefined,
-        } as any;
+        });
         vi.spyOn(console, "warn").mockImplementation(() => {});
     });
 

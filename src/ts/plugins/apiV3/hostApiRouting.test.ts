@@ -102,7 +102,7 @@ import { DBState, selectedCharID } from "src/ts/stores.svelte";
 import * as chatStore from "src/ts/storage/chatStore.svelte";
 import { checkCharOrder } from "src/ts/storage/characterOrder";
 import { installForwarding } from "src/ts/storage/forwarding.svelte";
-import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
+import { initializeRecords, resetRecords, takeRecordFields } from "src/ts/storage/records.svelte";
 import { MutationTargetGoneError } from "src/ts/storage/mutationValidation";
 import { selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { executePluginV3 } from "./v3.svelte";
@@ -324,8 +324,10 @@ describe("the routing table: collections, the selection, and custom keys", () =>
     });
 
     it("characterOrder goes through setCharacterOrder, and a malformed order is refused", async () => {
-        DBState.db.characters = [character("c", "C"), character("d", "D")] as any;
-        DBState.db.characterOrder = ["c", "d"] as any;
+        DBState.db = liveDatabase({
+            characters: [character("c", "C"), character("d", "D")],
+            characterOrder: ["c", "d"],
+        });
         const api = await makeApi();
         api.setDatabaseLite({ characterOrder: ["d", "c"] });
         expect(plain(db().characterOrder)).toEqual(["d", "c"]);
@@ -361,8 +363,10 @@ describe("the routing table: collections, the selection, and custom keys", () =>
 
 describe("characters through the character mutations", () => {
     beforeEach(() => {
-        DBState.db.characters = [character("c", "C"), character("d", "D")] as any;
-        DBState.db.characterOrder = ["c", "d"] as any;
+        DBState.db = liveDatabase({
+            characters: [character("c", "C"), character("d", "D")],
+            characterOrder: ["c", "d"],
+        });
     });
 
     it("a reordered list keeps the mirror order, appends a new character, and removes an omitted one (both setters)", async () => {
@@ -446,8 +450,10 @@ describe("characterOrder is applied after characters (Astra challenge point 1)",
     });
 
     it("additions and omissions in one call: the persisted order is the explicit one, the mirror keeps its order", async () => {
-        DBState.db.characters = [character("c", "C"), character("d", "D")] as any;
-        DBState.db.characterOrder = ["c", "d"] as any;
+        DBState.db = liveDatabase({
+            characters: [character("c", "C"), character("d", "D")],
+            characterOrder: ["c", "d"],
+        });
         const api = await makeApi();
         api.setDatabaseLite({ characterOrder: ["e", "d"], characters: [character("d", "D"), incoming("e", "E")] });
         expect(ids()).toEqual(["d", "e"]);
@@ -456,11 +462,13 @@ describe("characterOrder is applied after characters (Astra challenge point 1)",
 
     it("a generating character omitted from the list stays in the mirror; the order is the explicit one until the next repair", async () => {
         const refK = { chaId: "c", chatId: "kc" };
-        DBState.db.characters = [
-            character("c", "C", [chat("kc", [{ role: "char", data: "so far", chatId: "m" }])]),
-            character("d", "D"),
-        ] as any;
-        DBState.db.characterOrder = ["c", "d"] as any;
+        DBState.db = liveDatabase({
+            characters: [
+                character("c", "C", [chat("kc", [{ role: "char", data: "so far", chatId: "m" }])]),
+                character("d", "D"),
+            ],
+            characterOrder: ["c", "d"],
+        });
         chatStore.applyServerGeneration(refK, {
             jobId: "J",
             messageId: "m",
@@ -482,8 +490,7 @@ describe("characterOrder is applied after characters (Astra challenge point 1)",
     });
 
     it("a refused order leaves the characters applied, and their added ids repaired into the old order", async () => {
-        DBState.db.characters = [character("c", "C")] as any;
-        DBState.db.characterOrder = ["c"] as any;
+        DBState.db = liveDatabase({ characters: [character("c", "C")], characterOrder: ["c"] });
         const api = await makeApi();
         api.setDatabaseLite({ characterOrder: "c,e", characters: [character("c", "C"), incoming("e", "E")] });
         expect(ids()).toEqual(["c", "e"]);
@@ -528,10 +535,14 @@ describe("the per-key contract (A14)", () => {
 
     it("an error that is not a refusal propagates to the plugin instead of being warned about", async () => {
         const api = await makeApi();
-        // A mirror whose character list is not a list: the character routing fails past its checks.
-        DBState.db.characters = "broken" as any;
-        expect(() => api.setDatabaseLite({ characters: [incoming("e", "E")] })).toThrow(TypeError);
-        await expect(api.setDatabase({ characters: [incoming("e", "E")] })).rejects.toThrow(TypeError);
+        // A mirror whose character list is not loaded (since Phase 6 slice 5 the facade refuses a
+        // non-list, so the records are forgotten after the install instead): the character routing
+        // passes its checks and fails at the list operation.
+        resetRecords();
+        expect(() => api.setDatabaseLite({ characters: [incoming("e", "E")] })).toThrow(/characters are not loaded/);
+        await expect(api.setDatabase({ characters: [incoming("e", "E")] })).rejects.toThrow(
+            /characters are not loaded/,
+        );
         expect(console.warn).not.toHaveBeenCalled();
     });
 });

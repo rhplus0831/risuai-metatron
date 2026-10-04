@@ -13,7 +13,8 @@ import { loadSelection, selection, selectLoreBookPage, selectPersona, selectPres
 
 const KEY = "risu-selection";
 const stored = (storage: Storage) => JSON.parse(storage.getItem(KEY) ?? "null");
-const empty = { presetId: "", personaId: "", loreBookPage: 0 };
+// The in-memory selection also holds the tab's character (Phase 6 slice 5), which is never stored.
+const empty = { presetId: "", personaId: "", loreBookPage: 0, characterId: null };
 
 /** Runs `run` while both storages throw on every call (a quota error, a denied private mode). */
 function withThrowingStorages(run: () => void) {
@@ -61,11 +62,11 @@ describe("loadSelection", () => {
     it("reads this tab's sessionStorage first and the browser's localStorage otherwise", () => {
         localStorage.setItem(KEY, JSON.stringify({ presetId: "last", personaId: "last-p", loreBookPage: 2 }));
         loadSelection();
-        expect(selection).toEqual({ presetId: "last", personaId: "last-p", loreBookPage: 2 });
+        expect(selection).toEqual({ presetId: "last", personaId: "last-p", loreBookPage: 2, characterId: null });
 
         sessionStorage.setItem(KEY, JSON.stringify({ presetId: "mine", personaId: "mine-p", loreBookPage: 1 }));
         loadSelection();
-        expect(selection).toEqual({ presetId: "mine", personaId: "mine-p", loreBookPage: 1 });
+        expect(selection).toEqual({ presetId: "mine", personaId: "mine-p", loreBookPage: 1, characterId: null });
     });
 
     it("falls back field by field on junk: not JSON, not an object, or wrong types", () => {
@@ -79,15 +80,15 @@ describe("loadSelection", () => {
         expect(selection).toEqual(empty);
         localStorage.setItem(KEY, JSON.stringify({ presetId: "ok", loreBookPage: -1 }));
         loadSelection();
-        expect(selection).toEqual({ presetId: "ok", personaId: "", loreBookPage: 0 });
+        expect(selection).toEqual({ presetId: "ok", personaId: "", loreBookPage: 0, characterId: null });
         localStorage.setItem(KEY, JSON.stringify({ presetId: "ok", personaId: "ok-p", loreBookPage: 1.5 }));
         loadSelection();
-        expect(selection).toEqual({ presetId: "ok", personaId: "ok-p", loreBookPage: 0 });
+        expect(selection).toEqual({ presetId: "ok", personaId: "ok-p", loreBookPage: 0, characterId: null });
         // A junk sessionStorage entry does not hide a good localStorage one.
         sessionStorage.setItem(KEY, "[]");
         localStorage.setItem(KEY, JSON.stringify({ presetId: "good", personaId: "good-p", loreBookPage: 3 }));
         loadSelection();
-        expect(selection).toEqual({ presetId: "good", personaId: "good-p", loreBookPage: 3 });
+        expect(selection).toEqual({ presetId: "good", personaId: "good-p", loreBookPage: 3, characterId: null });
     });
 
     it("starts empty when storage throws on access", () => {
@@ -127,7 +128,7 @@ describe("selectPreset, selectPersona, and selectLoreBookPage", () => {
             expect(() => selectPreset("p2")).not.toThrow();
             expect(() => selectPersona("u2")).not.toThrow();
             expect(() => selectLoreBookPage(1)).not.toThrow();
-            expect(selection).toEqual({ presetId: "p2", personaId: "u2", loreBookPage: 1 });
+            expect(selection).toEqual({ presetId: "p2", personaId: "u2", loreBookPage: 1, characterId: null });
         });
     });
 

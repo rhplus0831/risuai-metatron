@@ -22,7 +22,13 @@ import {
 import { v4 as uuidv4, v4 } from "uuid";
 import { getImageType } from "./media";
 import { DBState, OpenRealmStore, selectedCharID } from "./stores.svelte";
-import { findCharacter, updateCharacter } from "./storage/characterStore.svelte";
+import {
+    addCharacter as addCharacterRecord,
+    findCharacter,
+    removeCharacter,
+    updateCharacter,
+} from "./storage/characterStore.svelte";
+import { batchRecordWrites } from "./storage/records.svelte";
 import { AppendableBuffer, changeChatTo, checkCharOrder, downloadFile, getFileSrc } from "./globalApi.svelte";
 import { updateInlayScreen } from "./process/inlayScreen";
 import { parseMarkdownSafe } from "./parser/parser.svelte";
@@ -31,16 +37,13 @@ import { doingChat } from "./process/index.svelte";
 import { createChat, ensureChat, isCharacterGenerating, setChatMeta, syncChatPage } from "./storage/chatStore.svelte";
 import { importCharacter } from "./characterCards";
 import { PngChunk } from "./pngChunk";
-import { markCharactersDirty } from "./storage/resourceSync.svelte";
 
 export function createNewCharacter() {
-    DBState.db.characters.push(createBlankChar());
-    checkCharOrder();
-    return DBState.db.characters.length - 1;
+    return findCharacterIndexbyId(addCharacterRecord(createBlankChar()));
 }
 
 export function createNewGroup() {
-    DBState.db.characters.push({
+    const chaId = addCharacterRecord({
         type: "group",
         name: "",
         firstMessage: "",
@@ -67,8 +70,7 @@ export function createNewGroup() {
         characterTalks: [],
         characterActive: [],
     });
-    checkCharOrder();
-    return DBState.db.characters.length - 1;
+    return findCharacterIndexbyId(chaId);
 }
 
 export async function getCharImage(loc: string, type: "plain" | "css" | "contain" | "lgcss") {
@@ -163,7 +165,6 @@ export async function selectCharImg(charIndex: number) {
     }
     dumpCharImage(charIndex);
     current.image = imgp;
-    markCharactersDirty([chaId]);
 }
 
 export function dumpCharImage(charIndex: number) {
@@ -179,8 +180,6 @@ export function dumpCharImage(charIndex: number) {
         ext: "png",
     });
     char.image = "";
-    DBState.db.characters[charIndex] = char;
-    markCharactersDirty([char.chaId]);
 }
 
 export function changeCharImage(charIndex: number, changeIndex: number) {
@@ -189,8 +188,6 @@ export function changeCharImage(charIndex: number, changeIndex: number) {
     char.ccAssets.splice(changeIndex, 1);
     dumpCharImage(charIndex);
     char.image = image;
-    DBState.db.characters[charIndex] = char;
-    markCharactersDirty([char.chaId]);
 }
 
 export const addingEmotion = writable(false);
@@ -210,7 +207,6 @@ export async function addCharEmotion(charId: number) {
         let dbChar = db.characters[charId];
         if (dbChar.type !== "group") {
             dbChar.emotionImages.push([name, imgp]);
-            DBState.db.characters[charId] = dbChar;
         }
     }
     addingEmotion.set(false);
@@ -220,7 +216,6 @@ export function rmCharEmotion(charId: number, emotionId: number) {
     let dbChar = DBState.db.characters[charId];
     if (dbChar.type !== "group") {
         dbChar.emotionImages.splice(emotionId, 1);
-        DBState.db.characters[charId] = dbChar;
     }
 }
 
@@ -612,6 +607,11 @@ export function characterFormatUpdate(
         updateInteraction?: boolean;
     } = {},
 ) {
+    // One queued save for the whole update (a live character's fields are written through its record).
+    return batchRecordWrites(() => formatCharacter(indexOrCharacter));
+}
+
+function formatCharacter(indexOrCharacter: number | character) {
     let cha = typeof indexOrCharacter === "number" ? getCharacterByIndex(indexOrCharacter) : indexOrCharacter;
     // A character in the mirror gets its chat defaults through the chat module; a detached one (not
     // yet added) directly, and the save loop creates its chats with it.
@@ -886,7 +886,6 @@ export async function makeGroupImage() {
         const index = findCharacterIndexbyId(chaId);
         if (index !== -1) {
             DBState.db.characters[index].image = image;
-            markCharactersDirty([chaId]);
         }
         alertStore.set({
             type: "none",
@@ -907,12 +906,9 @@ function dataURLtoBuffer(string: string) {
 }
 
 export function restoreChar(chaId: string) {
-    const index = findCharacterIndexbyId(chaId);
-    if (index === -1) {
+    if (!updateCharacter(chaId, { trashTime: undefined })) {
         return;
     }
-    DBState.db.characters[index].trashTime = undefined;
-    markCharactersDirty([chaId]);
     checkCharOrder();
 }
 
@@ -934,9 +930,8 @@ export async function removeChar(
             return;
         }
     }
-    const chars = DBState.db.characters;
     const index = chaId === undefined ? -1 : findCharacterIndexbyId(chaId);
-    if (index === -1 || index >= chars.length) {
+    if (index === -1) {
         return;
     }
     if (type !== "normal" && isCharacterGenerating(chaId)) {
@@ -945,13 +940,11 @@ export async function removeChar(
         return;
     }
     if (type === "normal") {
-        chars[index].trashTime = Date.now();
-        markCharactersDirty([chaId]);
+        updateCharacter(chaId, { trashTime: Date.now() });
+        checkCharOrder();
     } else {
-        chars.splice(index, 1);
+        removeCharacter(chaId);
     }
-    checkCharOrder();
-    DBState.db.characters = chars;
     selectedCharID.set(-1);
 }
 

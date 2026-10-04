@@ -446,6 +446,8 @@ The phase file gets:
   writes; a settled boot writes nothing, asserted separately.
 - **Optional split (F-l).** If the diff grows past one review, split the normalization into 5b
   before Stop B. That is the planner's call at slice start; there is no new stop.
+  Taken at slice start (2026-10-04): 5a ownership, then 5b normalization, each with its challenge,
+  review, and commit; Stop B follows 5b (`character-ownership.md`, "Implementation notes").
 
 ### Slices 6 and 7 (`readers-settings-pages`, `readers-settings-consumers`)
 

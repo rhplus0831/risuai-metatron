@@ -1,6 +1,6 @@
 # Slice: Character Ownership
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: split at slice start (2026-10-04, F-l). 5a (ownership) implemented; 5b (normalization) planned. See "Implementation notes".
 
 Phase: [Phase 6](../../phase-6-thin-client-and-closeout.md), "Projections" (the character list
 summary and the selected character as records, the source of truth flipped under the flat
@@ -35,7 +35,7 @@ calls `removeCharacter`; `watchGeneration`'s dirty mark and `setGeneratingCharac
 `src/ts/characters.ts` (`characterFormatUpdate` split: the pure defaults into `addCharacter`,
 the non-pure steps as named below), `src/ts/characterCards.ts` (the `postHistoryInstructions`
 transfer as an import-handling step), `server/src/data/normalize/characters.ts` (new) and its
-registration. No `src/lib` file (the readers move in `readers-characters`). Tests belong to the
+registration. No `src/lib` file (the readers move in `readers-characters`); 5a widened this to the structural writer sites (`implementation-plan.md` "Slice 5", R2). Tests belong to the
 review step.
 
 Identifiers (verified 2026-09-30): `selectedCharID` (`stores.svelte.ts:26`; 565 matching lines
@@ -151,3 +151,113 @@ mirror until `chat-projection-and-lazy-loading`; the record type still carries t
 contradiction is resolved by keeping them until that slice). Index-based plugin APIs keep
 creation order (Phase 1's rule). The `selectedCharID` shim is a second selection surface until it
 is removed.
+
+## Implementation notes (2026-10-04)
+
+### The split
+
+The diff would exceed one review, so the slice is split before Stop B (the planner's call at slice
+start, `implementation-plan.md` "Slice 5", F-l). Stop B follows 5b.
+
+- **5a, ownership (implemented):** the character records, the transport, selection by id, the
+  structural writers and dirty-mark callers, the deferral, the boot's trash pruning, and the id
+  integrity (moved from 5b's `assignIds` drop: by-id wrappers need valid, unique ids before they
+  exist).
+- **5b, normalization (next):** the shared pure character defaults (from `characterFormatUpdate` and
+  `checkNewFormat`'s character block) for `addCharacter` and a server `normalize/characters.ts`; the
+  import steps (`postHistoryInstructions`, lore v1, TTS `none`); `creation_date` once at creation;
+  `lastInteraction` only at send (owner decision 2); `fmIndex` from `createChat`; the rest of
+  `checkNewFormat`'s character block dropped. Until then `changeChar` still runs
+  `characterFormatUpdate`, now in one `batchRecordWrites` scope.
+
+### 5a as built (deviations from "Proposed decisions")
+
+- **Records.** The characters live in `records.svelte.ts` beside the settings records, as one list
+  (`characters`, not a settings `RecordKind`) whose elements are by id on `chaId`. Each character is its
+  own owner: its element and everything under it share a meta (owned objects, displacement, epoch), so
+  a value of character A assigned into B is stored as a detached copy and an edit of one never changes
+  the other. A raw application bumps only that character's epoch (one counter; a node takes the later of
+  its character's and the list's), so retained wrappers of other characters are unaffected. The ids are
+  unique by construction (`initializeRecords` repairs a fixture's missing or repeated ids before any
+  wrapper exists; every insertion refuses a taken id), so a character's writes skip the duplicate scan.
+- **Local fields.** `chats`, `chatPage`, and `reloadKeys` of a character are outside its record: every
+  trap (`get`, `getOwnPropertyDescriptor`, `set`, `defineProperty`, `deleteProperty`) acts on the raw
+  value and queues nothing, so the chat module and the message rendering never go through wrappers.
+  Storing a whole character keeps its own local values by identity and copies a `$state` value from
+  elsewhere.
+- **Structural writes are refused through the facade** (the plan review's smaller alternative to
+  emulating native array membership): a `push`, `splice` (any mutator), index or `length` assignment,
+  `delete`, `defineProperty`, or list assignment through `DBState.db.characters` throws `TypeError`,
+  except the no-op Svelte 3 self-assignments. Membership changes go through `characterStore`
+  (`addCharacter`, `replaceCharacterAt`, `removeCharacter`, the new bulk `removeCharacters`), which call
+  the records' list operations (`insertCharacterRecord`, `replaceCharacterRecordAt`,
+  `removeCharacterRecords`): one raw change, the membership and the stored ids queued once, then the
+  selection's hook. A character's `chaId` never changes (assignment of another value, `delete`, and
+  `defineProperty` refused). Inside a character, an array mutator runs in one batch.
+- **Transport.** `setCharacterWriteListener` (a character's write → its key; membership → the loop
+  wakes); the two `$effect`s, `markCharactersDirty`, `markCharacterDirtyAt`, and `dedupeCharacterIds`
+  are gone. The save loop reads the raw list (`characterData`) and applies server copies raw
+  (`applyRawCharacter`; `patchRawCharacter` for `mergeConcurrentChange`).
+- **Deferral removed** with `setGeneratingCharacter`, `releaseDeferredCharacters`, and the generating
+  restriction of `benignChanges` (`OPEN_DEFAULTS`). The neighbouring gates (in-flight, quarantine,
+  local change, revision, server-job-blocked deletes, chat deferrals) are unchanged. Visible effect: a
+  conflict on a character during a send reloads it at once.
+- **Selection.** `selection.characterId` (`null`: home; per tab; left out of the stored selection).
+  `selectedCharacterIndex` in `selection.svelte.ts` is the index store `stores.svelte.ts` exports as
+  `selectedCharID`: `get` computes the index fresh, `set(index)` selects the character there, and
+  subscribers are told synchronously after a selection and after every completed membership change (the
+  records' hook), which also selects home when the selected character left the list. `selIdState.selId`
+  is a getter and setter over a `$derived` of the same index. The `supaMemory` write is a selection
+  listener registered by `characterStore` (both conditions kept). `characterList` (the summary) is left
+  to `readers-characters`, its first reader.
+- **Writers moved.** `createNewCharacter`, `createNewGroup`, the playground character, and the module
+  conversion use `addCharacter`; `removeChar` uses `updateCharacter` (trash) or `removeCharacter`;
+  `restoreChar` uses `updateCharacter`; the regex import and the send's `lastInteraction` stamp use
+  `updateCharacter`; the Svelte 3 self-assignments are gone.
+- **Boot.** `watchGeneration` is `watchRemoteRecords` (the inlay-cache listeners only); the trash
+  pruning is one `removeCharacters`; `assignIds` is gone; `checkNewFormat`'s defaults run in one batch.
+
+### Measurements (production build, headless Chrome, `util/playwright/measureCharacters.mjs`)
+
+300 characters; "Big" has a 300-entry lorebook and a chat of 400 messages. Task latency medians of two
+runs each, baseline `3ea20656` against 5a:
+
+| Path                                                     | Baseline       | 5a             |
+| -------------------------------------------------------- | -------------- | -------------- |
+| Select Big (400-message history, default visible window) | 38.5–38.8 ms   | 37.2–38.3 ms   |
+| Select a small character                                 | 7.4–7.6 ms     | 6.7–8.1 ms     |
+| Typing in Big's description                              | 10.8–11.3 ms   | 9.7–10.7 ms    |
+| Character lorebook drag, 300 entries                     | 100.5–105.5 ms | 110.5–110.7 ms |
+
+The final tree (after the challenge fixes), measured again by the reviewer on an idle machine, two runs
+each: Select Big 37.6 / 36.3 ms against 37.4 / 36.1 ms, Select a small character 6.4 / 7.2 ms against
+8.2 / 6.9 ms, typing 11.6 / 10.9 ms against 10.0 / 10.4 ms, the drag 112.4 / 104.0 ms against
+112.9 / 111.6 ms (within about 7 %). One final-tree run of mine (drag 117.8 ms) overlapped a full test
+run and is not counted.
+
+The checks passed in all four runs (the typed description and the dragged order on the server, no page
+error, no egress). The drag is already one assignment of `globalLore`; its extra 5 to 10 % is the list
+re-render reading through the wrappers, like slice 4's lorebook drag. It is carried to
+`readers-characters` (slice 8, which moves the character lorebook's readers), with this workload
+(`measureCharacters.mjs`) and slice 4's criterion: within 10 % of the baseline (100.5–105.5 ms), or the
+miss reported at its stop. The selection timing covers the chat screen's default visible window
+(`loadPages`), not a render of the whole 400-message history.
+
+### After the challenge (Astra, 2026-10-04; two re-checks)
+
+- A raw merge (`patchRawCharacter`) no longer bumps the character's epoch: it advances the epoch of
+  each changed top-level field only (a node under a character carries the field it descends from, and
+  resolves against the latest of the list's, the character's, and that field's epoch), so only the
+  wrappers under those fields follow their paths, wherever they are, also when they are no longer in a
+  child map; a retained lore entry moved locally stays that entry, and a removed one stays detached.
+- A genuine same-id local replacement (`replaceCharacterRecordAt`, reached by `replaceCharacterFields`
+  and the legacy setters) advances the character's epoch, so the wrappers under it follow the new
+  object by path; a no-op self-replacement changes nothing.
+- `initializeRecords` refuses a list that holds one object twice, before anything is installed.
+- The selection store publishes through a Svelte `writable` (the standard subscribe/invalidate
+  protocol and subscriber queue), set synchronously after every change and before the selection
+  listeners run (a listener reads the new index; one superseded by a newer selection is skipped).
+- The membership hook runs untracked, so a list change made inside a `$derived` reconciles the
+  selection with it instead of throwing after the list changed.
+- `resetRecords` detaches every wrapper made before it (a generation checked at the root).
+- The measurement labels name the visible window.

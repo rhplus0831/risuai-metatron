@@ -231,7 +231,7 @@ describe("importChat writes the character selected when the dialog opened", () =
         expect(character(beta).chatFolders).toBeUndefined();
         expect(alerts.normal).toHaveBeenCalledWith(language.successImport);
         await sync.flushResources();
-        // Alpha is not selected: the folder write reaches the server through its mark.
+        // Alpha is not selected: the folder write reaches the server as its record's own write.
         expect(record("characters", alpha).chatFolders).toEqual(folders);
         for (const chat of chats) {
             expect(fake.chat(alpha, chat.id)?.data.name).toBe(chat.name);
@@ -239,14 +239,17 @@ describe("importChat writes the character selected when the dialog opened", () =
         expect(record("characters", beta).chatFolders).toBeUndefined();
     });
 
-    it("a reordered character list does not redirect the write", async () => {
-        const { run, alpha, chatsOf, db, index } = await boot();
+    it("a character list changed around the target (an earlier character removed) does not redirect the write", async () => {
+        const { run, alpha, beta, characterStore, chatsOf, db, index } = await boot();
+        const opened = index(alpha);
         await run(jsonl(), () => {
-            // Alpha moves to the end; the selected index now names another character.
-            const list = db().characters;
-            list.push(list.splice(index(alpha), 1)[0]);
+            // The list is in creation order and changes only through the character module (Phase 6
+            // slice 5): the harness's `c`, before Alpha, is removed, so the index Alpha had when the
+            // dialog opened now names Beta.
+            characterStore.removeCharacter("c");
         });
-        expect(index(alpha)).toBe(db().characters.length - 1);
+        expect(index(alpha)).toBe(opened - 1);
+        expect(db().characters[opened].chaId).toBe(beta);
         expect(chatsOf(alpha).map((chat: any) => chat.name)).toEqual(["Imported Chat", "A1"]);
         for (const entry of db().characters) {
             if (entry.chaId !== alpha) {

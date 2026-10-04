@@ -91,7 +91,6 @@ async function boot(options: { prepare?: (server: FakeResourceServer) => void } 
     await sync.flushResources();
     expect(fake.batchCount()).toBe(0);
     fake.requests.length = 0;
-    sync.setGeneratingCharacter(() => generating);
     const db = () => stores.DBState.db as any;
     const mirror = (id: string) => db().characters.find((entry: any) => entry.chaId === id);
     /** A write "another tab" makes on the server's current copy of a record. */
@@ -105,10 +104,7 @@ async function boot(options: { prepare?: (server: FakeResourceServer) => void } 
     return { fake, stores, sync, db, mirror, remote, changed };
 }
 
-let generating: string | null = null;
-
 beforeEach(() => {
-    generating = null;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.stubGlobal("location", { reload: vi.fn() });
     // The chat-change notices (started by `startResourceSync`) stay closed in these tests.
@@ -157,7 +153,6 @@ describe("a character another tab only opened or sent to", () => {
         remote("characters", "b", (data) => (data.lastInteraction = 400));
         delete mirror("b").lastInteraction;
         mirror("b").name = "Bob local";
-        sync.markCharactersDirty(["b"]);
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(fake.data("characters", "b")).toMatchObject({ lastInteraction: 400, name: "Bob local" });
         expect(alerts.normal).not.toHaveBeenCalled();
@@ -174,14 +169,12 @@ describe("a character another tab only opened or sent to", () => {
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
     });
 
-    it("works for a character that is not selected (marked by its writer) and for a group", async () => {
+    it("works for a character that is not selected (saved by its own write, Phase 6 slice 5) and for a group", async () => {
         const { fake, sync, mirror, remote } = await boot();
         remote("characters", "b", (data) => (data.lastInteraction = 200));
         mirror("b").name = "Bob local";
-        sync.markCharactersDirty(["b"]);
         remote("characters", "g", (data) => (data.lastInteraction = 200));
         mirror("g").characterActive[1] = false;
-        sync.markCharactersDirty(["g"]);
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(fake.data("characters", "b")).toMatchObject({ name: "Bob local", lastInteraction: 200 });
         expect(fake.data("characters", "g")).toMatchObject({
@@ -313,7 +306,6 @@ describe("which remote changes are merged", () => {
         // Remote removes member a and adds c, with the parallel arrays unchanged in value.
         remote("characters", "g", (data) => (data.characters = ["b", "c"]));
         mirror("g").characterActive[0] = false;
-        sync.markCharactersDirty(["g"]);
         expect((await sync.flushResources()).discarded).toEqual(["characters/g"]);
         expect(mirror("g")).toMatchObject({ characters: ["b", "c"], characterActive: [true, true] });
         expect(fake.data("characters", "g").characterActive).toEqual([true, true]);
@@ -409,7 +401,9 @@ describe("which remote changes are merged", () => {
 
     it("does not merge a create: a local new character whose id another tab created conflicts as before", async () => {
         const { fake, sync, db } = await boot();
-        db().characters.push(character("n", "Local new", { lastInteraction: 1 }));
+        // The list changes through the character module (Phase 6 slice 5: a push through the facade is refused).
+        const characterStore = await import("../characterStore.svelte");
+        characterStore.addCharacter(character("n", "Local new", { lastInteraction: 1 }));
         await tick();
         fake.set("characters", "n", character("n", "Local new", { lastInteraction: 2 }));
         const result = await sync.flushResources();
@@ -418,10 +412,29 @@ describe("which remote changes are merged", () => {
     });
 });
 
-describe("a running generation's character (the flag-off path)", () => {
+describe("a running generation's character (the generation deferral is gone)", () => {
+    /**
+     * Makes `a` generating as the app does: a server job of this tab streams into a chat of it (the
+     * mirror's chats are local, so the chat is placed there directly). Returns the job's end. Since
+     * Phase 6 slice 5 nothing holds a generating character back: the merge takes what it takes while
+     * idle, and any other change conflicts at once.
+     */
+    async function generate(db: () => any) {
+        const chat = await import("../chatStore.svelte");
+        db().characters.find((entry: any) => entry.chaId === "a").chats = [
+            { id: "ka", name: "K", note: "", localLore: [], message: [{ role: "char", data: "", chatId: "r" }] },
+        ];
+        chat.applyServerGeneration(
+            { chaId: "a", chatId: "ka" },
+            { jobId: "J", messageId: "r", generationId: "g1", text: "so far", seq: 0 },
+        );
+        expect(chat.isCharacterGenerating("a")).toBe(true);
+        return () => chat.endServerJob("J");
+    }
+
     it("rebases a stamp-only and an exact `supaMemory: false` change while generating, with no discard", async () => {
-        const { fake, sync, mirror, remote } = await boot();
-        generating = "a";
+        const { fake, sync, db, mirror, remote } = await boot();
+        const end = await generate(db);
         remote("characters", "a", (data) => {
             data.lastInteraction = 200;
             data.supaMemory = false;
@@ -431,6 +444,7 @@ describe("a running generation's character (the flag-off path)", () => {
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(fake.data("characters", "a")).toMatchObject({ lastInteraction: 200, supaMemory: false, desc: "local" });
         expect(alerts.normal).not.toHaveBeenCalled();
+        end();
     });
 
     it.each([
@@ -441,62 +455,44 @@ describe("a running generation's character (the flag-off path)", () => {
         ["`supaMemory: null`", { supaMemory: null }],
         ["the safe default mixed with a substantive addition", { supaMemory: false, lowLevelAccess: true }],
     ])(
-        "defers %s: the live character is untouched until the generation ends, then the normal reload discards",
+        "takes %s while generating as while idle (a field neither the base nor the local copy has): merged into the live character, no discard",
         async (_label, added) => {
-            const { fake, sync, mirror, remote, changed } = await boot();
-            generating = "a";
+            const { fake, sync, db, mirror, remote, changed } = await boot();
+            const end = await generate(db);
             const live = mirror("a");
             remote("characters", "a", (data) => {
                 Object.assign(data, added);
                 data.lastInteraction = 200;
             });
             live.desc = "local";
-            const error = await sync.flushResources().catch((caught) => caught);
-            expect(error).toBeInstanceOf(sync.GenerationBlockedError);
-            expect(error.message).toBe("A character is still being generated; try again when it finishes");
-            // Nothing of the server's copy reached the object the generation reads, and the
-            // character is neither written nor deleted meanwhile.
+            expect((await sync.flushResources()).discarded).toEqual([]);
+            // The merge reaches the object the screen and the send read, and is written once.
             expect(mirror("a")).toBe(live);
-            for (const key of Object.keys(added)) {
-                expect(Object.hasOwn(live, key)).toBe(false);
-            }
-            expect(live).toMatchObject({ lastInteraction: 100, desc: "local" });
-            expect(changed).toEqual([]);
+            expect(live).toMatchObject({ ...added, lastInteraction: 200, desc: "local" });
+            expect(fake.data("characters", "a")).toMatchObject({ ...added, lastInteraction: 200, desc: "local" });
+            expect(changed).toEqual(["characters/a"]);
+            expect(alerts.normal).not.toHaveBeenCalled();
             const batches = fake.batchCount();
             await vi.advanceTimersByTimeAsync(3000);
-            expect(
-                fake
-                    .batchBodies()
-                    .slice(batches)
-                    .flatMap((body) => body.ops),
-            ).toEqual([]);
-            await expect(sync.flushResources()).rejects.toBeInstanceOf(sync.GenerationBlockedError);
-
-            generating = null;
-            sync.releaseDeferredCharacters();
-            const result = await sync.flushResources();
-            expect(result.discarded).toEqual(["characters/a"]);
-            expect(mirror("a")).toMatchObject({ ...added, lastInteraction: 200, desc: "base" });
-            expect(changed).toEqual(["characters/a"]);
-            expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+            expect(fake.batchCount()).toBe(batches);
+            end();
         },
     );
 
-    it("keeps an already-deferred character deferred: a later stamp-only change does not rebase it", async () => {
-        const { fake, sync, mirror, remote } = await boot();
-        generating = "a";
+    it("conflicts at once for a substantive change while generating; a later stamp-only change then merges", async () => {
+        const { fake, sync, db, mirror, remote } = await boot();
+        const end = await generate(db);
         remote("characters", "a", (data) => (data.name = "Remote name"));
         mirror("a").desc = "local";
-        await expect(sync.flushResources()).rejects.toBeInstanceOf(sync.GenerationBlockedError);
+        expect((await sync.flushResources()).discarded).toEqual(["characters/a"]);
+        expect(mirror("a")).toMatchObject({ name: "Remote name", lastInteraction: 100, desc: "base" });
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         remote("characters", "a", (data) => (data.lastInteraction = 300));
         mirror("a").lastInteraction = 250;
-        await expect(sync.flushResources()).rejects.toBeInstanceOf(sync.GenerationBlockedError);
-        expect(mirror("a")).toMatchObject({ name: "Alice", lastInteraction: 250 });
-        generating = null;
-        sync.releaseDeferredCharacters();
-        expect((await sync.flushResources()).discarded).toEqual(["characters/a"]);
+        expect((await sync.flushResources()).discarded).toEqual([]);
         expect(mirror("a")).toMatchObject({ name: "Remote name", lastInteraction: 300, desc: "base" });
-        expect(fake.data("characters", "a").desc).toBe("base");
+        expect(fake.data("characters", "a")).toMatchObject({ name: "Remote name", lastInteraction: 300, desc: "base" });
+        end();
     });
 });
 

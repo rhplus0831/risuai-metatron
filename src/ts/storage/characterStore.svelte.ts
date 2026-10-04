@@ -1,8 +1,9 @@
-import { get } from "svelte/store";
+import { untrack } from "svelte";
 import { v4 } from "uuid";
 import type { character, groupChat } from "../../../shared/database.ts";
+import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
-import { DBState, selectedCharID } from "../stores.svelte";
+import { DBState } from "../stores.svelte";
 import { isCharacterGenerating, normalizeNewCharacter } from "./chatStore.svelte";
 import { checkCharOrder } from "./characterOrder";
 import {
@@ -15,16 +16,25 @@ import {
     requireObject,
     writeEntries,
 } from "./mutationValidation";
-import { markCharactersDirty } from "./resourceSync.svelte";
+import {
+    batchRecordWrites,
+    insertCharacterRecord,
+    removeCharacterRecords,
+    replaceCharacterRecordAt,
+} from "./records.svelte";
+import { onCharacterSelected, selectCharacter, selection } from "./selection.svelte";
+
+export { selectCharacter };
 
 /**
  * The character mutations (Phase 4): the external contracts (plugins, MCP, Lua, triggers, imports)
  * write characters only through these functions. Each validates its whole input and prepares a
  * detached copy before the mirror changes (a refusal throws `MutationValidationError` and changes
- * nothing), writes the mirror record by `chaId`, and marks it dirty: the save adapter watches only
- * the selected character's fields (`STRUCTURE.md` D4). The adapter stays the transport until Phase
- * 6. An existing character's chats are the chat module's (`chatStore.svelte.ts`): only a character
- * new to the mirror brings its chats with it.
+ * nothing) and writes the character record by `chaId`. Since Phase 6 slice 5 the characters are
+ * write-through records (`records.svelte.ts`): every write of a character's own fields queues its
+ * save, and the list's membership changes only here (add, replace at an index, remove). An existing
+ * character's chats are the chat module's (`chatStore.svelte.ts`): only a character new to the
+ * mirror brings its chats with it.
  */
 
 type AnyCharacter = character | groupChat;
@@ -101,8 +111,7 @@ export function addCharacter(char: unknown): string {
     if (indexOf(chaId) !== -1) {
         throw new MutationValidationError("character", `a character with chaId ${chaId} already exists`);
     }
-    DBState.db.characters ??= [];
-    DBState.db.characters.push(copy);
+    insertCharacterRecord(copy as unknown as Record<string, unknown>);
     normalizeNewCharacter(chaId);
     checkCharOrder();
     return chaId;
@@ -123,11 +132,12 @@ export function updateCharacter(chaId: string, patch: Record<string, unknown>): 
     if (index === -1) {
         return false;
     }
-    const next = writeEntries(list()[index] as unknown as Record<string, unknown>, prepared);
-    if (next) {
-        DBState.db.characters[index] = next as unknown as AnyCharacter;
-    }
-    markCharactersDirty([chaId]);
+    batchRecordWrites(() => {
+        const next = writeEntries(list()[index] as unknown as Record<string, unknown>, prepared);
+        if (next) {
+            replaceCharacterRecordAt(index, next);
+        }
+    });
     return true;
 }
 
@@ -148,7 +158,6 @@ export function replaceCharacterFields(char: unknown): boolean {
         return false;
     }
     writeCharacterFieldsAt(index, fields as unknown as AnyCharacter);
-    markCharactersDirty([chaId]);
     return true;
 }
 
@@ -175,18 +184,16 @@ export function replaceCharacterAt(index: number, char: unknown): string {
     if (characters.some((other, i) => i !== index && other?.chaId === chaId)) {
         throw new MutationValidationError("character", `a character with chaId ${chaId} already exists`);
     }
-    DBState.db.characters ??= [];
-    DBState.db.characters[index] = copy;
-    markCharactersDirty([chaId]);
+    replaceCharacterRecordAt(index, copy as unknown as Record<string, unknown>);
     normalizeNewCharacter(chaId);
     return chaId;
 }
 
 /**
  * Deletes a character for good (with its chats) and drops it from the character order. Refused
- * while it is generating a reply. The selection keeps its character: an earlier removal moves the
- * selected index down, and removing the selected character selects none. Trash and restore are
- * `updateCharacter(chaId, { trashTime })`. Returns `false` when no character has `chaId`.
+ * while it is generating a reply. The selection keeps its character (it is held by id); removing
+ * the selected character selects home. Trash and restore are `updateCharacter(chaId, { trashTime })`.
+ * Returns `false` when no character has `chaId`.
  */
 export function removeCharacter(chaId: string): boolean {
     const index = indexOf(chaId);
@@ -196,39 +203,65 @@ export function removeCharacter(chaId: string): boolean {
     if (isCharacterGenerating(chaId)) {
         throw new MutationValidationError("character", "the character is generating a reply");
     }
-    const selected = get(selectedCharID);
-    DBState.db.characters.splice(index, 1);
-    if (selected === index) {
-        selectedCharID.set(-1);
-    } else if (selected > index) {
-        selectedCharID.set(selected - 1);
-    }
+    removeCharacterRecords([chaId]);
     checkCharOrder();
     return true;
 }
 
 /**
+ * Deletes several characters for good in one change of the list (the boot's trash pruning): the
+ * ones generating a reply are kept. The order is repaired once. Returns the ids it removed.
+ */
+export function removeCharacters(ids: readonly string[]): string[] {
+    const removable = ids.filter((chaId) => indexOf(chaId) !== -1 && !isCharacterGenerating(chaId));
+    if (removable.length === 0) {
+        return [];
+    }
+    const removed = removeCharacterRecords(removable);
+    checkCharOrder();
+    return removed;
+}
+
+/** The selected character's record (its wrapper), or `undefined` at home. */
+export function selectedCharacter(): AnyCharacter | undefined {
+    const chaId = selection.characterId;
+    return chaId === null ? undefined : list().find((entry) => entry?.chaId === chaId);
+}
+
+// The HypaV3 preset that turns memory on for every chat does so when a character is selected.
+onCharacterSelected((chaId) => {
+    untrack(() => {
+        const db = DBState.db;
+        if (
+            db?.hypaV3 &&
+            selectedHypaV3Preset(db)?.settings?.alwaysToggleOn &&
+            findCharacter(chaId)?.supaMemory !== true
+        ) {
+            updateCharacter(chaId, { supaMemory: true });
+        }
+    });
+});
+
+/**
  * Legacy only: the shared body of `setCurrentCharacter` and `setCharacterByIndex`
- * (`database.svelte.ts`, the core-app wrappers until Phase 6), and of `replaceCharacterFields`
- * after its checks. Replaces the own fields of the record at `index` with `char`'s, keeping the
- * mirror's chats, selection, and render key. Not validated or detached, and it marks nothing.
- * External contracts never call it.
+ * (`database.svelte.ts`, the core-app wrappers until `aggregate-removal`), and of
+ * `replaceCharacterFields` after its checks. Replaces the own fields of the record at `index` with
+ * `char`'s, keeping the mirror's chats, selection, and render key (one queued save). Not validated
+ * or detached. External contracts never call it.
  */
 export function writeCharacterFieldsAt(index: number, char: AnyCharacter) {
-    DBState.db.characters ??= [];
-    const characters = DBState.db.characters;
-    const current = characters[index];
+    const current = list()[index];
     if (current === char) {
         return;
     }
     if (!current) {
-        characters[index] = char;
+        replaceCharacterRecordAt(index, char as unknown as Record<string, unknown>);
         return;
     }
-    characters[index] = {
+    replaceCharacterRecordAt(index, {
         ...char,
         chats: current.chats,
         chatPage: current.chatPage,
         reloadKeys: current.reloadKeys,
-    } as AnyCharacter;
+    } as unknown as Record<string, unknown>);
 }

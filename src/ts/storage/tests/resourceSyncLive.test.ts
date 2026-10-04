@@ -248,6 +248,44 @@ describe("records another writer committed", () => {
         expect(await sync.flushResources()).toEqual({ discarded: [] });
     });
 
+    it("applies another writer's character update raw, without a write; the element and a retained nested wrapper then write into the applied copy on its revision (Phase 6 slice 5a)", async () => {
+        const { fake, sync, stores, character } = await boot();
+        // `d` is not selected (`c` is): its record's own writes are saved all the same.
+        expect(stores.DBState.db.characters[0].chaId).toBe("c");
+        character("d").globalLore = [{ key: "k", content: "mine" }];
+        await tick();
+        await sync.flushResources();
+        expect(fake.record("characters", "d")!.data.globalLore).toEqual([{ key: "k", content: "mine" }]);
+        await settle(fake);
+        const element = character("d");
+        const entry = element.globalLore[0];
+        const chats = element.chats;
+        const batches = fake.batchCount();
+        fake.set("characters", "d", {
+            ...fake.record("characters", "d")!.data,
+            name: "D remote",
+            globalLore: [{ key: "k", content: "remote" }],
+        });
+        await settle(fake);
+        expect(element.name).toBe("D remote");
+        expect(entry.content).toBe("remote");
+        expect(element.chats).toBe(chats);
+        expect(fake.batchCount()).toBe(batches);
+        noNotice();
+        const held = fake.record("characters", "d")!.revision;
+        expect(sync.heldRecordRevision("characters", "d")).toBe(held);
+        entry.content = "edited after the update";
+        await tick();
+        await sync.flushResources();
+        const last = fake.batchBodies().at(-1) as any;
+        expect(last.ops).toEqual([expect.objectContaining({ kind: "characters", id: "d", baseRevision: held })]);
+        expect(fake.record("characters", "d")!.data).toMatchObject({
+            name: "D remote",
+            globalLore: [{ key: "k", content: "edited after the update" }],
+        });
+        noNotice();
+    });
+
     it("drops the echo of this tab's own save that arrives before its acknowledgement, and keeps the acknowledged revision", async () => {
         const { fake, sync, db } = await boot();
         db().zoomsize = 120;
@@ -785,22 +823,29 @@ describe("chats and chat lists another writer changed", () => {
 });
 
 describe("work that waits", () => {
-    it("does not read a generating character's update and applies it once the generation ends, without a write", async () => {
-        const { fake, sync, character } = await boot();
-        let generating: string | null = "d";
-        sync.setGeneratingCharacter(() => generating);
-        fake.set("characters", "d", { chaId: "d", name: "D remote" });
+    it("applies a generating character's update at once, without a write (the generation deferral is gone)", async () => {
+        const { fake, sync, chat, character } = await boot();
+        // A server job of this tab streams into `d`'s chat: `d` is generating. Since Phase 6 slice 5
+        // nothing holds a generating character's record back; the job keeps its chat locked.
+        chat.applyServerGeneration(
+            { chaId: "d", chatId: "m" },
+            { jobId: "J", messageId: "x", generationId: "g1", text: "X", seq: 0 },
+        );
+        expect(chat.isCharacterGenerating("d")).toBe(true);
+        try {
+            fake.set("characters", "d", { chaId: "d", name: "D remote" });
+            await settle(fake);
+            expect(reads(fake)).toBe(1);
+            expect(character("d").name).toBe("D remote");
+            expect(sync.heldRecordRevision("characters", "d")).toBe(fake.record("characters", "d")!.revision);
+            expect(fake.batchCount()).toBe(0);
+            noNotice();
+        } finally {
+            chat.endServerJob("J");
+        }
+        // The generation's end changes nothing more.
         await settle(fake);
-        expect(reads(fake)).toBe(0);
-        expect(character("d").name).toBe("D");
-        // What `watchGeneration` does when the generation ends.
-        generating = null;
-        sync.markCharactersDirty(["d"]);
-        sync.releaseDeferredCharacters();
-        await settle(fake);
-        expect(character("d").name).toBe("D remote");
         expect(fake.batchCount()).toBe(0);
-        noNotice();
     });
 
     it("reads at most 1,000 announced chats per request and reaches every one", async () => {

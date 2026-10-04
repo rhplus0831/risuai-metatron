@@ -1,5 +1,4 @@
 import { sleep } from "./util";
-import { v4 as uuidv4 } from "uuid";
 import { get } from "svelte/store";
 import { setDatabase, getDatabase, type Database } from "./storage/database.svelte";
 import {
@@ -12,7 +11,7 @@ import {
 import { mirrorFields, setMaskedSecrets } from "./storage/llmSecrets.svelte";
 import type { MaskedLlmSecrets } from "../../shared/llmSecrets.ts";
 import { loadSelection } from "./storage/selection.svelte";
-import { botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState } from "./stores.svelte";
+import { botMakerMode, selectedCharID, loadedStore, LoadingStatusState } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./alert";
 import { characterURLImport } from "./characterCards";
@@ -25,20 +24,14 @@ import { moduleUpdate } from "./process/modules";
 import { forageStorage, saveDb, setUsingSw, checkCharOrder } from "./globalApi.svelte";
 import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import { readKinds } from "./storage/resourceClient";
-import {
-    markCharactersDirty,
-    onRemoteRecordApplied,
-    releaseDeferredCharacters,
-    seedResources,
-    setGeneratingCharacter,
-    setRemoteResourceOwner,
-} from "./storage/resourceSync.svelte";
+import { batchRecordWrites } from "./storage/records.svelte";
+import { onRemoteRecordApplied, seedResources, setRemoteResourceOwner } from "./storage/resourceSync.svelte";
+import { removeCharacters } from "./storage/characterStore.svelte";
 import { importBrowserLocalData } from "./storage/browserLocalImport";
 import { assembleChats, initializeChats, seedChats, setRemoteChatListener } from "./storage/chatStore.svelte";
 import { invalidateInlayCaches, noteRemoteInlay, reconcileInlays, seedInlays } from "./process/files/inlays";
 import { loadPluginPermissions, refreshPluginPermissions } from "./plugins/apiV3/permissionStore";
 import { startEventFeed } from "./network/eventFeed";
-import { doingChat } from "./process/index.svelte";
 import { registerModelDynamic } from "./model/modellist";
 
 /**
@@ -83,7 +76,6 @@ export async function loadData() {
             } catch (error) {}
             LoadingStatusState.text = "Checking For Format Update...";
             await checkNewFormat();
-            assignIds();
             // Each tab selects its own chat (the browser's last choice), and a character without a
             // chat gets one; queued work waits until saving starts below.
             initializeChats();
@@ -104,7 +96,7 @@ export async function loadData() {
 
             // Saving starts before plugins load, so the browser-local import below can save.
             saveDb();
-            watchGeneration();
+            watchRemoteRecords();
             LoadingStatusState.text = "Moving Browser Data To The Server...";
             await importBrowserLocalData();
             await loadPluginPermissions();
@@ -210,27 +202,10 @@ function refreshPermissionsWithRetry(revision: string | null, attempt = 0) {
     });
 }
 
-/**
- * While a generation runs, a conflict does not swap its character out; when it ends, the character it
- * wrote is saved (it may no longer be selected) and any deferred reload runs. Records another tab
- * wrote may reference inlays this tab has not seen, so a remote reload drops the inlay caches.
- */
-function watchGeneration() {
-    let generatingId: string | null = null;
-    setGeneratingCharacter(() => generatingId);
+/** Records another tab wrote may reference inlays this tab has not seen: a remote reload drops the inlay caches. */
+function watchRemoteRecords() {
     onRemoteRecordApplied(() => invalidateInlayCaches());
     setRemoteChatListener(() => invalidateInlayCaches());
-    doingChat.subscribe((running) => {
-        if (running) {
-            generatingId = DBState.db.characters?.[get(selectedCharID)]?.chaId ?? null;
-            return;
-        }
-        if (generatingId) {
-            markCharactersDirty([generatingId]);
-            generatingId = null;
-        }
-        releaseDeferredCharacters();
-    });
 }
 
 /**
@@ -299,13 +274,9 @@ function updateHeightMode() {
 async function checkNewFormat(): Promise<void> {
     let db = getDatabase();
 
-    // Check data integrity
-    db.characters = db.characters
-        .map((v) => {
-            if (!v) {
-                return null;
-            }
-            v.chaId ??= uuidv4();
+    // Check data integrity (the ids are made valid and unique when the records are installed).
+    batchRecordWrites(() => {
+        for (const v of db.characters) {
             v.type ??= "character";
             v.customscript ??= [];
             v.firstMessage ??= "";
@@ -324,20 +295,14 @@ async function checkNewFormat(): Promise<void> {
                 v.systemPrompt ??= "";
                 v.scenario ??= "";
             }
-            return v;
-        })
-        .filter((v) => {
-            return v !== null;
-        });
-
-    for (let i = 0; i < db.characters.length; i++) {
-        const trashTime = db.characters[i].trashTime;
-        const targetTrashTime = trashTime ? trashTime + 1000 * 60 * 60 * 24 * 3 : 0;
-        if (trashTime && targetTrashTime < Date.now()) {
-            db.characters.splice(i, 1);
-            i--;
         }
-    }
+    });
+
+    // Characters in the trash for more than three days are deleted (one change of the list).
+    const now = Date.now();
+    removeCharacters(
+        db.characters.filter((v) => v.trashTime && v.trashTime + 1000 * 60 * 60 * 24 * 3 < now).map((v) => v.chaId),
+    );
     setDatabase(db);
     checkCharOrder();
 }
@@ -351,27 +316,5 @@ function cleanLegacyAccountData() {
         try {
             localStorage.removeItem(key);
         } catch (error) {}
-    }
-}
-
-/**
- * Assigns unique character ids. Chat and message ids come from the server (and the chat module for
- * new ones).
- */
-function assignIds() {
-    if (!DBState?.db?.characters) {
-        return;
-    }
-    const assignedIds = new Set<string>();
-    for (let i = 0; i < DBState.db.characters.length; i++) {
-        const cha = DBState.db.characters[i];
-        if (!cha.chaId) {
-            cha.chaId = uuidv4();
-        }
-        if (assignedIds.has(cha.chaId)) {
-            console.warn(`Duplicate chaId found: ${cha.chaId}. Assigning new ID.`);
-            cha.chaId = uuidv4();
-        }
-        assignedIds.add(cha.chaId);
     }
 }

@@ -452,10 +452,14 @@ describe("the consent gate", () => {
     });
 
     it("refuses a character that became a group while the prompt was open", async () => {
-        const { call, hold, character, unchanged } = await boot();
+        const { call, hold, character, unchanged, saved, sync } = await boot();
         const release = hold();
         const pending = call("risu-set-character-info", { id: "c", data: { name: "x" } });
         character("c").type = "group";
+        // Every write of a character's own fields is saved, selected or not (Phase 6 slice 5): the
+        // test's own change reaches the server first, so the check below sees only the refusal.
+        await sync.flushResources();
+        expect(saved().type).toBe("group");
         expect(
             await unchanged(async () => {
                 release(true);

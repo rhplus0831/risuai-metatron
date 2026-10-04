@@ -70,7 +70,7 @@
     import MultiLangInput from "../UI/GUI/MultiLangInput.svelte";
     import { applyModule } from "src/ts/process/modules";
     import { exportRegex, importRegex } from "src/ts/process/regexFiles";
-    import { markCharactersDirty } from "src/ts/storage/resourceSync.svelte";
+    import { updateCharacter } from "src/ts/storage/characterStore.svelte";
     import SliderInput from "../UI/GUI/SliderInput.svelte";
     import Toggles from "./Toggles.svelte";
     import { convertCharacterToModule } from "src/ts/interchangeability";
@@ -654,9 +654,7 @@
                 bind:value={DBState.db.characters[$selectedCharID].viewScreen}
                 onchange={() => {
                     if (DBState.db.characters[$selectedCharID].type === "character") {
-                        DBState.db.characters[$selectedCharID] = updateInlayScreen(
-                            DBState.db.characters[$selectedCharID] as character,
-                        );
+                        updateInlayScreen(DBState.db.characters[$selectedCharID] as character);
                     }
                 }}
             >
@@ -761,9 +759,7 @@
                             (DBState.db.characters[$selectedCharID] as character).additionalAssets = undefined;
                         }
 
-                        DBState.db.characters[$selectedCharID] = updateInlayScreen(
-                            DBState.db.characters[$selectedCharID] as character,
-                        );
+                        updateInlayScreen(DBState.db.characters[$selectedCharID] as character);
                     }
                 }}
             />
@@ -999,11 +995,7 @@
                     const character = DBState.db.characters[$selectedCharID];
                     const chaId = character.chaId;
                     const scripts = await importRegex($state.snapshot(character.customscript));
-                    const current = DBState.db.characters.find((entry) => entry.chaId === chaId);
-                    if (current) {
-                        current.customscript = scripts;
-                        markCharactersDirty([chaId]);
-                    }
+                    updateCharacter(chaId, { customscript: scripts });
                 }}><HardDriveUploadIcon /></button
             >
         </div>

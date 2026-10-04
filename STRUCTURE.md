@@ -91,11 +91,10 @@ Data and persistence (details: `docs/structure/persistence.md`)
   per chat, messages as rows, one chat order per character); the save adapter
   (`src/ts/storage/resourceSync.svelte.ts`, started by `saveDb`) saves the settings records
   (`src/ts/storage/records.svelte.ts`: the sections, the collections, `presets`, `modules`,
-  `plugins`, `pluginStorage`), which mark themselves on every local write through `DBState.db`'s
-  accessors, watches only the selected character's own fields deeply, and sends the chat module's
-  queued ops. If you mutate a non-selected character outside the character module (which marks what it
-  writes), call `markCharactersDirty([chaId])`, or that change is not saved. Additions and removals
-  need nothing. Every write names the revision and epoch
+  `plugins`, `pluginStorage`) and the character records (one per `chaId`, without its chats), which
+  mark themselves on every local write through `DBState.db`'s accessors, and sends the chat module's
+  queued ops. Add, replace, or remove a character only through `characterStore.svelte.ts`: a
+  structural write through `DBState.db.characters` throws. Every write names the revision and epoch
   it was based on; a stale one reloads that record, except chat ops that address one message by id
   (and per-field chat metadata), which still apply to an older chat revision while that message
   exists. Message ids are assigned optimistically by the client; the server keeps them, renames a
@@ -147,7 +146,8 @@ UI conventions (details: `docs/structure/ui-theming.md`, `docs/structure/setting
   `alertConfirm`, `alertSelect`, `alertInput`, ...), not `window.alert`.
 - U4. There is no router. The screen is chosen by ordered conditionals in `src/App.svelte` and
   `src/lib/ChatScreens/DefaultChatScreen.svelte`, driven by stores. `selectedCharID === -1`
-  means the home screen.
+  means the home screen. `selectedCharID` is an index view of the selected character's id
+  (`selection.characterId`, per tab); select by id with `selectCharacter`.
 
 Release
 

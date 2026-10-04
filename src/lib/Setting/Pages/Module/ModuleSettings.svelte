@@ -28,7 +28,7 @@
     import { onDestroy } from "svelte";
     import { importMCPModule } from "src/ts/process/mcp/mcp";
     import { convertModuleToCharacter } from "src/ts/interchangeability";
-    import { checkCharOrder } from "src/ts/globalApi.svelte";
+    import { addCharacter } from "src/ts/storage/characterStore.svelte";
     let tempModule: RisuModule = $state({
         name: "",
         description: "",
@@ -85,9 +85,8 @@
                                     e.stopPropagation();
                                     const module = DBState.db.modules.find((v) => v.id === rmodule.id);
                                     const char = convertModuleToCharacter(module);
-                                    DBState.db.characters.push(char);
+                                    addCharacter(char);
                                     alertNormal(language.successfullyConverted);
-                                    checkCharOrder();
                                 }}
                             >
                                 <UserIcon size={18} />

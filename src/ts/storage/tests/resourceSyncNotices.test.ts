@@ -100,11 +100,13 @@ async function boot() {
     const chat: ChatModule = await import("../chatStore.svelte");
     const transport: Transport = await import("../../network/generationJobs");
     const bootstrap: Bootstrap = await import("../../bootstrap");
+    const database = await import("../database.svelte");
 
     const snapshot = await client.readKinds(KINDS, { chats: true });
     sync.seedResources(snapshot);
     chat.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
+    // Installed as `loadData` installs it (the records, Phase 6 slices 4 and 5).
+    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
     stores.selectedCharID.set(0);
     chat.initializeChats();
     fake.requests.length = 0;

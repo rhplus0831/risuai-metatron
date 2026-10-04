@@ -1052,7 +1052,6 @@
                                 if (cha.type !== "group") {
                                     cha.removedQuotes = true;
                                 }
-                                DBState.db.characters[$selectedCharID] = cha;
                             }}
                         />
                     {/if}

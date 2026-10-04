@@ -144,7 +144,7 @@ describe("boot and mixed batches", () => {
         expect(fake.batchCount()).toBe(0);
         db().characters[0].name = "renamed";
         db().characters[0].chatPage = 1;
-        sync.markCharactersDirty(["c"]);
+        // The write itself queues the character's save (Phase 6 slice 5: no mark).
         await sync.flushResources();
         const saved = fake.record("characters", "c")!.data as any;
         expect(saved.name).toBe("renamed");
@@ -184,7 +184,9 @@ describe("boot and mixed batches", () => {
 
     it("creates a new character's chats exactly once, with the record holding none of them", async () => {
         const { fake, sync, db } = await boot();
-        db().characters.push({
+        const characterStore = await import("../characterStore.svelte");
+        // The list changes through the character module (Phase 6 slice 5: a push through the facade is refused).
+        characterStore.addCharacter({
             chaId: "d",
             name: "D",
             type: "character",

@@ -44,9 +44,9 @@ Boot:
 2. `boot.ts:boot` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
 3. `bootstrap.ts:loadData` loads the database: `forageStorage.Init()` (`AutoStorage`), one `readKinds` of every resource kind (the first request prompts for the password on a new browser), `seedResources`/`seedInlays`, `setDatabase` on the assembled DB, `registerSw`, then `characterURLImport`. A failed read only alerts; there is no local fallback.
 4. Common tail of `loadData`:
-   1. `checkNewFormat`, which ends in `setDatabase`, then `assignIds`.
+   1. `checkNewFormat` (character defaults, the trash pruning through `removeCharacters`), which ends in `setDatabase`.
    2. Theme functions: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`.
-   3. `saveDb()` (exactly once; starts the save adapter) and the generation watch (`doingChat`): it tells the adapter which character is generating (`setGeneratingCharacter`), marks that character dirty when the generation ends, wakes the deferred reloads (`releaseDeferredCharacters`), and drops the inlay caches whenever the adapter brought another tab's records in (`onRemoteRecordApplied` → `invalidateInlayCaches`).
+   3. `saveDb()` (exactly once; starts the save adapter) and `watchRemoteRecords`: it drops the inlay caches whenever the adapter brought another tab's records in (`onRemoteRecordApplied` → `invalidateInlayCaches`).
    4. `importBrowserLocalData` (moves old browser-only data to the server), `loadPluginPermissions`, then `loadPlugins`. Plugins load after normalization and ID assignment (before Phase 1 they loaded first).
    5. `loadedStore.set(true)` and `selectedCharID.set(-1)`.
    6. Observers, `registerModelDynamic`, `moduleUpdate`, `cleanLegacyAccountData`. There is no boot-time asset cleanup: orphaned `assets/*` files (including inlay blobs) are never purged automatically.
@@ -72,7 +72,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 - DB: `DBState` = `$state({db})`, initially an empty cast. `LoadingStatusState`.
 - Navigation:
-  - `selectedCharID`: `-1` means home.
+  - `selectedCharID`: `-1` means home. Since Phase 6 slice 5 an index view of `selection.characterId` (`storage/selection.svelte.ts`: the selected `chaId` per tab, never stored, `null` at home): `set(index)` selects the character there, and the value follows the character when the list changes (a removed selected character selects home); subscribers hear of every change synchronously.
   - `settingsOpen`, `SettingsMenuIndex`.
   - `sideBarStore`, `DynamicGUI`.
   - `PlaygroundStore`, `OpenRealmStore`, `RealmInitialOpenChar`.
@@ -80,11 +80,11 @@ All of these live in `src/ts/stores.svelte.ts`.
 - Reload signals:
   - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetTransformEffects` (the script transform's applied emotions, `cbs-rendering.md`).
   - `ReloadChatPointer`.
-  - `selIdState`: rune mirror of `selectedCharID`.
+  - `selIdState`: `selectedCharID` as a reactive field (`selIdState.selId`, a getter and setter over the same selection).
 - Overlays: `alertStore`, `terminalNotice` (`TerminalNotice.svelte`, a modal dialog above every other overlay), `popupStore`, `popUpEditorStore`, `easyPanelStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, `customSideBarConfigDialogStore`, `QuickSettings`.
 - Plugin extension arrays (runes): `additionalSettingsMenu`, `additionalFloatingActionButtons`, `additionalHamburgerMenu`, `additionalChatMenu`, `chatPanelStore`, `bodyIntercepterStore`. Types are `MenuDef` and `ChatPanelDef`.
 - Misc: `CustomCSSStore` (its subscriber injects CSS with `innerHTML`), `SafeModeStore`, `CharEmotion`, `ScrollToMessageStore`, `hotReloading`, `disableHighlight`.
-- Root `$effect`: mirrors `selectedCharID` into `selIdState` and reruns `moduleUpdate` when module, chat, or background dependencies change.
+- Root `$effect`: reruns `moduleUpdate` when module, chat, or background dependencies change.
 
 ## Coupling
 

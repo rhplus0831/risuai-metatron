@@ -17,6 +17,7 @@ import {
     type SectionKind,
 } from "../../../shared/sections.ts";
 import { clearSecret, setSecret } from "./llmSecrets.svelte";
+import { v4 } from "uuid";
 import { writeEntries } from "./mutationValidation";
 
 /**
@@ -77,6 +78,16 @@ export type RecordKind = (typeof RECORD_KINDS)[number];
 
 const recordKinds = new Set<string>(RECORD_KINDS);
 
+/**
+ * The character list (Phase 6 slice 5): held beside the settings records, but not a settings kind (the
+ * save loop writes one `characters` resource per `chaId`, not one record).
+ */
+export const CHARACTERS = "characters";
+/** A kind the wrapper machinery tracks: a settings record or the character list. */
+type TrackedKind = RecordKind | typeof CHARACTERS;
+/** Fields of a character that are not part of its record: the chat module's mirror and the render key. */
+const CHARACTER_LOCAL_FIELDS: ReadonlySet<string> = new Set(["chats", "chatPage", "reloadKeys"]);
+
 /** Whether `kind` is held by the records (the save loop's settings kinds). */
 export function isRecordKind(kind: string): kind is RecordKind {
     return recordKinds.has(kind);
@@ -108,8 +119,8 @@ export const SELECTABLE_ROOT_FIELDS: Readonly<Record<string, { items: string; se
  * `raw`, and the records it describes are returned for `initializeRecords` (a section from the
  * section fields present, in `SECTION_FIELDS` order; a selectable collection from its two fields).
  */
-export function takeRecordFields(raw: Record<string, unknown>): Partial<Record<RecordKind, unknown>> {
-    const fields: Partial<Record<RecordKind, unknown>> = {};
+export function takeRecordFields(raw: Record<string, unknown>): RecordFields {
+    const fields: RecordFields = {};
     const take = (key: string): { found: boolean; value: unknown } => {
         const descriptor = Object.getOwnPropertyDescriptor(raw, key);
         if (!descriptor || !("value" in descriptor)) {
@@ -146,6 +157,10 @@ export function takeRecordFields(raw: Record<string, unknown>): Partial<Record<R
         if (items.found || selectedId.found) {
             fields[kind as RecordKind] = { items: items.value ?? [], selectedId: selectedId.value ?? null };
         }
+    }
+    const characters = take(CHARACTERS);
+    if (characters.found) {
+        fields.characters = characters.value;
     }
     return fields;
 }
@@ -192,9 +207,20 @@ export function isRecordWrapper(value: unknown): boolean {
 /** Each record's data, as `$state`: a read of `records[kind]` is tracked, so a replacement re-renders. */
 const records: Record<string, unknown> = $state({});
 
-/** Per record (not reactive): the raw-application epoch and the wrapper bookkeeping. */
+/**
+ * Per owner (not reactive): the raw-application epoch and the wrapper bookkeeping. An owner is one
+ * persisted record: a settings kind, the character list itself, or one character (its element and
+ * everything under it, `characterOwner`), so a value is shared only within the record it belongs to.
+ */
 interface RecordMeta {
+    /** The owner's key: a settings kind, `characters` (the list), or `characters\0<chaId>`. */
+    key: string;
     epoch: number;
+    /** For a character owner: the list's meta (its epoch also applies) and the character's id. */
+    list: RecordMeta | null;
+    chaId: string | null;
+    /** For a character owner: the epoch of a raw change of one top-level field (`patchRawCharacter`). */
+    fieldEpochs: Map<string, number>;
     children: WeakMap<object, TrackedNode>;
     /** The `$state` objects this record's wrappers have reached (a written proxy that is one is stored as is). */
     owned: WeakSet<object>;
@@ -204,12 +230,18 @@ interface RecordMeta {
     clearScheduled: boolean;
 }
 const metas = new Map<string, RecordMeta>();
+/** Every epoch comes from this counter, so the epochs of a character and of its list never collide. */
+let epochCounter = 0;
 
-function metaOf(kind: string): RecordMeta {
+function metaOf(kind: string, list: RecordMeta | null = null, chaId: string | null = null): RecordMeta {
     let meta = metas.get(kind);
     if (!meta) {
         meta = {
+            key: kind,
             epoch: 0,
+            list,
+            chaId,
+            fieldEpochs: new Map(),
             children: new WeakMap(),
             owned: new WeakSet(),
             displaced: new Set(),
@@ -221,27 +253,107 @@ function metaOf(kind: string): RecordMeta {
     return meta;
 }
 
+/** The meta of one character (its element and its descendants). */
+function characterOwner(chaId: string): RecordMeta {
+    return metaOf(`${CHARACTERS}\u0000${chaId}`, metaOf(CHARACTERS), chaId);
+}
+
+/**
+ * The epoch a node resolves against: its owner's, for a character the latest of the character's,
+ * its list's, and that of the top-level field the node is under (`field`), all from one counter.
+ */
+function nodeEpoch(meta: RecordMeta, field: string | null): number {
+    let epoch = meta.epoch;
+    if (meta.list !== null) {
+        epoch = Math.max(epoch, meta.list.epoch);
+    }
+    if (field !== null) {
+        epoch = Math.max(epoch, meta.fieldEpochs.get(field) ?? 0);
+    }
+    return epoch;
+}
+
+function bumpEpoch(meta: RecordMeta) {
+    epochCounter += 1;
+    meta.epoch = epochCounter;
+}
+
 let writeListener: ((kind: RecordKind) => void) | null = null;
+/** The save loop's character hooks: a character's own fields changed, or the list's membership did. */
+export interface CharacterWriteListener {
+    character(chaId: string): void;
+    membership(): void;
+}
+let characterListener: CharacterWriteListener | null = null;
+let membershipHook: (() => void) | null = null;
 let batchDepth = 0;
-const batchedKinds = new Set<RecordKind>();
+/** Queued in the current batch: a kind, a character (`CHARACTER_KEY` + id), or `MEMBERSHIP_KEY`. */
+const batched = new Set<string>();
+const CHARACTER_KEY = "\u0000character:";
+const MEMBERSHIP_KEY = "\u0000membership";
 
 /** Registers the save loop's hook: called with a record's kind whenever a local write changed it. */
 export function setRecordWriteListener(listener: ((kind: RecordKind) => void) | null) {
     writeListener = listener;
 }
 
-/** Queues the record's write (inside `batchRecordWrites`, once per kind when it ends). */
-export function queueRecordWrite(kind: RecordKind) {
-    if (batchDepth > 0) {
-        batchedKinds.add(kind);
-        return;
-    }
-    writeListener?.(kind);
+/** Registers the save loop's character hooks (a local write of a character, a membership change). */
+export function setCharacterWriteListener(listener: CharacterWriteListener | null) {
+    characterListener = listener;
 }
 
 /**
- * Runs a bulk writer (`fn` is synchronous): its record writes are queued once per kind when the
- * outermost scope ends, also when `fn` throws (what it wrote is queued).
+ * Registers the selection's hook (`selection.svelte.ts`): called synchronously after every completed
+ * change of the character list's membership, local or raw, and after an installation or reset.
+ */
+export function setCharacterMembershipHook(hook: (() => void) | null) {
+    membershipHook = hook;
+}
+
+function dispatch(key: string) {
+    if (key === MEMBERSHIP_KEY) {
+        characterListener?.membership();
+    } else if (key.startsWith(CHARACTER_KEY)) {
+        characterListener?.character(key.slice(CHARACTER_KEY.length));
+    } else {
+        writeListener?.(key as RecordKind);
+    }
+}
+
+function queueKey(key: string) {
+    if (batchDepth > 0) {
+        batched.add(key);
+        return;
+    }
+    dispatch(key);
+}
+
+/** Queues the record's write (inside `batchRecordWrites`, once per kind when it ends). */
+export function queueRecordWrite(kind: RecordKind) {
+    queueKey(kind);
+}
+
+/** Queues a character's write (inside `batchRecordWrites`, once per character when it ends). */
+function queueCharacterWrite(chaId: string) {
+    queueKey(CHARACTER_KEY + chaId);
+}
+
+function queueMembership() {
+    queueKey(MEMBERSHIP_KEY);
+}
+
+/** Queues the write a change under `node` made: its settings kind, or the character it is in. */
+function queueNodeWrite(node: TrackedNode) {
+    if (node.kind !== CHARACTERS) {
+        queueRecordWrite(node.kind);
+    } else if (node.meta.chaId !== null) {
+        queueCharacterWrite(node.meta.chaId);
+    }
+}
+
+/**
+ * Runs a bulk writer (`fn` is synchronous): its record writes are queued once per kind (and once per
+ * character) when the outermost scope ends, also when `fn` throws (what it wrote is queued).
  */
 export function batchRecordWrites<T>(fn: () => T): T {
     batchDepth += 1;
@@ -249,11 +361,11 @@ export function batchRecordWrites<T>(fn: () => T): T {
         return fn();
     } finally {
         batchDepth -= 1;
-        if (batchDepth === 0 && batchedKinds.size > 0) {
-            const kinds = [...batchedKinds];
-            batchedKinds.clear();
-            for (const kind of kinds) {
-                writeListener?.(kind);
+        if (batchDepth === 0 && batched.size > 0) {
+            const keys = [...batched];
+            batched.clear();
+            for (const key of keys) {
+                dispatch(key);
             }
         }
     }
@@ -276,8 +388,7 @@ export function recordData<T = unknown>(kind: RecordKind): T | undefined {
  * change).
  */
 export function applyRaw(kind: RecordKind, data: unknown) {
-    const meta = metaOf(kind);
-    meta.epoch += 1;
+    bumpEpoch(metaOf(kind));
     untrack(() => {
         if (data === undefined) {
             delete records[kind];
@@ -287,22 +398,50 @@ export function applyRaw(kind: RecordKind, data: unknown) {
     });
 }
 
+/** What an installation holds: the settings records, and the character list (`[]` when absent). */
+export type RecordFields = Partial<Record<RecordKind, unknown>> & { characters?: unknown };
+
 /**
  * An installation (boot, a test fixture): replaces the whole record set with `fields` (a kind it
- * lacks is removed) and never queues a write.
+ * lacks is removed; the character list is `[]` then) and never queues a write. The characters get
+ * valid, unique ids before any wrapper exists: an entry that is not an object is dropped, and one
+ * without a string `chaId`, or with one an earlier entry has, gets a new id (the server's ids are
+ * the record ids, so a boot never needs this; a fixture or an old export may).
  */
-export function initializeRecords(fields: Partial<Record<RecordKind, unknown>>) {
+export function initializeRecords(fields: RecordFields) {
+    const list = (Array.isArray(fields.characters) ? fields.characters : []).filter(
+        (entry) => isObject(entry) && !Array.isArray(entry),
+    ) as Record<string, unknown>[];
+    // One object twice would be one character under two ids: refused before anything is installed.
+    if (new Set(list).size !== list.length) {
+        throw new TypeError("characters: the same character object appears twice in the list");
+    }
     for (const kind of RECORD_KINDS) {
         applyRaw(kind, Object.hasOwn(fields, kind) ? fields[kind] : undefined);
     }
+    const seen = new Set<string>();
+    for (const character of list) {
+        if (typeof character.chaId !== "string" || character.chaId === "" || seen.has(character.chaId)) {
+            character.chaId = v4();
+        }
+        seen.add(character.chaId as string);
+    }
+    bumpEpoch(metaOf(CHARACTERS));
+    untrack(() => {
+        records[CHARACTERS] = list;
+    });
+    runMembershipHook();
 }
 
 /**
  * Forgets every record, wrapper, and the write listener (a test's fresh start: the save loop is
- * started again, or its module loaded afresh). Wrappers a test still holds from before stay detached.
+ * started again, or its module loaded afresh). Wrappers a test still holds from before stay detached
+ * (they belong to an earlier generation).
  */
 export function resetRecords() {
+    generation += 1;
     writeListener = null;
+    characterListener = null;
     untrack(() => {
         for (const kind of Object.keys(records)) {
             delete records[kind];
@@ -311,8 +450,9 @@ export function resetRecords() {
     metas.clear();
     rootNodes.clear();
     batchDepth = 0;
-    batchedKinds.clear();
+    batched.clear();
     mutatorDepth = 0;
+    runMembershipHook();
 }
 
 /**
@@ -325,7 +465,7 @@ export function replaceRecord(kind: RecordKind, value: unknown) {
             assertNoLlmCredential(value);
         }
         const prepared = prepareEntryCredentials(kind, value, true);
-        const plain = unwrap(prepared.value, kind);
+        const plain = unwrap(prepared.value, metaOf(kind));
         records[kind] = plain;
         prepared.route();
     });
@@ -355,7 +495,7 @@ export function writeRecordField(kind: RecordKind, field: string, value: unknown
             stored = write.value;
             route = write.route;
         }
-        const plain = unwrap(stored, kind);
+        const plain = unwrap(stored, metaOf(kind));
         const created: Record<string, unknown> = {};
         Object.defineProperty(created, field, { value: plain, enumerable: true, writable: true, configurable: true });
         records[kind] = created;
@@ -566,7 +706,7 @@ function llmSecretDelete(container: string | null, field: string) {
  * credential when it had one.
  */
 function prepareEntryCredentials(
-    kind: RecordKind,
+    kind: TrackedKind,
     value: unknown,
     listLevel: boolean,
     elementLevel = false,
@@ -654,7 +794,7 @@ function idOf(entry: unknown): unknown {
  * Refuses (before anything changes) a credential whose owner is not exactly one element of the list
  * the write leaves (`resulting`): it would be routed to an id two elements share, or to none.
  */
-function assertCredentialOwners(kind: RecordKind, owners: readonly string[], resulting: readonly unknown[]) {
+function assertCredentialOwners(kind: TrackedKind, owners: readonly string[], resulting: readonly unknown[]) {
     for (const owner of owners) {
         let count = 0;
         for (const entry of resulting) {
@@ -692,11 +832,15 @@ type Step =
     /** A property key (an object field, or an array index for elements without by-id identity). */
     | { type: "key"; key: string }
     /** An element of an allowlisted by-id list (`BY_ID_FIELDS`), resolved by its id; `index` is where it last was. */
-    | { type: "id"; field: "id"; id: string; index: number };
+    | { type: "id"; field: string; id: string; index: number };
 
 interface TrackedNode {
-    kind: RecordKind;
+    kind: TrackedKind;
     meta: RecordMeta;
+    /** The `resetRecords` generation the node was made in; an older one never resolves. */
+    generation: number;
+    /** Under a character: the top-level field the node descends from (`null` for the element itself). */
+    field: string | null;
     parent: TrackedNode | null;
     step: Step;
     isArray: boolean;
@@ -715,6 +859,8 @@ interface TrackedNode {
 }
 
 const nodeOf = new WeakMap<object, TrackedNode>();
+/** Bumped by `resetRecords`: wrappers made before it are detached for good. */
+let generation = 0;
 const rootNodes = new Map<string, TrackedNode>();
 
 const isIndex = (key: string) => /^(0|[1-9]\d*)$/.test(key);
@@ -752,6 +898,10 @@ function adopt(node: TrackedNode, target: object, epoch: number) {
     node.target = target;
     node.epoch = epoch;
     node.meta.owned.add(target);
+    if (isCharacterElement(node)) {
+        // The list owns its elements too (a list-level read or comparison sees them as its own).
+        node.parent!.meta.owned.add(target);
+    }
 }
 
 /**
@@ -764,15 +914,18 @@ function adopt(node: TrackedNode, target: object, epoch: number) {
  */
 function resolve(node: TrackedNode): any {
     if (node.parent === null) {
+        if (node.generation !== generation) {
+            throw new DetachedWrapperError(`${node.kind}: the records were reset`);
+        }
         const data = records[node.kind];
         if (!isObject(data)) {
             throw new DetachedWrapperError(`${node.kind} is not loaded`);
         }
-        adopt(node, data, node.meta.epoch);
+        adopt(node, data, nodeEpoch(node.meta, null));
         return data;
     }
     const parent = resolve(node.parent);
-    const epoch = node.meta.epoch;
+    const epoch = nodeEpoch(node.meta, node.field);
     const step = node.step;
     if (step.type === "id") {
         if (node.target !== undefined && Object.is(parent[step.index], node.target)) {
@@ -882,22 +1035,22 @@ function detachedCopy(value: object, seen = new Map<object, unknown>()): unknown
  * - a Svelte proxy the record owns is stored as is; any other Svelte proxy a detached copy;
  * - a plain object or array is kept, with the wrappers in it replaced in place by these rules.
  */
-function unwrap(value: unknown, kind: RecordKind, seen = new Set<object>()): unknown {
+function unwrap(value: unknown, meta: RecordMeta, seen = new Set<object>()): unknown {
     if (!isObject(value)) {
         return value;
     }
     const node = nodeOf.get(value);
     if (node) {
-        return node.kind === kind ? assignedTarget(node) : detachedCopy(value);
+        return node.meta === meta ? assignedTarget(node) : detachedCopy(value);
     }
     if (STATE in value) {
-        const meta = metas.get(kind);
         const owned =
-            (meta && meta.owned.has(value)) ||
-            Object.is(
-                untrack(() => records[kind]),
-                value,
-            );
+            meta.owned.has(value) ||
+            (meta.chaId === null &&
+                Object.is(
+                    untrack(() => records[meta.key]),
+                    value,
+                ));
         return owned ? value : detachedCopy(value);
     }
     if (seen.has(value)) {
@@ -907,7 +1060,7 @@ function unwrap(value: unknown, kind: RecordKind, seen = new Set<object>()): unk
     for (const key of Reflect.ownKeys(value)) {
         const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
         if (descriptor && "value" in descriptor && isObject(descriptor.value)) {
-            const inner = unwrap(descriptor.value, kind, seen);
+            const inner = unwrap(descriptor.value, meta, seen);
             if (!Object.is(inner, descriptor.value)) {
                 // `defineProperty`, never an assignment: an own `__proto__` key stays a key.
                 Object.defineProperty(value, key, { ...descriptor, value: inner });
@@ -933,7 +1086,15 @@ function moveIndexChild(node: TrackedNode, index: string) {
 }
 
 function createChild(parentNode: TrackedNode, step: Step, value: object): TrackedNode {
-    const node = createNode(parentNode.kind, parentNode, step, value, parentNode.meta.epoch);
+    // A character element starts its own owner; anything deeper belongs to its parent's, under the
+    // top-level field it descends from.
+    const meta = isCharacterList(parentNode) && step.type === "id" ? characterOwner(step.id) : parentNode.meta;
+    const field = isCharacterList(parentNode)
+        ? null
+        : isCharacterElement(parentNode) && step.type === "key"
+          ? step.key
+          : parentNode.field;
+    const node = createNode(parentNode.kind, parentNode, step, value, nodeEpoch(meta, field), meta, field);
     parentNode.meta.owned.add(value);
     return node;
 }
@@ -947,20 +1108,23 @@ function createChild(parentNode: TrackedNode, step: Step, value: object): Tracke
  * - `translatorPresets.items`, `hypaV3Presets.items`: `selectableList`
  *   (`server/src/data/normalize/collections.ts`).
  */
-const BY_ID_FIELDS: readonly { kind: RecordKind; field: string | null }[] = [
+const BY_ID_FIELDS: readonly { kind: TrackedKind; field: string | null; id?: string }[] = [
     { kind: "presets", field: null },
     { kind: COLLECTION_KIND.personas, field: null },
     { kind: COLLECTION_KIND.translatorPresets, field: "items" },
     { kind: COLLECTION_KIND.hypaV3Presets, field: "items" },
+    // The character list: `chaId`, unique by construction (`initializeRecords`, the list operations).
+    { kind: CHARACTERS, field: null, id: "chaId" },
 ];
 
-function byIdField(parentNode: TrackedNode): "id" | null {
+/** The id field of the list `parentNode` is, when its elements have by-id identity (`BY_ID_FIELDS`). */
+function byIdField(parentNode: TrackedNode): string | null {
     for (const entry of BY_ID_FIELDS) {
         if (entry.kind !== parentNode.kind) {
             continue;
         }
         if (entry.field === null && parentNode.parent === null) {
-            return "id";
+            return entry.id ?? "id";
         }
         if (
             entry.field !== null &&
@@ -976,12 +1140,13 @@ function byIdField(parentNode: TrackedNode): "id" | null {
 
 /**
  * Refuses, before any state changes, a write through a wrapper with a by-id step (itself or an
- * ancestor) whose id now matches more than one element of its list.
+ * ancestor) whose id now matches more than one element of its list. The character list's ids are
+ * unique by construction, so a character's writes skip the scan.
  */
 function assertUniqueIds(node: TrackedNode) {
     for (let current: TrackedNode | null = node; current !== null; current = current.parent) {
         const step = current.step;
-        if (step.type !== "id" || current.parent === null) {
+        if (step.type !== "id" || current.parent === null || isCharacterList(current.parent)) {
             continue;
         }
         const list = untrack(() => resolve(current!.parent!));
@@ -1000,20 +1165,21 @@ function assertUniqueIds(node: TrackedNode) {
 
 /** The nested wrapper for `value` at `prop` of `parentNode` (one canonical wrapper per logical item). */
 function childWrapper(parentNode: TrackedNode, parentTarget: any, prop: string, value: object): any {
-    const epoch = parentNode.meta.epoch;
+    const epoch = nodeEpoch(parentNode.meta, parentNode.field);
     const refresh = (node: TrackedNode) => {
         if (!Object.is(node.target, value)) {
-            node.meta.owned.add(value);
+            adopt(node, value, nodeEpoch(node.meta, node.field));
+        } else {
+            node.epoch = nodeEpoch(node.meta, node.field);
         }
-        node.target = value;
-        node.epoch = epoch;
         return node.proxy;
     };
     if (Array.isArray(parentTarget)) {
         const record = value as Record<string, unknown>;
-        const field = byIdField(parentNode) !== null && typeof record.id === "string" ? "id" : null;
+        const idField = byIdField(parentNode);
+        const field = idField !== null && typeof record[idField] === "string" ? idField : null;
         if (field) {
-            const id = record.id as string;
+            const id = record[field] as string;
             const existing = parentNode.idChildren.get(id);
             if (existing && existing.isArray === Array.isArray(value)) {
                 (existing.step as { index: number }).index = Number(prop);
@@ -1084,6 +1250,52 @@ function install(node: TrackedNode, next: object) {
     parent[slot] = next;
 }
 
+/** Whether `node` is the character list itself. */
+function isCharacterList(node: TrackedNode): boolean {
+    return node.kind === CHARACTERS && node.parent === null;
+}
+
+/** Whether `node` is one character (an element of the character list). */
+function isCharacterElement(node: TrackedNode): boolean {
+    return node.parent !== null && isCharacterList(node.parent);
+}
+
+/** A local field of a character element (`CHARACTER_LOCAL_FIELDS`): raw, outside the record. */
+function isCharacterLocal(node: TrackedNode, prop: string | symbol): boolean {
+    return typeof prop === "string" && CHARACTER_LOCAL_FIELDS.has(prop) && isCharacterElement(node);
+}
+
+/** Refuses a change of the character list made through its wrapper (`characterStore` changes membership). */
+function refuseListWrite(what: string): never {
+    throw new TypeError(`characters: ${what} through DBState.db.characters; use characterStore`);
+}
+
+/** Whether `value` (a wrapper, a `$state` object, a plain one) stands for the object `current`. */
+function standsFor(value: unknown, current: unknown): boolean {
+    if (Object.is(value, current)) {
+        return true;
+    }
+    const node = isObject(value) ? nodeOf.get(value) : undefined;
+    if (!node) {
+        return false;
+    }
+    try {
+        return Object.is(
+            untrack(() => resolve(node)),
+            current,
+        );
+    } catch {
+        return false;
+    }
+}
+
+/** Refuses a change of a character's `chaId` (a same-value assignment changes nothing). */
+function refuseChaIdChange(target: Record<string, unknown>, value: unknown, what: string) {
+    if (!Object.is(target.chaId, value)) {
+        throw new TypeError(`characters: ${what} chaId; a character's id never changes`);
+    }
+}
+
 /** Whether `node` is the list of an entry-credential kind (`presets`, `customModels`). */
 const isEntryList = (node: TrackedNode) => node.parent === null && Object.hasOwn(entryLeaf, node.kind);
 /** Whether `node` is an element of that list. */
@@ -1092,6 +1304,27 @@ const isEntryElement = (node: TrackedNode) => node.parent !== null && isEntryLis
 function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean {
     assertUniqueIds(node);
     const target = resolve(node);
+    if (isCharacterList(node)) {
+        // Only the no-ops a Svelte 3 self-assignment makes; membership changes go through characterStore.
+        if (
+            (isIndex(prop) && standsFor(value, target[prop])) ||
+            (prop === "length" && Object.is(value, target.length))
+        ) {
+            return true;
+        }
+        refuseListWrite(`writing ${prop}`);
+    }
+    if (isCharacterElement(node)) {
+        if (CHARACTER_LOCAL_FIELDS.has(prop)) {
+            // Outside the record: the chat module's mirror and the render key, stored raw, nothing queued.
+            target[prop] = isRecordWrapper(value) ? detachedCopy(value as object) : value;
+            return true;
+        }
+        if (prop === "chaId") {
+            refuseChaIdChange(target, value, "assigning");
+            return true;
+        }
+    }
     let incoming = value;
     let route: () => void = () => {};
     const container = llmContainer(node);
@@ -1126,7 +1359,7 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
         route = prepared.route;
     }
     // Unwrapped (and validated: a gone wrapper throws) before anything changes.
-    const plain = unwrap(incoming, node.kind);
+    const plain = unwrap(incoming, node.meta);
     if (!Array.isArray(target) && assignsInheritedName(target, prop)) {
         install(node, writeEntries(target, [[prop, plain]])!);
     } else {
@@ -1136,7 +1369,7 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
         target[prop] = plain;
     }
     route();
-    queueRecordWrite(node.kind);
+    queueNodeWrite(node);
     return true;
 }
 
@@ -1180,7 +1413,7 @@ function planMutator(
             routes.push(prepared.route);
             owners.push(...prepared.owners);
         }
-        return unwrap(value, node.kind);
+        return unwrap(value, node.meta);
     });
     if (owners.length > 0) {
         const inserted = next.slice(insertedFrom, insertedTo);
@@ -1209,16 +1442,20 @@ function planMutator(
 }
 
 function createNode(
-    kind: RecordKind,
+    kind: TrackedKind,
     parent: TrackedNode | null,
     step: Step,
     target: object | undefined,
     epoch: number,
+    meta: RecordMeta = metaOf(kind),
+    field: string | null = null,
 ): TrackedNode {
     const isArray = Array.isArray(target);
     const node: TrackedNode = {
         kind,
-        meta: metaOf(kind),
+        meta,
+        generation,
+        field,
         parent,
         step,
         isArray,
@@ -1242,27 +1479,36 @@ function createNode(
             }
             const value = resolved[prop];
             if (typeof value === "function" && Array.isArray(resolved) && MUTATORS.has(prop)) {
+                if (isCharacterList(node)) {
+                    return () => refuseListWrite(`calling ${prop}`);
+                }
                 let mutator = node.mutators.get(prop);
                 if (!mutator) {
                     const native = value as (...args: unknown[]) => unknown;
                     mutator = (...args: unknown[]) => {
                         // Every inserted value is prepared (credentials validated and stripped) and
                         // unwrapped before the method runs, so a retained wrapper resolves its current
-                        // identity (or throws) and nothing changes on a refusal.
+                        // identity (or throws) and nothing changes on a refusal. Its writes are queued
+                        // once, when it ends (also when it throws).
                         const plan = untrack(() => planMutator(node, resolve(node), prop, args));
-                        mutatorDepth += 1;
-                        let result: unknown;
-                        try {
-                            result = Reflect.apply(native, node.proxy, plan.args);
-                        } finally {
-                            mutatorDepth -= 1;
-                        }
-                        plan.route();
-                        return result;
+                        return batchRecordWrites(() => {
+                            mutatorDepth += 1;
+                            let result: unknown;
+                            try {
+                                result = Reflect.apply(native, node.proxy, plan.args);
+                            } finally {
+                                mutatorDepth -= 1;
+                            }
+                            plan.route();
+                            return result;
+                        });
                     };
                     node.mutators.set(prop, mutator);
                 }
                 return mutator;
+            }
+            if (isCharacterLocal(node, prop)) {
+                return value;
             }
             // An inherited `__proto__` read returns the prototype, which is never wrapped.
             if (isObject(value) && (prop !== "__proto__" || Object.hasOwn(resolved, prop))) {
@@ -1284,8 +1530,17 @@ function createNode(
         },
         deleteProperty(_, prop) {
             return untrack(() => {
+                if (isCharacterList(node)) {
+                    refuseListWrite(`deleting ${String(prop)}`);
+                }
                 assertUniqueIds(node);
                 const resolved = resolve(node);
+                if (isCharacterLocal(node, prop)) {
+                    return Reflect.deleteProperty(resolved, prop);
+                }
+                if (isCharacterElement(node) && prop === "chaId") {
+                    throw new TypeError("characters: deleting chaId; a character's id never changes");
+                }
                 const container = llmContainer(node);
                 if (container !== undefined && typeof prop === "string") {
                     llmSecretDelete(container, prop);
@@ -1295,7 +1550,7 @@ function createNode(
                 }
                 displace(node.meta, resolved[prop]);
                 const done = Reflect.deleteProperty(resolved, prop);
-                queueRecordWrite(node.kind);
+                queueNodeWrite(node);
                 return done;
             });
         },
@@ -1311,8 +1566,17 @@ function createNode(
                 ) {
                     throw new TypeError(`${node.kind}: a record field is a writable, enumerable data property`);
                 }
+                if (isCharacterList(node)) {
+                    refuseListWrite(`defining ${String(prop)}`);
+                }
                 assertUniqueIds(node);
                 const resolved = resolve(node);
+                if (isCharacterElement(node) && typeof prop === "string") {
+                    if (CHARACTER_LOCAL_FIELDS.has(prop) || prop === "chaId") {
+                        // The `set` way: raw for a local field, the id refused unless unchanged.
+                        return writeThrough(node, prop, descriptor.value);
+                    }
+                }
                 if (
                     typeof prop === "string" &&
                     "value" in descriptor &&
@@ -1325,9 +1589,9 @@ function createNode(
                     return writeThrough(node, prop, descriptor.value);
                 }
                 const prepared =
-                    "value" in descriptor ? { ...descriptor, value: unwrap(descriptor.value, node.kind) } : descriptor;
+                    "value" in descriptor ? { ...descriptor, value: unwrap(descriptor.value, node.meta) } : descriptor;
                 const done = Reflect.defineProperty(resolved, prop, prepared);
-                queueRecordWrite(node.kind);
+                queueNodeWrite(node);
                 return done;
             });
         },
@@ -1340,10 +1604,19 @@ function createNode(
         getOwnPropertyDescriptor(_, prop) {
             const resolved = resolve(node);
             const descriptor = Reflect.getOwnPropertyDescriptor(resolved, prop);
-            if (descriptor && "value" in descriptor && typeof prop === "string" && isObject(descriptor.value)) {
+            if (
+                descriptor &&
+                "value" in descriptor &&
+                typeof prop === "string" &&
+                isObject(descriptor.value) &&
+                !isCharacterLocal(node, prop)
+            ) {
                 // Svelte's `getOwnPropertyDescriptor` may return the raw target's value; it is read
-                // through the proxy instead, so the wrapper stands for the `$state` object.
+                // through the proxy instead, so the wrapper stands for the `$state` object. A
+                // character's local fields stay raw.
                 descriptor.value = childWrapper(node, resolved, prop, resolved[prop]);
+            } else if (descriptor && "value" in descriptor && isCharacterLocal(node, prop)) {
+                descriptor.value = resolved[prop];
             }
             return descriptor;
         },
@@ -1369,13 +1642,18 @@ function createNode(
  * on every access. `undefined` while the record is absent: nothing is wrapped then.
  */
 export function trackedRecord<T = any>(kind: RecordKind): T | undefined {
+    return trackedRoot<T>(kind);
+}
+
+function trackedRoot<T>(kind: TrackedKind): T | undefined {
     const data = records[kind];
     if (!isObject(data)) {
         return undefined;
     }
     let node = rootNodes.get(kind);
     if (!node || node.isArray !== Array.isArray(data)) {
-        node = createNode(kind, null, { type: "root" }, untrack(() => records[kind]) as object, metaOf(kind).epoch);
+        const meta = metaOf(kind);
+        node = createNode(kind, null, { type: "root" }, untrack(() => records[kind]) as object, nodeEpoch(meta, null));
         rootNodes.set(kind, node);
     }
     return node.proxy as T;
@@ -1390,6 +1668,9 @@ function wrappedList(list: unknown): { node: TrackedNode; target: unknown[] } | 
     const node = isObject(list) ? nodeOf.get(list) : undefined;
     if (!node) {
         return null;
+    }
+    if (isCharacterList(node)) {
+        refuseListWrite("moving or replacing characters");
     }
     const target = untrack(() => resolve(node));
     if (!Array.isArray(target)) {
@@ -1422,7 +1703,7 @@ export function moveRecordListItem(list: unknown[], from: number, to: number) {
         target.splice(index, 0, item);
     });
     if (wrapped) {
-        queueRecordWrite(wrapped.node.kind);
+        queueNodeWrite(wrapped.node);
     }
 }
 
@@ -1444,7 +1725,7 @@ export function replaceRecordList(list: unknown[], items: readonly unknown[]) {
         const prepared = isEntryList(node)
             ? prepareEntryCredentials(node.kind, [...items], true)
             : { value: [...items], route: () => {} };
-        const plain = unwrap(prepared.value, node.kind) as unknown[];
+        const plain = unwrap(prepared.value, node.meta) as unknown[];
         // The elements the replacement drops count as displaced (a same-task re-insertion is allowed).
         const kept = new Set<unknown>(plain);
         for (const old of Array.from(target)) {
@@ -1455,5 +1736,248 @@ export function replaceRecordList(list: unknown[], items: readonly unknown[]) {
         target.splice(0, target.length, ...plain);
         prepared.route();
     });
-    queueRecordWrite(node.kind);
+    queueNodeWrite(node);
 }
+
+// ---------------------------------------------------------------------------------------------
+// The character list (Phase 6 slice 5, `character-ownership`).
+//
+// `DBState.db.characters` is the list's wrapper (`trackedCharacters`): an element is one character,
+// by id on `chaId`; a write under it (any depth, except its local fields `chats`, `chatPage`,
+// `reloadKeys`, which stay raw) queues that character's save. The list's membership changes only
+// through the operations below, which `characterStore` calls: each validates first, changes the raw
+// list once, queues the membership change and the characters it stored, and runs the selection's hook.
+// The raw path (`applyRawCharacter`, `patchRawCharacter`) is the save loop's: it queues nothing.
+
+type CharacterObject = Record<string, unknown>;
+
+/** The raw `$state` character list, read untracked (the save loop's projection and diffs). */
+export function characterData(): CharacterObject[] {
+    return (untrack(() => records[CHARACTERS]) as CharacterObject[] | undefined) ?? [];
+}
+
+/** The index of the character with `chaId` in the list, tracked (a reactive read); -1 when absent. */
+export function characterIndex(chaId: string | null): number {
+    if (chaId === null) {
+        return -1;
+    }
+    const list = records[CHARACTERS] as CharacterObject[] | undefined;
+    if (!Array.isArray(list)) {
+        return -1;
+    }
+    for (let index = 0; index < list.length; index += 1) {
+        if (list[index]?.chaId === chaId) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+/** The character list's wrapper (`DBState.db.characters`); `undefined` before an installation. */
+export function trackedCharacters<T = unknown[]>(): T | undefined {
+    return trackedRoot<T>(CHARACTERS);
+}
+
+/**
+ * An assignment to `DBState.db.characters`: only the list itself (a Svelte 3 self-assignment) is
+ * accepted, and changes nothing; membership changes go through `characterStore`.
+ */
+export function assignCharacters(value: unknown) {
+    const list = untrack(() => records[CHARACTERS]);
+    if (!standsFor(value, list)) {
+        refuseListWrite("replacing the list");
+    }
+}
+
+function rawList(): CharacterObject[] {
+    const list = untrack(() => records[CHARACTERS]) as CharacterObject[] | undefined;
+    if (!Array.isArray(list)) {
+        throw new DetachedWrapperError("characters are not loaded");
+    }
+    return list;
+}
+
+function requireNewId(list: readonly CharacterObject[], chaId: unknown, replacing = -1): string {
+    if (typeof chaId !== "string" || chaId === "") {
+        throw new TypeError("characters: a character needs a chaId");
+    }
+    if (list.some((entry, index) => index !== replacing && entry?.chaId === chaId)) {
+        throw new TypeError(`characters: a character with chaId ${chaId} already exists`);
+    }
+    return chaId;
+}
+
+/**
+ * A whole character as the list stores it, for the owner of `chaId`: its fields unwrapped by that
+ * owner's rules (a value of another character is copied), its local fields kept when they are the
+ * ones `current` (the same character's stored object) holds, copied when they are another `$state`
+ * object or a wrapper, kept when plain.
+ */
+function storedCharacter(value: unknown, chaId: string, current: CharacterObject | undefined): CharacterObject {
+    if (!isObject(value) || Array.isArray(value)) {
+        throw new TypeError("characters: a character is an object");
+    }
+    const meta = characterOwner(chaId);
+    const node = nodeOf.get(value);
+    if (node && node.meta === meta && isCharacterElement(node)) {
+        return assignedTarget(node) as CharacterObject;
+    }
+    const source = (node ? detachedCopy(value) : value) as CharacterObject;
+    const out: CharacterObject = {};
+    for (const key of Object.keys(source)) {
+        const entry = source[key];
+        let stored: unknown;
+        if (CHARACTER_LOCAL_FIELDS.has(key)) {
+            stored =
+                current !== undefined && Object.is(entry, current[key])
+                    ? entry
+                    : isObject(entry) && (nodeOf.has(entry) || STATE in entry)
+                      ? detachedCopy(entry)
+                      : entry;
+        } else {
+            stored = unwrap(entry, meta);
+        }
+        Object.defineProperty(out, key, { value: stored, enumerable: true, writable: true, configurable: true });
+    }
+    return out;
+}
+
+/** Runs a membership change of the list and what follows it: the queue and the selection's hook. */
+function changeMembership(change: () => readonly string[]) {
+    const stored = untrack(change);
+    batchRecordWrites(() => {
+        queueMembership();
+        for (const chaId of stored) {
+            queueCharacterWrite(chaId);
+        }
+    });
+    runMembershipHook();
+}
+
+/** The selection's hook, untracked (it reconciles `$state`; a caller may be inside a `$derived`). */
+function runMembershipHook() {
+    untrack(() => membershipHook?.());
+}
+
+/** Appends a character (a detached, checked object with a new `chaId`); returns its index. */
+export function insertCharacterRecord(value: CharacterObject): number {
+    let index = -1;
+    changeMembership(() => {
+        const list = rawList();
+        const chaId = requireNewId(list, value.chaId);
+        const stored = storedCharacter(value, chaId, undefined);
+        index = list.length;
+        list.push(stored);
+        return [chaId];
+    });
+    return index;
+}
+
+/**
+ * Stores a character at `index` (an existing index, or the list's length to append). The same
+ * `chaId` as the character there replaces it (its retained wrappers follow it); another id puts a
+ * different character there (the one there leaves the list), refused when another character has it.
+ */
+export function replaceCharacterRecordAt(index: number, value: CharacterObject) {
+    changeMembership(() => {
+        const list = rawList();
+        if (!Number.isInteger(index) || index < 0 || index > list.length) {
+            throw new TypeError("characters: no character at this index");
+        }
+        const current = list[index];
+        const chaId = requireNewId(list, value.chaId, index);
+        const stored = storedCharacter(value, chaId, current?.chaId === chaId ? current : undefined);
+        if (!Object.is(stored, current)) {
+            if (current !== undefined && current.chaId === chaId) {
+                // A whole replacement of the character: what was under it follows the new object by path.
+                displace(characterOwner(chaId), current);
+                bumpEpoch(characterOwner(chaId));
+            }
+            list[index] = stored;
+        }
+        return [chaId];
+    });
+}
+
+/** Removes the characters with these ids (one change of the list); returns the ids it removed. */
+export function removeCharacterRecords(ids: readonly string[]): string[] {
+    const wanted = new Set(ids);
+    const removed: string[] = [];
+    changeMembership(() => {
+        const list = rawList();
+        for (let index = list.length - 1; index >= 0; index -= 1) {
+            const chaId = list[index]?.chaId;
+            if (typeof chaId === "string" && wanted.has(chaId)) {
+                list.splice(index, 1);
+                removed.unshift(chaId);
+                // A character created again with this id is a new record: retained wrappers follow by path.
+                bumpEpoch(characterOwner(chaId));
+            }
+        }
+        return [];
+    });
+    return removed;
+}
+
+/**
+ * The raw path of a server copy of one character (a conflict reload, a live update, a job
+ * hydration): its own fields replaced (its local fields kept), a new one appended with no chats, or
+ * removed (`null`). Queues nothing; retained wrappers of that character follow it by path.
+ */
+export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
+    untrack(() => {
+        const list = rawList();
+        const index = list.findIndex((entry) => entry?.chaId === chaId);
+        bumpEpoch(characterOwner(chaId));
+        if (data === null) {
+            if (index !== -1) {
+                list.splice(index, 1);
+            }
+        } else if (index === -1) {
+            list.push({ ...data, chaId, chats: [], chatPage: 0 });
+        } else {
+            const local = list[index];
+            list[index] = {
+                ...data,
+                chaId,
+                chats: local.chats,
+                chatPage: local.chatPage,
+                reloadKeys: local.reloadKeys,
+            };
+        }
+    });
+    runMembershipHook();
+}
+
+/**
+ * The raw path of a merged server change (`mergeConcurrentChange`): sets (or, with `REMOVE_FIELD`,
+ * deletes) own fields of a character in place. Queues nothing; retained wrappers under the changed
+ * fields follow them by path, all others keep their identity. Returns `false` when no character has
+ * `chaId`.
+ */
+export function patchRawCharacter(chaId: string, changes: readonly (readonly [string, unknown])[]): boolean {
+    return untrack(() => {
+        const target = characterData().find((entry) => entry?.chaId === chaId);
+        if (!target) {
+            return false;
+        }
+        // Only the changed fields' subtrees follow their paths; every other wrapper of the character
+        // keeps its identity (a retained lore entry moved locally stays that entry).
+        const owner = characterOwner(chaId);
+        for (const [field] of changes) {
+            epochCounter += 1;
+            owner.fieldEpochs.set(field, epochCounter);
+        }
+        for (const [field, value] of changes) {
+            if (value === REMOVE_FIELD) {
+                delete target[field];
+            } else {
+                target[field] = value;
+            }
+        }
+        return true;
+    });
+}
+
+/** `patchRawCharacter`'s marker for a field to delete. */
+export const REMOVE_FIELD = Symbol("remove field");

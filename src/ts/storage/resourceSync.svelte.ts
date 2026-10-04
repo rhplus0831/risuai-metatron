@@ -1,7 +1,5 @@
 import isEqual from "lodash/isEqual";
 import { tick, untrack } from "svelte";
-import { get } from "svelte/store";
-import { v4 as uuidv4 } from "uuid";
 import type { ChatOrderRecord, ChatRecord } from "../../../shared/chats.ts";
 import { HIDDEN_HYDRATION_KINDS, type StreamingMessage } from "../../../shared/jobs.ts";
 import {
@@ -42,9 +40,19 @@ import {
 } from "../../../shared/llmSecrets.ts";
 import { alertError, alertNormal, alertTerminal } from "../alert";
 import { assignsInherited } from "./mutationValidation";
-import { DBState, selectedCharID } from "../stores.svelte";
+import { DBState } from "../stores.svelte";
 import { reconcileSelection } from "./forwarding.svelte";
-import { applyRaw, recordData, setRecordWriteListener, type RecordKind } from "./records.svelte";
+import {
+    applyRaw,
+    applyRawCharacter,
+    characterData,
+    patchRawCharacter,
+    recordData,
+    REMOVE_FIELD,
+    setCharacterWriteListener,
+    setRecordWriteListener,
+    type RecordKind,
+} from "./records.svelte";
 import type { character, Chat, Database, groupChat } from "./database.svelte";
 import {
     acceptRemoteCollection,
@@ -121,9 +129,10 @@ import {
  * - The settings records (the sections, the collections, `presets`, `modules`, `plugins`,
  *   `pluginStorage`) are write-through records (`records.svelte.ts`, Phase 6 slice 4): every local
  *   write of one marks it here at once (`setRecordWriteListener`), and every server copy goes in
- *   through `applyRaw`, which marks nothing. Characters are still watched (the selected one, and
- *   membership); writers that change a character while it is not selected call
- *   `markCharactersDirty`.
+ *   through `applyRaw`, which marks nothing. The characters are write-through records too (Phase 6
+ *   slice 5): a write of a character's own fields marks it (`setCharacterWriteListener`), a
+ *   membership change (add, replace, remove through `characterStore`) wakes the loop, and a server
+ *   copy goes in through `applyRawCharacter`/`patchRawCharacter`, which mark nothing.
  * - A cycle serializes each dirty collection and skips it when the text equals what the server
  *   holds (`persisted`), so hydration and no-op re-renders never become writes. Character membership
  *   is diffed by `chaId` every cycle: a new id is created, a vanished one deleted.
@@ -131,8 +140,8 @@ import {
  *   batch was in flight.
  * - A 409 reloads the conflicting records into the mirror (another tab or device wrote them) and
  *   shows `resourceReloaded` once per episode; a 412 (the server was restored) stops saving and
- *   reloads the page. The character a generation runs on is not swapped out under it: its reload
- *   is deferred and runs, inside the cycle, once the generation ends.
+ *   reloads the page. A server generation job reads its own configuration and refreshes character
+ *   records from the server, so a conflict reload of a character it runs on applies at once.
  * - A 409 entry with `reason: "generating"` (a server generation job owns a message the change
  *   touches) is not a reload: the work stays unsaved and is retried after `JOB_RETRY_MS`, and
  *   `chatGenerating` is shown once per refusal episode.
@@ -215,12 +224,6 @@ let permanentError: unknown = null;
 /** Keys whose local edits a conflict discarded, with a sequence number of the discard. */
 const discarded = new Map<string, number>();
 let discardSequence = 0;
-/**
- * Characters whose conflict reload waits until the generation running on them ends. They are
- * neither written nor deleted meanwhile; the next cycle after the generation reloads them.
- */
-const deferredCharacters = new Set<string>();
-let generatingCharacter: () => string | null = () => null;
 let noticeShown = false;
 /**
  * Character deletes the server refused for a generating message → when they may be sent again
@@ -279,14 +282,6 @@ function recordText(kind: string, data: unknown): string {
 }
 
 /**
- * Tells the adapter which character (by `chaId`) a generation is running on, or null. A conflict
- * on that character is not applied to the mirror while the check names it.
- */
-export function setGeneratingCharacter(check: () => string | null) {
-    generatingCharacter = check;
-}
-
-/**
  * Registers a listener called after a server record replaced the mirror's copy (a conflict reload
  * or a deferred reload): another tab or device wrote it, so caches derived from it may be stale.
  */
@@ -317,16 +312,7 @@ function settle(key: string, marked: number) {
     }
 }
 
-/** Whether a character's reload must still wait: it was deferred and its generation is still running. */
-function isBlockedByGeneration(id: string): boolean {
-    return deferredCharacters.has(id) && generatingCharacter() === id;
-}
-
-function isBlockedKey(key: string): boolean {
-    return key.startsWith(characterPrefix) && isBlockedByGeneration(key.slice(characterPrefix.length));
-}
-
-/** Whether anything waits to be saved or reloaded, not counting characters whose generation still runs. */
+/** Whether anything waits to be saved or reloaded. */
 function hasPendingWork(): boolean {
     if (
         hasPendingMembership(true) ||
@@ -337,36 +323,13 @@ function hasPendingWork(): boolean {
     ) {
         return true;
     }
-    for (const id of deferredCharacters) {
-        if (!isBlockedByGeneration(id)) {
-            return true;
-        }
-    }
     for (const key of dirty.keys()) {
         // A delete refused for a generating message stays unsaved but waits for its retry.
-        if (!isBlockedKey(key) && !recordQuarantine(key) && !isRecordJobBlocked(key)) {
+        if (!recordQuarantine(key) && !isRecordJobBlocked(key)) {
             return true;
         }
     }
     return false;
-}
-
-/** Marks characters for the next compare-and-save; for writers that change a non-selected character. */
-export function markCharactersDirty(ids: readonly string[] | "all") {
-    const list = ids === "all" ? (DBState.db.characters ?? []).map((character) => character?.chaId) : ids;
-    for (const id of list) {
-        if (typeof id === "string") {
-            markKey(characterKey(id));
-        }
-    }
-}
-
-/** `markCharactersDirty` for the character at an index of `DBState.db.characters`. */
-export function markCharacterDirtyAt(index: number) {
-    const id = DBState.db.characters?.[index]?.chaId;
-    if (typeof id === "string") {
-        markCharactersDirty([id]);
-    }
 }
 
 /**
@@ -452,7 +415,7 @@ function projectCharacter(character: character | groupChat): string {
 /** The text a record has after a server copy was written into the mirror (its key order, not the server's). */
 function projectRecord(kind: string, id: string): string | undefined {
     if (kind === RESOURCE_KIND.characters) {
-        const character = DBState.db.characters?.find((entry) => entry?.chaId === id);
+        const character = findMirrorCharacter(id);
         return character ? projectCharacter(character) : undefined;
     }
     return COLLECTIONS.includes(kind as Collection) ? projectCollection(kind as Collection) : undefined;
@@ -509,7 +472,7 @@ function hasPendingMembership(runnable = false): boolean {
     if (membershipGeneration <= membershipAcked) {
         return false;
     }
-    const ids = new Set((DBState.db.characters ?? []).filter(Boolean).map((character) => character.chaId));
+    const ids = new Set(characterData().map((character) => character.chaId as string));
     for (const id of ids) {
         if (!persisted.has(characterKey(id)) && !recordQuarantine(characterKey(id))) {
             return true;
@@ -595,20 +558,6 @@ function pendingOp(op: Omit<PendingOp, "part" | "bytes">): PendingOp {
     return { ...op, part, bytes: utf8ByteLength(part) };
 }
 
-/** Gives a duplicate `chaId` a new id (as `assignIds` does at boot) so no record overwrites another. */
-function dedupeCharacterIds(characters: (character | groupChat)[]) {
-    const seen = new Set<string>();
-    for (const character of characters) {
-        if (!character) {
-            continue;
-        }
-        if (typeof character.chaId !== "string" || seen.has(character.chaId)) {
-            character.chaId = uuidv4();
-        }
-        seen.add(character.chaId);
-    }
-}
-
 /**
  * Builds this cycle's operations and the generation each dirty key had when it was captured, then
  * takes the chat work: a new character's chats are created with it, a deleted one's are dropped.
@@ -653,21 +602,15 @@ function collectOperations(): {
         }
     }
 
-    const characters = DBState.db.characters ?? [];
-    dedupeCharacterIds(characters);
+    // The ids are unique by construction (`records.svelte.ts`).
+    const characters = characterData() as unknown as (character | groupChat)[];
     const present = new Set<string>();
     for (const character of characters) {
-        if (!character) {
-            continue;
-        }
         const id = character.chaId;
         present.add(id);
         const key = characterKey(id);
         // A character whose refused delete was undone: nothing waits any more.
         jobBlockedRecords.delete(key);
-        if (deferredCharacters.has(id)) {
-            continue;
-        }
         const current = persisted.get(key);
         if (current && !captured.has(key)) {
             continue;
@@ -689,7 +632,7 @@ function collectOperations(): {
     for (const [key, current] of persisted) {
         if (key.startsWith(characterPrefix)) {
             const id = key.slice(characterPrefix.length);
-            if (!present.has(id) && !deferredCharacters.has(id) && !isRecordJobBlocked(key)) {
+            if (!present.has(id) && !isRecordJobBlocked(key)) {
                 forgetCharacter(id);
                 addOperation(
                     pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: current.revision, text: null }),
@@ -839,13 +782,7 @@ async function cycle() {
     if (halted || !DBState.db?.characters) {
         return;
     }
-    for (const stage of [
-        reloadDeferredCharacters,
-        reloadDeferredChats,
-        hydrateCharacters,
-        applyRemoteUpdates,
-        refreshIdleChats,
-    ]) {
+    for (const stage of [reloadDeferredChats, hydrateCharacters, applyRemoteUpdates, refreshIdleChats]) {
         await stage();
         if (halted) {
             // A restore replaced the data meanwhile: nothing more is applied or sent.
@@ -932,10 +869,6 @@ async function cycle() {
     await sendSecretOps(capturedSecretOps);
     for (const [key, marked] of captured) {
         if (recordQuarantine(key)) {
-            continue;
-        }
-        if (key.startsWith(characterPrefix) && deferredCharacters.has(key.slice(characterPrefix.length))) {
-            // Not saved: its reload waits for the running generation.
             continue;
         }
         if (isRecordJobBlocked(key)) {
@@ -1315,36 +1248,26 @@ const isStamp = (value: unknown): value is number => typeof value === "number" &
 /** The `statics` counts (`incrementStatic`). */
 const STATIC_COUNTS = new Set(["imports", "messages"]);
 /**
- * Values the character screen fills in for an absent field when it opens a character (the
- * `Toggles.svelte` checkbox binding): the only absent-field values taken while a generation runs on
- * the character.
- */
-const OPEN_DEFAULTS: Readonly<Record<string, unknown>> = { supaMemory: false };
-
-/**
  * What a conflicting record's server copy changed against the saved base, if every change is one
  * this client can take without losing or reinterpreting anything, else null. The changes are the
  * values the mirror must take (ABSENT: delete the field). Allowed, field by field (top level):
  * - a field the server holds as this client does (both made the same change);
  * - a field the base did not have and this client does not have either (another tab filled it in,
- *   such as a default its character screen binds); the server's value is taken. While a generation
- *   runs on the character (`generating`), only an `OPEN_DEFAULTS` value: anything else waits for
- *   the generation's deferral, so the running generation never sees a new setting;
+ *   such as a default its character screen binds); the server's value is taken;
  * - a character's `lastInteraction`: the later of two finite stamps (another tab opened or sent to
  *   the character);
  * - a `statics` count: best effort, the server's count plus this client's increments since the
  *   base (`imports`, `messages`; a count both tabs raised to the same value, or one a lost answer
  *   already holds, may be off by those increments).
  * Anything else (a substantive remote edit, even of a field this client did not touch) is a
- * conflict as before, so related fields (a group's member arrays) and a running generation's
- * character are never combined from two sources.
+ * conflict as before, so related fields (a group's member arrays) are never combined from two
+ * sources.
  */
 function benignChanges(
     kind: string,
     saved: Record<string, unknown>,
     remote: Record<string, unknown>,
     local: Record<string, unknown>,
-    generating: boolean,
 ): Map<string, unknown> | null {
     const changes = new Map<string, unknown>();
     for (const field of new Set([...Object.keys(saved), ...Object.keys(remote), ...Object.keys(local)])) {
@@ -1383,12 +1306,7 @@ function benignChanges(
         if (isEqual(theirs, base) || isEqual(theirs, ours)) {
             continue;
         }
-        if (
-            base === ABSENT &&
-            ours === ABSENT &&
-            field !== "__proto__" &&
-            (!generating || (Object.hasOwn(OPEN_DEFAULTS, field) && isEqual(theirs, OPEN_DEFAULTS[field])))
-        ) {
+        if (base === ABSENT && ours === ABSENT && field !== "__proto__") {
             changes.set(field, theirs);
             continue;
         }
@@ -1412,9 +1330,6 @@ function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
     if (!(isCharacter || item.kind === COLLECTION_KIND.statics) || item.revision === null) {
         return false;
     }
-    if (isCharacter && deferredCharacters.has(item.id)) {
-        return false;
-    }
     const base = persisted.get(key);
     const projected = projectRecord(item.kind, item.id);
     if (!base || projected === undefined) {
@@ -1428,8 +1343,7 @@ function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
     }
     const remote = storedFields(item.data);
     const local = storedFields(JSON.parse(projected));
-    const generating = isCharacter && generatingCharacter() === item.id;
-    const changes = remote && saved && local ? benignChanges(item.kind, saved, remote, local, generating) : null;
+    const changes = remote && saved && local ? benignChanges(item.kind, saved, remote, local) : null;
     if (!changes) {
         return false;
     }
@@ -1453,14 +1367,19 @@ function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
     } catch {
         return false;
     }
-    for (const [field, value] of prepared) {
-        if (value === ABSENT) {
-            delete target[field];
-        } else {
-            target[field] = value;
+    if (isCharacter) {
+        patchRawCharacter(
+            item.id,
+            prepared.map(([field, value]) => [field, value === ABSENT ? REMOVE_FIELD : value] as const),
+        );
+    } else {
+        for (const [field, value] of prepared) {
+            if (value === ABSENT) {
+                delete target[field];
+            } else {
+                target[field] = value;
+            }
         }
-    }
-    if (!isCharacter) {
         applyRaw(COLLECTION_KIND.statics, target);
     }
     // The saved base is the server's record. The local projection stands for it when the two are
@@ -1549,10 +1468,6 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
         if (mergeConcurrentChange(item, key)) {
             continue;
         }
-        if (item.kind === RESOURCE_KIND.characters && generatingCharacter() === item.id) {
-            deferredCharacters.add(item.id);
-            continue;
-        }
         if (item.kind === RESOURCE_KIND.characters && item.revision !== null && !findMirrorCharacter(item.id)) {
             // A character the mirror did not have: its chats come with their order.
             hydrate.add(item.id);
@@ -1601,8 +1516,10 @@ async function hydrateCharacters(): Promise<boolean> {
     return true;
 }
 
-function findMirrorCharacter(id: string) {
-    return DBState.db.characters?.find((character) => character?.chaId === id);
+/** The raw `$state` object of a character in the mirror (reads and raw writes; no wrapper). */
+function findMirrorCharacter(id: string): (character | groupChat) | undefined {
+    return characterData().find((character) => character.chaId === id) as unknown as
+        (character | groupChat) | undefined;
 }
 
 /**
@@ -1657,37 +1574,6 @@ async function refreshIdleChats() {
     }
 }
 
-/**
- * Reloads the deferred characters whose generation ended (part of the cycle, so it never races a
- * write; a failed read is retried with the cycle's backoff and keeps the characters excluded).
- */
-async function reloadDeferredCharacters() {
-    const ids = [...deferredCharacters].filter((id) => !isBlockedByGeneration(id));
-    if (ids.length === 0) {
-        return;
-    }
-    const read = await readRefs(ids.map((id) => ({ kind: RESOURCE_KIND.characters, id })));
-    if (halted) {
-        return;
-    }
-    for (const item of read.items) {
-        acceptRemote(item);
-        deferredCharacters.delete(item.id);
-    }
-    for (const id of ids) {
-        // Not answered (never happens with the current route); do not keep it excluded forever.
-        deferredCharacters.delete(id);
-    }
-    showReloadedNotice();
-}
-
-/** Wakes the loop for characters whose reload waited for a generation; call when a generation ends. */
-export function releaseDeferredCharacters() {
-    if (deferredCharacters.size > 0) {
-        schedule(0);
-    }
-}
-
 /** Puts a section or settings collection record into its record (and `llmSecretState`). */
 function applySettingsRecord(
     kind: SectionKind | CollectionKind,
@@ -1734,34 +1620,17 @@ function applyToMirror(kind: string, id: string, data: unknown) {
             }
             return;
         case RESOURCE_KIND.characters: {
-            const characters = DBState.db.characters;
-            const index = characters.findIndex((character) => character?.chaId === id);
+            const existed = findMirrorCharacter(id) !== undefined;
             noteMirrorReplaced();
+            if (data === null && !existed) {
+                return;
+            }
+            // The raw path: the server record has only the character's own fields, so the mirror's
+            // chats, chat selection, and render key are kept; a new one's chats arrive with a
+            // collection read (`recoverFromConflict`). A removed selected character selects home.
+            applyRawCharacter(id, data as Record<string, unknown> | null);
             if (data === null) {
-                if (index === -1) {
-                    return;
-                }
-                const selected = get(selectedCharID);
-                characters.splice(index, 1);
                 forgetCharacter(id);
-                if (selected === index) {
-                    selectedCharID.set(-1);
-                } else if (selected > index) {
-                    selectedCharID.set(selected - 1);
-                }
-            } else if (index === -1) {
-                // Its chats arrive with a collection read (`recoverFromConflict`).
-                characters.push({ ...(data as character | groupChat), chats: [], chatPage: 0 });
-            } else {
-                // The server record has only the character's own fields: keep the mirror's chats,
-                // selection, and render key.
-                const local = characters[index];
-                characters[index] = {
-                    ...(data as character | groupChat),
-                    chats: local.chats,
-                    chatPage: local.chatPage,
-                    reloadKeys: local.reloadKeys,
-                };
             }
             return;
         }
@@ -1944,12 +1813,6 @@ export function reconcileRemote(listing: ResourceRevisionListing) {
 /** Whether a live update of `key` may be applied now: this client has no unsent change of it. */
 function canApplyRemote(key: string, entry: { kind: string; id: string; blockedLocal?: string }): boolean {
     if (sendingKeys.has(key) || recordQuarantine(key) || isRecordJobBlocked(key)) {
-        return false;
-    }
-    if (
-        entry.kind === RESOURCE_KIND.characters &&
-        (deferredCharacters.has(entry.id) || generatingCharacter() === entry.id)
-    ) {
         return false;
     }
     const held = persisted.get(key);
@@ -2223,12 +2086,6 @@ export function applyHydration(record: HydrationRecord): boolean {
         }
         return false;
     }
-    if (
-        record.kind === RESOURCE_KIND.characters &&
-        (deferredCharacters.has(record.id) || generatingCharacter() === record.id)
-    ) {
-        return false;
-    }
     applyToMirror(record.kind, record.id, record.data);
     persisted.set(key, {
         revision: record.revision,
@@ -2326,7 +2183,6 @@ export async function flushResources(options: { scope?: MutationScope } = {}): P
             throw new Error("Saving stopped: the server data was restored");
         }
         if (
-            unsettled().some(isBlockedKey) ||
             unsettledChatObligations(chatObligations).some(isChatDeferred) ||
             [...jobBlockedRecords.keys()].some(isRecordJobBlocked)
         ) {
@@ -2360,13 +2216,7 @@ export async function flushResources(options: { scope?: MutationScope } = {}): P
 
 /** True when a character was added or removed since the last save. */
 function collectMembershipChanges(): boolean {
-    const characters = DBState.db.characters ?? [];
-    const before = characters.map((character) => character?.chaId);
-    dedupeCharacterIds(characters);
-    if (characters.some((character, index) => character?.chaId !== before[index])) {
-        return true;
-    }
-    const ids = new Set(characters.filter(Boolean).map((character) => character.chaId));
+    const ids = new Set(characterData().map((character) => character.chaId as string));
     let known = 0;
     for (const key of persisted.keys()) {
         if (key.startsWith(characterPrefix)) {
@@ -2380,9 +2230,9 @@ function collectMembershipChanges(): boolean {
 }
 
 /**
- * Starts saving. Every collection and every character is marked once, so the client's load-time
- * normalization (`setDatabase`, `checkNewFormat`, `assignIds`) reaches the server; unchanged records
- * compare equal and are not sent.
+ * Starts saving. Every collection and every character is marked once, and the membership once, so
+ * the client's load-time writes (`setDatabase`, `checkNewFormat`, the boot's trash pruning) reach
+ * the server; unchanged records compare equal and are not sent.
  */
 export function startResourceSync() {
     if (started) {
@@ -2460,31 +2310,16 @@ export function startResourceSync() {
         }
     }, 60_000);
     startChatDriftCheck();
+    // Every local write of a character marks it at once; a membership change wakes the loop.
+    setCharacterWriteListener({
+        character: (chaId) => markKey(characterKey(chaId)),
+        membership: markMembership,
+    });
     for (const collection of COLLECTIONS) {
         markKey(collectionKey(collection));
     }
-    markCharactersDirty("all");
-
-    $effect.root(() => {
-        let selectedIndex = $state(get(selectedCharID));
-        selectedCharID.subscribe((value) => {
-            selectedIndex = value;
-        });
-
-        // Membership: an added, removed, or re-keyed character wakes the loop even when it is not selected.
-        $effect(() => {
-            for (const character of DBState.db.characters ?? []) {
-                void character?.chaId;
-            }
-            markMembership();
-        });
-        // The selected character's own fields (never its chats, selection, or render key).
-        $effect(() => {
-            const character = DBState.db.characters?.[selectedIndex];
-            if (character) {
-                projectCharacter(character);
-                markCharactersDirty([character.chaId]);
-            }
-        });
-    });
+    for (const character of characterData()) {
+        markKey(characterKey(character.chaId as string));
+    }
+    markMembership();
 }

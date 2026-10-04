@@ -254,7 +254,6 @@ describe("resource hydration", () => {
         expect(alerts.normal).not.toHaveBeenCalled();
         // A genuine edit afterwards saves on the hydrated revision: no conflict, no reload.
         character().name = "C by me";
-        sync.markCharactersDirty(["c"]);
         await sync.flushResources();
         expect(fake.batchCount()).toBe(1);
         expect(fake.record("characters", "c")!.data).toMatchObject({ name: "C by me" });
@@ -302,7 +301,6 @@ describe("resource hydration", () => {
     it("defers a record whose batch is in flight and applies it after the cycle when it is still newer", async () => {
         const { fake, sync, character } = await boot();
         character().name = "local edit";
-        sync.markCharactersDirty(["c"]);
         fake.holdNextBatch = true;
         const flushing = sync.flushResources();
         await vi.advanceTimersByTimeAsync(600);
@@ -868,11 +866,14 @@ describe("a refusal for a generating message", () => {
     });
 
     it("keeps a refused character delete as an unsaved membership change without polling, refuses a flush, and deletes at the retry; an undo clears it", async () => {
-        const { fake, sync, chat, db, stores, unloadWarning } = await boot();
+        const { fake, sync, chat, db, unloadWarning } = await boot();
+        const characterStore = await import("../characterStore.svelte");
         lockB(fake);
         const timeouts = vi.spyOn(globalThis, "setTimeout");
-        const removed = db().characters.splice(0, 1)[0];
-        stores.selectedCharID.set(-1);
+        // The list changes through the character module (Phase 6 slice 5: a splice through the
+        // facade is refused); removing the selected character selects home.
+        const removed = JSON.parse(JSON.stringify(db().characters[0]));
+        expect(characterStore.removeCharacter("c")).toBe(true);
         await tick();
         await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
         expect(fake.batchCount()).toBe(1);
@@ -886,11 +887,18 @@ describe("a refusal for a generating message", () => {
         await vi.advanceTimersByTimeAsync(4000);
         expect(fake.batchCount()).toBe(1);
         expect(timeouts.mock.calls.filter(([, delay]) => typeof delay === "number" && delay <= 500)).toEqual([]);
-        // Undo: the character is back, nothing is owed any more.
-        db().characters.unshift(removed);
+        // Undo: the character is back, nothing is owed for it any more. Added back through the
+        // character module, it also enters the character order (the fixture's order is `[]`): that
+        // repair is the one write the undo sends, with no character op.
+        characterStore.addCharacter(removed);
         await tick();
         await vi.advanceTimersByTimeAsync(2000);
-        expect(fake.batchCount()).toBe(1);
+        expect(fake.batchCount()).toBe(2);
+        expect(fake.batchBodies()[1]).toEqual({
+            ops: [expect.objectContaining({ kind: "characterOrder", id: "main", data: ["c"] })],
+            chats: [],
+            chatOrders: [],
+        });
         expect(fake.record("characters", "c")).not.toBeNull();
         await sync.flushResources();
         expect({
@@ -902,7 +910,7 @@ describe("a refusal for a generating message", () => {
         }).toEqual({ chatWork: false, runnable: false, idle: [], deferred: [], mirror: [["c", ["k", "j"]]] });
         expect(unloadWarning()).toBe(false);
         // Deleted again while still locked, then the job ends: the retry deletes it with its chats.
-        db().characters.splice(0, 1);
+        expect(characterStore.removeCharacter("c")).toBe(true);
         await tick();
         await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
         fake.lock!.endJob("T");

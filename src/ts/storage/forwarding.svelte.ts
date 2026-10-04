@@ -8,9 +8,12 @@ import {
 } from "../../../shared/presets.ts";
 import { FORWARDED_PRESET_KEYS, SECTION_FIELDS, SECTION_KIND, type SectionKind } from "../../../shared/sections.ts";
 import {
+    CHARACTERS,
     RECORD_ROOT_FIELDS,
     SELECTABLE_ROOT_FIELDS,
+    assignCharacters,
     replaceRecord,
+    trackedCharacters,
     trackedRecord,
     writeRecordField,
     type RecordKind,
@@ -152,6 +155,7 @@ const RECORD_ROOT_KEYS: readonly string[] = [
     ),
     ...Object.values(RECORD_ROOT_FIELDS),
     ...Object.values(SELECTABLE_ROOT_FIELDS).flatMap((names) => [names.items, names.selectedId]),
+    CHARACTERS,
 ];
 
 /**
@@ -159,7 +163,10 @@ const RECORD_ROOT_KEYS: readonly string[] = [
  * its section record; a collection field and `botPresets`, `modules`, `plugins`,
  * `pluginCustomStorage` are their record's wrapper (`undefined` while the record is absent), and an
  * assignment replaces the record; `translatorPresets`/`hypaV3Presets` and their selected ids are the
- * record's `items` and `selectedId`. Every write queues the record's write.
+ * record's `items` and `selectedId`. Every write queues the record's write. `characters` (Phase 6
+ * slice 5) is the character list's wrapper: a write under a character queues that character; the
+ * list's membership changes through `characterStore` (an assignment of the list itself is a no-op,
+ * any other is refused).
  */
 function installRecordAccessors(raw: object) {
     for (const key of RECORD_ROOT_KEYS) {
@@ -187,6 +194,12 @@ function installRecordAccessors(raw: object) {
             (_db, value) => untrack(() => replaceRecord(kind as RecordKind, value)),
         );
     }
+    defineForwarded(
+        raw,
+        CHARACTERS,
+        () => trackedCharacters(),
+        (_db, value) => untrack(() => assignCharacters(value)),
+    );
     for (const [kind, names] of Object.entries(SELECTABLE_ROOT_FIELDS)) {
         defineForwarded(
             raw,

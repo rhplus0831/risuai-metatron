@@ -61,6 +61,8 @@ import { processMultiCommand } from "./command";
 import { doingChat, sendChat } from "./index.svelte";
 import * as chat from "../storage/chatStore.svelte";
 import { DBState, selectedCharID } from "../stores.svelte";
+import { installForwarding } from "../storage/forwarding.svelte";
+import { initializeRecords, takeRecordFields } from "../storage/records.svelte";
 
 const m = (id: string, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
 const texts = (ref: chat.ChatRef) => chat.findChat(ref)!.message.map((message) => message.data);
@@ -127,7 +129,12 @@ beforeAll(async () => {
         ],
     });
     const read = server.store.readKinds([characters], { chats: true });
-    DBState.db = { characters: read.kinds.characters.map((record) => record.data) } as any;
+    // The characters are records since Phase 6 slice 5: installed as `setDatabaseLite` installs them
+    // (`database.svelte` is mocked here), so the selection (by id) sees them.
+    const raw = { characters: read.kinds.characters.map((record) => record.data) } as any;
+    initializeRecords(takeRecordFields(raw));
+    installForwarding(raw);
+    DBState.db = raw;
     chat.seedChats(read.chats!, read.chatOrders!);
     chat.assembleChats(DBState.db.characters as any, read.chats!, read.chatOrders!);
     chat.initializeChats();

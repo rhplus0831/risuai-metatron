@@ -5,7 +5,7 @@ import type { alertData } from "./alert";
 import { moduleUpdate } from "./process/modules";
 import { resetTransformEffects } from "./parser/transformClient";
 import type { hubType } from "./characterCards";
-import { selectedHypaV3Preset } from "../../shared/hypaV3Presets.ts";
+import { selectedCharacterIndex, selectedIndex } from "./storage/selection.svelte";
 
 function updateSize() {
     SizeStore.set({
@@ -24,7 +24,12 @@ export const loadedStore = writable(false);
 export const DynamicGUI = writable(false);
 export const sideBarClosing = writable(false);
 export const sideBarStore = writable(window.innerWidth > 1024);
-export const selectedCharID = writable(-1);
+/**
+ * The selected character as an index into `DBState.db.characters` (-1: home): an index view of
+ * `selection.characterId` (`selection.svelte.ts`, Phase 6 slice 5). `set` selects the character at
+ * that index; the value follows the character when the list changes around it.
+ */
+export const selectedCharID = selectedCharacterIndex;
 export const CurrentTriggerIdStore = writable<string | null>(null);
 export const CharEmotion = writable({} as { [key: string]: [string, string, number][] });
 export const ViewBoxsize = writable({ width: 12 * 16, height: 12 * 16 }); // Default width and height in pixels
@@ -57,9 +62,15 @@ export const hypaV3ProgressStore = writable({
     msg: "",
     subMsg: "",
 });
-export const selIdState = $state({
-    selId: -1,
-});
+/** `selectedCharID` as a reactive field (`selIdState.selId`), for runes code; writable the same way. */
+export const selIdState = {
+    get selId(): number {
+        return selectedIndex();
+    },
+    set selId(index: number) {
+        selectedCharID.set(index);
+    },
+};
 
 CustomCSSStore.subscribe((css) => {
     console.log(css);
@@ -167,20 +178,6 @@ ReloadGUIPointer.subscribe(() => {
 });
 
 $effect.root(() => {
-    // The selected character's id: an index moved by a removal before it (a live update or a conflict
-    // reload keeps the same character selected) is not a new selection, so it changes nothing.
-    let selectedChaId: string | undefined;
-    selectedCharID.subscribe((v) => {
-        selIdState.selId = v;
-        const character = DBState?.db?.characters?.[selIdState.selId];
-        const chaId = character?.chaId;
-        if (character && chaId !== selectedChaId) {
-            if (DBState.db.hypaV3 && selectedHypaV3Preset(DBState.db)?.settings?.alwaysToggleOn) {
-                character.supaMemory = true;
-            }
-        }
-        selectedChaId = chaId;
-    });
     $effect(() => {
         $state.snapshot(DBState.db.modules);
         DBState?.db?.enabledModules;

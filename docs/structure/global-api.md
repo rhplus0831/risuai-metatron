@@ -154,7 +154,7 @@ Alerts:
   1. Extend `alertData`.
   2. Add a helper in `alert.ts`.
   3. Add a render and resolve branch in `AlertComp.svelte`.
-- Change save behavior: `storage/resourceSync.svelte.ts` and the callers of `markCharactersDirty`. See `persistence.md`.
+- Change save behavior: `storage/resourceSync.svelte.ts` and the records (`storage/records.svelte.ts`). See `persistence.md`.
 
 ## Tests
 

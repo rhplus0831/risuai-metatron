@@ -2,7 +2,7 @@ import type { GenerationKind } from "../../../shared/jobs.ts";
 import type { PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { type ChatRef, currentChatRef, findChat } from "../storage/chatStore.svelte";
 import { incrementStatic } from "../storage/collectionStore.svelte";
-import { markCharacterDirtyAt } from "../storage/resourceSync.svelte";
+import { updateCharacter } from "../storage/characterStore.svelte";
 import { DBState } from "../stores.svelte";
 import { addRerolls } from "./prereroll";
 import { runServerJob, type ServerCommandOutcome } from "./serverCommands";
@@ -43,15 +43,12 @@ export async function sendChatOnServer(
     arg: ServerSendArg,
 ): Promise<{ ok: boolean; outcome: ServerCommandOutcome; result?: unknown; refusal?: ServerSendRefusal }> {
     const ref = arg.target ?? currentChatRef();
-    const characterIndex = ref ? DBState.db.characters.findIndex((entry) => entry?.chaId === ref.chaId) : -1;
-    const char = DBState.db.characters[characterIndex];
+    const char = ref ? DBState.db.characters.find((entry) => entry?.chaId === ref.chaId) : undefined;
     if (!ref || !char || !findChat(ref)) {
         return { ok: false, outcome: "refused", refusal: "definite" };
     }
     incrementStatic("messages");
-    char.lastInteraction = Date.now();
-    // The target is not necessarily the selected character (whose changes the save loop sees).
-    markCharacterDirtyAt(characterIndex);
+    updateCharacter(ref.chaId, { lastInteraction: Date.now() });
 
     const kind: GenerationKind = arg.preview
         ? "preview"

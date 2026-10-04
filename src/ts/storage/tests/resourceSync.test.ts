@@ -59,8 +59,15 @@ function character(chaId: string, name: string, extra: Record<string, unknown> =
 /**
  * Boots the adapter the way `loadData` does: read, seed, assemble, normalize (`normalize` stands in
  * for `setDatabase`), start, and let the boot compare pass run. `bootBatches` is what that pass sent.
+ * `assembled` changes the assembled database before it is installed (a fixture the server could not hold).
  */
-async function boot(options: { prepare?: (server: FakeResourceServer) => void; normalize?: (db: any) => void } = {}) {
+async function boot(
+    options: {
+        prepare?: (server: FakeResourceServer) => void;
+        assembled?: (db: any) => void;
+        normalize?: (db: any) => void;
+    } = {},
+) {
     vi.resetModules();
     const fake = new FakeResourceServer();
     // No `root` record since slice 6: the sections and collections are the records the server
@@ -83,7 +90,9 @@ async function boot(options: { prepare?: (server: FakeResourceServer) => void; n
 
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
+    const assembled = bootstrap.assembleDatabase(snapshot);
+    options.assembled?.(assembled);
+    database.setDatabaseLite(assembled);
     stores.selectedCharID.set(-1);
     options.normalize?.(stores.DBState.db);
     fake.requests.length = 0;
@@ -95,10 +104,7 @@ async function boot(options: { prepare?: (server: FakeResourceServer) => void; n
     return { fake, stores, client, sync, bootBatches, db: () => stores.DBState.db as any };
 }
 
-let generating: string | null = null;
-
 beforeEach(() => {
-    generating = null;
     // The adapter's debounce and backoff timers; cleared after each test so an earlier test's
     // adapter instance never wakes up against a later test's fake server.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
@@ -181,20 +187,18 @@ describe("dirty generations", () => {
         expect(fake.data("ui", "main").theme).toBe("edited again");
     });
 
-    it("watches presets deeply, and only the selected character deeply", async () => {
+    it("saves presets deeply, and every character's writes, selected or not", async () => {
         const { fake, sync, db, stores } = await boot();
         db().botPresets[0].name = "renamed preset";
         stores.selectedCharID.set(1);
         await tick();
         db().characters[1].name = "Bob 2";
-        db().characters[0].name = "Alice unsaved";
+        // Since Phase 6 slice 5 a write to a character that is not selected is saved too (no watcher, no mark).
+        db().characters[0].name = "Alice saved";
         await sync.flushResources();
         expect(fake.data("presets", "main")[0].name).toBe("renamed preset");
         expect(fake.data("characters", "b").name).toBe("Bob 2");
-        expect(fake.data("characters", "a").name).toBe("Alice");
-        sync.markCharactersDirty(["a"]);
-        await sync.flushResources();
-        expect(fake.data("characters", "a").name).toBe("Alice unsaved");
+        expect(fake.data("characters", "a").name).toBe("Alice saved");
     });
 
     it("keeps an edit made while its batch is in flight dirty and saves it in the next cycle", async () => {
@@ -233,9 +237,12 @@ describe("dirty generations", () => {
 
 describe("membership", () => {
     it("creates a new character and deletes a removed one", async () => {
-        const { fake, sync, db } = await boot();
-        db().characters.push(character("c", "Carol"));
-        db().characters.splice(0, 1);
+        const { fake, sync } = await boot();
+        // The list changes through the character module (Phase 6 slice 5: a push or splice through
+        // the facade is refused).
+        const characterStore = await import("../characterStore.svelte");
+        characterStore.addCharacter(character("c", "Carol"));
+        characterStore.removeCharacter("a");
         await sync.flushResources();
         expect(fake.get("characters", "c")).not.toBeNull();
         expect(fake.get("characters", "a")).toBeNull();
@@ -246,19 +253,24 @@ describe("membership", () => {
 
     it("saves a character added while a batch is in flight without another edit", async () => {
         const { fake, sync, db } = await boot();
+        const characterStore = await import("../characterStore.svelte");
         fake.holdNextBatch = true;
         db().theme = "in flight";
         void sync.flushResources().catch(() => {});
         await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
-        db().characters.push(character("late", "Late"));
+        characterStore.addCharacter(character("late", "Late"));
         await tick();
         fake.releaseBatch!();
         await vi.waitFor(() => expect(fake.get("characters", "late")).not.toBeNull(), { timeout: 3000 });
     });
 
-    it("renames a duplicate chaId before sending, so no record overwrites another", async () => {
-        const { fake, sync, db } = await boot();
-        db().characters.push(JSON.parse(JSON.stringify(db().characters[0])));
+    it("repairs a duplicate chaId at installation and refuses one at insertion, so no record overwrites another", async () => {
+        // Since Phase 6 slice 5 the ids are unique by construction: an installed list with a repeated
+        // id gets a new id for the later entry (the save loop no longer renames), and an insertion
+        // of a taken id is refused.
+        const { fake, sync, db } = await boot({
+            assembled: (assembled) => assembled.characters.push(JSON.parse(JSON.stringify(assembled.characters[0]))),
+        });
         await sync.flushResources();
         const ids = db().characters.map((entry: any) => entry.chaId);
         expect(new Set(ids).size).toBe(3);
@@ -266,6 +278,16 @@ describe("membership", () => {
         for (const id of ids) {
             expect(fake.get("characters", id)).not.toBeNull();
         }
+        expect(fake.data("characters", "a").name).toBe("Alice");
+        const characterStore = await import("../characterStore.svelte");
+        const validation = await import("../mutationValidation");
+        const batches = fake.batchCount();
+        expect(() => characterStore.addCharacter(JSON.parse(JSON.stringify(db().characters[1])))).toThrow(
+            validation.MutationValidationError,
+        );
+        await sync.flushResources();
+        expect(db().characters.map((entry: any) => entry.chaId)).toEqual(ids);
+        expect(fake.batchCount()).toBe(batches);
     });
 });
 
@@ -347,7 +369,7 @@ describe("conflicts", () => {
         const seen: string[] = [];
         const off = sync.onRemoteRecordApplied((kind, id) => seen.push(`${kind}/${id}`));
         fake.set("characters", "b", character("b", "Bob remote"));
-        sync.markCharactersDirty(["b"]);
+        // The write itself queues the save of `b`, which is not selected (Phase 6 slice 5: no mark).
         db().characters[1].name = "Bob local";
         await sync.flushResources();
         expect(seen).toEqual(["characters/b"]);
@@ -355,49 +377,55 @@ describe("conflicts", () => {
     });
 });
 
-describe("generation deferral", () => {
-    it("keeps the generating character's local state, refuses to flush it, and reloads it inside the cycle when the generation ends", async () => {
+describe("a generating character (the generation deferral is gone)", () => {
+    /**
+     * Makes `chaId` generating as the app does: a server job of this tab streams into a chat of it
+     * (the mirror's chats are local, so the chat is placed there directly). Returns the job's end.
+     */
+    async function generate(db: () => any, chaId: string) {
+        const chat = await import("../chatStore.svelte");
+        const character = db().characters.find((entry: any) => entry.chaId === chaId);
+        character.chats = [
+            { id: `k${chaId}`, name: "K", note: "", localLore: [], message: [{ role: "char", data: "", chatId: "r" }] },
+        ];
+        chat.applyServerGeneration(
+            { chaId, chatId: `k${chaId}` },
+            { jobId: `J${chaId}`, messageId: "r", generationId: `g${chaId}`, text: "so far", seq: 0 },
+        );
+        expect(chat.isCharacterGenerating(chaId)).toBe(true);
+        return () => chat.endServerJob(`J${chaId}`);
+    }
+
+    it("reloads the generating character inside the cycle on a conflict, and saves the batch's other edit after it", async () => {
         const { fake, sync, db, stores } = await boot();
-        sync.setGeneratingCharacter(() => generating);
         const seen: string[] = [];
         sync.onRemoteRecordApplied((kind, id) => seen.push(`${kind}/${id}`));
         stores.selectedCharID.set(0);
         await tick();
-        generating = "a";
+        const end = await generate(db, "a");
         fake.set("characters", "a", character("a", "remote name"));
         db().characters[0].name = "local name";
         db().theme = "saved anyway";
-        await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
-        expect(db().characters[0].name).toBe("local name");
-        expect(seen).toEqual([]);
-        // The batch was atomic, so the section edit was rejected with it; the loop saves it on its own,
-        // and later cycles neither write nor delete the deferred character. Every flush is refused
-        // while the deferred character still has a pending edit.
-        await vi.waitFor(() => expect(fake.data("ui", "main").theme).toBe("saved anyway"), { timeout: 3000 });
-        db().theme = "another";
-        await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
-        await vi.waitFor(() => expect(fake.data("ui", "main").theme).toBe("another"), { timeout: 3000 });
-        expect(fake.data("characters", "a").name).toBe("remote name");
-
-        generating = null;
-        sync.releaseDeferredCharacters();
+        // Since Phase 6 slice 5 nothing holds a generating character back: the conflict reloads it
+        // at once, with the discard reported and the notice shown.
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["characters/a"]);
         expect(db().characters[0].name).toBe("remote name");
         expect(seen).toEqual(["characters/a"]);
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+        // The batch was atomic, so the section edit was rejected with it; the loop saves it on its own.
+        await vi.waitFor(() => expect(fake.data("ui", "main").theme).toBe("saved anyway"), { timeout: 3000 });
+        expect(fake.data("characters", "a").name).toBe("remote name");
+        end();
     });
 
-    it("retries a failed deferred reload with the cycle's backoff and keeps the character excluded meanwhile", async () => {
+    it("retries a failed conflict reload with the cycle's backoff and keeps the local state meanwhile", async () => {
         const { fake, sync, db, stores } = await boot();
-        sync.setGeneratingCharacter(() => generating);
         stores.selectedCharID.set(0);
         await tick();
-        generating = "a";
+        const end = await generate(db, "a");
         fake.set("characters", "a", character("a", "remote name"));
         db().characters[0].name = "local name";
-        await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
-        generating = null;
         fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" };
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
         expect(db().characters[0].name).toBe("local name");
@@ -405,19 +433,20 @@ describe("generation deferral", () => {
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["characters/a"]);
         expect(db().characters[0].name).toBe("remote name");
+        end();
     });
 
-    it("defers by the generating character's id, not by the current selection", async () => {
+    it("reloads a generating character that is not selected the same way", async () => {
         const { fake, sync, db, stores } = await boot();
-        sync.setGeneratingCharacter(() => generating);
-        generating = "b";
         stores.selectedCharID.set(0);
         await tick();
+        const end = await generate(db, "b");
         fake.set("characters", "b", character("b", "remote Bob"));
-        sync.markCharactersDirty(["b"]);
         db().characters[1].name = "local Bob";
-        await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
-        expect(db().characters[1].name).toBe("local Bob");
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual(["characters/b"]);
+        expect(db().characters[1].name).toBe("remote Bob");
+        end();
     });
 });
 
@@ -679,7 +708,7 @@ describe("batch sizing", () => {
         // Each character is about 3 bytes per Hangul character; both fit only when measured correctly.
         db().characters[0].desc = "가".repeat(1000);
         db().characters[1].desc = "가".repeat(1000);
-        sync.markCharactersDirty("all");
+        // Both writes queue their character's save (Phase 6 slice 5: no mark).
         await sync.flushResources();
         expect(fake.batchCount()).toBe(1);
         expect(fake.data("characters", "a").desc).toHaveLength(1000);

@@ -17,7 +17,6 @@ import {
 } from "../../../shared/presets.ts";
 import { normalizePersonas } from "../../../shared/personas.ts";
 import { safeStructuredClone } from "../polyfill";
-import { markCharacterDirtyAt } from "./resourceSync.svelte";
 import { writeCharacterFieldsAt } from "./characterStore.svelte";
 import { installForwarding, reconcileSelection, selectedPreset, selectedPresetForWrite } from "./forwarding.svelte";
 import { batchRecordWrites, initializeRecords, takeRecordFields } from "./records.svelte";
@@ -95,13 +94,10 @@ export function getDatabase(options: getDatabaseOptions = {}): Database {
     return DBState.db as Database;
 }
 
+/** The selected character: its record (live), or with `{ snapshot: true }` a detached copy with its chats. */
 export function getCurrentCharacter(options: getDatabaseOptions = {}): character | groupChat {
     const db = getDatabase(options);
-    if (!db.characters) {
-        db.characters = [];
-    }
-    const char = db.characters?.[get(selectedCharID)];
-    return char;
+    return db.characters?.[get(selectedCharID)];
 }
 
 /**
@@ -110,34 +106,22 @@ export function getCurrentCharacter(options: getDatabaseOptions = {}): character
  * key: chats are written only through the chat module, and a caller's copy may hold stale ones.
  */
 export function setCurrentCharacter(char: character | groupChat) {
-    if (!DBState.db.characters) {
-        DBState.db.characters = [];
-    }
-    const index = DBState.db.characters.findIndex((entry) => entry?.chaId === char.chaId);
+    const index = DBState.db.characters?.findIndex((entry) => entry?.chaId === char.chaId) ?? -1;
     if (index === -1) {
         return;
     }
     writeCharacterFieldsAt(index, char);
-    // It may no longer be the selected character, which alone the save adapter watches.
-    markCharacterDirtyAt(index);
 }
 
+/** The character at an index: its record (live), or with `{ snapshot: true }` a detached copy with its chats. */
 export function getCharacterByIndex(index: number, options: getDatabaseOptions = {}): character | groupChat {
     const db = getDatabase(options);
-    if (!db.characters) {
-        db.characters = [];
-    }
-    const char = db.characters?.[index];
-    return char;
+    return db.characters?.[index];
 }
 
 /** `setCurrentCharacter` for the character at an index (the mirror's chats are kept the same way). */
 export function setCharacterByIndex(index: number, char: character | groupChat) {
-    if (!DBState.db.characters) {
-        DBState.db.characters = [];
-    }
     writeCharacterFieldsAt(index, char);
-    markCharacterDirtyAt(index);
 }
 
 export function getCurrentChat() {

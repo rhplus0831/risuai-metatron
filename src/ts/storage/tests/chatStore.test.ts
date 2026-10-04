@@ -65,8 +65,12 @@ async function boot(server?: StoreBackedServer) {
     }
     const stores: Stores = await import("../../stores.svelte");
     const chat: ChatModule = await import("../chatStore.svelte");
+    const database = await import("../database.svelte");
+    const records = await import("../records.svelte");
     const read = server.store.readKinds([characters], { chats: true });
-    stores.DBState.db = { characters: read.kinds.characters.map((record) => record.data) } as any;
+    // The characters are records since Phase 6 slice 5: installed as `loadData` installs them, so the
+    // selection (by id) sees them.
+    database.setDatabaseLite({ characters: read.kinds.characters.map((record) => record.data) } as any);
     chat.seedChats(read.chats!, read.chatOrders!);
     chat.assembleChats(stores.DBState.db.characters as any, read.chats!, read.chatOrders!);
     chat.initializeChats();
@@ -126,7 +130,7 @@ async function boot(server?: StoreBackedServer) {
         return { conflicts, ...result };
     };
     const open = () => chat.unsettledChatObligations(chat.captureChatObligations());
-    return { server, stores, chat, ref, character, take, apply, ack, commit, recover, open };
+    return { server, stores, chat, records, ref, character, take, apply, ack, commit, recover, open };
 }
 
 beforeEach(() => {
@@ -380,9 +384,11 @@ describe("generation lock", () => {
 
 describe("conflict recovery", () => {
     it("keeps a chat whose create the server refused: quarantined with an alert, not dropped", async () => {
-        const { server, stores, chat } = await boot();
+        const { server, chat, records } = await boot();
         const alert = await import("../../alert");
-        stores.DBState.db.characters.push({ chaId: "z", name: "Z", chats: [], chatPage: 0 } as any);
+        // The list changes only through its operations (Phase 6 slice 5); the raw insertion the
+        // character module makes, without its normalization.
+        records.insertCharacterRecord({ chaId: "z", name: "Z", chats: [], chatPage: 0 });
         const ref = { chaId: "z", chatId: "n" };
         chat.createChat("z", { id: "n", name: "N", message: [m("u", "typed before the refusal")] } as any);
         const work = chat.takeChatWork(new Set(["z"]));
@@ -824,8 +830,10 @@ describe("streaming message identity", () => {
 
 describe("new characters", () => {
     it("normalizeNewCharacter gives a new character's chats and messages ids (a default chat when it has none) without queuing anything; adoptCharacter queues the creates once", async () => {
-        const { server, stores, chat } = await boot();
-        stores.DBState.db.characters.push(
+        const { server, stores, chat, records } = await boot();
+        // The list changes only through its operations (Phase 6 slice 5): the raw insertion
+        // `addCharacter` makes, here without the normalization this case calls by hand.
+        for (const character of [
             {
                 chaId: "n",
                 name: "N",
@@ -839,9 +847,11 @@ describe("new characters", () => {
                     { id: "same", message: [], note: "", name: "Second", localLore: [] },
                     { id: "same", message: [], note: "", name: "Third", localLore: [] },
                 ],
-            } as any,
-            { chaId: "e", name: "E", chats: [] } as any,
-        );
+            },
+            { chaId: "e", name: "E", chats: [] },
+        ]) {
+            records.insertCharacterRecord(character);
+        }
         chat.normalizeNewCharacter("n");
         chat.normalizeNewCharacter("e");
         const n = stores.DBState.db.characters[1] as any;
