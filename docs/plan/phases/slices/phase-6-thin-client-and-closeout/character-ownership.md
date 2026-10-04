@@ -1,6 +1,6 @@
 # Slice: Character Ownership
 
-Status: split at slice start (2026-10-04, F-l). 5a (ownership) implemented; 5b (normalization) planned. See "Implementation notes".
+Status: split at slice start (2026-10-04, F-l). 5a (ownership) committed (`139fc73b`); 5b (normalization) implemented. See "Implementation notes".
 
 Phase: [Phase 6](../../phase-6-thin-client-and-closeout.md), "Projections" (the character list
 summary and the selected character as records, the source of truth flipped under the flat
@@ -261,3 +261,51 @@ miss reported at its stop. The selection timing covers the chat screen's default
   selection with it instead of throwing after the list changed.
 - `resetRecords` detaches every wrapper made before it (a generation checked at the root).
 - The measurement labels name the visible window.
+
+### 5b as built (2026-10-05)
+
+- **The shared helper.** `normalizeCharacter` (`shared/characters.ts`): pure and idempotent, a new
+  object with the input's fields in their order and each default set only where the field is
+  `undefined`/`null` (an absent one appended in a fixed order); never `chats`, `chatPage`,
+  `reloadKeys`, or `chaId`. It holds the union of `characterFormatUpdate`'s and `checkNewFormat`'s
+  deterministic defaults; `sdData`'s table (`defaultSdData`) and `newGenData`'s
+  (`inlayScreenGenData`, which `updateInlayScreen` now uses) moved there. A group's missing
+  `characters` is `[]` and a non-list one is refused (`CharacterShapeError`); the one exception to
+  "missing only" is a group's `characterTalks`/`characterActive`, rebuilt (every weight and flag reset,
+  as before) when they are not lists of the members' length.
+- **Server.** `server/src/data/normalize/characters.ts` keeps the kind's checks (`chaId` is the id, no
+  `chats`) and applies the helper; the startup pass rewrites stored characters once.
+- **Creation.** `prepareNewCharacter` (`characterStore.svelte.ts`), separate from installation
+  (`addPreparedCharacter`; `addCharacter` and `replaceCharacterAt` call both), prepares a detached copy
+  before anything changes: the checks, a `chaId`, the helper, then the creation steps once:
+  `ttsMode: "none"` → `""`, `creation_date` when absent, the lorebook conversion (`upgradeLorebook`), a
+  first chat when it has none, every chat's `fmIndex`/`localLore` (`prepareChatInput`), and the
+  `postHistoryInstructions` transfer into the note of the chat at `chatPage` (else the first). The
+  plugin list setter prepares every new entry before the list changes.
+- **Canonical text.** `replaceCharacterFields` applies the helper to the whole replacement; any other
+  write that removes or never set a default is made canonical by the save cycle before it is sent
+  (`canonicalCharacterText`: the differing fields written raw, no mark), so the held text is the
+  server's normalized text.
+- **Chats.** `prepareChatInput` (an absent `fmIndex` from `firstMsgIndex`, -1; `localLore` `[]`) runs in
+  `createChat`, `ensureChat` (no hard-coded -1), `normalizeNewCharacter`, the creation preparation,
+  `replaceChat`, and `applyChatResult` (every plugin chat setter).
+- **After the challenge (Astra, 2026-10-05).** `applyChatResult` and `replaceChat` prepare their input
+  (`prepareChatInput`), so every plugin chat setter gets the chat defaults; the save loop's character
+  projection defines its own keys and serializes the record's values directly (an own `__proto__` key
+  survives at any depth; `$state.snapshot` assigned keys and dropped it); the canonical comparison is by
+  reference (the helper keeps unchanged values).
+- **A chat's greeting on the server.** The server's chat normalizer (`normalizeChatMeta`) defaults an
+  absent `fmIndex` to -1 (the first message): a chat written without one (another writer, the raw
+  routes) used to get it from a selection's formatter, and the prompt assembly reads it
+  (`assemble.ts`'s greeting). The client's own chats carry their character's `firstMsgIndex`
+  (`prepareChatInput`). Found by `serverTransform.spec.ts` after the challenge. A `null` `fmIndex` is
+  stored as -1 too (another non-number is refused). On the client, `canonicalChat` applies the same
+  default (a create whose answer was lost is still recognized), and `setChatMeta` writes the default of
+  a field the server defaults (`name`, `note`, `localLore`, `fmIndex`) instead of removing it or setting
+  it to `null`, so the client holds what the server stores. Stored chats are not normalized at startup
+  (no chat pass; alpha data, no migration owed).
+- **Lorebook files.** `importLoreBook("global")` converts the imported entries before appending them (a
+  refusal imports nothing); local lore imports stay unconverted, as before.
+- **Removed.** `characterFormatUpdate` (`changeChar` and the playground call `ensureChat` +
+  `syncChatPage`; no `lastInteraction` stamp on selection, owner decision 2), `updateLorebooks`, and
+  `checkNewFormat`'s character defaults (it keeps the trash pruning, `setDatabase`, `checkCharOrder`).

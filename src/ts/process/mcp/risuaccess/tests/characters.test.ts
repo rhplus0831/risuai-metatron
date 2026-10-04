@@ -11,7 +11,9 @@ import type { RPCToolCallContent } from "../../mcplib";
 // is built from the record as it is after consent (a list replaced while the prompt was open), the
 // captured id stays the target through a rename and a selection change, and a character removed
 // or turned into a group while the prompt was open answers an error without a write. The read
-// tools' output is pinned, including an absent `globalLore`.
+// tools' output is pinned, including an empty `globalLore`. Since Phase 6 slice 5b every character
+// carries the shared defaults (the server normalizes the seeded `c`, `addCharacter` prepares the
+// others): `globalLore` is `[]`, `desc` is `""`, and `type` is `"character"` unless set.
 
 const { server, alerts, consent } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -96,8 +98,8 @@ const luaTrigger = (code: string) => ({
 });
 
 /**
- * Boots the harness, adds a second character and selects it (so the seeded `c`, which has no
- * `globalLore`, is not the selected one), and loads the character handler on that module graph.
+ * Boots the harness, adds a second character and selects it (so the seeded `c`, whose `globalLore` is
+ * the default empty list, is not the selected one), and loads the character handler on that module graph.
  */
 async function boot() {
     vi.resetModules();
@@ -201,9 +203,9 @@ describe("write tools on a character that is not selected", () => {
         expect(character(other).desc).toBe("other");
     });
 
-    it("the lorebook tools add to an absent globalLore, update one entry, and delete it, each saved by the next cycle", async () => {
+    it("the lorebook tools add to an empty globalLore, update one entry, and delete it, each saved by the next cycle", async () => {
         const { call, sync, saved, character } = await boot();
-        expect(character("c").globalLore).toBeUndefined();
+        expect(character("c").globalLore).toEqual([]);
         expect(
             await call("risu-set-character-lorebook", {
                 id: "c",
@@ -294,7 +296,8 @@ describe("write tools on a character that is not selected", () => {
         );
         await sync.flushResources();
         expect(saved(other).desc).toBe("selected");
-        expect(saved("c")).not.toHaveProperty("desc");
+        // `c` keeps its default description.
+        expect(saved("c").desc).toBe("");
     });
 });
 
@@ -427,7 +430,8 @@ describe("the consent gate", () => {
         expect(await pending).toBe("Successfully updated character Zed");
         await sync.flushResources();
         expect(saved("c")).toMatchObject({ name: "Zed", desc: "by name" });
-        expect(saved("c2")).not.toHaveProperty("desc");
+        // The twin keeps its default description.
+        expect(saved("c2").desc).toBe("");
         // The empty id resolves the selection at entry, not at consent.
         const releaseSelected = hold();
         const pendingSelected = call("risu-set-character-info", { id: "", data: { description: "was selected" } });
@@ -470,7 +474,7 @@ describe("the consent gate", () => {
 });
 
 describe("read tools", () => {
-    it("return the same shapes as before, with an absent globalLore read as empty", async () => {
+    it("return the same shapes as before, with the default empty globalLore read as empty", async () => {
         const { call, characterStore, other, sync } = await boot();
         expect(await call("risu-list-character-lorebooks", { id: "c" })).toBe("[]");
         expect(await call("risu-get-character-lorebook", { id: "c", names: ["x"] })).toBe(
@@ -509,11 +513,11 @@ describe("read tools", () => {
             JSON.stringify([{ name: "img", path: "p", ext: "png" }]),
         );
         expect(await call("risu-get-character-lua-script", { id: "c" })).toBe("print(1)");
-        // The seeded characters carry no `type` (JSON drops the undefined field).
+        // Both characters carry the default `type` (the server's for `c`, the creation's for `Other`).
         expect(await call("risu-list-characters", {})).toBe(
             JSON.stringify([
-                { id: "c", name: "C" },
-                { id: other, name: "Other" },
+                { id: "c", name: "C", type: "character" },
+                { id: other, name: "Other", type: "character" },
             ]),
         );
         // A read asks for no consent.

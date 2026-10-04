@@ -23,6 +23,7 @@ import { batchRecordWrites, initializeRecords, takeRecordFields } from "./record
 import { copyPresetSecret, setSecret } from "./llmSecrets.svelte";
 import { selectPreset } from "./selection.svelte";
 import type { botPreset, Chat, character, Database, groupChat, Message } from "../../../shared/database.ts";
+import { defaultSdData } from "../../../shared/characters.ts";
 
 //APP_VERSION_POINT is to locate the app version in the database file for version bumping
 export let appVer = "2026.8.250"; //<APP_VERSION_POINT>
@@ -131,19 +132,8 @@ export function getCurrentChat() {
 
 export const saveImage = saveImageGlobal;
 
-const defaultSdData: [string, string][] = [
-    ["always", "solo, 1girl"],
-    ["negative", ""],
-    ["|character\'s appearance", ""],
-    ["current situation", ""],
-    ["$character's pose", ""],
-    ["$character's emotion", ""],
-    ["current location", ""],
-];
-
-export const defaultSdDataFunc = () => {
-    return safeStructuredClone(defaultSdData);
-};
+/** The default image-generation prompt table (`shared/characters.ts`; a fresh copy each call). */
+export const defaultSdDataFunc = defaultSdData;
 
 /**
  * Copies the five keep-on-switch fields (`PRESET_KEEP_ON_SWITCH_FIELDS`, `providers` fields) into

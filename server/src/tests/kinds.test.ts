@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { botPreset } from "../../../shared/database.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import { ResourceValidationError } from "../data/resourceStore.ts";
@@ -76,7 +77,7 @@ describe("createKindRegistry", () => {
 });
 
 describe("default normalizers", () => {
-    it("return the input unchanged when the minimum shape holds, except presets, which get the canonical schema", () => {
+    it("return the input unchanged when the minimum shape holds, except presets, which get the canonical schema, and characters, which get the shared defaults", () => {
         // `presets` (slice 3) returns `normalizePresets`' copy: every preset gets an id and the
         // canonical fields, and an empty list becomes one default preset.
         const presets = kind("presets").normalize([{ name: "p" }, {}], { id: "main" }) as botPreset[];
@@ -94,8 +95,16 @@ describe("default normalizers", () => {
         accepts("pluginStorage", "main", { _safeLocalPluginStorage: { a: 1 } });
         accepts("pluginPermissions", "main", { grants: {}, lastGrantTime: {} });
         accepts("pluginPermissions", "main", { grants: { h_db: true }, lastGrantTime: { p_db_lastGrantTime: 1 } });
-        accepts("characters", "c1", { chaId: "c1" });
-        accepts("characters", "§playground", { chaId: "§playground", name: "n", chatPage: 0 });
+        // `characters` (Phase 6 slice 5b) returns a copy with the shared defaults (`normalizeCharacter`);
+        // the input is not changed.
+        for (const [id, input] of [
+            ["c1", { chaId: "c1" }],
+            ["§playground", { chaId: "§playground", name: "n", chatPage: 0 }],
+        ] as const) {
+            const before = structuredClone(input);
+            expect(kind("characters").normalize(input, { id }), id).toEqual(normalizeCharacter(input));
+            expect(input, id).toEqual(before);
+        }
         accepts("inlays", "i", { name: "n", ext: "png", type: "image", asset: "assets/inlay_x.png" });
         accepts("inlays", "i", {
             name: "n",

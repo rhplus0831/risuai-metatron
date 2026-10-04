@@ -11,8 +11,9 @@ import {
 import { SandboxHost } from "./factory";
 import { getCurrentCharacter, getDatabase } from "src/ts/storage/database.svelte";
 import {
-    addCharacter,
+    addPreparedCharacter,
     checkCharacterInput,
+    prepareNewCharacter,
     removeCharacter,
     replaceCharacterAt,
     replaceCharacterFields,
@@ -823,9 +824,10 @@ function applyPluginCharacter(index: number, char: any) {
  * Applies a whole character list a plugin hands back. The list is checked first and refused as a
  * whole (nothing changes) when an entry is malformed, or when two entries share a `chaId` or are one
  * object (they would become two characters sharing one set of chats). Then characters matched by
- * `chaId` go through `applyPluginCharacter`, new ones are appended (`addCharacter`, their chats
- * saved with them), and missing ones removed (`removeCharacter`), except a character that is
- * generating a reply: it stays (with a console warning). The mirror keeps its order.
+ * `chaId` go through `applyPluginCharacter`, new ones are appended (prepared by `prepareNewCharacter`
+ * before the list changes, their chats saved with them), and missing ones removed
+ * (`removeCharacter`), except a character that is generating a reply: it stays (with a console
+ * warning). The mirror keeps its order.
  */
 function applyPluginCharacters(incoming: unknown) {
     requireArray("characters", incoming);
@@ -839,14 +841,24 @@ function applyPluginCharacters(incoming: unknown) {
     }
     const kept = new Set(ids);
     const existing = (DBState.db.characters ?? []).map((character) => character?.chaId);
+    // Every new character is prepared (checked, normalized, its creation steps done) before the list
+    // changes, so an entry refused there leaves the whole list unapplied.
+    const prepared = new Map(
+        entries.flatMap((char, i) =>
+            typeof char.chaId === "string" && existing.includes(char.chaId)
+                ? []
+                : [[char, prepareNewCharacter(char, `characters[${i}]`)] as const],
+        ),
+    );
     for (const char of entries) {
-        if (typeof char.chaId === "string" && existing.includes(char.chaId)) {
+        const ready = prepared.get(char);
+        if (ready) {
+            addPreparedCharacter(ready);
+        } else {
             applyPluginCharacter(
                 DBState.db.characters.findIndex((entry) => entry?.chaId === char.chaId),
                 char,
             );
-        } else {
-            addCharacter(char);
         }
     }
     for (const chaId of existing) {

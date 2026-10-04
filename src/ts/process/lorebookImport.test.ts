@@ -9,7 +9,10 @@ import { bootMutations, plain } from "../storage/tests/mutationStoresHarness";
 // in the captured character (not selected, so the write reaches the server through its mark) and the
 // selected one is untouched; a record replaced with newer lore while the dialog was open gets the
 // entries appended to its current list; a character deleted meanwhile gets nothing and is not
-// recreated. The local mode (the chat module) is unchanged and not covered here.
+// recreated. The local mode (the chat module) is unchanged and not covered here. Since Phase 6 slice 5b
+// the imported entries are converted as they enter (`upgradeLorebook`: these entries have no old syntax,
+// so only `bookVersion: 2` is added), as are the harness characters' entries when they are created
+// (`addCharacter`); an entry written later through `updateCharacter` is kept as written.
 
 const { server, alerts, picker } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -57,6 +60,8 @@ const lore = (comment: string, content: string) => ({
     secondkey: "",
     selective: false,
 });
+/** An entry as the lorebook conversion leaves it (no old syntax in these entries to convert). */
+const upgraded = (entry: ReturnType<typeof lore>) => ({ ...entry, bookVersion: 2 });
 const nativeFile = (entries: unknown[]) => ({
     name: "lore.json",
     data: new TextEncoder().encode(JSON.stringify({ type: "risu", ver: 1, data: entries })),
@@ -120,13 +125,13 @@ describe("importLoreBook(global) writes the character captured before the dialog
     it("appends the entries to that character after the selection moved, and the write is saved", async () => {
         const { run, alpha, beta, index, stores, loreOf, sync, record, fake } = await boot();
         await run(nativeFile([lore("New", "n")]), () => stores.selectedCharID.set(index(beta)));
-        expect(loreOf(alpha)).toEqual([lore("A", "a"), lore("New", "n")]);
-        expect(loreOf(beta)).toEqual([lore("B", "b")]);
+        expect(loreOf(alpha)).toEqual([upgraded(lore("A", "a")), upgraded(lore("New", "n"))]);
+        expect(loreOf(beta)).toEqual([upgraded(lore("B", "b"))]);
         expect(get(stores.selectedCharID)).toBe(index(beta));
         expect(alerts.error).not.toHaveBeenCalled();
         await sync.flushResources();
-        expect(record("characters", alpha).globalLore).toEqual([lore("A", "a"), lore("New", "n")]);
-        expect(record("characters", beta).globalLore).toEqual([lore("B", "b")]);
+        expect(record("characters", alpha).globalLore).toEqual([upgraded(lore("A", "a")), upgraded(lore("New", "n"))]);
+        expect(record("characters", beta).globalLore).toEqual([upgraded(lore("B", "b"))]);
         const sent = fake.batchBodies().flatMap((batch: any) => (batch.ops ?? []).map((op: any) => op.id));
         expect(sent).toContain(alpha);
         expect(sent).not.toContain(beta);
@@ -137,7 +142,7 @@ describe("importLoreBook(global) writes the character captured before the dialog
         await run(nativeFile([lore("New", "n")]), () => {
             characterStore.updateCharacter(alpha, { globalLore: [lore("A", "a"), lore("Newer", "x")] });
         });
-        expect(loreOf(alpha)).toEqual([lore("A", "a"), lore("Newer", "x"), lore("New", "n")]);
+        expect(loreOf(alpha)).toEqual([lore("A", "a"), lore("Newer", "x"), upgraded(lore("New", "n"))]);
         await sync.flushResources();
         expect(record("characters", alpha).globalLore).toEqual(loreOf(alpha));
     });
@@ -161,6 +166,64 @@ describe("importLoreBook(global) writes the character captured before the dialog
         expect(fake.batchCount()).toBe(batches);
         expect(db().characters.some((entry: any) => entry.chaId === alpha)).toBe(false);
         expect(fake.record("characters", alpha)).toBeNull();
-        expect(loreOf(beta)).toEqual([lore("B", "b")]);
+        expect(loreOf(beta)).toEqual([upgraded(lore("B", "b"))]);
+    });
+});
+
+// Phase 6 slice 5b (`character-ownership.md`, "5b as built", "Lorebook files"): the global import
+// converts the file's old entries (below `bookVersion` 2) as they enter, refuses a file the
+// conversion cannot read without changing anything, and leaves the character's own entries as
+// written; the local import (the chat's lore) stays unconverted, as the old formatter never covered it.
+describe("the lorebook conversion of an imported file", () => {
+    const old = (comment: string, content: string, extra: Record<string, unknown> = {}) => ({
+        ...lore(comment, content),
+        ...extra,
+    });
+
+    it("converts the file's old entries in the global import and keeps the character's own entries as written", async () => {
+        const { run, alpha, characterStore, loreOf, sync, record } = await boot();
+        const own = old("Own", "<char> stays", { bookVersion: 1 });
+        characterStore.updateCharacter(alpha, { globalLore: [own] });
+        await run(
+            nativeFile([
+                old("Old", "<bot> greets <user>\n@@@end", { activationPercent: 30 }),
+                old("Current", "<char> kept", { bookVersion: 2 }),
+            ]),
+        );
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(loreOf(alpha)).toEqual([
+            own,
+            {
+                ...old("Old", "@@probability 30\n{{char}} greets {{user}}\n@@depth 0"),
+                activationPercent: null,
+                bookVersion: 2,
+            },
+            old("Current", "<char> kept", { bookVersion: 2 }),
+        ]);
+        await sync.flushResources();
+        expect(record("characters", alpha).globalLore).toEqual(loreOf(alpha));
+    });
+
+    it("refuses a file with an entry the conversion cannot read: nothing is imported or sent", async () => {
+        const { run, alpha, loreOf, sync, fake, mirrorText } = await boot();
+        const before = loreOf(alpha);
+        const mirror = mirrorText();
+        await run(nativeFile([lore("New", "n"), 5]));
+        expect(alerts.error).toHaveBeenCalledTimes(1);
+        expect(loreOf(alpha)).toEqual(before);
+        expect(mirrorText()).toBe(mirror);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(0);
+    });
+
+    it("leaves the entries of a local import unconverted", async () => {
+        const { alpha, lorebook, chat, character } = await boot();
+        const file = nativeFile([old("Old", "<char> local\n@@end")]);
+        picker.answer = async () => file;
+        await lorebook.importLoreBook("local");
+        expect(alerts.error).not.toHaveBeenCalled();
+        const selected = character(alpha);
+        const ref = { chaId: alpha, chatId: selected.chats[selected.chatPage].id };
+        expect(plain(chat.findChat(ref)!.localLore)).toEqual([old("Old", "<char> local\n@@end")]);
     });
 });

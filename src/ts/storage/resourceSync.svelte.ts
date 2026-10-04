@@ -40,6 +40,7 @@ import {
 } from "../../../shared/llmSecrets.ts";
 import { alertError, alertNormal, alertTerminal } from "../alert";
 import { assignsInherited } from "./mutationValidation";
+import { normalizeCharacter } from "../../../shared/characters.ts";
 import { DBState } from "../stores.svelte";
 import { reconcileSelection } from "./forwarding.svelte";
 import {
@@ -399,17 +400,53 @@ function projectCollection(collection: Collection): string | undefined {
 
 /**
  * A character as stored: its own fields in their order, without `CHARACTER_LOCAL_KEYS` (the chats
- * are saved on their own; the selection and the render key are client-only). Reads only those
- * fields, so a watcher built on it does not track the chats.
+ * are saved on their own; the selection and the render key are client-only).
  */
 function projectCharacter(character: character | groupChat): string {
+    // Own keys defined, never assigned, and the values serialized straight from the record (not
+    // `$state.snapshot`, which assigns keys): an own `__proto__` key survives at any depth.
     const copy: Record<string, unknown> = {};
-    for (const key in character) {
+    const record = character as unknown as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
         if (!CHARACTER_LOCAL_KEYS.has(key)) {
-            copy[key] = $state.snapshot((character as unknown as Record<string, unknown>)[key]);
+            Object.defineProperty(copy, key, {
+                value: record[key],
+                enumerable: true,
+                writable: true,
+                configurable: true,
+            });
         }
     }
     return JSON.stringify(copy);
+}
+
+/**
+ * A character about to be written, made canonical (Phase 6 slice 5b): the server stores
+ * `normalizeCharacter` of what it gets, so when a local write removed or never set a default, the
+ * differing fields are written into the mirror raw first (`patchRawCharacter`: no mark, no echo) and the
+ * canonical text is sent and held. Then the held text is the server's, and a later conflict merges
+ * against the record the server really has. A character whose shape the helper refuses is sent as it
+ * is (the server refuses it, and the record is quarantined as any refused write).
+ */
+function canonicalCharacterText(id: string, text: string): string {
+    let own: Record<string, unknown>;
+    let canonical: Record<string, unknown>;
+    try {
+        own = JSON.parse(text) as Record<string, unknown>;
+        canonical = normalizeCharacter(own);
+    } catch {
+        return text;
+    }
+    const changes = Object.keys(canonical)
+        // The helper keeps every unchanged value by reference: only a default or a rebuilt group array differs.
+        .filter((field) => !Object.hasOwn(own, field) || !Object.is(own[field], canonical[field]))
+        .map((field) => [field, canonical[field]] as const);
+    if (changes.length === 0) {
+        return text;
+    }
+    patchRawCharacter(id, changes);
+    const character = findMirrorCharacter(id);
+    return character ? projectCharacter(character) : text;
 }
 
 /** The text a record has after a server copy was written into the mirror (its key order, not the server's). */
@@ -615,7 +652,10 @@ function collectOperations(): {
         if (current && !captured.has(key)) {
             continue;
         }
-        const text = projectCharacter(character);
+        let text = projectCharacter(character);
+        if (text !== current?.text) {
+            text = canonicalCharacterText(id, text);
+        }
         if (text !== current?.text) {
             addOperation(
                 pendingOp({ key, kind: RESOURCE_KIND.characters, id, baseRevision: current?.revision ?? null, text }),
@@ -1254,8 +1294,8 @@ const STATIC_COUNTS = new Set(["imports", "messages"]);
  * - a field the server holds as this client does (both made the same change);
  * - a field the base did not have and this client does not have either (another tab filled it in,
  *   such as a default its character screen binds); the server's value is taken;
- * - a character's `lastInteraction`: the later of two finite stamps (another tab opened or sent to
- *   the character);
+ * - a character's `lastInteraction`: the later of two finite stamps (another tab sent to the
+ *   character);
  * - a `statics` count: best effort, the server's count plus this client's increments since the
  *   base (`imports`, `messages`; a count both tabs raised to the same value, or one a lost answer
  *   already holds, may be off by those increments).
@@ -1317,8 +1357,8 @@ function benignChanges(
 
 /**
  * A conflicting character or `statics` record whose server change this client can take
- * (`benignChanges`): another tab opened the character (its `lastInteraction` stamp and the
- * defaults its screen fills in) or counted a send. The changes go into the mirror, the base moves
+ * (`benignChanges`): another tab sent to the character (its `lastInteraction` stamp), filled in a
+ * default its screen binds, or counted a send. The changes go into the mirror, the base moves
  * to the server's revision, and the key stays dirty, so the next cycle writes the merged record.
  * Nothing is discarded and no reload notice is shown; a field taken from the server is announced to
  * the remote-change listeners (caches derived from the record). Not for a create, a delete, another

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOrderRecord, ChatRecord } from "../../../shared/chats.ts";
 import type {
     BackupArchiveManifest,
@@ -53,6 +54,8 @@ async function defaultServer(options: Omit<TestServerOptions, "password"> = {}) 
     return s;
 }
 const character = (id: string, extra: Record<string, unknown> = {}) => ({ chaId: id, ...extra });
+/** A character as the server stores it: the shared defaults filled in (the `characters` normalizer). */
+const stored = (id: string, extra: Record<string, unknown> = {}) => normalizeCharacter(character(id, extra));
 const backupsDir = (s: ResourceTestClient) => path.join(s.savePath, "backups");
 const tmpDir = (s: ResourceTestClient) => path.join(s.savePath, ".tmp");
 /** File names under `save/assets`, or none when the folder was never created. */
@@ -175,7 +178,7 @@ describe("POST /api/backups/:id/restore", () => {
         ).toEqual(["characters/a", "pluginStorage/main", "characters/b"]);
 
         const characters = (await (await s.list("characters")).json()) as { items: (Stored & { id: string })[] };
-        expect(characters.items.map((c) => [c.id, c.data])).toEqual([["a", character("a")]]);
+        expect(characters.items.map((c) => [c.id, c.data])).toEqual([["a", stored("a")]]);
         expect(characters.items[0].revision.startsWith(`${epoch}:`)).toBe(true);
         expect(await (await s.get("pluginStorage", "main")).json()).toMatchObject({ data: { note: "before" } });
 
@@ -262,7 +265,7 @@ describe("POST /api/backups/:id/restore", () => {
 
         expect(await listBackups(s)).toEqual(before);
         expect(await s.readEpoch()).toBe(epoch);
-        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: character("a") });
+        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: stored("a") });
         expect((await s.put("characters", "b", { baseRevision: null, data: character("b") })).status).toBe(200);
     });
 
@@ -350,7 +353,7 @@ describe("maintenance", () => {
         expect(await (await s.get("characters", "a")).json()).toEqual({
             epoch: s.epoch,
             revision,
-            data: character("a"),
+            data: stored("a"),
         });
     });
 
@@ -572,7 +575,7 @@ describe("POST /api/backups/import", () => {
         const state = (await (await target.readKinds("characters,pluginStorage")).json()) as {
             kinds: Record<string, { id: string; data: unknown }[]>;
         };
-        expect(state.kinds.characters.map((c) => [c.id, c.data])).toEqual([["a", character("a")]]);
+        expect(state.kinds.characters.map((c) => [c.id, c.data])).toEqual([["a", stored("a")]]);
         expect(state.kinds.pluginStorage.map((r) => r.data)).toEqual([{ note: "u" }]);
         // The safety snapshot holds the target's previous state; staging is gone; old-epoch writes are refused.
         const backups = await listBackups(target);
@@ -727,7 +730,7 @@ describe("POST /api/backups/import", () => {
         expect(readdirSync(tmpDir(s))).toEqual([]);
         expect(await listBackups(s)).toEqual(before);
         expect(await s.readEpoch()).toBe(epoch);
-        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: character("a") });
+        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: stored("a") });
     });
 
     it("ignores cold-storage records of old archives", async () => {
@@ -1050,7 +1053,7 @@ describe("chats in snapshots and archives", () => {
         expect(await refused.json()).toEqual({ error: "Unsupported resource database version 1" });
         expect(assetFiles(s)).toEqual([]);
         expect(await s.readEpoch()).toBe(epoch);
-        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: character("a") });
+        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: stored("a") });
 
         const rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-server-v1-"));
         try {
@@ -1099,7 +1102,7 @@ describe("chats in snapshots and archives", () => {
         expect(await refused.json()).toEqual({ error: "Unsupported resource database version 2" });
         expect(assetFiles(s)).toEqual([]);
         expect(await s.readEpoch()).toBe(epoch);
-        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: character("a") });
+        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: stored("a") });
 
         const snapshot = "resources-20300101T000000000Z-00000004";
         writeFileSync(path.join(backupsDir(s), `${snapshot}.sqlite`), bytes);
@@ -1110,7 +1113,7 @@ describe("chats in snapshots and archives", () => {
         expect(await rejected.json()).toEqual({ error: "Unsupported resource database version 2" });
         expect(await listBackups(s)).toEqual(before);
         expect(await s.readEpoch()).toBe(epoch);
-        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: character("a") });
+        expect(await (await s.get("characters", "a")).json()).toEqual({ epoch, revision, data: stored("a") });
         // The `root` kind is gone: nothing could restore such a record into the live store.
         const noRoot = await s.readKinds("root");
         expect(noRoot.status).toBe(400);

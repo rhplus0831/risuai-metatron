@@ -167,21 +167,23 @@ describe("mirror and queue", () => {
         chat.setMessageText(ref, "a", "two");
         chat.replaceMessage(ref, m("b", "B2"));
         chat.setMessageText(ref, "b", "B3");
-        chat.setChatMeta(ref, { note: "n1" });
+        // A field the server does not default (an unset `note` is written as its default since Phase 6
+        // slice 5b, so it is no unset any more).
+        chat.setChatMeta(ref, { scriptstate: { $a: "1" } });
         // Set then unset the same field: only the unset survives, beside the other set.
-        chat.setChatMeta(ref, { name: "N" }, ["note"]);
+        chat.setChatMeta(ref, { name: "N" }, ["scriptstate"]);
         chat.appendMessage(ref, m("x", "X"));
         chat.appendMessage(ref, m("y", "Y"));
         const { work } = commit();
         expect(work.groups[0].ops).toEqual([
             { op: "setText", id: "a", text: "two" },
             { op: "setMessage", message: m("b", "B3") },
-            { op: "meta", set: { name: "N" }, unset: ["note"] },
+            { op: "meta", set: { name: "N" }, unset: ["scriptstate"] },
             { op: "append", messages: [m("x", "X"), m("y", "Y")], anchor: { end: true } },
         ]);
         const saved = server.chat("c", "k")!.data as any;
         expect(saved.name).toBe("N");
-        expect(saved.note).toBe("");
+        expect(saved).not.toHaveProperty("scriptstate");
         expect(server.texts("c", "k")).toEqual(["two", "B3", "C", "X", "Y"]);
     });
 
@@ -544,26 +546,34 @@ describe("applyChatResult", () => {
         expect(server.texts("c", "k")).toEqual(["Z first", "A changed", "B", "C"]);
     });
 
-    it("sets and unsets chat fields from the diff", async () => {
+    it("sets and unsets chat fields from the diff, and gives an omitted fmIndex its default", async () => {
         const { server, chat, ref, commit } = await boot();
+        // A field the result can unset: `fmIndex` is a chat default since Phase 6 slice 5b (below).
+        chat.setChatMeta(ref, { hypaV3Data: { summaries: [] } });
+        commit();
         const baseline = chat.captureChatBaseline(ref);
         const result = clone(baseline.chat) as any;
         result.note = "hook note";
         result.scriptstate = { $count: "1" };
+        delete result.hypaV3Data;
+        // An omitted `fmIndex` gets its default (the character's `firstMsgIndex`, -1), the value it had,
+        // so it is not unset and nothing is sent for it.
         delete result.fmIndex;
         chat.applyChatResult(baseline, result);
         const mirror = chat.findChat(ref) as any;
         expect(mirror.note).toBe("hook note");
         expect(mirror.scriptstate).toEqual({ $count: "1" });
-        expect(mirror).not.toHaveProperty("fmIndex");
+        expect(mirror).not.toHaveProperty("hypaV3Data");
+        expect(mirror.fmIndex).toBe(-1);
         const { work } = commit();
         expect(work.groups[0].ops).toEqual([
-            { op: "meta", set: { note: "hook note", scriptstate: { $count: "1" } }, unset: ["fmIndex"] },
+            { op: "meta", set: { note: "hook note", scriptstate: { $count: "1" } }, unset: ["hypaV3Data"] },
         ]);
         const saved = server.chat("c", "k")!.data as any;
         expect(saved.note).toBe("hook note");
         expect(saved.scriptstate).toEqual({ $count: "1" });
-        expect(saved).not.toHaveProperty("fmIndex");
+        expect(saved).not.toHaveProperty("hypaV3Data");
+        expect(saved.fmIndex).toBe(-1);
     });
 
     it("replaces the whole chat for a reorder only while nothing changed since the baseline", async () => {

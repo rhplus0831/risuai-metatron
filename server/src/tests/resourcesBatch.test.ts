@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { normalizeCharacter } from "../../../shared/characters.ts";
 import { createResourceTestClient, type ResourceTestClient } from "./testSupport.ts";
 
 const servers: ResourceTestClient[] = [];
@@ -31,6 +32,8 @@ type ReadRefs = {
 };
 
 const character = (id: string, extra: Record<string, unknown> = {}) => ({ chaId: id, ...extra });
+/** A character as the server stores it: the shared defaults filled in (the `characters` normalizer). */
+const stored = (id: string, extra: Record<string, unknown> = {}) => normalizeCharacter(character(id, extra));
 const create = (kind: string, id: string, data: unknown) => ({ kind, id, baseRevision: null, data });
 
 describe("POST /api/resources/batch", () => {
@@ -87,8 +90,8 @@ describe("POST /api/resources/batch", () => {
             { id: "main", revision: second.results[3].revision, data: { note: "v" } },
         ]);
         expect(state.kinds.characters.map((c) => [c.id, c.data])).toEqual([
-            ["a", character("a", { name: "A" })],
-            ["c", character("c")],
+            ["a", stored("a", { name: "A" })],
+            ["c", stored("c")],
         ]);
         // The batch's write, not the materialized default, is what is stored.
         expect(state.kinds.presets).toMatchObject([
@@ -118,8 +121,8 @@ describe("POST /api/resources/batch", () => {
         } satisfies BatchConflict);
         const state = (await (await s.readKinds("characters")).json()) as ReadKinds;
         expect(state.kinds.characters).toEqual([
-            { id: "a", revision: a, data: character("a") },
-            { id: "b", revision: b, data: character("b") },
+            { id: "a", revision: a, data: stored("a") },
+            { id: "b", revision: b, data: stored("b") },
         ]);
     });
 
@@ -263,10 +266,10 @@ describe("multi-kind and ref reads", () => {
         expect(await res.json()).toEqual({
             epoch: s.epoch,
             items: [
-                { kind: "characters", id: "a", revision: a, data: character("a") },
+                { kind: "characters", id: "a", revision: a, data: stored("a") },
                 { kind: "characters", id: "gone", revision: null, data: null },
                 { kind: "pluginStorage", id: "main", revision: storage, data: { note: "u" } },
-                { kind: "characters", id: "a", revision: a, data: character("a") },
+                { kind: "characters", id: "a", revision: a, data: stored("a") },
             ],
             chats: [],
             chatCollections: [],

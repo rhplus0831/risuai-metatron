@@ -405,6 +405,34 @@ describe("characters through the character mutations", () => {
         );
     });
 
+    it("refuses the whole list when a new entry fails its creation (Phase 6 slice 5b: prepared before the list changes)", async () => {
+        const api = await makeApi();
+        const before = plain(db().characters);
+        // The first new entry is valid; the second passes the shape check but not its creation (a
+        // lorebook entry the conversion refuses, a group whose members are not a list).
+        for (const bad of [
+            { ...incoming("f", "bad lore"), globalLore: [null] },
+            { ...incoming("f", "bad group"), type: "group", characters: "e" },
+        ]) {
+            api.setDatabaseLite({ characters: [character("c", "renamed"), incoming("e", "E"), bad] });
+        }
+        expect(ids()).toEqual(["c", "d"]);
+        expect(plain(db().characters)).toEqual(before);
+        expect(plain(db().characterOrder)).toEqual(["c", "d"]);
+        expect(warnings()).toHaveLength(2);
+        expect(warnings().every((text) => /Refused the database key characters;.*characters\[2\]/.test(text))).toBe(
+            true,
+        );
+        // A valid list then lands with its new entry created once (its creation steps done).
+        api.setDatabaseLite({ characters: [character("c", "renamed"), incoming("e", "E")] });
+        expect(ids()).toEqual(["c", "e"]);
+        const e = db().characters[1];
+        expect(e).toMatchObject({ type: "character", desc: "", firstMsgIndex: -1, creation_date: expect.any(Number) });
+        expect(plain(e.chats)).toEqual([
+            { id: expect.any(String), message: [], note: "", name: "Chat 1", localLore: [], fmIndex: -1 },
+        ]);
+    });
+
     it("a non-list characters value is refused with a warning, while the other keys land", async () => {
         const api = await makeApi();
         api.setDatabaseLite({ theme: "before", characters: { chaId: "c" }, customCSS: "after" });

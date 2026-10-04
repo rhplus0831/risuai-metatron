@@ -813,8 +813,20 @@ export function setStreamingState(
 // Chat membership and selection
 
 /**
+ * A chat's defaults that come from its character (Phase 6 slice 5b): `fmIndex`, the greeting the chat
+ * starts from, is the character's `firstMsgIndex` (-1: the first message) when absent, and `localLore`
+ * is `[]` when absent. An explicit `fmIndex` (also 0 or -1) is kept. Changes `chat` in place.
+ */
+export function prepareChatInput(chat: Chat, character: { firstMsgIndex?: unknown }) {
+    if (chat.fmIndex === undefined || chat.fmIndex === null) {
+        chat.fmIndex = typeof character.firstMsgIndex === "number" ? character.firstMsgIndex : -1;
+    }
+    chat.localLore ??= [];
+}
+
+/**
  * Creates a chat in a character at `index` (default: the end). Missing or duplicate chat and message
- * ids are assigned. Returns the mirror's chat.
+ * ids are assigned, and the character's chat defaults (`prepareChatInput`). Returns the mirror's chat.
  */
 export function createChat(
     chaId: string,
@@ -824,6 +836,7 @@ export function createChat(
     const character = requireCharacter(chaId);
     const chats = chatsOf(character);
     const chat = clone<Chat>(input);
+    prepareChatInput(chat, character);
     delete chat.isStreaming;
     delete chat.activeStreamingDisplayOptimizationMode;
     if (!isValidId(chat.id) || chats.some((entry) => entry.id === chat.id)) {
@@ -850,7 +863,7 @@ export function createChat(
 export function ensureChat(chaId: string) {
     const character = findCharacter(chaId);
     if (character && chatsOf(character).length === 0) {
-        createChat(chaId, { message: [], note: "", name: "Chat 1", localLore: [], fmIndex: -1 }, { index: 0 });
+        createChat(chaId, { message: [], note: "", name: "Chat 1", localLore: [] }, { index: 0 });
     }
 }
 
@@ -1071,8 +1084,21 @@ function applyRemoval(ref: ChatRef, chat: Chat, present: readonly string[]) {
 }
 
 /**
+ * The chat fields the server's chat normalizer (`normalizeChatMeta`) defaults: removing one, or setting
+ * it to `null`, stores the default, so the client writes the default itself and holds what the server
+ * holds (Phase 6 slice 5b).
+ */
+const SERVER_META_DEFAULTS: Readonly<Record<string, () => unknown>> = {
+    name: () => "",
+    note: () => "",
+    localLore: () => [],
+    fmIndex: () => -1,
+};
+
+/**
  * Sets and removes chat fields (not `id`, `message`, or the streaming flags). Values equal to the
- * current ones are skipped, so a component can commit its whole editing copy without echo.
+ * current ones are skipped, so a component can commit its whole editing copy without echo. A field the
+ * server defaults (`SERVER_META_DEFAULTS`) is set to its default instead of removed or set to `null`.
  */
 export function setChatMeta(
     ref: ChatRef,
@@ -1081,7 +1107,14 @@ export function setChatMeta(
 ) {
     const chat = requireChat(ref) as unknown as Record<string, unknown>;
     const changes: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(set)) {
+    const requested: Record<string, unknown> = { ...set };
+    for (const key of unset) {
+        if (Object.hasOwn(SERVER_META_DEFAULTS, key) && requested[key] === undefined) {
+            requested[key] = null;
+        }
+    }
+    for (const [key, entry] of Object.entries(requested)) {
+        const value = entry === null && Object.hasOwn(SERVER_META_DEFAULTS, key) ? SERVER_META_DEFAULTS[key]() : entry;
         if (forbiddenMetaKeys.has(key)) {
             throw new Error(`setChatMeta cannot change ${key}`);
         }
@@ -1096,7 +1129,8 @@ export function setChatMeta(
         if (forbiddenMetaKeys.has(key)) {
             throw new Error(`setChatMeta cannot change ${key}`);
         }
-        return Object.hasOwn(chat, key) && !Object.hasOwn(changes, key);
+        // A field the server defaults is never removed: the loop above set it to its default.
+        return Object.hasOwn(chat, key) && !Object.hasOwn(changes, key) && !Object.hasOwn(SERVER_META_DEFAULTS, key);
     });
     if (Object.keys(changes).length === 0 && removals.length === 0) {
         return;
@@ -1146,6 +1180,7 @@ export function replaceChat(ref: ChatRef, input: DeepReadonly<Chat>) {
     }
     const chat = clone<Chat>(input);
     chat.id = ref.chatId;
+    prepareChatInput(chat, character);
     chat.message ??= [];
     ensureMessageIds(chat.message, new Set());
     delete chat.isStreaming;
@@ -1185,6 +1220,8 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
         return;
     }
     const next = clone<Chat>(result);
+    // A result without the character-derived defaults gets them (it never unsets them).
+    prepareChatInput(next, requireCharacter(ref.chaId));
     next.message ??= [];
     const baseMessages = new Map(baseline.chat.message.map((message) => [message.chatId!, message]));
     ensureMessageIds(next.message, new Set());
@@ -1503,10 +1540,11 @@ export function normalizeNewCharacter(chaId: string) {
     }
     const chats = chatsOf(character);
     if (chats.length === 0) {
-        chats.push({ id: uuidv4(), message: [], note: "", name: "Chat 1", localLore: [], fmIndex: -1 });
+        chats.push({ id: uuidv4(), message: [], note: "", name: "Chat 1", localLore: [] });
     }
     const ids = new Set<string>();
     for (const chat of chats) {
+        prepareChatInput(chat, character);
         if (!isValidId(chat.id) || ids.has(chat.id)) {
             chat.id = uuidv4();
         }
@@ -1743,6 +1781,7 @@ function canonicalChat(chat: Chat): string {
     copy.name ??= "";
     copy.note ??= "";
     copy.localLore ??= [];
+    copy.fmIndex ??= -1;
     return canonical(copy);
 }
 

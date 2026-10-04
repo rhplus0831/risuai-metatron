@@ -15,6 +15,7 @@ import { v4 } from "uuid";
 import { type ChatRef, currentChatRef, findChat, setChatMeta } from "../storage/chatStore.svelte";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { findCharacter, updateCharacter } from "../storage/characterStore.svelte";
+import { upgradeLorebook } from "../../../shared/modules.ts";
 
 /** Appends entries to the selected chat's local lore (through the chat module). */
 function appendLocalLore(entries: loreBook[]) {
@@ -143,7 +144,9 @@ export async function importLoreBook(mode: "global" | "local" | "sglobal") {
             // The character selected when the import started, by id; a character removed meanwhile gets nothing.
             const character = chaId === undefined ? undefined : findCharacter(chaId);
             if (character) {
-                updateCharacter(chaId, { globalLore: [...(character.globalLore ?? []), ...lore] });
+                // Old entries in the file are converted as they enter (a refusal imports nothing); the
+                // character's own entries keep their content.
+                updateCharacter(chaId, { globalLore: [...(character.globalLore ?? []), ...upgradeLorebook(lore)] });
             }
         } else if (chatTarget) {
             const chat = findChat(chatTarget);

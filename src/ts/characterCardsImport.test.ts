@@ -173,6 +173,30 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(get(stores.selectedCharID)).toBe(-1);
     });
 
+    it("a card is prepared as a creation (Phase 6 slice 5b): the defaults, the time, the lore conversion; the record is the server's normalized text", async () => {
+        const { cards, ids, added, fake, sync } = await boot();
+        const before = ids();
+        const started = Date.now();
+        const card = cardV2("Old", { character_book: characterBook("Old Lore", "<char> and <user>\n@@end") });
+        await cards.importCharacterProcess({ name: "card.json", data: encode(card) });
+        const { character, record } = await added(before);
+        expect(character.creation_date).toBeGreaterThanOrEqual(started);
+        expect(character.globalLore).toEqual([
+            expect.objectContaining({
+                comment: "Old Lore",
+                content: "{{char}} and {{user}}\n@@depth 0",
+                bookVersion: 2,
+            }),
+        ]);
+        expect(character).toMatchObject({ type: "character", newGenData: expect.any(Object), firstMsgIndex: -1 });
+        expect(character.chats[0]).toMatchObject({ fmIndex: -1, localLore: [] });
+        const { chats: _chats, chatPage: _page, reloadKeys: _keys, ...own } = character;
+        expect(JSON.stringify(record)).toBe(JSON.stringify(own));
+        fake.requests.length = 0;
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(0);
+    });
+
     it("an off-spec JSON card (name, description, first message) goes through convertOffSpecCards and addCharacter", async () => {
         const { cards, ids, added } = await boot();
         const before = ids();

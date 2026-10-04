@@ -17,7 +17,7 @@ import {
 import { checkNullish, decryptBuffer, isKnownUri, selectFileByDom, sleep } from "./util";
 import { language } from "src/lang";
 import { v4 as uuidv4, v4 } from "uuid";
-import { changeChar, characterFormatUpdate } from "./characters";
+import { changeChar } from "./characters";
 import {
     AppendableBuffer,
     BlankWriter,

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { BatchConflict } from "../../../shared/resources.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
@@ -248,7 +249,7 @@ describe("the generation lock guard on character deletes", () => {
             }),
         ).toThrow(ResourceConflictError);
         expect(state()).toBe(before);
-        expect(store.get(characters, "d")!.data).toEqual({ chaId: "d" });
+        expect(store.get(characters, "d")!.data).toEqual(normalizeCharacter({ chaId: "d" }));
         // The owner's token passes nothing here either: a character delete is never a job's write.
         lock.endJob("token-1");
         store.delete(characters, "c", revisions.c);
@@ -284,7 +285,7 @@ describe("the generation lock guard on character deletes", () => {
         store.applyChanges({
             ops: [{ kind: characters, id: "c", baseRevision: revisions.c, data: { chaId: "c", name: "ok" } }],
         });
-        expect(store.get(characters, "c")!.data).toEqual({ chaId: "c", name: "ok" });
+        expect(store.get(characters, "c")!.data).toEqual(normalizeCharacter({ chaId: "c", name: "ok" }));
         store.applyChanges(
             { ops: [{ kind: characters, id: "c", baseRevision: store.get(characters, "c")!.revision, delete: true }] },
             { epoch: store.epoch(), jobToken: token },

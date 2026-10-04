@@ -1,5 +1,6 @@
 import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { normalizeCharacter } from "../../../../shared/characters.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
 import { materialize } from "./serverKinds";
@@ -41,12 +42,13 @@ type Stores = typeof import("../../stores.svelte");
 type Bootstrap = typeof import("../../bootstrap");
 type DatabaseModule = typeof import("../database.svelte");
 
+/** A character as the server stores it: the shared defaults filled in (Phase 6 slice 5b). */
 function character(chaId: string, name: string, extra: Record<string, unknown> = {}) {
-    return { chaId, name, type: "character", ...extra };
+    return normalizeCharacter({ chaId, name, type: "character", ...extra });
 }
 
 function group(chaId: string, extra: Record<string, unknown> = {}) {
-    return {
+    return normalizeCharacter({
         chaId,
         name: "Group",
         type: "group",
@@ -54,7 +56,7 @@ function group(chaId: string, extra: Record<string, unknown> = {}) {
         characterActive: [true, true],
         characterTalks: [0.5, 0.5],
         ...extra,
-    };
+    });
 }
 
 /**
@@ -518,8 +520,9 @@ describe("the flush barrier around a merge", () => {
         fake.releaseBatch!();
         expect(await flushing).toEqual({ discarded: [] });
         expect(fake.data("characters", "a")).toMatchObject({ desc: "local", lastInteraction: 200 });
-        // The edit made during the write was not acknowledged by it; the next flush saves it.
-        expect(fake.data("characters", "a").personality).toBeUndefined();
+        // The edit made during the write was not acknowledged by it (the server still holds the default);
+        // the next flush saves it.
+        expect(fake.data("characters", "a").personality).toBe("");
         await sync.flushResources();
         expect(fake.data("characters", "a").personality).toBe("typed during the write");
     });

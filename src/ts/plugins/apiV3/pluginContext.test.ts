@@ -149,10 +149,21 @@ vi.mock("src/ts/process/index.svelte", async () => {
 // The tools of `requestChatData` are stand-ins; the plugin provider is real.
 vi.mock("src/ts/process/mcp/mcp", () => ({ getTools: vi.fn(async () => []) }));
 
-// `requestChatDataMain` is spied on so a refused `runLLMModel` can be shown not to dispatch.
-vi.mock("src/ts/process/request/request", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("src/ts/process/request/request")>();
-    return { ...actual, requestChatDataMain: vi.fn(actual.requestChatDataMain) };
+// `requestChatDataMain` is spied on so a refused `runLLMModel` can be shown not to dispatch. The factory
+// does not load the actual module: loading it there loads its imports (the plugin API among them, which
+// imports this module) while the mock is still being made, and an importer entered in that window binds
+// to the unspied original, so whether the API saw the spy depended on the import order. Each export
+// forwards to the actual module at its call instead, so every importer gets the spy in any order.
+vi.mock("src/ts/process/request/request", () => {
+    type Request = typeof import("src/ts/process/request/request");
+    const actual = () => vi.importActual<Request>("src/ts/process/request/request");
+    return {
+        requestChatData: async (...args: Parameters<Request["requestChatData"]>) =>
+            (await actual()).requestChatData(...args),
+        requestChatDataMain: vi.fn(async (...args: Parameters<Request["requestChatDataMain"]>) =>
+            (await actual()).requestChatDataMain(...args),
+        ),
+    };
 });
 
 // The server transform is a stand-in: with the tab's plugin handlers every text is pending as it came

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
+import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp, ChatRecord } from "../../../shared/chats.ts";
 import type { BatchConflict } from "../../../shared/resources.ts";
 import { CHAT_TABLES_SQL, MAX_GENERATION_HISTORY } from "../data/chatStore.ts";
@@ -153,7 +154,7 @@ describe("creating characters and chats", () => {
 
         const read = store.readKinds([characters], { chats: true });
         expect(read.kinds.characters).toEqual([
-            { id: "c", revision: result.results[0].revision, data: { chaId: "c", name: "C" } },
+            { id: "c", revision: result.results[0].revision, data: normalizeCharacter({ chaId: "c", name: "C" }) },
         ]);
         expect(read.chats!.map((c) => c.id)).toEqual(["k1", "k0", "k9"]);
         const stored = read.chats![0];
@@ -163,13 +164,21 @@ describe("creating characters and chats", () => {
             name: "Chat 1",
             note: "first",
             localLore: [],
+            fmIndex: -1,
             message: [
                 m("a", "hello"),
                 { role: "char", data: "no id", chatId: k1.messageIds![1] },
                 { ...m("a", "dup"), chatId: k1.messageIds![2] },
             ],
         });
-        expect(read.chats![1].data).toEqual({ id: "k0", name: "Chat 0", note: "", localLore: [], message: [] });
+        expect(read.chats![1].data).toEqual({
+            id: "k0",
+            name: "Chat 0",
+            note: "",
+            localLore: [],
+            fmIndex: -1,
+            message: [],
+        });
         expect(read.chatOrders).toEqual(result.chatOrders);
         // Without the flag the chat tables are not read.
         expect(store.readKinds([characters])).not.toHaveProperty("chats");
@@ -454,6 +463,7 @@ describe("revision rules", () => {
             name: "R",
             note: "",
             localLore: [],
+            fmIndex: -1,
             message: [m("z", "Z"), { ...m("z", "Z2"), chatId: replaced.messageIds![1] }],
         });
         const deleted = store.applyChanges({ chats: [group("k", replaced.revision!, [{ op: "delete" }])] });
@@ -1175,7 +1185,13 @@ describe("snapshots", () => {
             [1, "c", "k", 7, 1],
             [2, "c", "k2", 1, 1],
         ]);
-        expect(JSON.parse(validated.chats[0].meta)).toEqual({ name: "K", id: "k", note: "", localLore: [] });
+        expect(JSON.parse(validated.chats[0].meta)).toEqual({
+            name: "K",
+            id: "k",
+            note: "",
+            localLore: [],
+            fmIndex: -1,
+        });
         expect(validated.messages).toEqual([
             {
                 chatSeq: 1,

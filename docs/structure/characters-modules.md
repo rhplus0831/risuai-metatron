@@ -34,9 +34,9 @@
   - Export: `exportChar` (dialog), `exportCharacterCard` (writer), `createBaseV2`/`createBaseV3`.
   - Hub and links: `characterURLImport` (deep links and shares), `hubURL`, `getRisuHub`/`downloadRisuHub`/`getRealmInfo`. `hubURL` is the self-host server's same-origin `/hub-proxy`.
 - `characters.ts`: character lifecycle.
-  - Create and select: `addCharacter`, `createNewCharacter`, `createBlankChar`, `createNewGroup`, `changeChar` (runs `characterFormatUpdate`).
+  - Create and select: `addCharacter`, `createNewCharacter`, `createBlankChar`, `createNewGroup`, `changeChar` (makes sure the character has a chat and shows its chat, `ensureChat` and `syncChatPage`, then selects it; since Phase 6 slice 5b it applies no defaults and stamps no `lastInteraction`).
   - Delete: `removeChar` (soft delete via `trashTime`, or permanent).
-  - `updateLorebooks`, plus image, emotion, and chat import/export helpers.
+  - Image, emotion, and chat import/export helpers.
 - `pngChunk.ts` `PngChunk`: `read`, `readGenerator` (streaming), `trim`, `write`, `streamWriter`. Other chunks are preserved.
 - `process/processzip.ts`:
   - `CharXWriter`: sanitizes and uniquifies asset names, skips files over 50 MiB.
@@ -125,10 +125,10 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - The `getModules` cache is keyed by joined IDs. After editing module contents in place, call `refreshModules` or `moduleUpdate`.
 - `getModuleTriggers` mutates the triggers' `lowLevelAccess`. Aggregate order follows the DB module order.
 - Keep `character.modules`, `chat.modules`, `enabledModules`, and `moduleIntergration` (which matches namespaces) distinct.
-- `LoreBookList` must rebuild its Svelte arrays after SortableJS DOM moves. `characterFormatUpdate` and `updateLorebooks` are the lore migration points.
+- `LoreBookList` must rebuild its Svelte arrays after SortableJS DOM moves. Old lorebook entries (below `bookVersion` 2) are converted only as they enter: a character's creation (`prepareNewCharacter`), a lorebook file imported into a character (`importLoreBook`), and the module import paths (`upgradeLorebook`, `shared/modules.ts`); later updates keep their content.
 - `chaId` and chat IDs must be unique. The installation (`initializeRecords`) gives a character without a valid or unique id a new one, and a character's id never changes afterwards; chat and message ids are assigned by the chat module (`createChat`, `appendMessage`) and kept unique by the server.
 - An import path adds a character only through `addCharacter` (and modules, personas, and presets through the collection module). The core-app creators (`createNewCharacter`, `createNewGroup`, the editors) still push into the mirror until Phase 6.
-- A character's chats are created through the chat module once it is in the mirror: `importChat` calls `createChat` (a copy gets a fresh chat id and keeps its message ids), and `characterFormatUpdate` on a live character calls `ensureChat` and moves `postHistoryInstructions` into the chat note with `setChatMeta`. A character that is not yet added (a new card, an import) carries its initial chats directly; the save loop creates them with it.
+- A character's chats are created through the chat module once it is in the mirror: `importChat` calls `createChat` (a copy gets a fresh chat id and keeps its message ids), and `changeChar` calls `ensureChat` for a character without one. A character that is not yet added (a new card, an import) carries its initial chats directly; its creation (`prepareNewCharacter`, Phase 6 slice 5b) gives it a first chat when it has none, each chat its `fmIndex` (the character's `firstMsgIndex`) and `localLore` (`prepareChatInput`), and moves `postHistoryInstructions` into the note of the chat at `chatPage`; the save loop creates the chats with it.
 
 ## Recipes
 

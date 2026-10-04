@@ -24,7 +24,6 @@ import { moduleUpdate } from "./process/modules";
 import { forageStorage, saveDb, setUsingSw, checkCharOrder } from "./globalApi.svelte";
 import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import { readKinds } from "./storage/resourceClient";
-import { batchRecordWrites } from "./storage/records.svelte";
 import { onRemoteRecordApplied, seedResources, setRemoteResourceOwner } from "./storage/resourceSync.svelte";
 import { removeCharacters } from "./storage/characterStore.svelte";
 import { importBrowserLocalData } from "./storage/browserLocalImport";
@@ -269,34 +268,14 @@ function updateHeightMode() {
 }
 
 /**
- * Checks and updates the database format to the latest version.
+ * The boot's maintenance of the installed database: the trash pruning, the preset and persona
+ * backstops again (`setDatabase`), and the character order.
  */
 async function checkNewFormat(): Promise<void> {
     let db = getDatabase();
 
-    // Check data integrity (the ids are made valid and unique when the records are installed).
-    batchRecordWrites(() => {
-        for (const v of db.characters) {
-            v.type ??= "character";
-            v.customscript ??= [];
-            v.firstMessage ??= "";
-            v.globalLore ??= [];
-            v.name ??= "";
-            v.viewScreen ??= "none";
-            v.emotionImages = v.emotionImages ?? [];
-
-            if (v.type === "character") {
-                v.bias ??= [];
-                v.characterVersion ??= "";
-                v.creator ??= "";
-                v.desc ??= "";
-                v.utilityBot ??= false;
-                v.tags ??= [];
-                v.systemPrompt ??= "";
-                v.scenario ??= "";
-            }
-        }
-    });
+    // The characters arrive normalized by the server (`normalizeCharacter`); the client applies no
+    // default at boot (Phase 6 slice 5b). Their ids were made valid and unique when they were installed.
 
     // Characters in the trash for more than three days are deleted (one change of the list).
     const now = Date.now();

@@ -100,7 +100,7 @@ describe("updateCharacter", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("removes a field for an undefined value, and detaches the patch", async () => {
+    it("removes a field for an undefined value (a default field is saved as its default), and detaches the patch", async () => {
         const { sync, characterStore, record, character } = await boot();
         const value = { nested: ["x"] };
         characterStore.updateCharacter("c", { desc: "d", extra: value });
@@ -108,10 +108,15 @@ describe("updateCharacter", () => {
         expect(plain(character("c").extra)).toEqual({ nested: ["x"] });
         await sync.flushResources();
         expect(record("characters", "c")).toMatchObject({ desc: "d", extra: { nested: ["x"] } });
-        characterStore.updateCharacter("c", { desc: undefined });
+        characterStore.updateCharacter("c", { desc: undefined, extra: undefined });
         expect("desc" in character("c")).toBe(false);
+        expect("extra" in character("c")).toBe(false);
         await sync.flushResources();
-        expect(record("characters", "c")).not.toHaveProperty("desc");
+        // `extra` is removed from the server; `desc` is a character default (Phase 6 slice 5b), so the
+        // save cycle writes its default back before saving, and the mirror shows it.
+        expect(record("characters", "c")).not.toHaveProperty("extra");
+        expect(record("characters", "c").desc).toBe("");
+        expect(character("c").desc).toBe("");
     });
 
     it("stores keys named like Object.prototype members as own properties, keeps the chats, and saves them", async () => {
@@ -207,9 +212,10 @@ describe("replaceCharacterFields", () => {
         await sync.flushResources();
         const saved = record("characters", "c");
         expect(saved).toMatchObject({ name: "Replaced", toString: "t", constructor: 9 });
-        // The mirror keeps an own `__proto__`; the character projection goes through `$state.snapshot`,
-        // which drops it (the adapter's rule, `persistence.md`), so only the other keys reach the server.
-        expect(Object.hasOwn(saved, "__proto__")).toBe(false);
+        // The mirror keeps an own `__proto__`, and the character projection serializes the record's own
+        // keys directly (Phase 6 slice 5b; `$state.snapshot` used to drop it), so it reaches the server too.
+        expect(Object.hasOwn(saved, "__proto__")).toBe(true);
+        expect(Object.getOwnPropertyDescriptor(saved, "__proto__")!.value).toEqual({ x: 1 });
         expect(saved).not.toHaveProperty("chats");
         expect(server.current.texts("c", "k")).toEqual(["A", "B", "C"]);
     });

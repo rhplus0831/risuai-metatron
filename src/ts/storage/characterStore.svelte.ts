@@ -4,7 +4,10 @@ import type { character, groupChat } from "../../../shared/database.ts";
 import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { DBState } from "../stores.svelte";
-import { isCharacterGenerating, normalizeNewCharacter } from "./chatStore.svelte";
+import { CharacterShapeError, normalizeCharacter } from "../../../shared/characters.ts";
+import { ModuleShapeError, upgradeLorebook } from "../../../shared/modules.ts";
+import type { Chat } from "../../../shared/database.ts";
+import { isCharacterGenerating, normalizeNewCharacter, prepareChatInput } from "./chatStore.svelte";
 import { checkCharOrder } from "./characterOrder";
 import {
     CHARACTER_FIXED_FIELDS,
@@ -74,6 +77,9 @@ export function checkCharacterInput(char: unknown, key = "character"): asserts c
     if (char.chaId !== undefined && typeof char.chaId !== "string") {
         throw new MutationValidationError(key, "chaId must be a string");
     }
+    if (char.type === "group" && char.characters !== undefined && char.characters !== null) {
+        requireArray(`${key}.characters`, char.characters);
+    }
     if (char.chats === undefined) {
         return;
     }
@@ -87,14 +93,84 @@ export function checkCharacterInput(char: unknown, key = "character"): asserts c
     });
 }
 
-/** A checked, detached copy of `char` with its `chaId` (assigned on the copy when missing or empty). */
-function prepareCharacter(char: unknown): { copy: AnyCharacter; chaId: string } {
-    checkCharacterInput(char);
-    const copy = detach({ ...char, reloadKeys: undefined }) as unknown as AnyCharacter;
-    if (typeof copy.chaId !== "string" || copy.chaId === "") {
-        copy.chaId = v4();
+/** A character ready to be installed: checked, detached, normalized, its creation steps done. */
+export interface PreparedCharacter {
+    readonly copy: AnyCharacter;
+    readonly chaId: string;
+}
+
+const preparedCharacters = new WeakSet<PreparedCharacter>();
+
+/** `normalizeCharacter` with its shape refusal as a `MutationValidationError`. */
+function normalizedFields<T extends Record<string, unknown>>(fields: T, key: string): T {
+    try {
+        return normalizeCharacter(fields);
+    } catch (error) {
+        if (error instanceof CharacterShapeError) {
+            throw new MutationValidationError(key, error.message);
+        }
+        throw error;
     }
-    return { copy, chaId: copy.chaId };
+}
+
+/**
+ * Prepares a character that enters the list (Phase 6 slice 5b; every creator and importer goes
+ * through `addCharacter` or `replaceCharacterAt`), on a detached copy and before anything is
+ * installed, so a refusal changes nothing: the checks; a `chaId` when missing; the shared defaults
+ * (`normalizeCharacter`); then the creation steps, each run once here: `ttsMode` `"none"` becomes
+ * `""`, `creation_date` is set when absent, old lorebook entries are converted (`upgradeLorebook`:
+ * never on later updates, which keep their content), a character without chats gets its first chat,
+ * every chat gets its `fmIndex` (the greeting, `firstMsgIndex`) and `localLore` when absent, and
+ * `postHistoryInstructions` moves into the note of the chat at `chatPage` (else the first).
+ */
+export function prepareNewCharacter(char: unknown, key = "character"): PreparedCharacter {
+    checkCharacterInput(char, key);
+    const detached = detach({ ...char, reloadKeys: undefined }) as Record<string, unknown>;
+    if (typeof detached.chaId !== "string" || detached.chaId === "") {
+        detached.chaId = v4();
+    }
+    const copy = normalizedFields(detached, key);
+    if (copy.ttsMode === "none") {
+        copy.ttsMode = "";
+    }
+    if (copy.creation_date === undefined || copy.creation_date === null) {
+        copy.creation_date = Date.now();
+    }
+    if (!Array.isArray(copy.globalLore)) {
+        throw new MutationValidationError(`${key}.globalLore`, "must be a list");
+    }
+    try {
+        copy.globalLore = upgradeLorebook(copy.globalLore);
+    } catch (error) {
+        if (error instanceof ModuleShapeError) {
+            throw new MutationValidationError(`${key}.globalLore`, error.message);
+        }
+        throw error;
+    }
+    const chats = (Array.isArray(copy.chats) ? copy.chats : []) as Chat[];
+    if (chats.length === 0) {
+        chats.push({ id: v4(), message: [], note: "", name: "Chat 1", localLore: [] });
+    }
+    copy.chats = chats;
+    for (const chat of chats) {
+        prepareChatInput(chat, copy);
+    }
+    const instructions = copy.postHistoryInstructions;
+    if (typeof instructions === "string" && instructions !== "") {
+        const page = typeof copy.chatPage === "number" ? copy.chatPage : 0;
+        const chat = chats[page] ?? chats[0];
+        chat.note = ((chat.note ?? "") + "\n" + instructions).trim();
+        copy.postHistoryInstructions = "";
+    }
+    const prepared: PreparedCharacter = { copy: copy as unknown as AnyCharacter, chaId: copy.chaId as string };
+    preparedCharacters.add(prepared);
+    return prepared;
+}
+
+function requirePrepared(prepared: PreparedCharacter) {
+    if (!preparedCharacters.has(prepared)) {
+        throw new MutationValidationError("character", "not prepared by prepareNewCharacter");
+    }
 }
 
 /** The mirror record of a character, typed read-only: change it through `updateCharacter`. */
@@ -103,11 +179,18 @@ export function findCharacter(chaId: string): DeepReadonly<AnyCharacter> | undef
 }
 
 /**
- * Adds a character (with its chats) to the mirror, gives its chats ids, and puts it into the
- * character order. A `chaId` another character has is refused. Returns the id.
+ * Adds a character (with its chats) to the mirror, prepared as a creation (`prepareNewCharacter`),
+ * gives its chats ids, and puts it into the character order. A `chaId` another character has is
+ * refused. Returns the id.
  */
 export function addCharacter(char: unknown): string {
-    const { copy, chaId } = prepareCharacter(char);
+    return addPreparedCharacter(prepareNewCharacter(char));
+}
+
+/** `addCharacter` for a character prepared before (a caller's preflight of a whole list). */
+export function addPreparedCharacter(prepared: PreparedCharacter): string {
+    requirePrepared(prepared);
+    const { copy, chaId } = prepared;
     if (indexOf(chaId) !== -1) {
         throw new MutationValidationError("character", `a character with chaId ${chaId} already exists`);
     }
@@ -152,7 +235,11 @@ export function replaceCharacterFields(char: unknown): boolean {
     if (typeof chaId !== "string" || chaId === "") {
         throw new MutationValidationError("character", "chaId must name the character to replace");
     }
-    const fields = detach(Object.fromEntries(Object.entries(char).filter(([field]) => !LOCAL_FIELDS.has(field))));
+    // A whole replacement gets the shared defaults at once, so what is saved is what the server holds.
+    const fields = normalizedFields(
+        detach(Object.fromEntries(Object.entries(char).filter(([field]) => !LOCAL_FIELDS.has(field)))),
+        "character",
+    );
     const index = indexOf(chaId);
     if (index === -1) {
         return false;
@@ -173,7 +260,7 @@ export function replaceCharacterAt(index: number, char: unknown): string {
     if (!Number.isInteger(index) || index < 0 || index > characters.length) {
         throw new MutationValidationError("index", "no character at this index");
     }
-    const { copy, chaId } = prepareCharacter(char);
+    const { copy, chaId } = prepareNewCharacter(char);
     const current = characters[index];
     if (current && current.chaId === chaId) {
         throw new MutationValidationError("character", "the character at this index has this chaId already");

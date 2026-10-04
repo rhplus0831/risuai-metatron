@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import {
     type BatchConflict,
@@ -119,7 +120,9 @@ describe("POST /api/resources/batch with chats", () => {
         });
 
         const all = await readAll(s);
-        expect(all.kinds.characters).toEqual([{ id: "c", revision: r.body.results[0].revision, data: { chaId: "c" } }]);
+        expect(all.kinds.characters).toEqual([
+            { id: "c", revision: r.body.results[0].revision, data: normalizeCharacter({ chaId: "c" }) },
+        ]);
         expect(all.chats).toEqual([
             {
                 characterId: "c",
@@ -130,6 +133,7 @@ describe("POST /api/resources/batch with chats", () => {
                     name: "K",
                     note: "n",
                     localLore: [],
+                    fmIndex: -1,
                     message: [
                         m("a", "A"),
                         { role: "char", data: "no id", chatId: generated },

@@ -7,7 +7,8 @@
     import PlaygroundJinja from "./PlaygroundJinja.svelte";
     import PlaygroundSyntax from "./PlaygroundSyntax.svelte";
     import { findCharacterIndexbyId } from "src/ts/util";
-    import { characterFormatUpdate, createBlankChar } from "src/ts/characters";
+    import { createBlankChar } from "src/ts/characters";
+    import { ensureChat, syncChatPage } from "src/ts/storage/chatStore.svelte";
     import { type character } from "src/ts/storage/database.svelte";
     import { DBState } from "src/ts/stores.svelte";
     import { addCharacter } from "src/ts/storage/characterStore.svelte";
@@ -32,7 +33,8 @@
             char.utilityBot = true;
             char.name = "assistant";
             char.firstMessage = "{{none}}";
-            characterFormatUpdate(charIndex);
+            ensureChat(char.chaId);
+            syncChatPage(char.chaId);
 
             selectedCharID.set(charIndex);
             return;

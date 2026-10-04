@@ -1,14 +1,5 @@
 import { get, writable } from "svelte/store";
-import {
-    saveImage,
-    type character,
-    type Chat,
-    defaultSdDataFunc,
-    type loreBook,
-    getDatabase,
-    getCharacterByIndex,
-    setCharacterByIndex,
-} from "./storage/database.svelte";
+import { saveImage, type character, type Chat, defaultSdDataFunc, getDatabase } from "./storage/database.svelte";
 import { alertAddCharacter, alertConfirm, alertError, alertNormal, alertSelect, alertStore, alertWait } from "./alert";
 import { language } from "../lang";
 import {
@@ -28,13 +19,11 @@ import {
     removeCharacter,
     updateCharacter,
 } from "./storage/characterStore.svelte";
-import { batchRecordWrites } from "./storage/records.svelte";
 import { AppendableBuffer, changeChatTo, checkCharOrder, downloadFile, getFileSrc } from "./globalApi.svelte";
-import { updateInlayScreen } from "./process/inlayScreen";
 import { parseMarkdownSafe } from "./parser/parser.svelte";
 import { translateHTML } from "./translator/translator";
 import { doingChat } from "./process/index.svelte";
-import { createChat, ensureChat, isCharacterGenerating, setChatMeta, syncChatPage } from "./storage/chatStore.svelte";
+import { createChat, ensureChat, isCharacterGenerating, syncChatPage } from "./storage/chatStore.svelte";
 import { importCharacter } from "./characterCards";
 import { PngChunk } from "./pngChunk";
 
@@ -601,162 +590,6 @@ function formatTavernChat(chat: string, charName: string) {
         .replace(/((\{\{)|<)([Cc]har)(=.+)?((\}\})|>)/g, charName);
 }
 
-export function characterFormatUpdate(
-    indexOrCharacter: number | character,
-    arg: {
-        updateInteraction?: boolean;
-    } = {},
-) {
-    // One queued save for the whole update (a live character's fields are written through its record).
-    return batchRecordWrites(() => formatCharacter(indexOrCharacter));
-}
-
-function formatCharacter(indexOrCharacter: number | character) {
-    let cha = typeof indexOrCharacter === "number" ? getCharacterByIndex(indexOrCharacter) : indexOrCharacter;
-    // A character in the mirror gets its chat defaults through the chat module; a detached one (not
-    // yet added) directly, and the save loop creates its chats with it.
-    const live = typeof indexOrCharacter === "number";
-    if (live) {
-        ensureChat(cha.chaId);
-        syncChatPage(cha.chaId);
-    } else if (cha.chats.length === 0) {
-        (cha as unknown as { chats: Chat[] }).chats = [
-            {
-                id: uuidv4(),
-                message: [],
-                note: "",
-                name: "Chat 1",
-                localLore: [],
-            },
-        ];
-    }
-    if (!cha.type) {
-        cha.type = "character";
-    }
-    if (!cha.chaId) {
-        cha.chaId = uuidv4();
-    }
-    if (cha.type !== "group") {
-        if (checkNullish(cha.sdData)) {
-            cha.sdData = defaultSdDataFunc();
-        }
-        if (checkNullish(cha.utilityBot)) {
-            cha.utilityBot = false;
-        }
-        cha.triggerscript = cha.triggerscript ?? [];
-        cha.alternateGreetings = cha.alternateGreetings ?? [];
-        cha.exampleMessage = cha.exampleMessage ?? "";
-        cha.creatorNotes = cha.creatorNotes ?? "";
-        cha.systemPrompt = cha.systemPrompt ?? "";
-        cha.tags = cha.tags ?? [];
-        cha.creator = cha.creator ?? "";
-        cha.characterVersion = cha.characterVersion ?? "";
-        cha.personality = cha.personality ?? "";
-        cha.scenario = cha.scenario ?? "";
-        cha.firstMsgIndex = cha.firstMsgIndex ?? -1;
-        cha.additionalData = cha.additionalData ?? {
-            tag: [],
-            creator: "",
-            character_version: "",
-        };
-        cha.voicevoxConfig = cha.voicevoxConfig ?? {
-            SPEED_SCALE: 1,
-            PITCH_SCALE: 0,
-            INTONATION_SCALE: 1,
-            VOLUME_SCALE: 1,
-        };
-        if (cha.postHistoryInstructions) {
-            // Moved into the selected chat's note (and cleared) together.
-            const chat = cha.chats[cha.chatPage] ?? cha.chats[0];
-            const note = ((chat?.note ?? "") + "\n" + cha.postHistoryInstructions).trim();
-            if (live && chat?.id) {
-                setChatMeta({ chaId: cha.chaId, chatId: chat.id }, { note });
-            } else if (chat) {
-                (chat as Chat).note = note;
-            }
-            cha.postHistoryInstructions = null;
-        }
-        cha.additionalText ??= "";
-        cha.depth_prompt ??= {
-            depth: 0,
-            prompt: "",
-        };
-        cha.hfTTS ??= {
-            model: "",
-            language: "en",
-        };
-        cha.backgroundHTML ??= "";
-        cha.backgroundCSS ??= "";
-        cha.creation_date ??= Date.now();
-        cha.globalLore = updateLorebooks(cha.globalLore);
-        if (!cha.newGenData) {
-            cha = updateInlayScreen(cha);
-        }
-        // Migrate legacy 'none' value to '' for UI dropdown compatibility
-        // Using '' because it's falsy, so `if (ttsMode)` correctly detects enabled TTS
-        if (cha.ttsMode === "none") {
-            cha.ttsMode = "";
-        }
-        cha.ttsMode ??= "";
-    } else {
-        if (!cha.characterTalks || cha.characterTalks.length !== cha.characters.length) {
-            cha.characterTalks = [];
-            for (let i = 0; i < cha.characters.length; i++) {
-                cha.characterTalks.push((1 / 6) * 4);
-            }
-        }
-        if (!cha.characterActive || cha.characterActive.length !== cha.characters.length) {
-            cha.characterActive = [];
-            for (let i = 0; i < cha.characters.length; i++) {
-                cha.characterActive.push(true);
-            }
-        }
-    }
-    if (checkNullish(cha.customscript)) {
-        cha.customscript = [];
-    }
-    cha.lastInteraction = Date.now();
-    if (typeof indexOrCharacter === "number") {
-        setCharacterByIndex(indexOrCharacter, cha);
-    }
-    // Chat defaults: `fmIndex` follows the character's greeting (ids and `localLore` come from the
-    // chat module and the server).
-    for (const chat of cha.chats) {
-        if (chat.fmIndex === undefined || chat.fmIndex === null) {
-            if (live && chat.id) {
-                setChatMeta({ chaId: cha.chaId, chatId: chat.id }, { fmIndex: cha.firstMsgIndex ?? -1 });
-            } else {
-                (chat as Chat).fmIndex = cha.firstMsgIndex ?? -1;
-            }
-        }
-        if (!live && !chat.localLore) {
-            (chat as Chat).localLore = [];
-        }
-    }
-    return cha;
-}
-
-export function updateLorebooks(book: loreBook[]) {
-    return book.map((v) => {
-        v.bookVersion ??= 1;
-        if (v.bookVersion >= 2) {
-            return v;
-        }
-        if (v.activationPercent) {
-            const perc = v.activationPercent;
-            v.activationPercent = null;
-
-            v.content = `@@probability ${perc}\n${v.content}`;
-        }
-        v.content = v.content
-            .replace(/@@@?end/g, "@@depth 0")
-            .replace(/\<(char|bot)\>/g, "{{char}}")
-            .replace(/\<(user)\>/g, "{{user}}");
-        v.bookVersion = 2;
-        return v;
-    });
-}
-
 export function createBlankChar(): character {
     return {
         name: "",
@@ -991,8 +824,12 @@ export async function changeChar(
         return;
     }
     reseter();
-    characterFormatUpdate(index, {
-        updateInteraction: true,
-    });
+    // A selection only makes sure the character has a chat and shows its chat (owner decision 2: it
+    // no longer stamps `lastInteraction`; a send does). The defaults come from creation and the server.
+    const chaId = DBState.db.characters[index]?.chaId;
+    if (chaId !== undefined) {
+        ensureChat(chaId);
+        syncChatPage(chaId);
+    }
     selectedCharID.set(index);
 }

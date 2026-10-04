@@ -123,7 +123,8 @@ describe("server copies of a character", () => {
         expect(result.discarded).toEqual(["characters/c"]);
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         expect(element.name).toBe("server name");
-        expect(element.desc).toBeUndefined();
+        // The server copy's description (its default, Phase 6 slice 5b), not the conflicting local edit.
+        expect(element.desc).toBe("");
         expect(entry.content).toBe("server");
         // The chats stayed the chat module's.
         expect(element.chats.map((chat: any) => chat.id)).toEqual(["k", "j"]);

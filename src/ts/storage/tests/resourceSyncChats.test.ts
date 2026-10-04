@@ -345,7 +345,8 @@ describe("one chat's trouble does not block the rest", () => {
         expect(alerts.error.mock.calls[0][0]).toMatch(/chat k could not be saved: chats\[0\]\.ops\[0\]/);
         expect((fake.chat("c", "j")!.data as any).note).toBe("fine");
         expect(fake.record("ui", "main")!.data).toMatchObject({ theme: "section edit" });
-        expect((fake.chat("c", "k")!.data as any).fmIndex).toBeUndefined();
+        // The refused value did not land: the chat keeps the server's default (-1, Phase 6 slice 5b).
+        expect((fake.chat("c", "k")!.data as any).fmIndex).toBe(-1);
         expect(chat.hasChatWork()).toBe(false);
         chat.setChatMeta(refJ, { note: "still saving" });
         await sync.flushResources();

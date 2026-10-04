@@ -79,6 +79,7 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
 }));
 
+import { normalizeCharacter } from "../../../../shared/characters.ts";
 import { DBState } from "src/ts/stores.svelte";
 import { installForwarding } from "src/ts/storage/forwarding.svelte";
 import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
@@ -126,12 +127,14 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
             pluginV2: [{ name: "old" }],
         });
 
-        // `characters` is reconciled on the live mirror: a new character is added with a `chaId` and
-        // ids for its chats (a default chat when it has none), usable at once.
+        // `characters` is reconciled on the live mirror: a new character is added with a `chaId`, the
+        // shared defaults and a `creation_date` (prepared as a creation, Phase 6 slice 5b), and ids for its
+        // chats (a default chat when it has none), usable at once.
         expect(DBState.db.characters).toEqual([
             {
-                name: "c",
+                ...normalizeCharacter({ name: "c" }),
                 chaId: expect.any(String),
+                creation_date: expect.any(Number),
                 chatPage: 0,
                 chats: [{ id: expect.any(String), message: [], note: "", name: "Chat 1", localLore: [], fmIndex: -1 }],
             },
@@ -523,5 +526,37 @@ describe("v3 character setters normalize new characters", () => {
         expect(DBState.db.characters.map((character: any) => character.chaId)).toEqual(["c", r.chaId]);
         expect((DBState.db.characters[1] as any).name).toBe("replacement");
         expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/another character already has/));
+    });
+
+    it("setCharacterToIndex prepares a new character as a creation, and gives a same-id replacement the defaults only (Phase 6 slice 5b)", async () => {
+        const api = await makeApi();
+        const oldLore = { key: "k", content: "<char>", bookVersion: 1 };
+        api.setCharacterToIndex(1, {
+            chaId: "n",
+            name: "new",
+            firstMsgIndex: 1,
+            postHistoryInstructions: "moved",
+            ttsMode: "none",
+            globalLore: [oldLore],
+        });
+        const created = DBState.db.characters[1] as any;
+        expect(created).toMatchObject({
+            chaId: "n",
+            desc: "",
+            ttsMode: "",
+            postHistoryInstructions: "",
+            creation_date: expect.any(Number),
+            globalLore: [{ key: "k", content: "{{char}}", bookVersion: 2 }],
+        });
+        expect(created.chats).toHaveLength(1);
+        expect(created.chats[0]).toMatchObject({ name: "Chat 1", note: "moved", fmIndex: 1, localLore: [] });
+
+        // The same id: a whole replacement of the character's fields, with the defaults, no creation step.
+        api.setCharacterToIndex(1, { chaId: "n", name: "replaced", globalLore: [oldLore], ttsMode: "none" });
+        const replaced = DBState.db.characters[1] as any;
+        expect(replaced).toMatchObject({ chaId: "n", name: "replaced", desc: "", ttsMode: "none" });
+        expect(JSON.parse(JSON.stringify(replaced.globalLore))).toEqual([oldLore]);
+        expect(replaced).not.toHaveProperty("creation_date");
+        expect(replaced.chats[0]).toMatchObject({ note: "moved", fmIndex: 1 });
     });
 });

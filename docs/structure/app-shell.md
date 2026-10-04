@@ -15,7 +15,7 @@
 - `src/ts/bootstrap.ts`:
   - `loadData`: the server resources are read and assembled into the DB, then migrations, theme, `saveDb` (the save adapter), the browser-local import, plugins, `loadedStore = true`, then services.
   - `assembleDatabase`: builds the DB from the resource records (see `persistence.md`, Load).
-  - `checkNewFormat`: legacy character and module repair.
+  - `checkNewFormat`: the boot's maintenance (the trash pruning, the preset and persona backstops again, the character order); no character default (Phase 6 slice 5b).
   - `registerSw`: service worker.
 - `src/ts/stores.svelte.ts`: all global UI stores plus the `DBState` rune (see State).
 - `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `isMobile`, `isIOS()`, `getRisuEnvironmentLabel` (`node` or `node(dev)`), `getDetailedOSLabel`, `isInStandaloneMode` (unused).
@@ -44,7 +44,7 @@ Boot:
 2. `boot.ts:boot` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
 3. `bootstrap.ts:loadData` loads the database: `forageStorage.Init()` (`AutoStorage`), one `readKinds` of every resource kind (the first request prompts for the password on a new browser), `seedResources`/`seedInlays`, `setDatabase` on the assembled DB, `registerSw`, then `characterURLImport`. A failed read only alerts; there is no local fallback.
 4. Common tail of `loadData`:
-   1. `checkNewFormat` (character defaults, the trash pruning through `removeCharacters`), which ends in `setDatabase`.
+   1. `checkNewFormat` (the trash pruning through `removeCharacters`), which ends in `setDatabase` and `checkCharOrder`.
    2. Theme functions: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`.
    3. `saveDb()` (exactly once; starts the save adapter) and `watchRemoteRecords`: it drops the inlay caches whenever the adapter brought another tab's records in (`onRemoteRecordApplied` → `invalidateInlayCaches`).
    4. `importBrowserLocalData` (moves old browser-only data to the server), `loadPluginPermissions`, then `loadPlugins`. Plugins load after normalization and ID assignment (before Phase 1 they loaded first).

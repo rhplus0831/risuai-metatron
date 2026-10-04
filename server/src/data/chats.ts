@@ -21,8 +21,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * The stored metadata of chat `id`: every field of the input except `message` and the client-only
- * streaming flags, with `id` set and `name`, `note`, `localLore` defaulted. A present `id` must equal
- * the chat id.
+ * streaming flags, with `id` set and `name`, `note`, `localLore`, `fmIndex` (-1) defaulted. A present `id`
+ * must equal the chat id.
  */
 export function normalizeChatMeta(input: unknown, id: string): Record<string, unknown> {
     if (!isPlainObject(input)) {
@@ -47,7 +47,11 @@ export function normalizeChatMeta(input: unknown, id: string): Record<string, un
     if (!Array.isArray(meta.localLore)) {
         throw new ResourceValidationError("chat.localLore must be an array");
     }
-    if (meta.fmIndex !== undefined && typeof meta.fmIndex !== "number") {
+    // The greeting the chat starts from (-1: the first message). The client gives a chat it creates its
+    // character's `firstMsgIndex` (`prepareChatInput`); a chat written without one starts from the first
+    // message, as a selection's formatter gave it before Phase 6 slice 5b.
+    meta.fmIndex ??= -1;
+    if (typeof meta.fmIndex !== "number") {
         throw new ResourceValidationError("chat.fmIndex must be a number");
     }
     if (meta.toolCalls !== undefined) {

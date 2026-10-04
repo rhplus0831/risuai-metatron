@@ -173,6 +173,9 @@ function seed(server: StoreBackedServer) {
         name: "Spike",
         desc: "the description",
         firstMessage: "hello",
+        // A field that is not a character default (Phase 6 slice 5b: a deleted default is saved as its
+        // default), for the delete proof.
+        replaceGlobalNote: "the note",
         globalLore: Array.from({ length: LORE_SIZE }, (_, index) => loreEntry(index)),
     });
 }
@@ -678,29 +681,29 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
 
         it("delete of a key: gone from the serialization, reads undefined, a later set restores it", async () => {
             const character = db.characters[0];
-            expect(delete character.firstMessage).toBe(true);
-            expect(character.firstMessage).toBeUndefined();
+            expect(delete character.replaceGlobalNote).toBe(true);
+            expect(character.replaceGlobalNote).toBeUndefined();
             if (candidate !== "accessor") {
-                expect("firstMessage" in liveChar()).toBe(false);
+                expect("replaceGlobalNote" in liveChar()).toBe(false);
                 const removed = await capture(CHAR);
                 expect(removed.captured).toBe(true);
-                expect(JSON.parse(stats.bodies[0]).ops[0].data).not.toHaveProperty("firstMessage");
-                expect(server.record(CHARACTERS_KIND, CHA)!.data).not.toHaveProperty("firstMessage");
+                expect(JSON.parse(stats.bodies[0]).ops[0].data).not.toHaveProperty("replaceGlobalNote");
+                expect(server.record(CHARACTERS_KIND, CHA)!.data).not.toHaveProperty("replaceGlobalNote");
 
                 resetCounters();
-                character.firstMessage = "restored";
-                expect(liveChar().firstMessage).toBe("restored");
+                character.replaceGlobalNote = "restored";
+                expect(liveChar().replaceGlobalNote).toBe("restored");
                 const restored = await capture(CHAR);
                 expect(restored.captured).toBe(true);
-                expect(server.record(CHARACTERS_KIND, CHA)!.data.firstMessage).toBe("restored");
+                expect(server.record(CHARACTERS_KIND, CHA)!.data.replaceGlobalNote).toBe("restored");
             } else {
                 // Candidate 1: `delete` removes the view's accessor; the record keeps the key and nothing queues.
-                expect(liveChar().firstMessage).toBe("hello");
+                expect(liveChar().replaceGlobalNote).toBe("the note");
                 expect(queuedKeys()).toEqual([]);
                 // A later set creates a plain data property on the view; the record never sees it.
-                character.firstMessage = "restored";
-                expect(liveChar().firstMessage).toBe("hello");
-                expect(character.firstMessage).toBe("restored");
+                character.replaceGlobalNote = "restored";
+                expect(liveChar().replaceGlobalNote).toBe("the note");
+                expect(character.replaceGlobalNote).toBe("restored");
                 const result = await capture(CHAR);
                 expect(result.captured).toBe(false);
                 expect(result.report.ops).toEqual([]);

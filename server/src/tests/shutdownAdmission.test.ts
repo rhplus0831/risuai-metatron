@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
+import { normalizeCharacter } from "../../../shared/characters.ts";
 import { createResourceTestClient, type ResourceTestClient } from "./testSupport.ts";
 
 // Shutdown against resource requests, in process (`shutdown.test.ts` covers the `main.ts` drain):
@@ -54,7 +55,7 @@ describe("shutdown admission for resource requests", () => {
         const saved = await pending;
         expect(saved.status).toBe(200);
         expect(saved.headers.get("connection")).toBe("close");
-        expect(((await saved.json()) as { data: unknown }).data).toEqual({ chaId: "draining" });
+        expect(((await saved.json()) as { data: unknown }).data).toEqual(normalizeCharacter({ chaId: "draining" }));
         await disposing;
         expect(disposed).toBe(true);
     });

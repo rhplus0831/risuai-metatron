@@ -17,7 +17,7 @@ const rejects = (fn: () => unknown, error: string, label = error) => {
 };
 
 describe("normalizeChatMeta", () => {
-    it("keeps every field except the messages and the streaming flags, sets the id, and defaults name, note, and localLore", () => {
+    it("keeps every field except the messages and the streaming flags, sets the id, and defaults name, note, localLore, and fmIndex", () => {
         const input = {
             id: "k",
             name: "Chat",
@@ -44,7 +44,7 @@ describe("normalizeChatMeta", () => {
         expect(input.message).toHaveLength(1);
         expect(meta).not.toBe(input);
         // Without an id the chat id is stamped on.
-        expect(normalizeChatMeta({}, "k")).toEqual({ id: "k", name: "", note: "", localLore: [] });
+        expect(normalizeChatMeta({}, "k")).toEqual({ id: "k", name: "", note: "", localLore: [], fmIndex: -1 });
         expect(normalizeChatMeta({ note: "n", localLore: [{ key: "x" }] }, "k")).toMatchObject({
             note: "n",
             localLore: [{ key: "x" }],
@@ -65,11 +65,13 @@ describe("normalizeChatMeta", () => {
             name: "",
             note: "",
             localLore: [],
+            fmIndex: -1,
         });
         rejects(() => normalizeChatMeta({ localLore: {} }, "k"), "chat.localLore must be an array");
         rejects(() => normalizeChatMeta({ fmIndex: "0" }, "k"), "chat.fmIndex must be a number");
-        // `fmIndex` stays optional: its default depends on the character, which the creator has.
-        expect(normalizeChatMeta({ fmIndex: undefined }, "k").fmIndex).toBeUndefined();
+        // An absent `fmIndex` starts the chat from the first message (-1); a given one is kept.
+        expect(normalizeChatMeta({ fmIndex: undefined }, "k").fmIndex).toBe(-1);
+        expect(normalizeChatMeta({ fmIndex: 2 }, "k").fmIndex).toBe(2);
     });
 });
 
@@ -207,7 +209,7 @@ describe("prepareChatGroups", () => {
         } satisfies Partial<PreparedChatGroup>);
         expect(created.ops[0]).toMatchObject({ op: "create", index: 0 });
         const create = created.ops[0] as Extract<PreparedChatGroup["ops"][number], { op: "create" }>;
-        expect(JSON.parse(create.meta)).toEqual({ name: "n", id: "k", note: "", localLore: [] });
+        expect(JSON.parse(create.meta)).toEqual({ name: "n", id: "k", note: "", localLore: [], fmIndex: -1 });
         expect(create.messages[0]).toEqual({ id: "a", text: JSON.stringify(message("a", "x")) });
         expect(create.messages[1].id).toMatch(uuid);
         expect(created.ops[1]).toEqual({ op: "meta", set: { note: "n" }, unset: [], merge: {} });

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
@@ -297,7 +298,7 @@ describe("the write capability", () => {
             });
             expect(builds).toBe(2);
             expect(applied.results[0].revision).toBe(character().revision);
-            expect(character().data).toEqual({ chaId: "c", name: "patched 2" });
+            expect(character().data).toEqual(normalizeCharacter({ chaId: "c", name: "patched 2" }));
             expect(owner("r")).toBe("gA");
             // A second conflict fails the write, with every owner of this write restored (r keeps gA
             // from before, u is still the other job's).

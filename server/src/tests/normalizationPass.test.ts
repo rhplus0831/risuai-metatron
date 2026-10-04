@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
+import { normalizeCharacter } from "../../../shared/characters.ts";
 import {
     createKindRegistry,
     DEFAULT_RESOURCE_KINDS,
@@ -367,7 +368,7 @@ describe("the pass inside replaceAll", () => {
         ]);
         expect(parseToken(after.kinds.pluginStorage[0].revision)).toMatchObject({ epoch, revision: 1 });
         expect(after.kinds.characters).toEqual([
-            { id: "c", revision: expect.any(String), data: { chaId: "c", name: "C" } },
+            { id: "c", revision: expect.any(String), data: normalizeCharacter({ chaId: "c", name: "C" }) },
         ]);
         expect(parseToken(after.kinds.characters[0].revision)).toMatchObject({ epoch, revision: 1 });
         for (const kind of materialized) {

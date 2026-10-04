@@ -22,6 +22,7 @@ import { normalizeProviders } from "./normalize/providers.ts";
 import { normalizeSecrets } from "./normalize/secrets.ts";
 import { requireArrayOfObjects, requireObject } from "./normalize/shared.ts";
 import { normalizeModules } from "./normalize/modules.ts";
+import { normalizeCharacterRecord } from "./normalize/characters.ts";
 import { normalizeUi } from "./normalize/ui.ts";
 import { carriesSecretPath, maskLlmSecrets, withStoredSecrets } from "../../../shared/llmSecrets.ts";
 import { ResourceValidationError } from "./resourceStore.ts";
@@ -159,15 +160,7 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
         name: RESOURCE_KIND.characters,
         schemaVersion: 1,
         normalize(input, { id }) {
-            const character = requireObject(input, "character");
-            if (character.chaId !== id) {
-                throw new ResourceValidationError("character.chaId must equal the resource id");
-            }
-            // Chats live in the chat tables (Phase 2); the character record holds only its own fields.
-            if (Object.hasOwn(character, "chats")) {
-                throw new ResourceValidationError("character must not hold chats");
-            }
-            return character;
+            return normalizeCharacterRecord(input, id);
         },
     },
     {

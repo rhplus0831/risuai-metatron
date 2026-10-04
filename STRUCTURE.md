@@ -81,7 +81,7 @@ Data and persistence (details: `docs/structure/persistence.md`)
   the settings records (`records.svelte.ts`). `setDatabaseLite` moves a fresh object's record fields
   into the records, installs the accessors, and does not normalize. Chat and message fields
   are the exception: they are stored as the client sends them (the server normalizer in
-  `server/src/data/chats.ts` fills only `name`, `note`, and `localLore`), so readers default a
+  `server/src/data/chats.ts` fills only `name`, `note`, `localLore`, and `fmIndex`), so readers default a
   missing chat field where they read it.
 - D3. Never rename persisted keys, including misspelled ones: `seperateModels`,
   `seperateParameters`, `moduleIntergration`, `PresensePenalty`. Saved databases and shared files
