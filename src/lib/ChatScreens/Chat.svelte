@@ -896,6 +896,7 @@
                                     url.startsWith("https://asset.localhost") ||
                                     url.startsWith("https://sv.risuai") ||
                                     url.startsWith("data:") ||
+                                    url.startsWith("blob:") ||
                                     url.startsWith("http") ||
                                     url.startsWith("/"))
                             ) {
@@ -948,6 +949,7 @@
                                     iconImage.startsWith("https://asset.localhost") ||
                                     iconImage.startsWith("https://sv.risuai") ||
                                     iconImage.startsWith("data:") ||
+                                    iconImage.startsWith("blob:") ||
                                     iconImage.startsWith("http") ||
                                     iconImage.startsWith("/"))
                             ) {
@@ -1015,6 +1017,7 @@
                                             userIconSrc.startsWith("https://asset.localhost") ||
                                             userIconSrc.startsWith("https://sv.risuai") ||
                                             userIconSrc.startsWith("data:") ||
+                                            userIconSrc.startsWith("blob:") ||
                                             userIconSrc.startsWith("http") ||
                                             userIconSrc.startsWith("/"))
                                     ) {

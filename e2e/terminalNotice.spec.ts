@@ -327,3 +327,75 @@ test("Enter in the composer once the notice opened goes to its OK: no send, and 
     expect(s.generations).toEqual([]);
     expect(s.errors).toEqual([]);
 });
+
+test("no key event leaves the notice for the page's own listeners behind it; Space on its OK still reloads", async ({
+    context,
+    baseURL,
+}) => {
+    // The Stop B fix (Phase 6): a key pressed on the notice bubbled out of the dialog to `window`,
+    // where a panel's own `svelte:window` handler (Iris's Enter/Space, the Escape of Iris,
+    // `BookmarkList`, `TriggerV2List`) acted behind the notice. Here every bubbling `window` and
+    // `document` listener stands for such a panel; a capture listener records what was pressed.
+    const s = await session(context, baseURL!);
+    const { page } = s;
+    const leaked: string[] = [];
+    const seen: string[] = [];
+    page.on("console", (message) => {
+        const text = message.text();
+        if (text.startsWith("leaked ")) leaked.push(text.slice("leaked ".length));
+        if (text.startsWith("seen ")) seen.push(text.slice("seen ".length));
+    });
+    await page.evaluate(() => {
+        for (const type of ["keydown", "keyup", "keypress"]) {
+            const describe = (event: Event) => {
+                const key = (event as KeyboardEvent).key;
+                const target = event.target as HTMLElement;
+                return `${type}:${key === " " ? "Space" : key}:${target.closest("dialog") ? "dialog" : "page"}`;
+            };
+            window.addEventListener(type, (event) => console.log(`leaked window ${describe(event)}`));
+            document.addEventListener(type, (event) => console.log(`leaked document ${describe(event)}`));
+            window.addEventListener(type, (event) => console.log(`seen ${describe(event)}`), true);
+        }
+    });
+    const navigationsBefore = s.navigations.length;
+    await page.evaluate(async () => {
+        const client = await import("/src/ts/storage/resourceClient.ts");
+        client.epochMismatch("epoch-restored");
+    });
+    await expect(notice(page)).toBeVisible({ timeout: 10_000 });
+    expect(await noticeState(page)).toMatchObject({ message: NOTICE, modal: true, focusOnOk: true });
+
+    // Escape, a held (repeated) Enter, and a printable key (its `keypress`): none acknowledges it,
+    // and none reaches a bubbling listener of the page.
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    const cdp = await context.newCDPSession(page);
+    const enter = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...enter, text: "\r", autoRepeat: true });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...enter });
+    await page.keyboard.press("a");
+    await page.waitForTimeout(1000);
+    expect(await noticeState(page)).toMatchObject({ message: NOTICE, modal: true, focusOnOk: true });
+    expect(s.navigations.length).toBe(navigationsBefore);
+    expect(seen).toEqual(
+        expect.arrayContaining([
+            "keydown:Escape:dialog",
+            "keyup:Escape:dialog",
+            "keydown:Enter:dialog",
+            "keyup:Enter:dialog",
+            "keypress:a:dialog",
+            "keyup:a:dialog",
+        ]),
+    );
+    expect(leaked).toEqual([]);
+
+    // Space activates the focused OK (the button's own action, on its keyup): the page reloads, and
+    // that key did not leave the dialog either.
+    await page.keyboard.press(" ");
+    await expect.poll(() => s.navigations.length, { timeout: 20_000 }).toBeGreaterThan(navigationsBefore);
+    expect(seen).toContain("keydown:Space:dialog");
+    expect(leaked).toEqual([]);
+    await openApp(page, baseURL!);
+    await expect(notice(page)).toHaveCount(0);
+    expect(s.errors).toEqual([]);
+});

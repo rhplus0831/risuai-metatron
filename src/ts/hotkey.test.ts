@@ -35,8 +35,9 @@ vi.mock("./process/index.svelte", () => ({
 }));
 
 import { alertToast, doingAlert, terminalNotice } from "./alert";
-import { initHotkey } from "./hotkey";
+import { hotkeyMatches, initHotkey } from "./hotkey";
 import { setDatabase, type Database } from "./storage/database.svelte";
+import { setRecordWriteListener } from "./storage/records.svelte";
 import { llmSecretState, setMaskedSecrets } from "./storage/llmSecrets.svelte";
 import { maskLlmSecrets } from "../../shared/llmSecrets.ts";
 import { selection, selectPreset } from "./storage/selection.svelte";
@@ -133,5 +134,52 @@ describe("preset hotkeys", () => {
         await Promise.resolve();
         expect(selection.presetId).toBe("a");
         expect(alertToast).not.toHaveBeenCalled();
+    });
+});
+
+describe("hotkey matching", () => {
+    // The Stop B fix (Phase 6): the stored hotkeys are a write-through record since slice 4, and the
+    // built-in hotkeys carry no `shift` flag. Matching filled the missing flags in on the stored
+    // element, so a session's first key press saved the `hotkeys` record.
+    it("reads a stored hotkey with missing modifier flags as 'not held' and writes nothing, for the dispatch and the textarea caller", async () => {
+        setDatabase({
+            characters: [],
+            botPresets: [{ id: "a", name: "A" }],
+            hotkeys: [
+                { key: "r", ctrl: true, alt: true, action: "reroll" },
+                { key: "e", ctrl: true, action: "popupEditor" },
+            ],
+        } as unknown as Database);
+        const written: string[] = [];
+        setRecordWriteListener((kind) => written.push(kind));
+        try {
+            // The dispatch walks every hotkey: Ctrl+Alt+R matches the first, the second is compared too.
+            document.dispatchEvent(
+                new KeyboardEvent("keydown", {
+                    key: "r",
+                    ctrlKey: true,
+                    altKey: true,
+                    bubbles: true,
+                    cancelable: true,
+                }),
+            );
+            await Promise.resolve();
+            // `TextAreaInput`'s popup-editor check passes the stored element itself.
+            const popup = DBState.db.hotkeys.find((hotkey) => hotkey.action === "popupEditor");
+            expect(hotkeyMatches(popup, new KeyboardEvent("keydown", { key: "e", ctrlKey: true }))).toBe(true);
+            expect(
+                hotkeyMatches(popup, new KeyboardEvent("keydown", { key: "e", ctrlKey: true, shiftKey: true })),
+            ).toBe(false);
+            expect(hotkeyMatches(popup, new KeyboardEvent("keydown", { key: "e", ctrlKey: true, altKey: true }))).toBe(
+                false,
+            );
+            expect(written).toEqual([]);
+            expect(JSON.parse(JSON.stringify(DBState.db.hotkeys))).toEqual([
+                { key: "r", ctrl: true, alt: true, action: "reroll" },
+                { key: "e", ctrl: true, action: "popupEditor" },
+            ]);
+        } finally {
+            setRecordWriteListener(null);
+        }
     });
 });

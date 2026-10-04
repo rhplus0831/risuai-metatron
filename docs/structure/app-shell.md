@@ -24,7 +24,7 @@
 - `src/types.d.ts`: the `DeepPartial<T>` utility type only.
 - `src/ts/hotkey.ts`:
   - `initHotkey`: keydown dispatch switch.
-  - `hotkeyMatches`.
+  - `hotkeyMatches`: reads the hotkey only (a missing modifier flag is "not held"); it never writes the stored list.
   - `activeHotkeys`: the stored hotkeys without `scrollToActiveChar` while `enableScrollToActiveChar` is off (the dispatch and `HotkeySettings.svelte` read through it).
 - `src/ts/defaulthotkeys.ts`: re-exports `defaultHotkeys` (declared in `shared/hotkeys.ts`) and the `Hotkey` type declared in `shared/settings.ts`.
 - `src/ts/observer.svelte.ts`:

@@ -353,15 +353,17 @@ export function hotkeyMatches(hotkey: (typeof DBState.db.hotkeys)[number], ev: K
         return false;
     }
 
-    hotkey.ctrl = hotkey.ctrl ?? false;
-    hotkey.alt = hotkey.alt ?? false;
-    hotkey.shift = hotkey.shift ?? false;
+    // A missing modifier flag means "not held". The hotkey is the stored record's element, so this
+    // only reads it: a write would save the hotkey list.
+    const ctrl = hotkey.ctrl ?? false;
+    const alt = hotkey.alt ?? false;
+    const shift = hotkey.shift ?? false;
 
-    if (hotkey.ctrl !== ev.ctrlKey) return false;
-    if (hotkey.alt !== ev.altKey) return false;
-    if (hotkey.shift !== ev.shiftKey) return false;
+    if (ctrl !== ev.ctrlKey) return false;
+    if (alt !== ev.altKey) return false;
+    if (shift !== ev.shiftKey) return false;
     if (hotkey.key.toLowerCase() !== ev.key.toLowerCase()) return false;
-    if (!hotkey.ctrl && !hotkey.alt && !hotkey.shift) {
+    if (!ctrl && !alt && !shift) {
         if (["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) return false;
     }
     return true;

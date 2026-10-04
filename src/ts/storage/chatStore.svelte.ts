@@ -2426,7 +2426,12 @@ export function applyRemoteCollection(
     }
     if (next.length === 0) {
         // Every chat is gone on the server (the writer's own new chat follows in a later change):
-        // the list is left as it is rather than creating a chat here, which would be a write.
+        // the list is left as it is rather than creating a chat here, which would be a write. A
+        // character with no chats on either side (another writer created it without one) has its
+        // empty order held, so the chat this client gives it can be saved.
+        if (local.size === 0) {
+            orderRevisions.set(chaId, collection.order.revision);
+        }
         return true;
     }
     orderRevisions.set(chaId, collection.order.revision);

@@ -429,6 +429,32 @@ describe("characters another writer created or deleted", () => {
         noNotice();
     });
 
+    it("holds the empty chat order of a new character created without chats, so this tab's first chat for it is saved without a reload (Stop B fix)", async () => {
+        // Before the fix the empty list left the order unheld: the character never counted as known
+        // to the server, and its first chat's create waited forever (nothing saved, no notice).
+        const { fake, chat, sync, character, chatIds } = await boot();
+        fake.store.applyChanges({
+            ops: [{ kind: characterKind(fake), id: "e", baseRevision: null, data: { chaId: "e", name: "E" } }],
+        });
+        await settle(fake);
+        expect(character("e").name).toBe("E");
+        expect(chatIds("e")).toEqual([]);
+        expect(fake.order("e")!.ids).toEqual([]);
+        expect(chat.heldOrderRevision("e")).toBe(fake.order("e")!.revision);
+        expect(fake.batchCount()).toBe(0);
+
+        // Opening it gives it its first chat: saved with the order on the next cycle.
+        chat.ensureChat("e");
+        const [first] = chatIds("e");
+        await sync.flushResources();
+        await settle(fake);
+        expect(fake.chat("e", first)).not.toBeNull();
+        expect(fake.order("e")!.ids).toEqual([first]);
+        expect(chat.heldChatRevision({ chaId: "e", chatId: first })).toBe(fake.chat("e", first)!.revision);
+        expect(chatIds("e")).toEqual([first]);
+        noNotice();
+    });
+
     it("removes a deleted selected character and moves the selection home; a recreation (a new incarnation) is inserted", async () => {
         const { fake, stores, db, character, chatIds } = await boot();
         fake.store.delete(characterKind(fake), "c", fake.record("characters", "c")!.revision);

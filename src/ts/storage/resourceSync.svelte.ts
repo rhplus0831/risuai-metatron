@@ -2313,7 +2313,9 @@ export function startResourceSync() {
         })();
     });
     window.addEventListener("beforeunload", (event) => {
-        if (hasUnsavedWork()) {
+        // A halted loop (the data was replaced) can save nothing more: no warning, so the reload after
+        // the restore notice goes through.
+        if (!halted && hasUnsavedWork()) {
             event.preventDefault();
             event.returnValue = "";
         }

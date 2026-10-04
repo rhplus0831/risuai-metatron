@@ -30,11 +30,15 @@
             }
         }}
         onkeydown={(event) => {
+            // No key reaches the page's own listeners behind the notice (a panel's Escape or Enter).
+            event.stopPropagation();
             // A held or composing Enter (the composer had focus) does not acknowledge it.
             if (event.key === "Enter" && (event.repeat || event.isComposing)) {
                 event.preventDefault();
             }
         }}
+        onkeyup={(event) => event.stopPropagation()}
+        onkeypress={(event) => event.stopPropagation()}
     >
         <div class="flex flex-col">
             <span id="terminal-notice-message" class="text-textcolor whitespace-pre-wrap">{$terminalNotice}</span>

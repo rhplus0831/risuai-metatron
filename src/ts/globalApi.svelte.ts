@@ -78,74 +78,81 @@ export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer |
     }, 10000);
 }
 
-let fileCache: {
-    origin: string[];
-    res: (Uint8Array | "loading" | "done")[];
-} = {
-    origin: [],
-    res: [],
-};
+/** Each file's source URL, one load per path; a failed load is dropped, so the next read tries again. */
+const fileSources = new Map<string, Promise<string>>();
+
+/** How long a service-worker request may take before the read falls back to an object URL. */
+const SW_REQUEST_TIMEOUT_MS = 10_000;
 
 /**
- * Gets the source URL of a file.
+ * Gets the source URL of a file: the service worker's URL when the worker holds it (registered once
+ * per path), else an object URL of its bytes, kept for the page (also on a page the worker does not
+ * control yet, its first load). Concurrent reads of a path share one load. Resolves to `""` when the
+ * file cannot be read or is empty.
  *
  * @param {string} loc - The location of the file.
  * @returns {Promise<string>} - A promise that resolves to the source URL of the file.
  */
-export async function getFileSrc(loc: string) {
+export function getFileSrc(loc: string): Promise<string> {
+    let source = fileSources.get(loc);
+    if (!source) {
+        source = loadFileSrc(loc);
+        fileSources.set(loc, source);
+        void source.then((src) => {
+            if (src === "" && fileSources.get(loc) === source) {
+                fileSources.delete(loc);
+            }
+        });
+    }
+    return source;
+}
+
+class MissingFileError extends Error {
+    constructor(loc: string) {
+        super(`No file at ${loc}`);
+    }
+}
+
+async function loadFileSrc(loc: string): Promise<string> {
+    let bytes: Promise<Uint8Array> | null = null;
+    // A missing or empty file is never registered or shown: the read resolves `""` and is tried again.
+    const read = () =>
+        (bytes ??= (async () => {
+            const data = (await forageStorage.getItem(loc)) as unknown as Uint8Array | null;
+            if (!data || data.length === 0) {
+                throw new MissingFileError(loc);
+            }
+            return data;
+        })());
     try {
         if (usingSw) {
-            const encoded = Buffer.from(loc, "utf-8").toString("hex");
-            let ind = fileCache.origin.indexOf(loc);
-            if (ind === -1) {
-                ind = fileCache.origin.length;
-                fileCache.origin.push(loc);
-                fileCache.res.push("loading");
-                try {
-                    const hasCache: boolean = (await (await fetch("/sw/check/" + encoded)).json()).able;
-                    if (hasCache) {
-                        fileCache.res[ind] = "done";
-                        return "/sw/img/" + encoded;
-                    } else {
-                        const f: Uint8Array = (await forageStorage.getItem(loc)) as unknown as Uint8Array;
-                        await fetch("/sw/register/" + encoded, {
-                            method: "POST",
-                            body: f as any,
-                        });
-                        fileCache.res[ind] = "done";
-                        await sleep(10);
+            try {
+                const encoded = Buffer.from(loc, "utf-8").toString("hex");
+                const check = await fetch("/sw/check/" + encoded, {
+                    signal: AbortSignal.timeout(SW_REQUEST_TIMEOUT_MS),
+                });
+                const hasCache: boolean = (await check.json()).able;
+                if (!hasCache) {
+                    const registered = await fetch("/sw/register/" + encoded, {
+                        method: "POST",
+                        body: (await read()) as any,
+                        signal: AbortSignal.timeout(SW_REQUEST_TIMEOUT_MS),
+                    });
+                    if (!registered.ok) {
+                        throw new Error(`The service worker did not register ${loc}`);
                     }
-                    return "/sw/img/" + encoded;
-                } catch (error) {}
-            } else {
-                const f = fileCache.res[ind];
-                if (f === "loading") {
-                    while (fileCache.res[ind] === "loading") {
-                        await sleep(10);
-                    }
+                    await sleep(10);
                 }
                 return "/sw/img/" + encoded;
-            }
-        } else {
-            let ind = fileCache.origin.indexOf(loc);
-            if (ind === -1) {
-                ind = fileCache.origin.length;
-                fileCache.origin.push(loc);
-                fileCache.res.push("loading");
-                const f: Uint8Array = (await forageStorage.getItem(loc)) as unknown as Uint8Array;
-                fileCache.res[ind] = f;
-                return `data:image/png;base64,${Buffer.from(f).toString("base64")}`;
-            } else {
-                const f = fileCache.res[ind];
-                if (f === "loading") {
-                    while (fileCache.res[ind] === "loading") {
-                        await sleep(10);
-                    }
-                    return `data:image/png;base64,${Buffer.from(fileCache.res[ind]).toString("base64")}`;
+            } catch (error) {
+                if (error instanceof MissingFileError) {
+                    throw error;
                 }
-                return `data:image/png;base64,${Buffer.from(f).toString("base64")}`;
+                // The worker is not there (or does not control this page yet): an object URL.
+                console.warn(error);
             }
         }
+        return URL.createObjectURL(new Blob([(await read()) as Uint8Array<ArrayBuffer>], { type: "image/png" }));
     } catch (error) {
         console.error(error);
         return "";

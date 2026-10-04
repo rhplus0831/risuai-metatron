@@ -293,32 +293,49 @@ test("the server transform reproduces markdown.json (final HTML and editprocess 
     expect(unexpected(errors)).toEqual([]);
 });
 
-test("a display trigger and additional assets render on the server path as the browser path recorded them", async ({
-    page,
-    baseURL,
-}) => {
-    const errors: string[] = [];
-    // No seeded random here: nothing below depends on it.
-    await boot(page, baseURL!, errors, false);
-    const chaId = "char-golden-extra";
-    const chatId = "chat-golden-extra";
-    await page.evaluate(
-        async ({ chaId, chatId }) => {
+/**
+ * The extra scenario's character (a display trigger, the editdisplay scripts `pic` and `em`, the
+ * additional assets pic1 and pic2 stored under `assets/<id>.png`), saved. `pic1Size` (a square's
+ * side) stores a noise PNG of about that side squared times four bytes as pic1, else a 1x1 PNG.
+ */
+async function seedExtra(
+    page: Page,
+    { chaId, chatId, pics, pic1Size }: { chaId: string; chatId: string; pics: [string, string]; pic1Size?: number },
+) {
+    const stored = await page.evaluate(
+        async ({ chaId, chatId, pics, pic1Size }) => {
             const { DBState } = await import("/src/ts/stores.svelte.ts");
             const characterStore = await import("/src/ts/storage/characterStore.svelte.ts");
             const { saveAsset } = await import("/src/ts/globalApi.svelte.ts");
             const db = DBState.db as any;
             db.didFirstSetup = true;
-            if (db.characters.some((c: any) => c?.chaId === chaId)) return;
-            // Two stored 1x1 PNGs.
+            // Stored 1x1 PNGs, or for pic1 a noise PNG that does not compress.
             const png = Uint8Array.from(
                 atob(
                     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
                 ),
                 (c) => c.charCodeAt(0),
             );
-            const pic1 = await saveAsset(png, "golden-pic-1", "golden-pic-1.png");
-            const pic2 = await saveAsset(png, "golden-pic-2", "golden-pic-2.png");
+            let first = png;
+            if (pic1Size) {
+                const canvas = document.createElement("canvas");
+                canvas.width = canvas.height = pic1Size;
+                const context = canvas.getContext("2d")!;
+                const pixels = context.createImageData(pic1Size, pic1Size);
+                // Random bytes in the most `getRandomValues` fills at once; opaque.
+                for (let i = 0; i < pixels.data.length; i += 65536) {
+                    crypto.getRandomValues(pixels.data.subarray(i, Math.min(pixels.data.length, i + 65536)));
+                }
+                for (let i = 3; i < pixels.data.length; i += 4) {
+                    pixels.data[i] = 255;
+                }
+                context.putImageData(pixels, 0, 0);
+                const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), "image/png"));
+                first = new Uint8Array(await blob.arrayBuffer());
+            }
+            const pic1 = await saveAsset(first, pics[0], `${pics[0]}.png`);
+            const pic2 = await saveAsset(png, pics[1], `${pics[1]}.png`);
+            if (db.characters.some((c: any) => c?.chaId === chaId)) return { pic1, pic2, pic1Bytes: first.length };
             characterStore.addCharacter({
                 type: "character",
                 chaId,
@@ -380,54 +397,71 @@ test("a display trigger and additional assets render on the server path as the b
                     },
                 ],
             });
+            return { pic1, pic2, pic1Bytes: first.length };
+        },
+        { chaId, chatId, pics, pic1Size },
+    );
+    await waitSaved(page, chaId, chatId);
+    return stored;
+}
+
+/** The extra scenario's render in the current page (`extra.cases`'s shape). */
+const renderExtra = (page: Page, chaId: string, chatId: string) =>
+    page.evaluate(
+        async ({ chaId, chatId }) => {
+            const stores = await import("/src/ts/stores.svelte.ts");
+            const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
+            const parser = await import("/src/ts/parser/parser.svelte.ts");
+            const index = stores.DBState.db.characters.findIndex((c: any) => c?.chaId === chaId);
+            stores.selectedCharID.set(index);
+            chatStore.selectChat(chaId, chatId);
+            const char = stores.DBState.db.characters[index] as any;
+            const chat = chatStore.findChat({ chaId, chatId })!;
+            const out: Record<string, string> = {};
+            const texts: [string, string, number, object][] = [
+                ["greeting", char.firstMessage, -1, { firstmsg: true, chatRole: "char" }],
+                ...chat.message.map(
+                    (m: any, i: number) => [m.chatId, m.data, i, { firstmsg: false, chatRole: m.role }] as any,
+                ),
+            ];
+            for (const [id, data, idx, cbs] of texts) {
+                parser.resetAssetsCache(char.additionalAssets, char.emotionImages, []);
+                out[id] = await parser.ParseMarkdown(data, char, "normal", idx, cbs);
+                if (!data.includes("img::") && !data.includes("SHOWPIC")) {
+                    out[`${id}:back`] = await parser.ParseMarkdown(data, char, "back", idx, cbs);
+                }
+            }
+            return out;
         },
         { chaId, chatId },
     );
-    await waitSaved(page, chaId, chatId);
 
-    // `getFileSrc` answers a path once per page in this stack and waits forever on a second read of
-    // it (its service-worker check fails and the path stays "loading": a browser-path defect outside
-    // this slice), so the render runs in a fresh page and reads each asset once.
-    const render = async () => {
-        await page.reload();
-        await openApp(page, baseURL!);
-        return await page.evaluate(
-            async ({ chaId, chatId }) => {
-                const stores = await import("/src/ts/stores.svelte.ts");
-                const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
-                const parser = await import("/src/ts/parser/parser.svelte.ts");
-                const index = stores.DBState.db.characters.findIndex((c: any) => c?.chaId === chaId);
-                stores.selectedCharID.set(index);
-                chatStore.selectChat(chaId, chatId);
-                const char = stores.DBState.db.characters[index] as any;
-                const chat = chatStore.findChat({ chaId, chatId })!;
-                const out: Record<string, string> = {};
-                const texts: [string, string, number, object][] = [
-                    ["greeting", char.firstMessage, -1, { firstmsg: true, chatRole: "char" }],
-                    ...chat.message.map(
-                        (m: any, i: number) => [m.chatId, m.data, i, { firstmsg: false, chatRole: m.role }] as any,
-                    ),
-                ];
-                for (const [id, data, idx, cbs] of texts) {
-                    parser.resetAssetsCache(char.additionalAssets, char.emotionImages, []);
-                    out[id] = await parser.ParseMarkdown(data, char, "normal", idx, cbs);
-                    if (!data.includes("img::") && !data.includes("SHOWPIC")) {
-                        out[`${id}:back`] = await parser.ParseMarkdown(data, char, "back", idx, cbs);
-                    }
-                }
-                return out;
-            },
-            { chaId, chatId },
-        );
-    };
+/** The `/sw/img/` URL the recording holds for a stored path. */
+const swUrl = (path: string) => `/sw/img/${Buffer.from(path, "utf-8").toString("hex")}`;
 
+test("a display trigger and additional assets render on the server path as the browser path recorded them", async ({
+    page,
+    baseURL,
+}) => {
+    const errors: string[] = [];
+    // No seeded random here: nothing below depends on it.
+    await boot(page, baseURL!, errors, false);
+    const chaId = "char-golden-extra";
+    const chatId = "chat-golden-extra";
+    await seedExtra(page, { chaId, chatId, pics: ["golden-pic-1", "golden-pic-2"] });
+
+    // The recording holds the service worker's URLs, so the render runs in a page the worker
+    // controls: reloaded (the worker does not control the page that registered it, its first load;
+    // that render is the next test's).
+    await page.reload();
+    await openApp(page, baseURL!);
     const transformPosts: string[] = [];
     page.on("request", (request) => {
         if (request.method() === "POST" && new URL(request.url()).pathname === "/api/transform") {
             transformPosts.push(request.postData() ?? "");
         }
     });
-    const serverPath = await render();
+    const serverPath = await renderExtra(page, chaId, chatId);
     expect(transformPosts.length).toBeGreaterThan(0);
 
     // The recorded browser path: the trigger appended its text before the regex scripts (the `em`
@@ -441,5 +475,70 @@ test("a display trigger and additional assets render on the server path as the b
     expect(recorded["x-1"]).not.toContain("{{img::");
     // The server path renders the same.
     expect(differences(recorded, serverPath)).toEqual([]);
+    expect(unexpected(errors)).toEqual([]);
+});
+
+test("on a page's first load the same render holds object URLs, a large image included, and is otherwise the recording", async ({
+    page,
+    baseURL,
+}) => {
+    // The Stop B fix (Phase 6): on a first load `getFileSrc` answered `undefined` (and a later read
+    // of the path never settled). Its fallback is an object URL, not a data URL: the first asset
+    // pass runs before the text goes to the server transform, and a data URL of a large image
+    // (twice in the markup: `src` and `alt`) would pass the transform's text limit, so the display
+    // trigger and the scripts would not run.
+    const errors: string[] = [];
+    await boot(page, baseURL!, errors, false);
+    expect(await page.evaluate(() => navigator.serviceWorker.controller)).toBeNull();
+    const chaId = "char-golden-first-load";
+    const chatId = "chat-golden-first-load";
+    const { pic1, pic2, pic1Bytes } = await seedExtra(page, {
+        chaId,
+        chatId,
+        pics: ["golden-first-load-1", "golden-first-load-2"],
+        pic1Size: 320,
+    });
+    expect(pic1Bytes).toBeGreaterThan(256 * 1024);
+
+    const transformPosts: string[] = [];
+    page.on("request", (request) => {
+        if (request.method() === "POST" && new URL(request.url()).pathname === "/api/transform") {
+            transformPosts.push(request.postData() ?? "");
+        }
+    });
+    const firstLoad = await renderExtra(page, chaId, chatId);
+    expect(transformPosts.length).toBeGreaterThan(0);
+    // The message with the large image went to the server transform: its display trigger ran.
+    expect(firstLoad["x-1"].includes("[trigger <em>appended</em>"), firstLoad["x-1"].slice(0, 300)).toBe(true);
+    expect(Math.max(...transformPosts.map((body) => body.length))).toBeLessThan(64 * 1024);
+    // A later read of each path answers the URL the render used: an object URL that displays.
+    const sources = await page.evaluate(
+        async (paths) => {
+            const { getFileSrc } = await import("/src/ts/globalApi.svelte.ts");
+            const out: { src: string; width: number }[] = [];
+            for (const path of paths) {
+                const src = await getFileSrc(path);
+                const image = new Image();
+                image.src = src;
+                await image.decode().catch(() => {});
+                out.push({ src, width: image.naturalWidth });
+            }
+            return out;
+        },
+        [pic1, pic2],
+    );
+    expect(sources.map(({ src }) => src.startsWith("blob:"))).toEqual([true, true]);
+    expect(sources.map(({ width }) => width)).toEqual([320, 1]);
+    expect(firstLoad["x-1"]).toContain(`src="${sources[0].src}"`);
+    expect(firstLoad["x-1"]).toContain(`src="${sources[1].src}"`);
+
+    // With the object URLs in place of the recording's worker URLs, the render is the recording.
+    const asRecorded: Record<string, string> = {};
+    for (const [id, html] of Object.entries(firstLoad)) {
+        asRecorded[id] = html
+            .replaceAll(sources[0].src, swUrl("assets/golden-pic-1.png"))
+            .replaceAll(sources[1].src, swUrl("assets/golden-pic-2.png"));
+    }
+    expect(differences(extra.cases, asRecorded)).toEqual([]);
     expect(unexpected(errors)).toEqual([]);
 });

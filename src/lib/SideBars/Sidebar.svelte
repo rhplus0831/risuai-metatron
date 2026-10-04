@@ -35,7 +35,7 @@
     import BaseRoundedButton from "../UI/BaseRoundedButton.svelte";
     import { getCharacterIndexObject, selectSingleFile } from "src/ts/util";
     import { v4 } from "uuid";
-    import { checkCharOrder, getFileSrc, saveAsset } from "src/ts/globalApi.svelte";
+    import { checkCharOrder, saveAsset } from "src/ts/globalApi.svelte";
     import { alertInput, alertSelect } from "src/ts/alert";
     import SideChatList from "./SideChatList.svelte";
     import { sideBarSize } from "src/ts/gui/guisize";
@@ -672,7 +672,8 @@
                                                         const folderImageData = await saveAsset(folderImage.data);
 
                                                         oder.imgFile = folderImageData;
-                                                        oder.img = await getFileSrc(folderImageData);
+                                                        // Shown from `imgFile`; a resolved URL is page-local.
+                                                        oder.img = "";
                                                         db.characterOrder[ind] = oder;
                                                         break;
                                                 }
