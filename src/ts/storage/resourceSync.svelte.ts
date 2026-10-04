@@ -64,7 +64,6 @@ import {
     chatDiscardsSince,
     type ChatWork,
     chatWorkBody,
-    checkpointAllGenerations,
     forgetCharacter,
     hasChatWork,
     hydrateChat,
@@ -88,10 +87,9 @@ import {
     idleChatRefreshes,
     chatNoticeSeq,
     finishIdleChatRefresh,
-    settleUnloadCheckpoint,
+    settleUnloadWork,
     takeChatWork,
-    trackUnloadCheckpoint,
-    unloadCheckpoint,
+    trackUnloadWork,
     unloadPendingChatWork,
     unsettledChatObligations,
 } from "./chatStore.svelte";
@@ -2339,8 +2337,6 @@ export async function flushResources(options: { scope?: MutationScope } = {}): P
     if (refused) {
         throw refused;
     }
-    // A running generation's text so far becomes a checkpoint, so it is part of what is flushed.
-    checkpointAllGenerations();
     // What must be settled: every key dirty now, at its current generation, every membership
     // change so far (a later mark of the same key raises the bar but never lowers it), and every
     // chat and chat order with queued or in-flight work.
@@ -2447,7 +2443,6 @@ export function startResourceSync() {
         }
         void (async () => {
             await tick();
-            checkpointAllGenerations();
             if (timer) {
                 clearTimeout(timer);
                 timer = null;
@@ -2466,9 +2461,9 @@ export function startResourceSync() {
             event.returnValue = "";
         }
     });
-    // One shared budget, including requests still in flight from an earlier pagehide. Checkpoints
-    // have priority; ordinary by-id work follows in separate requests. Resource writes use only
-    // normal cycles, so they never race a keepalive write on the same revision.
+    // One shared budget, including requests still in flight from an earlier pagehide: by-id chat work,
+    // one request per chat. Resource writes use only normal cycles, so they never race a keepalive
+    // write on the same revision.
     let unloadBytes = 0;
     function sendUnload(request: { body: string; work: ChatWork }) {
         const bytes = utf8ByteLength(request.body);
@@ -2478,19 +2473,15 @@ export function startResourceSync() {
         if (
             sendBatchOnUnload(request.body, (result) => {
                 unloadBytes -= bytes;
-                settleUnloadCheckpoint(request.work, result?.chats ?? null);
+                settleUnloadWork(request.work, result?.chats ?? null);
             })
         ) {
             unloadBytes += bytes;
-            trackUnloadCheckpoint(request.work);
+            trackUnloadWork(request.work);
         }
     }
     window.addEventListener("pagehide", () => {
         try {
-            const checkpoint = unloadCheckpoint(UNLOAD_BODY_LIMIT - unloadBytes);
-            if (checkpoint) {
-                sendUnload(checkpoint);
-            }
             for (const request of unloadPendingChatWork(UNLOAD_BODY_LIMIT - unloadBytes)) {
                 sendUnload(request);
             }

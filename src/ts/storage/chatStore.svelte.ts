@@ -7,7 +7,6 @@ import type {
     ChatOrderResult,
     ChatRecord,
     MessageAnchor,
-    MessageGeneration,
 } from "../../../shared/chats.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { StreamingMessage } from "../../../shared/jobs.ts";
@@ -32,33 +31,22 @@ import type { character, Chat, groupChat, Message } from "./database.svelte";
  *   but not acknowledged is resent exactly as sent (it may have landed), followed by later work.
  * - Each chat has a local version that every change bumps (local or from the server); a hook's
  *   baseline records it, so a whole-chat replacement never overwrites a change made meanwhile.
- * - The generating message is locked: only calls carrying its generation id may rewrite or remove it.
- *   The module checkpoints its text every three seconds, and `endGeneration` sends the final text; the
- *   lock stays until that is acknowledged or discarded. A generation the server stopped accepting
- *   (another tab took the message over, or it was closed) is rejected: writes carrying its id do
- *   nothing from then on.
- * - Final writes are retained by generation id until acknowledged or discarded, independently of
- *   the current message lock (auto-continue can supersede an ending generation). A conflict waits
- *   for producers to end, reloads, then reapplies those finals in order for surviving message ids.
- *   The current lock survives that reload until acknowledgement. Recovery keeps the original
- *   generation id and sequence: acknowledged begins are never reopened, unacknowledged begins are
- *   retried, and the server's fence history still rejects displaced or closed generations. Message
- *   id adoption renames retained finals along with queued work and locks.
  * - A stale acknowledgement keeps the old base and requests an idle refresh. Only a chat with no
  *   pending/in-flight work, lock, deferral, or quarantine may accept it; this is not a discard.
  * - The selected chat is per tab: `selectChat` records the chat id, and `chatPage` is derived from it.
- * - A server generation job (Phase 5) locks its message too: `applyServerGeneration` writes the
- *   streamed text into the mirror without queuing anything, and the job's end releases its locks.
- *   A chat `resource` event replaces the chat through `hydrateChat` (never an outgoing write). Work
- *   the server refused for a generating message (`reason: "generating"`) is kept and retried after
- *   `JOB_RETRY_MS`.
+ * - A server generation job (Phase 5) locks the message it writes: nothing but the job may rewrite or
+ *   remove it. `applyServerGeneration` writes the streamed text into the mirror without queuing
+ *   anything, and the job's end releases its locks. A chat `resource` event replaces the chat through
+ *   `hydrateChat` (never an outgoing write). Work the server refused for a generating message
+ *   (`reason: "generating"`) is kept and retried after `JOB_RETRY_MS`. A conflict on a chat a job
+ *   streams into is deferred: it reloads once the job ends. The streamed message is `streamingState`
+ *   (the chat screen's display optimization) from its first stream update until its lock is released.
  */
 
 export type ChatRef = { chaId: string; chatId: string };
 
 type AnyCharacter = character | groupChat;
 
-const CHECKPOINT_INTERVAL_MS = 3000;
 /** How long a chat whose work the server refused for a generating message waits before it is retried. */
 export const JOB_RETRY_MS = 5000;
 const SELECTION_STORAGE_KEY = "risu-selected-chats";
@@ -94,35 +82,11 @@ export type SentChatGroup = {
     seq: number;
     /** For a create: what the chat is on the server if this whole group landed (replay recognition). */
     expected?: string;
-    /** Generations whose final write this group carries (released on success or discard). */
-    finals: { messageKey: string; generationId: string }[];
-    /** For each generation-carrying op in order: its generation id and message key. */
-    generationOps: { generationId: string; messageKey: string }[];
-    /** Unload work taken from the ordinary queue, rather than a synthetic generation checkpoint. */
-    unloadPending?: boolean;
 };
 
 export type SentChatOrder = { characterId: string; baseRevision: string; ids: string[]; seq: number };
 
 export type ChatWork = { groups: SentChatGroup[]; orders: SentChatOrder[] };
-
-type Generation = {
-    generationId: string;
-    seq: number;
-    /** Text last queued as a checkpoint. */
-    queuedText: string | null;
-    timer: ReturnType<typeof setInterval> | null;
-    /** `endGeneration` was called; the lock goes once the final text is acknowledged or discarded. */
-    ending: boolean;
-    /** The server acknowledged the `begin`, so it knows the message and the generation. */
-    begun: boolean;
-};
-
-type GenerationFinal = {
-    messageKey: string;
-    op: Extract<ChatOp, { op: "setText" }> & { generation: MessageGeneration };
-    begun: boolean;
-};
 
 const chatRevisions = new Map<string, string>();
 /**
@@ -161,7 +125,7 @@ let discardSequence = 0;
 const quarantined = new Set<string>();
 /** Refused reorders wait until the ordered ids change. */
 const quarantinedOrders = new Map<string, string>();
-/** Chats whose conflict reload waits for the generation running in them. */
+/** Chats whose conflict reload waits for the server job streaming into them. */
 const deferred = new Set<string>();
 /** Chats acknowledged on an older base, awaiting an idle read of the server's complete state. */
 const staleChats = new Set<string>();
@@ -173,11 +137,7 @@ const staleChats = new Set<string>();
  */
 const noticedChats = new Map<string, { seq: number; revision: string | null }>();
 let noticeSeq = 0;
-/** Locked messages (`messageKeyOf`) → their running generation. */
-const generations = new Map<string, Generation>();
-/** Finals in producer order, including generations superseded by auto-continue before their ack. */
-const generationFinals = new Map<string, GenerationFinal>();
-/** Bumped whenever `generations` gains or loses a lock, so the chat screen's lock reads re-run. */
+/** Bumped whenever `serverGenerations` gains or loses a lock, so the chat screen's lock reads re-run. */
 const lockState = $state({ version: 0 });
 /**
  * Messages a server generation job writes (`messageKeyOf`) → the job, its generation, the last
@@ -198,8 +158,8 @@ const retiredGenerations = new Set<string>();
 const jobMetadataRevisions = new Map<string, string>();
 /** Chats whose work the server refused for a generating message → when it may be sent again. */
 const jobBlocked = new Map<string, number>();
-/** Generations the server stopped accepting → their message key. */
-const rejectedGenerations = new Map<string, string>();
+/** The server generation `streamingState` shows; its lock's release clears the state. */
+let streamingGeneration: string | null = null;
 /** Chat keys → local version, bumped by every change of the chat in the mirror. */
 const versions = new Map<string, number>();
 let localSeq = 0;
@@ -209,7 +169,11 @@ let remoteListener: ((ref: ChatRef) => void) | null = null;
 /** Bumped by every mirror write this module makes (the development drift check compares it). */
 let mutationToken = 0;
 
-/** The message being generated, for the chat screen (client-only; replaces the persisted flags). */
+/**
+ * The message a server job of this tab streams into, for the chat screen's display optimization
+ * (client-only; replaces the persisted flags): set on the generation's first stream update with the
+ * configured mode, cleared when its lock is released.
+ */
 export const streamingState = $state({
     chaId: null as string | null,
     chatId: null as string | null,
@@ -373,29 +337,16 @@ function enqueue(ref: ChatRef, op: ChatOp) {
 
 /** Folds `next` into `last` (both unsent, consecutive) when the result is the same; returns whether it did. */
 function coalesce(last: ChatOp, next: ChatOp): boolean {
-    const sameGeneration = (a?: MessageGeneration, b?: MessageGeneration) => a?.id === b?.id && !a?.final;
     if (last.op === "setText" && next.op === "setText" && last.id === next.id) {
-        if (!sameGeneration(last.generation, next.generation)) {
-            return false;
-        }
         last.text = next.text;
-        last.generation = next.generation;
         return true;
     }
     if (last.op === "setMessage" && next.op === "setText" && last.message.chatId === next.id) {
-        if (!sameGeneration(last.generation, next.generation)) {
-            return false;
-        }
         last.message = { ...last.message, data: next.text };
-        last.generation = next.generation;
         return true;
     }
     if (last.op === "setMessage" && next.op === "setMessage" && last.message.chatId === next.message.chatId) {
-        if (!sameGeneration(last.generation, next.generation)) {
-            return false;
-        }
         last.message = next.message;
-        last.generation = next.generation;
         return true;
     }
     if (last.op === "meta" && next.op === "meta") {
@@ -443,25 +394,19 @@ function coalesce(last: ChatOp, next: ChatOp): boolean {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Locks and generations
-
-function lockOf(ref: ChatRef, messageId: string): Generation | undefined {
-    return generations.get(messageKeyOf(ref, messageId));
-}
+// Locks and server generations
 
 /**
- * Whether a message is locked by a generation (its edit, delete, and regenerate are off). The lock
- * lasts until the final write is acknowledged, after the send returned. Reactive; the chat id is
- * part of the identity: a branched or copied chat keeps its source's message ids, and its copy of
- * the generating message is not locked.
+ * Whether a message is locked by a server generation job (its edit, delete, and regenerate are off)
+ * until the job releases it. Reactive; the chat id is part of the identity: a branched or copied
+ * chat keeps its source's message ids, and its copy of the generating message is not locked.
  */
 export function isMessageLocked(ref: ChatRef | null, messageId: string | undefined): boolean {
     void lockState.version;
     if (ref === null || messageId === undefined) {
         return false;
     }
-    const key = messageKeyOf(ref, messageId);
-    return generations.has(key) || serverGenerations.has(key);
+    return serverGenerations.has(messageKeyOf(ref, messageId));
 }
 
 /**
@@ -483,79 +428,38 @@ export function isStreamingMessage(ref: ChatRef | null, messageId: string | unde
 export function isChatGenerating(ref: ChatRef): boolean {
     void lockState.version;
     const prefix = `${keyOf(ref.chaId, ref.chatId)}\u0000`;
-    return [...generations.keys(), ...serverGenerations.keys()].some((key) => key.startsWith(prefix));
-}
-
-/** Whether a producer is still generating in a chat (not only waiting for its final write's answer). */
-function hasLiveGeneration(ref: ChatRef): boolean {
-    const prefix = `${keyOf(ref.chaId, ref.chatId)}\u0000`;
-    return (
-        [...generations].some(([key, generation]) => key.startsWith(prefix) && !generation.ending) ||
-        [...serverGenerations.keys()].some((key) => key.startsWith(prefix))
-    );
+    return [...serverGenerations.keys()].some((key) => key.startsWith(prefix));
 }
 
 /** Whether any chat of a character has a running generation. */
 export function isCharacterGenerating(chaId: string): boolean {
     const prefix = `${chaId}\u0000`;
-    return [...generations.keys(), ...serverGenerations.keys()].some((key) => key.startsWith(prefix));
+    return [...serverGenerations.keys()].some((key) => key.startsWith(prefix));
 }
 
-/** Whether `generationId` is a generation the server stopped accepting. */
-function isRejected(generationId: string | undefined): boolean {
-    return generationId !== undefined && rejectedGenerations.has(generationId);
-}
-
-/** Throws unless the caller may rewrite or remove these messages (unlocked, or its own generation). */
-function assertUnlocked(ref: ChatRef, messageIds: readonly (string | undefined)[], generationId?: string) {
+/** Throws when a server job locks any of these messages. */
+function assertUnlocked(ref: ChatRef, messageIds: readonly (string | undefined)[]) {
     for (const id of messageIds) {
-        if (id === undefined) {
-            continue;
-        }
-        const lock = lockOf(ref, id);
-        // A server job's message: no client generation id passes.
-        if ((lock && lock.generationId !== generationId) || serverGenerations.has(messageKeyOf(ref, id))) {
+        if (id !== undefined && serverGenerations.has(messageKeyOf(ref, id))) {
             throw new Error("This message is being generated; wait until it finishes");
         }
     }
 }
 
-/**
- * Locks a message for a generation and starts persisting it: the server fences the message for this
- * generation, and its text is checkpointed every three seconds until `endGeneration`.
- */
-export function beginGeneration(ref: ChatRef, messageId: string, generationId: string) {
-    const messageKey = messageKeyOf(ref, messageId);
-    const existing = generations.get(messageKey);
-    if ((existing && !existing.ending) || serverGenerations.has(messageKey)) {
-        throw new Error("This message is being generated; wait until it finishes");
+/** Clears `streamingState` when it shows `generationId` (its lock was released). */
+function releaseStreaming(generationId: string) {
+    if (streamingGeneration === generationId) {
+        setStreamingState(null);
     }
-    requireChat(ref);
-    if (existing) {
-        // The previous generation already queued its final text (continue right after it ended);
-        // that write still goes out before this `begin`, and its acknowledgement matches by id.
-        releaseGeneration(messageKey, existing.generationId, true);
-    }
-    const generation: Generation = {
-        generationId,
-        seq: 0,
-        queuedText: null,
-        timer: null,
-        ending: false,
-        begun: false,
-    };
-    generations.set(messageKey, generation);
-    lockState.version += 1;
-    generation.timer = setInterval(() => checkpointGeneration(ref, messageId), CHECKPOINT_INTERVAL_MS);
-    enqueue(ref, { op: "begin", id: messageId, generationId });
 }
 
 /**
  * Mirrors a server generation job's reply (an `accepted` or `chunk` event): locks the message for
  * the job and writes `text` into the mirror. Nothing is queued and the chat's revision does not
  * move: only a whole-chat hydration (`hydrateChat`) advances it. A chunk older than the last one
- * of its generation (`seq`) is dropped. Returns false when the chat or message is not in the mirror
- * (its hydration comes first) or the chunk is old.
+ * of its generation (`seq`) is dropped. The generation's first stream update makes its message the
+ * streaming one (`streamingState`, with the configured display optimization mode). Returns false
+ * when the chat or message is not in the mirror (its hydration comes first) or the chunk is old.
  */
 export function applyServerGeneration(
     ref: ChatRef,
@@ -576,6 +480,8 @@ export function applyServerGeneration(
     } else if (existing && update.seq <= existing.seq) {
         return false;
     }
+    // A placeholder lock from the job's chat event (sequence -1) has had no stream update yet.
+    const firstUpdate = !existing || existing.generationId !== update.generationId || existing.seq < 0;
     // The stored copy may already hold this text or a later one (a processed checkpoint).
     const mark = serverWatermarks.get(messageKey);
     const older = mark?.generationId === update.generationId && update.seq <= mark.seq;
@@ -588,6 +494,14 @@ export function applyServerGeneration(
     });
     if (!existing) {
         lockState.version += 1;
+    }
+    if (firstUpdate) {
+        setStreamingState({
+            ...ref,
+            messageId: update.messageId,
+            mode: DBState.db.streamingDisplayOptimizationMode ?? "off",
+        });
+        streamingGeneration = update.generationId;
     }
     if (older) {
         return false;
@@ -609,6 +523,7 @@ export function endServerJob(jobId: string) {
             serverGenerations.delete(messageKey);
             serverWatermarks.delete(messageKey);
             retiredGenerations.add(entry.generationId);
+            releaseStreaming(entry.generationId);
             const [chaId, chatId] = messageKey.split("\u0000");
             if (chatRevisions.has(keyOf(chaId, chatId))) {
                 staleChats.add(keyOf(chaId, chatId));
@@ -625,8 +540,8 @@ export function endServerJob(jobId: string) {
 /**
  * Applies a chat `resource` event of a server job: the server's whole chat replaces the mirror's
  * when its revision is at least the held one and the chat has no local work (pending, in flight,
- * deferred, quarantined, refused for a generating message) and no client generation; otherwise the
- * chat is marked for an idle refresh. A chat the mirror lacks, or one this client has not seen on
+ * deferred, quarantined, refused for a generating message); otherwise the chat is marked for an
+ * idle refresh. A chat the mirror lacks, or one this client has not seen on
  * the server, is not hydrated. Nothing is queued, discarded, or settled, and no notice is shown.
  *
  * `job` (a job's chat event): its `streaming` messages are still generating, each with the newest
@@ -662,6 +577,7 @@ export function hydrateChat(
                 serverGenerations.delete(messageKey);
                 serverWatermarks.delete(messageKey);
                 retiredGenerations.add(entry.generationId);
+                releaseStreaming(entry.generationId);
                 released = true;
             }
         }
@@ -672,6 +588,7 @@ export function hydrateChat(
                 // The server says this generation owns the message now: an older owner is gone.
                 serverGenerations.delete(messageKey);
                 retiredGenerations.add(holder.generationId);
+                releaseStreaming(holder.generationId);
                 released = true;
             }
             if (outcome === "applied") {
@@ -751,15 +668,7 @@ function applyChatHydration(server: {
     if (order === null || order < 0) {
         return "old";
     }
-    const prefix = `${key}\u0000`;
-    if (
-        pending.has(key) ||
-        inflight.has(key) ||
-        deferred.has(key) ||
-        quarantined.has(key) ||
-        jobBlocked.has(key) ||
-        [...generations.keys()].some((messageKey) => messageKey.startsWith(prefix))
-    ) {
+    if (pending.has(key) || inflight.has(key) || deferred.has(key) || quarantined.has(key) || jobBlocked.has(key)) {
         staleChats.add(key);
         return "busy";
     }
@@ -804,120 +713,14 @@ export function chatJobRetryAt(): number | null {
     return earliest;
 }
 
-function stopTimer(generation: Generation) {
-    if (generation.timer !== null) {
-        clearInterval(generation.timer);
-        generation.timer = null;
-    }
-}
-
-/** Queues the generating message's current text as a checkpoint when it changed since the last one. */
-export function checkpointGeneration(ref: ChatRef, messageId: string) {
-    const generation = lockOf(ref, messageId);
-    if (!generation || generation.ending) {
-        return;
-    }
-    const message = mirrorChat(ref)?.message.find((entry) => entry.chatId === messageId);
-    if (!message || message.data === generation.queuedText) {
-        return;
-    }
-    generation.seq += 1;
-    generation.queuedText = message.data;
-    enqueue(ref, {
-        op: "setText",
-        id: messageId,
-        text: message.data,
-        generation: { id: generation.generationId, seq: generation.seq },
-    });
-}
-
-/** Queues a checkpoint for every running generation (before a flush). */
-export function checkpointAllGenerations() {
-    for (const key of generations.keys()) {
-        const [chaId, chatId, messageId] = key.split("\u0000");
-        checkpointGeneration({ chaId, chatId }, messageId);
-    }
-}
-
-/** Whether a generation is running (the save loop keeps an unload request ready meanwhile). */
-export function hasRunningGenerations(): boolean {
-    return [...generations.values()].some((generation) => !generation.ending);
-}
-
-/**
- * A best-effort request as the page goes away (`pagehide`): the whole current text of each running
- * generation the server knows, as a checkpoint, with its groups as sent. A text goes whole or not at
- * all, and only while the body stays within `limitBytes` (the `keepalive` budget); a suffix is never
- * sent, since output scripts can rewrite the text before it. A chat with a request in flight is
- * skipped: that request already carries its latest checkpoint, and two writes of this client on one
- * base would leave its revision behind the server's if the page survives. Returns null when there is
- * nothing. Once the request is sent, `trackUnloadCheckpoint` keeps the loop from sending more for
- * these chats until `settleUnloadCheckpoint` records the answer (the page may stay: back-forward
- * cache) or its loss.
- */
-export function unloadCheckpoint(limitBytes: number): { body: string; work: ChatWork } | null {
-    const groups = new Map<string, SentChatGroup>();
-    const encoder = new TextEncoder();
-    const bodyOf = () => `{"chats":[${chatWorkBody({ groups: [...groups.values()], orders: [] }).chats.join(",")}]}`;
-    for (const [messageKey, generation] of generations) {
-        if (generation.ending || !generation.begun) {
-            continue;
-        }
-        const [chaId, chatId, messageId] = messageKey.split("\u0000");
-        const key = keyOf(chaId, chatId);
-        const baseRevision = chatRevisions.get(key);
-        const message = mirrorChat({ chaId, chatId })?.message.find((entry) => entry.chatId === messageId);
-        if (
-            !baseRevision ||
-            !message ||
-            deferred.has(key) ||
-            quarantined.has(key) ||
-            inflight.has(key) ||
-            isJobBlocked(key)
-        ) {
-            continue;
-        }
-        const previous = groups.get(key);
-        const ops: ChatOp[] = [
-            ...(previous?.ops ?? []),
-            {
-                op: "setText",
-                id: messageId,
-                text: message.data,
-                generation: { id: generation.generationId, seq: generation.seq + 1 },
-            },
-        ];
-        // Sequence 0: settling it settles nothing (the chat's own work keeps its sequence).
-        groups.set(key, sentGroup(key, { characterId: chaId, chatId } as Pending, baseRevision, ops, 0));
-        if (encoder.encode(bodyOf()).length > limitBytes) {
-            if (previous) {
-                groups.set(key, previous);
-            } else {
-                groups.delete(key);
-            }
-            continue;
-        }
-        // The page may stay (back-forward cache): later checkpoints must still supersede this one,
-        // and this text needs no checkpoint of its own again.
-        generation.seq += 1;
-        generation.queuedText = message.data;
-    }
-    if (groups.size === 0) {
-        return null;
-    }
-    return { body: bodyOf(), work: { groups: [...groups.values()], orders: [] } };
-}
-
-/** Marks an unload checkpoint's groups in flight (the request was sent). */
-export function trackUnloadCheckpoint(work: ChatWork) {
+/** Takes an unload request's ops out of the queue and marks its groups in flight (the request was sent). */
+export function trackUnloadWork(work: ChatWork) {
     for (const group of work.groups) {
-        if (group.unloadPending) {
-            const entry = pending.get(group.key);
-            if (entry) {
-                entry.ops = entry.ops.slice(group.ops.length);
-                if (entry.ops.length === 0) {
-                    pending.delete(group.key);
-                }
+        const entry = pending.get(group.key);
+        if (entry) {
+            entry.ops = entry.ops.slice(group.ops.length);
+            if (entry.ops.length === 0) {
+                pending.delete(group.key);
             }
         }
         inflight.set(group.key, group);
@@ -925,51 +728,26 @@ export function trackUnloadCheckpoint(work: ChatWork) {
 }
 
 /**
- * Records the answer to an unload checkpoint the page survived to receive (`results` in group
- * order; null: the request failed or was refused, and the ordinary checkpoints carry on). The
- * revision rule is the acknowledgement's: a group applied on the current revision moves the base,
- * a `stale` one requests an idle refresh (the chat holds changes this client has not seen), and a
- * generation the server no longer accepts stops. The chats' queued work goes out again.
+ * Records the answer to an unload request the page survived to receive (`results` in group order;
+ * null: the request failed or was refused, and its ops go back in front of the queue). An answer is
+ * an ordinary acknowledgement.
  */
-export function settleUnloadCheckpoint(work: ChatWork, results: readonly ChatGroupResult[] | null) {
+export function settleUnloadWork(work: ChatWork, results: readonly ChatGroupResult[] | null) {
     work.groups.forEach((group, index) => {
-        if (group.unloadPending) {
-            const taken = { groups: [group], orders: [] };
-            if (results?.[index]) {
-                ackChatWork(taken, [results[index]], []);
-            } else {
-                requeueChatWork(taken);
-            }
-            return;
+        const taken = { groups: [group], orders: [] };
+        if (results?.[index]) {
+            ackChatWork(taken, [results[index]], []);
+        } else {
+            requeueChatWork(taken);
         }
-        if (inflight.get(group.key) === group) {
-            inflight.delete(group.key);
-        }
-        const result = results?.[index];
-        if (!result) {
-            return;
-        }
-        if (result.revision !== null && (!result.stale || !chatRevisions.has(group.key))) {
-            holdChatRevision(group.key, result.revision);
-        }
-        if (result.stale) {
-            staleChats.add(group.key);
-        }
-        (result.checkpoints ?? []).forEach((outcome, opIndex) => {
-            const op = group.generationOps[opIndex];
-            if (outcome === "ignored" && op) {
-                console.warn("[Chat] The server no longer accepts this generation's text; it stops saving");
-                rejectGeneration(op.messageKey, op.generationId);
-            }
-        });
     });
     notifyWork();
 }
 
 /**
  * Pending by-id work for existing chats, one request per chat within the remaining shared budget.
- * Take only an eligible prefix: jumping past a replace/begin/delete could change its meaning.
- * Nothing leaves the queue until `trackUnloadCheckpoint` confirms the request was sent.
+ * Take only an eligible prefix: jumping past a replace or delete could change its meaning.
+ * Nothing leaves the queue until `trackUnloadWork` confirms the request was sent.
  */
 export function unloadPendingChatWork(limitBytes: number): { body: string; work: ChatWork }[] {
     const requests: { body: string; work: ChatWork }[] = [];
@@ -1007,7 +785,6 @@ export function unloadPendingChatWork(limitBytes: number): { body: string; work:
             continue;
         }
         const group = sentGroup(key, entry, base, ops, ops.length === entry.ops.length ? entry.seq : 0);
-        group.unloadPending = true;
         const work = { groups: [group], orders: [] };
         const body = `{"chats":[${chatWorkBody(work).chats.join(",")}]}`;
         const bytes = encoder.encode(body).length;
@@ -1020,80 +797,6 @@ export function unloadPendingChatWork(limitBytes: number): { body: string; work:
     return requests;
 }
 
-/**
- * Ends a generation: sends the message's current text as its final write. The lock stays until
- * that write is acknowledged or discarded, so no older checkpoint can land after it. A generation
- * whose chat reload waits retains its final text and lock: the reload reapplies the final on the
- * fresh revision before the lock can be released.
- */
-export function endGeneration(ref: ChatRef, messageId: string, generationId: string) {
-    const messageKey = messageKeyOf(ref, messageId);
-    const generation = generations.get(messageKey);
-    if (!generation || generation.generationId !== generationId || generation.ending) {
-        return;
-    }
-    stopTimer(generation);
-    const message = mirrorChat(ref)?.message.find((entry) => entry.chatId === messageId);
-    if (!message) {
-        releaseGeneration(messageKey, generationId);
-        return;
-    }
-    generation.ending = true;
-    generation.seq += 1;
-    const op: GenerationFinal["op"] = {
-        op: "setText",
-        id: messageId,
-        text: message.data,
-        generation: { id: generationId, seq: generation.seq, final: true },
-    };
-    generationFinals.set(generationId, { messageKey, op: clone(op), begun: generation.begun });
-    enqueue(ref, op);
-}
-
-function releaseGeneration(messageKey: string, generationId: string, keepFinal = false) {
-    if (!keepFinal) {
-        generationFinals.delete(generationId);
-    }
-    const generation = generations.get(messageKey);
-    if (!generation || generation.generationId !== generationId) {
-        return;
-    }
-    stopTimer(generation);
-    generations.delete(messageKey);
-    lockState.version += 1;
-    const [chaId, chatId, messageId] = messageKey.split("\u0000");
-    if (streamingState.chaId === chaId && streamingState.chatId === chatId && streamingState.messageId === messageId) {
-        setStreamingState(null);
-    }
-    if (deferred.size > 0) {
-        notifyWork();
-    }
-}
-
-/** Stops a generation the server no longer accepts: later writes carrying its id do nothing. */
-function rejectGeneration(messageKey: string, generationId: string) {
-    rejectedGenerations.set(generationId, messageKey);
-    releaseGeneration(messageKey, generationId);
-}
-
-/** Releases (and rejects, when still running) every generation of a chat whose work is dropped. */
-function dropGenerations(key: string) {
-    for (const [id, final] of generationFinals) {
-        if (final.messageKey.startsWith(`${key}\u0000`)) {
-            releaseGeneration(final.messageKey, id);
-        }
-    }
-    for (const [messageKey, generation] of [...generations]) {
-        if (messageKey.startsWith(`${key}\u0000`)) {
-            if (generation.ending) {
-                releaseGeneration(messageKey, generation.generationId);
-            } else {
-                rejectGeneration(messageKey, generation.generationId);
-            }
-        }
-    }
-}
-
 /** Sets or clears the message the chat screen shows as streaming. */
 export function setStreamingState(
     target: (ChatRef & { messageId: string; mode: Chat["activeStreamingDisplayOptimizationMode"] }) | null,
@@ -1102,6 +805,8 @@ export function setStreamingState(
     streamingState.chatId = target?.chatId ?? null;
     streamingState.messageId = target?.messageId ?? null;
     streamingState.mode = target?.mode;
+    // A server generation that owns the state records itself after this call.
+    streamingGeneration = null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1316,76 +1021,26 @@ export function appendMessage(
     return messages.map((message) => message.chatId!);
 }
 
-/**
- * The stamp of a write by the generation that owns a message: `undefined` for an ordinary write
- * (no `generationId`), `null` when the write must be dropped (its generation was rejected, or the
- * id is not the message's running generation).
- */
-function generationWrite(
-    ref: ChatRef,
-    messageId: string,
-    options: { generationId?: string },
-): MessageGeneration | undefined | null {
-    if (options.generationId === undefined) {
-        return undefined;
-    }
-    const generation = lockOf(ref, messageId);
-    if (!generation || generation.generationId !== options.generationId || generation.ending) {
-        return null;
-    }
-    generation.seq += 1;
-    return { id: generation.generationId, seq: generation.seq };
-}
-
-/**
- * Replaces one message by its id (`message.chatId`). With `generationId`, a write by the message's
- * own running generation; it does nothing when that generation no longer owns the message.
- */
-export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>, options: { generationId?: string } = {}) {
+/** Replaces one message by its id (`message.chatId`). */
+export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
     const chat = requireChat(ref);
     const message = clone<Message>(input);
     const index = indexOfMessage(chat, message.chatId!);
     if (index === -1) {
         throw new Error(`No message ${message.chatId}`);
     }
-    if (options.generationId !== undefined && !isOwner(ref, message.chatId!, options.generationId)) {
-        return;
-    }
-    assertUnlocked(ref, [message.chatId], options.generationId);
-    const generation = generationWrite(ref, message.chatId!, options);
-    if (generation === null) {
-        return;
-    }
+    assertUnlocked(ref, [message.chatId]);
     chat.message[index] = message;
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueue(ref, { op: "setMessage", message: clone(message), generation });
+    enqueue(ref, { op: "setMessage", message: clone(message) });
 }
 
-function isOwner(ref: ChatRef, messageId: string, generationId: string): boolean {
-    const generation = lockOf(ref, messageId);
-    return !!generation && generation.generationId === generationId && !generation.ending;
-}
-
-/**
- * Sets a message's text. A write by the message's own running generation (`generationId`) only
- * updates the mirror (its checkpoints and final write carry it); with any other `generationId` it
- * does nothing.
- */
-export function setMessageText(ref: ChatRef, id: string, text: string, options: { generationId?: string } = {}) {
+/** Sets a message's text. */
+export function setMessageText(ref: ChatRef, id: string, text: string) {
     const chat = requireChat(ref);
     const index = indexOfMessage(chat, id);
     if (index === -1) {
         throw new Error(`No message ${id}`);
-    }
-    if (options.generationId !== undefined) {
-        if (!isOwner(ref, id, options.generationId)) {
-            return;
-        }
-        if (chat.message[index].data !== text) {
-            chat.message[index].data = text;
-            changed(keyOf(ref.chaId, ref.chatId));
-        }
-        return;
     }
     assertUnlocked(ref, [id]);
     if (chat.message[index].data !== text) {
@@ -1395,21 +1050,14 @@ export function setMessageText(ref: ChatRef, id: string, text: string, options: 
     enqueue(ref, { op: "setText", id, text });
 }
 
-/**
- * Removes messages by id. Removing several needs the chat's current revision on the server. A
- * locked message can be removed only by its own generation (`generationId`); with a rejected
- * generation id nothing happens.
- */
-export function removeMessages(ref: ChatRef, ids: readonly string[], options: { generationId?: string } = {}) {
-    if (isRejected(options.generationId)) {
-        return;
-    }
+/** Removes messages by id. Removing several needs the chat's current revision on the server. */
+export function removeMessages(ref: ChatRef, ids: readonly string[]) {
     const chat = requireChat(ref);
     const present = ids.filter((id) => indexOfMessage(chat, id) !== -1);
     if (present.length === 0) {
         return;
     }
-    assertUnlocked(ref, present, options.generationId);
+    assertUnlocked(ref, present);
     applyRemoval(ref, chat, present);
 }
 
@@ -1528,24 +1176,14 @@ const nonMetaKeys = new Set(["message", "id", "isStreaming", "activeStreamingDis
  * changed chat fields are set or removed. Changes made meanwhile by others are kept. When the hook
  * reordered surviving messages, the whole chat is replaced, but only if the chat has not changed
  * since the baseline and no generation runs in it (otherwise the order change is dropped with a
- * warning). Everything is checked against the locks before the mirror changes; `generationId` lets
- * the running generation change its own message. Changes to a message whose generation was
- * rejected are dropped.
+ * warning). Everything is checked against the locks before the mirror changes.
  */
-export function applyChatResult(
-    baseline: ChatBaseline,
-    result: DeepReadonly<Chat>,
-    options: { generationId?: string } = {},
-) {
+export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Chat>) {
     const { ref } = baseline;
     const current = mirrorChat(ref);
     if (!current) {
         return;
     }
-    const rejectedMessage = isRejected(options.generationId)
-        ? rejectedGenerations.get(options.generationId!)!.split("\u0000")[2]
-        : null;
-    const writeOptions = rejectedMessage === null ? options : {};
     const next = clone<Chat>(result);
     next.message ??= [];
     const baseMessages = new Map(baseline.chat.message.map((message) => [message.chatId!, message]));
@@ -1559,30 +1197,19 @@ export function applyChatResult(
     const resultIds = new Set(next.message.map((message) => message.chatId!));
     const removed = baseline.chat.message
         .map((message) => message.chatId!)
-        .filter((id) => id !== rejectedMessage && !resultIds.has(id) && indexOfMessage(current, id) !== -1);
+        .filter((id) => !resultIds.has(id) && indexOfMessage(current, id) !== -1);
     const changedMessages = next.message.filter((message) => {
         const before = baseMessages.get(message.chatId!);
-        return (
-            message.chatId !== rejectedMessage &&
-            before !== undefined &&
-            JSON.stringify(before) !== JSON.stringify(message)
-        );
+        return before !== undefined && JSON.stringify(before) !== JSON.stringify(message);
     });
     const survivorsBefore = baseline.chat.message.map((message) => message.chatId!).filter((id) => resultIds.has(id));
     const survivorsAfter = next.message.map((message) => message.chatId!).filter((id) => baseMessages.has(id));
     const reordered = survivorsBefore.some((id, index) => survivorsAfter[index] !== id);
-    // The capability covers only the messages its generation owns; other messages are ordinary writes.
-    const optionsFor = (id: string) =>
-        writeOptions.generationId !== undefined && lockOf(ref, id)?.generationId === writeOptions.generationId
-            ? writeOptions
-            : {};
-    for (const id of [...removed, ...changedMessages.map((message) => message.chatId!)]) {
-        assertUnlocked(ref, [id], optionsFor(id).generationId);
-    }
+    assertUnlocked(ref, [...removed, ...changedMessages.map((message) => message.chatId!)]);
 
     if (reordered) {
         const unchanged = baseline.version === (versions.get(keyOf(ref.chaId, ref.chatId)) ?? 0);
-        if (unchanged && !isChatGenerating(ref) && rejectedMessage === null) {
+        if (unchanged && !isChatGenerating(ref)) {
             replaceChat(ref, next);
             return;
         }
@@ -1614,7 +1241,7 @@ export function applyChatResult(
                 }
             }
         }
-        replaceMessage(ref, merged as unknown as Message, optionsFor(message.chatId!));
+        replaceMessage(ref, merged as unknown as Message);
     }
     let previous: string | null = null;
     for (const message of next.message) {
@@ -1829,13 +1456,9 @@ function orderMembershipReady(chaId: string): boolean {
     });
 }
 
-/** Unsaved user work, including requests in flight and live text between checkpoints. */
+/** Unsaved user work, including requests in flight. */
 export function hasUnsavedChatWork(canSaveCharacter: (id: string) => boolean = () => true): boolean {
-    for (const key of new Set(
-        [...pending.keys(), ...inflight.keys(), ...generations.keys()].map((key) =>
-            key.split("\u0000").slice(0, 2).join("\u0000"),
-        ),
-    )) {
+    for (const key of new Set([...pending.keys(), ...inflight.keys()])) {
         if (!quarantined.has(key) && canSaveCharacter(key.split("\u0000")[0])) {
             return true;
         }
@@ -1922,14 +1545,12 @@ export function forgetCharacter(chaId: string) {
             staleChats.delete(key);
             noticedChats.delete(key);
             deferred.delete(key);
-            dropGenerations(key);
         }
     }
     for (const key of [...pending.keys()]) {
         if (key.startsWith(prefix)) {
             settleKey(key, workSeq(key));
             pending.delete(key);
-            dropGenerations(key);
         }
     }
     for (const key of [...chatRevisions.keys(), ...jobBlocked.keys()]) {
@@ -2018,15 +1639,8 @@ export function takeChatWork(creating: ReadonlySet<string>, options: { maxOps?: 
                 const otherKey = keyOf(entry.characterId, other.id!);
                 return chatRevisions.has(otherKey) || createdHere.has(otherKey);
             }).length;
-        // Only the generation ops remain: the mirror copy already holds every other change.
-        const messageIds = new Set(chat.message.map((message) => message.chatId));
-        const ops: ChatOp[] = [
-            { op: "create", chat: projectChat(chat), index },
-            ...entry.ops.filter(
-                (op) => (op.op === "begin" || (op.op === "setText" && op.generation)) && messageIds.has(op.id),
-            ),
-        ];
-        const group = sentGroup(key, entry, null, ops);
+        // The mirror copy already holds every queued change.
+        const group = sentGroup(key, entry, null, [{ op: "create", chat: projectChat(chat), index }]);
         inflight.set(key, group);
         pending.delete(key);
         groups.push(group);
@@ -2108,34 +1722,7 @@ function sentGroup(
     ops: ChatOp[],
     seq = entry.seq,
 ): SentChatGroup {
-    const ref = { chaId: entry.characterId, chatId: entry.chatId };
-    const finals: SentChatGroup["finals"] = [];
-    const generationOps: SentChatGroup["generationOps"] = [];
-    for (const op of ops) {
-        if ((op.op === "setText" || op.op === "setMessage") && op.generation) {
-            const id = op.op === "setText" ? op.id : op.message.chatId!;
-            const messageKey = messageKeyOf(ref, id);
-            generationOps.push({ generationId: op.generation.id, messageKey });
-            if (op.generation.final) {
-                finals.push({ messageKey, generationId: op.generation.id });
-            }
-        }
-    }
-    let expected: string | undefined;
     const create = ops[0]?.op === "create" ? ops[0] : null;
-    if (create) {
-        // The chat as it is on the server if the whole group landed (texts of its checkpoints applied).
-        const chat = clone(create.chat);
-        for (const op of ops) {
-            if (op.op === "setText") {
-                const message = chat.message.find((entry) => entry.chatId === op.id);
-                if (message) {
-                    message.data = op.text;
-                }
-            }
-        }
-        expected = canonicalChat(chat);
-    }
     return {
         key,
         characterId: entry.characterId,
@@ -2143,9 +1730,8 @@ function sentGroup(
         baseRevision,
         ops,
         seq,
-        expected,
-        finals,
-        generationOps,
+        // The chat as it is on the server if the create landed.
+        ...(create ? { expected: canonicalChat(create.chat) } : {}),
     };
 }
 
@@ -2235,30 +1821,6 @@ export function ackChatWork(
             if (result.messageIds) {
                 adoptMessageIds(group, result.messageIds);
             }
-            for (const op of group.ops) {
-                if (op.op === "begin") {
-                    const final = generationFinals.get(op.generationId);
-                    if (final) {
-                        final.begun = true;
-                    }
-                    for (const generation of generations.values()) {
-                        if (generation.generationId === op.generationId) {
-                            generation.begun = true;
-                        }
-                    }
-                }
-            }
-            (result.checkpoints ?? []).forEach((outcome, opIndex) => {
-                const op = group.generationOps[opIndex];
-                if (outcome === "ignored" && op) {
-                    // Another tab took the message over, or a manual edit closed the generation.
-                    console.warn("[Chat] The server no longer accepts this generation's text; it stops saving");
-                    rejectGeneration(op.messageKey, op.generationId);
-                }
-            });
-        }
-        for (const final of group.finals) {
-            releaseGeneration(final.messageKey, final.generationId);
         }
         settleKey(group.key, group.seq);
     });
@@ -2284,7 +1846,8 @@ export function ackChatWork(
 
 /**
  * The server renamed messages of the group's last create or replace (a missing, invalid, or
- * duplicate id): rename them in the mirror (all at once, by occurrence), in queued ops, and in locks.
+ * duplicate id): rename them in the mirror (all at once, by occurrence), in queued ops, and in the
+ * streaming state.
  */
 function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
     const last = [...group.ops].reverse().find((op) => op.op === "create" || op.op === "replace") as
@@ -2319,7 +1882,7 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
     const rename = (id: string) => firstRename.get(id) ?? id;
     const entry = pending.get(group.key);
     for (const op of entry?.ops ?? []) {
-        if (op.op === "setText" || op.op === "begin") {
+        if (op.op === "setText") {
             op.id = rename(op.id);
         } else if (op.op === "setMessage") {
             op.message = { ...op.message, chatId: rename(op.message.chatId!) };
@@ -2329,29 +1892,9 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
             op.anchor = { after: rename(op.anchor.after) };
         }
     }
-    for (const [from, to] of firstRename) {
-        const fromKey = messageKeyOf(ref, from);
-        const toKey = messageKeyOf(ref, to);
-        for (const final of generationFinals.values()) {
-            if (final.messageKey === fromKey) {
-                final.messageKey = toKey;
-                final.op.id = to;
-            }
-        }
-        for (const op of [...group.finals, ...group.generationOps]) {
-            if (op.messageKey === fromKey) {
-                op.messageKey = toKey;
-            }
-        }
-        const generation = generations.get(messageKeyOf(ref, from));
-        if (generation) {
-            generations.delete(messageKeyOf(ref, from));
-            generations.set(messageKeyOf(ref, to), generation);
-            lockState.version += 1;
-            if (streamingState.messageId === from && streamingState.chatId === ref.chatId) {
-                streamingState.messageId = to;
-            }
-        }
+    const streamed = streamingState.messageId;
+    if (streamed !== null && streamingState.chaId === ref.chaId && streamingState.chatId === ref.chatId) {
+        streamingState.messageId = rename(streamed);
     }
 }
 
@@ -2392,7 +1935,7 @@ export function requeueChatWork(work: ChatWork) {
     }
 }
 
-/** Stops sending a chat whose work the server refused as invalid (its generations stop too). */
+/** Stops sending a chat whose work the server refused as invalid. */
 export function quarantineChat(group: Pick<SentChatGroup, "key" | "seq">) {
     inflight.delete(group.key);
     jobBlocked.delete(group.key);
@@ -2402,7 +1945,6 @@ export function quarantineChat(group: Pick<SentChatGroup, "key" | "seq">) {
     const seq = Math.max(group.seq, workSeq(group.key));
     pending.delete(group.key);
     markDiscarded(group.key, seq);
-    dropGenerations(group.key);
 }
 
 function quarantineRefusedCreate(key: string, seq: number) {
@@ -2423,9 +1965,8 @@ export type RemoteChat = { characterId: string; id: string; revision: string | n
  * Handles the chat part of a 409 (the whole batch was rolled back). Work that did not conflict is
  * queued again. For each conflicting chat, with the server's copy read back: our own create or
  * delete that already landed (a replay) keeps the local state and the rest of its work; a chat a
- * generation locks is deferred (excluded from batches, reloaded when producers end, preserving
- * their finals even if they ended during the request); a chat
- * that is gone is dropped and its character's chat list is to be refreshed (`refresh`); any other
+ * server job locks is deferred (excluded from batches, reloaded when the job ends); a chat that is
+ * gone is dropped and its character's chat list is to be refreshed (`refresh`); any other
  * is replaced by the server copy and its local work discarded. Reorders that conflicted are dropped
  * (the caller refreshes those characters). A group refused for a generating message (`generating`:
  * `reason: "generating"`) is kept and retried after `JOB_RETRY_MS`, not reloaded. Returns whether a
@@ -2483,7 +2024,7 @@ export function recoverChatConflicts(
             continue;
         }
         if (isChatGenerating(ref)) {
-            // Also preserve finals whose producer ended while the request/read was in flight.
+            // A server job streams into it: replacing the chat now would drop the streamed text.
             deferred.add(group.key);
             retry.push(group);
             continue;
@@ -2539,38 +2080,22 @@ function requeueRecovered(groups: readonly SentChatGroup[]) {
     }
 }
 
-function discardChatWork(key: string, seq: number, keepFinals = false) {
+function discardChatWork(key: string, seq: number) {
     const highest = Math.max(seq, workSeq(key));
     pending.delete(key);
     inflight.delete(key);
     staleChats.delete(key);
     jobBlocked.delete(key);
-    // Recovered finals still owe an acknowledgement, including to a flush already waiting on
-    // the discarded group's sequence. Their re-enqueued work will settle that sequence later.
-    markDiscarded(key, keepFinals ? 0 : highest);
-    if (keepFinals) {
-        return;
-    }
-    for (const [id, final] of generationFinals) {
-        if (final.messageKey.startsWith(`${key}\u0000`)) {
-            releaseGeneration(final.messageKey, id);
-        }
-    }
-    for (const [messageKey, generation] of [...generations]) {
-        if (messageKey.startsWith(`${key}\u0000`) && generation.ending) {
-            releaseGeneration(messageKey, generation.generationId);
-        }
-    }
+    markDiscarded(key, highest);
 }
 
 /**
  * Replaces a chat in the mirror with the server's copy and discards its local work. A chat that is
- * gone on the server is removed (a character left without chats gets a new one). Deferred recovery
- * uses `keepFinals` to retain final writes and ending locks across the replacement.
+ * gone on the server is removed (a character left without chats gets a new one).
  */
-export function acceptRemoteChat(server: RemoteChat, seq = 0, keepFinals = false) {
+export function acceptRemoteChat(server: RemoteChat, seq = 0) {
     const key = keyOf(server.characterId, server.id);
-    discardChatWork(key, seq, keepFinals);
+    discardChatWork(key, seq);
     applyRemoteChat(server);
 }
 
@@ -2980,22 +2505,22 @@ export function acceptRemoteCollection(collection: {
     remoteListener?.({ chaId, chatId: "" });
 }
 
-/** Deferred chats whose generation has ended: their reload can run. */
+/** Deferred chats whose server job has ended: their reload can run. */
 export function deferredReloads(): ChatRef[] {
     return [...deferred]
         .map((key) => {
             const [chaId, chatId] = key.split("\u0000");
             return { chaId, chatId };
         })
-        .filter((ref) => !hasLiveGeneration(ref) && !inflight.has(keyOf(ref.chaId, ref.chatId)));
+        .filter((ref) => !isChatGenerating(ref) && !inflight.has(keyOf(ref.chaId, ref.chatId)));
 }
 
 /** Applies a deferred chat's reload (after a successful read) and ends its deferral. */
 export function finishDeferredReload(server: RemoteChat): string | null {
     const key = keyOf(server.characterId, server.id);
     const ref = { chaId: server.characterId, chatId: server.id };
-    // A continue may have taken the lock while the read was in flight.
-    if (!deferred.has(key) || hasLiveGeneration(ref) || inflight.has(key)) {
+    // A new job may have locked the chat while the read was in flight.
+    if (!deferred.has(key) || isChatGenerating(ref) || inflight.has(key)) {
         return null;
     }
     deferred.delete(key);
@@ -3009,29 +2534,7 @@ export function finishDeferredReload(server: RemoteChat): string | null {
         chatRevisions.delete(key);
         return server.characterId;
     }
-    const seq = workSeq(key);
-    acceptRemoteChat(server, 0, true);
-    let requeued = false;
-    for (const [id, final] of generationFinals) {
-        if (!final.messageKey.startsWith(`${key}\u0000`)) {
-            continue;
-        }
-        const message = mirrorChat(ref)?.message.find((entry) => entry.chatId === final.op.id);
-        if (!message) {
-            releaseGeneration(final.messageKey, id);
-            continue;
-        }
-        message.data = final.op.text;
-        changed(key);
-        if (!final.begun) {
-            enqueue(ref, { op: "begin", id: final.op.id, generationId: id });
-        }
-        enqueue(ref, clone(final.op));
-        requeued = true;
-    }
-    if (!requeued) {
-        settleKey(key, seq);
-    }
+    acceptRemoteChat(server);
     return null;
 }
 
@@ -3064,8 +2567,8 @@ export function unsettledChatObligations(obligations: ReturnType<typeof captureC
 }
 
 /**
- * Whether an obligation waits on a deferred chat whose producer is still generating, or on a chat
- * the server refused for a generating message (until its retry).
+ * Whether an obligation waits on a deferred chat a server job still streams into, or on a chat the
+ * server refused for a generating message (until its retry).
  */
 export function isChatDeferred(key: string): boolean {
     if (!key.includes("\u0000")) {
@@ -3079,7 +2582,7 @@ export function isChatDeferred(key: string): boolean {
         return false;
     }
     const [chaId, chatId] = key.split("\u0000");
-    return hasLiveGeneration({ chaId, chatId });
+    return isChatGenerating({ chaId, chatId });
 }
 
 /** Chat keys discarded after `sequence` (for `flushResources`' report). */

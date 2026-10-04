@@ -563,13 +563,10 @@ describe("a job's reply in the mirror", () => {
         expect(chat.isChatGenerating(refK)).toBe(false);
     });
 
-    it("keeps the client's own generation path separate: a server lock refuses a client generation and a client edit", async () => {
+    it("refuses a client edit of a message a server job locks, keeps the other messages editable, and marks the character generating until the job ends", async () => {
         const { chat, text, apply, accepted } = await boot();
         apply("J", accepted("J", "g1"));
-        expect(() => chat.beginGeneration(refK, "b", "client-g")).toThrow(/being generated/);
         expect(() => chat.setMessageText(refK, "b", "mine")).toThrow(/being generated/);
-        // A write under the job's generation id is not the client's generation: a no-op.
-        chat.setMessageText(refK, "b", "mine", { generationId: "g1" });
         expect(text("b")).toBe("");
         expect(chat.isCharacterGenerating("c")).toBe(true);
         chat.setMessageText(refK, "a", "fine");
@@ -707,6 +704,99 @@ describe("a reply locked by its job's chat event, before its stream", () => {
         apply("J", chunk("g2", 1, "FIRST REPLY, CONTINUED"));
         expect(text("b")).toBe("FIRST REPLY, CONTINUED");
         expect(locked("b")).toBe(true);
+    });
+});
+
+// Phase 6 slice 3 (owner decision 3): the streaming display optimization follows the server stream.
+// A generation's first stream update makes its message `streamingState`, with the configured mode;
+// every release of that generation's lock clears it.
+describe("the streaming state follows a job's stream", () => {
+    const state = (chat: ChatModule) => ({ ...chat.streamingState });
+    const none = { chaId: null, chatId: null, messageId: null, mode: undefined };
+
+    it("is set by a generation's first stream update with the configured mode, not by its chat event's placeholder lock, keeps that mode, and is cleared at the job's end", async () => {
+        const { fake, chat, db, locked, chatEvent, copyWith, apply, chunk, accepted } = await boot();
+        db().streamingDisplayOptimizationMode = "strong";
+        const revision = bumped(fake.chat("c", "k")!.revision, 1);
+        apply(
+            "J",
+            chatEvent("J", [{ messageId: "b", generationId: "g1", seq: 0 }], { revision, data: copyWith("b", "") }),
+        );
+        expect(locked("b")).toBe(true);
+        expect(state(chat)).toEqual(none);
+        apply("J", accepted("J", "g1", "b", 0));
+        expect(state(chat)).toEqual({ ...refK, messageId: "b", mode: "strong" });
+        expect(chat.isStreamingMessage(refK, "b")).toBe(true);
+        // A later chunk of the same generation keeps the mode it started with.
+        db().streamingDisplayOptimizationMode = "balanced";
+        apply("J", chunk("g1", 1, "RAW ONE"));
+        expect(state(chat)).toEqual({ ...refK, messageId: "b", mode: "strong" });
+        apply("J", { type: "done", epoch: fake.store.epoch(), revision: null });
+        expect(locked("b")).toBe(false);
+        expect(state(chat)).toEqual(none);
+
+        // Without the setting: "off". A generation that starts with a chunk sets it too.
+        delete db().streamingDisplayOptimizationMode;
+        apply("K", chunk("g2", 0, "FIRST", "c"));
+        expect(state(chat)).toEqual({ ...refK, messageId: "c", mode: "off" });
+    });
+
+    it("is cleared when a chat event releases the generation or hands its message to another one, and a later generation keeps it when an earlier one's lock is released", async () => {
+        const { fake, chat, db, chatEvent, copyWith, apply, chunk, accepted } = await boot();
+        db().streamingDisplayOptimizationMode = "balanced";
+        apply("A", accepted("A", "g1", "a"));
+        expect(state(chat)).toEqual({ ...refK, messageId: "a", mode: "balanced" });
+        // Another job's generation takes the state over.
+        apply("B", accepted("B", "g3", "c"));
+        expect(state(chat)).toEqual({ ...refK, messageId: "c", mode: "balanced" });
+        // A's chat event no longer lists g1: its lock goes, B's state stays.
+        let revision = bumped(fake.chat("c", "k")!.revision, 1);
+        apply("A", chatEvent("A", [], { revision, data: copyWith("a", "A FINAL") }));
+        expect(chat.isMessageLocked(refK, "a")).toBe(false);
+        expect(state(chat)).toEqual({ ...refK, messageId: "c", mode: "balanced" });
+        // A's terminal event releases nothing of B's.
+        apply("A", { type: "done", epoch: fake.store.epoch(), revision: null });
+        expect(state(chat)).toEqual({ ...refK, messageId: "c", mode: "balanced" });
+
+        // B's chat event hands c to a continue's generation g4: g3's state goes; g4's placeholder
+        // lock sets nothing until its first stream update.
+        revision = bumped(revision, 1);
+        apply("B", chatEvent("B", [{ messageId: "c", generationId: "g4", seq: 0 }], { revision }));
+        expect(chat.isMessageLocked(refK, "c")).toBe(true);
+        expect(state(chat)).toEqual(none);
+        db().streamingDisplayOptimizationMode = "strong";
+        apply("B", chunk("g4", 1, "CONTINUED", "c"));
+        expect(state(chat)).toEqual({ ...refK, messageId: "c", mode: "strong" });
+
+        // A continue that arrives as a stream update first (g5 replaces g4 without a chat event)
+        // takes the state over; g4's late chunk changes nothing; the release of g5 clears it.
+        apply("B", accepted("B", "g5", "c", 0));
+        apply("B", chunk("g4", 9, "OLD", "c"));
+        expect(state(chat)).toEqual({ ...refK, messageId: "c", mode: "strong" });
+        revision = bumped(revision, 1);
+        apply("B", chatEvent("B", [], { revision, data: copyWith("c", "C FINAL") }));
+        expect(chat.isMessageLocked(refK, "c")).toBe(false);
+        expect(state(chat)).toEqual(none);
+
+        // Another job's chat event names a new owner of a message job C streams into: C's state goes,
+        // and the new owner's placeholder lock keeps the message locked.
+        apply("C", accepted("C", "g6", "a"));
+        expect(state(chat)).toEqual({ ...refK, messageId: "a", mode: "strong" });
+        revision = bumped(revision, 1);
+        apply("D", chatEvent("D", [{ messageId: "a", generationId: "g7", seq: 0 }], { revision }));
+        expect(chat.isMessageLocked(refK, "a")).toBe(true);
+        expect(state(chat)).toEqual(none);
+    });
+
+    it("is cleared by a release in a copy local work keeps out (the lock goes all the same)", async () => {
+        const { fake, chat, chatEvent, copyWith, apply, accepted } = await boot();
+        apply("J", accepted("J", "g1"));
+        expect(state(chat)).toEqual({ ...refK, messageId: "b", mode: "off" });
+        chat.setChatMeta(refK, { note: "local" });
+        const revision = bumped(fake.chat("c", "k")!.revision, 1);
+        apply("J", chatEvent("J", [], { revision, data: copyWith("b", "FINAL") }));
+        expect(chat.isMessageLocked(refK, "b")).toBe(false);
+        expect(state(chat)).toEqual(none);
     });
 });
 

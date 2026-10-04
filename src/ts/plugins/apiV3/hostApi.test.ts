@@ -354,14 +354,24 @@ describe("v3 character setters and the generation lock", () => {
         ];
     }
 
+    // A server generation job locks the reply; an ended generation is retired, so each test uses its own.
+    let job = 0;
+
     beforeEach(() => {
         DBState.db = { characters: liveCharacters(), pluginCustomStorage: undefined } as any;
         vi.spyOn(console, "warn").mockImplementation(() => {});
-        chatStore.beginGeneration(refK, "a", "g");
+        job += 1;
+        chatStore.applyServerGeneration(refK, {
+            jobId: `J${job}`,
+            messageId: "a",
+            generationId: `g${job}`,
+            text: "reply so far",
+            seq: 0,
+        });
     });
 
     afterEach(() => {
-        chatStore.endGeneration(refK, "a", "g");
+        chatStore.endServerJob(`J${job}`);
         vi.restoreAllMocks();
     });
 

@@ -3,8 +3,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The chat module's lock readers are reactive (`lockState`): an `$effect` over `isMessageLocked` or
-// `isChatGenerating` re-evaluates when a generation begins, when its final write is acknowledged,
-// and when the server stops accepting it. This file is `.svelte.test.ts` so it can use runes the
+// `isChatGenerating` re-evaluates when a server generation job locks a message and when the job
+// releases it. This file is `.svelte.test.ts` so it can use runes the
 // way `Chat.svelte` does; the module is imported once (a reset module graph would get its own Svelte
 // runtime instance, and the effect would not see the module's state).
 
@@ -89,7 +89,7 @@ afterEach(() => {
 });
 
 describe("reactive lock readers", () => {
-    it("re-evaluates an effect over isMessageLocked and isChatGenerating when a generation begins and when its final write is acknowledged", () => {
+    it("re-evaluates an effect over isMessageLocked and isChatGenerating when a server job locks a message and when the job ends", () => {
         const branch = chat.createChat("c", {
             id: "branch",
             name: "Branch",
@@ -115,56 +115,20 @@ describe("reactive lock readers", () => {
         flushSync();
         expect(seen).toEqual(["----"]);
 
-        chat.beginGeneration(ref, "a", "g");
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "", seq: 0 });
         flushSync();
         expect(seen.at(-1)).toBe("a--chat");
-        commit();
-        chat.setMessageText(ref, "a", "streamed", { generationId: "g" });
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "streamed", seq: 1 });
         flushSync();
         // Text writes do not touch the lock set: no re-evaluation.
         expect(seen).toHaveLength(2);
 
-        // Ending keeps the lock until the final write is acknowledged.
-        chat.endGeneration(ref, "a", "g");
-        flushSync();
-        expect(seen).toHaveLength(2);
+        // The lock lasts until the job ends.
         expect(chat.isMessageLocked(ref, "a")).toBe(true);
-        commit();
+        chat.endServerJob("J");
         flushSync();
         expect(seen.at(-1)).toBe("----");
         expect(seen).toHaveLength(3);
-        stop();
-    });
-
-    it("re-evaluates when the server stops accepting a generation (another tab took the message over)", () => {
-        chat.beginGeneration(ref, "b", "g2");
-        commit();
-        let lockedId: string | null = null;
-        const stop = $effect.root(() => {
-            $effect(() => {
-                lockedId =
-                    chat.findChat(ref)!.message.find((message) => chat.isMessageLocked(ref, message.chatId))?.chatId ??
-                    null;
-            });
-        });
-        flushSync();
-        expect(lockedId).toBe("b");
-
-        server.chatBatch([
-            {
-                characterId: "c",
-                chatId: "k",
-                baseRevision: server.chat("c", "k")!.revision,
-                ops: [{ op: "begin", id: "b", generationId: "other" }],
-            },
-        ]);
-        chat.setMessageText(ref, "b", "more", { generationId: "g2" });
-        vi.advanceTimersByTime(3000);
-        const result = commit();
-        expect(result.chats[0].checkpoints).toEqual(["ignored"]);
-        flushSync();
-        expect(lockedId).toBeNull();
-        expect(chat.isChatGenerating(ref)).toBe(false);
         stop();
     });
 });

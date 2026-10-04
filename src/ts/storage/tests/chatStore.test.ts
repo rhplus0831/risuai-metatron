@@ -306,85 +306,46 @@ describe("membership and selection", () => {
 });
 
 describe("generation lock", () => {
-    it("checkpoints the text on the timer, keeps the lock until the final write is acknowledged, and drops writes of an ended generation", async () => {
-        const { server, chat, ref, take, apply, ack, commit } = await boot();
-        chat.beginGeneration(ref, "a", "g1");
-        expect(commit().work.groups[0].ops).toEqual([{ op: "begin", id: "a", generationId: "g1" }]);
-        chat.setMessageText(ref, "a", "partial", { generationId: "g1" });
+    it("refuses edits, removals, and a chat replacement touching a message a server job locks, keeps the other messages editable, and keeps the lock until the job ends", async () => {
+        const { server, chat, ref, take, commit } = await boot();
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g1", text: "partial", seq: 0 });
         expect(chat.findChat(ref)!.message[0].data).toBe("partial");
-        // Mirror only until the checkpoint timer fires.
+        // The streamed text is mirror only: nothing is queued for it.
         expect(take().groups).toEqual([]);
-        vi.advanceTimersByTime(3000);
-        const checkpoint = commit();
-        expect(checkpoint.work.groups[0].ops).toEqual([
-            { op: "setText", id: "a", text: "partial", generation: { id: "g1", seq: 1 } },
-        ]);
-        expect(checkpoint.result.chats[0].checkpoints).toEqual(["applied"]);
-        expect(server.texts("c", "k")[0]).toBe("partial");
 
         expect(() => chat.setMessageText(ref, "a", "manual")).toThrow(/being generated/);
         expect(() => chat.removeMessages(ref, ["a"])).toThrow(/being generated/);
         expect(() => chat.replaceChat(ref, clone(chat.findChat(ref)))).toThrow(/being generated/);
         chat.setMessageText(ref, "b", "other messages stay editable");
-        chat.setMessageText(ref, "a", "final text", { generationId: "g1" });
-        chat.endGeneration(ref, "a", "g1");
-        expect(chat.isMessageLocked(ref, "a")).toBe(true);
-        const work = take();
-        expect(work.groups[0].finals).toHaveLength(1);
-        const result = apply(work);
-        expect(chat.isMessageLocked(ref, "a")).toBe(true);
-        ack(work, result);
-        expect(chat.isMessageLocked(ref, "a")).toBe(false);
-        expect(server.texts("c", "k")).toEqual(["final text", "other messages stay editable", "C"]);
-
-        // A late chunk of the ended generation changes nothing, and never becomes a manual write.
-        chat.setMessageText(ref, "a", "late chunk", { generationId: "g1" });
-        expect(chat.findChat(ref)!.message[0].data).toBe("final text");
-        expect(take().groups).toEqual([]);
-    });
-
-    it("keeps the lock on a duplicate checkpoint and releases it when the server ignores the generation", async () => {
-        const { server, chat, ref, take, apply, ack, commit } = await boot();
-        chat.beginGeneration(ref, "b", "g2");
         commit();
-        chat.setMessageText(ref, "b", "one", { generationId: "g2" });
-        vi.advanceTimersByTime(3000);
-        const first = take();
-        apply(first);
-        // The answer was lost: the same checkpoint is sent again.
-        chat.requeueChatWork(first);
-        const replay = commit();
-        expect(replay.result.chats[0].checkpoints).toEqual(["duplicate"]);
-        expect(replay.result.chats[0].stale).toBe(true);
-        expect(chat.isMessageLocked(ref, "b")).toBe(true);
+        expect(chat.isMessageLocked(ref, "a")).toBe(true);
+        chat.endServerJob("J");
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        expect(server.texts("c", "k")).toEqual(["A", "other messages stay editable", "C"]);
 
-        // Another tab takes the message over on the current revision.
-        server.chatBatch([
-            {
-                characterId: "c",
-                chatId: "k",
-                baseRevision: server.chat("c", "k")!.revision,
-                ops: [{ op: "begin", id: "b", generationId: "g3" }],
-            },
-        ]);
-        chat.setMessageText(ref, "b", "two", { generationId: "g2" });
-        vi.advanceTimersByTime(3000);
-        const ignored = commit();
-        expect(ignored.result.chats[0].checkpoints).toEqual(["ignored"]);
-        expect(chat.isMessageLocked(ref, "b")).toBe(false);
-        expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/no longer accepts/));
-        chat.setMessageText(ref, "b", "three", { generationId: "g2" });
-        chat.endGeneration(ref, "b", "g2");
-        expect(chat.findChat(ref)!.message[1].data).toBe("two");
+        // A late chunk of the ended job changes nothing, and never becomes a manual write.
+        expect(
+            chat.applyServerGeneration(ref, {
+                jobId: "J",
+                messageId: "a",
+                generationId: "g1",
+                text: "late chunk",
+                seq: 1,
+            }),
+        ).toBe(false);
+        expect(chat.findChat(ref)!.message[0].data).toBe("partial");
         expect(take().groups).toEqual([]);
-        expect(server.texts("c", "k")[1]).toBe("one");
     });
 
-    it("defers the reload of a chat a generation runs in until the generation ends", async () => {
-        const { server, chat, ref, take, recover, commit } = await boot();
-        chat.beginGeneration(ref, "a", "g");
-        const begin = take();
-        chat.ackChatWork(begin, server.store.applyChanges({ chats: begin.groups as any }).chats, []);
+    it("defers the reload of a chat a server job streams into until the job ends", async () => {
+        const { server, chat, ref, take, recover } = await boot();
+        chat.applyServerGeneration(ref, {
+            jobId: "J",
+            messageId: "a",
+            generationId: "g",
+            text: "streamed so far",
+            seq: 0,
+        });
         server.chatBatch([
             {
                 characterId: "c",
@@ -393,7 +354,6 @@ describe("generation lock", () => {
                 ops: [{ op: "meta", set: { note: "remote" } }],
             },
         ]);
-        chat.setMessageText(ref, "a", "streamed so far", { generationId: "g" });
         chat.removeMessages(ref, ["b", "c"]);
         const work = take();
         const { conflicts } = recover(work);
@@ -402,98 +362,23 @@ describe("generation lock", () => {
         expect(chat.isMessageLocked(ref, "a")).toBe(true);
         expect(take().groups).toEqual([]);
         expect(chat.deferredReloads()).toEqual([]);
-        // The mirror keeps the local state while the producer runs.
+        // The mirror keeps the local state while the job streams.
         expect(texts(chat.findChat(ref))).toEqual(["streamed so far"]);
 
-        chat.endGeneration(ref, "a", "g");
-        // The generated text is retained through the reload: the lock stays until it is re-sent.
-        expect(chat.isMessageLocked(ref, "a")).toBe(true);
+        chat.endServerJob("J");
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
         expect(chat.deferredReloads()).toEqual([ref]);
         expect(chat.finishDeferredReload(server.chat("c", "k")! as any)).toBeNull();
         expect(chat.isChatDeferred("c\u0000k")).toBe(false);
-        // The bulk removal is discarded with the reload; the final text is put back on the server copy.
-        expect(texts(chat.findChat(ref))).toEqual(["streamed so far", "B", "C"]);
+        // The bulk removal is discarded with the reload; the server's copy replaces the chat.
+        expect(texts(chat.findChat(ref))).toEqual(["A", "B", "C"]);
         expect((chat.findChat(ref) as any).note).toBe("remote");
         expect(chat.chatDiscardsSince(0)).toEqual(["c/k"]);
-        expect(chat.isMessageLocked(ref, "a")).toBe(true);
-        const fresh = server.chat("c", "k")!.revision;
-        const recovered = commit();
-        expect(recovered.work.groups[0].baseRevision).toBe(fresh);
-        expect(recovered.work.groups[0].ops).toEqual([
-            {
-                op: "setText",
-                id: "a",
-                text: "streamed so far",
-                generation: { id: "g", seq: expect.any(Number), final: true },
-            },
-        ]);
-        expect(server.texts("c", "k")).toEqual(["streamed so far", "B", "C"]);
-        expect(chat.isMessageLocked(ref, "a")).toBe(false);
-        expect(chat.hasChatWork()).toBe(false);
-    });
-
-    it("keeps both finals when an auto-continue's group conflicts on a stale base", async () => {
-        const { server, chat, ref, take, recover, commit } = await boot();
-        chat.beginGeneration(ref, "a", "g1");
-        commit();
-        server.chatBatch([
-            {
-                characterId: "c",
-                chatId: "k",
-                baseRevision: server.chat("c", "k")!.revision,
-                ops: [{ op: "meta", set: { name: "Remote" } }],
-            },
-        ]);
-        // A by-id write lands on the older base: the client keeps that base.
-        chat.setChatMeta(ref, { note: "mine" });
-        expect(commit().result.chats[0].stale).toBe(true);
-        chat.setMessageText(ref, "a", "first", { generationId: "g1" });
-        // g1 ends and g2 continues the same message before g1's final is sent: one group carries
-        // g1's final and g2's `begin`, which the stale base refuses.
-        chat.endGeneration(ref, "a", "g1");
-        chat.beginGeneration(ref, "a", "g2");
-        chat.setMessageText(ref, "a", "first, second", { generationId: "g2" });
-        const work = take();
-        expect(work.groups[0].ops.map((op) => op.op)).toEqual(["setText", "begin"]);
-        const { conflicts } = recover(work);
-        expect(conflicts).toHaveLength(1);
-        expect(chat.isChatDeferred("c\u0000k")).toBe(true);
-
-        chat.endGeneration(ref, "a", "g2");
-        expect(chat.deferredReloads()).toEqual([ref]);
-        expect(chat.finishDeferredReload(server.chat("c", "k")! as any)).toBeNull();
-        expect(texts(chat.findChat(ref))[0]).toBe("first, second");
-        expect((chat.findChat(ref) as any).name).toBe("Remote");
-        expect((chat.findChat(ref) as any).note).toBe("mine");
-        const recovered = commit();
-        const tag = (op: any) => `${op.op}:${op.generation?.id ?? op.generationId}`;
-        expect(recovered.work.groups[0].ops.map(tag)).toEqual(["setText:g1", "begin:g2", "setText:g2"]);
-        expect(server.texts("c", "k")[0]).toBe("first, second");
-        expect(chat.isMessageLocked(ref, "a")).toBe(false);
         expect(chat.hasChatWork()).toBe(false);
     });
 });
 
 describe("conflict recovery", () => {
-    it("sends a new chat's create without generation ops for a reply a hook removed", async () => {
-        const { server, chat, take, apply, ack } = await boot();
-        const ref = { chaId: "c", chatId: "n" };
-        chat.createChat("c", { id: "n", name: "N", message: [m("u", "hello")] } as any);
-        chat.appendMessage(ref, m("r", "", "char"));
-        chat.beginGeneration(ref, "r", "g");
-        chat.setMessageText(ref, "r", "partial", { generationId: "g" });
-        // An output trigger with the generation's capability removed the reply before the save
-        // loop ran: the create must not carry a `begin` for a message its payload does not hold.
-        chat.removeMessages(ref, ["r"], { generationId: "g" });
-        const work = take();
-        expect(work.groups[0].ops.map((op) => op.op)).toEqual(["create"]);
-        ack(work, apply(work));
-        chat.endGeneration(ref, "r", "g");
-        expect(chat.isMessageLocked(ref, "r")).toBe(false);
-        expect(server.texts("c", "n")).toEqual(["hello"]);
-        expect(chat.hasChatWork()).toBe(false);
-    });
-
     it("keeps a chat whose create the server refused: quarantined with an alert, not dropped", async () => {
         const { server, stores, chat } = await boot();
         const alert = await import("../../alert");
@@ -739,9 +624,9 @@ describe("applyChatResult", () => {
     });
 
     it("refuses a result that touches a locked message before changing anything", async () => {
-        const { chat, ref, take, commit } = await boot();
-        chat.beginGeneration(ref, "a", "g");
-        commit();
+        const { chat, ref, take } = await boot();
+        // The job's accepted snapshot holds the stored text so far.
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "A", seq: 0 });
         const baseline = chat.captureChatBaseline(ref);
         const result = clone(baseline.chat);
         result.message[0].data = "the hook rewrote the reply";
@@ -752,127 +637,24 @@ describe("applyChatResult", () => {
         expect((chat.findChat(ref) as any).note).toBe("");
         expect(take().groups).toEqual([]);
     });
-
-    it("lets a generation-carrying result edit its own message (stamped) and other messages (plain) in one pass", async () => {
-        const { server, chat, ref, commit } = await boot();
-        chat.beginGeneration(ref, "a", "g");
-        commit();
-        const baseline = chat.captureChatBaseline(ref);
-        const result = clone(baseline.chat);
-        result.message[0].data = "changed reply";
-        result.message[1].data = "changed earlier message";
-        chat.applyChatResult(baseline, result, { generationId: "g" });
-        expect(texts(chat.findChat(ref))).toEqual(["changed reply", "changed earlier message", "C"]);
-        const { work, result: answer } = commit();
-        expect(work.groups[0].ops).toEqual([
-            { op: "setMessage", message: m("a", "changed reply", "char"), generation: { id: "g", seq: 1 } },
-            { op: "setMessage", message: m("b", "changed earlier message") },
-        ]);
-        expect(answer.chats[0].checkpoints).toEqual(["applied"]);
-        expect(server.texts("c", "k")).toEqual(["changed reply", "changed earlier message", "C"]);
-        expect(chat.isMessageLocked(ref, "a")).toBe(true);
-    });
-
-    it("removes the generating message and others as one op, so the removal still needs the current revision", async () => {
-        const { server, chat, ref, take, apply, commit } = await boot();
-        chat.beginGeneration(ref, "a", "g");
-        commit();
-        const baseline = chat.captureChatBaseline(ref);
-        server.chatBatch([
-            {
-                characterId: "c",
-                chatId: "k",
-                baseRevision: server.chat("c", "k")!.revision,
-                ops: [{ op: "setText", id: "b", text: "important remote edit" }],
-            },
-        ]);
-        const result = clone(baseline.chat);
-        result.message = [result.message[2]];
-        chat.applyChatResult(baseline, result, { generationId: "g" });
-        const work = take();
-        expect(work.groups[0].ops).toEqual([{ op: "remove", ids: ["a", "b"] }]);
-        expect(() => apply(work)).toThrow(server.errors.ResourceBatchConflictError);
-        expect(server.texts("c", "k")).toEqual(["A", "important remote edit", "C"]);
-    });
 });
 
-describe("unload checkpoint (pagehide)", () => {
+describe("unload work (pagehide)", () => {
     const LIMIT = 60 * 1024;
-    const bodyBytes = (body: string) => new TextEncoder().encode(body).length;
-
-    it("carries the whole current text of each begun generation, whole or not at all within the budget, and skips a chat with a request in flight", async () => {
-        const { server, chat, ref, take, apply, ack, commit } = await boot();
-        const refJ = { chaId: "c", chatId: "j" };
-        chat.createChat("c", { id: "j", name: "J", note: "", localLore: [], message: [m("x", "X", "char")] } as any);
-        chat.beginGeneration(ref, "a", "gk");
-        commit();
-        chat.beginGeneration(refJ, "x", "gj");
-        chat.setMessageText(ref, "a", "k so far", { generationId: "gk" });
-        chat.setMessageText(refJ, "x", "j so far", { generationId: "gj" });
-
-        // j's begin is queued but not acknowledged: the server does not know its generation yet.
-        const first = chat.unloadCheckpoint(LIMIT)!;
-        expect(first.work.groups.map((group) => group.chatId)).toEqual(["k"]);
-        expect(first.work.groups[0].ops).toEqual([
-            { op: "setText", id: "a", text: "k so far", generation: { id: "gk", seq: 1 } },
-        ]);
-        expect(first.work.groups[0].seq).toBe(0);
-        expect(JSON.parse(first.body)).toEqual({
-            chats: [
-                {
-                    characterId: "c",
-                    chatId: "k",
-                    baseRevision: server.chat("c", "k")!.revision,
-                    ops: first.work.groups[0].ops,
-                },
-            ],
-        });
-        // Nothing was sent: the sequence still advanced so a later checkpoint supersedes this one.
-        commit();
-        chat.setMessageText(ref, "a", "k later", { generationId: "gk" });
-        vi.advanceTimersByTime(3000);
-        expect(commit().work.groups.find((group) => group.chatId === "k")!.ops).toEqual([
-            { op: "setText", id: "a", text: "k later", generation: { id: "gk", seq: 2 } },
-        ]);
-
-        // Both begun: a budget that fits one group leaves the other out whole (never a suffix).
-        const both = chat.unloadCheckpoint(LIMIT)!;
-        expect(both.work.groups.map((group) => group.chatId)).toEqual(["k", "j"]);
-        const onlyK = chat.unloadCheckpoint(bodyBytes(both.body) - 1)!;
-        expect(onlyK.work.groups.map((group) => group.chatId)).toEqual(["k"]);
-        expect(bodyBytes(onlyK.body)).toBeLessThanOrEqual(bodyBytes(both.body) - 1);
-        // k's sequence advanced twice (both bodies), j's once (left out of the second).
-        expect(both.work.groups.map((group) => (group.ops[0] as any).generation.seq)).toEqual([3, 2]);
-        expect((onlyK.work.groups[0].ops[0] as any).generation.seq).toBe(4);
-        expect(chat.unloadCheckpoint(10)).toBeNull();
-
-        // A chat whose request is in flight is skipped (that request carries its latest checkpoint).
-        chat.setMessageText(ref, "a", "k newer", { generationId: "gk" });
-        chat.setMessageText(refJ, "x", "j newer", { generationId: "gj" });
-        vi.advanceTimersByTime(3000);
-        const inflight = take();
-        expect(inflight.groups.map((group) => group.chatId)).toEqual(["k", "j"]);
-        expect(chat.unloadCheckpoint(LIMIT)).toBeNull();
-        ack(inflight, apply(inflight));
-        expect(chat.unloadCheckpoint(LIMIT)!.work.groups.map((group) => group.chatId)).toEqual(["k", "j"]);
-    });
 
     it("settles a surviving page's answer like an acknowledgement, so the tab's next current-revision op does not conflict with its own write", async () => {
         const { server, chat, ref, take, apply, ack, commit } = await boot();
-        chat.beginGeneration(ref, "a", "g");
-        commit();
-        chat.setMessageText(ref, "a", "streamed", { generationId: "g" });
-        const checkpoint = chat.unloadCheckpoint(LIMIT)!;
-        chat.trackUnloadCheckpoint(checkpoint.work);
+        chat.setMessageText(ref, "a", "unload write");
+        const [request] = chat.unloadPendingChatWork(LIMIT);
+        chat.trackUnloadWork(request.work);
 
         // Queued work of that chat waits for the answer; other chats are not held.
         chat.setChatMeta(ref, { note: "edited while the answer is out" });
         expect(chat.hasChatWork()).toBe(false);
         expect(take().groups).toEqual([]);
-        const answer = server.store.applyChanges(JSON.parse(checkpoint.body));
-        expect(answer.chats[0].checkpoints).toEqual(["applied"]);
-        expect(server.texts("c", "k")[0]).toBe("streamed");
-        chat.settleUnloadCheckpoint(checkpoint.work, answer.chats);
+        const answer = server.store.applyChanges(JSON.parse(request.body));
+        expect(server.texts("c", "k")[0]).toBe("unload write");
+        chat.settleUnloadWork(request.work, answer.chats);
         expect(chat.hasChatWork()).toBe(true);
 
         // The note goes out on the revision the unload write produced: not stale.
@@ -881,95 +663,52 @@ describe("unload checkpoint (pagehide)", () => {
             { op: "meta", set: { note: "edited while the answer is out" }, unset: [] },
         ]);
         expect(note.result.chats[0].stale).toBeUndefined();
-        chat.endGeneration(ref, "a", "g");
-        expect(commit().result.chats[0].stale).toBeUndefined();
-        expect(chat.isMessageLocked(ref, "a")).toBe(false);
 
-        // Continue: a new generation on the message needs the current revision, which this tab has.
-        chat.beginGeneration(ref, "a", "g2");
-        const begin = take();
-        expect(begin.groups[0].baseRevision).toBe(server.chat("c", "k")!.revision);
-        ack(begin, apply(begin));
-        chat.setMessageText(ref, "a", "streamed, continued", { generationId: "g2" });
-        chat.endGeneration(ref, "a", "g2");
-        commit();
-        expect(server.texts("c", "k")[0]).toBe("streamed, continued");
-        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        // A current-revision op (a bulk removal) goes out on the revision this tab holds.
+        chat.removeMessages(ref, ["b", "c"]);
+        const bulk = take();
+        expect(bulk.groups[0].baseRevision).toBe(server.chat("c", "k")!.revision);
+        ack(bulk, apply(bulk));
+        expect(server.texts("c", "k")).toEqual(["unload write"]);
+        expect(chat.hasChatWork()).toBe(false);
     });
 
-    it("keeps the base when the answer is lost or stale, and stops a generation the server ignores", async () => {
-        const { server, chat, ref, take, apply, commit, recover } = await boot();
-        chat.beginGeneration(ref, "a", "g");
-        commit();
-        chat.setMessageText(ref, "a", "streamed", { generationId: "g" });
+    it("keeps the base when the answer is lost or stale", async () => {
+        const { server, chat, ref, take, commit, recover } = await boot();
+        chat.setMessageText(ref, "a", "unload write");
 
         // Lost answer (the request failed, or the page did not survive to see it): the chat's work
         // resumes on the old base. Had the write landed anyway, the next current-revision op
         // conflicts and reloads the chat, which is the documented protection of unseen writes.
-        const lost = chat.unloadCheckpoint(LIMIT)!;
-        chat.trackUnloadCheckpoint(lost.work);
+        const [lost] = chat.unloadPendingChatWork(LIMIT);
+        chat.trackUnloadWork(lost.work);
         server.store.applyChanges(JSON.parse(lost.body));
-        chat.settleUnloadCheckpoint(lost.work, null);
+        chat.settleUnloadWork(lost.work, null);
         chat.setChatMeta(ref, { note: "after the lost answer" });
         const note = commit();
         expect(note.result.chats[0].stale).toBe(true);
-        chat.endGeneration(ref, "a", "g");
-        commit();
-        chat.beginGeneration(ref, "a", "g2");
-        const { conflicts } = recover(take());
+        chat.removeMessages(ref, ["b", "c"]);
+        const { conflicts, reloaded } = recover(take());
         expect(conflicts).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: expect.any(String) }]);
-        // A generation runs in the chat: its reload waits for the end of the generation.
-        expect(chat.isChatDeferred("c\u0000k")).toBe(true);
-        chat.endGeneration(ref, "a", "g2");
-        // The refused op was g2's `begin`: after the reload it is retried together with the final.
-        expect(chat.isMessageLocked(ref, "a")).toBe(true);
-        expect(chat.deferredReloads()).toEqual([ref]);
-        const remote = server.store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0];
-        expect(chat.finishDeferredReload(remote as any)).toBeNull();
+        expect(reloaded).toBe(true);
+        expect(chat.chatDiscardsSince(0)).toEqual(["c/k"]);
+        expect(texts(chat.findChat(ref))).toEqual(["unload write", "B", "C"]);
         expect((chat.findChat(ref) as any).note).toBe("after the lost answer");
-        expect(texts(chat.findChat(ref))[0]).toBe("streamed");
-        const recovered = commit();
-        expect(recovered.work.groups[0].ops.map((op) => op.op)).toEqual(["begin", "setText"]);
-        expect(recovered.result.chats[0].stale).toBeUndefined();
-        expect(chat.isMessageLocked(ref, "a")).toBe(false);
         expect(chat.hasChatWork()).toBe(false);
 
         // Stale answer (another tab wrote meanwhile): the base stays older, as for any acknowledgement.
-        chat.beginGeneration(ref, "a", "g3");
-        commit();
-        chat.setMessageText(ref, "a", "third", { generationId: "g3" });
+        chat.setMessageText(ref, "a", "third");
         const before = server.chat("c", "k")!.revision;
         server.chatBatch([
             { characterId: "c", chatId: "k", baseRevision: before, ops: [{ op: "setText", id: "b", text: "remote" }] },
         ]);
-        const stale = chat.unloadCheckpoint(LIMIT)!;
-        chat.trackUnloadCheckpoint(stale.work);
+        const [stale] = chat.unloadPendingChatWork(LIMIT);
+        chat.trackUnloadWork(stale.work);
         const staleAnswer = server.store.applyChanges(JSON.parse(stale.body));
         expect(staleAnswer.chats[0].stale).toBe(true);
-        chat.settleUnloadCheckpoint(stale.work, staleAnswer.chats);
+        chat.settleUnloadWork(stale.work, staleAnswer.chats);
         chat.setChatMeta(ref, { note: "still on the old base" });
         expect(commit().result.chats[0].stale).toBe(true);
-
-        // Ignored (another tab took the message over): the generation stops saving.
-        server.chatBatch([
-            {
-                characterId: "c",
-                chatId: "k",
-                baseRevision: server.chat("c", "k")!.revision,
-                ops: [{ op: "begin", id: "a", generationId: "other-tab" }],
-            },
-        ]);
-        chat.setMessageText(ref, "a", "fourth", { generationId: "g3" });
-        const ignored = chat.unloadCheckpoint(LIMIT)!;
-        chat.trackUnloadCheckpoint(ignored.work);
-        const ignoredAnswer = server.store.applyChanges(JSON.parse(ignored.body));
-        expect(ignoredAnswer.chats[0].checkpoints).toEqual(["ignored"]);
-        chat.settleUnloadCheckpoint(ignored.work, ignoredAnswer.chats);
-        expect(chat.isMessageLocked(ref, "a")).toBe(false);
-        expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/no longer accepts/));
-        chat.setMessageText(ref, "a", "late", { generationId: "g3" });
-        expect(chat.findChat(ref)!.message[0].data).toBe("fourth");
-        expect(server.texts("c", "k")[0]).toBe("third");
 
         // Idle after the stale answers: the chat is read back and re-based without a discard or a
         // notice, so the next revision-bound op applies instead of conflicting.
@@ -985,6 +724,57 @@ describe("unload checkpoint (pagehide)", () => {
         expect(bulk.result.chats[0].stale).toBeUndefined();
         expect(server.texts("c", "k")).toEqual(["third"]);
     });
+
+    it("takes only a by-id prefix, leaves a chat's request out whole when it does not fit the remaining budget, and skips a chat with a request in flight", async () => {
+        const { server, chat, ref, take, apply, ack, commit } = await boot();
+        const refJ = { chaId: "c", chatId: "j" };
+        const bytes = (body: string) => new TextEncoder().encode(body).length;
+        chat.createChat("c", { id: "j", name: "J", note: "", localLore: [], message: [m("x", "X")] } as any);
+        commit();
+        const long = "long ".repeat(400);
+        chat.setMessageText(ref, "a", long);
+        // A bulk removal needs the current revision: it and everything after it stay queued.
+        chat.removeMessages(ref, ["b", "c"]);
+        chat.setChatMeta(ref, { note: "after the removal" });
+        chat.setChatMeta(refJ, { note: "small" });
+
+        const both = chat.unloadPendingChatWork(LIMIT);
+        expect(both.map((request) => request.work.groups[0].chatId)).toEqual(["k", "j"]);
+        const [requestK, requestJ] = both;
+        expect(requestK.work.groups[0].ops).toEqual([{ op: "setText", id: "a", text: long }]);
+        // Part of the chat's queue: settling it settles nothing (sequence 0).
+        expect(requestK.work.groups[0].seq).toBe(0);
+
+        // A budget one byte short of k's request: k is left out whole (never a part of its ops), and
+        // the next chat that fits still goes.
+        const onlyJ = chat.unloadPendingChatWork(bytes(requestK.body) - 1);
+        expect(onlyJ.map((request) => request.work.groups[0].chatId)).toEqual(["j"]);
+        expect(onlyJ[0].body).toBe(requestJ.body);
+        expect(chat.unloadPendingChatWork(bytes(requestJ.body) - 1)).toEqual([]);
+
+        // Sent: only the prefix leaves k's queue; the rest goes after the answer.
+        chat.trackUnloadWork(requestK.work);
+        const workJ = take();
+        expect(workJ.groups.map((group) => group.chatId)).toEqual(["j"]);
+        ack(workJ, apply(workJ));
+        const answer = server.store.applyChanges(JSON.parse(requestK.body));
+        chat.settleUnloadWork(requestK.work, answer.chats);
+        const rest = take();
+        expect(rest.groups.map((group) => group.chatId)).toEqual(["k"]);
+        expect(rest.groups[0].ops.map((op) => op.op)).toEqual(["remove", "meta"]);
+        ack(rest, apply(rest));
+        expect(server.texts("c", "k")).toEqual([long]);
+
+        // A chat with a request in flight is skipped until its answer.
+        chat.setChatMeta(ref, { note: "k again" });
+        chat.setChatMeta(refJ, { note: "j again" });
+        const inflight = take();
+        chat.setChatMeta(ref, { note: "k behind the request" });
+        chat.setChatMeta(refJ, { note: "j behind the request" });
+        expect(chat.unloadPendingChatWork(LIMIT)).toEqual([]);
+        ack(inflight, apply(inflight));
+        expect(chat.unloadPendingChatWork(LIMIT).map((request) => request.work.groups[0].chatId)).toEqual(["k", "j"]);
+    });
 });
 
 describe("streaming message identity", () => {
@@ -994,7 +784,7 @@ describe("streaming message identity", () => {
         const branch = chat.createChat("c", { ...clone(source), id: "branch", name: "Branch" } as any, { index: 0 });
         expect(ids(branch)).toEqual(ids(source));
         const refBranch = { chaId: "c", chatId: branch.id! };
-        chat.beginGeneration(ref, "a", "g");
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "A", seq: 0 });
         chat.setStreamingState({ ...ref, messageId: "a", mode: "off" });
         expect(chat.isStreamingMessage(ref, "a")).toBe(true);
         expect(chat.isStreamingMessage(refBranch, "a")).toBe(false);
@@ -1007,6 +797,28 @@ describe("streaming message identity", () => {
         expect(() => chat.setMessageText(ref, "a", "edited in the source")).toThrow(/being generated/);
         chat.setStreamingState(null);
         expect(chat.isStreamingMessage(ref, "a")).toBe(false);
+    });
+
+    it("renames the streaming message when the server renames it in a whole-chat write of its chat, and leaves another character's chat with the same ids alone", async () => {
+        const { chat, ref, take, apply, ack } = await boot();
+        /** Sends a replace of `k` and acknowledges it with the server renaming its messages to `renamed`. */
+        const replaceRenaming = (renamed: string[]) => {
+            chat.replaceChat(ref, clone(chat.findChat(ref)) as any);
+            const work = take();
+            const result = apply(work);
+            result.chats[0] = { ...result.chats[0], messageIds: renamed };
+            ack(work, result);
+        };
+        chat.setStreamingState({ chaId: "other", chatId: "k", messageId: "b", mode: "balanced" });
+        replaceRenaming(["a", "b2", "c"]);
+        expect(ids(chat.findChat(ref))).toEqual(["a", "b2", "c"]);
+        expect({ ...chat.streamingState }).toEqual({ chaId: "other", chatId: "k", messageId: "b", mode: "balanced" });
+
+        chat.setStreamingState({ ...ref, messageId: "b2", mode: "strong" });
+        replaceRenaming(["a", "b3", "c"]);
+        expect(ids(chat.findChat(ref))).toEqual(["a", "b3", "c"]);
+        expect({ ...chat.streamingState }).toEqual({ ...ref, messageId: "b3", mode: "strong" });
+        expect(chat.isStreamingMessage(ref, "b3")).toBe(true);
     });
 });
 

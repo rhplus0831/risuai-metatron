@@ -302,10 +302,9 @@ describe("replaceCharacterAt", () => {
             () => characterStore.replaceCharacterAt(1, { chaId: "c", name: "x" }),
             validation.MutationValidationError,
         );
-        chat.beginGeneration(refK, "a", "g");
-        await sync.flushResources(); // the `begin` op is sent, so the refusal check compares a settled server
+        chat.applyServerGeneration(refK, { jobId: "J", messageId: "a", generationId: "g", text: "A", seq: 0 });
         await refused(() => characterStore.replaceCharacterAt(0, { name: "x" }), validation.MutationValidationError);
-        chat.endGeneration(refK, "a", "g");
+        chat.endServerJob("J");
     });
 
     it("puts a different character at the index, saving it with its chats and deleting the old one", async () => {
@@ -331,10 +330,9 @@ describe("replaceCharacterAt", () => {
 describe("removeCharacter", () => {
     it("refuses a generating character and returns false for an unknown one", async () => {
         const { fake, sync, chat, characterStore, refused, validation } = await boot();
-        chat.beginGeneration(refK, "a", "g");
-        await sync.flushResources();
+        chat.applyServerGeneration(refK, { jobId: "J", messageId: "a", generationId: "g", text: "A", seq: 0 });
         await refused(() => characterStore.removeCharacter("c"), validation.MutationValidationError);
-        chat.endGeneration(refK, "a", "g");
+        chat.endServerJob("J");
         await sync.flushResources();
         const batches = fake.batchCount();
         expect(characterStore.removeCharacter("nope")).toBe(false);

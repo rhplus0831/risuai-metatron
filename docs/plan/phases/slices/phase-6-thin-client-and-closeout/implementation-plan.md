@@ -647,3 +647,12 @@ slice's reviewer with this plan's amendments, and the reviewer judges again.
 - **Stops C and D:** the counts re-measured.
 - **Stop D:** the closeout criteria walked one by one, and the Docker two-client matrix
   (including restart and snapshot restore).
+
+## Stop decisions
+
+- **Stop A (2026-10-04).** The owner confirmed the spike's verdict (owner decision 1): the deep
+  write-through record, without the resolve cache, for every record, accepting its departure from
+  the 2× cost rule; slice 4 carries the obligations recorded in
+  [`spike-projection-bindings.md`](spike-projection-bindings.md) ("Verdict"). Slice 2 (live updates)
+  was reported with the two-tab matrix on the flat mirror (`util/playwright/checkLiveUpdates.mjs`,
+  49/49), and slice 3 started.

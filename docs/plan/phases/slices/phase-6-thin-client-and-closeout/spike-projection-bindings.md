@@ -1,6 +1,6 @@
 # Slice: Spike, Projection Binding Pattern
 
-Status: run on 2026-10-04 (results and the proposed verdict below; the owner confirms the verdict at Stop A).
+Status: run on 2026-10-04; the verdict below was confirmed by the owner at Stop A (2026-10-04).
 
 Phase: [Phase 6](../../phase-6-thin-client-and-closeout.md), "Projections" (the binding pattern
 every projection uses) and the Safety Contract ("no projection recreates an aggregate database
@@ -336,11 +336,11 @@ Not covered:
 - unassisted candidate 1 aside, the hybrids (candidate 1 plus explicit nested setters) were not
   measured.
 
-## Verdict (proposed; the owner confirms at Stop A)
+## Verdict (confirmed by the owner at Stop A, 2026-10-04)
 
 **Candidate 2, the deep write-through record without the resolve cache, for every record.** It
 passes every implemented correctness case, including the challenge's (Astra's Phase 6 slice 1
-challenge, 2026-10-04) and the reviewer's duplicate-id cases. That departs from the verdict rule above in two ways, so the owner confirms
+challenge, 2026-10-04) and the reviewer's duplicate-id cases. That departs from the verdict rule above in two ways; the owner confirmed
 it at Stop A.
 
 - **The cost rule is missed.** Candidate 2 is about ×6 of direct writes for nested leaf writes, ×4.3–4.5

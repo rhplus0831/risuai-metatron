@@ -93,7 +93,7 @@ Not in `sendChat`:
 - `PromptItem` types: `plain|jailbreak|cot`, `chatML`, typed `persona|description|lorebook|postEverything|memory`, `authornote`, `chat` (with a range), and `cache`.
 - Reactive singletons: `DBState.db`, `selectedCharID`, `doingChat`, `CharEmotion`.
 - The tab never mutates the chat in place: `chats` are read-only mirror fields, and every write goes through `src/ts/storage/chatStore.svelte.ts` (see `persistence.md`), addressed by chat and message id. Autosave does not see chats.
-- Streaming display: a server job's message is locked while it streams (`isMessageLocked`); `Chat.svelte` disables its controls and renders it raw until the lock ends. `streamingState` is set by no producer since the cutover (the browser generation path set it; recorded in `persistence.md`).
+- Streaming display: a server job's message is locked while it streams (`isMessageLocked`); `Chat.svelte` disables its controls and renders it without the server transform until the lock ends. The display optimization (`streamingDisplayOptimizationMode`) follows the stream: `applyServerGeneration` sets `streamingState` on the generation's first stream update with the configured mode, and its lock's release clears it (`persistence.md`). `Chats.svelte` keeps the streaming row mounted under `balanced` and `strong` (its hash leaves out the text, which `updateStreamingDisplay` passes in), and `strong` renders that text raw, without markdown (Phase 6 slice 3; `util/playwright/checkStreamingModes.mjs`).
 
 ## Coupling
 

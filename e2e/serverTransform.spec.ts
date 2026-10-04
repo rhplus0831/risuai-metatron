@@ -10,7 +10,8 @@ import { openApp } from "../util/playwright/stack.mjs";
 // - a send renders its reply raw while it streams and transforms it once when the lock ends, in each
 //   streaming display mode, without rendering any other row again (a lock change on one message
 //   re-rendered every row before the reviewed fix: their HTML was rebuilt and an open `<details>`
-//   closed);
+//   closed); while it streams it is the streaming message with the configured mode, which "strong"
+//   shows without markdown and the others parse (Phase 6 slice 3);
 // - a locked message that is not the last row renders raw while locked and transformed after;
 // - "Re-render" asks again for that message only, bypassing the cache;
 // - a render answered after a chat switch does not land in the new chat, whose rows render with
@@ -293,7 +294,8 @@ for (const mode of ["off", "balanced", "strong"] as const) {
         });
         const from = s.posts.length;
 
-        stream = { chunks: ["Hello ", "slow ", "stream ", "reply."], delayMs: 400 };
+        // Markdown in the reply tells the display modes apart while it streams (Phase 6 slice 3).
+        stream = { chunks: ["Hello ", "**slow** ", "stream ", "reply."], delayMs: 400 };
         const input = page.locator("textarea.input-text").first();
         await input.fill(`Stream please ${mode}`);
         await input.press("Enter");
@@ -302,6 +304,21 @@ for (const mode of ["off", "balanced", "strong"] as const) {
         // While it streams: raw (no regex, no Lua), and no request for it.
         expect(await streaming.innerText()).not.toContain("HELLO");
         expect(await streaming.innerText()).not.toContain("[lua");
+        // The reply is the streaming message with the configured mode; "strong" shows its text without
+        // markdown, the others parse it.
+        const live = await page.evaluate(async () => {
+            const { streamingState } = await import("/src/ts/storage/chatStore.svelte.ts");
+            return { ...streamingState };
+        });
+        expect(live.mode).toBe(mode);
+        expect(live.messageId).toBe(await streaming.getAttribute("data-chat-id"));
+        if (mode === "strong") {
+            expect(await streaming.innerText()).toContain("**slow**");
+            expect(await streaming.locator("strong").count()).toBe(0);
+        } else {
+            expect(await streaming.innerText()).not.toContain("**");
+            await expect(streaming.locator("strong").filter({ hasText: "slow" })).toHaveCount(1);
+        }
 
         const reply = page.locator(".risu-chat").filter({ hasText: "reply." }).last();
         await expect(reply).toContainText("HELLO slow stream reply.", { timeout: 20_000 });
@@ -310,7 +327,16 @@ for (const mode of ["off", "balanced", "strong"] as const) {
 
         const all = await lastMessages(page, chaId, chatId);
         const [userMessage, replyMessage] = all.slice(-2);
-        expect(replyMessage.data).toBe("Hello slow stream reply.");
+        expect(replyMessage.data).toBe("Hello **slow** stream reply.");
+        // The end cleared the streaming state, and the final reply renders parsed in every mode.
+        expect(
+            await page.evaluate(async () => {
+                const { streamingState } = await import("/src/ts/storage/chatStore.svelte.ts");
+                return streamingState.messageId;
+            }),
+        ).toBeNull();
+        await expect(reply.locator("strong").filter({ hasText: "slow" })).toHaveCount(1);
+        expect(await reply.innerText()).not.toContain("**");
         const targets = count(targeted(s, from));
         // The new reply once (when its lock ended), the new user message at most once (its mount),
         // and nothing else: no seeded row, no greeting.
@@ -339,12 +365,16 @@ test("a locked message that is not the last row renders raw while locked and tra
     await watchRow(page, "m-c2");
     const from = s.posts.length;
 
-    // A generation locks m-u2 (index 2 of 6); its row renders again while locked (a reload pointer).
+    // A server generation job locks m-u2 (index 2 of 6), its stream holding the stored text; its row
+    // renders again while locked (a reload pointer).
     await page.evaluate(
         async ({ chaId, chatId }) => {
             const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
             const { ReloadChatPointer } = await import("/src/ts/stores.svelte.ts");
-            chatStore.beginGeneration({ chaId, chatId }, "m-u2", "e2e-lock");
+            chatStore.applyServerGeneration(
+                { chaId, chatId },
+                { jobId: "e2e-job", messageId: "m-u2", generationId: "e2e-lock", text: "Hello u2", seq: 0 },
+            );
             ReloadChatPointer.update((v: Record<number, number>) => ({ ...v, 2: (v[2] ?? 0) + 1 }));
         },
         { chaId, chatId },
@@ -357,7 +387,7 @@ test("a locked message that is not the last row renders raw while locked and tra
     await page.evaluate(
         async ({ chaId, chatId }) => {
             const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
-            chatStore.endGeneration({ chaId, chatId }, "m-u2", "e2e-lock");
+            chatStore.endServerJob("e2e-job");
         },
         { chaId, chatId },
     );

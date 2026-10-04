@@ -458,7 +458,13 @@ describe("characterOrder is applied after characters (Astra challenge point 1)",
             character("d", "D"),
         ] as any;
         DBState.db.characterOrder = ["c", "d"] as any;
-        chatStore.beginGeneration(refK, "m", "g");
+        chatStore.applyServerGeneration(refK, {
+            jobId: "J",
+            messageId: "m",
+            generationId: "g",
+            text: "so far",
+            seq: 0,
+        });
         try {
             const api = await makeApi();
             api.setDatabaseLite({ characterOrder: ["d"], characters: [character("d", "D")] });
@@ -468,7 +474,7 @@ describe("characterOrder is applied after characters (Astra challenge point 1)",
             checkCharOrder();
             expect(plain(db().characterOrder)).toEqual(["d", "c"]);
         } finally {
-            chatStore.endGeneration(refK, "m", "g");
+            chatStore.endServerJob("J");
         }
     });
 

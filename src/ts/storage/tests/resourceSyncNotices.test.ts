@@ -233,10 +233,9 @@ describe("a chat another tab announced", () => {
         expect(readsOf(fake)).toBe(after);
     });
 
-    it("does not read a chat with a running client generation; reads it after the generation ends, keeping the final", async () => {
-        const { fake, sync, chat, mirrorChat, notify } = await boot();
-        chat.beginGeneration(refK, "c", "cg");
-        await sync.flushResources().catch(() => {});
+    it("does not read a chat a server job of this tab streams into; reads it after the job ends, keeping the stored final", async () => {
+        const { fake, chat, mirrorChat, notify } = await boot();
+        chat.applyServerGeneration(refK, { jobId: "J", messageId: "c", generationId: "cg", text: "so far", seq: 0 });
         await vi.advanceTimersByTimeAsync(1000);
         const r0 = fake.chat("c", "k")!.revision;
         fake.chatBatch([
@@ -246,8 +245,16 @@ describe("a chat another tab announced", () => {
         notify("k");
         await vi.advanceTimersByTimeAsync(3000);
         expect(readsOf(fake) - reads).toBe(0);
-        chat.setMessageText(refK, "c", "final", { generationId: "cg" });
-        chat.endGeneration(refK, "c", "cg");
+        // The job stores its final reply, then ends.
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: fake.chat("c", "k")!.revision,
+                ops: [{ op: "setText", id: "c", text: "final" } as any],
+            },
+        ]);
+        chat.endServerJob("J");
         await vi.advanceTimersByTimeAsync(3000);
         expect(fake.texts("c", "k")).toEqual(["A2", "B", "final"]);
         expect(mirrorChat()!.message.map((m) => m.data)).toEqual(["A2", "B", "final"]);

@@ -164,8 +164,8 @@
         return character && chat?.id ? { chaId: character.chaId, chatId: chat.id } : null;
     });
     /**
-     * Whether this message is locked by a generation (its edit, delete, and regenerate are off): while
-     * it streams and until its final write is acknowledged, and also a previous group speaker's reply.
+     * Whether this message is locked by a server generation job (its edit, delete, and regenerate are
+     * off): while it streams and until the job releases it, and also a previous group speaker's reply.
      */
     let locked = $derived(isMessageLocked(displayedChat, messageId));
     let originalEditControlDisabled = $derived(editTranslationMode || loadingTranslationEdit || locked);

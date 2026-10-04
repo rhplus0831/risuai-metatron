@@ -259,18 +259,8 @@ describe("the flush barrier", () => {
         expect(fake.batchCount()).toBe(2);
     });
 
-    it("checkpoints a running generation before flushing and treats a create whose answer was lost as landed", async () => {
+    it("treats a create whose answer was lost as landed", async () => {
         const { fake, sync, chat } = await boot();
-        chat.beginGeneration(refK, "a", "g");
-        chat.setMessageText(refK, "a", "so far", { generationId: "g" });
-        await sync.flushResources();
-        expect(fake.texts("c", "k")[0]).toBe("so far");
-        chat.setMessageText(refK, "a", "done", { generationId: "g" });
-        chat.endGeneration(refK, "a", "g");
-        await sync.flushResources();
-        expect(fake.texts("c", "k")[0]).toBe("done");
-        expect(chat.isMessageLocked(refK, "a")).toBe(false);
-
         fake.dropNextBatchResponse = true;
         chat.createChat("c", { id: "n", name: "N", message: [m("x", "old")] } as any);
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
@@ -358,10 +348,9 @@ describe("one chat's trouble does not block the rest", () => {
         expect((fake.chat("c", "j")!.data as any).note).toBe("still saving");
     });
 
-    it("defers a generating chat's conflict, saves the rest on its own, and reloads the chat once the generation ends", async () => {
+    it("defers the conflict of a chat a server job streams into, saves the rest on its own, and reloads the chat once the job ends", async () => {
         const { fake, sync, chat, db } = await boot();
-        chat.beginGeneration(refK, "a", "g");
-        await sync.flushResources();
+        chat.applyServerGeneration(refK, { jobId: "J", messageId: "a", generationId: "g", text: "streamed", seq: 0 });
         fake.chatBatch([
             {
                 characterId: "c",
@@ -370,7 +359,6 @@ describe("one chat's trouble does not block the rest", () => {
                 ops: [{ op: "meta", set: { note: "remote" } }],
             },
         ]);
-        chat.setMessageText(refK, "a", "streamed", { generationId: "g" });
         chat.removeMessages(refK, ["b", "c"]);
         chat.setChatMeta(refJ, { note: "j saved" });
         db().theme = "section saved";
@@ -382,16 +370,15 @@ describe("one chat's trouble does not block the rest", () => {
         expect(chat.findChat(refK)!.message.map((message) => message.data)).toEqual(["streamed"]);
         expect(chat.isMessageLocked(refK, "a")).toBe(true);
 
-        chat.endGeneration(refK, "a", "g");
-        expect(chat.isMessageLocked(refK, "a")).toBe(true);
+        chat.endServerJob("J");
+        expect(chat.isMessageLocked(refK, "a")).toBe(false);
         const result = await sync.flushResources();
-        // The bulk removal is discarded with the reload; the generated text survives it.
+        // The bulk removal is discarded with the reload; the server's copy replaces the chat.
         expect(result.discarded).toEqual(["chats/c/k"]);
-        expect(chat.findChat(refK)!.message.map((message) => message.data)).toEqual(["streamed", "B", "C"]);
+        expect(chat.findChat(refK)!.message.map((message) => message.data)).toEqual(["A", "B", "C"]);
         expect((chat.findChat(refK) as any).note).toBe("remote");
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
-        expect(fake.texts("c", "k")).toEqual(["streamed", "B", "C"]);
-        expect(chat.isMessageLocked(refK, "a")).toBe(false);
+        expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
         expect(chat.hasChatWork()).toBe(false);
     });
 
@@ -460,7 +447,7 @@ describe("one chat's trouble does not block the rest", () => {
 });
 
 describe("pagehide", () => {
-    it("sends the running generations' text and pending by-id work with keepalive requests, and a page that survives settles its revision so a later continue does not conflict with its own write", async () => {
+    it("sends pending by-id work with keepalive requests, one per chat, and a page that survives settles its revision so a later current-revision op does not conflict with its own write", async () => {
         const { fake, sync, chat } = await boot();
         // The unload request bypasses `authFetch` (a pre-signed token, `keepalive`): the raw fetch.
         // Listeners of earlier module graphs stay on the shared window; only this graph's epoch counts.
@@ -471,14 +458,12 @@ describe("pagehide", () => {
             }
             return fake.fetch(path, init);
         });
-        chat.beginGeneration(refK, "a", "g");
-        await sync.flushResources();
-        chat.setMessageText(refK, "a", "streamed", { generationId: "g" });
+        chat.setMessageText(refK, "a", "unload write");
         chat.setChatMeta(refJ, { note: "j is not held" });
         const batches = fake.batchCount();
 
         window.dispatchEvent(new Event("pagehide"));
-        // The checkpoint first, then the pending by-id work of an existing chat in its own request.
+        // The pending by-id work of each existing chat in its own request.
         expect(keepalive).toHaveLength(2);
         expect(keepalive.map((init) => init.keepalive)).toEqual([true, true]);
         expect(new Headers(keepalive[0].headers).get("risu-auth")).toBe("signed-token");
@@ -488,8 +473,7 @@ describe("pagehide", () => {
                     characterId: "c",
                     chatId: "k",
                     baseRevision: expect.any(String),
-                    // Sequence 2: the flush above checkpointed the text once (sequence 1).
-                    ops: [{ op: "setText", id: "a", text: "streamed", generation: { id: "g", seq: 2 } }],
+                    ops: [{ op: "setText", id: "a", text: "unload write" }],
                 },
             ],
         });
@@ -503,7 +487,7 @@ describe("pagehide", () => {
                 },
             ],
         });
-        await vi.waitFor(() => expect(fake.texts("c", "k")[0]).toBe("streamed"));
+        await vi.waitFor(() => expect(fake.texts("c", "k")[0]).toBe("unload write"));
         await vi.waitFor(() => expect((fake.chat("c", "j")!.data as any).note).toBe("j is not held"));
 
         // The page survived (back-forward cache): the answers settle k and j, and k's later work
@@ -518,27 +502,19 @@ describe("pagehide", () => {
             .slice(batches)
             .flatMap((body) => body.chats ?? [])
             .filter((group: any) => group.chatId === "k");
-        // The unload request's group, then the note; the flush queued no checkpoint of its own for
-        // the text the unload request already carried.
+        // The unload request's group, then the note; the text the unload request carried is not sent again.
         expect(groupsSent.map((group: any) => group.ops.map((op: any) => op.op))).toEqual([["setText"], ["meta"]]);
-        chat.endGeneration(refK, "a", "g");
-        await sync.flushResources();
-        expect(chat.isMessageLocked(refK, "a")).toBe(false);
 
-        // Continue: a new generation on the message needs the current revision (a self-conflict
-        // would reload the chat with the notice and discard its work).
-        chat.beginGeneration(refK, "a", "g2");
+        // A current-revision op (a bulk removal) needs the current revision (a self-conflict would
+        // reload the chat with the notice and discard its work).
+        chat.removeMessages(refK, ["b", "c"]);
         const flushed = await sync.flushResources();
         expect(flushed.discarded).toEqual([]);
         expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
-        chat.setMessageText(refK, "a", "streamed, continued", { generationId: "g2" });
-        chat.endGeneration(refK, "a", "g2");
-        await sync.flushResources();
-        expect(fake.texts("c", "k")).toEqual(["streamed, continued", "B", "C"]);
-        expect(chat.isMessageLocked(refK, "a")).toBe(false);
+        expect(fake.texts("c", "k")).toEqual(["unload write"]);
     });
 
-    it("sends nothing without a running generation, and resumes a chat's saving when the unload request fails", async () => {
+    it("sends nothing without pending work, and resumes a chat's saving when the unload request fails", async () => {
         const { fake, sync, chat } = await boot();
         let calls = 0;
         vi.stubGlobal("fetch", (_path: string, init: RequestInit) => {
@@ -550,19 +526,15 @@ describe("pagehide", () => {
         window.dispatchEvent(new Event("pagehide"));
         expect(calls).toBe(0);
 
-        chat.beginGeneration(refK, "a", "g");
-        await sync.flushResources();
-        chat.setMessageText(refK, "a", "streamed", { generationId: "g" });
+        chat.setMessageText(refK, "a", "unload write");
         window.dispatchEvent(new Event("pagehide"));
         expect(calls).toBe(1);
         // A chat whose unload request is out sends nothing until the answer or the failure.
         chat.setChatMeta(refK, { note: "queued behind the unload request" });
         await vi.waitFor(() => expect(chat.hasChatWork()).toBe(true));
-        chat.endGeneration(refK, "a", "g");
         await sync.flushResources();
         expect((fake.chat("c", "k")!.data as any).note).toBe("queued behind the unload request");
-        expect(fake.texts("c", "k")[0]).toBe("streamed");
-        expect(chat.isMessageLocked(refK, "a")).toBe(false);
+        expect(fake.texts("c", "k")[0]).toBe("unload write");
     });
 });
 

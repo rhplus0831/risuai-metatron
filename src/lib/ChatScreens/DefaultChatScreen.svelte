@@ -249,7 +249,7 @@
         if (!ref) {
             return;
         }
-        // The last reply stays locked until its final write is acknowledged, after the send returned.
+        // The last reply stays locked until its server job releases it.
         if (isChatGenerating(ref)) {
             alertError(language.chatGenerating);
             return;
@@ -330,7 +330,7 @@
         if (!ref) {
             return;
         }
-        // The last reply stays locked until its final write is acknowledged, after the send returned.
+        // The last reply stays locked until its server job releases it.
         if (isChatGenerating(ref)) {
             alertError(language.chatGenerating);
             return;
