@@ -1,4 +1,9 @@
-import { type PluginPermissionGrants, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../../shared/resources.ts";
+import {
+    compareRevision,
+    type PluginPermissionGrants,
+    RESOURCE_KIND,
+    SINGLETON_RESOURCE_ID,
+} from "../../../../shared/resources.ts";
 import { getResource, putResource, ResourceConflictError } from "../../storage/resourceClient";
 
 /**
@@ -98,6 +103,29 @@ export function recordPermissionGrants(added: {
             }
         }
         throw new Error("Could not save the plugin permission grant");
+    });
+    queue = run.catch(() => {});
+    return run;
+}
+
+/**
+ * A live update: another tab or device committed the grants at `revision` (Phase 6). Read again
+ * unless this tab already holds that revision or a newer one; the read runs in the same queue as
+ * `recordPermissionGrants`, and an answer older than what this tab holds by then is not taken.
+ */
+export function refreshPluginPermissions(revision: string | null): Promise<void> {
+    const run = queue.then(async () => {
+        if (revision !== null && current.revision !== null && (compareRevision(revision, current.revision) ?? 0) <= 0) {
+            return;
+        }
+        const fetched = await fetchGrants();
+        if (
+            fetched.revision === null ||
+            current.revision === null ||
+            (compareRevision(fetched.revision, current.revision) ?? 1) > 0
+        ) {
+            current = fetched;
+        }
     });
     queue = run.catch(() => {});
     return run;

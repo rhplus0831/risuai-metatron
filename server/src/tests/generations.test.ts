@@ -595,10 +595,40 @@ describe("generation jobs over HTTP and WebSocket", () => {
                 ws.onclose = () => resolve("closed");
             });
             expect(unknown).toBe("closed");
+            // The live-update socket on the same dispatcher (Phase 6): a JWT is admitted and gets `hello`.
+            const feedFrames: { type: string; epoch?: string }[] = [];
+            let feedOpened = false;
+            const feedJwt = await signer.jwt();
+            const feedClosed = new Promise<number>((resolve) => {
+                const ws = new WebSocket(`${base.replace("http", "ws")}/api/events/ws?risu-auth=${feedJwt}`);
+                ws.onopen = () => {
+                    feedOpened = true;
+                };
+                ws.onmessage = (message) => feedFrames.push(JSON.parse(String(message.data)));
+                ws.onerror = () => {};
+                ws.onclose = (event) => resolve(event.code);
+            });
+            await waitFor(() => feedFrames.length > 0);
+            expect(feedOpened).toBe(true);
+            expect(feedFrames[0]).toEqual({ type: "hello", epoch });
             const generation = await createOk();
             const owner = await follow(generation);
             await until(owner, 1);
+            // A job's write (the runner's in-process `applyChanges` with its token) is a commit: the
+            // feed socket sees the chat change with the revision the write returned.
+            let written = "";
+            step((job) => {
+                written = job.write(() => ({
+                    chats: [group(job.context.chatRevision, [{ op: "begin", id: "r", generationId: "g1" }])],
+                })).chats[0].revision!;
+            });
+            await waitFor(() => feedFrames.some((frame) => frame.type === "change"));
+            expect(feedFrames.find((frame) => frame.type === "change")).toMatchObject({
+                epoch,
+                changes: { resources: [], chats: [{ characterId: "c", id: "k", revision: written }], chatOrders: [] },
+            });
             server.context.beginShutdown();
+            expect(await feedClosed).toBe(1001);
             // Jobs were aborted at time zero; the socket got the terminal event.
             await owner.closed;
             expect(owner.events.at(-1)).toMatchObject({ type: "error", reason: "shutdown", status: 503 });

@@ -3,7 +3,12 @@ import { getImageType } from "src/ts/media";
 import { getDatabase } from "../../storage/database.svelte";
 import { getModelInfo, LLMFlags, LLMFormat } from "src/ts/model/modellist";
 import { asBuffer } from "../../util";
-import { type InlayResource, RESOURCE_KIND, type ResourceRecord } from "../../../../shared/resources.ts";
+import {
+    compareRevision,
+    type InlayResource,
+    RESOURCE_KIND,
+    type ResourceRecord,
+} from "../../../../shared/resources.ts";
 import { forageStorage } from "../../globalApi.svelte";
 import {
     deleteResource,
@@ -70,8 +75,88 @@ export function seedInlays(records: readonly ResourceRecord[]) {
     }
 }
 
-/** Drops the metadata and negative caches (not the content-addressed blobs): the next read asks the server. */
+/**
+ * Live updates (Phase 6) invalidate cached metadata; a metadata read that began before an
+ * invalidation must not put an older copy back. `changeCount` counts invalidations; `changedAt` holds
+ * the count at an id's last invalidation, `reconciledAt` the count at the last reconnect (every id).
+ */
+let changeCount = 0;
+let reconciledAt = 0;
+const changedAt = new Map<string, number>();
+
+/** Whether a read issued at `issuedAt` may still fill the cache for `id`. */
+function stillCurrent(id: string, issuedAt: number): boolean {
+    return reconciledAt <= issuedAt && (changedAt.get(id) ?? 0) <= issuedAt;
+}
+
+/** Records that `id`'s cached metadata changed now (a live update, or this tab's own write or delete). */
+function markChanged(id: string) {
+    changeCount += 1;
+    changedAt.set(id, changeCount);
+}
+
+/**
+ * Puts a read's answer into the cache when no invalidation or write landed since the read was issued
+ * (`issuedAt`) and the cache holds nothing newer. Returns whether it did.
+ */
+function fillMeta(id: string, meta: Meta, issuedAt: number): boolean {
+    if (!stillCurrent(id, issuedAt)) {
+        return false;
+    }
+    const cached = metaCache.get(id);
+    if (cached && (compareRevision(cached.revision, meta.revision) ?? 0) > 0) {
+        return false;
+    }
+    metaCache.set(id, meta);
+    return true;
+}
+
+/**
+ * A live update: another tab or device committed inlay `id` at `revision` (null: deleted). The
+ * cached metadata is dropped unless it is that revision or newer; the next read asks the server.
+ */
+export function noteRemoteInlay(id: string, revision: string | null) {
+    const cached = metaCache.get(id);
+    if (revision !== null && cached && (compareRevision(cached.revision, revision) ?? -1) >= 0) {
+        return;
+    }
+    markChanged(id);
+    metaCache.delete(id);
+    missingIds.delete(id);
+}
+
+/**
+ * After a reconnect: every inlay the server lists with its revision. Cached metadata older than the
+ * listed revision, or of an inlay no longer listed, is dropped, and an id listed now is no longer
+ * remembered as missing; reads in flight do not fill the cache.
+ */
+export function reconcileInlays(listed: ReadonlyMap<string, string>) {
+    changeCount += 1;
+    reconciledAt = changeCount;
+    for (const [id, meta] of [...metaCache]) {
+        const revision = listed.get(id);
+        if (revision === undefined || (compareRevision(meta.revision, revision) ?? -1) < 0) {
+            metaCache.delete(id);
+        }
+    }
+    for (const id of [...missingIds.keys()]) {
+        if (listed.has(id)) {
+            missingIds.delete(id);
+        }
+    }
+}
+
+/**
+ * Drops the metadata and negative caches (not the content-addressed blobs): the next read asks the
+ * server, and reads in flight do not fill the cache.
+ */
 export function invalidateInlayCaches() {
+    changeCount += 1;
+    reconciledAt = changeCount;
+    clearMetaCaches();
+}
+
+function clearMetaCaches() {
     metaCache.clear();
     missingIds.clear();
 }
@@ -106,14 +191,26 @@ async function getMeta(id: string): Promise<Meta | null> {
     if (!pending) {
         pending = (async () => {
             try {
-                const record = await getResource<InlayResource>(RESOURCE_KIND.inlays, id);
-                if (!record) {
-                    missingIds.set(id, Date.now() + MISSING_ID_TTL_MS);
-                    return null;
+                // A live update that lands during the read makes its answer stale: read again.
+                for (let attempt = 0; ; attempt += 1) {
+                    const issuedAt = changeCount;
+                    const record = await getResource<InlayResource>(RESOURCE_KIND.inlays, id);
+                    const current = stillCurrent(id, issuedAt);
+                    if (!current && attempt < 2) {
+                        continue;
+                    }
+                    if (!record) {
+                        if (current) {
+                            missingIds.set(id, Date.now() + MISSING_ID_TTL_MS);
+                        }
+                        return null;
+                    }
+                    const meta = { revision: record.revision, data: record.data };
+                    if (current) {
+                        fillMeta(id, meta, issuedAt);
+                    }
+                    return meta;
                 }
-                const meta = { revision: record.revision, data: record.data };
-                metaCache.set(id, meta);
-                return meta;
             } finally {
                 pendingMeta.delete(id);
             }
@@ -199,6 +296,7 @@ function putMeta(id: string, data: InlayResource, check?: () => void): Promise<v
             check?.();
             try {
                 const saved = await putResource(RESOURCE_KIND.inlays, id, data, base);
+                markChanged(id);
                 metaCache.set(id, { revision: saved.revision, data });
                 missingIds.delete(id);
                 return;
@@ -432,11 +530,15 @@ export async function getInlayAssetBlob(id: string): Promise<(InlayAsset & { dat
 
 /** Every inlay's metadata (read fresh from the server; no media bytes). The listing replaces the cached view. */
 export async function listInlayAssets(): Promise<[id: string, InlayResource][]> {
+    const issuedAt = changeCount;
     const result = await readKinds([RESOURCE_KIND.inlays]);
     const records = result.kinds[RESOURCE_KIND.inlays] ?? [];
-    invalidateInlayCaches();
+    if (reconciledAt <= issuedAt) {
+        clearMetaCaches();
+    }
     for (const record of records) {
-        metaCache.set(record.id, { revision: record.revision, data: record.data as InlayResource });
+        // A live update or a write that landed during the read keeps that id's newer state.
+        fillMeta(record.id, { revision: record.revision, data: record.data as InlayResource }, issuedAt);
     }
     return records.map((record) => [record.id, record.data as InlayResource]);
 }
@@ -483,6 +585,7 @@ export function removeInlayAsset(id: string) {
             }
             try {
                 await deleteResource(RESOURCE_KIND.inlays, id, meta.revision);
+                markChanged(id);
                 metaCache.delete(id);
                 missingIds.set(id, Date.now() + MISSING_ID_TTL_MS);
                 return;

@@ -472,6 +472,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         "SELECT seq, id, revision, meta FROM chats WHERE characterId = ? ORDER BY seq",
     );
     const selectAllOrders = db.prepare("SELECT seq, characterId, revision, ids FROM chatOrders ORDER BY seq");
+    const selectChatRevisions = db.prepare("SELECT seq, characterId, id, revision FROM chats ORDER BY seq");
+    const selectOrderRevisions = db.prepare("SELECT seq, characterId, revision FROM chatOrders ORDER BY seq");
     const insertRestoredChat = db.prepare(
         "INSERT INTO chats (characterId, id, revision, schemaVersion, meta) VALUES (?, ?, ?, ?, ?)",
     );
@@ -847,11 +849,17 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     }
 
     return {
-        /** Creates a new character's empty chat order (inside the character's create). */
-        createOrder(characterId: string) {
-            if (!readOrder(characterId)) {
-                insertOrder.run(characterId);
+        /**
+         * Creates a new character's empty chat order (inside the character's create). Returns the new
+         * order's revision, or null when the character already had one.
+         */
+        createOrder(characterId: string): string | null {
+            if (readOrder(characterId)) {
+                return null;
             }
+            insertOrder.run(characterId);
+            const order = readOrder(characterId)!;
+            return tokens.token(order.seq, order.revision);
         },
 
         /** Whether a generation job other than `jobToken` owns a message of the character's chats. */
@@ -865,10 +873,16 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return row ? tokens.token(row.seq, row.revision) : null;
         },
 
-        /** Deletes a character's chats, their messages, and its order (inside the character's delete). */
-        deleteCharacter(characterId: string) {
+        /**
+         * Deletes a character's chats, their messages, and its order (inside the character's delete).
+         * Returns the ids of the chats it deleted and whether an order existed.
+         */
+        deleteCharacter(characterId: string): { chatIds: string[]; order: boolean } {
+            const chatIds = (selectCharacterChats.all(characterId) as { id: string }[]).map((row) => row.id);
+            const order = readOrder(characterId) !== null;
             deleteCharacterChats.run(characterId);
             deleteOrder.run(characterId);
+            return { chatIds, order };
         },
 
         /**
@@ -959,6 +973,24 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     return [change.characterId, order ? { seq: order.seq, revision: order.revision } : null];
                 }),
             );
+        },
+
+        /** Every chat's and every chat order's revision, without their data. */
+        listRevisions(): {
+            chats: { characterId: string; id: string; revision: string }[];
+            chatOrders: { characterId: string; revision: string }[];
+        } {
+            const chats = (
+                selectChatRevisions.all() as { seq: number; characterId: string; id: string; revision: number }[]
+            ).map((row) => ({
+                characterId: row.characterId,
+                id: row.id,
+                revision: tokens.token(row.seq, row.revision),
+            }));
+            const chatOrders = (
+                selectOrderRevisions.all() as { seq: number; characterId: string; revision: number }[]
+            ).map((row) => ({ characterId: row.characterId, revision: tokens.token(row.seq, row.revision) }));
+            return { chats, chatOrders };
         },
 
         /** Every chat (metadata plus messages in order) and every chat order, in one read. */

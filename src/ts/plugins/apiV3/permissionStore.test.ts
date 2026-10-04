@@ -11,7 +11,13 @@ vi.mock("../../storage/nodeStorage", () => ({
 }));
 
 import * as client from "../../storage/resourceClient";
-import { getLastGrantTime, hasPermissionGrant, loadPluginPermissions, recordPermissionGrants } from "./permissionStore";
+import {
+    getLastGrantTime,
+    hasPermissionGrant,
+    loadPluginPermissions,
+    recordPermissionGrants,
+    refreshPluginPermissions,
+} from "./permissionStore";
 
 let fake: FakeResourceServer;
 
@@ -112,5 +118,88 @@ describe("recordPermissionGrants", () => {
         await expect(recordPermissionGrants({ grants: ["x"] })).rejects.toMatchObject({ status: 500 });
         await recordPermissionGrants({ grants: ["x"] });
         expect(hasPermissionGrant("x")).toBe(true);
+    });
+});
+
+// Phase 6 live updates: another tab's or device's grant reaches this tab as a feed notice with the
+// committed revision. The fake's revisions are real tokens here, since the refresh compares them.
+describe("refreshPluginPermissions", () => {
+    const EPOCH = "00000000-0000-4000-8000-000000000002";
+    let counter = 0;
+    const reads = () => fake.requests.filter((r) => r.method === "GET").length;
+
+    beforeEach(async () => {
+        counter = 0;
+        fake.restore(EPOCH);
+        client.setResourceEpoch(EPOCH);
+        const set = fake.set.bind(fake);
+        fake.set = (kind: string, id: string, data: unknown) => {
+            set(kind, id, data);
+            const token = `${EPOCH}:1:${++counter}`;
+            fake.records.get(fake.key(kind, id))!.revision = token;
+            return token;
+        };
+        await loadPluginPermissions();
+        fake.requests.length = 0;
+    });
+
+    it("reads a newer revision, and skips one this tab already holds", async () => {
+        const r1 = fake.set("pluginPermissions", "main", { grants: { theirs: true }, lastGrantTime: {} });
+        await refreshPluginPermissions(r1);
+        expect(hasPermissionGrant("theirs")).toBe(true);
+        expect(reads()).toBe(1);
+        await refreshPluginPermissions(r1);
+        expect(reads()).toBe(1);
+        // This tab's own grant: its echo needs no read.
+        await recordPermissionGrants({ grants: ["mine"] });
+        const own = fake.get("pluginPermissions", "main")!.revision;
+        fake.requests.length = 0;
+        await refreshPluginPermissions(own);
+        expect(reads()).toBe(0);
+        expect(hasPermissionGrant("mine")).toBe(true);
+    });
+
+    it("runs after a grant write already queued, so the write's newer copy is never replaced by an older read", async () => {
+        const r1 = fake.set("pluginPermissions", "main", { grants: { theirs: true }, lastGrantTime: {} });
+        const writing = recordPermissionGrants({ grants: ["mine"] });
+        const refreshing = refreshPluginPermissions(r1);
+        await Promise.all([writing, refreshing]);
+        expect(hasPermissionGrant("theirs")).toBe(true);
+        expect(hasPermissionGrant("mine")).toBe(true);
+        expect(fake.data("pluginPermissions", "main").grants).toEqual({ theirs: true, mine: true });
+    });
+
+    it("keeps a newer copy this tab came to hold while the refresh's read was out", async () => {
+        const r1 = fake.set("pluginPermissions", "main", { grants: { one: true }, lastGrantTime: {} });
+        let release!: () => void;
+        const real = fake.fetch;
+        let held = false;
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                const response = real(path, init);
+                if (!held) {
+                    held = true;
+                    await new Promise<void>((resolve) => (release = resolve));
+                }
+                return response;
+            },
+        };
+        const refreshing = refreshPluginPermissions(r1);
+        await vi.waitFor(() => expect(release).toBeDefined());
+        fake.set("pluginPermissions", "main", { grants: { one: true, two: true }, lastGrantTime: {} });
+        await loadPluginPermissions();
+        release();
+        await refreshing;
+        expect(hasPermissionGrant("two")).toBe(true);
+        server.current = fake;
+    });
+
+    it("forgets the grants when the record is gone", async () => {
+        const r1 = fake.set("pluginPermissions", "main", { grants: { gone: true }, lastGrantTime: {} });
+        await refreshPluginPermissions(r1);
+        expect(hasPermissionGrant("gone")).toBe(true);
+        fake.delete("pluginPermissions", "main");
+        await refreshPluginPermissions(null);
+        expect(hasPermissionGrant("gone")).toBe(false);
     });
 });

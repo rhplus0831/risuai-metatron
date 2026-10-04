@@ -1,6 +1,6 @@
 # Slice: Live Updates
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented on 2026-10-04 (as amended by the implementation plan; see "Implementation notes" below).
 
 Phase: [Phase 6](../../phase-6-thin-client-and-closeout.md), "Live updates" (resource-change
 events with revisions over the WebSocket; the client applies events to its projections and
@@ -197,3 +197,32 @@ Phase 3's choice). A reconcile after every `hello` reads every revision on the s
 by the record count, no data). An observing tab reads a whole chat per checkpoint. Until the
 projection slices land, events are applied to the flat mirror through `applyToMirror`, which is
 what the projections read, so no second application path exists.
+
+## Implementation notes
+
+Implemented on 2026-10-04 on `9b9d634d`, with the plan's amendments
+([`implementation-plan.md`](implementation-plan.md), "Slice 2"). Where this differs from the text
+above:
+
+- **Server.**
+  - `GET /api/resources/revisions` is in `routes/resources.ts`, registered before
+    `/api/resources/:kind`; `routes/events.ts` holds only the socket.
+  - The store's publishing scope wraps `put`, `delete`, `applyChanges`, and `transaction`. The chat
+    tables report what a character's create and delete changed (`createOrder` returns the new
+    order's revision; `deleteCharacter` returns the deleted chat ids).
+  - A socket more than 4 MiB behind is terminated; its client reconnects and reconciles.
+- **Client application runs inside the save cycle.** `noteRemoteChanges` compares on arrival and
+  queues; the cycle reads and applies before its batch (`applyRemoteUpdates`), never alongside one.
+  The 50 ms batching is the cycle's schedule. Records with a local change are not read (they wait
+  for their save or its conflict), so an application never races this tab's own write. At most
+  1,000 records and 1,000 chat lists are read per cycle.
+- **Names.**
+  - There is no `markChatStale`: chats go through `noteRemoteChat` (the idle refresh with the
+    announced revision).
+  - Chat lists go through `applyRemoteCollection`, which also takes the case of an idle refresh
+    finding a chat deleted (it went through `acceptRemoteCollection` before). A list the update
+    would empty is left as it is, rather than creating a chat (which would be a write).
+  - The owners outside the mirror are `refreshPluginPermissions(revision)` and
+    `noteRemoteInlay(id, revision)`, registered with `setRemoteResourceOwner`.
+- **`chatChangeNotices.ts` is removed** with its producer in `network/generationJobs.ts` and its
+  start in `resourceSync.svelte.ts`.

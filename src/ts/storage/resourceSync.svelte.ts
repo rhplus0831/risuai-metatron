@@ -2,6 +2,7 @@ import isEqual from "lodash/isEqual";
 import { tick, untrack } from "svelte";
 import { get } from "svelte/store";
 import { v4 as uuidv4 } from "uuid";
+import type { ChatOrderRecord, ChatRecord } from "../../../shared/chats.ts";
 import { HIDDEN_HYDRATION_KINDS, type StreamingMessage } from "../../../shared/jobs.ts";
 import {
     compareRevision,
@@ -9,8 +10,10 @@ import {
     isChatOrderConflict,
     parseRevisionToken,
     RESOURCE_KIND,
+    type ChangeSet,
     type ResourceBatchResult,
     type ResourceReadKindsResult,
+    type ResourceRevisionListing,
     SINGLETON_RESOURCE_ID,
 } from "../../../shared/resources.ts";
 import {
@@ -40,13 +43,20 @@ import {
     type SecretPath,
 } from "../../../shared/llmSecrets.ts";
 import { alertError, alertNormal, alertNormalWait } from "../alert";
-import { startChatChangeNotices } from "./chatChangeNotices";
 import { assignsInherited } from "./mutationValidation";
 import { DBState, selectedCharID } from "../stores.svelte";
+import { reconcileSelection } from "./forwarding.svelte";
 import type { character, Chat, Database, groupChat } from "./database.svelte";
 import {
     acceptRemoteCollection,
     ackChatWork,
+    applyRemoteCollection,
+    canApplyRemoteCollection,
+    heldChatRefs,
+    heldChatRevision,
+    heldChatRevisionsOf,
+    heldOrderRevision,
+    noteRemoteChat,
     adoptCharacter,
     captureChatObligations,
     chatDiscardSequence,
@@ -97,6 +107,7 @@ import {
     sendBatchOnUnload,
     sendSecretRequest,
     setEpochMismatchListener,
+    setMutationAdmission,
     setResourceEpoch,
     UNLOAD_BODY_LIMIT,
 } from "./resourceClient";
@@ -125,6 +136,10 @@ import {
  *   touches) is not a reload: the work stays unsaved and is retried after `JOB_RETRY_MS`, and
  *   `chatGenerating` is shown once per refusal episode.
  * - `applyHydration` applies a record a server job sent, without any outgoing write.
+ * - Live updates (`noteRemoteChanges`, from the change feed, `network/eventFeed.ts`): records another
+ *   writer committed are read and applied inside the cycle, before its batch, only while this client
+ *   has no unsent change of them; nothing is discarded and no notice is shown. A record with a local
+ *   change waits: its save then lands (the update is older) or conflicts (the normal 409 path).
  *
  * Transport state here is plain (no runes); only `saving` is reactive.
  */
@@ -230,6 +245,25 @@ const sendingKeys = new Set<string>();
 const deferredHydrations = new Map<string, HydrationRecord>();
 type RemoteChangeListener = (kind: string, id: string) => void;
 const remoteChangeListeners = new Set<RemoteChangeListener>();
+/**
+ * Live updates waiting to be read and applied inside the cycle: record key → the newest revision
+ * another writer committed (null: deleted). `blockedLocal`: the `llmSecrets` siblings this client
+ * held unsent when the server's siblings had changed too; the entry waits for that local text to
+ * change (its save or a conflict settles it).
+ */
+const remoteRecords = new Map<string, { kind: string; id: string; revision: string | null; blockedLocal?: string }>();
+/**
+ * Characters whose chat list (chats created, deleted, or reordered elsewhere) waits to be read and
+ * applied → the sequence of the latest notice; a read settles only the notice it was issued for.
+ */
+const remoteCollections = new Map<string, number>();
+let remoteCollectionSeq = 0;
+/** Kinds whose records live outside the mirror (`inlays`, `pluginPermissions`): their own owner applies a live update. */
+const remoteOwners = new Map<string, RemoteResourceOwner>();
+/** A live update waits this long, so the refs of a burst of commits are read together. */
+const REMOTE_DELAY_MS = 50;
+/** Most records (and, separately, chat lists) one cycle reads for live updates; the rest wait for the next. */
+const MAX_REMOTE_READS = 1000;
 
 /** Records what the server holds, from the boot read. Call before `setDatabase` touches the data. */
 export function seedResources(result: ResourceReadKindsResult) {
@@ -308,7 +342,8 @@ function hasPendingWork(): boolean {
         hasPendingMembership(true) ||
         hasChatWork(canSaveCharacter) ||
         hydrate.size > 0 ||
-        llmSecretState.queue.some((op) => !awaitsOwnerDeletion(op))
+        llmSecretState.queue.some((op) => !awaitsOwnerDeletion(op)) ||
+        hasRemoteWork()
     ) {
         return true;
     }
@@ -831,10 +866,19 @@ async function cycle() {
     if (halted || !DBState.db?.characters) {
         return;
     }
-    await reloadDeferredCharacters();
-    await reloadDeferredChats();
-    await hydrateCharacters();
-    await refreshIdleChats();
+    for (const stage of [
+        reloadDeferredCharacters,
+        reloadDeferredChats,
+        hydrateCharacters,
+        applyRemoteUpdates,
+        refreshIdleChats,
+    ]) {
+        await stage();
+        if (halted) {
+            // A restore replaced the data meanwhile: nothing more is applied or sent.
+            return;
+        }
+    }
     const { ops, captured, membership, chatWork } = collectOperations();
     // The credential writes queued so far go after this batch; one queued while it is in flight
     // (say, the key of a preset created meanwhile) waits for the next cycle, after its resource.
@@ -847,6 +891,10 @@ async function cycle() {
     if (batches.length > 0) {
         saving.state = true;
         for (const [index, batch] of batches.entries()) {
+            if (halted) {
+                requeueChatWork(mergeWork(batches.slice(index).map((entry) => entry.work)));
+                return;
+            }
             const later = mergeWork(batches.slice(index + 1).map((entry) => entry.work));
             if (index > 0) {
                 // An earlier request of this cycle may have created or deleted chats of a character
@@ -904,6 +952,9 @@ async function cycle() {
                 hydrate.add(characterId);
             }
         }
+    }
+    if (halted) {
+        return;
     }
     await sendSecretOps(capturedSecretOps);
     for (const [key, marked] of captured) {
@@ -1551,6 +1602,9 @@ async function hydrateCharacters(): Promise<boolean> {
         ids.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
         { chatCollections: ids },
     );
+    if (halted) {
+        return false;
+    }
     const records = new Map(read.items.map((item) => [item.id, item]));
     for (const collection of read.chatCollections ?? []) {
         const record = records.get(collection.characterId);
@@ -1583,6 +1637,9 @@ async function reloadDeferredChats() {
     const read = await readRefs([], {
         chats: released.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
     });
+    if (halted) {
+        return;
+    }
     for (const chat of read.chats ?? []) {
         const refresh = finishDeferredReload(chat as RemoteChat);
         if (refresh) {
@@ -1594,19 +1651,28 @@ async function reloadDeferredChats() {
 
 /** Stale acknowledgements rebase only idle chats, inside the cycle and without a reload notice. */
 async function refreshIdleChats() {
-    const refs = idleChatRefreshes();
+    const refs = idleChatRefreshes().slice(0, MAX_REMOTE_READS);
     if (refs.length === 0) {
         return;
     }
-    // Taken before the read: a notice that arrives while the read is in flight keeps its mark.
+    // Taken before the read: a notice that arrives while the read is in flight keeps its mark, and a
+    // chat found gone is removed only if its held revision did not change meanwhile.
     const notices = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, chatNoticeSeq(ref)]));
+    const issued = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, heldChatRevision(ref)]));
     const read = await readRefs([], {
         chats: refs.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
     });
+    if (halted) {
+        return;
+    }
     for (const chat of read.chats ?? []) {
-        const notice = notices.get(`${chat.characterId}\u0000${chat.id}`) ?? 0;
-        if (finishIdleChatRefresh(chat as RemoteChat, notice) && chat.revision === null) {
-            hydrate.add(chat.characterId);
+        const key = `${chat.characterId}\u0000${chat.id}`;
+        if (
+            finishIdleChatRefresh(chat as RemoteChat, notices.get(key) ?? 0, issued.get(key)) &&
+            chat.revision === null
+        ) {
+            // The chat is gone: the character's list is read again, never discarding local work.
+            noteRemoteCollection(chat.characterId);
         }
     }
 }
@@ -1621,6 +1687,9 @@ async function reloadDeferredCharacters() {
         return;
     }
     const read = await readRefs(ids.map((id) => ({ kind: RESOURCE_KIND.characters, id })));
+    if (halted) {
+        return;
+    }
     for (const item of read.items) {
         acceptRemote(item);
         deferredCharacters.delete(item.id);
@@ -1730,6 +1799,394 @@ function applyToMirror(kind: string, id: string, data: unknown) {
                 };
             }
             return;
+        }
+    }
+}
+
+/**
+ * The owner of a kind whose records live outside the mirror (`inlays`, `pluginPermissions`): a live
+ * update of such a record goes to `apply` with its id and revision (null: deleted); after a
+ * reconnect, `reconcile` gets every id the server lists for the kind with its revision (an id it
+ * holds that is not listed was deleted meanwhile).
+ */
+export type RemoteResourceOwner = {
+    apply: (id: string, revision: string | null) => void;
+    reconcile?: (listed: ReadonlyMap<string, string>) => void;
+};
+
+/** Registers (or, with null, removes) the owner of a kind outside the mirror. */
+export function setRemoteResourceOwner(kind: string, owner: RemoteResourceOwner | null) {
+    if (owner) {
+        remoteOwners.set(kind, owner);
+    } else {
+        remoteOwners.delete(kind);
+    }
+}
+
+const isMirroredKind = (kind: string) => kind === RESOURCE_KIND.characters || COLLECTIONS.includes(kind as Collection);
+
+function noteRemoteCollection(chaId: string) {
+    remoteCollectionSeq += 1;
+    remoteCollections.set(chaId, remoteCollectionSeq);
+}
+
+/** A character this client does not hold yet whose record waits to be read (a new character). */
+function awaitsInsertion(chaId: string): boolean {
+    return remoteRecords.get(recordKey(RESOURCE_KIND.characters, chaId))?.revision != null;
+}
+
+function runOwner(kind: string, run: (owner: RemoteResourceOwner) => void) {
+    const owner = remoteOwners.get(kind);
+    if (!owner) {
+        return;
+    }
+    try {
+        run(owner);
+    } catch (error) {
+        console.error("[Save]", error);
+    }
+}
+
+/**
+ * A live update: the refs and revisions one committed write changed (the change feed). Each is
+ * compared with what this client holds when it arrives, and one that is not newer is dropped (this
+ * client's own save, or a job event that applied it first). A newer record waits for the cycle,
+ * which reads and applies it while this client has no unsent change of it (`applyRemoteUpdates`); a
+ * chat goes to the chat module's idle refresh; a new chat or a changed chat order reads the
+ * character's chat list (also for a character still waiting to be inserted). Never an outgoing
+ * write, a discard, or a notice.
+ */
+export function noteRemoteChanges(changes: ChangeSet) {
+    if (halted || !started) {
+        return;
+    }
+    let woke = false;
+    for (const ref of changes.resources) {
+        if (remoteOwners.has(ref.kind)) {
+            runOwner(ref.kind, (owner) => owner.apply(ref.id, ref.revision));
+            continue;
+        }
+        if (!isMirroredKind(ref.kind)) {
+            continue;
+        }
+        const key = recordKey(ref.kind, ref.id);
+        const held = persisted.get(key);
+        if (ref.revision === null && !held) {
+            // A record created and deleted before this client read it: nothing to read any more.
+            remoteRecords.delete(key);
+            continue;
+        }
+        if (ref.revision !== null && held && (compareRevision(ref.revision, held.revision) ?? 0) <= 0) {
+            continue;
+        }
+        if (!held && ref.kind !== RESOURCE_KIND.characters) {
+            // Singletons are seeded at boot; one this client does not hold is not its data.
+            continue;
+        }
+        const waiting = remoteRecords.get(key);
+        if (
+            waiting &&
+            waiting.revision !== null &&
+            ref.revision !== null &&
+            (compareRevision(ref.revision, waiting.revision) ?? 0) <= 0
+        ) {
+            continue;
+        }
+        remoteRecords.set(key, { kind: ref.kind, id: ref.id, revision: ref.revision });
+        woke = true;
+    }
+    for (const chat of changes.chats) {
+        if (!findMirrorCharacter(chat.characterId)) {
+            if (chat.revision !== null && awaitsInsertion(chat.characterId)) {
+                noteRemoteCollection(chat.characterId);
+                woke = true;
+            }
+            continue;
+        }
+        const outcome = noteRemoteChat({ chaId: chat.characterId, chatId: chat.id }, chat.revision);
+        if (outcome === "collection") {
+            noteRemoteCollection(chat.characterId);
+        }
+        woke ||= outcome !== "ignored";
+    }
+    for (const order of changes.chatOrders) {
+        if (order.revision === null) {
+            // A deleted character's order goes with it.
+            continue;
+        }
+        if (!findMirrorCharacter(order.characterId)) {
+            if (awaitsInsertion(order.characterId)) {
+                noteRemoteCollection(order.characterId);
+                woke = true;
+            }
+            continue;
+        }
+        const held = heldOrderRevision(order.characterId);
+        if (held !== null && (compareRevision(order.revision, held) ?? 0) <= 0) {
+            continue;
+        }
+        noteRemoteCollection(order.characterId);
+        woke = true;
+    }
+    if (woke) {
+        schedule(REMOTE_DELAY_MS);
+    }
+}
+
+/**
+ * Reconciles with the server's revision listing (after every `hello` of the live-update socket, so
+ * nothing committed while it was disconnected is missed): every listed record, chat, and order goes
+ * through `noteRemoteChanges`, every one this client holds that the server no longer lists is a
+ * deletion, and each owner outside the mirror reconciles its own records.
+ */
+export function reconcileRemote(listing: ResourceRevisionListing) {
+    const changes: ChangeSet = {
+        resources: listing.resources.filter((entry) => !remoteOwners.has(entry.kind)),
+        chats: [...listing.chats],
+        chatOrders: [...listing.chatOrders],
+    };
+    const listed = new Set(listing.resources.map((entry) => recordKey(entry.kind, entry.id)));
+    for (const key of persisted.keys()) {
+        const separator = key.indexOf("\u0000");
+        const kind = key.slice(0, separator);
+        if (!listed.has(key) && !remoteOwners.has(kind)) {
+            changes.resources.push({ kind, id: key.slice(separator + 1), revision: null });
+        }
+    }
+    const listedChats = new Set(listing.chats.map((chat) => `${chat.characterId}\u0000${chat.id}`));
+    for (const { ref } of heldChatRefs()) {
+        if (!listedChats.has(`${ref.chaId}\u0000${ref.chatId}`)) {
+            changes.chats.push({ characterId: ref.chaId, id: ref.chatId, revision: null });
+        }
+    }
+    for (const kind of remoteOwners.keys()) {
+        const ofKind = new Map(
+            listing.resources.filter((entry) => entry.kind === kind).map((entry) => [entry.id, entry.revision]),
+        );
+        runOwner(kind, (owner) => {
+            if (owner.reconcile) {
+                owner.reconcile(ofKind);
+            } else {
+                for (const [id, revision] of ofKind) {
+                    owner.apply(id, revision);
+                }
+            }
+        });
+    }
+    noteRemoteChanges(changes);
+}
+
+/** Whether a live update of `key` may be applied now: this client has no unsent change of it. */
+function canApplyRemote(key: string, entry: { kind: string; id: string; blockedLocal?: string }): boolean {
+    if (sendingKeys.has(key) || recordQuarantine(key) || isRecordJobBlocked(key)) {
+        return false;
+    }
+    if (
+        entry.kind === RESOURCE_KIND.characters &&
+        (deferredCharacters.has(entry.id) || generatingCharacter() === entry.id)
+    ) {
+        return false;
+    }
+    const held = persisted.get(key);
+    if (!held) {
+        // A character this client does not hold yet; one it created and has not saved waits for its save.
+        return entry.kind === RESOURCE_KIND.characters && !findMirrorCharacter(entry.id);
+    }
+    const local = projectRecord(entry.kind, entry.id);
+    if (entry.kind === SECTION_KIND.llmSecrets) {
+        // Decided against the server's siblings once read (`adoptRemoteSecretRecord`).
+        return local !== entry.blockedLocal;
+    }
+    return local === held.text;
+}
+
+/** Drops waiting live updates this client already holds (its own save, a conflict reload, a job event). */
+function settleRemoteRecords() {
+    for (const [key, entry] of remoteRecords) {
+        const held = persisted.get(key);
+        if (entry.revision === null ? !held : held && (compareRevision(entry.revision, held.revision) ?? 0) <= 0) {
+            remoteRecords.delete(key);
+        }
+    }
+    for (const id of remoteCollections.keys()) {
+        if (!findMirrorCharacter(id) && !awaitsInsertion(id)) {
+            remoteCollections.delete(id);
+        }
+    }
+}
+
+/** The chat lists a cycle may read now: characters in the mirror with no order work. */
+function applicableCollections(): string[] {
+    return [...remoteCollections.keys()].filter((id) => findMirrorCharacter(id) && canApplyRemoteCollection(id));
+}
+
+function hasRemoteWork(): boolean {
+    settleRemoteRecords();
+    for (const [key, entry] of remoteRecords) {
+        if (canApplyRemote(key, entry)) {
+            return true;
+        }
+    }
+    return applicableCollections().length > 0;
+}
+
+/**
+ * Adopts the server's `llmSecrets` record from a live update: its revision, masked status, and
+ * siblings, judged by text against the saved siblings, as `adoptSecretRecord` does, with every
+ * credential path invalidated (two keys can share a status). Where a local sibling edit meets a
+ * changed server sibling, nothing is applied and false is returned: the save's 409 decides.
+ */
+function adoptRemoteSecretRecord(revision: string, masked: MaskedLlmSecrets): boolean {
+    const key = collectionKey(SECTION_KIND.llmSecrets);
+    const saved = persisted.get(key)?.text;
+    const remote = llmSecretsText(masked);
+    const local = projectCollection(SECTION_KIND.llmSecrets);
+    if (local === saved) {
+        persisted.set(key, { revision, text: remote });
+        applySettingsRecord(SECTION_KIND.llmSecrets, masked, "all");
+        return true;
+    }
+    if (remote === saved) {
+        persisted.set(key, { revision, text: remote });
+        setMaskedSecrets(masked, "all");
+        return true;
+    }
+    return false;
+}
+
+/** Puts a live update into the mirror as the server holds it: no discard, no settled key, no notice. */
+function applyRemoteRecord(
+    item: { kind: string; id: string; revision: string | null; data: unknown },
+    collection?: { characterId: string; order: ChatOrderRecord | null; chats: ChatRecord[] },
+) {
+    const key = recordKey(item.kind, item.id);
+    const isNew = item.kind === RESOURCE_KIND.characters && !persisted.has(key);
+    applyToMirror(item.kind, item.id, item.revision === null ? null : item.data);
+    if (item.revision === null) {
+        persisted.delete(key);
+    } else {
+        persisted.set(key, {
+            revision: item.revision,
+            text: projectRecord(item.kind, item.id) ?? recordText(item.kind, item.data),
+        });
+    }
+    if (isSettingsCollection(item.kind) || item.kind === RESOURCE_KIND.presets) {
+        // The preset and persona selections are this tab's: resolve them against the new list.
+        reconcileSelection(DBState.db);
+    }
+    if (isNew && collection) {
+        applyRemoteCollection(collection);
+    }
+    notifyRemoteListeners(item.kind, item.id);
+}
+
+/**
+ * Reads and applies the waiting live updates (part of the cycle, before its batch, so it never races
+ * this client's own write): the records this client can take now and the chat lists of characters
+ * with no order work, at most `MAX_REMOTE_READS` of each. Eligibility is checked again after the
+ * read: a change made meanwhile keeps the update waiting. A read settles only the notice it was
+ * issued for, or a later one its answer covers. A deletion applies only if the held revision is
+ * unchanged since the read was issued; otherwise it is read again.
+ */
+async function applyRemoteUpdates() {
+    settleRemoteRecords();
+    const records = [...remoteRecords].filter(([key, entry]) => canApplyRemote(key, entry)).slice(0, MAX_REMOTE_READS);
+    const newCharacters = new Set(
+        records
+            .filter(
+                ([key, entry]) =>
+                    entry.kind === RESOURCE_KIND.characters && !persisted.has(key) && entry.revision !== null,
+            )
+            .map(([, entry]) => entry.id),
+    );
+    const collections = [...newCharacters, ...applicableCollections().filter((id) => !newCharacters.has(id))].slice(
+        0,
+        MAX_REMOTE_READS,
+    );
+    if (records.length === 0 && collections.length === 0) {
+        return;
+    }
+    const issuedEntries = new Map(records);
+    const issuedHeld = new Map(records.map(([key]) => [key, persisted.get(key)?.revision ?? null]));
+    const issuedSeqs = new Map(collections.map((id) => [id, remoteCollections.get(id)]));
+    const issuedChats = new Map(collections.map((id) => [id, heldChatRevisionsOf(id)]));
+    const read = await readRefs(
+        records.map(([, entry]) => ({ kind: entry.kind, id: entry.id })),
+        { chatCollections: collections },
+    );
+    await tick();
+    if (halted) {
+        return;
+    }
+    const collectionOf = new Map((read.chatCollections ?? []).map((entry) => [entry.characterId, entry]));
+    for (const item of read.items) {
+        const key = recordKey(item.kind, item.id);
+        const entry = remoteRecords.get(key);
+        if (!entry) {
+            continue;
+        }
+        const held = persisted.get(key);
+        // The notice the read was issued for, or a later one the answer covers.
+        const settled =
+            entry === issuedEntries.get(key) ||
+            (entry.revision !== null &&
+                item.revision !== null &&
+                (compareRevision(entry.revision, item.revision) ?? 0) <= 0);
+        if (item.revision === null) {
+            if (!held) {
+                if (settled) {
+                    remoteRecords.delete(key);
+                }
+                continue;
+            }
+            if (held.revision !== issuedHeld.get(key) || !canApplyRemote(key, entry)) {
+                continue;
+            }
+            applyRemoteRecord(item);
+            if (settled) {
+                remoteRecords.delete(key);
+            }
+            continue;
+        }
+        if (held && (compareRevision(item.revision, held.revision) ?? 0) <= 0) {
+            if (settled) {
+                remoteRecords.delete(key);
+            }
+            continue;
+        }
+        if (!canApplyRemote(key, entry)) {
+            continue;
+        }
+        if (item.kind === SECTION_KIND.llmSecrets) {
+            if (!adoptRemoteSecretRecord(item.revision, item.data as MaskedLlmSecrets)) {
+                entry.blockedLocal = projectCollection(SECTION_KIND.llmSecrets);
+                continue;
+            }
+            notifyRemoteListeners(item.kind, item.id);
+        } else {
+            applyRemoteRecord(item, collectionOf.get(item.id));
+        }
+        if (settled) {
+            remoteRecords.delete(key);
+        }
+    }
+    for (const id of collections) {
+        const collection = collectionOf.get(id);
+        const applied = newCharacters.has(id)
+            ? findMirrorCharacter(id) !== undefined
+            : !!collection && applyRemoteCollection(collection, issuedChats.get(id));
+        if ((applied || !collection) && remoteCollections.get(id) === issuedSeqs.get(id)) {
+            remoteCollections.delete(id);
+        }
+    }
+}
+
+function notifyRemoteListeners(kind: string, id: string) {
+    for (const listener of remoteChangeListeners) {
+        try {
+            listener(kind, id);
+        } catch (error) {
+            console.error("[Save]", error);
         }
     }
 }
@@ -1976,6 +2433,7 @@ export function startResourceSync() {
     setEpochMismatchListener(() => {
         void haltForRestore();
     });
+    setMutationAdmission(() => !halted);
     setSecretScheduler(() => {
         permanentError = null;
         schedule();
@@ -1983,7 +2441,6 @@ export function startResourceSync() {
     setChatWorkListener(() => {
         schedule();
     });
-    startChatChangeNotices();
     document.addEventListener("visibilitychange", () => {
         if (document.visibilityState !== "hidden" || halted) {
             return;

@@ -5,6 +5,7 @@ import {
     type ResourceBatchResult,
     type ResourceReadKindsResult,
     type ResourceReadRefsResult,
+    type ResourceRevisionListing,
 } from "../../../shared/resources.ts";
 import { authFetch, getNodeServerProxyAuth } from "./nodeStorage";
 
@@ -46,6 +47,16 @@ export class ResourceRequestError extends Error {
 
 let currentEpoch = "";
 let epochMismatchListener: ((epoch: string) => void) | null = null;
+let mutationAdmission: (() => boolean) | null = null;
+
+/**
+ * Registers the check every mutation runs right before it goes out, after authentication and
+ * signing (the save adapter's: saving has not halted for a restore). A refused mutation is not sent
+ * and fails as a request that did not reach the server.
+ */
+export function setMutationAdmission(check: (() => boolean) | null) {
+    mutationAdmission = check;
+}
 
 export function setResourceEpoch(epoch: string) {
     currentEpoch = epoch;
@@ -92,7 +103,19 @@ async function send(path: string, init: RequestInit & { mutation?: boolean } = {
     }
     let response: Response;
     try {
-        response = await authFetch(path, { ...init, headers, cache: "no-store" });
+        response = await authFetch(
+            path,
+            { ...init, headers, cache: "no-store" },
+            init.mutation
+                ? {
+                      beforeDispatch: () => {
+                          if (mutationAdmission && !mutationAdmission()) {
+                              throw new Error("Saving stopped: the server data was restored");
+                          }
+                      },
+                  }
+                : {},
+        );
     } catch (error) {
         throw new ResourceRequestError(0, error instanceof Error ? error.message : String(error));
     }
@@ -159,6 +182,11 @@ export async function readRefs(
             body: JSON.stringify({ refs, ...options }),
         }),
     );
+}
+
+/** Every record's, chat's, and chat order's revision on the server (no data): the live-update reconcile. */
+export async function listRevisions(): Promise<ResourceRevisionListing> {
+    return checkedEpoch(await sendJson<ResourceRevisionListing>("/api/resources/revisions"));
 }
 
 function resourcePath(kind: string, id: string) {

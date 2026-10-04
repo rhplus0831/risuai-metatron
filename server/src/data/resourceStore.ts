@@ -5,7 +5,14 @@ import path from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { types } from "node:util";
 import type { ChatGroupResult, ChatOrderRecord, ChatOrderResult, ChatRecord } from "../../../shared/chats.ts";
-import { type BatchConflict, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
+import {
+    type BatchConflict,
+    type ChangeSet,
+    RESOURCE_KIND,
+    type ResourceRevisionListing,
+    SINGLETON_RESOURCE_ID,
+} from "../../../shared/resources.ts";
+import type { ChangeFeed } from "./changeFeed.ts";
 import {
     CHAT_TABLE_COLUMNS,
     CHAT_TABLES_SQL,
@@ -141,6 +148,13 @@ export type AppliedChanges = {
 
 export type ResourceStore = ReturnType<typeof createResourceStore>;
 
+/** The refs one write changed, keyed so a record written twice keeps its final revision. */
+type ChangeAccumulator = {
+    resources: Map<string, ChangeSet["resources"][number]>;
+    chats: Map<string, ChangeSet["chats"][number]>;
+    chatOrders: Map<string, ChangeSet["chatOrders"][number]>;
+};
+
 /**
  * A synchronous transaction body. A body whose return type can be a promise does not type-check.
  * This is best-effort and the runtime check in `transaction` is the guarantee: a body returning
@@ -184,8 +198,14 @@ export function isValidResourceId(id: unknown): id is string {
  * a kind object from `kinds` and rejects any other, so a write always runs that kind's normalizer.
  * Kinds that need rows of their own (chat messages) get their own tables behind this interface later.
  */
-export function createResourceStore(options: { file: string; kinds: ResourceKindRegistry; guard?: MessageGuard }) {
-    const { kinds, guard } = options;
+export function createResourceStore(options: {
+    file: string;
+    kinds: ResourceKindRegistry;
+    guard?: MessageGuard;
+    /** Where committed changes are published (Phase 6 live updates). */
+    feed?: ChangeFeed;
+}) {
+    const { kinds, guard, feed } = options;
     if (options.file !== ":memory:") {
         mkdirSync(path.dirname(options.file), { recursive: true });
     }
@@ -200,6 +220,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
 
     const selectOne = db.prepare("SELECT seq, revision, data FROM resources WHERE kind = ? AND id = ?");
     const selectKind = db.prepare("SELECT id, seq, revision, data FROM resources WHERE kind = ? ORDER BY seq");
+    const selectRevisions = db.prepare("SELECT kind, id, seq, revision FROM resources ORDER BY seq");
     const insert = db.prepare(
         "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES (?, ?, 1, ?, ?) " +
             "ON CONFLICT (kind, id) DO NOTHING",
@@ -288,6 +309,66 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
     const transactionScope = new AsyncLocalStorage<{ ended: boolean }>();
 
     const token = (seq: number, revision: number) => `${epoch}:${seq}:${revision}`;
+
+    /**
+     * The refs the outermost write (`put`, `delete`, `applyChanges`, `transaction`) changed so far,
+     * keyed so a record written twice keeps its final revision. Dropped when the write throws (it
+     * rolled back); published once after its commit. Null outside a write.
+     */
+    let changes: ChangeAccumulator | null = null;
+
+    function recordResource(kind: string, id: string, revision: string | null) {
+        changes?.resources.set(`${kind}\u0000${id}`, { kind, id, revision });
+    }
+
+    function recordChat(characterId: string, id: string, revision: string | null) {
+        changes?.chats.set(`${characterId}\u0000${id}`, { characterId, id, revision });
+    }
+
+    function recordOrder(characterId: string, revision: string | null) {
+        changes?.chatOrders.set(characterId, { characterId, revision });
+    }
+
+    /** A character's chats and order deleted with it, recorded as deletions. */
+    function recordCharacterCascade(characterId: string, removed: { chatIds: string[]; order: boolean }) {
+        for (const chatId of removed.chatIds) {
+            recordChat(characterId, chatId, null);
+        }
+        if (removed.order) {
+            recordOrder(characterId, null);
+        }
+    }
+
+    /**
+     * Runs a write as the outermost publishing scope (or inside the current one) and publishes what
+     * it changed after it returns: by then its transaction has committed and `transactionState` is
+     * cleared. A throw publishes nothing.
+     */
+    function publishing<T>(fn: () => T): T {
+        if (changes) {
+            return fn();
+        }
+        const scope: ChangeAccumulator = { resources: new Map(), chats: new Map(), chatOrders: new Map() };
+        changes = scope;
+        let result: T;
+        try {
+            result = fn();
+        } finally {
+            changes = null;
+        }
+        if (feed && (scope.resources.size > 0 || scope.chats.size > 0 || scope.chatOrders.size > 0)) {
+            feed.publish({
+                type: "change",
+                epoch,
+                changes: {
+                    resources: [...scope.resources.values()],
+                    chats: [...scope.chats.values()],
+                    chatOrders: [...scope.chatOrders.values()],
+                },
+            });
+        }
+        return result;
+    }
 
     function parseToken(value: string): { seq: number; revision: number } | null {
         const match = revisionTokenRegex.exec(value);
@@ -395,6 +476,195 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
         return rows.map((row) => ({ id: row.id, revision: token(row.seq, row.revision), data: JSON.parse(row.data) }));
     }
 
+    /** `applyChanges` inside the publishing scope (see there). */
+    function applyChangesInScope(
+        batch: {
+            ops?: readonly ResourceBatchOperation[];
+            chats?: unknown;
+            chatOrders?: unknown;
+        },
+        options: { epoch?: string; jobToken?: string },
+    ): AppliedChanges {
+        assertNotInTransaction();
+        if (options.epoch !== undefined) {
+            assertEpochNow(options.epoch);
+        }
+        if (options.jobToken !== undefined && !guard?.isLive(options.jobToken)) {
+            throw new JobTokenError();
+        }
+        const operations = batch.ops ?? [];
+        const seen = new Set<string>();
+        const prepared = operations.map((operation, index) => {
+            try {
+                const { kind, id } = operation;
+                assertKind(kind);
+                assertId(kind, id);
+                const key = `${kind.name}\u0000${id}`;
+                if (seen.has(key)) {
+                    throw new ResourceValidationError("duplicate kind and id");
+                }
+                seen.add(key);
+                if (operation.delete) {
+                    assertDeletable(kind);
+                    if (typeof operation.baseRevision !== "string") {
+                        throw new ResourceValidationError("a deletion needs a base revision");
+                    }
+                    return { operation, text: null };
+                }
+                return { operation, text: serialize(normalizeInput(kind, operation.data, id)).text };
+            } catch (error) {
+                if (error instanceof ResourceValidationError) {
+                    throw new ResourceValidationError(`ops[${index}]: ${error.message}`);
+                }
+                throw error;
+            }
+        });
+        const chatGroups = prepareChatGroups(batch.chats);
+        const chatOrders = prepareChatOrders(batch.chatOrders);
+        const deletedCharacters = new Set(
+            prepared
+                .filter(({ operation, text }) => text === null && isCharacterKind(operation.kind))
+                .map(({ operation }) => operation.id),
+        );
+        for (const entry of [...chatGroups, ...chatOrders]) {
+            if (deletedCharacters.has(entry.characterId)) {
+                throw new ResourceValidationError(
+                    `the batch deletes character ${entry.characterId} and also changes its chats`,
+                );
+            }
+        }
+
+        db.exec("BEGIN IMMEDIATE");
+        let committed = false;
+        try {
+            const conflicts: BatchConflict[] = [];
+            const bases = prepared.map(({ operation: { kind, id, baseRevision }, text }) => {
+                const row = selectOne.get(kind.name, id) as { seq: number; revision: number } | undefined;
+                const base = baseRevision === null ? null : parseToken(baseRevision);
+                if (text === null && isCharacterKind(kind) && chatTables.characterLocked(id, options.jobToken)) {
+                    conflicts.push({
+                        kind: kind.name,
+                        id,
+                        revision: row ? token(row.seq, row.revision) : null,
+                        reason: "generating",
+                    });
+                    return base;
+                }
+                const current =
+                    baseRevision === null
+                        ? row === undefined
+                        : !!row && !!base && base.seq === row.seq && base.revision === row.revision;
+                if (!current) {
+                    conflicts.push({ kind: kind.name, id, revision: row ? token(row.seq, row.revision) : null });
+                }
+                return base;
+            });
+            // With a stale resource op nothing will be written, but chat entries are still
+            // checked so the 409 lists every conflict.
+            const orderBases = chatTables.orderBases(chatOrders);
+            const results =
+                conflicts.length > 0
+                    ? []
+                    : prepared.map(({ operation: { kind, id }, text }, index) => {
+                          const base = bases[index];
+                          if (text === null) {
+                              remove.run(kind.name, id, base!.seq, base!.revision);
+                              if (isCharacterKind(kind)) {
+                                  recordCharacterCascade(id, chatTables.deleteCharacter(id));
+                              }
+                              return { kind: kind.name, id, revision: null };
+                          }
+                          if (base === null) {
+                              const result = insert.run(kind.name, id, kind.schemaVersion, text);
+                              if (isCharacterKind(kind)) {
+                                  const order = chatTables.createOrder(id);
+                                  if (order !== null) {
+                                      recordOrder(id, order);
+                                  }
+                              }
+                              return { kind: kind.name, id, revision: token(Number(result.lastInsertRowid), 1) };
+                          }
+                          const revision = nextRevision(base.revision, 1);
+                          update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision);
+                          return { kind: kind.name, id, revision: token(base.seq, revision) };
+                      });
+            const chatOutcome = chatTables.apply(
+                chatGroups,
+                chatOrders,
+                orderBases,
+                conflicts.length > 0,
+                options.jobToken,
+            );
+            conflicts.push(...chatOutcome.conflicts);
+            if (conflicts.length > 0) {
+                throw new ResourceBatchConflictError(conflicts);
+            }
+            db.exec("COMMIT");
+            committed = true;
+            writeCount += prepared.length + chatOutcome.applied;
+            for (const result of results) {
+                recordResource(result.kind, result.id, result.revision);
+            }
+            for (const chat of chatOutcome.results) {
+                recordChat(chat.characterId, chat.id, chat.revision);
+            }
+            for (const order of chatOutcome.orders) {
+                recordOrder(order.characterId, order.revision);
+            }
+            return { results, chats: chatOutcome.results, chatOrders: chatOutcome.orders };
+        } finally {
+            if (!committed && db.isTransaction) {
+                db.exec("ROLLBACK");
+            }
+        }
+    }
+
+    /** `transaction` inside the publishing scope (see there). */
+    function transactionInScope<F extends () => unknown>(fn: TransactionBody<F>): ReturnType<F> {
+        assertWritable();
+        assertNotInTransaction();
+        db.exec("BEGIN IMMEDIATE");
+        const state: { conflict: ResourceConflictError | null; writes: number } = { conflict: null, writes: 0 };
+        transactionState = state;
+        const scope = { ended: false };
+        let committed = false;
+        try {
+            // The thenable check runs inside the scope too, so continuations a custom `then`
+            // schedules are covered.
+            const result = transactionScope.run(scope, () => {
+                const value = fn();
+                if (isThenable(value)) {
+                    try {
+                        value.then(undefined, () => {});
+                    } catch {
+                        // The body already failed the synchronous contract; report that instead.
+                    }
+                    throw new Error("Resource transactions must be synchronous");
+                }
+                return value;
+            }) as ReturnType<F>;
+            if (state.conflict) {
+                throw state.conflict;
+            }
+            db.exec("COMMIT");
+            committed = true;
+            writeCount += state.writes;
+            return result;
+        } finally {
+            scope.ended = true;
+            transactionState = null;
+            if (!committed && db.isTransaction) {
+                db.exec("ROLLBACK");
+            }
+        }
+    }
+
+    function assertEpochNow(expected: string | undefined): void {
+        if (expected !== epoch) {
+            throw new ResourceEpochError(epoch);
+        }
+    }
+
     const store = {
         /** The current database epoch. A restore replaces it. */
         epoch(): string {
@@ -411,9 +681,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
          * synchronous block as the write it guards, with no await in between.
          */
         assertEpoch(expected: string | undefined): void {
-            if (expected !== epoch) {
-                throw new ResourceEpochError(epoch);
-            }
+            assertEpochNow(expected);
         },
 
         get<T>(kind: ResourceKind<T>, id: string): { revision: string; data: T } | null {
@@ -499,33 +767,41 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
             assertKind(kind);
             assertId(kind, id);
             const { text, stored } = serialize(normalizeInput(kind, input, id));
-            return atomically(() => {
-                let seq: number;
-                let revision: number;
-                if (baseRevision === null) {
-                    const result = insert.run(kind.name, id, kind.schemaVersion, text);
-                    if (result.changes === 0) {
-                        conflict(kind, id);
+            return publishing(() =>
+                atomically(() => {
+                    let seq: number;
+                    let revision: number;
+                    if (baseRevision === null) {
+                        const result = insert.run(kind.name, id, kind.schemaVersion, text);
+                        if (result.changes === 0) {
+                            conflict(kind, id);
+                        }
+                        seq = Number(result.lastInsertRowid);
+                        revision = 1;
+                        if (isCharacterKind(kind)) {
+                            const order = chatTables.createOrder(id);
+                            if (order !== null) {
+                                recordOrder(id, order);
+                            }
+                        }
+                    } else {
+                        const base = parseToken(baseRevision);
+                        if (!base) {
+                            conflict(kind, id);
+                        }
+                        revision = nextRevision(base.revision, 1);
+                        if (
+                            update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision).changes === 0
+                        ) {
+                            conflict(kind, id);
+                        }
+                        seq = base.seq;
                     }
-                    seq = Number(result.lastInsertRowid);
-                    revision = 1;
-                    if (isCharacterKind(kind)) {
-                        chatTables.createOrder(id);
-                    }
-                } else {
-                    const base = parseToken(baseRevision);
-                    if (!base) {
-                        conflict(kind, id);
-                    }
-                    revision = nextRevision(base.revision, 1);
-                    if (update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision).changes === 0) {
-                        conflict(kind, id);
-                    }
-                    seq = base.seq;
-                }
-                countWrite();
-                return { revision: token(seq, revision), data: stored as T };
-            });
+                    countWrite();
+                    recordResource(kind.name, id, token(seq, revision));
+                    return { revision: token(seq, revision), data: stored as T };
+                }),
+            );
         },
 
         /**
@@ -537,21 +813,36 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
             assertKind(kind);
             assertId(kind, id);
             assertDeletable(kind);
-            atomically(() => {
-                // Before the revision check: a refusal for a generating message reads as "retry
-                // after the job", not as a stale view.
-                if (isCharacterKind(kind) && chatTables.characterLocked(id)) {
-                    conflict(kind, id, "generating");
-                }
-                const base = parseToken(baseRevision);
-                if (!base || remove.run(kind.name, id, base.seq, base.revision).changes === 0) {
-                    conflict(kind, id);
-                }
-                if (isCharacterKind(kind)) {
-                    chatTables.deleteCharacter(id);
-                }
-                countWrite();
-            });
+            publishing(() =>
+                atomically(() => {
+                    // Before the revision check: a refusal for a generating message reads as "retry
+                    // after the job", not as a stale view.
+                    if (isCharacterKind(kind) && chatTables.characterLocked(id)) {
+                        conflict(kind, id, "generating");
+                    }
+                    const base = parseToken(baseRevision);
+                    if (!base || remove.run(kind.name, id, base.seq, base.revision).changes === 0) {
+                        conflict(kind, id);
+                    }
+                    if (isCharacterKind(kind)) {
+                        recordCharacterCascade(id, chatTables.deleteCharacter(id));
+                    }
+                    countWrite();
+                    recordResource(kind.name, id, null);
+                }),
+            );
+        },
+
+        /**
+         * Every record's, chat's, and chat order's revision, without data, in one synchronous read:
+         * what a client reconciles against after it (re)connects to the live-update socket.
+         */
+        listRevisions(): ResourceRevisionListing {
+            assertOpen();
+            const resources = (selectRevisions.all() as { kind: string; id: string; seq: number; revision: number }[])
+                .filter((row) => kinds.has(row.kind))
+                .map((row) => ({ kind: row.kind, id: row.id, revision: token(row.seq, row.revision) }));
+            return { epoch, resources, ...chatTables.listRevisions() };
         },
 
         /** A chat's revision token, or null when it does not exist (its messages are not read). */
@@ -592,126 +883,7 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
             options: { epoch?: string; jobToken?: string } = {},
         ): AppliedChanges {
             assertWritable();
-            assertNotInTransaction();
-            if (options.epoch !== undefined) {
-                store.assertEpoch(options.epoch);
-            }
-            if (options.jobToken !== undefined && !guard?.isLive(options.jobToken)) {
-                throw new JobTokenError();
-            }
-            const operations = batch.ops ?? [];
-            const seen = new Set<string>();
-            const prepared = operations.map((operation, index) => {
-                try {
-                    const { kind, id } = operation;
-                    assertKind(kind);
-                    assertId(kind, id);
-                    const key = `${kind.name}\u0000${id}`;
-                    if (seen.has(key)) {
-                        throw new ResourceValidationError("duplicate kind and id");
-                    }
-                    seen.add(key);
-                    if (operation.delete) {
-                        assertDeletable(kind);
-                        if (typeof operation.baseRevision !== "string") {
-                            throw new ResourceValidationError("a deletion needs a base revision");
-                        }
-                        return { operation, text: null };
-                    }
-                    return { operation, text: serialize(normalizeInput(kind, operation.data, id)).text };
-                } catch (error) {
-                    if (error instanceof ResourceValidationError) {
-                        throw new ResourceValidationError(`ops[${index}]: ${error.message}`);
-                    }
-                    throw error;
-                }
-            });
-            const chatGroups = prepareChatGroups(batch.chats);
-            const chatOrders = prepareChatOrders(batch.chatOrders);
-            const deletedCharacters = new Set(
-                prepared
-                    .filter(({ operation, text }) => text === null && isCharacterKind(operation.kind))
-                    .map(({ operation }) => operation.id),
-            );
-            for (const entry of [...chatGroups, ...chatOrders]) {
-                if (deletedCharacters.has(entry.characterId)) {
-                    throw new ResourceValidationError(
-                        `the batch deletes character ${entry.characterId} and also changes its chats`,
-                    );
-                }
-            }
-
-            db.exec("BEGIN IMMEDIATE");
-            let committed = false;
-            try {
-                const conflicts: BatchConflict[] = [];
-                const bases = prepared.map(({ operation: { kind, id, baseRevision }, text }) => {
-                    const row = selectOne.get(kind.name, id) as { seq: number; revision: number } | undefined;
-                    const base = baseRevision === null ? null : parseToken(baseRevision);
-                    if (text === null && isCharacterKind(kind) && chatTables.characterLocked(id, options.jobToken)) {
-                        conflicts.push({
-                            kind: kind.name,
-                            id,
-                            revision: row ? token(row.seq, row.revision) : null,
-                            reason: "generating",
-                        });
-                        return base;
-                    }
-                    const current =
-                        baseRevision === null
-                            ? row === undefined
-                            : !!row && !!base && base.seq === row.seq && base.revision === row.revision;
-                    if (!current) {
-                        conflicts.push({ kind: kind.name, id, revision: row ? token(row.seq, row.revision) : null });
-                    }
-                    return base;
-                });
-                // With a stale resource op nothing will be written, but chat entries are still
-                // checked so the 409 lists every conflict.
-                const orderBases = chatTables.orderBases(chatOrders);
-                const results =
-                    conflicts.length > 0
-                        ? []
-                        : prepared.map(({ operation: { kind, id }, text }, index) => {
-                              const base = bases[index];
-                              if (text === null) {
-                                  remove.run(kind.name, id, base!.seq, base!.revision);
-                                  if (isCharacterKind(kind)) {
-                                      chatTables.deleteCharacter(id);
-                                  }
-                                  return { kind: kind.name, id, revision: null };
-                              }
-                              if (base === null) {
-                                  const result = insert.run(kind.name, id, kind.schemaVersion, text);
-                                  if (isCharacterKind(kind)) {
-                                      chatTables.createOrder(id);
-                                  }
-                                  return { kind: kind.name, id, revision: token(Number(result.lastInsertRowid), 1) };
-                              }
-                              const revision = nextRevision(base.revision, 1);
-                              update.run(kind.schemaVersion, text, kind.name, id, base.seq, base.revision);
-                              return { kind: kind.name, id, revision: token(base.seq, revision) };
-                          });
-                const chatOutcome = chatTables.apply(
-                    chatGroups,
-                    chatOrders,
-                    orderBases,
-                    conflicts.length > 0,
-                    options.jobToken,
-                );
-                conflicts.push(...chatOutcome.conflicts);
-                if (conflicts.length > 0) {
-                    throw new ResourceBatchConflictError(conflicts);
-                }
-                db.exec("COMMIT");
-                committed = true;
-                writeCount += prepared.length + chatOutcome.applied;
-                return { results, chats: chatOutcome.results, chatOrders: chatOutcome.orders };
-            } finally {
-                if (!committed && db.isTransaction) {
-                    db.exec("ROLLBACK");
-                }
-            }
+            return publishing(() => applyChangesInScope(batch, options));
         },
 
         /**
@@ -720,45 +892,11 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
          * the transaction is never held across an await, and a returned promise or thenable rolls back
          * and throws. Once `fn` returns, a store write from work it started through awaits, promise
          * continuations, or timers throws, so that work cannot autocommit after a rollback. Callbacks
-         * `fn` registers on an event emitter do not carry that scope and are not covered.
+         * `fn` registers on an event emitter do not carry that scope and are not covered. What the
+         * writes inside it changed is published once, after the commit.
          */
         transaction<F extends () => unknown>(fn: TransactionBody<F>): ReturnType<F> {
-            assertWritable();
-            assertNotInTransaction();
-            db.exec("BEGIN IMMEDIATE");
-            const state: { conflict: ResourceConflictError | null; writes: number } = { conflict: null, writes: 0 };
-            transactionState = state;
-            const scope = { ended: false };
-            let committed = false;
-            try {
-                // The thenable check runs inside the scope too, so continuations a custom `then`
-                // schedules are covered.
-                const result = transactionScope.run(scope, () => {
-                    const value = fn();
-                    if (isThenable(value)) {
-                        try {
-                            value.then(undefined, () => {});
-                        } catch {
-                            // The body already failed the synchronous contract; report that instead.
-                        }
-                        throw new Error("Resource transactions must be synchronous");
-                    }
-                    return value;
-                }) as ReturnType<F>;
-                if (state.conflict) {
-                    throw state.conflict;
-                }
-                db.exec("COMMIT");
-                committed = true;
-                writeCount += state.writes;
-                return result;
-            } finally {
-                scope.ended = true;
-                transactionState = null;
-                if (!committed && db.isTransaction) {
-                    db.exec("ROLLBACK");
-                }
-            }
+            return publishing(() => transactionInScope(fn));
         },
 
         /**
@@ -905,6 +1043,8 @@ export function createResourceStore(options: { file: string; kinds: ResourceKind
             }
             epoch = nextEpoch;
             writeCount += 1;
+            // Every client reloads: their tokens are of the old epoch.
+            feed?.publish({ type: "epoch", epoch: nextEpoch });
             return nextEpoch;
         },
 

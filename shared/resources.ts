@@ -177,6 +177,25 @@ export type ResourceReadRefsResult = {
     chatCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatRecord[] }[];
 };
 
+/**
+ * What one committed write changed (Phase 6 live updates): refs and their new revisions only, never
+ * data. A `null` revision is a deletion. A record that changed more than once in the write appears
+ * once, with its final revision.
+ */
+export type ChangeSet = {
+    resources: { kind: string; id: string; revision: string | null }[];
+    chats: { characterId: string; id: string; revision: string | null }[];
+    chatOrders: { characterId: string; revision: string | null }[];
+};
+
+/** `GET /api/resources/revisions`: every record, chat, and chat order the server holds, with its revision. */
+export type ResourceRevisionListing = {
+    epoch: string;
+    resources: { kind: string; id: string; revision: string }[];
+    chats: { characterId: string; id: string; revision: string }[];
+    chatOrders: { characterId: string; revision: string }[];
+};
+
 export type BackupSnapshotInfo = { id: string; createdAt: string; size: number };
 
 /** First record of a local backup archive (format version 2). */

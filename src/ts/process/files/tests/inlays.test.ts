@@ -456,3 +456,150 @@ describe("writeInlayImage", () => {
         );
     });
 });
+
+// Phase 6 live updates: another writer's inlay change reaches this tab as a feed notice
+// (`noteRemoteInlay`) or a reconnect's listing (`reconcileInlays`); a read, a listing, or this tab's
+// own write that overlaps one must not put an older copy back into the metadata cache. The fake's
+// revisions are made real tokens here, since the cache compares them.
+describe("live updates", () => {
+    const EPOCH = "00000000-0000-4000-8000-000000000001";
+    let counter = 0;
+    /** Holds the next request whose path ends with `suffix` after it was answered (a snapshot of that moment). */
+    const gate = { suffix: null as string | null, release: null as (() => void) | null };
+    const sig = (text: string) => ({ name: "s", ext: "json", type: "signature" as const, text });
+    const metaReads = (id: string) =>
+        fake.requests.filter((r) => r.method === "GET" && r.path === `/api/resources/inlays/${id}`).length;
+
+    beforeEach(() => {
+        counter = 0;
+        fake.epoch = EPOCH;
+        client.setResourceEpoch(EPOCH);
+        const set = fake.set.bind(fake);
+        fake.set = (kind: string, id: string, data: unknown) => {
+            set(kind, id, data);
+            const token = `${EPOCH}:1:${++counter}`;
+            fake.records.get(fake.key(kind, id))!.revision = token;
+            return token;
+        };
+        gate.suffix = null;
+        gate.release = null;
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                const response = fake.fetch(path, init);
+                if (gate.suffix !== null && path.endsWith(gate.suffix)) {
+                    gate.suffix = null;
+                    await new Promise<void>((resolve) => (gate.release = resolve));
+                }
+                return response;
+            },
+        };
+    });
+
+    const until = async (condition: () => boolean) => {
+        for (let i = 0; i < 50 && !condition(); i += 1) {
+            await Promise.resolve();
+            await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
+        }
+        expect(condition()).toBe(true);
+    };
+
+    test("a notice drops cached metadata older than its revision, keeps one at or above it, and a deletion drops it", async () => {
+        const r1 = fake.set("inlays", "a", sig("one"));
+        expect((await I.getInlayMetadata("a"))?.text).toBe("one");
+        I.noteRemoteInlay("a", r1);
+        expect((await I.getInlayMetadata("a"))?.text).toBe("one");
+        expect(metaReads("a")).toBe(1);
+        const r2 = fake.set("inlays", "a", sig("two"));
+        I.noteRemoteInlay("a", r2);
+        expect((await I.getInlayMetadata("a"))?.text).toBe("two");
+        expect(metaReads("a")).toBe(2);
+        fake.delete("inlays", "a");
+        I.noteRemoteInlay("a", null);
+        expect(await I.getInlayMetadata("a")).toBeNull();
+    });
+
+    test("a notice during a metadata read: the read's older answer is not cached, the read asks again", async () => {
+        fake.set("inlays", "a", sig("one"));
+        gate.suffix = "/inlays/a";
+        const reading = I.getInlayMetadata("a");
+        await until(() => gate.release !== null);
+        const r2 = fake.set("inlays", "a", sig("two"));
+        I.noteRemoteInlay("a", r2);
+        gate.release!();
+        expect((await reading)?.text).toBe("two");
+        expect(metaReads("a")).toBe(2);
+        // The newer copy is cached.
+        expect((await I.getInlayMetadata("a"))?.text).toBe("two");
+        expect(metaReads("a")).toBe(2);
+    });
+
+    test("this tab's own write during a listing: the listing's older copy never replaces the written one", async () => {
+        await I.saveInlayedSignature("sig", { signatures: [], sourceFormat: 0, source: "one" });
+        gate.suffix = "kinds=inlays";
+        const listing = I.listInlayAssets();
+        await until(() => gate.release !== null);
+        // The write's base is cached: it does not wait for the listing.
+        await I.saveInlayedSignature("sig", { signatures: [], sourceFormat: 0, source: "two" });
+        gate.release!();
+        await listing;
+        // The listing clears the cache it replaces and does not fill this id (it changed during the
+        // listing), so the next read may ask the server again; it never serves the listed "one".
+        expect(JSON.parse((await I.getInlayAsset("sig"))!.data).source).toBe("two");
+    });
+
+    test("a listing that began before a notice does not put that inlay's older copy back", async () => {
+        fake.set("inlays", "a", sig("one"));
+        fake.set("inlays", "b", sig("b"));
+        gate.suffix = "kinds=inlays";
+        const listing = I.listInlayAssets();
+        await until(() => gate.release !== null);
+        const r2 = fake.set("inlays", "a", sig("two"));
+        I.noteRemoteInlay("a", r2);
+        gate.release!();
+        await listing;
+        const before = metaReads("a");
+        expect((await I.getInlayMetadata("a"))?.text).toBe("two");
+        expect(metaReads("a")).toBe(before + 1);
+        // The other inlay's listed copy was cached.
+        expect((await I.getInlayMetadata("b"))?.text).toBe("b");
+        expect(metaReads("b")).toBe(0);
+    });
+
+    test("a reconnect's listing drops metadata of removed and older inlays, keeps current ones, and forgets a listed miss", async () => {
+        const ra = fake.set("inlays", "a", sig("a"));
+        fake.set("inlays", "b", sig("b1"));
+        fake.set("inlays", "gone", sig("gone"));
+        for (const id of ["a", "b", "gone"]) {
+            await I.getInlayMetadata(id);
+        }
+        expect(await I.getInlayMetadata("new")).toBeNull();
+        const rb = fake.set("inlays", "b", sig("b2"));
+        fake.delete("inlays", "gone");
+        const rn = fake.set("inlays", "new", sig("new"));
+        fake.requests.length = 0;
+        I.reconcileInlays(
+            new Map([
+                ["a", ra],
+                ["b", rb],
+                ["new", rn],
+            ]),
+        );
+        expect((await I.getInlayMetadata("a"))?.text).toBe("a");
+        expect(metaReads("a")).toBe(0);
+        expect((await I.getInlayMetadata("b"))?.text).toBe("b2");
+        expect(await I.getInlayMetadata("gone")).toBeNull();
+        expect((await I.getInlayMetadata("new"))?.text).toBe("new");
+    });
+
+    test("an invalidation during a metadata read keeps that read's answer out of the cache", async () => {
+        fake.set("inlays", "a", sig("one"));
+        gate.suffix = "/inlays/a";
+        const reading = I.getInlayMetadata("a");
+        await until(() => gate.release !== null);
+        fake.set("inlays", "a", sig("two"));
+        I.invalidateInlayCaches();
+        gate.release!();
+        expect((await reading)?.text).toBe("two");
+        expect((await I.getInlayMetadata("a"))?.text).toBe("two");
+    });
+});

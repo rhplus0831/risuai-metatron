@@ -167,14 +167,19 @@ ReloadGUIPointer.subscribe(() => {
 });
 
 $effect.root(() => {
+    // The selected character's id: an index moved by a removal before it (a live update or a conflict
+    // reload keeps the same character selected) is not a new selection, so it changes nothing.
+    let selectedChaId: string | undefined;
     selectedCharID.subscribe((v) => {
         selIdState.selId = v;
-
-        if (DBState?.db?.characters?.[selIdState.selId]) {
+        const character = DBState?.db?.characters?.[selIdState.selId];
+        const chaId = character?.chaId;
+        if (character && chaId !== selectedChaId) {
             if (DBState.db.hypaV3 && selectedHypaV3Preset(DBState.db)?.settings?.alwaysToggleOn) {
-                DBState.db.characters[selIdState.selId].supaMemory = true;
+                character.supaMemory = true;
             }
         }
+        selectedChaId = chaId;
     });
     $effect(() => {
         $state.snapshot(DBState.db.modules);

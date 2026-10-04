@@ -6,7 +6,6 @@ import {
     type GenerationTerminalEvent,
 } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
-import { announceChatChange } from "../storage/chatChangeNotices";
 import { applyServerGeneration, type ChatRef, endServerJob } from "../storage/chatStore.svelte";
 import { authFetch, getNodeServerProxyAuth } from "../storage/nodeStorage";
 import { epochMismatch, getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
@@ -365,10 +364,6 @@ export function applyGenerationEvent(
             applyHydration(record);
             // Kept for a later callback's barrier, which applies it again after local work settles.
             onChannel((channel) => channel.rememberHydration(record));
-            if (event.kind === "chats" && event.characterId) {
-                // A committed copy: the other tabs of this browser read the chat again.
-                announceChatChange({ chaId: event.characterId, chatId: event.id });
-            }
             return;
         }
         case "notice":
@@ -385,7 +380,6 @@ export function applyGenerationEvent(
         case "done":
         case "error":
             releaseGenerationJob(jobId);
-            announceChatChange(ref, true);
             return;
     }
 }

@@ -1,6 +1,6 @@
 import type { ChatOp, ChatOrderRecord, ChatRecord } from "../../../../shared/chats.ts";
 import { parseSecretPath, readSecret, writeSecret, type SecretPath } from "../../../../shared/llmSecrets.ts";
-import { RESOURCE_EPOCH_HEADER } from "../../../../shared/resources.ts";
+import { type ChangeSet, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } from "../../../../shared/resources.ts";
 
 /**
  * An `authFetch` stand-in over the real server resource store (`createResourceStore`, SQLite in
@@ -51,7 +51,16 @@ export type ServerStore = {
         chats: any[];
         chatOrders: any[];
     };
+    /** The revision listing (`GET /api/resources/revisions`, Phase 6 live updates). */
+    listRevisions(): ResourceRevisionListing;
+    transaction<T>(fn: () => T): T;
 };
+
+/** What the server's change feed publishes (`server/src/data/changeFeed.ts`). */
+export type ServerFeedEvent = { type: "change"; epoch: string; changes: ChangeSet } | { type: "epoch"; epoch: string };
+
+type ServerFeed = { subscribe(listener: (event: ServerFeedEvent) => void): () => void };
+type FeedModule = { createChangeFeed(): ServerFeed };
 
 /** The server generation lock (`server/src/jobs/generationLock.ts`), as far as the tests drive it. */
 export type ServerGenerationLock = {
@@ -67,7 +76,12 @@ export type ServerGenerationLock = {
 type LockModule = { createGenerationLock(): ServerGenerationLock };
 
 type StoreModule = {
-    createResourceStore(options: { file: string; kinds: unknown; guard?: ServerGenerationLock }): ServerStore;
+    createResourceStore(options: {
+        file: string;
+        kinds: unknown;
+        guard?: ServerGenerationLock;
+        feed?: ServerFeed;
+    }): ServerStore;
     ResourceConflictError: new (current: string | null) => Error & { current: string | null };
     ResourceBatchConflictError: new (conflicts: unknown[]) => Error & { conflicts: unknown[] };
     ResourceValidationError: new (message: string) => Error;
@@ -91,14 +105,24 @@ export class StoreBackedServer {
     /** Most operations one batch may name (`MAX_BATCH_OPERATIONS` of the batch route). */
     static readonly MAX_BATCH_OPERATIONS = 5000;
 
-    /** `lock`: build the store with the server generation lock as its guard (`this.lock`). */
-    static async create(options: { lock?: boolean } = {}): Promise<StoreBackedServer> {
-        const [storeModule, kindsModule, lockModule] = (await Promise.all([
+    /**
+     * `lock`: build the store with the server generation lock as its guard (`this.lock`). `feed`:
+     * build it with the server change feed; every published event is recorded in `feedEvents` and
+     * handed to `onFeed` (the test's stand-in for the live-update socket).
+     */
+    static async create(options: { lock?: boolean; feed?: boolean } = {}): Promise<StoreBackedServer> {
+        const [storeModule, kindsModule, lockModule, feedModule] = (await Promise.all([
             import(/* @vite-ignore */ `${SERVER_DATA}resourceStore.ts`),
             import(/* @vite-ignore */ `${SERVER_DATA}kinds.ts`),
             options.lock ? import(/* @vite-ignore */ `${SERVER_JOBS}generationLock.ts`) : null,
-        ])) as [StoreModule, KindsModule, LockModule | null];
-        return new StoreBackedServer(storeModule, kindsModule, lockModule?.createGenerationLock() ?? null);
+            options.feed ? import(/* @vite-ignore */ `${SERVER_DATA}changeFeed.ts`) : null,
+        ])) as [StoreModule, KindsModule, LockModule | null, FeedModule | null];
+        return new StoreBackedServer(
+            storeModule,
+            kindsModule,
+            lockModule?.createGenerationLock() ?? null,
+            feedModule?.createChangeFeed() ?? null,
+        );
     }
 
     readonly kinds: ReadonlyMap<string, unknown>;
@@ -120,11 +144,29 @@ export class StoreBackedServer {
     failNext: { status: number; body?: unknown; times: number; match?: (path: string) => boolean } | null = null;
     /** Runs before the next batch is applied (something another tab does meanwhile); one-shot. */
     beforeNextBatch: (() => Promise<void> | void) | null = null;
+    /** Every event the change feed published (`create({ feed: true })`), in order. */
+    feedEvents: ServerFeedEvent[] = [];
+    /** Receives each published event as it is published (synchronously, right after the commit). */
+    onFeed: ((event: ServerFeedEvent) => void) | null = null;
 
-    private constructor(storeModule: StoreModule, kindsModule: KindsModule, lock: ServerGenerationLock | null) {
+    private constructor(
+        storeModule: StoreModule,
+        kindsModule: KindsModule,
+        lock: ServerGenerationLock | null,
+        feed: ServerFeed | null,
+    ) {
         this.kinds = kindsModule.createKindRegistry(kindsModule.DEFAULT_RESOURCE_KINDS);
         this.lock = lock;
-        this.store = storeModule.createResourceStore({ file: ":memory:", kinds: this.kinds, guard: lock ?? undefined });
+        feed?.subscribe((event) => {
+            this.feedEvents.push(event);
+            this.onFeed?.(event);
+        });
+        this.store = storeModule.createResourceStore({
+            file: ":memory:",
+            kinds: this.kinds,
+            guard: lock ?? undefined,
+            feed: feed ?? undefined,
+        });
         this.errors = storeModule;
     }
 
@@ -265,6 +307,9 @@ export class StoreBackedServer {
                 }));
             }
             return Response.json(read);
+        }
+        if (url.pathname === "/api/resources/revisions" && method === "GET") {
+            return Response.json(this.store.listRevisions());
         }
         if (url.pathname === "/api/resources/read" && method === "POST") {
             const refs = ((body.refs ?? []) as { kind: string; id: string }[]).map((ref) => ({

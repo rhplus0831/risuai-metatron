@@ -8,6 +8,7 @@ import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "./data/kinds.ts";
+import { createChangeFeed } from "./data/changeFeed.ts";
 import { createResourceStore, ResourceStoreClosedError } from "./data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { createVectorCache } from "./data/vectorCache.ts";
@@ -34,6 +35,7 @@ import { registerLlmRoutes } from "./routes/llm.ts";
 import { registerLlmSecretRoutes } from "./routes/llmSecrets.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
 import { createProxyStreamJobs } from "./routes/proxyStreamJobs.ts";
+import { createEventSockets } from "./routes/events.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
 import { registerStorageRoutes } from "./routes/storage.ts";
 import { createScriptWorkerPool } from "./scripts/workerPool.ts";
@@ -75,11 +77,19 @@ export function createServerContext(options: {
     const resourceKinds = createKindRegistry(options.resourceKinds ?? DEFAULT_RESOURCE_KINDS);
     // The store consults the lock on every write that could rewrite or remove a job's message.
     const generationLock = createGenerationLock();
+    // Every committed change goes to the live-update sockets (Phase 6).
+    const changeFeed = createChangeFeed();
     // `save/data/` is not a storage namespace, so the `/api/*` storage routes cannot reach the file.
     const resources = createResourceStore({
         file: path.join(savePath, "data", "resources.sqlite"),
         kinds: resourceKinds,
         guard: generationLock,
+        feed: changeFeed,
+    });
+    const eventSockets = createEventSockets({
+        feed: changeFeed,
+        epoch: () => resources.epoch(),
+        authorize: auth.isAuthorizedToken,
     });
     const snapshots = createSnapshotManager({
         store: resources,
@@ -136,7 +146,7 @@ export function createServerContext(options: {
     snapshots.onMaintenance(async () => () => mcpRegistry.sync(resources.epoch()));
     const llmSecretsKind = resourceKinds.get(RESOURCE_KIND.llmSecrets);
 
-    /** The one `upgrade` listener per HTTP server (proxy stream jobs, then generation jobs). */
+    /** The one `upgrade` listener per HTTP server (proxy stream jobs, generation jobs, live updates). */
     const upgradeListeners = new Map<http.Server, (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void>();
     // Workers start on the first task: Lua buttons and manual triggers (`command` jobs) run there.
     const scriptWorkers = createScriptWorkerPool({ rootDir: options.rootDir });
@@ -195,6 +205,8 @@ export function createServerContext(options: {
             server.off("upgrade", listener);
         }
         upgradeListeners.clear();
+        // Before the snapshot manager stops: the clients see the server going away (1001) and reconnect.
+        eventSockets.close();
         proxyStreamJobs.dispose();
         authenticatedRouteLimiter.dispose();
         authRouteLimiter.dispose();
@@ -333,7 +345,11 @@ export function createServerContext(options: {
         beginShutdown,
         generationJobs,
         llmRequests,
-        /** Installs the one `upgrade` dispatcher: proxy stream jobs, generation jobs, else the socket is destroyed. */
+        eventSockets,
+        /**
+         * Installs the one `upgrade` dispatcher: proxy stream jobs, generation jobs, the live-update
+         * socket, else the socket is destroyed.
+         */
         attachWebSocket: (server: http.Server) => {
             if (shuttingDown || upgradeListeners.has(server)) {
                 return;
@@ -341,7 +357,8 @@ export function createServerContext(options: {
             const listener = (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
                 if (
                     !proxyStreamJobs.handleUpgrade(req, socket, head) &&
-                    !generationJobs.handleUpgrade(req, socket, head)
+                    !generationJobs.handleUpgrade(req, socket, head) &&
+                    !eventSockets.handleUpgrade(req, socket, head)
                 ) {
                     socket.destroy();
                 }

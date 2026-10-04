@@ -32,11 +32,13 @@ import {
     releaseDeferredCharacters,
     seedResources,
     setGeneratingCharacter,
+    setRemoteResourceOwner,
 } from "./storage/resourceSync.svelte";
 import { importBrowserLocalData } from "./storage/browserLocalImport";
 import { assembleChats, initializeChats, seedChats, setRemoteChatListener } from "./storage/chatStore.svelte";
-import { invalidateInlayCaches, seedInlays } from "./process/files/inlays";
-import { loadPluginPermissions } from "./plugins/apiV3/permissionStore";
+import { invalidateInlayCaches, noteRemoteInlay, reconcileInlays, seedInlays } from "./process/files/inlays";
+import { loadPluginPermissions, refreshPluginPermissions } from "./plugins/apiV3/permissionStore";
+import { startEventFeed } from "./network/eventFeed";
 import { doingChat } from "./process/index.svelte";
 import { registerModelDynamic } from "./model/modellist";
 
@@ -107,6 +109,12 @@ export async function loadData() {
             LoadingStatusState.text = "Moving Browser Data To The Server...";
             await importBrowserLocalData();
             await loadPluginPermissions();
+            // Live updates (Phase 6): other tabs' and devices' changes reach this tab from here on.
+            setRemoteResourceOwner(RESOURCE_KIND.inlays, { apply: noteRemoteInlay, reconcile: reconcileInlays });
+            setRemoteResourceOwner(RESOURCE_KIND.pluginPermissions, {
+                apply: (_id, revision) => refreshPermissionsWithRetry(revision),
+            });
+            startEventFeed();
             LoadingStatusState.text = "Loading Plugins...";
             try {
                 await loadPlugins();
@@ -191,6 +199,16 @@ export function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
     db.characters = characters;
     assembleChats(characters, snapshot.chats ?? [], snapshot.chatOrders ?? []);
     return db as unknown as Database;
+}
+
+/** A live update of the plugin permissions: read again, retried a few times (5 s apart) after a failed read. */
+function refreshPermissionsWithRetry(revision: string | null, attempt = 0) {
+    refreshPluginPermissions(revision).catch((error) => {
+        console.error("[Live updates]", error);
+        if (attempt < 3) {
+            setTimeout(() => refreshPermissionsWithRetry(revision, attempt + 1), 5000);
+        }
+    });
 }
 
 /**

@@ -201,6 +201,15 @@ export function registerResourceRoutes(
         }
     });
 
+    // Before `/api/resources/:kind`, which would take `revisions` as a kind name.
+    app.get("/api/resources/revisions", limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) {
+            return denied;
+        }
+        return c.json(store.listRevisions());
+    });
+
     app.get("/api/resources/:kind", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

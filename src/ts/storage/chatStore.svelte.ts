@@ -166,10 +166,12 @@ const deferred = new Set<string>();
 /** Chats acknowledged on an older base, awaiting an idle read of the server's complete state. */
 const staleChats = new Set<string>();
 /**
- * Chats another tab of this browser announced as changed on the server (`chatChangeNotices.ts`) →
- * the sequence of the latest notice. Only an idle read that began after that notice clears it.
+ * Chats a live update announced as changed on the server (`noteRemoteChat`) → the sequence of the
+ * latest notice and the revision it announced (null: deleted). Only an idle read that began after
+ * that notice clears it, or this client coming to hold that revision another way (its own save, a
+ * job's chat event).
  */
-const noticedChats = new Map<string, number>();
+const noticedChats = new Map<string, { seq: number; revision: string | null }>();
 let noticeSeq = 0;
 /** Locked messages (`messageKeyOf`) → their running generation. */
 const generations = new Map<string, Generation>();
@@ -2615,6 +2617,7 @@ function canRefreshChat(ref: ChatRef): boolean {
 
 /** Stale and noticed chats eligible for a read inside the save cycle, never alongside a batch. */
 export function idleChatRefreshes(): ChatRef[] {
+    dropAnsweredNotices();
     return [...new Set([...staleChats, ...noticedChats.keys()])]
         .map((key) => {
             const [chaId, chatId] = key.split("\u0000");
@@ -2625,15 +2628,19 @@ export function idleChatRefreshes(): ChatRef[] {
 
 /** The sequence of a chat's latest notice (0 without one), taken before its read for `finishIdleChatRefresh`. */
 export function chatNoticeSeq(ref: ChatRef): number {
-    return noticedChats.get(keyOf(ref.chaId, ref.chatId)) ?? 0;
+    return noticedChats.get(keyOf(ref.chaId, ref.chatId))?.seq ?? 0;
 }
 
 /**
  * Rechecks eligibility after the read's await; busy chats retain their refresh mark for later. A
  * notice that arrived during the read (a later sequence than `notice`) keeps its mark: the read
- * may predate the change it announced.
+ * may predate the change it announced. A chat the read found gone is removed only if the revision
+ * held when the read was issued (`issued`) is still the held one (a job's chat event may have
+ * installed a newer copy meanwhile: the mark stays and the chat is read again); it is removed
+ * without creating a replacement chat (that would be a write), and the last chat of a character is
+ * left in place for the writer's own new chat to replace through the character's chat list.
  */
-export function finishIdleChatRefresh(server: RemoteChat, notice = 0): boolean {
+export function finishIdleChatRefresh(server: RemoteChat, notice = 0, issued?: string | null): boolean {
     const key = keyOf(server.characterId, server.id);
     if (
         (!staleChats.has(key) && !noticedChats.has(key)) ||
@@ -2646,26 +2653,235 @@ export function finishIdleChatRefresh(server: RemoteChat, notice = 0): boolean {
         // A read older than a hydration that arrived meanwhile.
         return false;
     }
-    if ((noticedChats.get(key) ?? 0) <= notice || server.revision === null) {
+    if (server.revision === null && issued !== undefined && (held ?? null) !== issued) {
+        return false;
+    }
+    if ((noticedChats.get(key)?.seq ?? 0) <= notice || server.revision === null) {
         noticedChats.delete(key);
+    }
+    if (server.revision === null) {
+        removeRemoteChat(server.characterId, server.id);
+        return true;
     }
     applyRemoteChat(server);
     return true;
 }
 
 /**
- * Another tab of this browser announced that a server job changed this chat: the chat is read
- * again once it is idle here (no local work, generation, retry block, deferral, or quarantine).
- * Ignored for a chat the mirror does not hold. Nothing is written and no job is owned.
+ * Removes a chat another writer deleted, found by an idle read: no replacement chat is created and
+ * nothing is queued. The character's only chat stays (its writer created another one, which its chat
+ * list brings, and the list then drops this one).
  */
-export function markChatNoticed(ref: ChatRef): boolean {
+function removeRemoteChat(chaId: string, chatId: string) {
+    const key = keyOf(chaId, chatId);
+    staleChats.delete(key);
+    const character = findCharacter(chaId);
+    const chats = character ? chatsOf(character) : [];
+    const index = chats.findIndex((chat) => chat.id === chatId);
+    if (index !== -1 && chats.length === 1) {
+        return;
+    }
+    if (index !== -1) {
+        chats.splice(index, 1);
+        changed(key);
+        syncChatPage(chaId);
+    }
+    chatRevisions.delete(key);
+    remoteListener?.({ chaId, chatId });
+}
+
+/** The chat revisions this client holds for a character's chats (a collection read's deletion fence). */
+export function heldChatRevisionsOf(chaId: string): Map<string, string> {
+    const prefix = `${chaId}\u0000`;
+    return new Map([...chatRevisions].filter(([key]) => key.startsWith(prefix)));
+}
+
+/** A queued or in-flight delete of this chat (the mirror no longer shows it). */
+function hasUnsentDelete(key: string): boolean {
+    return (
+        !!pending.get(key)?.ops.some((op) => op.op === "delete") ||
+        !!inflight.get(key)?.ops.some((op) => op.op === "delete")
+    );
+}
+
+/** Drops a chat's notice once `revision` covers what it announced. */
+function settleNotice(key: string, revision: string) {
+    const notice = noticedChats.get(key);
+    if (notice && notice.revision !== null && (compareRevision(notice.revision, revision) ?? 1) <= 0) {
+        noticedChats.delete(key);
+    }
+}
+
+/**
+ * A notice whose revision this client now holds (its own save landed, or a job's chat event applied
+ * it) needs no read: dropped, unless the chat waits for an idle read anyway (`staleChats`).
+ */
+function dropAnsweredNotices() {
+    for (const [key, notice] of noticedChats) {
+        const held = chatRevisions.get(key);
+        if (
+            notice.revision !== null &&
+            held !== undefined &&
+            !staleChats.has(key) &&
+            (compareRevision(notice.revision, held) ?? 1) <= 0
+        ) {
+            noticedChats.delete(key);
+        }
+    }
+}
+
+/**
+ * A live update says the server committed this chat at `revision` (null: deleted). A chat the mirror
+ * holds at an older revision is read again once it is idle here (no local work, generation, retry
+ * block, deferral, or quarantine; `idleChatRefreshes`); a notice at or below the held revision is
+ * dropped (this tab's own save, or a job's chat event that applied it first). A chat the mirror does
+ * not hold, of a character it holds, is a new chat: `"collection"` asks for the character's chat list
+ * (`applyRemoteCollection`). Nothing is written and nothing is discarded.
+ */
+export function noteRemoteChat(ref: ChatRef, revision: string | null): "noticed" | "collection" | "ignored" {
     const key = keyOf(ref.chaId, ref.chatId);
-    if (!mirrorChat(ref) || !chatRevisions.has(key)) {
-        return false;
+    if (!findCharacter(ref.chaId)) {
+        return "ignored";
+    }
+    const held = chatRevisions.get(key);
+    if (!mirrorChat(ref)) {
+        return revision === null || held !== undefined ? "ignored" : "collection";
+    }
+    if (held === undefined) {
+        // A chat this client created and has not saved yet: its own save settles it.
+        return "ignored";
+    }
+    if (revision !== null && (compareRevision(revision, held) ?? 0) <= 0) {
+        return "ignored";
     }
     noticeSeq += 1;
-    noticedChats.set(key, noticeSeq);
+    noticedChats.set(key, { seq: noticeSeq, revision });
     notifyWork();
+    return "noticed";
+}
+
+/** The chat-order revision this client holds for a character, or null (read only). */
+export function heldOrderRevision(chaId: string): string | null {
+    return orderRevisions.get(chaId) ?? null;
+}
+
+/** Every chat this client holds a revision for (the live-update reconcile compares them). */
+export function heldChatRefs(): { ref: ChatRef; revision: string }[] {
+    return [...chatRevisions].map(([key, revision]) => {
+        const [chaId, chatId] = key.split("\u0000");
+        return { ref: { chaId, chatId }, revision };
+    });
+}
+
+/** Every character this client holds a chat-order revision for. */
+export function heldOrderCharacters(): string[] {
+    return [...orderRevisions.keys()];
+}
+
+/** Whether a character's chat list can take a live update now: no order work pending or in flight. */
+export function canApplyRemoteCollection(chaId: string): boolean {
+    return !pendingOrders.has(chaId) && !inflightOrders.has(chaId);
+}
+
+/**
+ * Applies a character's chat list from a live update (another writer created, deleted, or reordered
+ * its chats), never discarding local work: callers check `canApplyRemoteCollection` first, and an
+ * older order than the held one is ignored. A chat with unsent or in-flight work, a running
+ * generation, a deferral, or a quarantine keeps its local copy; a chat deleted here and not yet on
+ * the server stays out; a local chat not on the server yet stays (after the server's); an idle local
+ * chat the server no longer has is removed, only while its held revision is the one in `issued` (the
+ * revisions held when the list was read). A chat's notice is dropped only when the adopted copy
+ * covers it. Nothing is queued. Returns false when the character's order work is busy or a removal
+ * was fenced (the caller reads the list again later).
+ */
+export function applyRemoteCollection(
+    collection: {
+        characterId: string;
+        order: ChatOrderRecord | null;
+        chats: readonly ChatRecord[];
+    },
+    issued?: ReadonlyMap<string, string>,
+): boolean {
+    const chaId = collection.characterId;
+    if (!canApplyRemoteCollection(chaId)) {
+        return false;
+    }
+    const character = findCharacter(chaId);
+    if (!collection.order || !character) {
+        return true;
+    }
+    const heldOrder = orderRevisions.get(chaId);
+    if (heldOrder !== undefined && (compareRevision(collection.order.revision, heldOrder) ?? 0) < 0) {
+        return true;
+    }
+    const byId = new Map(collection.chats.map((chat) => [chat.id, chat]));
+    const local = new Map(chatsOf(character).map((chat) => [chat.id!, chat]));
+    const next: Chat[] = [];
+    const placed = new Set<string>();
+    const adopted: { key: string; revision: string }[] = [];
+    for (const id of collection.order.ids) {
+        const record = byId.get(id);
+        if (!record || placed.has(id)) {
+            continue;
+        }
+        placed.add(id);
+        const key = keyOf(chaId, id);
+        const mine = local.get(id);
+        const held = chatRevisions.get(key);
+        if (!mine && hasUnsentDelete(key)) {
+            // Deleted here, not yet on the server: stays out of the mirror (its delete settles it).
+            continue;
+        }
+        if (mine && (!canRefreshChat({ chaId, chatId: id }) || pending.get(key)?.create)) {
+            next.push(mine);
+            continue;
+        }
+        if (mine && held !== undefined && (compareRevision(record.revision, held) ?? 0) <= 0) {
+            next.push(mine);
+            continue;
+        }
+        next.push(record.data);
+        adopted.push({ key, revision: record.revision });
+    }
+    const removed: string[] = [];
+    for (const [id, chat] of local) {
+        if (placed.has(id)) {
+            continue;
+        }
+        const key = keyOf(chaId, id);
+        if (!chatRevisions.has(key) || !canRefreshChat({ chaId, chatId: id })) {
+            // Not on the server yet, or busy here: kept; its own save (or a conflict) settles it.
+            next.push(chat);
+            continue;
+        }
+        if (issued && issued.get(key) !== chatRevisions.get(key)) {
+            // A newer copy arrived while the list was read (a job's chat event): read the list again.
+            return false;
+        }
+        removed.push(key);
+    }
+    if (next.length === 0) {
+        // Every chat is gone on the server (the writer's own new chat follows in a later change):
+        // the list is left as it is rather than creating a chat here, which would be a write.
+        return true;
+    }
+    orderRevisions.set(chaId, collection.order.revision);
+    for (const { key, revision } of adopted) {
+        holdChatRevision(key, revision);
+        staleChats.delete(key);
+        settleNotice(key, revision);
+        changed(key);
+    }
+    for (const key of removed) {
+        chatRevisions.delete(key);
+        staleChats.delete(key);
+        noticedChats.delete(key);
+        changed(key);
+    }
+    chatsOf(character).splice(0, chatsOf(character).length, ...next);
+    mutationToken += 1;
+    syncChatPage(chaId);
+    remoteListener?.({ chaId, chatId: "" });
     return true;
 }
 
