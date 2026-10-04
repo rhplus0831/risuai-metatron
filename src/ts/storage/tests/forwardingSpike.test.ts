@@ -6,8 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Phase 3, slice 1: the forwarding-layer spike (`docs/plan/phases/slices/phase-3-settings-sections/
 // spike-forwarding-layer.md`). Every case runs over the test-only prototype layer in
-// `forwardingHarness.svelte.ts`, installed on `DBState.db` so the real `getSettingValue` /
-// `setSettingValue` and the real `SettingNumber.svelte` wrapper run unchanged against it.
+// `forwardingHarness.svelte.ts`, installed on `DBState.db`. Since Phase 6 slice 6 the real
+// `getSettingValue` / `setSettingValue` resolve `bindKey`/`bindPath` through the settings record
+// views (the real records), which the prototype does not back: the spike's wrapper components bind
+// through the pre-slice-6 registry copy over `DBState.db` (`spikeRegistry.ts`), and the real
+// `SettingNumber.svelte` case (proof 4) runs over the production layer, installed as the app does.
 //
 // `stores.svelte.ts` wires module updates into a module-level effect, `Help.svelte` (reached
 // through the real wrapper) imports the alert module, and `database.svelte.ts` (reached through
@@ -29,6 +32,10 @@ vi.mock("../../alert", () => ({
 
 import type { SettingContext, SettingItem } from "../../setting/types";
 import { DBState } from "../../stores.svelte";
+import { setDatabase, type Database } from "../database.svelte";
+import { resetRecords } from "../records.svelte";
+import { selectPreset } from "../selection.svelte";
+import { activePersona, activePreset, settings } from "../settingsViews.svelte";
 import SettingNumber from "src/lib/Setting/Wrappers/SettingNumber.svelte";
 import {
     createProbe,
@@ -47,6 +54,7 @@ import {
     switchTo,
     type SpikeDb,
 } from "./forwardingHarness.svelte";
+import { candidateContext } from "./spikeRegistry";
 import SpikeNumberSync from "./SpikeNumberSync.svelte";
 import SpikeSelectSync from "./SpikeSelectSync.svelte";
 import SpikeTextSync from "./SpikeTextSync.svelte";
@@ -56,8 +64,20 @@ type Mounted = ReturnType<typeof mount>;
 const mounted: Mounted[] = [];
 let db: SpikeDb;
 
+/** The context the spike's wrapper components get: the candidate (`spikeRegistry.ts`). */
 function ctx(): SettingContext {
-    return { db: DBState.db, modelInfo: undefined, subModelInfo: undefined } as unknown as SettingContext;
+    return candidateContext();
+}
+
+/** The real registry's context (the record views), for the real wrapper over the production layer. */
+function realCtx(): SettingContext {
+    return {
+        settings,
+        preset: activePreset,
+        persona: activePersona,
+        modelInfo: undefined,
+        subModelInfo: undefined,
+    } as unknown as SettingContext;
 }
 
 function render(component: Parameters<typeof mount>[0], props: Record<string, unknown>) {
@@ -117,6 +137,9 @@ afterEach(async () => {
     const instances = mounted.splice(0);
     await Promise.all(instances.map((instance) => unmount(instance)));
     document.body.replaceChildren();
+    // Proof 4's real-wrapper case installs the production layer; forget its records and selection.
+    selectPreset("");
+    resetRecords();
 });
 
 describe("the installed Svelte proxy over forwarding accessors", () => {
@@ -387,14 +410,24 @@ describe("proof 4: a wrapper write made in the same flush as a switch must land 
         // The spike's proof 4 showed that the old wrapper (`localValue` + two effects) lost this
         // edit: the DB-to-local effect ran first and overwrote `localValue` with b's value, so the
         // guarded write-back had nothing to write. Slice 5 rewrote the wrapper to the replacement
-        // pattern below; this is the regression test for the real wrapper.
+        // pattern below; this is the regression test for the real wrapper. Since slice 6 its
+        // registry reads the real records, so it runs over the production layer (presets `a` at 80
+        // and `b` at 50, as in the harness), installed as the app does; the switch is the selection.
+        selectPreset("");
+        setDatabase({
+            characters: [],
+            botPresets: [
+                { id: "a", name: "A", temperature: 80 },
+                { id: "b", name: "B", temperature: 50 },
+            ],
+        } as unknown as Database);
         const item = numberItem();
-        const { target } = render(SettingNumber, { item, ctx: ctx() });
+        const { target } = render(SettingNumber, { item, ctx: realCtx() });
         const element = target.querySelector<HTMLInputElement>("input")!;
         expect(element.value).toBe("80");
 
         typeInto(element, "91");
-        switchTo("b");
+        selectPreset("b");
         flushSync();
 
         expect(preset("a")!.temperature).toBe(91);

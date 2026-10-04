@@ -32,7 +32,7 @@ export const chatFormatSettingsItems: SettingItem[] = [
         type: "textarea",
         fallbackLabel: "Jinja Template",
         bindKey: "JinjaTemplate",
-        condition: (ctx) => ctx.db.instructChatTemplate === "jinja",
+        condition: (ctx) => ctx.preset.instructChatTemplate === "jinja",
         keywords: ["jinja", "template", "custom"],
     },
 ];

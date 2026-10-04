@@ -50,6 +50,7 @@ vi.mock("src/ts/process/modules", () => ({
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 
 import { DBState } from "src/ts/stores.svelte";
+import { setDatabaseLite } from "src/ts/storage/database.svelte";
 import OtherBotSettings from "./OtherBotSettings.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
@@ -76,7 +77,9 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 beforeEach(() => {
     const exported = createHypaV3Preset("Exported", { memoryTokensRatio: 0.35, queryChatCount: 7 });
     const other = createHypaV3Preset("Other");
-    DBState.db = {
+    // Installed the way the app installs a database (its fields moved into the records), since the
+    // page reads the records through the settings views (Phase 6 slice 6).
+    setDatabaseLite({
         characters: [],
         hypaV3: true,
         hypav2: false,
@@ -85,7 +88,7 @@ beforeEach(() => {
         useLegacyGUI: false,
         hypaV3Presets: [other, exported],
         hypaV3PresetId: exported.id,
-    } as any;
+    } as any);
 });
 
 afterEach(() => {

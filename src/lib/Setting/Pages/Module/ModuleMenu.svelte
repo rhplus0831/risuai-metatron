@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import type { loreBook } from "src/ts/storage/database.svelte";
@@ -16,7 +17,6 @@
     import { exportRegex, importRegex } from "src/ts/process/regexFiles";
     import { selectMultipleFile } from "src/ts/util";
 
-    import { DBState } from "src/ts/stores.svelte";
     import { v4 } from "uuid";
 
     let submenu = $state(0);
@@ -29,7 +29,7 @@
     let assetFilePath: string[] = $state([]);
 
     $effect.pre(() => {
-        if (DBState.db.useAdditionalAssetsPreview) {
+        if (settings.ui.useAdditionalAssetsPreview) {
             if (currentModule?.assets) {
                 for (let i = 0; i < currentModule.assets.length; i++) {
                     if (currentModule.assets[i].length > 2 && currentModule.assets[i][2]) {
@@ -341,7 +341,7 @@
                     {#each currentModule.assets as assets, i}
                         <tr>
                             <td class="font-medium truncate">
-                                {#if assetFilePath[i] && DBState.db.useAdditionalAssetsPreview}
+                                {#if assetFilePath[i] && settings.ui.useAdditionalAssetsPreview}
                                     {#if assetFileExtensions[i] === "mp4"}
                                         <!-- svelte-ignore a11y_media_has_caption -->
                                         <video controls class="mt-2 px-2 w-full m-1 rounded-md"

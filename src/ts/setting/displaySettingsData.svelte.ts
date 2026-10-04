@@ -32,7 +32,7 @@ export const displayThemeSettingsItems: SettingItem[] = [
         id: "display.customGui",
         type: "button",
         labelKey: "defineCustomGUI",
-        condition: (ctx) => ctx.db.theme === "custom",
+        condition: (ctx) => ctx.settings.ui.theme === "custom",
         options: {
             onClick: () => CustomGUISettingMenuStore.set(true),
         },
@@ -44,7 +44,7 @@ export const displayThemeSettingsItems: SettingItem[] = [
         labelKey: "chatHTML",
         helpKey: "chatHTML",
         bindKey: "guiHTML",
-        condition: (ctx) => ctx.db.theme === "customHTML",
+        condition: (ctx) => ctx.settings.ui.theme === "customHTML",
         keywords: ["custom", "html", "chat"],
     },
     {
@@ -52,7 +52,7 @@ export const displayThemeSettingsItems: SettingItem[] = [
         type: "slider",
         labelKey: "waifuWidth",
         bindKey: "waifuWidth",
-        condition: (ctx) => ctx.db.theme === "waifu",
+        condition: (ctx) => ctx.settings.ui.theme === "waifu",
         options: {
             min: 50,
             max: 200,
@@ -66,7 +66,7 @@ export const displayThemeSettingsItems: SettingItem[] = [
         type: "slider",
         labelKey: "waifuWidth2",
         bindKey: "waifuWidth2",
-        condition: (ctx) => ctx.db.theme === "waifu",
+        condition: (ctx) => ctx.settings.ui.theme === "waifu",
         options: {
             min: 20,
             max: 150,
@@ -85,7 +85,7 @@ export const displayThemeSettingsItems: SettingItem[] = [
         id: "display.customColorScheme",
         type: "custom",
         componentId: "CustomColorSchemeEditor",
-        condition: (ctx) => ctx.db.colorSchemeName === "custom",
+        condition: (ctx) => ctx.settings.ui.colorSchemeName === "custom",
         keywords: ["custom", "color", "scheme"],
     },
     {
@@ -108,7 +108,7 @@ export const displayThemeSettingsItems: SettingItem[] = [
         id: "display.customTextTheme",
         type: "custom",
         componentId: "CustomTextThemeEditor",
-        condition: (ctx) => ctx.db.textTheme === "custom",
+        condition: (ctx) => ctx.settings.ui.textTheme === "custom",
         keywords: ["custom", "text", "color", "theme"],
     },
     {
@@ -132,7 +132,7 @@ export const displayThemeSettingsItems: SettingItem[] = [
         type: "text",
         fallbackLabel: "",
         bindKey: "customFont",
-        condition: (ctx) => ctx.db.font === "custom",
+        condition: (ctx) => ctx.settings.ui.font === "custom",
         onChange: () => updateTextThemeAndCSS(),
         keywords: ["font", "custom"],
     },
@@ -230,7 +230,7 @@ export const displaySizeSettingsItems: SettingItem[] = [
         type: "slider",
         labelKey: "memoryLimitThickness",
         bindKey: "memoryLimitThickness",
-        condition: (ctx) => ctx.db.showMemoryLimit,
+        condition: (ctx) => ctx.settings.ui.showMemoryLimit,
         options: { min: 1, max: 500, step: 1 },
         keywords: ["memory", "limit", "thickness"],
     },
@@ -413,11 +413,11 @@ export const displayOtherSettingsItems: SettingItem[] = [
         id: "display.leadingDoubleQuote",
         type: "text",
         labelKey: "leadingDoubleQuote",
-        condition: (ctx) => ctx.db.customQuotes,
-        getValue: (db) => db.customQuotesData?.[0] ?? "",
-        setValue: (db, value: string) => {
-            db.customQuotesData ??= ['"', '"', "'", "'"];
-            db.customQuotesData[0] = value;
+        condition: (ctx) => ctx.settings.ui.customQuotes,
+        getValue: (ctx) => ctx.settings.ui.customQuotesData?.[0] ?? "",
+        setValue: (value: string, ctx) => {
+            ctx.settings.ui.customQuotesData ??= ['"', '"', "'", "'"];
+            ctx.settings.ui.customQuotesData[0] = value;
         },
         keywords: ["quote", "double", "leading"],
     },
@@ -425,11 +425,11 @@ export const displayOtherSettingsItems: SettingItem[] = [
         id: "display.trailingDoubleQuote",
         type: "text",
         labelKey: "trailingDoubleQuote",
-        condition: (ctx) => ctx.db.customQuotes,
-        getValue: (db) => db.customQuotesData?.[1] ?? "",
-        setValue: (db, value: string) => {
-            db.customQuotesData ??= ['"', '"', "'", "'"];
-            db.customQuotesData[1] = value;
+        condition: (ctx) => ctx.settings.ui.customQuotes,
+        getValue: (ctx) => ctx.settings.ui.customQuotesData?.[1] ?? "",
+        setValue: (value: string, ctx) => {
+            ctx.settings.ui.customQuotesData ??= ['"', '"', "'", "'"];
+            ctx.settings.ui.customQuotesData[1] = value;
         },
         keywords: ["quote", "double", "trailing"],
     },
@@ -437,11 +437,11 @@ export const displayOtherSettingsItems: SettingItem[] = [
         id: "display.leadingSingleQuote",
         type: "text",
         labelKey: "leadingSingleQuote",
-        condition: (ctx) => ctx.db.customQuotes,
-        getValue: (db) => db.customQuotesData?.[2] ?? "",
-        setValue: (db, value: string) => {
-            db.customQuotesData ??= ['"', '"', "'", "'"];
-            db.customQuotesData[2] = value;
+        condition: (ctx) => ctx.settings.ui.customQuotes,
+        getValue: (ctx) => ctx.settings.ui.customQuotesData?.[2] ?? "",
+        setValue: (value: string, ctx) => {
+            ctx.settings.ui.customQuotesData ??= ['"', '"', "'", "'"];
+            ctx.settings.ui.customQuotesData[2] = value;
         },
         keywords: ["quote", "single", "leading"],
     },
@@ -449,11 +449,11 @@ export const displayOtherSettingsItems: SettingItem[] = [
         id: "display.trailingSingleQuote",
         type: "text",
         labelKey: "trailingSingleQuote",
-        condition: (ctx) => ctx.db.customQuotes,
-        getValue: (db) => db.customQuotesData?.[3] ?? "",
-        setValue: (db, value: string) => {
-            db.customQuotesData ??= ['"', '"', "'", "'"];
-            db.customQuotesData[3] = value;
+        condition: (ctx) => ctx.settings.ui.customQuotes,
+        getValue: (ctx) => ctx.settings.ui.customQuotesData?.[3] ?? "",
+        setValue: (value: string, ctx) => {
+            ctx.settings.ui.customQuotesData ??= ['"', '"', "'", "'"];
+            ctx.settings.ui.customQuotesData[3] = value;
         },
         keywords: ["quote", "single", "trailing"],
     },
@@ -472,7 +472,7 @@ export const displayOtherSettingsItems: SettingItem[] = [
         helpKey: "unrecommended",
         helpUnrecommended: true,
         bindKey: "useChatSticker",
-        condition: (ctx) => ctx.db.showUnrecommended,
+        condition: (ctx) => ctx.settings.ui.showUnrecommended,
         keywords: ["chat", "sticker"],
     },
     {

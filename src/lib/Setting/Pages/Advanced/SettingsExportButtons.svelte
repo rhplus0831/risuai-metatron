@@ -1,8 +1,8 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { SECTION_FIELDS } from "../../../../../shared/sections.ts";
     import { language } from "src/lang";
     import Button from "src/lib/UI/GUI/Button.svelte";
-    import { DBState } from "src/ts/stores.svelte";
     import { alertMd, alertNormal } from "src/ts/alert";
     import { downloadFile, getRequestLog } from "src/ts/globalApi.svelte";
     import { getDatabase } from "src/ts/storage/database.svelte";
@@ -21,7 +21,7 @@
     className="mt-4"
     onclick={async () => {
         let mdTable = "| Type | Value |\n| --- | --- |\n";
-        const s = DBState.db.statics;
+        const s = settings.statics;
         for (const key in s) {
             mdTable += `| ${key} | ${s[key]} |\n`;
         }

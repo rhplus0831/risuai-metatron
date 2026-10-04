@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { DBState } from "src/ts/stores.svelte";
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
@@ -26,20 +26,20 @@
     <Button
         className="mt-2"
         onclick={(e) => {
-            if (DBState.db.customModels[index].flags.includes(flag)) {
-                DBState.db.customModels[index].flags = DBState.db.customModels[index].flags.filter((f) => f !== flag);
+            if (settings.customModels[index].flags.includes(flag)) {
+                settings.customModels[index].flags = settings.customModels[index].flags.filter((f) => f !== flag);
             } else {
-                DBState.db.customModels[index].flags.push(flag);
+                settings.customModels[index].flags.push(flag);
             }
         }}
-        styled={DBState.db.customModels[index].flags.includes(flag) ? "primary" : "outlined"}
+        styled={settings.customModels[index].flags.includes(flag) ? "primary" : "outlined"}
     >
         {name}
     </Button>
 {/snippet}
 
 {#snippet mainBody()}
-    {#each DBState.db.customModels as model, index (model.id)}
+    {#each settings.customModels as model, index (model.id)}
         <div class="flex flex-col mt-2">
             <button
                 class="hover:bg-selected px-6 py-2 text-lg rounded-t-md border-selected border flex justify-between items-center"
@@ -62,11 +62,11 @@
                         onclick={(e) => {
                             e.stopPropagation();
                             if (index === 0) return;
-                            let models = DBState.db.customModels;
+                            let models = settings.customModels;
                             let temp = models[index];
                             models[index] = models[index - 1];
                             models[index - 1] = temp;
-                            DBState.db.customModels = models;
+                            settings.customModels = models;
                         }}
                     >
                         <ArrowUp />
@@ -76,12 +76,12 @@
                         styled="outlined"
                         onclick={(e) => {
                             e.stopPropagation();
-                            if (index === DBState.db.customModels.length - 1) return;
-                            let models = DBState.db.customModels;
+                            if (index === settings.customModels.length - 1) return;
+                            let models = settings.customModels;
                             let temp = models[index];
                             models[index] = models[index + 1];
                             models[index + 1] = temp;
-                            DBState.db.customModels = models;
+                            settings.customModels = models;
                         }}
                     >
                         <ArrowDown />
@@ -93,12 +93,12 @@
                             e.stopPropagation();
                             // By the captured id: the model's key leaves the server with it.
                             const id = model.id;
-                            let models = DBState.db.customModels;
+                            let models = settings.customModels;
                             const at = models.findIndex((entry) => entry.id === id);
                             if (at !== -1) {
                                 models.splice(at, 1);
                             }
-                            DBState.db.customModels = models;
+                            settings.customModels = models;
                             deleteEntrySecret("customModels", id);
                             openedModels.delete(model.id);
                             openedModels = new Set(openedModels);
@@ -111,17 +111,17 @@
             {#if openedModels.has(model.id)}
                 <div class="flex flex-col border border-selected p-2 rounded-b-md overflow-x-auto">
                     <span class="text-textcolor mt-4">{language.name}</span>
-                    <TextInput size={"sm"} bind:value={DBState.db.customModels[index].name} />
+                    <TextInput size={"sm"} bind:value={settings.customModels[index].name} />
                     <span class="text-textcolor mt-4">{language.proxyRequestModel}</span>
-                    <TextInput size={"sm"} bind:value={DBState.db.customModels[index].internalId} />
+                    <TextInput size={"sm"} bind:value={settings.customModels[index].internalId} />
                     <span class="text-textcolor mt-4">URL</span>
-                    <TextInput size={"sm"} bind:value={DBState.db.customModels[index].url} />
+                    <TextInput size={"sm"} bind:value={settings.customModels[index].url} />
                     <span class="text-textcolor mt-4">{language.tokenizer}</span>
                     <SelectInput
                         size={"sm"}
-                        value={DBState.db.customModels[index].tokenizer.toString()}
+                        value={settings.customModels[index].tokenizer.toString()}
                         onchange={(e) => {
-                            DBState.db.customModels[index].tokenizer = parseInt(e.currentTarget.value) as LLMTokenizer;
+                            settings.customModels[index].tokenizer = parseInt(e.currentTarget.value) as LLMTokenizer;
                         }}
                     >
                         <OptionInput value="0">Unknown</OptionInput>
@@ -144,9 +144,9 @@
                     <span class="text-textcolor">{language.format}</span>
                     <SelectInput
                         size={"sm"}
-                        value={DBState.db.customModels[index].format.toString()}
+                        value={settings.customModels[index].format.toString()}
                         onchange={(e) => {
-                            DBState.db.customModels[index].format = parseInt(e.currentTarget.value) as LLMFormat;
+                            settings.customModels[index].format = parseInt(e.currentTarget.value) as LLMFormat;
                         }}
                     >
                         <OptionInput value="0">OpenAICompatible</OptionInput>
@@ -169,7 +169,7 @@
                     <SecretInput path={{ kind: "entry", field: "customModels", id: model.id }} />
                     <span class="text-textcolor">{language.additionalParams}</span>
                     <TextAreaInput
-                        bind:value={DBState.db.customModels[index].params}
+                        bind:value={settings.customModels[index].params}
                         placeholder={`temperature=0.7
     max_tokens=2000
     reasoning_effort="high"
@@ -211,7 +211,7 @@
         <button
             class="hover:bg-selected px-6 py-2 text-lg rounded-md border-selected border flex justify-center items-center cursor-pointer"
             onclick={() => {
-                DBState.db.customModels.push({
+                settings.customModels.push({
                     internalId: "",
                     url: "",
                     tokenizer: 0,

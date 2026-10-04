@@ -61,11 +61,11 @@ export const languageSettingsItems: SettingItem[] = [
                     );
                 }
 
-                ctx.db.language = "en";
+                ctx.settings.ui.language = "en";
             }
 
             await sleep(10);
-            changeLanguage(ctx.db.language);
+            changeLanguage(ctx.settings.ui.language);
             langState.changed = true;
         },
     },
@@ -95,9 +95,13 @@ export const languageSettingsItems: SettingItem[] = [
                 {
                     value: "zh-TW",
                     label: "Chinese (Traditional)",
-                    condition: (ctx) => ctx.db.translatorType === "google",
+                    condition: (ctx) => ctx.settings.memoryTranslateMedia.translatorType === "google",
                 },
-                { value: "fa", label: "Persian (Farsi)", condition: (ctx) => ctx.db.translatorType === "google" },
+                {
+                    value: "fa",
+                    label: "Persian (Farsi)",
+                    condition: (ctx) => ctx.settings.memoryTranslateMedia.translatorType === "google",
+                },
                 { value: "ja", label: "Japanese" },
                 { value: "fr", label: "French" },
                 { value: "es", label: "Spanish" },
@@ -116,7 +120,7 @@ export const languageSettingsItems: SettingItem[] = [
         labelKey: "translatorType",
         bindKey: "translatorType",
         classes: "mt-4",
-        condition: (ctx) => !!ctx.db.translator,
+        condition: (ctx) => !!ctx.settings.memoryTranslateMedia.translator,
         options: {
             selectOptions: [
                 { value: "google", label: "Google" },
@@ -135,7 +139,9 @@ export const languageSettingsItems: SettingItem[] = [
         labelKey: "deeplKey",
         bindPath: "deeplOptions.key",
         classes: "mt-4",
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "deepl",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "deepl",
     },
 
     {
@@ -144,7 +150,9 @@ export const languageSettingsItems: SettingItem[] = [
         labelKey: "deeplFreeKey",
         bindPath: "deeplOptions.freeApi",
         classes: "mt-2",
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "deepl",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "deepl",
     },
 
     {
@@ -153,7 +161,9 @@ export const languageSettingsItems: SettingItem[] = [
         labelKey: "deeplXUrl",
         bindPath: "deeplXOptions.url",
         classes: "mt-4",
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "deeplX",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "deeplX",
     },
 
     {
@@ -162,14 +172,18 @@ export const languageSettingsItems: SettingItem[] = [
         labelKey: "deeplXToken",
         bindPath: "deeplXOptions.token",
         classes: "mt-4",
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "deeplX",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "deeplX",
     },
 
     {
         id: "lang.llmPresets",
         type: "custom",
         componentId: "TranslatorPresetSettings",
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "llm",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "llm",
     },
 
     {
@@ -178,7 +192,9 @@ export const languageSettingsItems: SettingItem[] = [
         labelKey: "sourceLanguage",
         bindKey: "translatorInputLanguage",
         classes: "mt-4",
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "google",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "google",
         options: {
             selectOptions: [
                 { value: "auto", label: "Auto" },
@@ -200,7 +216,9 @@ export const languageSettingsItems: SettingItem[] = [
         labelKey: "htmlTranslation",
         bindKey: "htmlTranslation",
         classes: "mt-4",
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "bergamot",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "bergamot",
     },
 
     // General Translation Options
@@ -210,7 +228,7 @@ export const languageSettingsItems: SettingItem[] = [
         labelKey: "autoTranslation",
         bindKey: "autoTranslate",
         classes: "mt-2",
-        condition: (ctx) => !!ctx.db.translator,
+        condition: (ctx) => !!ctx.settings.memoryTranslateMedia.translator,
     },
 
     {
@@ -220,7 +238,7 @@ export const languageSettingsItems: SettingItem[] = [
         bindKey: "combineTranslation",
         helpKey: "combineTranslation",
         classes: "mt-4",
-        condition: (ctx) => !!ctx.db.translator,
+        condition: (ctx) => !!ctx.settings.memoryTranslateMedia.translator,
     },
 
     {
@@ -230,7 +248,7 @@ export const languageSettingsItems: SettingItem[] = [
         bindKey: "legacyTranslation",
         helpKey: "legacyTranslation",
         classes: "mt-4",
-        condition: (ctx) => !!ctx.db.translator,
+        condition: (ctx) => !!ctx.settings.memoryTranslateMedia.translator,
     },
 
     {
@@ -240,7 +258,9 @@ export const languageSettingsItems: SettingItem[] = [
         bindKey: "translateBeforeHTMLFormatting",
         helpKey: "translateBeforeHTMLFormatting",
         classes: "mt-4",
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "llm",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "llm",
     },
 
     {
@@ -250,7 +270,9 @@ export const languageSettingsItems: SettingItem[] = [
         bindKey: "autoTranslateCachedOnly",
         helpKey: "autoTranslateCachedOnly",
         classes: "mt-4",
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "llm",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "llm",
     },
 
     // Translation Cache
@@ -259,7 +281,9 @@ export const languageSettingsItems: SettingItem[] = [
         type: "button",
         labelKey: "exportTranslationCache",
         classes: "mt-4",
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "llm",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "llm",
         options: {
             onClick: async () => {
                 alertWait(language.loading);
@@ -285,7 +309,9 @@ export const languageSettingsItems: SettingItem[] = [
         type: "button",
         labelKey: "importTranslationCache",
         classes: "mt-2",
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "llm",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "llm",
         options: {
             onClick: async () => {
                 try {
@@ -332,7 +358,9 @@ export const languageSettingsItems: SettingItem[] = [
         type: "button",
         labelKey: "clearTranslationCache",
         classes: "mt-2",
-        condition: (ctx) => !!ctx.db.translator && ctx.db.translatorType === "llm",
+        condition: (ctx) =>
+            !!ctx.settings.memoryTranslateMedia.translator &&
+            ctx.settings.memoryTranslateMedia.translatorType === "llm",
         options: {
             onClick: async () => {
                 try {

@@ -1,5 +1,5 @@
 import type { SettingItem, SettingContext } from "./types";
-import { DBState } from "../stores.svelte";
+import { readSettingsRoot, writeSettingsRoot } from "../storage/settingsViews.svelte";
 import { language } from "src/lang";
 import { accessibilitySettingsItems } from "./accessibilitySettingsData";
 import { advancedSettingsItems } from "./advancedSettingsData";
@@ -22,34 +22,43 @@ export function getLabel(item: SettingItem): string {
 
 export function getSettingValue(item: SettingItem, ctx: SettingContext): any {
     if (item.getValue) {
-        return item.getValue(DBState.db, ctx);
+        return item.getValue(ctx);
     }
     if (item.bindPath) {
-        const parts = item.bindPath.split(".");
-        let value: any = DBState.db;
+        const [root, ...parts] = item.bindPath.split(".");
+        let value: any = readSettingsRoot(root);
         for (const part of parts) {
             value = value?.[part];
         }
         return value;
     }
     if (item.bindKey) {
-        return (DBState.db as any)[item.bindKey];
+        return readSettingsRoot(item.bindKey);
     }
     return undefined;
 }
 
 export function setSettingValue(item: SettingItem, newValue: any, ctx: SettingContext): void {
     if (item.setValue) {
-        item.setValue(DBState.db, newValue, ctx);
+        item.setValue(newValue, ctx);
     } else if (item.bindPath) {
-        const parts = item.bindPath.split(".");
-        let obj: any = DBState.db;
-        for (let i = 0; i < parts.length - 1; i++) {
-            obj = obj[parts[i]] ??= {};
+        const [root, ...parts] = item.bindPath.split(".");
+        if (parts.length === 0) {
+            writeSettingsRoot(root, newValue);
+        } else {
+            let obj: any = readSettingsRoot(root);
+            if (obj === undefined || obj === null) {
+                obj = {};
+                writeSettingsRoot(root, obj);
+                obj = readSettingsRoot(root);
+            }
+            for (let i = 0; i < parts.length - 1; i++) {
+                obj = obj[parts[i]] ??= {};
+            }
+            obj[parts[parts.length - 1]] = newValue;
         }
-        obj[parts[parts.length - 1]] = newValue;
     } else if (item.bindKey) {
-        (DBState.db as any)[item.bindKey] = newValue;
+        writeSettingsRoot(item.bindKey, newValue);
     }
 
     if (item.onChange) {

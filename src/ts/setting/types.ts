@@ -5,7 +5,7 @@
  * Settings are defined as data and rendered automatically by SettingRenderer.
  */
 
-import type { Database } from "../storage/database.svelte";
+import type { ActivePersona, ActivePreset, SettingsRootKey, SettingsViews } from "../storage/settingsViews.svelte";
 import type { CustomComponentId, CustomComponentProps } from "./customComponents";
 import type { LLMModel } from "../model/types";
 
@@ -13,7 +13,12 @@ import type { LLMModel } from "../model/types";
  * Context passed to condition functions for visibility checks
  */
 export interface SettingContext {
-    db: Database;
+    /** The settings record views (`settings.<section>.<field>`, the collections). */
+    settings: SettingsViews;
+    /** The selected preset, by its own field names. */
+    preset: ActivePreset;
+    /** The selected persona. */
+    persona: ActivePersona;
     modelInfo: LLMModel;
     subModelInfo: LLMModel;
 }
@@ -122,22 +127,24 @@ export interface SettingItem {
     showExperimental?: boolean;
 
     /**
-     * Database key for binding (DBState.db.xxx)
+     * Root field name for binding (a section field, a forwarded preset field by its root name, a
+     * persona alias, or a collection), resolved through the settings views (`readSettingsRoot`).
      * Only for input types (check, text, number, textarea, slider, select, color)
      */
-    bindKey?: keyof Database;
+    bindKey?: SettingsRootKey;
 
     /**
      * Path for nested object binding (e.g., 'ooba.top_p')
-     * Use when binding to nested properties like DBState.db.ooba.top_p
+     * Use when binding to nested properties like the selected preset's `ooba.top_p`; the first
+     * segment is a root field name, resolved like `bindKey`
      * Takes precedence over bindKey if both are specified
      */
-    bindPath?: string;
+    bindPath?: `${SettingsRootKey}.${string}`;
 
     /**
      * Condition function for visibility
      * Return true to show, false to hide
-     * @param ctx - Contains db, modelInfo, and subModelInfo
+     * @param ctx - Contains settings, preset, persona, modelInfo, and subModelInfo
      */
     condition?: (ctx: SettingContext) => boolean;
 
@@ -169,13 +176,13 @@ export interface SettingItem {
      * Recommended over bindKey/bindPath for complete type safety and reactivity.
      * TODO: Consider making SettingItem generic or using discriminated unions to eliminate `any` from accessor signatures.
      */
-    getValue?: (db: Database, ctx?: SettingContext) => any;
+    getValue?: (ctx: SettingContext) => any;
 
     /**
      * Optional setter function for the setting's value.
      * TODO: Consider making SettingItem generic or using discriminated unions to eliminate `any` from accessor signatures.
      */
-    setValue?: (db: Database, val: any, ctx?: SettingContext) => void;
+    setValue?: (val: any, ctx: SettingContext) => void;
 
     /**
      * Optional callback fired when the value changes (useful for side-effects like CSS updates)

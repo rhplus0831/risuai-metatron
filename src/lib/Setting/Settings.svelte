@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
         AccessibilityIcon,
         ActivityIcon,
@@ -23,7 +24,6 @@
     import PluginSettings from "./Pages/PluginSettings.svelte";
     import AdvancedSettings from "./Pages/AdvancedSettings.svelte";
     import { additionalSettingsMenu, easyPanelStore, SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
-    import { DBState } from "src/ts/stores.svelte";
     import Communities from "./Pages/Communities.svelte";
     import GlobalLoreBookSettings from "./Pages/GlobalLoreBookSettings.svelte";
     import Lorepreset from "./lorepreset.svelte";
@@ -194,7 +194,7 @@
                     </button>
                 {/each}
 
-                {#if DBState.db.enableRisuaiProTools}
+                {#if settings.ui.enableRisuaiProTools}
                     <button
                         class="flex gap-2 items-center hover:text-textcolor"
                         class:text-textcolor={$SettingsMenuIndex === 16}
@@ -223,7 +223,7 @@
                             settingsOpen.set(false);
                         }}
                     >
-                        <CircleXIcon size={DBState.db.settingsCloseButtonSize} />
+                        <CircleXIcon size={settings.ui.settingsCloseButtonSize} />
                     </button>
                 {/if}
             </div>
@@ -286,7 +286,7 @@
                     }
                 }}
             >
-                <CircleXIcon size={DBState.db.settingsCloseButtonSize} />
+                <CircleXIcon size={settings.ui.settingsCloseButtonSize} />
             </button>
         {/if}
     </div>

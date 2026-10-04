@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { language } from "src/lang";
     import Help from "src/lib/Others/Help.svelte";
@@ -23,10 +24,15 @@
     import { createHypaV3Preset } from "src/ts/process/memory/hypav3";
     import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 
-    let submenu = $state(DBState.db.useLegacyGUI ? -1 : 0);
+    let submenu = $state(settings.ui.useLegacyGUI ? -1 : 0);
 
     // HypaV3: the selected preset, by id (`hypaV3PresetId`); the first one when that id is gone.
-    const currentHypaV3 = $derived(selectedHypaV3Preset(DBState.db));
+    const currentHypaV3 = $derived(
+        selectedHypaV3Preset({
+            hypaV3Presets: settings.hypaV3Presets.items,
+            hypaV3PresetId: settings.hypaV3Presets.selectedId,
+        }),
+    );
 
     $effect(() => {
         const settings = currentHypaV3?.settings;
@@ -63,14 +69,14 @@
     });
 
     async function getMaxMemoryRatio(): Promise<number> {
-        const promptTemplateToken = await tokenizePreset(DBState.db.promptTemplate);
+        const promptTemplateToken = await tokenizePreset(activePreset.promptTemplate);
         const char = DBState.db.characters[$selectedCharID];
         const charToken = await getCharToken(char);
-        const maxLoreToken = char.loreSettings?.tokenBudget ?? DBState.db.loreBookToken;
-        const maxResponse = DBState.db.maxResponse;
+        const maxLoreToken = char.loreSettings?.tokenBudget ?? settings.providers.loreBookToken;
+        const maxResponse = activePreset.maxResponse;
         const requiredToken =
             promptTemplateToken + charToken.persistant + Math.min(charToken.dynamic, maxLoreToken) + maxResponse * 3;
-        const maxContext = DBState.db.maxContext;
+        const maxContext = activePreset.maxContext;
 
         if (maxContext === 0) {
             return 0;
@@ -108,7 +114,7 @@
      * https://wavespeed.ai/docs/docs-common-api/models
      */
     async function fetchWavespeedModels() {
-        if (!DBState.db.wavespeedImage.key || DBState.db.wavespeedImage.key.trim() === "") {
+        if (!settings.secrets.wavespeedImage.key || settings.secrets.wavespeedImage.key.trim() === "") {
             alertError("WaveSpeed API Key not set");
             return [];
         }
@@ -118,7 +124,7 @@
             const result = await globalFetch("https://api.wavespeed.ai/api/v3/models", {
                 method: "GET",
                 headers: {
-                    Authorization: `Bearer ${DBState.db.wavespeedImage.key}`,
+                    Authorization: `Bearer ${settings.secrets.wavespeedImage.key}`,
                 },
             });
 
@@ -174,18 +180,18 @@
      * Handle model selection change
      */
     function handleModelChange() {
-        const selectedModel = wavespeedModels.find((m) => m.model_id === DBState.db.wavespeedImage.model);
+        const selectedModel = wavespeedModels.find((m) => m.model_id === settings.secrets.wavespeedImage.model);
 
         // Reset reference_mode for text-to-image models
         if (selectedModel?.supportsImageInput) {
-            DBState.db.wavespeedImage.reference_mode = "";
-            DBState.db.wavespeedImage.reference_image = undefined;
-            DBState.db.wavespeedImage.reference_base64image = undefined;
+            settings.secrets.wavespeedImage.reference_mode = "";
+            settings.secrets.wavespeedImage.reference_image = undefined;
+            settings.secrets.wavespeedImage.reference_base64image = undefined;
         }
 
         // Reset loras if model doesn't support them
         if (!selectedModel?.supportsLoras) {
-            DBState.db.wavespeedImage.loras = undefined;
+            settings.secrets.wavespeedImage.loras = undefined;
         }
     }
 
@@ -214,8 +220,8 @@
 
     $effect(() => {
         // Sync loras to DB, filtering out empty URLs
-        if (DBState.db.wavespeedImage) {
-            DBState.db.wavespeedImage.loras = wavespeedLoras
+        if (settings.secrets.wavespeedImage) {
+            settings.secrets.wavespeedImage.loras = wavespeedLoras
                 .filter((item) => item.path && item.path.trim() !== "")
                 .map((item) => ({
                     path: item.path,
@@ -273,7 +279,7 @@
     <Accordion name={language.imageGeneration} styled disabled={submenu !== -1}>
         <span class="text-textcolor mt-2">{language.imageGeneration} {language.provider} <Help key="sdProvider" /></span
         >
-        <SelectInput className="mt-2 mb-4" bind:value={DBState.db.sdProvider}>
+        <SelectInput className="mt-2 mb-4" bind:value={settings.memoryTranslateMedia.sdProvider}>
             <OptionInput value="">None</OptionInput>
             <OptionInput value="webui">Stable Diffusion WebUI</OptionInput>
             <OptionInput value="novelai">Novel AI</OptionInput>
@@ -286,64 +292,87 @@
             <OptionInput value="wavespeed">WaveSpeedAI</OptionInput>
 
             <!-- Legacy -->
-            {#if DBState.db.sdProvider === "comfy"}
+            {#if settings.memoryTranslateMedia.sdProvider === "comfy"}
                 <OptionInput value="comfy">ComfyUI (Legacy)</OptionInput>
             {/if}
         </SelectInput>
 
-        {#if DBState.db.sdProvider === "webui"}
+        {#if settings.memoryTranslateMedia.sdProvider === "webui"}
             <span class="text-draculared text-xs mb-2">You must use WebUI with --api flag</span>
             <span class="text-draculared text-xs mb-2"
                 >You must use WebUI without agpl license or use unmodified version with agpl license to observe the
                 contents of the agpl license.</span
             >
             <span class="text-textcolor mt-2">WebUI {language.providerURL}</span>
-            <TextInput size="sm" marginBottom placeholder="https://..." bind:value={DBState.db.webUiUrl} />
+            <TextInput
+                size="sm"
+                marginBottom
+                placeholder="https://..."
+                bind:value={settings.memoryTranslateMedia.webUiUrl}
+            />
             <span class="text-textcolor">Steps</span>
-            <NumberInput size="sm" marginBottom min={0} max={100} bind:value={DBState.db.sdSteps} />
+            <NumberInput size="sm" marginBottom min={0} max={100} bind:value={settings.memoryTranslateMedia.sdSteps} />
 
             <span class="text-textcolor">CFG Scale</span>
-            <NumberInput size="sm" marginBottom min={0} max={20} bind:value={DBState.db.sdCFG} />
+            <NumberInput size="sm" marginBottom min={0} max={20} bind:value={settings.memoryTranslateMedia.sdCFG} />
 
             <span class="text-textcolor">Width</span>
-            <NumberInput size="sm" marginBottom min={0} max={2048} bind:value={DBState.db.sdConfig.width} />
+            <NumberInput
+                size="sm"
+                marginBottom
+                min={0}
+                max={2048}
+                bind:value={settings.memoryTranslateMedia.sdConfig.width}
+            />
             <span class="text-textcolor">Height</span>
-            <NumberInput size="sm" marginBottom min={0} max={2048} bind:value={DBState.db.sdConfig.height} />
+            <NumberInput
+                size="sm"
+                marginBottom
+                min={0}
+                max={2048}
+                bind:value={settings.memoryTranslateMedia.sdConfig.height}
+            />
             <span class="text-textcolor">Sampler</span>
-            <TextInput size="sm" marginBottom bind:value={DBState.db.sdConfig.sampler_name} />
+            <TextInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.sdConfig.sampler_name} />
 
             <div class="flex items-center mt-2">
-                <Check bind:check={DBState.db.sdConfig.enable_hr} name="Enable Hires" />
+                <Check bind:check={settings.memoryTranslateMedia.sdConfig.enable_hr} name="Enable Hires" />
             </div>
-            {#if DBState.db.sdConfig.enable_hr === true}
+            {#if settings.memoryTranslateMedia.sdConfig.enable_hr === true}
                 <span class="text-textcolor">denoising_strength</span>
                 <NumberInput
                     size="sm"
                     marginBottom
                     min={0}
                     max={10}
-                    bind:value={DBState.db.sdConfig.denoising_strength}
+                    bind:value={settings.memoryTranslateMedia.sdConfig.denoising_strength}
                 />
                 <span class="text-textcolor">hr_scale</span>
-                <NumberInput size="sm" marginBottom min={0} max={10} bind:value={DBState.db.sdConfig.hr_scale} />
+                <NumberInput
+                    size="sm"
+                    marginBottom
+                    min={0}
+                    max={10}
+                    bind:value={settings.memoryTranslateMedia.sdConfig.hr_scale}
+                />
                 <span class="text-textcolor">Upscaler</span>
-                <TextInput size="sm" marginBottom bind:value={DBState.db.sdConfig.hr_upscaler} />
+                <TextInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.sdConfig.hr_upscaler} />
             {/if}
         {/if}
 
-        {#if DBState.db.sdProvider === "novelai"}
+        {#if settings.memoryTranslateMedia.sdProvider === "novelai"}
             <span class="text-textcolor mt-2">Novel AI {language.providerURL}</span>
             <TextInput
                 size="sm"
                 marginBottom
                 placeholder="https://image.novelai.net"
-                bind:value={DBState.db.NAIImgUrl}
+                bind:value={settings.memoryTranslateMedia.NAIImgUrl}
             />
             <span class="text-textcolor">API Key</span>
-            <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={DBState.db.NAIApiKey} />
+            <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
 
             <span class="text-textcolor">Model</span>
-            <SelectInput className="mb-4" bind:value={DBState.db.NAIImgModel}>
+            <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.NAIImgModel}>
                 <OptionInput value="nai-diffusion-5-full">nai-diffusion-5-full</OptionInput>
                 <OptionInput value="nai-diffusion-5-curated">nai-diffusion-5-curated</OptionInput>
                 <OptionInput value="nai-diffusion-4-5-full">nai-diffusion-4-5-full</OptionInput>
@@ -356,13 +385,25 @@
             </SelectInput>
 
             <span class="text-textcolor">Width</span>
-            <NumberInput size="sm" marginBottom min={0} max={2048} bind:value={DBState.db.NAIImgConfig.width} />
+            <NumberInput
+                size="sm"
+                marginBottom
+                min={0}
+                max={2048}
+                bind:value={settings.memoryTranslateMedia.NAIImgConfig.width}
+            />
             <span class="text-textcolor">Height</span>
-            <NumberInput size="sm" marginBottom min={0} max={2048} bind:value={DBState.db.NAIImgConfig.height} />
+            <NumberInput
+                size="sm"
+                marginBottom
+                min={0}
+                max={2048}
+                bind:value={settings.memoryTranslateMedia.NAIImgConfig.height}
+            />
             <span class="text-textcolor">Sampler</span>
 
-            {#if DBState.db.NAIImgModel === "nai-diffusion-4-full" || DBState.db.NAIImgModel === "nai-diffusion-4-curated-preview" || DBState.db.NAIImgModel === "nai-diffusion-4-5-full" || DBState.db.NAIImgModel === "nai-diffusion-4-5-curated"}
-                <SelectInput className="mb-4" bind:value={DBState.db.NAIImgConfig.sampler}>
+            {#if settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-full" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-curated-preview" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-5-full" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-5-curated"}
+                <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.NAIImgConfig.sampler}>
                     <OptionInput value="k_euler_ancestral">Euler Ancestral</OptionInput>
                     <OptionInput value="k_dpmpp_2s_ancestral">DPM++ 2S Ancestral</OptionInput>
                     <OptionInput value="k_dpmpp_2m_sde">DPM++ 2M SDE</OptionInput>
@@ -371,7 +412,7 @@
                     <OptionInput value="k_dpmpp_sde">DPM++ SDE</OptionInput>
                 </SelectInput>
             {:else}
-                <SelectInput className="mb-4" bind:value={DBState.db.NAIImgConfig.sampler}>
+                <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.NAIImgConfig.sampler}>
                     <OptionInput value="k_euler_ancestral">Euler Ancestral</OptionInput>
                     <OptionInput value="k_dpmpp_2s_ancestral">DPM++ 2S Ancestral</OptionInput>
                     <OptionInput value="k_dpmpp_sde">DPM++ SDE</OptionInput>
@@ -383,7 +424,7 @@
             {/if}
 
             <span class="text-textcolor">Noise Schedule</span>
-            <SelectInput className="mb-4" bind:value={DBState.db.NAIImgConfig.noise_schedule}>
+            <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.NAIImgConfig.noise_schedule}>
                 <OptionInput value="native">native</OptionInput>
                 <OptionInput value="karras">karras</OptionInput>
                 <OptionInput value="exponential">exponential</OptionInput>
@@ -391,22 +432,40 @@
             </SelectInput>
 
             <span class="text-textcolor">steps</span>
-            <NumberInput size="sm" marginBottom min={0} max={2048} bind:value={DBState.db.NAIImgConfig.steps} />
+            <NumberInput
+                size="sm"
+                marginBottom
+                min={0}
+                max={2048}
+                bind:value={settings.memoryTranslateMedia.NAIImgConfig.steps}
+            />
             <span class="text-textcolor">CFG scale</span>
-            <NumberInput size="sm" marginBottom min={0} max={2048} bind:value={DBState.db.NAIImgConfig.scale} />
+            <NumberInput
+                size="sm"
+                marginBottom
+                min={0}
+                max={2048}
+                bind:value={settings.memoryTranslateMedia.NAIImgConfig.scale}
+            />
             <span class="text-textcolor">CFG rescale</span>
-            <NumberInput size="sm" marginBottom min={0} max={1} bind:value={DBState.db.NAIImgConfig.cfg_rescale} />
+            <NumberInput
+                size="sm"
+                marginBottom
+                min={0}
+                max={1}
+                bind:value={settings.memoryTranslateMedia.NAIImgConfig.cfg_rescale}
+            />
 
             <span class="text-textcolor">Image Reference</span>
-            <SelectInput className="mb-4" bind:value={DBState.db.NAIImgConfig.reference_mode}>
+            <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.NAIImgConfig.reference_mode}>
                 <OptionInput value="">None</OptionInput>
                 <OptionInput value="vibe">Vibe Trasfer</OptionInput>
-                {#if DBState.db.NAIImgModel === "nai-diffusion-4-5-full" || DBState.db.NAIImgModel === "nai-diffusion-4-5-curated"}
+                {#if settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-5-full" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-5-curated"}
                     <OptionInput value="character">Character Reference</OptionInput>
                 {/if}
             </SelectInput>
 
-            {#if DBState.db.NAIImgConfig.reference_mode === "vibe"}
+            {#if settings.memoryTranslateMedia.NAIImgConfig.reference_mode === "vibe"}
                 <div class="relative">
                     <button
                         class="mb-4"
@@ -423,31 +482,38 @@
                                 }
 
                                 // Store the vibe data
-                                DBState.db.NAIImgConfig.vibe_data = vibeData;
+                                settings.memoryTranslateMedia.NAIImgConfig.vibe_data = vibeData;
 
                                 // Set the thumbnail as preview image for display
                                 if (vibeData.thumbnail) {
                                     // Clear the array and add the thumbnail
-                                    DBState.db.NAIImgConfig.reference_image_multiple = [];
+                                    settings.memoryTranslateMedia.NAIImgConfig.reference_image_multiple = [];
 
                                     // Set default model selection based on current model
-                                    if (DBState.db.NAIImgModel.includes("nai-diffusion-4-full")) {
-                                        DBState.db.NAIImgConfig.vibe_model_selection = "v4full";
-                                    } else if (DBState.db.NAIImgModel.includes("nai-diffusion-4-curated")) {
-                                        DBState.db.NAIImgConfig.vibe_model_selection = "v4curated";
-                                    } else if (DBState.db.NAIImgModel.includes("nai-diffusion-4-5-full")) {
-                                        DBState.db.NAIImgConfig.vibe_model_selection = "v4-5full";
-                                    } else if (DBState.db.NAIImgModel.includes("nai-diffusion-4-5-curated")) {
-                                        DBState.db.NAIImgConfig.vibe_model_selection = "v4-5curated";
+                                    if (settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-full")) {
+                                        settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection = "v4full";
+                                    } else if (
+                                        settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-curated")
+                                    ) {
+                                        settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection = "v4curated";
+                                    } else if (
+                                        settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-5-full")
+                                    ) {
+                                        settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection = "v4-5full";
+                                    } else if (
+                                        settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-5-curated")
+                                    ) {
+                                        settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection = "v4-5curated";
                                     }
 
                                     // Set InfoExtracted to the first value for the selected model
-                                    const selectedModel = DBState.db.NAIImgConfig.vibe_model_selection;
+                                    const selectedModel =
+                                        settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection;
                                     if (selectedModel && vibeData.encodings[selectedModel]) {
                                         const encodings = vibeData.encodings[selectedModel];
                                         const firstKey = Object.keys(encodings)[0];
                                         if (firstKey) {
-                                            DBState.db.NAIImgConfig.InfoExtracted = Number(
+                                            settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted = Number(
                                                 encodings[firstKey].params.information_extracted,
                                             );
                                         }
@@ -456,17 +522,19 @@
 
                                 // Initialize reference_strength_multiple if not set
                                 if (
-                                    !DBState.db.NAIImgConfig.reference_strength_multiple ||
-                                    !Array.isArray(DBState.db.NAIImgConfig.reference_strength_multiple)
+                                    !settings.memoryTranslateMedia.NAIImgConfig.reference_strength_multiple ||
+                                    !Array.isArray(
+                                        settings.memoryTranslateMedia.NAIImgConfig.reference_strength_multiple,
+                                    )
                                 ) {
-                                    DBState.db.NAIImgConfig.reference_strength_multiple = [0.7];
+                                    settings.memoryTranslateMedia.NAIImgConfig.reference_strength_multiple = [0.7];
                                 }
                             } catch (error) {
                                 alertError("Error parsing vibe file: " + error);
                             }
                         }}
                     >
-                        {#if !DBState.db.NAIImgConfig.vibe_data || !DBState.db.NAIImgConfig.vibe_data.thumbnail}
+                        {#if !settings.memoryTranslateMedia.NAIImgConfig.vibe_data || !settings.memoryTranslateMedia.NAIImgConfig.vibe_data.thumbnail}
                             <div
                                 class="rounded-md h-20 w-20 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500 flex items-center justify-center"
                             >
@@ -474,18 +542,18 @@
                             </div>
                         {:else}
                             <img
-                                src={DBState.db.NAIImgConfig.vibe_data.thumbnail}
+                                src={settings.memoryTranslateMedia.NAIImgConfig.vibe_data.thumbnail}
                                 alt="Vibe Preview"
                                 class="rounded-md h-40 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"
                             />
                         {/if}
                     </button>
 
-                    {#if DBState.db.NAIImgConfig.vibe_data}
+                    {#if settings.memoryTranslateMedia.NAIImgConfig.vibe_data}
                         <button
                             onclick={() => {
-                                DBState.db.NAIImgConfig.vibe_data = undefined;
-                                DBState.db.NAIImgConfig.vibe_model_selection = undefined;
+                                settings.memoryTranslateMedia.NAIImgConfig.vibe_data = undefined;
+                                settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection = undefined;
                             }}
                             class="absolute top-2 right-2 bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded-sm"
                         >
@@ -494,51 +562,51 @@
                     {/if}
                 </div>
 
-                {#if DBState.db.NAIImgConfig.vibe_data}
+                {#if settings.memoryTranslateMedia.NAIImgConfig.vibe_data}
                     <span class="text-textcolor">Vibe Model</span>
                     <SelectInput
                         className="mb-2"
-                        bind:value={DBState.db.NAIImgConfig.vibe_model_selection}
+                        bind:value={settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection}
                         onchange={(e) => {
                             // When vibe model changes, set InfoExtracted to the first value
                             if (
-                                DBState.db.NAIImgConfig.vibe_data?.encodings &&
-                                DBState.db.NAIImgConfig.vibe_model_selection &&
-                                DBState.db.NAIImgConfig.vibe_data.encodings[
-                                    DBState.db.NAIImgConfig.vibe_model_selection
+                                settings.memoryTranslateMedia.NAIImgConfig.vibe_data?.encodings &&
+                                settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection &&
+                                settings.memoryTranslateMedia.NAIImgConfig.vibe_data.encodings[
+                                    settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection
                                 ]
                             ) {
                                 const encodings =
-                                    DBState.db.NAIImgConfig.vibe_data.encodings[
-                                        DBState.db.NAIImgConfig.vibe_model_selection
+                                    settings.memoryTranslateMedia.NAIImgConfig.vibe_data.encodings[
+                                        settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection
                                     ];
                                 const firstKey = Object.keys(encodings)[0];
                                 if (firstKey) {
-                                    DBState.db.NAIImgConfig.InfoExtracted = Number(
+                                    settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted = Number(
                                         encodings[firstKey].params.information_extracted,
                                     );
                                 }
                             }
                         }}
                     >
-                        {#if DBState.db.NAIImgConfig.vibe_data.encodings?.v4full}
+                        {#if settings.memoryTranslateMedia.NAIImgConfig.vibe_data.encodings?.v4full}
                             <OptionInput value="v4full">nai-diffusion-4-full</OptionInput>
                         {/if}
-                        {#if DBState.db.NAIImgConfig.vibe_data.encodings?.v4curated}
+                        {#if settings.memoryTranslateMedia.NAIImgConfig.vibe_data.encodings?.v4curated}
                             <OptionInput value="v4curated">nai-diffusion-4-curated</OptionInput>
                         {/if}
-                        {#if DBState.db.NAIImgConfig.vibe_data.encodings?.["v4-5full"]}
+                        {#if settings.memoryTranslateMedia.NAIImgConfig.vibe_data.encodings?.["v4-5full"]}
                             <OptionInput value="v4-5full">nai-diffusion-4-5-full</OptionInput>
                         {/if}
-                        {#if DBState.db.NAIImgConfig.vibe_data.encodings?.["v4-5curated"]}
+                        {#if settings.memoryTranslateMedia.NAIImgConfig.vibe_data.encodings?.["v4-5curated"]}
                             <OptionInput value="v4-5curated">nai-diffusion-4-5-curated</OptionInput>
                         {/if}
                     </SelectInput>
 
                     <span class="text-textcolor">Information Extracted</span>
-                    <SelectInput className="mb-2" bind:value={DBState.db.NAIImgConfig.InfoExtracted}>
-                        {#if DBState.db.NAIImgConfig.vibe_model_selection && DBState.db.NAIImgConfig.vibe_data.encodings[DBState.db.NAIImgConfig.vibe_model_selection]}
-                            {#each Object.entries(DBState.db.NAIImgConfig.vibe_data.encodings[DBState.db.NAIImgConfig.vibe_model_selection]) as [key, value]}
+                    <SelectInput className="mb-2" bind:value={settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted}>
+                        {#if settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection && settings.memoryTranslateMedia.NAIImgConfig.vibe_data.encodings[settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection]}
+                            {#each Object.entries(settings.memoryTranslateMedia.NAIImgConfig.vibe_data.encodings[settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection]) as [key, value]}
                                 <OptionInput value={value.params.information_extracted}
                                     >{value.params.information_extracted}</OptionInput
                                 >
@@ -553,12 +621,12 @@
                         max={1}
                         step={0.1}
                         fixed={2}
-                        bind:value={DBState.db.NAIImgConfig.reference_strength_multiple[0]}
+                        bind:value={settings.memoryTranslateMedia.NAIImgConfig.reference_strength_multiple[0]}
                     />
                 {/if}
             {/if}
 
-            {#if DBState.db.NAIImgConfig.reference_mode === "character" && (DBState.db.NAIImgModel === "nai-diffusion-4-5-full" || DBState.db.NAIImgModel === "nai-diffusion-4-5-curated")}
+            {#if settings.memoryTranslateMedia.NAIImgConfig.reference_mode === "character" && (settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-5-full" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-5-curated")}
                 <div class="relative">
                     <button
                         class="mb-2"
@@ -570,20 +638,24 @@
 
                             const imageData = img.data;
 
-                            DBState.db.NAIImgConfig.character_base64image = Buffer.from(imageData).toString("base64");
+                            settings.memoryTranslateMedia.NAIImgConfig.character_base64image =
+                                Buffer.from(imageData).toString("base64");
                             const saveId = await saveAsset(imageData);
-                            DBState.db.NAIImgConfig.character_image = saveId;
-                            console.log("Character image set:", DBState.db.NAIImgConfig.character_image);
+                            settings.memoryTranslateMedia.NAIImgConfig.character_image = saveId;
+                            console.log(
+                                "Character image set:",
+                                settings.memoryTranslateMedia.NAIImgConfig.character_image,
+                            );
                         }}
                     >
-                        {#if !DBState.db.NAIImgConfig.character_image || DBState.db.NAIImgConfig.character_image === ""}
+                        {#if !settings.memoryTranslateMedia.NAIImgConfig.character_image || settings.memoryTranslateMedia.NAIImgConfig.character_image === ""}
                             <div
                                 class="rounded-md h-20 w-20 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500 flex items-center justify-center"
                             >
                                 <span class="text-sm">Upload<br />Image</span>
                             </div>
                         {:else}
-                            {#await getCharImage(DBState.db.NAIImgConfig.character_image, "plain")}
+                            {#await getCharImage(settings.memoryTranslateMedia.NAIImgConfig.character_image, "plain")}
                                 <div
                                     class="rounded-md h-20 w-20 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500 flex items-center justify-center"
                                 >
@@ -599,11 +671,11 @@
                         {/if}
                     </button>
 
-                    {#if DBState.db.NAIImgConfig.character_image && DBState.db.NAIImgConfig.character_image !== ""}
+                    {#if settings.memoryTranslateMedia.NAIImgConfig.character_image && settings.memoryTranslateMedia.NAIImgConfig.character_image !== ""}
                         <button
                             onclick={() => {
-                                DBState.db.NAIImgConfig.character_image = undefined;
-                                DBState.db.NAIImgConfig.character_base64image = undefined;
+                                settings.memoryTranslateMedia.NAIImgConfig.character_image = undefined;
+                                settings.memoryTranslateMedia.NAIImgConfig.character_base64image = undefined;
                             }}
                             class="absolute top-2 right-2 bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded-sm"
                         >
@@ -615,32 +687,36 @@
                 <span class="text-textcolor2 text-xs mb-2 block">Leave blank to use the character's default image.</span
                 >
 
-                <Check className="mb-4" bind:check={DBState.db.NAIImgConfig.style_aware} name="Style Aware" />
+                <Check
+                    className="mb-4"
+                    bind:check={settings.memoryTranslateMedia.NAIImgConfig.style_aware}
+                    name="Style Aware"
+                />
             {/if}
 
-            {#if (DBState.db.NAIImgModel === "nai-diffusion-3" || DBState.db.NAIImgModel === "nai-diffusion-furry-3" || DBState.db.NAIImgModel === "nai-diffusion-2") && DBState.db.NAIImgConfig.sampler !== "ddim_v3"}
-                <Check bind:check={DBState.db.NAIImgConfig.sm} name="Use SMEA" />
+            {#if (settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-3" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-furry-3" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-2") && settings.memoryTranslateMedia.NAIImgConfig.sampler !== "ddim_v3"}
+                <Check bind:check={settings.memoryTranslateMedia.NAIImgConfig.sm} name="Use SMEA" />
             {/if}
 
-            {#if DBState.db.NAIImgModel === "nai-diffusion-3" && DBState.db.NAIImgConfig.sampler !== "ddim_v3"}
-                <Check bind:check={DBState.db.NAIImgConfig.sm_dyn} name="Use DYN" />
+            {#if settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-3" && settings.memoryTranslateMedia.NAIImgConfig.sampler !== "ddim_v3"}
+                <Check bind:check={settings.memoryTranslateMedia.NAIImgConfig.sm_dyn} name="Use DYN" />
             {/if}
 
-            {#if DBState.db.NAIImgModel === "nai-diffusion-4-5-full" || DBState.db.NAIImgModel === "nai-diffusion-4-5-curated" || DBState.db.NAIImgModel === "nai-diffusion-4-full" || DBState.db.NAIImgModel === "nai-diffusion-4-curated-preview" || DBState.db.NAIImgModel === "nai-diffusion-3" || DBState.db.NAIImgModel === "nai-diffusion-furry-3"}
-                <Check bind:check={DBState.db.NAIImgConfig.variety_plus} name="Variety+" />
+            {#if settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-5-full" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-5-curated" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-full" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-curated-preview" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-3" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-furry-3"}
+                <Check bind:check={settings.memoryTranslateMedia.NAIImgConfig.variety_plus} name="Variety+" />
             {/if}
 
-            {#if DBState.db.NAIImgModel === "nai-diffusion-3" || DBState.db.NAIImgModel === "nai-diffusion-furry-3" || DBState.db.NAIImgModel === "nai-diffusion-2"}
-                <Check bind:check={DBState.db.NAIImgConfig.decrisp} name="Decrisp" />
+            {#if settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-3" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-furry-3" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-2"}
+                <Check bind:check={settings.memoryTranslateMedia.NAIImgConfig.decrisp} name="Decrisp" />
             {/if}
 
-            {#if DBState.db.NAIImgModel === "nai-diffusion-4-full" || DBState.db.NAIImgModel === "nai-diffusion-4-curated-preview"}
-                <Check bind:check={DBState.db.NAIImgConfig.legacy_uc} name="Use legacy uc" />
+            {#if settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-full" || settings.memoryTranslateMedia.NAIImgModel === "nai-diffusion-4-curated-preview"}
+                <Check bind:check={settings.memoryTranslateMedia.NAIImgConfig.legacy_uc} name="Use legacy uc" />
             {/if}
 
-            <Check className="mt-4 mb-4" bind:check={DBState.db.NAII2I} name="Enable I2I" />
+            <Check className="mt-4 mb-4" bind:check={settings.memoryTranslateMedia.NAII2I} name="Enable I2I" />
 
-            {#if DBState.db.NAII2I}
+            {#if settings.memoryTranslateMedia.NAII2I}
                 <div class="relative">
                     <button
                         class="mb-2"
@@ -649,19 +725,21 @@
                             if (!img) {
                                 return null;
                             }
-                            DBState.db.NAIImgConfig.base64image = Buffer.from(img.data).toString("base64");
+                            settings.memoryTranslateMedia.NAIImgConfig.base64image = Buffer.from(img.data).toString(
+                                "base64",
+                            );
                             const saveId = await saveAsset(img.data);
-                            DBState.db.NAIImgConfig.image = saveId;
+                            settings.memoryTranslateMedia.NAIImgConfig.image = saveId;
                         }}
                     >
-                        {#if !DBState.db.NAIImgConfig.image || DBState.db.NAIImgConfig.image === ""}
+                        {#if !settings.memoryTranslateMedia.NAIImgConfig.image || settings.memoryTranslateMedia.NAIImgConfig.image === ""}
                             <div
                                 class="rounded-md h-20 w-20 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500 flex items-center justify-center"
                             >
                                 <span class="text-sm">Upload<br />Image</span>
                             </div>
                         {:else}
-                            {#await getCharImage(DBState.db.NAIImgConfig.image, "plain")}
+                            {#await getCharImage(settings.memoryTranslateMedia.NAIImgConfig.image, "plain")}
                                 <div
                                     class="rounded-md h-20 w-20 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500 flex items-center justify-center"
                                 >
@@ -677,11 +755,11 @@
                         {/if}
                     </button>
 
-                    {#if DBState.db.NAIImgConfig.image && DBState.db.NAIImgConfig.image !== ""}
+                    {#if settings.memoryTranslateMedia.NAIImgConfig.image && settings.memoryTranslateMedia.NAIImgConfig.image !== ""}
                         <button
                             onclick={() => {
-                                DBState.db.NAIImgConfig.image = undefined;
-                                DBState.db.NAIImgConfig.base64image = undefined;
+                                settings.memoryTranslateMedia.NAIImgConfig.image = undefined;
+                                settings.memoryTranslateMedia.NAIImgConfig.base64image = undefined;
                             }}
                             class="absolute top-2 right-2 bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded-sm"
                         >
@@ -692,38 +770,50 @@
                 <span class="text-textcolor2 text-xs block">Leave blank to use the character's default image.</span>
 
                 <span class="text-textcolor mt-2">Strength</span>
-                <SliderInput min={0} max={0.99} step={0.01} fixed={2} bind:value={DBState.db.NAIImgConfig.strength} />
+                <SliderInput
+                    min={0}
+                    max={0.99}
+                    step={0.01}
+                    fixed={2}
+                    bind:value={settings.memoryTranslateMedia.NAIImgConfig.strength}
+                />
                 <span class="text-textcolor mt-2">Noise</span>
-                <SliderInput min={0} max={0.99} step={0.01} fixed={2} bind:value={DBState.db.NAIImgConfig.noise} />
+                <SliderInput
+                    min={0}
+                    max={0.99}
+                    step={0.01}
+                    fixed={2}
+                    bind:value={settings.memoryTranslateMedia.NAIImgConfig.noise}
+                />
             {/if}
         {/if}
 
-        {#if DBState.db.sdProvider === "dalle"}
+        {#if settings.memoryTranslateMedia.sdProvider === "dalle"}
             <span class="text-textcolor">OpenAI API Key</span>
             <SecretInput path={{ kind: "flat", field: "openAIKey" }} marginBottom placeholder="sk-..." />
 
             <span class="text-textcolor mt-4">Dall-E Quality</span>
-            <SelectInput className="mt-2 mb-4" bind:value={DBState.db.dallEQuality}>
+            <SelectInput className="mt-2 mb-4" bind:value={settings.memoryTranslateMedia.dallEQuality}>
                 <OptionInput value="standard">Standard</OptionInput>
                 <OptionInput value="hd">HD</OptionInput>
             </SelectInput>
         {/if}
 
-        {#if DBState.db.sdProvider === "stability"}
+        {#if settings.memoryTranslateMedia.sdProvider === "stability"}
             <span class="text-textcolor">Stability API Key</span>
-            <TextInput size="sm" marginBottom placeholder="..." bind:value={DBState.db.stabilityKey} />
+            <TextInput size="sm" marginBottom placeholder="..." bind:value={settings.secrets.stabilityKey} />
 
             <span class="text-textcolor">Stability Model</span>
-            <SelectInput className="mt-2 mb-4" bind:value={DBState.db.stabilityModel}>
+            <SelectInput className="mt-2 mb-4" bind:value={settings.memoryTranslateMedia.stabilityModel}>
                 <OptionInput value="ultra">SD Ultra</OptionInput>
                 <OptionInput value="core">SD Core</OptionInput>
                 <OptionInput value="sd3-large">SD3 Large</OptionInput>
                 <OptionInput value="sd3-medium">SD3 Medium</OptionInput>
             </SelectInput>
 
-            {#if DBState.db.stabilityModel === "core"}
+            {#if settings.memoryTranslateMedia.stabilityModel === "core"}
                 <span class="text-textcolor">SD Core Style</span>
-                <SelectInput className="mt-2 mb-4" bind:value={DBState.db.stabllityStyle}>
+                <SelectInput className="mt-2 mb-4" bind:value={settings.memoryTranslateMedia.stabllityStyle}>
                     <OptionInput value="">Unspecified</OptionInput>
                     <OptionInput value="3d-model">3D Model</OptionInput>
                     <OptionInput value="analog-film">Analog Film</OptionInput>
@@ -746,28 +836,44 @@
             {/if}
         {/if}
 
-        {#if DBState.db.sdProvider === "comfyui"}
+        {#if settings.memoryTranslateMedia.sdProvider === "comfyui"}
             <span class="text-textcolor mt-2">ComfyUI {language.providerURL}</span>
-            <TextInput size="sm" marginBottom placeholder="http://127.0.0.1:8188" bind:value={DBState.db.comfyUiUrl} />
+            <TextInput
+                size="sm"
+                marginBottom
+                placeholder="http://127.0.0.1:8188"
+                bind:value={settings.memoryTranslateMedia.comfyUiUrl}
+            />
 
             <span class="text-textcolor">Workflow <Help key="comfyWorkflow" /></span>
-            <TextInput size="sm" marginBottom bind:value={DBState.db.comfyConfig.workflow} />
+            <TextInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.comfyConfig.workflow} />
 
             <span class="text-textcolor">Timeout (sec)</span>
-            <NumberInput size="sm" marginBottom bind:value={DBState.db.comfyConfig.timeout} min={1} max={120} />
+            <NumberInput
+                size="sm"
+                marginBottom
+                bind:value={settings.memoryTranslateMedia.comfyConfig.timeout}
+                min={1}
+                max={120}
+            />
         {/if}
 
-        {#if DBState.db.sdProvider === "comfy"}
+        {#if settings.memoryTranslateMedia.sdProvider === "comfy"}
             <span class="text-draculared text-xs mb-2">The first image generated by the prompt will be selected. </span>
             <span class="text-draculared text-xs mb-2">"Please run comfyUI with --enable-cors-header."</span>
             <span class="text-textcolor mt-2">ComfyUI {language.providerURL}</span>
-            <TextInput size="sm" marginBottom placeholder="http://127.0.0.1:8188" bind:value={DBState.db.comfyUiUrl} />
+            <TextInput
+                size="sm"
+                marginBottom
+                placeholder="http://127.0.0.1:8188"
+                bind:value={settings.memoryTranslateMedia.comfyUiUrl}
+            />
             <span class="text-textcolor">Workflow</span>
             <TextInput
                 size="sm"
                 marginBottom
                 placeholder="valid ComfyUI API json (Enable Dev mode Options in ComfyUI)"
-                bind:value={DBState.db.comfyConfig.workflow}
+                bind:value={settings.memoryTranslateMedia.comfyConfig.workflow}
             />
 
             <span class="text-textcolor">Positive Text Node: ID</span>
@@ -775,71 +881,105 @@
                 size="sm"
                 marginBottom
                 placeholder="eg. 1, 3, etc"
-                bind:value={DBState.db.comfyConfig.posNodeID}
+                bind:value={settings.memoryTranslateMedia.comfyConfig.posNodeID}
             />
             <span class="text-textcolor">Positive Text Node: Input Field Name</span>
-            <TextInput size="sm" marginBottom placeholder="eg. text" bind:value={DBState.db.comfyConfig.posInputName} />
+            <TextInput
+                size="sm"
+                marginBottom
+                placeholder="eg. text"
+                bind:value={settings.memoryTranslateMedia.comfyConfig.posInputName}
+            />
             <span class="text-textcolor">Negative Text Node: ID</span>
             <TextInput
                 size="sm"
                 marginBottom
                 placeholder="eg. 1, 3, etc"
-                bind:value={DBState.db.comfyConfig.negNodeID}
+                bind:value={settings.memoryTranslateMedia.comfyConfig.negNodeID}
             />
             <span class="text-textcolor">Positive Text Node: Input Field Name</span>
-            <TextInput size="sm" marginBottom placeholder="eg. text" bind:value={DBState.db.comfyConfig.negInputName} />
+            <TextInput
+                size="sm"
+                marginBottom
+                placeholder="eg. text"
+                bind:value={settings.memoryTranslateMedia.comfyConfig.negInputName}
+            />
             <span class="text-textcolor">Timeout (sec)</span>
-            <NumberInput size="sm" marginBottom bind:value={DBState.db.comfyConfig.timeout} min={1} max={120} />
+            <NumberInput
+                size="sm"
+                marginBottom
+                bind:value={settings.memoryTranslateMedia.comfyConfig.timeout}
+                min={1}
+                max={120}
+            />
         {/if}
 
-        {#if DBState.db.sdProvider === "fal"}
+        {#if settings.memoryTranslateMedia.sdProvider === "fal"}
             <span class="text-textcolor">Fal.ai API Key</span>
-            <TextInput size="sm" marginBottom placeholder="..." bind:value={DBState.db.falToken} />
+            <TextInput size="sm" marginBottom placeholder="..." bind:value={settings.secrets.falToken} />
 
             <span class="text-textcolor mt-4">Width</span>
-            <NumberInput size="sm" marginBottom min={0} max={2048} bind:value={DBState.db.sdConfig.width} />
+            <NumberInput
+                size="sm"
+                marginBottom
+                min={0}
+                max={2048}
+                bind:value={settings.memoryTranslateMedia.sdConfig.width}
+            />
             <span class="text-textcolor mt-4">Height</span>
-            <NumberInput size="sm" marginBottom min={0} max={2048} bind:value={DBState.db.sdConfig.height} />
+            <NumberInput
+                size="sm"
+                marginBottom
+                min={0}
+                max={2048}
+                bind:value={settings.memoryTranslateMedia.sdConfig.height}
+            />
 
             <span class="text-textcolor mt-4">Model</span>
-            <SelectInput className="mt-2" bind:value={DBState.db.falModel}>
+            <SelectInput className="mt-2" bind:value={settings.memoryTranslateMedia.falModel}>
                 <OptionInput value="fal-ai/flux/dev">Flux[Dev]</OptionInput>
                 <OptionInput value="fal-ai/flux-lora">Flux[Dev] with Lora</OptionInput>
                 <OptionInput value="fal-ai/flux-pro">Flux[Pro]</OptionInput>
                 <OptionInput value="fal-ai/flux/schnell">Flux[Schnell]</OptionInput>
             </SelectInput>
 
-            {#if DBState.db.falModel === "fal-ai/flux-lora"}
+            {#if settings.memoryTranslateMedia.falModel === "fal-ai/flux-lora"}
                 <span class="text-textcolor mt-4">Lora Model URL <Help key="urllora" /></span>
-                <TextInput size="sm" marginBottom bind:value={DBState.db.falLora} />
+                <TextInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.falLora} />
 
                 <span class="text-textcolor mt-4">Lora Weight</span>
-                <SliderInput fixed={2} min={0} max={2} step={0.01} bind:value={DBState.db.falLoraScale} />
+                <SliderInput
+                    fixed={2}
+                    min={0}
+                    max={2}
+                    step={0.01}
+                    bind:value={settings.memoryTranslateMedia.falLoraScale}
+                />
             {/if}
         {/if}
 
-        {#if DBState.db.sdProvider === "Imagen"}
+        {#if settings.memoryTranslateMedia.sdProvider === "Imagen"}
             <span class="text-textcolor mt-2">GoogleAI API Key</span>
             <SecretInput path={{ kind: "nested", field: "google" }} marginBottom />
 
             <span class="text-textcolor">Model</span>
-            <SelectInput className="mb-4" bind:value={DBState.db.ImagenModel}>
+            <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.ImagenModel}>
                 <OptionInput value="imagen-4.0-generate-001">Imagen 4</OptionInput>
                 <OptionInput value="imagen-4.0-ultra-generate-001">Imagen 4 Ultra</OptionInput>
                 <OptionInput value="imagen-4.0-fast-generate-001">Imagen 4 Fast</OptionInput>
                 <OptionInput value="imagen-3.0-generate-002">Imagen 3.0</OptionInput>
             </SelectInput>
 
-            {#if DBState.db.ImagenModel === "imagen-4.0-generate-001" || DBState.db.ImagenModel === "imagen-4.0-ultra-generate-001"}
+            {#if settings.memoryTranslateMedia.ImagenModel === "imagen-4.0-generate-001" || settings.memoryTranslateMedia.ImagenModel === "imagen-4.0-ultra-generate-001"}
                 <span class="text-textcolor">Image size</span>
-                <SelectInput className="mb-4" bind:value={DBState.db.ImagenImageSize}>
+                <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.ImagenImageSize}>
                     <OptionInput value="1K">1K</OptionInput>
                     <OptionInput value="2K">2K</OptionInput>
                 </SelectInput>
             {/if}
 
             <span class="text-textcolor">Aspect ratio</span>
-            <SelectInput className="mb-4" bind:value={DBState.db.ImagenAspectRatio}>
+            <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.ImagenAspectRatio}>
                 <OptionInput value="1:1">1:1</OptionInput>
                 <OptionInput value="3:4">3:4</OptionInput>
                 <OptionInput value="4:3">4:3</OptionInput>
@@ -848,20 +988,20 @@
             </SelectInput>
 
             <span class="text-textcolor">Person generation</span>
-            <SelectInput className="mb-4" bind:value={DBState.db.ImagenPersonGeneration}>
+            <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.ImagenPersonGeneration}>
                 <OptionInput value="allow_all">Allow all</OptionInput>
                 <OptionInput value="allow_adult">Allow adult</OptionInput>
                 <OptionInput value="dont_allow">Don't allow</OptionInput>
             </SelectInput>
         {/if}
 
-        {#if DBState.db.sdProvider === "openai-compat"}
+        {#if settings.memoryTranslateMedia.sdProvider === "openai-compat"}
             <span class="text-textcolor mt-2">API URL</span>
             <TextInput
                 size="sm"
                 marginBottom
                 placeholder="https://api.example.com/v1/images/generations"
-                bind:value={DBState.db.openaiCompatImage.url}
+                bind:value={settings.secrets.openaiCompatImage.url}
             />
 
             <span class="text-textcolor">API Key</span>
@@ -869,15 +1009,20 @@
                 size="sm"
                 marginBottom
                 placeholder="sk-..."
-                hideText={DBState.db.hideApiKey}
-                bind:value={DBState.db.openaiCompatImage.key}
+                hideText={settings.ui.hideApiKey}
+                bind:value={settings.secrets.openaiCompatImage.key}
             />
 
             <span class="text-textcolor">Model</span>
-            <TextInput size="sm" marginBottom placeholder="dall-e-3" bind:value={DBState.db.openaiCompatImage.model} />
+            <TextInput
+                size="sm"
+                marginBottom
+                placeholder="dall-e-3"
+                bind:value={settings.secrets.openaiCompatImage.model}
+            />
 
             <span class="text-textcolor">Image Size</span>
-            <SelectInput className="mb-4" bind:value={DBState.db.openaiCompatImage.size}>
+            <SelectInput className="mb-4" bind:value={settings.secrets.openaiCompatImage.size}>
                 <OptionInput value="1024x1024">1024x1024</OptionInput>
                 <OptionInput value="1536x1024">1536x1024</OptionInput>
                 <OptionInput value="1024x1536">1024x1536</OptionInput>
@@ -886,7 +1031,7 @@
             </SelectInput>
 
             <span class="text-textcolor">Quality</span>
-            <SelectInput className="mb-4" bind:value={DBState.db.openaiCompatImage.quality}>
+            <SelectInput className="mb-4" bind:value={settings.secrets.openaiCompatImage.quality}>
                 <OptionInput value="auto">Auto</OptionInput>
                 <OptionInput value="low">Low</OptionInput>
                 <OptionInput value="medium">Medium</OptionInput>
@@ -894,14 +1039,14 @@
             </SelectInput>
         {/if}
 
-        {#if DBState.db.sdProvider === "wavespeed"}
+        {#if settings.memoryTranslateMedia.sdProvider === "wavespeed"}
             <span class="text-textcolor">API Key</span>
             <TextInput
                 size="sm"
                 marginBottom
                 placeholder="sk-..."
-                hideText={DBState.db.hideApiKey}
-                bind:value={DBState.db.wavespeedImage.key}
+                hideText={settings.ui.hideApiKey}
+                bind:value={settings.secrets.wavespeedImage.key}
             />
 
             <span class="text-textcolor">Model</span>
@@ -913,7 +1058,11 @@
                 {isWavespeedLoading ? "Loading..." : "Refresh Models"}
             </button>
             <TextInput bind:value={wavespeedSearchQuery} placeholder="Search models..." size="sm" marginBottom />
-            <SelectInput className="mb-4" bind:value={DBState.db.wavespeedImage.model} onchange={handleModelChange}>
+            <SelectInput
+                className="mb-4"
+                bind:value={settings.secrets.wavespeedImage.model}
+                onchange={handleModelChange}
+            >
                 <OptionInput value="">Select a model...</OptionInput>
                 {#if wavespeedModels.length > 0}
                     {#each getFilteredModels() as model}
@@ -921,13 +1070,15 @@
                             {getModelDisplayName(model)}
                         </OptionInput>
                     {/each}
-                {:else if DBState.db.wavespeedImage.model}
-                    <OptionInput value={DBState.db.wavespeedImage.model}>{DBState.db.wavespeedImage.model}</OptionInput>
+                {:else if settings.secrets.wavespeedImage.model}
+                    <OptionInput value={settings.secrets.wavespeedImage.model}
+                        >{settings.secrets.wavespeedImage.model}</OptionInput
+                    >
                 {/if}
             </SelectInput>
 
             <span class="text-textcolor mt-4">LoRAs</span>
-            {#if wavespeedModels.find((m) => m.model_id === DBState.db.wavespeedImage.model)?.supportsLoras}
+            {#if wavespeedModels.find((m) => m.model_id === settings.secrets.wavespeedImage.model)?.supportsLoras}
                 {#each wavespeedLoras as lora, index}
                     <TextInput
                         size="sm"
@@ -948,14 +1099,14 @@
             {/if}
 
             <span class="text-textcolor">Image Reference</span>
-            {#if wavespeedModels.find((m) => m.model_id === DBState.db.wavespeedImage.model)?.supportsImageInput}
-                <SelectInput className="mb-4" bind:value={DBState.db.wavespeedImage.reference_mode}>
+            {#if wavespeedModels.find((m) => m.model_id === settings.secrets.wavespeedImage.model)?.supportsImageInput}
+                <SelectInput className="mb-4" bind:value={settings.secrets.wavespeedImage.reference_mode}>
                     <OptionInput value="">None</OptionInput>
                     <OptionInput value="image">Upload Image</OptionInput>
                     <OptionInput value="character">Use Character Image</OptionInput>
                 </SelectInput>
 
-                {#if DBState.db.wavespeedImage.reference_mode === "image"}
+                {#if settings.secrets.wavespeedImage.reference_mode === "image"}
                     <div class="relative">
                         <button
                             class="mb-2"
@@ -967,21 +1118,21 @@
 
                                 const imageData = img.data;
 
-                                DBState.db.wavespeedImage.reference_base64image =
+                                settings.secrets.wavespeedImage.reference_base64image =
                                     Buffer.from(imageData).toString("base64");
                                 const saveId = await saveAsset(imageData);
-                                DBState.db.wavespeedImage.reference_image = saveId;
-                                console.log("Character image set:", DBState.db.wavespeedImage.reference_image);
+                                settings.secrets.wavespeedImage.reference_image = saveId;
+                                console.log("Character image set:", settings.secrets.wavespeedImage.reference_image);
                             }}
                         >
-                            {#if !DBState.db.wavespeedImage.reference_image || DBState.db.wavespeedImage.reference_image === ""}
+                            {#if !settings.secrets.wavespeedImage.reference_image || settings.secrets.wavespeedImage.reference_image === ""}
                                 <div
                                     class="rounded-md h-20 w-20 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500 flex items-center justify-center"
                                 >
                                     <span class="text-sm">Upload<br />Image</span>
                                 </div>
                             {:else}
-                                {#await getCharImage(DBState.db.wavespeedImage.reference_image, "plain")}
+                                {#await getCharImage(settings.secrets.wavespeedImage.reference_image, "plain")}
                                     <div
                                         class="rounded-md h-20 w-20 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500 flex items-center justify-center"
                                     >
@@ -997,11 +1148,11 @@
                             {/if}
                         </button>
 
-                        {#if DBState.db.wavespeedImage.reference_image && DBState.db.wavespeedImage.reference_image !== ""}
+                        {#if settings.secrets.wavespeedImage.reference_image && settings.secrets.wavespeedImage.reference_image !== ""}
                             <button
                                 onclick={() => {
-                                    DBState.db.wavespeedImage.reference_image = undefined;
-                                    DBState.db.wavespeedImage.reference_base64image = undefined;
+                                    settings.secrets.wavespeedImage.reference_image = undefined;
+                                    settings.secrets.wavespeedImage.reference_base64image = undefined;
                                 }}
                                 class="absolute top-2 right-2 bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded-sm"
                             >
@@ -1010,7 +1161,7 @@
                         {/if}
                     </div>
                 {/if}
-                {#if DBState.db.wavespeedImage.reference_mode === "character"}
+                {#if settings.secrets.wavespeedImage.reference_mode === "character"}
                     <span class="text-textcolor2 text-xs mb-2 block">Use the character's default image.</span>
                 {/if}
             {:else}
@@ -1024,25 +1175,25 @@
 
 {#if submenu === 1 || submenu === -1}
     <Accordion name="TTS" styled disabled={submenu !== -1}>
-        <CheckInput bind:check={DBState.db.ttsAutoSpeech} name="Auto Speech" className="mt-2" />
+        <CheckInput bind:check={settings.memoryTranslateMedia.ttsAutoSpeech} name="Auto Speech" className="mt-2" />
 
         <span class="text-textcolor mt-2">ElevenLabs API key</span>
-        <TextInput size="sm" marginBottom bind:value={DBState.db.elevenLabKey} />
+        <TextInput size="sm" marginBottom bind:value={settings.secrets.elevenLabKey} />
 
         <span class="text-textcolor mt-2">VOICEVOX URL</span>
-        <TextInput size="sm" marginBottom bind:value={DBState.db.voicevoxUrl} />
+        <TextInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.voicevoxUrl} />
 
         <span class="text-textcolor">OpenAI Key</span>
         <SecretInput path={{ kind: "flat", field: "openAIKey" }} marginBottom />
 
         <span class="text-textcolor mt-2">NovelAI API key</span>
-        <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={DBState.db.NAIApiKey} />
+        <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
 
         <span class="text-textcolor">Huggingface Key</span>
-        <TextInput size="sm" marginBottom bind:value={DBState.db.huggingfaceKey} placeholder="hf_..." />
+        <TextInput size="sm" marginBottom bind:value={settings.secrets.huggingfaceKey} placeholder="hf_..." />
 
         <span class="text-textcolor">fish-speech API Key</span>
-        <TextInput size="sm" marginBottom bind:value={DBState.db.fishSpeechKey} />
+        <TextInput size="sm" marginBottom bind:value={settings.secrets.fishSpeechKey} />
     </Accordion>
 {/if}
 
@@ -1050,7 +1201,7 @@
     <Accordion name={language.emotionImage} styled disabled={submenu !== -1}>
         <span class="text-textcolor mt-2">{language.emotionMethod}</span>
 
-        <SelectInput className="mt-2 mb-4" bind:value={DBState.db.emotionProcesser}>
+        <SelectInput className="mt-2 mb-4" bind:value={settings.memoryTranslateMedia.emotionProcesser}>
             <OptionInput value="submodel">Ax. Model</OptionInput>
             <OptionInput value="embedding">MiniLM-L6-v2</OptionInput>
         </SelectInput>
@@ -1063,48 +1214,48 @@
 
         <SelectInput
             className="mb-4"
-            value={DBState.db.hypaV3
+            value={settings.memoryTranslateMedia.hypaV3
                 ? "hypaV3"
-                : DBState.db.hypav2
+                : settings.memoryTranslateMedia.hypav2
                   ? "hypaV2"
-                  : DBState.db.supaModelType !== "none"
+                  : settings.memoryTranslateMedia.supaModelType !== "none"
                     ? "supaMemory"
-                    : DBState.db.hanuraiEnable
+                    : settings.memoryTranslateMedia.hanuraiEnable
                       ? "hanuraiMemory"
                       : "none"}
             onchange={(v) => {
                 //@ts-expect-error 'value' doesn't exist on EventTarget, but target is HTMLSelectElement here
                 const value = v.target.value;
                 if (value === "supaMemory") {
-                    DBState.db.supaModelType = "distilbart";
-                    DBState.db.memoryAlgorithmType = "supaMemory";
-                    DBState.db.hypav2 = false;
-                    DBState.db.hanuraiEnable = false;
-                    DBState.db.hypaV3 = false;
+                    settings.memoryTranslateMedia.supaModelType = "distilbart";
+                    settings.ui.memoryAlgorithmType = "supaMemory";
+                    settings.memoryTranslateMedia.hypav2 = false;
+                    settings.memoryTranslateMedia.hanuraiEnable = false;
+                    settings.memoryTranslateMedia.hypaV3 = false;
                 } else if (value === "hanuraiMemory") {
-                    DBState.db.supaModelType = "none";
-                    DBState.db.memoryAlgorithmType = "hanuraiMemory";
-                    DBState.db.hypav2 = false;
-                    DBState.db.hanuraiEnable = true;
-                    DBState.db.hypaV3 = false;
+                    settings.memoryTranslateMedia.supaModelType = "none";
+                    settings.ui.memoryAlgorithmType = "hanuraiMemory";
+                    settings.memoryTranslateMedia.hypav2 = false;
+                    settings.memoryTranslateMedia.hanuraiEnable = true;
+                    settings.memoryTranslateMedia.hypaV3 = false;
                 } else if (value === "hypaV2") {
-                    DBState.db.supaModelType = "distilbart";
-                    DBState.db.memoryAlgorithmType = "hypaMemoryV2";
-                    DBState.db.hypav2 = true;
-                    DBState.db.hanuraiEnable = false;
-                    DBState.db.hypaV3 = false;
+                    settings.memoryTranslateMedia.supaModelType = "distilbart";
+                    settings.ui.memoryAlgorithmType = "hypaMemoryV2";
+                    settings.memoryTranslateMedia.hypav2 = true;
+                    settings.memoryTranslateMedia.hanuraiEnable = false;
+                    settings.memoryTranslateMedia.hypaV3 = false;
                 } else if (value === "hypaV3") {
-                    DBState.db.memoryAlgorithmType = "hypaMemoryV3";
-                    DBState.db.supaModelType = "none";
-                    DBState.db.hanuraiEnable = false;
-                    DBState.db.hypav2 = false;
-                    DBState.db.hypaV3 = true;
+                    settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+                    settings.memoryTranslateMedia.supaModelType = "none";
+                    settings.memoryTranslateMedia.hanuraiEnable = false;
+                    settings.memoryTranslateMedia.hypav2 = false;
+                    settings.memoryTranslateMedia.hypaV3 = true;
                 } else {
-                    DBState.db.supaModelType = "none";
-                    DBState.db.memoryAlgorithmType = "none";
-                    DBState.db.hypav2 = false;
-                    DBState.db.hanuraiEnable = false;
-                    DBState.db.hypaV3 = false;
+                    settings.memoryTranslateMedia.supaModelType = "none";
+                    settings.ui.memoryAlgorithmType = "none";
+                    settings.memoryTranslateMedia.hypav2 = false;
+                    settings.memoryTranslateMedia.hanuraiEnable = false;
+                    settings.memoryTranslateMedia.hypaV3 = false;
                 }
             }}
         >
@@ -1115,37 +1266,42 @@
             <OptionInput value="hypaV3">{language.HypaMemory} V3</OptionInput>
         </SelectInput>
 
-        {#if DBState.db.hanuraiEnable}
+        {#if settings.memoryTranslateMedia.hanuraiEnable}
             <span class="mb-2 text-textcolor2 text-sm text-wrap wrap-break-word max-w-full">{language.hanuraiDesc}</span
             >
             <span>Chunk Size</span>
-            <NumberInput size="sm" marginBottom bind:value={DBState.db.hanuraiTokens} min={100} />
+            <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.hanuraiTokens} min={100} />
             <div class="flex mb-4">
-                <Check bind:check={DBState.db.hanuraiSplit} name="Text Spliting" />
+                <Check bind:check={settings.memoryTranslateMedia.hanuraiSplit} name="Text Spliting" />
             </div>
-        {:else if DBState.db.hypav2}
+        {:else if settings.memoryTranslateMedia.hypav2}
             <span class="mb-2 text-textcolor2 text-sm text-wrap wrap-break-word max-w-full">{language.hypaV2Desc}</span>
             <span class="text-textcolor mt-4">{language.SuperMemory} {language.model}</span>
-            <SelectInput className="mt-2 mb-2" bind:value={DBState.db.supaModelType}>
+            <SelectInput className="mt-2 mb-2" bind:value={settings.memoryTranslateMedia.supaModelType}>
                 <OptionInput value="distilbart">distilbart-cnn-6-6 (Free/Local)</OptionInput>
                 <OptionInput value="instruct35">OpenAI 3.5 Turbo Instruct</OptionInput>
                 <OptionInput value="subModel">{language.submodel}</OptionInput>
             </SelectInput>
-            {#if DBState.db.supaModelType === "davinci" || DBState.db.supaModelType === "curie" || DBState.db.supaModelType === "instruct35"}
+            {#if settings.memoryTranslateMedia.supaModelType === "davinci" || settings.memoryTranslateMedia.supaModelType === "curie" || settings.memoryTranslateMedia.supaModelType === "instruct35"}
                 <span class="text-textcolor">{language.SuperMemory} OpenAI Key</span>
                 <SecretInput path={{ kind: "flat", field: "supaMemoryKey" }} marginBottom />
             {/if}
             <span class="text-textcolor">{language.summarizationPrompt} <Help key="summarizationPrompt" /></span>
             <TextAreaInput
                 size="sm"
-                bind:value={DBState.db.supaMemoryPrompt}
+                bind:value={settings.memoryTranslateMedia.supaMemoryPrompt}
                 placeholder="Leave it blank to use default"
             />
             <span class="text-textcolor">{language.hypaChunkSize}</span>
-            <NumberInput size="sm" marginBottom bind:value={DBState.db.hypaChunkSize} min={100} />
+            <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.hypaChunkSize} min={100} />
             <span class="text-textcolor">{language.hypaAllocatedTokens}</span>
-            <NumberInput size="sm" marginBottom bind:value={DBState.db.hypaAllocatedTokens} min={100} />
-        {:else if DBState.db.hypaV3}
+            <NumberInput
+                size="sm"
+                marginBottom
+                bind:value={settings.memoryTranslateMedia.hypaAllocatedTokens}
+                min={100}
+            />
+        {:else if settings.memoryTranslateMedia.hypaV3}
             <span class="max-w-full mb-6 text-sm text-wrap wrap-break-word text-textcolor2"
                 >{language.hypaV3Settings.descriptionLabel}</span
             >
@@ -1155,11 +1311,11 @@
                 bind:value={
                     () => currentHypaV3?.id,
                     (value) => {
-                        DBState.db.hypaV3PresetId = value;
+                        settings.hypaV3Presets.selectedId = value;
                     }
                 }
             >
-                {#each DBState.db.hypaV3Presets as preset (preset.id)}
+                {#each settings.hypaV3Presets.items as preset (preset.id)}
                     <option class="bg-darkbg appearance-none" value={preset.id}>{preset.name}</option>
                 {/each}
             </select>
@@ -1169,8 +1325,8 @@
                     class="mr-2 text-textcolor2 hover:text-green-500 cursor-pointer"
                     onclick={() => {
                         const newPreset = createHypaV3Preset();
-                        DBState.db.hypaV3Presets.push(newPreset);
-                        DBState.db.hypaV3PresetId = newPreset.id;
+                        settings.hypaV3Presets.items.push(newPreset);
+                        settings.hypaV3Presets.selectedId = newPreset.id;
                     }}
                 >
                     <PlusIcon size={24} />
@@ -1179,7 +1335,7 @@
                 <button
                     class="mr-2 text-textcolor2 hover:text-green-500 cursor-pointer"
                     onclick={async () => {
-                        const presets = DBState.db.hypaV3Presets;
+                        const presets = settings.hypaV3Presets.items;
 
                         if (presets.length === 0) {
                             alertError("There must be least one preset.");
@@ -1193,7 +1349,7 @@
 
                         if (!newName || newName.trim().length === 0) return;
 
-                        const preset = DBState.db.hypaV3Presets.find((entry) => entry.id === id);
+                        const preset = settings.hypaV3Presets.items.find((entry) => entry.id === id);
                         if (preset) {
                             preset.name = newName;
                         }
@@ -1205,7 +1361,7 @@
                 <button
                     class="mr-2 text-textcolor2 hover:text-green-500 cursor-pointer"
                     onclick={async (e) => {
-                        if (DBState.db.hypaV3Presets.length <= 1) {
+                        if (settings.hypaV3Presets.items.length <= 1) {
                             alertError("There must be least one preset.");
                             return;
                         }
@@ -1217,12 +1373,12 @@
                         if (!confirmed) return;
 
                         // Resolved again after the dialog: a conflict reload may have replaced the list.
-                        const presets = DBState.db.hypaV3Presets;
+                        const presets = settings.hypaV3Presets.items;
                         const index = presets.findIndex((entry) => entry.id === id);
                         if (index === -1 || presets.length <= 1) return;
                         presets.splice(index, 1);
-                        if (DBState.db.hypaV3PresetId === id) {
-                            DBState.db.hypaV3PresetId = presets[0].id;
+                        if (settings.hypaV3Presets.selectedId === id) {
+                            settings.hypaV3Presets.selectedId = presets[0].id;
                         }
                     }}
                 >
@@ -1235,7 +1391,7 @@
                     class="mr-2 text-textcolor2 hover:text-green-500 cursor-pointer"
                     onclick={async () => {
                         try {
-                            const presets = DBState.db.hypaV3Presets;
+                            const presets = settings.hypaV3Presets.items;
 
                             if (presets.length === 0) {
                                 alertError("There must be least one preset.");
@@ -1280,8 +1436,8 @@
                                 objImport.data.name || "Imported Preset",
                                 objImport.data.settings || {},
                             );
-                            DBState.db.hypaV3Presets.push(newPreset);
-                            DBState.db.hypaV3PresetId = newPreset.id;
+                            settings.hypaV3Presets.items.push(newPreset);
+                            settings.hypaV3Presets.selectedId = newPreset.id;
 
                             alertNormal(language.successImport);
                         } catch (error) {
@@ -1472,36 +1628,39 @@
             {/if}
 
             <div class="mb-8"></div>
-        {:else if DBState.db.supaModelType !== "none" && DBState.db.hypav2 === false && DBState.db.hypaV3 === false}
+        {:else if settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2 === false && settings.memoryTranslateMedia.hypaV3 === false}
             <span class="mb-2 text-textcolor2 text-sm text-wrap wrap-break-word max-w-full">{language.supaDesc}</span>
             <span class="text-textcolor mt-4">{language.SuperMemory} {language.model}</span>
-            <SelectInput className="mt-2 mb-2" bind:value={DBState.db.supaModelType}>
+            <SelectInput className="mt-2 mb-2" bind:value={settings.memoryTranslateMedia.supaModelType}>
                 <OptionInput value="distilbart">distilbart-cnn-6-6 (Free/Local)</OptionInput>
                 <OptionInput value="instruct35">OpenAI 3.5 Turbo Instruct</OptionInput>
                 <OptionInput value="subModel">{language.submodel}</OptionInput>
             </SelectInput>
             <span class="text-textcolor">{language.maxSupaChunkSize}</span>
-            <NumberInput size="sm" marginBottom bind:value={DBState.db.maxSupaChunkSize} min={100} />
-            {#if DBState.db.supaModelType === "davinci" || DBState.db.supaModelType === "curie" || DBState.db.supaModelType === "instruct35"}
+            <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.maxSupaChunkSize} min={100} />
+            {#if settings.memoryTranslateMedia.supaModelType === "davinci" || settings.memoryTranslateMedia.supaModelType === "curie" || settings.memoryTranslateMedia.supaModelType === "instruct35"}
                 <span class="text-textcolor">{language.SuperMemory} OpenAI Key</span>
                 <SecretInput path={{ kind: "flat", field: "supaMemoryKey" }} marginBottom />
             {/if}
-            {#if DBState.db.supaModelType !== "none"}
+            {#if settings.memoryTranslateMedia.supaModelType !== "none"}
                 <span class="text-textcolor">{language.SuperMemory} Prompt</span>
                 <TextInput
                     size="sm"
                     marginBottom
-                    bind:value={DBState.db.supaMemoryPrompt}
+                    bind:value={settings.memoryTranslateMedia.supaMemoryPrompt}
                     placeholder="Leave it blank to use default"
                 />
             {/if}
             <div class="flex mb-4">
-                <Check bind:check={DBState.db.hypaMemory} name={language.enable + " " + language.HypaMemory} />
+                <Check
+                    bind:check={settings.memoryTranslateMedia.hypaMemory}
+                    name={language.enable + " " + language.HypaMemory}
+                />
             </div>
         {/if}
 
         <span class="text-textcolor">{language.embedding} <Help key="embedding" /></span>
-        <SelectInput className="mb-4" bind:value={DBState.db.hypaModel}>
+        <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.hypaModel}>
             {#if "gpu" in navigator}
                 <OptionInput value="MiniLMGPU">MiniLM L6 v2 (GPU)</OptionInput>
                 <OptionInput value="nomicGPU">Nomic Embed Text v1.5 (GPU)</OptionInput>
@@ -1523,23 +1682,28 @@
             <OptionInput value="custom">Custom (OpenAI-compatible)</OptionInput>
         </SelectInput>
 
-        {#if DBState.db.hypaModel === "openai3small" || DBState.db.hypaModel === "openai3large" || DBState.db.hypaModel === "ada"}
+        {#if settings.memoryTranslateMedia.hypaModel === "openai3small" || settings.memoryTranslateMedia.hypaModel === "openai3large" || settings.memoryTranslateMedia.hypaModel === "ada"}
             <span class="text-textcolor">OpenAI API Key</span>
             <SecretInput path={{ kind: "flat", field: "supaMemoryKey" }} marginBottom />
         {/if}
 
-        {#if DBState.db.hypaModel === "custom"}
+        {#if settings.memoryTranslateMedia.hypaModel === "custom"}
             <span class="text-textcolor">URL</span>
-            <TextInput size="sm" marginBottom bind:value={DBState.db.hypaCustomSettings.url} />
+            <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.url} />
             <span class="text-textcolor">Key/Password</span>
-            <TextInput size="sm" marginBottom bind:value={DBState.db.hypaCustomSettings.key} />
+            <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.key} />
             <span class="text-textcolor">Request Model</span>
-            <TextInput size="sm" marginBottom bind:value={DBState.db.hypaCustomSettings.model} />
+            <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.model} />
         {/if}
 
-        {#if DBState.db.hypaModel === "voyageContext3"}
+        {#if settings.memoryTranslateMedia.hypaModel === "voyageContext3"}
             <span class="text-textcolor">Voyage API Key</span>
-            <TextInput size="sm" marginBottom hideText={DBState.db.hideApiKey} bind:value={DBState.db.voyageApiKey} />
+            <TextInput
+                size="sm"
+                marginBottom
+                hideText={settings.ui.hideApiKey}
+                bind:value={settings.secrets.voyageApiKey}
+            />
         {/if}
     </Accordion>
 {/if}

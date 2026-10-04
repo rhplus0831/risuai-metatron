@@ -1,11 +1,11 @@
 <script lang="ts">
+    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { ArrowLeft, PlusIcon, TrashIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import PromptDataItem from "src/lib/UI/PromptDataItem.svelte";
     import { tokenizePreset, type PromptItem } from "src/ts/process/prompt";
     import { templateCheck } from "src/ts/process/templates/templateCheck";
 
-    import { DBState } from "src/ts/stores.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
@@ -26,7 +26,11 @@
     let draggedIndex = $state(-1);
     let dragOverIndex = $state(-1);
     let openedItemIndices = $state(new Set<number>());
-    executeTokenize(DBState.db.promptTemplate);
+    /** The selected preset's template for reading: `[]` while it has none (writes go to the preset). */
+    function templateItems(): PromptItem[] {
+        return activePreset.promptTemplate ?? [];
+    }
+    executeTokenize(templateItems());
     interface Props {
         onGoBack?: () => void;
         mode?: "independent" | "inline";
@@ -41,14 +45,14 @@
     }
 
     $effect.pre(() => {
-        warns = templateCheck(DBState.db);
+        warns = templateCheck({ promptTemplate: activePreset.promptTemplate });
     });
     $effect.pre(() => {
-        executeTokenize(DBState.db.promptTemplate);
+        executeTokenize(templateItems());
     });
 
     function getDisplayTemplate() {
-        return DBState.db.promptTemplate.map((item, i) => ({
+        return templateItems().map((item, i) => ({
             item,
             originalIndex: i,
             displayIndex: i,
@@ -77,7 +81,7 @@
             return;
         }
 
-        const templates = [...DBState.db.promptTemplate];
+        const templates = [...templateItems()];
         const [movedItem] = templates.splice(draggedIndex, 1);
 
         const adjustedDropIndex = draggedIndex < dragOverIndex ? dragOverIndex - 1 : dragOverIndex;
@@ -103,17 +107,17 @@
         });
         openedItemIndices = newOpenedIndices;
 
-        DBState.db.promptTemplate = templates;
+        activePreset.promptTemplate = templates;
         draggedIndex = -1;
         dragOverIndex = -1;
     }
 
     const handleKeyDown = (e: KeyboardEvent) => {
         if (e.ctrlKey && e.altKey && e.key === "o") {
-            if (openedItemIndices.size === DBState.db.promptTemplate.length) {
+            if (openedItemIndices.size === templateItems().length) {
                 openedItemIndices = new Set<number>();
             } else {
-                openedItemIndices = new Set(DBState.db.promptTemplate.map((_, i) => i));
+                openedItemIndices = new Set(templateItems().map((_, i) => i));
             }
         }
     };
@@ -168,13 +172,13 @@
 
 {#if subMenu === 0}
     <div class="contain w-full max-w-full mt-4 flex flex-col p-3 rounded-md">
-        {#if DBState.db.promptTemplate.length === 0}
+        {#if templateItems().length === 0}
             <div class="text-textcolor2">No Format</div>
         {/if}
         {#key sorted}
             {#each getReorderedTemplate() as { item: prompt, originalIndex, displayIndex }}
                 <PromptDataItem
-                    bind:promptItem={DBState.db.promptTemplate[originalIndex]}
+                    bind:promptItem={activePreset.promptTemplate[originalIndex]}
                     isDragging={draggedIndex === originalIndex}
                     isOpened={openedItemIndices.has(originalIndex)}
                     bind:draggedIndex
@@ -184,9 +188,9 @@
                     {displayIndex}
                     onDrop={handlePromptDrop}
                     onRemove={() => {
-                        let templates = DBState.db.promptTemplate;
+                        let templates = activePreset.promptTemplate;
                         templates.splice(originalIndex, 1);
-                        DBState.db.promptTemplate = templates;
+                        activePreset.promptTemplate = templates;
 
                         const newOpenedIndices = new Set<number>();
                         openedItemIndices.forEach((index) => {
@@ -204,14 +208,14 @@
                         dragOverIndex = -1;
                     }}
                     moveDown={() => {
-                        if (originalIndex === DBState.db.promptTemplate.length - 1) {
+                        if (originalIndex === activePreset.promptTemplate.length - 1) {
                             return;
                         }
-                        let templates = DBState.db.promptTemplate;
+                        let templates = activePreset.promptTemplate;
                         let temp = templates[originalIndex];
                         templates[originalIndex] = templates[originalIndex + 1];
                         templates[originalIndex + 1] = temp;
-                        DBState.db.promptTemplate = templates;
+                        activePreset.promptTemplate = templates;
 
                         const newOpenedIndices = new Set<number>();
                         openedItemIndices.forEach((index) => {
@@ -229,11 +233,11 @@
                         if (originalIndex === 0) {
                             return;
                         }
-                        let templates = DBState.db.promptTemplate;
+                        let templates = activePreset.promptTemplate;
                         let temp = templates[originalIndex];
                         templates[originalIndex] = templates[originalIndex - 1];
                         templates[originalIndex - 1] = temp;
-                        DBState.db.promptTemplate = templates;
+                        activePreset.promptTemplate = templates;
 
                         const newOpenedIndices = new Set<number>();
                         openedItemIndices.forEach((index) => {
@@ -255,14 +259,14 @@
     <button
         class="font-medium cursor-pointer hover:text-green-500"
         onclick={() => {
-            let value = DBState.db.promptTemplate ?? [];
+            let value = activePreset.promptTemplate ?? [];
             value.push({
                 type: "plain",
                 text: "",
                 role: "system",
                 type2: "normal",
             });
-            DBState.db.promptTemplate = value;
+            activePreset.promptTemplate = value;
         }}><PlusIcon /></button
     >
 
@@ -270,20 +274,28 @@
     <span class="text-textcolor2 mb-6 text-sm mt-2">{extokens} {language.exactTokens}</span>
 {:else}
     <span class="text-textcolor mt-4">{language.postEndInnerFormat}</span>
-    <TextInput bind:value={DBState.db.promptSettings.postEndInnerFormat} />
+    <TextInput bind:value={activePreset.promptSettings.postEndInnerFormat} />
 
-    <Check bind:check={DBState.db.promptSettings.sendChatAsSystem} name={language.sendChatAsSystem} className="mt-4" />
-    <Check bind:check={DBState.db.promptSettings.sendName} name={language.formatGroupInSingle} className="mt-4" />
-    <Check bind:check={DBState.db.promptSettings.trimStartNewChat} name={language.trimStartNewChat} className="mt-4" />
-    <Check bind:check={DBState.db.promptSettings.utilOverride} name={language.utilOverride} className="mt-4" />
-    <Check bind:check={DBState.db.jsonSchemaEnabled} name={language.enableJsonSchema} className="mt-4" />
-    <Check bind:check={DBState.db.outputImageModal} name={language.outputImageModal} className="mt-4" />
+    <Check
+        bind:check={activePreset.promptSettings.sendChatAsSystem}
+        name={language.sendChatAsSystem}
+        className="mt-4"
+    />
+    <Check bind:check={activePreset.promptSettings.sendName} name={language.formatGroupInSingle} className="mt-4" />
+    <Check
+        bind:check={activePreset.promptSettings.trimStartNewChat}
+        name={language.trimStartNewChat}
+        className="mt-4"
+    />
+    <Check bind:check={activePreset.promptSettings.utilOverride} name={language.utilOverride} className="mt-4" />
+    <Check bind:check={activePreset.jsonSchemaEnabled} name={language.enableJsonSchema} className="mt-4" />
+    <Check bind:check={activePreset.outputImageModal} name={language.outputImageModal} className="mt-4" />
 
-    <Check bind:check={DBState.db.strictJsonSchema} name={language.strictJsonSchema} className="mt-4" />
+    <Check bind:check={activePreset.strictJsonSchema} name={language.strictJsonSchema} className="mt-4" />
 
-    {#if DBState.db.showUnrecommended}
+    {#if settings.ui.showUnrecommended}
         <Check
-            bind:check={DBState.db.promptSettings.customChainOfThought}
+            bind:check={activePreset.promptSettings.customChainOfThought}
             name={language.customChainOfThought}
             className="mt-4"
         >
@@ -291,9 +303,9 @@
         </Check>
     {/if}
     <span class="text-textcolor mt-4">{language.maxThoughtTagDepth}</span>
-    <NumberInput bind:value={DBState.db.promptSettings.maxThoughtTagDepth} />
+    <NumberInput bind:value={activePreset.promptSettings.maxThoughtTagDepth} />
     <span class="text-textcolor mt-4">{language.groupOtherBotRole} <Help key="groupOtherBotRole" /></span>
-    <SelectInput bind:value={DBState.db.groupOtherBotRole}>
+    <SelectInput bind:value={activePreset.groupOtherBotRole}>
         <OptionInput value="user">User</OptionInput>
         <OptionInput value="system">System</OptionInput>
         <OptionInput value="assistant">assistant</OptionInput>
@@ -301,59 +313,59 @@
     <span class="text-textcolor mt-4"
         >{language.customPromptTemplateToggle} <Help key="customPromptTemplateToggle" /></span
     >
-    <TextAreaInput bind:value={DBState.db.customPromptTemplateToggle} />
+    <TextAreaInput bind:value={activePreset.customPromptTemplateToggle} />
     <span class="text-textcolor mt-4">{language.defaultVariables} <Help key="defaultVariables" /></span>
-    <TextAreaInput bind:value={DBState.db.templateDefaultVariables} />
+    <TextAreaInput bind:value={activePreset.templateDefaultVariables} />
     <span class="text-textcolor mt-4">{language.predictedOutput}</span>
-    <TextAreaInput bind:value={DBState.db.OAIPrediction} />
+    <TextAreaInput bind:value={settings.providers.OAIPrediction} />
     <span class="text-textcolor mt-4">{language.autoSuggest} <Help key="autoSuggest" /></span>
-    <TextAreaInput bind:value={DBState.db.autoSuggestPrompt} placeholder={defaultAutoSuggestPrompt} />
+    <TextAreaInput bind:value={activePreset.autoSuggestPrompt} placeholder={defaultAutoSuggestPrompt} />
     <span class="text-textcolor mt-4">{language.groupInnerFormat} <Help key="groupInnerFormat" /></span>
     <TextAreaInput
         placeholder={`<{{char}}\'s Message>\n{{slot}}\n</{{char}}\'s Message>`}
-        bind:value={DBState.db.groupTemplate}
+        bind:value={activePreset.groupTemplate}
     />
     <span class="text-textcolor mt-4">{language.systemContentReplacement} <Help key="systemContentReplacement" /></span>
-    <TextAreaInput bind:value={DBState.db.systemContentReplacement} />
+    <TextAreaInput bind:value={activePreset.systemContentReplacement} />
     <span class="text-textcolor mt-4">{language.systemRoleReplacement} <Help key="systemRoleReplacement" /></span>
-    <SelectInput bind:value={DBState.db.systemRoleReplacement}>
+    <SelectInput bind:value={activePreset.systemRoleReplacement}>
         <OptionInput value="user">User</OptionInput>
         <OptionInput value="assistant">assistant</OptionInput>
     </SelectInput>
-    {#if DBState.db.jsonSchemaEnabled}
+    {#if activePreset.jsonSchemaEnabled}
         <span class="text-textcolor mt-4">{language.jsonSchema} <Help key="jsonSchema" /></span>
-        <TextAreaInput bind:value={DBState.db.jsonSchema} />
+        <TextAreaInput bind:value={activePreset.jsonSchema} />
         <span class="text-textcolor mt-4">{language.extractJson} <Help key="extractJson" /></span>
-        <TextInput bind:value={DBState.db.extractJson} />
+        <TextInput bind:value={activePreset.extractJson} />
     {/if}
 
-    {#if !DBState.db.auxModelUnderModelSettings}
+    {#if !settings.ui.auxModelUnderModelSettings}
         <AuxModelSelectors />
     {/if}
 
     {#snippet fallbackModelList(arg: "model" | "memory" | "translate" | "emotion" | "otherAx")}
-        {#each DBState.db.fallbackModels[arg] as model, i}
+        {#each settings.providers.fallbackModels[arg] as model, i}
             <span class="text-textcolor mt-4">
                 {language.model}
                 {i + 1}
             </span>
-            <ModelList bind:value={DBState.db.fallbackModels[arg][i]} blankable />
+            <ModelList bind:value={settings.providers.fallbackModels[arg][i]} blankable />
         {/each}
         <div class="flex gap-2">
             <button
                 class="bg-selected text-textcolor p-2 rounded-md"
                 onclick={() => {
-                    let value = DBState.db.fallbackModels[arg] ?? [];
+                    let value = settings.providers.fallbackModels[arg] ?? [];
                     value.push("");
-                    DBState.db.fallbackModels[arg] = value;
+                    settings.providers.fallbackModels[arg] = value;
                 }}><PlusIcon /></button
             >
             <button
                 class="bg-red-500 text-white p-2 rounded-md"
                 onclick={() => {
-                    let value = DBState.db.fallbackModels[arg] ?? [];
+                    let value = settings.providers.fallbackModels[arg] ?? [];
                     value.pop();
-                    DBState.db.fallbackModels[arg] = value;
+                    settings.providers.fallbackModels[arg] = value;
                 }}><TrashIcon /></button
             >
         </div>
@@ -361,12 +373,12 @@
 
     <Accordion name={language.fallbackModel} styled>
         <Check
-            bind:check={DBState.db.fallbackWhenBlankResponse}
+            bind:check={settings.providers.fallbackWhenBlankResponse}
             name={language.fallbackWhenBlankResponse}
             className="mt-4"
         />
         <Check
-            bind:check={DBState.db.doNotChangeFallbackModels}
+            bind:check={settings.providers.doNotChangeFallbackModels}
             name={language.doNotChangeFallbackModels}
             className="mt-4"
         />

@@ -1,6 +1,6 @@
 <script lang="ts">
     import { language } from "src/lang";
-    import { DBState } from "src/ts/stores.svelte";
+    import { readSettingsRoot, writeSettingsRoot } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
 
     interface Props {
@@ -10,7 +10,7 @@
     }
 
     let { field, labelKey, defaultColor }: Props = $props();
-    let currentValue = $derived(DBState.db[field]);
+    let currentValue = $derived(readSettingsRoot(field) as string | null | undefined);
 </script>
 
 {#if currentValue}
@@ -18,7 +18,7 @@
         <Check
             check={true}
             onChange={() => {
-                DBState.db[field] = null;
+                writeSettingsRoot(field, null);
             }}
             name={language[labelKey]}
             hiddenName
@@ -28,7 +28,7 @@
             class="style2 text-sm mr-2"
             value={currentValue}
             oninput={(e) => {
-                DBState.db[field] = e.currentTarget.value;
+                writeSettingsRoot(field, e.currentTarget.value);
             }}
         />
         <span>{language[labelKey]}</span>
@@ -38,7 +38,7 @@
         <Check
             check={false}
             onChange={() => {
-                DBState.db[field] = defaultColor;
+                writeSettingsRoot(field, defaultColor);
             }}
             name={language[labelKey]}
         />

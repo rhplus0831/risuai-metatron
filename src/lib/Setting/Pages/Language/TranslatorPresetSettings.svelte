@@ -1,11 +1,11 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { DownloadIcon, HardDriveUploadIcon, PencilIcon, PlusIcon, TrashIcon } from "@lucide/svelte";
     import Help from "src/lib/Others/Help.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import { alertConfirm, alertError, alertInput, alertNormal } from "src/ts/alert";
     import { downloadFile } from "src/ts/globalApi.svelte";
-    import { DBState } from "src/ts/stores.svelte";
     import {
         createTranslatorPreset,
         decodeTranslatorPresetFile,
@@ -19,7 +19,12 @@
     import { language } from "src/lang";
 
     /** The selected preset, by id (`translatorPresetId`); the first one when that id is gone. */
-    const current = $derived(getCurrentTranslatorPresetFromState(DBState.db));
+    const current = $derived(
+        getCurrentTranslatorPresetFromState({
+            translatorPresets: settings.translatorPresets.items,
+            translatorPresetId: settings.translatorPresets.selectedId,
+        }),
+    );
 </script>
 
 <span class="text-textcolor mt-4">Preset</span>
@@ -28,11 +33,11 @@
     bind:value={
         () => current.id,
         (value) => {
-            DBState.db.translatorPresetId = value;
+            settings.translatorPresets.selectedId = value;
         }
     }
 >
-    {#each DBState.db.translatorPresets as preset (preset.id)}
+    {#each settings.translatorPresets.items as preset (preset.id)}
         <option class="bg-darkbg appearance-none" value={preset.id}>{preset.name}</option>
     {/each}
 </select>
@@ -42,8 +47,8 @@
         class="mr-2 text-textcolor2 hover:text-green-500 cursor-pointer"
         onclick={() => {
             const newPreset = createTranslatorPreset();
-            DBState.db.translatorPresets.push(newPreset);
-            DBState.db.translatorPresetId = newPreset.id;
+            settings.translatorPresets.items.push(newPreset);
+            settings.translatorPresets.selectedId = newPreset.id;
         }}
     >
         <PlusIcon size={24} />
@@ -52,7 +57,7 @@
     <button
         class="mr-2 text-textcolor2 hover:text-green-500 cursor-pointer"
         onclick={async () => {
-            const presets = DBState.db.translatorPresets;
+            const presets = settings.translatorPresets.items;
 
             if (presets.length === 0) {
                 alertError("There must be at least one preset.");
@@ -65,7 +70,7 @@
 
             if (!newName || newName.trim().length === 0) return;
 
-            const preset = DBState.db.translatorPresets.find((entry) => entry.id === id);
+            const preset = settings.translatorPresets.items.find((entry) => entry.id === id);
             if (preset) {
                 preset.name = newName;
             }
@@ -77,7 +82,7 @@
     <button
         class="mr-2 text-textcolor2 hover:text-green-500 cursor-pointer"
         onclick={async () => {
-            if (DBState.db.translatorPresets.length <= 1) {
+            if (settings.translatorPresets.items.length <= 1) {
                 alertError("There must be at least one preset.");
                 return;
             }
@@ -88,12 +93,12 @@
             if (!confirmed) return;
 
             // Resolved again after the dialog: a conflict reload may have replaced the list.
-            const presets = DBState.db.translatorPresets;
+            const presets = settings.translatorPresets.items;
             const index = presets.findIndex((entry) => entry.id === id);
             if (index === -1 || presets.length <= 1) return;
             presets.splice(index, 1);
-            if (DBState.db.translatorPresetId === id) {
-                DBState.db.translatorPresetId = presets[0].id;
+            if (settings.translatorPresets.selectedId === id) {
+                settings.translatorPresets.selectedId = presets[0].id;
             }
         }}
     >
@@ -106,7 +111,7 @@
         class="mr-2 text-textcolor2 hover:text-green-500 cursor-pointer"
         onclick={async () => {
             try {
-                const presets = DBState.db.translatorPresets;
+                const presets = settings.translatorPresets.items;
 
                 if (presets.length === 0) {
                     alertError("There must be at least one preset.");
@@ -136,8 +141,8 @@
                 if (!selectedFile) return;
 
                 const newPreset = await decodeTranslatorPresetFile(selectedFile.data);
-                DBState.db.translatorPresets.push(newPreset);
-                DBState.db.translatorPresetId = newPreset.id;
+                settings.translatorPresets.items.push(newPreset);
+                settings.translatorPresets.selectedId = newPreset.id;
 
                 alertNormal(language.successImport);
             } catch (error) {
@@ -149,7 +154,7 @@
     </button>
 </div>
 
-{#if DBState.db.translatorPresets?.some((entry) => entry.id === current.id)}
+{#if settings.translatorPresets.items?.some((entry) => entry.id === current.id)}
     {@const preset = current}
     <span class="text-textcolor mt-4">{language.translationResponseSize}</span>
     <NumberInput

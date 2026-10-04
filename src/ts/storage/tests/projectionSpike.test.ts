@@ -10,8 +10,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // case runs over the test-only prototype in `projectionHarness.svelte.ts`: per-resource records
 // held as `$state`, the two wrapper candidates (`projectRecord`, accessor-backed; `trackedRecord`,
 // deep write-through), a root facade installed on the real `DBState.db` (so the real
-// `getSettingValue` / `setSettingValue`, the real `customQuotesData` items, and real components run
-// against it), and a prototype transport over the real server store (`StoreBackedServer`).
+// `customQuotesData` items and real components run against it), and a prototype transport over the
+// real server store (`StoreBackedServer`). Since Phase 6 slice 6 the real `getSettingValue` /
+// `setSettingValue` resolve `bindKey`/`bindPath` through the settings record views (the real
+// records), which the prototype does not back: the registry proofs run the pre-slice-6 registry copy
+// over `DBState.db` (`spikeRegistry.ts`), and the items' callbacks get a context over the facade.
 //
 // Every per-candidate proof runs three times: `accessor` (candidate 1), `tracked` (candidate 2,
 // validating its path on every access), and `tracked-cached` (candidate 2 with the resolve cache).
@@ -39,7 +42,6 @@ vi.mock("../../alert", () => ({
 import type { character } from "../../../../shared/database.ts";
 import { displaySettingsItems } from "../../setting/displaySettingsData.svelte";
 import type { SettingContext, SettingItem } from "../../setting/types";
-import { getSettingValue, setSettingValue } from "../../setting/utils";
 import { DBState } from "../../stores.svelte";
 import { isSecretSet, llmSecretState, secretStatus } from "../llmSecrets.svelte";
 import { safeStructuredClone } from "../../polyfill";
@@ -87,6 +89,7 @@ import SpikeRecordInput from "./SpikeRecordInput.svelte";
 import SpikeRecordList from "./SpikeRecordList.svelte";
 import SpikeRecordMany from "./SpikeRecordMany.svelte";
 import SpikeRecordSync from "./SpikeRecordSync.svelte";
+import { candidateContext, candidateGetSettingValue, candidateSetSettingValue } from "./spikeRegistry";
 import { StoreBackedServer } from "./storeBackedServer";
 
 type Mounted = ReturnType<typeof mount>;
@@ -198,8 +201,9 @@ afterEach(async () => {
     resetProjection();
 });
 
+/** The candidate's settings context (`spikeRegistry.ts`): every section view is the facade on `DBState.db`. */
 function ctx(): SettingContext {
-    return { db: DBState.db, modelInfo: undefined, subModelInfo: undefined } as unknown as SettingContext;
+    return candidateContext();
 }
 
 function render(component: Parameters<typeof mount>[0], props: Record<string, unknown>) {
@@ -477,7 +481,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             expect(queuedKeys()).toEqual([]);
         });
 
-        it("the function binding over the real getSettingValue/setSettingValue: bindKey, bindPath, and item callbacks", async () => {
+        it("the function binding over the registry resolution (the pre-slice-6 copy): bindKey, bindPath, and item callbacks", async () => {
             const items: { item: SettingItem; key: string; nested: boolean; read: () => unknown; raw: () => void }[] = [
                 {
                     item: { id: "spike.customCSS", type: "text", bindKey: "customCSS" },
@@ -511,9 +515,10 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                     item: {
                         id: "spike.lore3",
                         type: "text",
-                        getValue: (database) => (database.characters[0] as character).globalLore[3].content,
-                        setValue: (database, value: string) => {
-                            (database.characters[0] as character).globalLore[3].content = value;
+                        // Item callbacks take the context since slice 6; the character is the facade's.
+                        getValue: () => (DBState.db.characters[0] as character).globalLore[3].content,
+                        setValue: (value: string) => {
+                            (DBState.db.characters[0] as character).globalLore[3].content = value;
                         },
                     },
                     key: CHAR,
@@ -714,7 +719,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             switchPreset("b");
             expect(livePreset("b").openrouterProvider).toBeNull();
             const item: SettingItem = { id: "spike.order", type: "text", bindPath: "openrouterProvider.order" };
-            setSettingValue(item, ["openai"], ctx());
+            candidateSetSettingValue(item, ["openai"], ctx());
             expect(livePreset("b").openrouterProvider).toEqual({ order: ["openai"] });
             expect(livePreset("a").openrouterProvider).not.toEqual({ order: ["openai"] });
             const preset = await capture(PRESETS);
@@ -731,7 +736,11 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                 "main",
                 edited("secrets", "main", (data) => (data.deeplXOptions = null)),
             );
-            setSettingValue({ id: "spike.deeplx", type: "text", bindPath: "deeplXOptions.url" }, "https://new", ctx());
+            candidateSetSettingValue(
+                { id: "spike.deeplx", type: "text", bindPath: "deeplXOptions.url" },
+                "https://new",
+                ctx(),
+            );
             expect(liveRecord<any>("secrets").deeplXOptions).toEqual({ url: "https://new" });
             const section = await capture(SECRETS);
             expect(section.captured).toBe(true);
@@ -759,11 +768,11 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         /** Reads every item, writes every item once, reads again; returns the reads and the touched fields. */
         function runRegistry() {
             const items = [customQuotes(), deeplXUrl, ...quoteItems()];
-            const before = items.map((item) => getSettingValue(item, ctx()));
-            setSettingValue(customQuotes(), false, ctx());
-            setSettingValue(deeplXUrl, "https://changed", ctx());
-            quoteItems().forEach((item, index) => setSettingValue(item, ["<", ">", "(", ")"][index], ctx()));
-            const after = items.map((item) => getSettingValue(item, ctx()));
+            const before = items.map((item) => candidateGetSettingValue(item, ctx()));
+            candidateSetSettingValue(customQuotes(), false, ctx());
+            candidateSetSettingValue(deeplXUrl, "https://changed", ctx());
+            quoteItems().forEach((item, index) => candidateSetSettingValue(item, ["<", ">", "(", ")"][index], ctx()));
+            const after = items.map((item) => candidateGetSettingValue(item, ctx()));
             const fields = JSON.parse(
                 JSON.stringify({
                     customQuotes: DBState.db.customQuotes,
@@ -796,13 +805,13 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             const cases: { name: string; prepare?: () => void; write: () => void; key: string; nested: boolean }[] = [
                 {
                     name: "bindKey customQuotes",
-                    write: () => setSettingValue(customQuotes(), false, ctx()),
+                    write: () => candidateSetSettingValue(customQuotes(), false, ctx()),
                     key: UI,
                     nested: false,
                 },
                 {
                     name: "bindPath deeplXOptions.url",
-                    write: () => setSettingValue(deeplXUrl, "https://x", ctx()),
+                    write: () => candidateSetSettingValue(deeplXUrl, "https://x", ctx()),
                     key: SECRETS,
                     nested: true,
                 },
@@ -814,13 +823,13 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                             "main",
                             edited("secrets", "main", (data) => (data.deeplXOptions = null)),
                         ),
-                    write: () => setSettingValue(deeplXUrl, "https://y", ctx()),
+                    write: () => candidateSetSettingValue(deeplXUrl, "https://y", ctx()),
                     key: SECRETS,
                     nested: false,
                 },
                 {
                     name: "customQuotesData[0] item",
-                    write: () => setSettingValue(quoteItems()[0], "<", ctx()),
+                    write: () => candidateSetSettingValue(quoteItems()[0], "<", ctx()),
                     key: UI,
                     nested: true,
                 },
@@ -832,7 +841,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                             "main",
                             edited("ui", "main", (data) => (data.customQuotesData = null)),
                         ),
-                    write: () => setSettingValue(quoteItems()[3], ")", ctx()),
+                    write: () => candidateSetSettingValue(quoteItems()[3], ")", ctx()),
                     key: UI,
                     nested: false,
                 },

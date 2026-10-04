@@ -1,8 +1,9 @@
 <script>
+    import { selectLoreBookPage } from "src/ts/storage/selection.svelte";
+    import { settings, selectedLoreBookPage } from "src/ts/storage/settingsViews.svelte";
     import { alertConfirm } from "../../ts/alert";
     import { language } from "../../lang";
 
-    import { DBState } from "src/ts/stores.svelte";
     import { SquarePenIcon, PlusIcon, TrashIcon, XIcon } from "@lucide/svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
     let editMode = $state(false);
@@ -20,18 +21,18 @@
                 </button>
             </div>
         </div>
-        {#each DBState.db.loreBook as lore, ind}
+        {#each settings.loreBook as lore, ind}
             <button
                 onclick={() => {
                     if (!editMode) {
-                        DBState.db.loreBookPage = ind;
+                        selectLoreBookPage(ind);
                     }
                 }}
                 class="flex items-center text-textcolor border-t-1 border-solid border-0 border-darkborderc p-2 cursor-pointer"
-                class:bg-selected={ind === DBState.db.loreBookPage}
+                class:bg-selected={ind === selectedLoreBookPage()}
             >
                 {#if editMode}
-                    <TextInput bind:value={DBState.db.loreBook[ind].name} placeholder="string" padding={false} />
+                    <TextInput bind:value={settings.loreBook[ind].name} placeholder="string" padding={false} />
                 {:else}
                     <span>{lore.name}</span>
                 {/if}
@@ -42,15 +43,15 @@
                         tabindex="0"
                         onclick={async (e) => {
                             e.stopPropagation();
-                            if (DBState.db.loreBook.length === 1) {
+                            if (settings.loreBook.length === 1) {
                                 return;
                             }
                             const d = await alertConfirm(`${language.removeConfirm}${lore.name}`);
                             if (d) {
-                                DBState.db.loreBookPage = 0;
-                                let loreBook = DBState.db.loreBook;
+                                selectLoreBookPage(0);
+                                let loreBook = settings.loreBook;
                                 loreBook.splice(ind, 1);
-                                DBState.db.loreBook = loreBook;
+                                settings.loreBook = loreBook;
                             }
                         }}
                         onkeydown={(e) => {
@@ -68,14 +69,14 @@
             <button
                 class="text-textcolor2 hover:text-green-500 cursor-pointer mr-1"
                 onclick={() => {
-                    let loreBooks = DBState.db.loreBook;
+                    let loreBooks = settings.loreBook;
                     let newLoreBook = {
                         name: `New LoreBook`,
                         data: [],
                     };
                     loreBooks.push(newLoreBook);
 
-                    DBState.db.loreBook = loreBooks;
+                    settings.loreBook = loreBooks;
                 }}
             >
                 <PlusIcon />

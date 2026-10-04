@@ -43,6 +43,7 @@ vi.mock("src/ts/util", () => ({
 }));
 
 import { DBState } from "src/ts/stores.svelte";
+import { setDatabaseLite } from "src/ts/storage/database.svelte";
 import TranslatorPresetSettings from "./TranslatorPresetSettings.svelte";
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
@@ -89,11 +90,13 @@ function reloadFromServer(items: ReturnType<typeof preset>[], selectedId: string
 }
 
 beforeEach(() => {
-    DBState.db = {
+    // Installed the way the app installs a database (its fields moved into the records), since the
+    // page reads the records through the settings views (Phase 6 slice 6).
+    setDatabaseLite({
         characters: [],
         translatorPresets: [preset("a", "A"), preset("b", "B")],
         translatorPresetId: "a",
-    } as any;
+    } as any);
 });
 
 afterEach(() => {

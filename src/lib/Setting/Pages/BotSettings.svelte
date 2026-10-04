@@ -1,9 +1,9 @@
 <script lang="ts">
+    import { settings, activePreset, currentPresetRecord } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { language } from "src/lang";
     import Help from "src/lib/Others/Help.svelte";
 
-    import { DBState } from "src/ts/stores.svelte";
     import { customProviderStore } from "src/ts/plugins/pluginHooks";
     import { downloadFile } from "src/ts/globalApi.svelte";
     import { tokenizeAccurate, tokenizerList } from "src/ts/tokenizer";
@@ -13,7 +13,6 @@
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import SecretInput from "src/lib/UI/GUI/SecretInput.svelte";
     import { isSecretSet, secretVersion } from "src/ts/storage/llmSecrets.svelte";
-    import { selectedPreset } from "src/ts/storage/forwarding.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
@@ -55,25 +54,25 @@
     // Reset model selection and display name when subscription mode toggles
     let _nanogptSubModeInitialized = false;
     $effect(() => {
-        const _sub = DBState.db.nanogptUseSubscriptionEndpoint;
+        const _sub = settings.providers.nanogptUseSubscriptionEndpoint;
         if (!_nanogptSubModeInitialized) {
             _nanogptSubModeInitialized = true;
             return;
         }
-        DBState.db.nanogptRequestModel = "";
-        DBState.db.nanogptRequestModelName = "";
+        settings.providers.nanogptRequestModel = "";
+        settings.providers.nanogptRequestModelName = "";
     });
 
     // Reset provider selection to Auto when the model or subscription mode changes
     let _nanogptProviderResetInitialized = false;
     $effect(() => {
-        const _model = DBState.db.nanogptRequestModel;
-        const _sub = DBState.db.nanogptUseSubscriptionEndpoint;
+        const _model = settings.providers.nanogptRequestModel;
+        const _sub = settings.providers.nanogptUseSubscriptionEndpoint;
         if (!_nanogptProviderResetInitialized) {
             _nanogptProviderResetInitialized = true;
             return;
         }
-        DBState.db.nanogptProvider = "";
+        settings.providers.nanogptProvider = "";
     });
 
     // Reset subscription mode (and related state) when API key is cleared
@@ -86,11 +85,11 @@
             return;
         }
         if (!_key) {
-            DBState.db.nanogptUseSubscriptionEndpoint = false;
-            DBState.db.nanogptSubscriptionState = "";
-            DBState.db.nanogptRequestModel = "";
-            DBState.db.nanogptRequestModelName = "";
-            DBState.db.nanogptProvider = "";
+            settings.providers.nanogptUseSubscriptionEndpoint = false;
+            settings.providers.nanogptSubscriptionState = "";
+            settings.providers.nanogptRequestModel = "";
+            settings.providers.nanogptRequestModelName = "";
+            settings.providers.nanogptProvider = "";
         }
     });
 
@@ -107,35 +106,37 @@
     let { goPromptTemplate = () => {} }: Props = $props();
 
     async function loadTokenize() {
-        tokens.mainPrompt = await tokenizeAccurate(DBState.db.mainPrompt, true);
-        tokens.jailbreak = await tokenizeAccurate(DBState.db.jailbreak, true);
-        tokens.globalNote = await tokenizeAccurate(DBState.db.globalNote, true);
+        tokens.mainPrompt = await tokenizeAccurate(activePreset.mainPrompt, true);
+        tokens.jailbreak = await tokenizeAccurate(activePreset.jailbreak, true);
+        tokens.globalNote = await tokenizeAccurate(activePreset.globalNote, true);
     }
 
     $effect.pre(() => {
-        if (DBState.db.aiModel === "textgen_webui" || DBState.db.subModel === "mancer") {
-            DBState.db.useStreaming = DBState.db.textgenWebUIStreamURL.startsWith("wss://");
+        if (activePreset.aiModel === "textgen_webui" || activePreset.subModel === "mancer") {
+            settings.providers.useStreaming = activePreset.textgenWebUIStreamURL.startsWith("wss://");
         }
     });
 
-    let submenu = $state(DBState.db.useLegacyGUI ? -1 : 0);
-    let modelInfo = $derived(getModelInfo(DBState.db.aiModel));
-    let subModelInfo = $derived(getModelInfo(DBState.db.subModel));
+    let submenu = $state(settings.ui.useLegacyGUI ? -1 : 0);
+    let modelInfo = $derived(getModelInfo(activePreset.aiModel));
+    let subModelInfo = $derived(getModelInfo(activePreset.subModel));
     let nanogptInputMode = $state<"list" | "manual">(
-        DBState.db.nanogptRequestModel && !DBState.db.nanogptRequestModelName ? "manual" : "list",
+        settings.providers.nanogptRequestModel && !settings.providers.nanogptRequestModelName ? "manual" : "list",
     );
     // svelte-ignore state_referenced_locally
     let prevNanogptInputMode = nanogptInputMode;
     $effect(() => {
         if (nanogptInputMode !== prevNanogptInputMode) {
-            DBState.db.nanogptRequestModel = "";
-            DBState.db.nanogptRequestModelName = "";
+            settings.providers.nanogptRequestModel = "";
+            settings.providers.nanogptRequestModelName = "";
             prevNanogptInputMode = nanogptInputMode;
         }
     });
 
-    let usesOllamaLocal = $derived(DBState.db.aiModel === "ollama-hosted" || DBState.db.subModel === "ollama-hosted");
-    let usesOllamaCloud = $derived(DBState.db.aiModel === "ollama-cloud" || DBState.db.subModel === "ollama-cloud");
+    let usesOllamaLocal = $derived(
+        activePreset.aiModel === "ollama-hosted" || activePreset.subModel === "ollama-hosted",
+    );
+    let usesOllamaCloud = $derived(activePreset.aiModel === "ollama-cloud" || activePreset.subModel === "ollama-cloud");
 </script>
 
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.chatBot}</h2>
@@ -183,10 +184,10 @@
 
 {#if submenu === 0 || submenu === -1}
     <span class="text-textcolor mt-4">{language.model} <Help key="model" /></span>
-    <ModelList bind:value={DBState.db.aiModel} />
+    <ModelList bind:value={activePreset.aiModel} />
 
     <span class="text-textcolor mt-2">{language.submodel} <Help key="submodel" /></span>
-    <ModelList bind:value={DBState.db.subModel} />
+    <ModelList bind:value={activePreset.subModel} />
 
     {#if modelInfo.provider === LLMProvider.GoogleCloud || subModelInfo.provider === LLMProvider.GoogleCloud}
         <span class="text-textcolor">GoogleAI API Key</span>
@@ -194,16 +195,26 @@
     {/if}
     {#if modelInfo.provider === LLMProvider.VertexAI || subModelInfo.provider === LLMProvider.VertexAI}
         <span class="text-textcolor">Project ID</span>
-        <TextInput marginBottom={true} size={"sm"} placeholder="..." bind:value={DBState.db.google.projectId} />
+        <TextInput
+            marginBottom={true}
+            size={"sm"}
+            placeholder="..."
+            bind:value={settings.llmSecrets.google.projectId}
+        />
         <span class="text-textcolor">Vertex Client Email</span>
-        <TextInput marginBottom={true} size={"sm"} placeholder="..." bind:value={DBState.db.vertexClientEmail} />
+        <TextInput
+            marginBottom={true}
+            size={"sm"}
+            placeholder="..."
+            bind:value={settings.llmSecrets.vertexClientEmail}
+        />
         <span class="text-textcolor">Vertex Private Key</span>
         <SecretInput path={{ kind: "flat", field: "vertexPrivateKey" }} marginBottom />
         <span class="text-textcolor">Region</span>
         <SelectInput
-            value={DBState.db.vertexRegion}
+            value={settings.providers.vertexRegion}
             onchange={(e) => {
-                DBState.db.vertexRegion = e.currentTarget.value;
+                settings.providers.vertexRegion = e.currentTarget.value;
             }}
         >
             <OptionInput value={"global"}>global</OptionInput>
@@ -215,7 +226,7 @@
         <span class="text-textcolor">NovelList {language.apiKey}</span>
         <SecretInput path={{ kind: "flat", field: "novellistAPI" }} marginBottom />
     {/if}
-    {#if DBState.db.aiModel.startsWith("mancer") || DBState.db.subModel.startsWith("mancer")}
+    {#if activePreset.aiModel.startsWith("mancer") || activePreset.subModel.startsWith("mancer")}
         <span class="text-textcolor">Mancer {language.apiKey}</span>
         <SecretInput path={{ kind: "flat", field: "mancerHeader" }} marginBottom />
     {/if}
@@ -231,12 +242,17 @@
         <span class="text-textcolor">NovelAI Bearer Token</span>
         <SecretInput path={{ kind: "nested", field: "novelai" }} />
     {/if}
-    {#if DBState.db.aiModel === "reverse_proxy" || DBState.db.subModel === "reverse_proxy"}
+    {#if activePreset.aiModel === "reverse_proxy" || activePreset.subModel === "reverse_proxy"}
         <span class="text-textcolor mt-2">URL <Help key="forceUrl" /></span>
-        <TextInput marginBottom={false} size={"sm"} bind:value={DBState.db.forceReplaceUrl} placeholder="https//..." />
+        <TextInput
+            marginBottom={false}
+            size={"sm"}
+            bind:value={activePreset.forceReplaceUrl}
+            placeholder="https//..."
+        />
         <span class="text-textcolor mt-4"> {language.proxyAPIKey}</span>
         <SecretInput
-            path={{ kind: "entry", field: "presets", id: selectedPreset(DBState.db)?.id ?? "" }}
+            path={{ kind: "entry", field: "presets", id: activePreset.id ?? "" }}
             marginBottom
             placeholder="leave it blank if it hasn't password"
         />
@@ -244,14 +260,14 @@
         <TextInput
             marginBottom={false}
             size={"sm"}
-            bind:value={DBState.db.customProxyRequestModel}
+            bind:value={activePreset.customProxyRequestModel}
             placeholder="Name"
         />
         <span class="text-textcolor mt-4"> {language.format}</span>
         <SelectInput
-            value={DBState.db.customAPIFormat.toString()}
+            value={activePreset.customAPIFormat.toString()}
             onchange={(e) => {
-                DBState.db.customAPIFormat = parseInt(e.currentTarget.value) as LLMFormat;
+                activePreset.customAPIFormat = parseInt(e.currentTarget.value) as LLMFormat;
             }}
         >
             <OptionInput value={LLMFormat.OpenAICompatible.toString()}>OpenAI Compatible</OptionInput>
@@ -269,13 +285,13 @@
     {#if usesOllamaLocal || usesOllamaCloud}
         {#if usesOllamaLocal}
             <span class="text-textcolor mt-4">Ollama URL</span>
-            <TextInput marginBottom={false} size={"sm"} bind:value={DBState.db.ollamaURL} />
+            <TextInput marginBottom={false} size={"sm"} bind:value={settings.providers.ollamaURL} />
         {/if}
 
         {#if usesOllamaCloud}
             <span class="text-textcolor mt-4">Ollama {language.model}</span>
             <SegmentedControl
-                bind:value={DBState.db.ollamaInputMode}
+                bind:value={settings.providers.ollamaInputMode}
                 options={[
                     { value: "list", label: (language as any).nanoGPTSelectFromList || "Select from List" },
                     { value: "manual", label: (language as any).nanoGPTManualInput || "Manual Input" },
@@ -283,27 +299,27 @@
                 size="md"
             />
 
-            {#if DBState.db.ollamaInputMode === "manual"}
+            {#if settings.providers.ollamaInputMode === "manual"}
                 <TextInput
                     marginBottom={false}
                     size={"sm"}
-                    bind:value={DBState.db.ollamaCloudModel}
+                    bind:value={settings.providers.ollamaCloudModel}
                     placeholder="Model"
-                    oninput={() => (DBState.db.ollamaCloudModelName = "")}
+                    oninput={() => (settings.providers.ollamaCloudModelName = "")}
                 />
             {:else}
-                {#await (secretVersion( { kind: "flat", field: "ollamaApiKey" } ), getOllamaModels(DBState.db.ollamaURL, "cloud"))}
-                    <ModelGrid bind:value={DBState.db.ollamaCloudModel} loading={true} />
+                {#await (secretVersion( { kind: "flat", field: "ollamaApiKey" } ), getOllamaModels(settings.providers.ollamaURL, "cloud"))}
+                    <ModelGrid bind:value={settings.providers.ollamaCloudModel} loading={true} />
                 {:then cloudModels}
                     <ModelGrid
-                        bind:value={DBState.db.ollamaCloudModel}
+                        bind:value={settings.providers.ollamaCloudModel}
                         items={cloudModels ?? []}
-                        selectedLabelOverride={DBState.db.ollamaCloudModel
-                            ? `Cloud / ${DBState.db.ollamaCloudModelName || DBState.db.ollamaCloudModel}`
+                        selectedLabelOverride={settings.providers.ollamaCloudModel
+                            ? `Cloud / ${settings.providers.ollamaCloudModelName || settings.providers.ollamaCloudModel}`
                             : undefined}
                         onselect={(_id, name) => {
-                            DBState.db.ollamaModelSource = "cloud";
-                            DBState.db.ollamaCloudModelName = name;
+                            settings.providers.ollamaModelSource = "cloud";
+                            settings.providers.ollamaCloudModelName = name;
                         }}
                     />
                 {/await}
@@ -314,9 +330,9 @@
 
             <span class="text-textcolor mt-4">Ollama {language.format}</span>
             <SelectInput
-                value={DBState.db.ollamaRequestFormat.toString()}
+                value={settings.providers.ollamaRequestFormat.toString()}
                 onchange={(e) => {
-                    DBState.db.ollamaRequestFormat = parseInt(e.currentTarget.value) as LLMFormat;
+                    settings.providers.ollamaRequestFormat = parseInt(e.currentTarget.value) as LLMFormat;
                 }}
             >
                 <OptionInput value={LLMFormat.Ollama.toString()}>Ollama SDK</OptionInput>
@@ -326,7 +342,7 @@
             </SelectInput>
 
             <div class="mt-2">
-                <CheckInput bind:check={DBState.db.useStreaming} name={`Response ${language.streaming}`} />
+                <CheckInput bind:check={settings.providers.useStreaming} name={`Response ${language.streaming}`} />
             </div>
         {/if}
 
@@ -335,18 +351,18 @@
             <TextInput
                 marginBottom={false}
                 size={"sm"}
-                bind:value={DBState.db.ollamaModel}
+                bind:value={settings.providers.ollamaModel}
                 placeholder="Model"
                 oninput={() => {
-                    DBState.db.ollamaModelSource = "local";
-                    DBState.db.ollamaModelName = "";
+                    settings.providers.ollamaModelSource = "local";
+                    settings.providers.ollamaModelName = "";
                 }}
             />
         {/if}
 
-        {#if usesOllamaLocal || (usesOllamaCloud && DBState.db.ollamaRequestFormat === LLMFormat.Ollama)}
+        {#if usesOllamaLocal || (usesOllamaCloud && settings.providers.ollamaRequestFormat === LLMFormat.Ollama)}
             <span class="text-textcolor mt-4">Ollama Thinking</span>
-            <SelectInput bind:value={DBState.db.ollamaThinkingMode}>
+            <SelectInput bind:value={settings.providers.ollamaThinkingMode}>
                 <OptionInput value="auto">Auto</OptionInput>
                 <OptionInput value="off">Off</OptionInput>
                 <OptionInput value="on">On</OptionInput>
@@ -356,16 +372,16 @@
             </SelectInput>
         {/if}
     {/if}
-    {#if DBState.db.aiModel === "nanogpt" || DBState.db.subModel === "nanogpt"}
+    {#if activePreset.aiModel === "nanogpt" || activePreset.subModel === "nanogpt"}
         <span class="text-textcolor mt-4">NanoGPT {language.apiKey}</span>
         <SecretInput path={{ kind: "flat", field: "nanogptKey" }} marginBottom />
 
         <NanoGPTDashboard keySet={isSecretSet(NANOGPT_KEY)} keyVersion={secretVersion(NANOGPT_KEY)} />
 
-        {#if DBState.db.nanogptSubscriptionState === "active" || DBState.db.nanogptSubscriptionState === "grace"}
+        {#if settings.providers.nanogptSubscriptionState === "active" || settings.providers.nanogptSubscriptionState === "grace"}
             <div class="flex items-center mt-3">
                 <CheckInput
-                    bind:check={DBState.db.nanogptUseSubscriptionEndpoint}
+                    bind:check={settings.providers.nanogptUseSubscriptionEndpoint}
                     name={language.nanoGPTUseSubscriptionEndpoint}
                 />
             </div>
@@ -385,60 +401,61 @@
             <TextInput
                 marginBottom={false}
                 size={"sm"}
-                bind:value={DBState.db.nanogptRequestModel}
+                bind:value={settings.providers.nanogptRequestModel}
                 placeholder={(language as any).nanoGPTManualModelSelect || "Manual Model Select"}
-                oninput={() => (DBState.db.nanogptRequestModelName = "")}
+                oninput={() => (settings.providers.nanogptRequestModelName = "")}
             />
         {:else}
             {#await Promise.all([getNanoGPTModels(), (secretVersion(NANOGPT_KEY), getNanoGPTSubscriptionModels())])}
-                <ModelGrid bind:value={DBState.db.nanogptRequestModel} loading={true} />
+                <ModelGrid bind:value={settings.providers.nanogptRequestModel} loading={true} />
             {:then [regular, sub]}
                 <ModelGrid
-                    bind:value={DBState.db.nanogptRequestModel}
-                    items={DBState.db.nanogptUseSubscriptionEndpoint
+                    bind:value={settings.providers.nanogptRequestModel}
+                    items={settings.providers.nanogptUseSubscriptionEndpoint
                         ? (sub ?? []).map(ngToGridItem)
                         : (regular ?? []).map(ngToGridItem)}
-                    showSubBadge={DBState.db.nanogptUseSubscriptionEndpoint}
-                    selectedLabelOverride={DBState.db.nanogptRequestModel && !DBState.db.nanogptRequestModelName
-                        ? DBState.db.nanogptRequestModel
+                    showSubBadge={settings.providers.nanogptUseSubscriptionEndpoint}
+                    selectedLabelOverride={settings.providers.nanogptRequestModel &&
+                    !settings.providers.nanogptRequestModelName
+                        ? settings.providers.nanogptRequestModel
                         : undefined}
                     onselect={(_id, name) => {
-                        DBState.db.nanogptRequestModelName = name;
+                        settings.providers.nanogptRequestModelName = name;
                     }}
                 />
-                {#if !DBState.db.nanogptUseSubscriptionEndpoint}
+                {#if !settings.providers.nanogptUseSubscriptionEndpoint}
                     <NanoGPTProviderPicker
                         keySet={isSecretSet(NANOGPT_KEY)}
                         keyVersion={secretVersion(NANOGPT_KEY)}
-                        modelId={DBState.db.nanogptRequestModel}
-                        bind:value={DBState.db.nanogptProvider}
+                        modelId={settings.providers.nanogptRequestModel}
+                        bind:value={settings.providers.nanogptProvider}
                     />
                 {/if}
             {/await}
         {/if}
     {/if}
-    {#if DBState.db.aiModel === "openrouter" || DBState.db.subModel === "openrouter"}
+    {#if activePreset.aiModel === "openrouter" || activePreset.subModel === "openrouter"}
         <span class="text-textcolor mt-4">OpenRouter {language.apiKey}</span>
         <SecretInput path={{ kind: "flat", field: "openrouterKey" }} marginBottom />
 
         <span class="text-textcolor mt-4">OpenRouter {language.model}</span>
         {#await getOpenRouterModels()}
             <ModelGrid
-                bind:value={DBState.db.openrouterRequestModel}
+                bind:value={activePreset.openrouterRequestModel}
                 pinnedItems={openrouterPinnedItems}
                 loading={true}
             />
         {:then m}
             <ModelGrid
-                bind:value={DBState.db.openrouterRequestModel}
+                bind:value={activePreset.openrouterRequestModel}
                 items={(m ?? []).map(orToGridItem)}
                 pinnedItems={openrouterPinnedItems}
             />
         {/await}
     {/if}
-    {#if DBState.db.aiModel === "openrouter" || DBState.db.aiModel === "reverse_proxy"}
+    {#if activePreset.aiModel === "openrouter" || activePreset.aiModel === "reverse_proxy"}
         <span class="text-textcolor">{language.tokenizer}</span>
-        <SelectInput bind:value={DBState.db.customTokenizer}>
+        <SelectInput bind:value={settings.providers.customTokenizer}>
             {#each tokenizerList as entry}
                 <OptionInput value={entry[0]}>{entry[1]}</OptionInput>
             {/each}
@@ -461,26 +478,26 @@
 
     <div class="py-2 flex flex-col gap-2 mb-4">
         {#if !usesOllamaCloud && (modelInfo.flags.includes(LLMFlags.hasStreaming) || subModelInfo.flags.includes(LLMFlags.hasStreaming))}
-            <Check bind:check={DBState.db.useStreaming} name={`Response ${language.streaming}`} />
+            <Check bind:check={settings.providers.useStreaming} name={`Response ${language.streaming}`} />
 
-            {#if DBState.db.useStreaming && (modelInfo.flags.includes(LLMFlags.geminiThinking) || subModelInfo.flags.includes(LLMFlags.geminiThinking))}
-                <Check bind:check={DBState.db.streamGeminiThoughts} name={`Stream Gemini Thoughts`} />
+            {#if settings.providers.useStreaming && (modelInfo.flags.includes(LLMFlags.geminiThinking) || subModelInfo.flags.includes(LLMFlags.geminiThinking))}
+                <Check bind:check={settings.providers.streamGeminiThoughts} name={`Stream Gemini Thoughts`} />
             {/if}
         {/if}
 
-        {#if DBState.db.aiModel === "reverse_proxy" || DBState.db.subModel === "reverse_proxy"}
-            <Check bind:check={DBState.db.reverseProxyOobaMode} name={`${language.reverseProxyOobaMode}`} />
+        {#if activePreset.aiModel === "reverse_proxy" || activePreset.subModel === "reverse_proxy"}
+            <Check bind:check={settings.providers.reverseProxyOobaMode} name={`${language.reverseProxyOobaMode}`} />
         {/if}
         {#if modelInfo.provider === LLMProvider.NovelAI || subModelInfo.provider === LLMProvider.NovelAI}
-            <Check bind:check={DBState.db.NAIadventure} name={language.textAdventureNAI} />
+            <Check bind:check={activePreset.NAIadventure} name={language.textAdventureNAI} />
 
-            <Check bind:check={DBState.db.NAIappendName} name={language.appendNameNAI} />
+            <Check bind:check={activePreset.NAIappendName} name={language.appendNameNAI} />
         {/if}
     </div>
 
-    {#if DBState.db.aiModel === "custom" || DBState.db.subModel === "custom"}
+    {#if activePreset.aiModel === "custom" || activePreset.subModel === "custom"}
         <span class="text-textcolor mt-2">{language.plugin}</span>
-        <SelectInput className="mt-2 mb-4" bind:value={DBState.db.currentPluginProvider}>
+        <SelectInput className="mt-2 mb-4" bind:value={activePreset.currentPluginProvider}>
             <OptionInput value="">None</OptionInput>
             {#each $customProviderStore as plugin}
                 <OptionInput value={plugin}>{plugin}</OptionInput>
@@ -488,46 +505,46 @@
         </SelectInput>
     {/if}
 
-    {#if DBState.db.aiModel === "kobold" || DBState.db.subModel === "kobold"}
+    {#if activePreset.aiModel === "kobold" || activePreset.subModel === "kobold"}
         <span class="text-textcolor">Kobold URL</span>
-        <TextInput marginBottom={true} bind:value={DBState.db.koboldURL} />
+        <TextInput marginBottom={true} bind:value={activePreset.koboldURL} />
     {/if}
 
-    {#if DBState.db.aiModel === "echo_model" || DBState.db.subModel === "echo_model"}
+    {#if activePreset.aiModel === "echo_model" || activePreset.subModel === "echo_model"}
         <span class="text-textcolor mt-2">Echo Message</span>
         <TextAreaInput
             margin="bottom"
-            bind:value={DBState.db.echoMessage}
+            bind:value={settings.providers.echoMessage}
             placeholder={"The message you want to receive as the bot's response\n(e.g., Lumi tilts her head, her white hair sliding down as her pretty green and aqua eyes sparkle…)"}
         />
         <span class="text-textcolor mt-2">Echo Delay (Seconds)</span>
-        <NumberInput marginBottom={true} bind:value={DBState.db.echoDelay} min={0} />
+        <NumberInput marginBottom={true} bind:value={settings.providers.echoDelay} min={0} />
     {/if}
 
-    {#if DBState.db.aiModel.startsWith("horde") || DBState.db.subModel.startsWith("horde")}
+    {#if activePreset.aiModel.startsWith("horde") || activePreset.subModel.startsWith("horde")}
         <span class="text-textcolor">Horde {language.apiKey}</span>
         <SecretInput path={{ kind: "nested", field: "hordeConfig" }} marginBottom />
     {/if}
-    {#if DBState.db.aiModel === "textgen_webui" || DBState.db.subModel === "textgen_webui" || DBState.db.aiModel === "mancer" || DBState.db.subModel === "mancer"}
+    {#if activePreset.aiModel === "textgen_webui" || activePreset.subModel === "textgen_webui" || activePreset.aiModel === "mancer" || activePreset.subModel === "mancer"}
         <span class="text-textcolor mt-2">Blocking {language.providerURL}</span>
-        <TextInput marginBottom={true} bind:value={DBState.db.textgenWebUIBlockingURL} placeholder="https://..." />
+        <TextInput marginBottom={true} bind:value={activePreset.textgenWebUIBlockingURL} placeholder="https://..." />
         <span class="text-draculared text-xs mb-2">You must use textgen webui with --public-api</span>
         <span class="text-textcolor mt-2">Stream {language.providerURL}</span>
-        <TextInput marginBottom={true} bind:value={DBState.db.textgenWebUIStreamURL} placeholder="wss://..." />
+        <TextInput marginBottom={true} bind:value={activePreset.textgenWebUIStreamURL} placeholder="wss://..." />
         <span class="text-draculared text-xs mb-2"
             >Warning: For Ooba version over 1.7, use "Ooba" as model, and use url like
             http://127.0.0.1:5000/v1/chat/completions</span
         >
     {/if}
-    {#if DBState.db.aiModel === "ooba" || DBState.db.subModel === "ooba"}
+    {#if activePreset.aiModel === "ooba" || activePreset.subModel === "ooba"}
         <span class="text-textcolor mt-2">Ooba {language.providerURL}</span>
-        <TextInput marginBottom={true} bind:value={DBState.db.textgenWebUIBlockingURL} placeholder="https://..." />
+        <TextInput marginBottom={true} bind:value={activePreset.textgenWebUIBlockingURL} placeholder="https://..." />
     {/if}
-    {#if DBState.db.aiModel.startsWith("horde") || DBState.db.aiModel === "kobold"}
+    {#if activePreset.aiModel.startsWith("horde") || activePreset.aiModel === "kobold"}
         <ChatFormatSettings />
     {/if}
 
-    {#if DBState.db.auxModelUnderModelSettings}
+    {#if settings.ui.auxModelUnderModelSettings}
         <AuxModelSelectors />
     {/if}
 {/if}
@@ -535,7 +552,7 @@
 {#if submenu === 1 || submenu === -1}
     <!-- Data-driven basic parameters -->
     <SettingRenderer items={allBasicParameterItems} {modelInfo} {subModelInfo} />
-    {#if DBState.db.aiModel === "textgen_webui" || DBState.db.aiModel === "mancer" || DBState.db.aiModel.startsWith("local_") || DBState.db.aiModel.startsWith("hf:::")}
+    {#if activePreset.aiModel === "textgen_webui" || activePreset.aiModel === "mancer" || activePreset.aiModel.startsWith("local_") || activePreset.aiModel.startsWith("hf:::")}
         <span class="text-textcolor">Repetition Penalty</span>
         <SliderInput
             min={1}
@@ -543,69 +560,76 @@
             step={0.01}
             fixed={2}
             marginBottom
-            bind:value={DBState.db.ooba.repetition_penalty}
+            bind:value={activePreset.ooba.repetition_penalty}
         />
         <span class="text-textcolor">Length Penalty</span>
-        <SliderInput min={-5} max={5} step={0.05} marginBottom fixed={2} bind:value={DBState.db.ooba.length_penalty} />
+        <SliderInput
+            min={-5}
+            max={5}
+            step={0.05}
+            marginBottom
+            fixed={2}
+            bind:value={activePreset.ooba.length_penalty}
+        />
         <span class="text-textcolor">Top K</span>
-        <SliderInput min={0} max={100} step={1} marginBottom bind:value={DBState.db.ooba.top_k} />
+        <SliderInput min={0} max={100} step={1} marginBottom bind:value={activePreset.ooba.top_k} />
         <span class="text-textcolor">Top P</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={DBState.db.ooba.top_p} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.ooba.top_p} />
         <span class="text-textcolor">Typical P</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={DBState.db.ooba.typical_p} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.ooba.typical_p} />
         <span class="text-textcolor">Top A</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={DBState.db.ooba.top_a} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.ooba.top_a} />
         <span class="text-textcolor">No Repeat n-gram Size</span>
-        <SliderInput min={0} max={20} step={1} marginBottom bind:value={DBState.db.ooba.no_repeat_ngram_size} />
+        <SliderInput min={0} max={20} step={1} marginBottom bind:value={activePreset.ooba.no_repeat_ngram_size} />
         <div class="flex items-center mt-4">
-            <Check bind:check={DBState.db.ooba.do_sample} name={"Do Sample"} />
+            <Check bind:check={activePreset.ooba.do_sample} name={"Do Sample"} />
         </div>
         <div class="flex items-center mt-4">
-            <Check bind:check={DBState.db.ooba.add_bos_token} name={"Add BOS Token"} />
+            <Check bind:check={activePreset.ooba.add_bos_token} name={"Add BOS Token"} />
         </div>
         <div class="flex items-center mt-4">
-            <Check bind:check={DBState.db.ooba.ban_eos_token} name={"Ban EOS Token"} />
+            <Check bind:check={activePreset.ooba.ban_eos_token} name={"Ban EOS Token"} />
         </div>
         <div class="flex items-center mt-4">
-            <Check bind:check={DBState.db.ooba.skip_special_tokens} name={"Skip Special Tokens"} />
+            <Check bind:check={activePreset.ooba.skip_special_tokens} name={"Skip Special Tokens"} />
         </div>
         <div class="flex items-center mt-4">
             <Check
-                check={!!DBState.db.localStopStrings}
+                check={!!activePreset.localStopStrings}
                 name={language.customStopWords}
                 onChange={() => {
-                    if (!DBState.db.localStopStrings) {
-                        DBState.db.localStopStrings = [];
+                    if (!activePreset.localStopStrings) {
+                        activePreset.localStopStrings = [];
                     } else {
-                        DBState.db.localStopStrings = null;
+                        activePreset.localStopStrings = null;
                     }
                 }}
             />
         </div>
-        {#if DBState.db.localStopStrings}
+        {#if activePreset.localStopStrings}
             <div class="flex flex-col p-2 rounded-sm border border-selected mt-2 gap-1">
                 <div class="p-2">
                     <button
                         class="font-medium flex justify-center items-center h-full cursor-pointer hover:text-green-500 w-full"
                         onclick={() => {
-                            let localStopStrings = DBState.db.localStopStrings;
+                            let localStopStrings = activePreset.localStopStrings;
                             localStopStrings.push("");
-                            DBState.db.localStopStrings = localStopStrings;
+                            activePreset.localStopStrings = localStopStrings;
                         }}><PlusIcon /></button
                     >
                 </div>
-                {#each DBState.db.localStopStrings as stopString, i}
+                {#each activePreset.localStopStrings as stopString, i}
                     <div class="flex w-full">
                         <div class="grow">
-                            <TextInput marginBottom bind:value={DBState.db.localStopStrings[i]} fullwidth fullh />
+                            <TextInput marginBottom bind:value={activePreset.localStopStrings[i]} fullwidth fullh />
                         </div>
                         <div>
                             <button
                                 class="font-medium flex justify-center items-center h-full cursor-pointer hover:text-green-500 w-full"
                                 onclick={() => {
-                                    let localStopStrings = DBState.db.localStopStrings;
+                                    let localStopStrings = activePreset.localStopStrings;
                                     localStopStrings.splice(i, 1);
-                                    DBState.db.localStopStrings = localStopStrings;
+                                    activePreset.localStopStrings = localStopStrings;
                                 }}><TrashIcon /></button
                             >
                         </div>
@@ -616,20 +640,20 @@
         <div class="flex flex-col p-3 rounded-md border-selected border mt-4">
             <ChatFormatSettings />
         </div>
-        <Check bind:check={DBState.db.ooba.formating.useName} name={language.useNamePrefix} />
+        <Check bind:check={activePreset.ooba.formating.useName} name={language.useNamePrefix} />
     {:else if modelInfo.format === LLMFormat.NovelAI}
         <div class="flex flex-col p-3 bg-darkbg mt-4">
             <span class="text-textcolor">Starter</span>
-            <TextInput bind:value={DBState.db.NAIsettings.starter} placeholder={"⁂"} />
+            <TextInput bind:value={activePreset.NAISettings.starter} placeholder={"⁂"} />
             <span class="text-textcolor">Seperator</span>
-            <TextInput bind:value={DBState.db.NAIsettings.seperator} placeholder={"\\n"} />
+            <TextInput bind:value={activePreset.NAISettings.seperator} placeholder={"\\n"} />
         </div>
         <span class="text-textcolor">Top P</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={DBState.db.NAIsettings.topP} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.NAISettings.topP} />
         <span class="text-textcolor">Top K</span>
-        <SliderInput min={0} max={100} step={1} marginBottom bind:value={DBState.db.NAIsettings.topK} />
+        <SliderInput min={0} max={100} step={1} marginBottom bind:value={activePreset.NAISettings.topK} />
         <span class="text-textcolor">Top A</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={DBState.db.NAIsettings.topA} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.NAISettings.topA} />
         <span class="text-textcolor">Tailfree Sampling</span>
         <SliderInput
             min={0}
@@ -637,10 +661,17 @@
             step={0.001}
             marginBottom
             fixed={3}
-            bind:value={DBState.db.NAIsettings.tailFreeSampling}
+            bind:value={activePreset.NAISettings.tailFreeSampling}
         />
         <span class="text-textcolor">Typical P</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={DBState.db.NAIsettings.typicalp} />
+        <SliderInput
+            min={0}
+            max={1}
+            step={0.01}
+            marginBottom
+            fixed={2}
+            bind:value={activePreset.NAISettings.typicalp}
+        />
         <span class="text-textcolor">Repetition Penalty</span>
         <SliderInput
             min={0}
@@ -648,7 +679,7 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={DBState.db.NAIsettings.repetitionPenalty}
+            bind:value={activePreset.NAISettings.repetitionPenalty}
         />
         <span class="text-textcolor">Repetition Penalty Range</span>
         <SliderInput
@@ -657,7 +688,7 @@
             step={1}
             marginBottom
             fixed={0}
-            bind:value={DBState.db.NAIsettings.repetitionPenaltyRange}
+            bind:value={activePreset.NAISettings.repetitionPenaltyRange}
         />
         <span class="text-textcolor">Repetition Penalty Slope</span>
         <SliderInput
@@ -666,7 +697,7 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={DBState.db.NAIsettings.repetitionPenaltySlope}
+            bind:value={activePreset.NAISettings.repetitionPenaltySlope}
         />
         <span class="text-textcolor">Frequency Penalty</span>
         <SliderInput
@@ -675,7 +706,7 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={DBState.db.NAIsettings.frequencyPenalty}
+            bind:value={activePreset.NAISettings.frequencyPenalty}
         />
         <span class="text-textcolor">Presence Penalty</span>
         <SliderInput
@@ -684,7 +715,7 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={DBState.db.NAIsettings.presencePenalty}
+            bind:value={activePreset.NAISettings.presencePenalty}
         />
         <span class="text-textcolor">Mirostat LR</span>
         <SliderInput
@@ -693,7 +724,7 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={DBState.db.NAIsettings.mirostat_lr}
+            bind:value={activePreset.NAISettings.mirostat_lr}
         />
         <span class="text-textcolor">Mirostat Tau</span>
         <SliderInput
@@ -702,15 +733,22 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={DBState.db.NAIsettings.mirostat_tau}
+            bind:value={activePreset.NAISettings.mirostat_tau}
         />
         <span class="text-textcolor">Cfg Scale</span>
-        <SliderInput min={1} max={3} step={0.01} marginBottom fixed={2} bind:value={DBState.db.NAIsettings.cfg_scale} />
+        <SliderInput
+            min={1}
+            max={3}
+            step={0.01}
+            marginBottom
+            fixed={2}
+            bind:value={activePreset.NAISettings.cfg_scale}
+        />
     {:else if modelInfo.format === LLMFormat.NovelList}
         <span class="text-textcolor">Top P</span>
-        <SliderInput min={0} max={2} step={0.01} marginBottom fixed={2} bind:value={DBState.db.ainconfig.top_p} />
+        <SliderInput min={0} max={2} step={0.01} marginBottom fixed={2} bind:value={activePreset.ainconfig.top_p} />
         <span class="text-textcolor">Reputation Penalty</span>
-        <SliderInput min={0} max={2} step={0.01} marginBottom fixed={2} bind:value={DBState.db.ainconfig.rep_pen} />
+        <SliderInput min={0} max={2} step={0.01} marginBottom fixed={2} bind:value={activePreset.ainconfig.rep_pen} />
         <span class="text-textcolor">Reputation Penalty Range</span>
         <SliderInput
             min={0}
@@ -718,7 +756,7 @@
             step={1}
             marginBottom
             fixed={2}
-            bind:value={DBState.db.ainconfig.rep_pen_range}
+            bind:value={activePreset.ainconfig.rep_pen_range}
         />
         <span class="text-textcolor">Reputation Penalty Slope</span>
         <SliderInput
@@ -727,23 +765,23 @@
             step={0.1}
             marginBottom
             fixed={2}
-            bind:value={DBState.db.ainconfig.rep_pen_slope}
+            bind:value={activePreset.ainconfig.rep_pen_slope}
         />
         <span class="text-textcolor">Top K</span>
-        <SliderInput min={1} max={500} step={1} marginBottom fixed={2} bind:value={DBState.db.ainconfig.top_k} />
+        <SliderInput min={1} max={500} step={1} marginBottom fixed={2} bind:value={activePreset.ainconfig.top_k} />
         <span class="text-textcolor">Top A</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={DBState.db.ainconfig.top_a} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.ainconfig.top_a} />
         <span class="text-textcolor">Typical P</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={DBState.db.ainconfig.typical_p} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.ainconfig.typical_p} />
     {:else}
         <!-- Standard parameters now handled by SettingRenderer above -->
     {/if}
 
-    {#if (DBState.db.reverseProxyOobaMode && DBState.db.aiModel === "reverse_proxy") || DBState.db.aiModel === "ooba"}
-        <OobaSettings instructionMode={DBState.db.aiModel === "ooba"} />
+    {#if (settings.providers.reverseProxyOobaMode && activePreset.aiModel === "reverse_proxy") || activePreset.aiModel === "ooba"}
+        <OobaSettings instructionMode={activePreset.aiModel === "ooba"} />
     {/if}
 
-    {#if DBState.db.aiModel.startsWith("openrouter")}
+    {#if activePreset.aiModel.startsWith("openrouter")}
         <OpenrouterSettings />
     {/if}
 
@@ -762,33 +800,39 @@
                         <button
                             class="font-medium cursor-pointer hover:text-green-500 w-full flex justify-center items-center"
                             onclick={() => {
-                                let bia = DBState.db.bias;
+                                let bia = activePreset.bias;
                                 bia.push(["", 0]);
-                                DBState.db.bias = bia;
+                                activePreset.bias = bia;
                             }}><PlusIcon /></button
                         >
                     </th>
                 </tr>
-                {#if DBState.db.bias.length === 0}
+                {#if activePreset.bias.length === 0}
                     <tr>
                         <td colspan="3" class="text-textcolor2">{language.noBias}</td>
                     </tr>
                 {/if}
-                {#each DBState.db.bias as bias, i}
+                {#each activePreset.bias as bias, i}
                     <tr>
                         <td class="font-medium truncate">
-                            <TextInput bind:value={DBState.db.bias[i][0]} size="lg" fullwidth />
+                            <TextInput bind:value={activePreset.bias[i][0]} size="lg" fullwidth />
                         </td>
                         <td class="font-medium truncate">
-                            <NumberInput bind:value={DBState.db.bias[i][1]} max={100} min={-101} size="lg" fullwidth />
+                            <NumberInput
+                                bind:value={activePreset.bias[i][1]}
+                                max={100}
+                                min={-101}
+                                size="lg"
+                                fullwidth
+                            />
                         </td>
                         <td>
                             <button
                                 class="font-medium flex justify-center items-center h-full cursor-pointer hover:text-green-500 w-full"
                                 onclick={() => {
-                                    let bia = DBState.db.bias;
+                                    let bia = activePreset.bias;
                                     bia.splice(i, 1);
-                                    DBState.db.bias = bia;
+                                    activePreset.bias = bia;
                                 }}><TrashIcon /></button
                             >
                         </td>
@@ -800,7 +844,7 @@
             <button
                 class="font-medium cursor-pointer hover:text-textcolor gap-2"
                 onclick={() => {
-                    const data = JSON.stringify(DBState.db.bias, null, 2);
+                    const data = JSON.stringify(activePreset.bias, null, 2);
                     downloadFile("bias.json", data);
                 }}><DownloadIcon /></button
             >
@@ -810,7 +854,7 @@
                     const sel = await selectSingleFile(["json"]);
                     const utf8 = new TextDecoder().decode(sel.data);
                     if (Array.isArray(JSON.parse(utf8))) {
-                        DBState.db.bias = JSON.parse(utf8);
+                        activePreset.bias = JSON.parse(utf8);
                     }
                 }}><HardDriveUploadIcon /></button
             >
@@ -827,31 +871,31 @@
                         <button
                             class="font-medium cursor-pointer hover:text-green-500 w-full flex justify-center items-center"
                             onclick={() => {
-                                DBState.db.additionalParams.push(["", ""]);
+                                settings.providers.additionalParams.push(["", ""]);
                             }}><PlusIcon /></button
                         >
                     </th>
                 </tr>
-                {#if DBState.db.additionalParams.length === 0}
+                {#if settings.providers.additionalParams.length === 0}
                     <tr class="text-textcolor2">
                         <td colspan="3">{language.noData}</td>
                     </tr>
                 {/if}
-                {#each DBState.db.additionalParams as additionalParams, i}
+                {#each settings.providers.additionalParams as additionalParams, i}
                     <tr>
                         <td class="font-medium truncate">
-                            <TextInput bind:value={DBState.db.additionalParams[i][0]} size="lg" fullwidth />
+                            <TextInput bind:value={settings.providers.additionalParams[i][0]} size="lg" fullwidth />
                         </td>
                         <td class="font-medium truncate">
-                            <TextInput bind:value={DBState.db.additionalParams[i][1]} size="lg" fullwidth />
+                            <TextInput bind:value={settings.providers.additionalParams[i][1]} size="lg" fullwidth />
                         </td>
                         <td>
                             <button
                                 class="font-medium flex justify-center items-center h-full cursor-pointer hover:text-green-500 w-full"
                                 onclick={() => {
-                                    let additionalParams = DBState.db.additionalParams;
+                                    let additionalParams = settings.providers.additionalParams;
                                     additionalParams.splice(i, 1);
-                                    DBState.db.additionalParams = additionalParams;
+                                    settings.providers.additionalParams = additionalParams;
                                 }}><TrashIcon /></button
                             >
                         </td>
@@ -862,7 +906,7 @@
     </Accordion>
 
     <Accordion styled name={language.promptTemplate}>
-        {#if DBState.db.promptTemplate}
+        {#if activePreset.promptTemplate}
             {#if submenu !== -1}
                 <PromptSettings mode="inline" subMenu={1} />
             {/if}
@@ -871,7 +915,7 @@
                 check={false}
                 name={language.usePromptTemplate}
                 onChange={() => {
-                    DBState.db.promptTemplate = [];
+                    activePreset.promptTemplate = [];
                 }}
             />
         {/if}
@@ -881,22 +925,22 @@
         <Button
             className="mt-2"
             onclick={(e) => {
-                if (DBState.db.customFlags.includes(flag as LLMFlags)) {
-                    DBState.db.customFlags = DBState.db.customFlags.filter((f) => f !== flag);
+                if (activePreset.customFlags.includes(flag as LLMFlags)) {
+                    activePreset.customFlags = activePreset.customFlags.filter((f) => f !== flag);
                 } else {
-                    DBState.db.customFlags.push(flag as LLMFlags);
+                    activePreset.customFlags.push(flag as LLMFlags);
                 }
             }}
-            styled={DBState.db.customFlags.includes(flag as LLMFlags) ? "primary" : "outlined"}
+            styled={activePreset.customFlags.includes(flag as LLMFlags) ? "primary" : "outlined"}
         >
             {name}
         </Button>
     {/snippet}
 
     <Accordion styled name={language.customFlags}>
-        <Check bind:check={DBState.db.enableCustomFlags} name={language.enableCustomFlags} />
+        <Check bind:check={activePreset.enableCustomFlags} name={language.enableCustomFlags} />
 
-        {#if DBState.db.enableCustomFlags}
+        {#if activePreset.enableCustomFlags}
             {@render CustomFlagButton("hasImageInput", 0)}
             {@render CustomFlagButton("hasImageOutput", 1)}
             {@render CustomFlagButton("hasAudioInput", 2)}
@@ -925,25 +969,25 @@
     </Accordion>
 
     <Accordion styled name={language.moduleIntergration} help="moduleIntergration">
-        <TextAreaInput bind:value={DBState.db.moduleIntergration} fullwidth height={"32"} autocomplete="off" />
+        <TextAreaInput bind:value={activePreset.moduleIntergration} fullwidth height={"32"} autocomplete="off" />
     </Accordion>
 
     <Accordion styled name={language.tools}>
         <Check
             name={language.search}
-            check={DBState.db.modelTools.includes("search")}
+            check={activePreset.modelTools.includes("search")}
             onChange={() => {
-                if (DBState.db.modelTools.includes("search")) {
-                    DBState.db.modelTools = DBState.db.modelTools.filter((tool) => tool !== "search");
+                if (activePreset.modelTools.includes("search")) {
+                    activePreset.modelTools = activePreset.modelTools.filter((tool) => tool !== "search");
                 } else {
-                    DBState.db.modelTools.push("search");
+                    activePreset.modelTools.push("search");
                 }
             }}
         />
     </Accordion>
 
     <Accordion styled name={language.regexScript}>
-        <RegexList bind:value={DBState.db.presetRegex} buttons />
+        <RegexList bind:value={activePreset.regex} buttons />
     </Accordion>
 
     <Accordion styled name={language.icon}>
@@ -952,14 +996,9 @@
                 {language.preview}
             </span>
             <div class="flex items-center justify-center gap-2">
-                {#if DBState.db.botPresets[DBState.db.botPresetsId]?.image}
-                    <img
-                        src={DBState.db.botPresets[DBState.db.botPresetsId]?.image}
-                        alt="icon"
-                        class="w-6 h-6 rounded-md"
-                        decoding="async"
-                    />
-                    <span class="text-textcolor2">{DBState.db.botPresets[DBState.db.botPresetsId]?.name}</span>
+                {#if currentPresetRecord()?.image}
+                    <img src={currentPresetRecord()?.image} alt="icon" class="w-6 h-6 rounded-md" decoding="async" />
+                    <span class="text-textcolor2">{currentPresetRecord()?.name}</span>
                 {:else}
                     <span class="text-textcolor2">{language.noImages}</span>
                 {/if}
@@ -969,7 +1008,7 @@
             class="mt-2 text-textcolor2 hover:text-textcolor focus-within:text-textcolor"
             onclick={async () => {
                 // The selection can change while the file dialog is open: the image goes to this preset.
-                const presetId = DBState.db.botPresets[DBState.db.botPresetsId]?.id;
+                const presetId = activePreset.id;
                 const sel = await selectSingleFile(["png", "jpg", "jpeg", "webp"]);
                 if (!sel) {
                     return;
@@ -985,7 +1024,7 @@
                 canvas.height = 48;
                 ctx.drawImage(img, 0, 0, 48, 48);
                 const data = canvas.toDataURL("image/jpeg", 0.7);
-                const target = DBState.db.botPresets.find((preset) => preset.id === presetId);
+                const target = settings.presets.find((preset) => preset.id === presetId);
                 if (target) {
                     target.image = data; //Since its small (max 2304 pixels), its okay to store it directly
                 }
@@ -1005,27 +1044,27 @@
 {/if}
 
 {#if submenu === 2 || submenu === -1}
-    {#if !DBState.db.promptTemplate}
+    {#if !activePreset.promptTemplate}
         <span class="text-textcolor">{language.mainPrompt} <Help key="mainprompt" /></span>
-        <TextAreaInput fullwidth autocomplete="off" height={"32"} bind:value={DBState.db.mainPrompt}></TextAreaInput>
+        <TextAreaInput fullwidth autocomplete="off" height={"32"} bind:value={activePreset.mainPrompt}></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm mt-2">{tokens.mainPrompt} {language.tokens}</span>
         <span class="text-textcolor">{language.jailbreakPrompt} <Help key="jailbreak" /></span>
-        <TextAreaInput fullwidth autocomplete="off" height={"32"} bind:value={DBState.db.jailbreak}></TextAreaInput>
+        <TextAreaInput fullwidth autocomplete="off" height={"32"} bind:value={activePreset.jailbreak}></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm mt-2">{tokens.jailbreak} {language.tokens}</span>
         <span class="text-textcolor">{language.globalNote} <Help key="globalNote" /></span>
-        <TextAreaInput fullwidth autocomplete="off" height={"32"} bind:value={DBState.db.globalNote}></TextAreaInput>
+        <TextAreaInput fullwidth autocomplete="off" height={"32"} bind:value={activePreset.globalNote}></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm mt-2">{tokens.globalNote} {language.tokens}</span>
         <span class="text-textcolor mb-2 mt-4">{language.formatingOrder} <Help key="formatOrder" /></span>
-        <DropList bind:list={DBState.db.formatingOrder} />
+        <DropList bind:list={activePreset.formatingOrder} />
         <div class="flex items-center mt-4">
-            <Check bind:check={DBState.db.promptPreprocess} name={language.promptPreprocess} />
+            <Check bind:check={activePreset.promptPreprocess} name={language.promptPreprocess} />
         </div>
     {:else if submenu === 2}
         <PromptSettings mode="inline" />
     {/if}
 {/if}
 
-{#if DBState.db.promptTemplate && submenu === -1}
+{#if activePreset.promptTemplate && submenu === -1}
     <div class="mt-2">
         <Button onclick={goPromptTemplate} size="sm">{language.promptTemplate}</Button>
     </div>

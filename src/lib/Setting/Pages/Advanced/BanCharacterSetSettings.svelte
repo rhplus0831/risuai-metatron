@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { DBState } from "src/ts/stores.svelte";
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import Accordion from "src/lib/UI/Accordion.svelte";
@@ -50,12 +50,14 @@
 <Accordion styled name={language.banCharacterset}>
     {#each characterSets as set}
         <Button
-            styled={DBState.db.banCharacterset.includes(set) ? "primary" : "outlined"}
+            styled={settings.providers.banCharacterset.includes(set) ? "primary" : "outlined"}
             onclick={(e) => {
-                if (DBState.db.banCharacterset.includes(set)) {
-                    DBState.db.banCharacterset = DBState.db.banCharacterset.filter((item) => item !== set);
+                if (settings.providers.banCharacterset.includes(set)) {
+                    settings.providers.banCharacterset = settings.providers.banCharacterset.filter(
+                        (item) => item !== set,
+                    );
                 } else {
-                    DBState.db.banCharacterset.push(set);
+                    settings.providers.banCharacterset.push(set);
                 }
             }}
         >

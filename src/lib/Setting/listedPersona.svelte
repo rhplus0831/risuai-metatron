@@ -1,8 +1,7 @@
 <script lang="ts">
+    import { settings, activePersona } from "src/ts/storage/settingsViews.svelte";
     import { XIcon } from "@lucide/svelte";
     import { language } from "../../lang";
-
-    import { DBState } from "src/ts/stores.svelte";
     import { changeUserPersona } from "src/ts/persona";
 
     interface Props {
@@ -10,6 +9,8 @@
     }
 
     let { close = () => {} }: Props = $props();
+    // Read once per render, not once per row.
+    const selectedPersonaId = $derived(activePersona.id);
 </script>
 
 <div class="absolute w-full h-full z-40 bg-black/50 flex justify-center items-center">
@@ -22,14 +23,14 @@
                 </button>
             </div>
         </div>
-        {#each DBState.db.personas as persona, i}
+        {#each settings.personas as persona, i}
             <button
                 onclick={() => {
                     changeUserPersona(persona.id);
                     close();
                 }}
                 class="flex items-center text-textcolor border-t-1 border-solid border-0 border-darkborderc p-2 cursor-pointer"
-                class:bg-selected={i === DBState.db.selectedPersona}
+                class:bg-selected={persona.id === selectedPersonaId}
             >
                 <span class="overflow-x-auto whitespace-nowrap w-full text-left">
                     <span class="font-medium">{persona.name}</span>

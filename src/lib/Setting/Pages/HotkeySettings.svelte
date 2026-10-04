@@ -1,6 +1,6 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
-    import { DBState } from "src/ts/stores.svelte";
     import { activeHotkeys } from "src/ts/hotkey";
 </script>
 
@@ -16,7 +16,7 @@
             </tr>
         </thead>
         <tbody>
-            {#each activeHotkeys(DBState.db.hotkeys, DBState.db) as hotkey}
+            {#each activeHotkeys(settings.hotkeys, settings.ui) as hotkey}
                 <tr>
                     <td>{language.hotkeyDesc[hotkey.action]}</td>
                     <td>

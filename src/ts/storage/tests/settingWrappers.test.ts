@@ -9,6 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // fires once per edit and never on a switch re-render (plan amendment A16), and a switch shows the
 // other preset's value. `SettingNumber` also keeps a cleared input empty (the record holds `null`;
 // Astra challenge point 3), and `SettingSelect` still writes its hidden-option fallback once.
+// Since Phase 6 slice 6 the wrappers get the real context (the settings record views), and
+// `SettingSegmented` binds through the registry like the others (it bound `DBState.db[bindKey]`);
+// `SettingRenderer` builds that context and shows an item by its condition over the views.
 
 vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 vi.mock("../../alert", () => ({
@@ -38,6 +41,11 @@ import SettingSelect from "src/lib/Setting/Wrappers/SettingSelect.svelte";
 import SettingSlider from "src/lib/Setting/Wrappers/SettingSlider.svelte";
 import SettingText from "src/lib/Setting/Wrappers/SettingText.svelte";
 import SettingTextarea from "src/lib/Setting/Wrappers/SettingTextarea.svelte";
+import SettingSegmented from "src/lib/Setting/Wrappers/SettingSegmented.svelte";
+import SettingRenderer from "src/lib/Setting/SettingRenderer.svelte";
+import { activePersona, activePreset, settings } from "../settingsViews.svelte";
+import { accessibilitySettingsItems } from "../../setting/accessibilitySettingsData";
+import { chatFormatSettingsItems } from "../../setting/chatFormatSettingsData";
 
 type AnyDb = Record<string, any>;
 type Mounted = ReturnType<typeof mount>;
@@ -46,8 +54,15 @@ const mounted: Mounted[] = [];
 const db = () => DBState.db as unknown as AnyDb;
 const preset = (id: string) => db().botPresets.find((entry: { id: string }) => entry.id === id);
 
+/** The context `SettingRenderer` builds: the settings record views (Phase 6 slice 6). */
 function ctx(): SettingContext {
-    return { db: DBState.db, modelInfo: undefined, subModelInfo: undefined } as unknown as SettingContext;
+    return {
+        settings,
+        preset: activePreset,
+        persona: activePersona,
+        modelInfo: undefined,
+        subModelInfo: undefined,
+    } as unknown as SettingContext;
 }
 
 function item(overrides: Partial<SettingItem> & Pick<SettingItem, "type" | "bindKey">): SettingItem {
@@ -341,5 +356,121 @@ describe("SettingColor", () => {
         flushSync();
         expect(swatch()).toContain("#445566");
         expect(color.onChange).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("SettingSegmented", () => {
+    const options = {
+        segmentOptions: [
+            { value: "chatml", label: "ChatML" },
+            { value: "alpaca", label: "Alpaca" },
+            { value: "vicuna", label: "Vicuna" },
+        ],
+    };
+    const segment = (target: HTMLElement, label: string) =>
+        [...target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]")].find(
+            (button) => button.textContent?.trim() === label,
+        )!;
+    const active = (target: HTMLElement) =>
+        target.querySelector<HTMLButtonElement>(".segmented-btn-active")?.textContent?.trim();
+
+    it("writes a choice synchronously into the selected preset through the registry, fires onChange once, and follows a switch", () => {
+        const segmented = item({ type: "segmented", bindKey: "instructChatTemplate", options });
+        const { target } = render(SettingSegmented, { item: segmented, ctx: ctx() });
+        expect(active(target)).toBe("ChatML");
+        expect(segmented.onChange).not.toHaveBeenCalled();
+
+        segment(target, "Vicuna").click();
+        expect(preset("a").instructChatTemplate).toBe("vicuna");
+        expect(preset("b").instructChatTemplate).toBe("alpaca");
+        expect(segmented.onChange).toHaveBeenCalledTimes(1);
+        expect(segmented.onChange).toHaveBeenCalledWith("vicuna", expect.anything());
+        flushSync();
+        expect(active(target)).toBe("Vicuna");
+
+        // The value already there is not a write.
+        segment(target, "Vicuna").click();
+        expect(segmented.onChange).toHaveBeenCalledTimes(1);
+
+        changeToPreset("b", false);
+        flushSync();
+        expect(active(target)).toBe("Alpaca");
+        expect(segmented.onChange).toHaveBeenCalledTimes(1);
+
+        // An edit and a switch in the same flush: the edit stays with the preset it was made on.
+        segment(target, "ChatML").click();
+        changeToPreset("a", false);
+        flushSync();
+        expect(preset("b").instructChatTemplate).toBe("chatml");
+        expect(preset("a").instructChatTemplate).toBe("vicuna");
+        expect(active(target)).toBe("Vicuna");
+        expect(segmented.onChange).toHaveBeenCalledTimes(2);
+    });
+
+    it("binds a custom getter and setter, not only a bindKey", () => {
+        let stored = "alpaca";
+        const setValue = vi.fn((value: string) => (stored = value));
+        const segmented: SettingItem = {
+            id: "wrappers.segmented.custom",
+            type: "segmented",
+            fallbackLabel: "custom",
+            options,
+            getValue: () => stored,
+            setValue,
+            onChange: vi.fn(),
+        };
+        const { target } = render(SettingSegmented, { item: segmented, ctx: ctx() });
+        expect(active(target)).toBe("Alpaca");
+        segment(target, "Vicuna").click();
+        expect(setValue).toHaveBeenCalledTimes(1);
+        expect(setValue).toHaveBeenCalledWith("vicuna", expect.anything());
+        expect(stored).toBe("vicuna");
+        expect(segmented.onChange).toHaveBeenCalledTimes(1);
+        // The preset was not touched: the item has no binding of its own.
+        expect(preset("a").instructChatTemplate).toBe("chatml");
+    });
+
+    it("writes the hidden-option fallback into the selected preset", () => {
+        preset("a").instructChatTemplate = "gone";
+        const segmented = item({ type: "segmented", bindKey: "instructChatTemplate", options });
+        render(SettingSegmented, { item: segmented, ctx: ctx() });
+        flushSync();
+        expect(preset("a").instructChatTemplate).toBe("vicuna");
+        expect(preset("b").instructChatTemplate).toBe("alpaca");
+        expect(segmented.onChange).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("SettingRenderer", () => {
+    const byId = (items: SettingItem[], id: string) => items.find((entry) => entry.id === id)!;
+
+    it("shows an item by its condition over the section views and the selected preset, and its wrapper writes the record", () => {
+        const always = byId(accessibilitySettingsItems, "acc.alwaysScrollToNewMessage");
+        const jinja = byId(chatFormatSettingsItems, "chatFormat.jinjaTemplate");
+        preset("b").instructChatTemplate = "jinja";
+        const { target } = render(SettingRenderer, { items: [always, jinja] });
+        const checkbox = () => target.querySelector<HTMLInputElement>("input[type=checkbox]");
+        const textarea = () => target.querySelector<HTMLTextAreaElement>("textarea");
+        expect(checkbox()).toBeNull();
+        expect(textarea()).toBeNull();
+
+        settings.ui.autoScrollToNewMessage = true;
+        flushSync();
+        expect(checkbox()).not.toBeNull();
+        checkbox()!.checked = true;
+        checkbox()!.dispatchEvent(new Event("change", { bubbles: true }));
+        expect(db().alwaysScrollToNewMessage).toBe(true);
+        expect(settings.ui.alwaysScrollToNewMessage).toBe(true);
+
+        changeToPreset("b", false);
+        flushSync();
+        expect(textarea()).not.toBeNull();
+        typeInto(textarea()!, "{{ messages }}");
+        expect(preset("b").JinjaTemplate).toBe("{{ messages }}");
+        expect(preset("a").JinjaTemplate).not.toBe("{{ messages }}");
+
+        changeToPreset("a", false);
+        flushSync();
+        expect(textarea()).toBeNull();
     });
 });
