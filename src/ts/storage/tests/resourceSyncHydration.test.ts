@@ -43,6 +43,7 @@ type Client = typeof import("../resourceClient");
 type Stores = typeof import("../../stores.svelte");
 type ChatModule = typeof import("../chatStore.svelte");
 type Bootstrap = typeof import("../../bootstrap");
+type DatabaseModule = typeof import("../database.svelte");
 type Transport = typeof import("../../network/generationJobs");
 
 const KINDS = Object.values(RESOURCE_KIND);
@@ -107,11 +108,12 @@ async function boot() {
     const chat: ChatModule = await import("../chatStore.svelte");
     const transport: Transport = await import("../../network/generationJobs");
     const bootstrap: Bootstrap = await import("../../bootstrap");
+    const database: DatabaseModule = await import("../database.svelte");
 
     const snapshot = await client.readKinds(KINDS, { chats: true });
     sync.seedResources(snapshot);
     chat.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
+    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
     stores.selectedCharID.set(0);
     chat.initializeChats();
     fake.requests.length = 0;

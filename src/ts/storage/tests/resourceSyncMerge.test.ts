@@ -39,6 +39,7 @@ type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
 type Stores = typeof import("../../stores.svelte");
 type Bootstrap = typeof import("../../bootstrap");
+type DatabaseModule = typeof import("../database.svelte");
 
 function character(chaId: string, name: string, extra: Record<string, unknown> = {}) {
     return { chaId, name, type: "character", ...extra };
@@ -79,10 +80,11 @@ async function boot(options: { prepare?: (server: FakeResourceServer) => void } 
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
+    const database: DatabaseModule = await import("../database.svelte");
 
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
+    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
     stores.selectedCharID.set(0);
     sync.startResourceSync();
     await tick();

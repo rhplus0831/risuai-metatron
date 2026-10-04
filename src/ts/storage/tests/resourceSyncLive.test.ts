@@ -59,6 +59,7 @@ type Client = typeof import("../resourceClient");
 type Stores = typeof import("../../stores.svelte");
 type ChatModule = typeof import("../chatStore.svelte");
 type Bootstrap = typeof import("../../bootstrap");
+type DatabaseModule = typeof import("../database.svelte");
 type Selection = typeof import("../selection.svelte");
 type Secrets = typeof import("../llmSecrets.svelte");
 
@@ -111,13 +112,14 @@ async function boot(options: { secret?: boolean } = {}) {
     const sync: Sync = await import("../resourceSync.svelte");
     const chatModule: ChatModule = await import("../chatStore.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
+    const database: DatabaseModule = await import("../database.svelte");
     const selection: Selection = await import("../selection.svelte");
     const secrets: Secrets = await import("../llmSecrets.svelte");
 
     const snapshot = await client.readKinds(KINDS, { chats: true });
     sync.seedResources(snapshot);
     chatModule.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
+    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
     stores.selectedCharID.set(0);
     chatModule.initializeChats();
     const adding = vi.spyOn(window, "addEventListener").mockImplementation(() => {});

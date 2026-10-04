@@ -102,6 +102,7 @@ import { DBState, selectedCharID } from "src/ts/stores.svelte";
 import * as chatStore from "src/ts/storage/chatStore.svelte";
 import { checkCharOrder } from "src/ts/storage/characterOrder";
 import { installForwarding } from "src/ts/storage/forwarding.svelte";
+import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
 import { MutationTargetGoneError } from "src/ts/storage/mutationValidation";
 import { selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { executePluginV3 } from "./v3.svelte";
@@ -148,13 +149,13 @@ const incoming = (chaId: string, name: string) => ({ chaId, name, chats: [] });
 
 /**
  * A live database with the forwarding accessors installed, as `setDatabaseLite` installs them in
- * the app: two presets (`a` selected), two personas (`p` selected), and the fields the routed keys
+ * the app (its record fields moved into the records first, the whole set replaced): two presets (`a` selected), two personas (`p` selected), and the fields the routed keys
  * write, so an unchanged value is told apart from a missing one.
  */
 function liveDatabase(fields: Record<string, unknown> = {}) {
     selectPreset("a");
     selectPersona("p");
-    return installForwarding({
+    const raw: Record<string, unknown> = {
         botPresets: [
             { id: "a", name: "A" },
             { id: "b", name: "B" },
@@ -179,7 +180,9 @@ function liveDatabase(fields: Record<string, unknown> = {}) {
         seperateModels: { memory: "" },
         seperateModelsForAxModels: false,
         ...fields,
-    }) as any;
+    };
+    initializeRecords(takeRecordFields(raw));
+    return installForwarding(raw) as any;
 }
 
 async function makeApi(name = `routing-test-${Math.random().toString(36).slice(2)}`): Promise<CapturedApi> {

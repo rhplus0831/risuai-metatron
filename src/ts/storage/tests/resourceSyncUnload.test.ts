@@ -38,6 +38,7 @@ type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
 type Stores = typeof import("../../stores.svelte");
 type Bootstrap = typeof import("../../bootstrap");
+type DatabaseModule = typeof import("../database.svelte");
 
 async function boot() {
     vi.resetModules();
@@ -56,10 +57,11 @@ async function boot() {
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
+    const database: DatabaseModule = await import("../database.svelte");
 
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
+    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
     stores.selectedCharID.set(-1);
     fake.requests.length = 0;
     sync.startResourceSync();

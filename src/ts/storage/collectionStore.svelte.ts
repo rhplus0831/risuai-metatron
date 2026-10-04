@@ -1,7 +1,7 @@
 import { untrack } from "svelte";
 import { v4 } from "uuid";
 import type { Database, RisuPersona } from "../../../shared/database.ts";
-import type { RisuModule } from "../../../shared/modules.ts";
+import { ModuleShapeError, normalizeModule, type RisuModule } from "../../../shared/modules.ts";
 import type { RisuPlugin } from "../../../shared/plugins.ts";
 import { normalizePersonas, PERSONA_DEFAULTS } from "../../../shared/personas.ts";
 import {
@@ -27,15 +27,17 @@ import {
     requireObject,
     writeEntries,
 } from "./mutationValidation";
+import { batchRecordWrites } from "./records.svelte";
 import { selection } from "./selection.svelte";
 
 /**
  * The mutations of the settings sections, the small collections, presets, modules, and plugins
  * (Phase 4). The external contracts write these records only through the functions here. Each
  * validates its whole input before the mirror changes (a refusal throws `MutationValidationError`
- * and changes nothing), detaches the caller's data, and writes the mirror by id; the section and
- * collection watchers of the save adapter transport the change (`resourceSync.svelte.ts`), so
- * nothing needs a mark. The checks refuse what they can see (JSON data, the kind of a preset field,
+ * and changes nothing), detaches the caller's data, and writes by id through `DBState.db`, whose
+ * fields are the settings records (`records.svelte.ts`, Phase 6 slice 4): a write queues its record's
+ * save, and a function that writes several times does so in one `batchRecordWrites` scope, so each
+ * record it changed is queued once. The checks refuse what they can see (JSON data, the kind of a preset field,
  * the shape of a list); the server's normalizers may still rewrite a value that passes (a
  * non-canonical one then stays different in the mirror until reload, as Phase 3 accepted).
  */
@@ -111,13 +113,15 @@ export function updateSettings(patch: Record<string, unknown>, options: { preset
     if (entries.some((entry) => entry.target === "preset") && !hasPreset(DBState.db, presetId)) {
         throw new MutationTargetGoneError(`preset ${presetId}`);
     }
-    for (const { key, value, target } of prepared) {
-        if (target === "preset") {
-            writePresetField(DBState.db, presetId, key, value);
-        } else {
-            db()[key] = value;
+    batchRecordWrites(() => {
+        for (const { key, value, target } of prepared) {
+            if (target === "preset") {
+                writePresetField(DBState.db, presetId, key, value);
+            } else {
+                db()[key] = value;
+            }
         }
-    }
+    });
 }
 
 /** Raises a usage counter (`statics.imports` or `statics.messages`) by one. A whole-record write, not an atomic counter. */
@@ -168,21 +172,31 @@ export function updatePersona(id: string, patch: Record<string, unknown>) {
     if (index === -1) {
         throw new MutationTargetGoneError(`persona ${id}`);
     }
-    const next = writeEntries(DBState.db.personas[index] as unknown as Record<string, unknown>, prepared);
-    if (next) {
-        DBState.db.personas[index] = next as unknown as RisuPersona;
+    batchRecordWrites(() => {
+        const next = writeEntries(DBState.db.personas[index] as unknown as Record<string, unknown>, prepared);
+        if (next) {
+            DBState.db.personas[index] = next as unknown as RisuPersona;
+        }
+    });
+}
+
+/** A module in its canonical form (`normalizeModule`), as `MutationValidationError` when malformed. */
+function canonicalModule(key: string, module: unknown, newId?: () => string): RisuModule {
+    try {
+        return normalizeModule(module, newId);
+    } catch (error) {
+        if (error instanceof ModuleShapeError) {
+            throw new MutationValidationError(key, error.message);
+        }
+        throw error;
     }
 }
 
-/** A detached, checked module; a missing or empty id is assigned. */
+/** A detached, checked module in its canonical form; a missing or empty id is assigned. */
 function checkedModule(key: string, module: unknown): RisuModule {
     requireObject(key, module);
     requireJsonData(key, module);
-    const copy = detach(module) as unknown as RisuModule;
-    if (typeof copy.id !== "string" || copy.id === "") {
-        copy.id = v4();
-    }
-    return copy;
+    return canonicalModule(key, detach(module), v4);
 }
 
 /** The mirror record of a module, typed read-only: change it through `updateModule`. */
@@ -218,10 +232,16 @@ export function updateModule(id: string, patch: Record<string, unknown>): boolea
     if (index === -1) {
         return false;
     }
-    const next = writeEntries(DBState.db.modules[index] as unknown as Record<string, unknown>, prepared);
-    if (next) {
-        DBState.db.modules[index] = next as unknown as RisuModule;
-    }
+    // The patched module is checked on a copy (the shape an added module gets), then the patch goes
+    // into the live module in place, so a retained reference to it stays current.
+    const copy = detach(DBState.db.modules[index]) as unknown as Record<string, unknown>;
+    canonicalModule(`modules[${index}]`, writeEntries(copy, prepared) ?? copy);
+    batchRecordWrites(() => {
+        const next = writeEntries(DBState.db.modules[index] as unknown as Record<string, unknown>, prepared);
+        if (next) {
+            DBState.db.modules[index] = next as unknown as RisuModule;
+        }
+    });
     return true;
 }
 
@@ -314,16 +334,18 @@ export function setPluginArgument(pluginName: string, key: string, value: unknow
         throw new MutationValidationError(key, "a plugin argument is a string or a finite number");
     }
     let found = false;
-    for (const plugin of DBState.db.plugins ?? []) {
-        if (plugin?.name === pluginName) {
-            plugin.realArg ??= {};
-            const next = writeEntries(plugin.realArg, [[key, value]]);
-            if (next) {
-                plugin.realArg = next as RisuPlugin["realArg"];
+    batchRecordWrites(() => {
+        for (const plugin of DBState.db.plugins ?? []) {
+            if (plugin?.name === pluginName) {
+                plugin.realArg ??= {};
+                const next = writeEntries(plugin.realArg, [[key, value]]);
+                if (next) {
+                    plugin.realArg = next as RisuPlugin["realArg"];
+                }
+                found = true;
             }
-            found = true;
         }
-    }
+    });
     return found;
 }
 
@@ -336,21 +358,22 @@ export function addAuthRefresh(entry: unknown) {
             throw new MutationValidationError(`authRefresh.${field}`, "expected a string");
         }
     }
-    DBState.db.authRefreshes ??= [];
     const next = detach(entry) as unknown as Database["authRefreshes"][number];
-    // One entry per server: a new login replaces the server's entry (every one with its URL).
-    const list = DBState.db.authRefreshes;
+    // One entry per server: a new login replaces the server's entry (every one with its URL). Built
+    // on a copy and installed once.
+    const list = detach(DBState.db.authRefreshes ?? []) as Database["authRefreshes"];
     const first = list.findIndex((refresh) => refresh?.url === next.url);
     if (typeof next.url !== "string" || first === -1) {
         list.push(next);
-        return;
-    }
-    list[first] = next;
-    for (let index = list.length - 1; index > first; index--) {
-        if (list[index]?.url === next.url) {
-            list.splice(index, 1);
+    } else {
+        list[first] = next;
+        for (let index = list.length - 1; index > first; index--) {
+            if (list[index]?.url === next.url) {
+                list.splice(index, 1);
+            }
         }
     }
+    DBState.db.authRefreshes = list;
 }
 
 /** Adds a preset: the canonical fields (`normalizePreset`) under a fresh id. Returns the id. */

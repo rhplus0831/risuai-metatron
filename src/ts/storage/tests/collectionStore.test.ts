@@ -370,16 +370,17 @@ describe("character order, plugins, and OAuth entries", () => {
         expect(Object.getPrototypeOf(db().plugins[1].realArg)).toBe(Object.prototype);
         await sync.flushResources();
         const saved = record("plugins");
-        // The mirror keeps the own `__proto__`; the `plugins` projection goes through `$state.snapshot`,
-        // which drops it (the adapter's rule, `persistence.md`: only `pluginStorage` is serialized from the proxy).
-        const { ["__proto__"]: dropped, ...otherSaved } = otherArgs;
-        expect(dropped).toBe("p");
+        // The own `__proto__` is saved too (Phase 6 slice 4, `settings-ownership.md`, "Observable
+        // changes"): the `plugins` projection serializes the record, no longer `$state.snapshot`,
+        // which dropped it.
         expect(saved.map((plugin: any) => plugin.realArg)).toEqual([
             { a: "2", k: "v", n: 3 },
-            otherSaved,
+            otherArgs,
             { k: "v", n: 3 },
         ]);
-        expect(Object.hasOwn(saved[1].realArg, "__proto__")).toBe(false);
+        expect(Object.hasOwn(saved[1].realArg, "__proto__")).toBe(true);
+        expect(saved[1].realArg["__proto__"]).toBe("p");
+        expect(Object.getPrototypeOf(saved[1].realArg)).toBe(Object.prototype);
     });
 
     it("addAuthRefresh refuses a non-string field and saves a valid entry", async () => {

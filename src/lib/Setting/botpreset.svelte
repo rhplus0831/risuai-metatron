@@ -20,6 +20,7 @@
     import { normalizePreset } from "../../../shared/presets.ts";
     import PromptDiffModal from "../Others/PromptDiffModal.svelte";
     import { RISU_PRESET_DRAG_TYPE } from "src/ts/dragTypes";
+    import { moveRecordListItem } from "src/ts/storage/records.svelte";
 
     let editMode = $state(false);
     let isDragging = $state(false);
@@ -46,15 +47,10 @@
         )
             return;
 
-        let botPresets = [...DBState.db.botPresets];
-        const movedItem = botPresets.splice(fromIndex, 1)[0];
-        if (!movedItem) return;
-
         const adjustedToIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
-        botPresets.splice(adjustedToIndex, 0, movedItem);
-
-        // The selection is by id, so a reorder leaves it on the same preset.
-        DBState.db.botPresets = botPresets;
+        // One write of the presets record (Phase 6 slice 4: a reorder past a frame budget through the
+        // record's wrappers). The selection is by id, so a reorder leaves it on the same preset.
+        moveRecordListItem(DBState.db.botPresets, fromIndex, adjustedToIndex);
     }
 
     function isPresetDrag(e: DragEvent) {

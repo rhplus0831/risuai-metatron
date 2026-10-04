@@ -29,7 +29,7 @@
     import Settings from "./lib/Setting/Settings.svelte";
     import { showRealmInfoStore, importCharacterProcess } from "./ts/characterCards";
     import { importPreset, getDatabase, setDatabase } from "./ts/storage/database.svelte";
-    import { readModule } from "./ts/process/modules";
+    import { prepareModuleImport, readModule } from "./ts/process/modules";
     import { alertNormal } from "./ts/alert";
     import { language } from "./lang";
     import SavePopupIconComp from "./lib/Others/SavePopupIcon.svelte";
@@ -102,8 +102,10 @@
         } else if (name.endsWith(".risum")) {
             const data = new Uint8Array(await file.arrayBuffer());
             const module = await readModule(Buffer.from(data));
-            addModule(module);
-            alertNormal(language.successImport);
+            if (await prepareModuleImport(module)) {
+                addModule(module);
+                alertNormal(language.successImport);
+            }
         } else {
             await importCharacterProcess({
                 name: file.name,

@@ -433,7 +433,10 @@ describe("importUserPersona", () => {
             id: expect.any(String),
         });
         expect(db().personas[2].id.length).toBeGreaterThan(0);
-        expect(detached).toHaveLength(2);
+        // A retained wrapper follows its record across replacements (Phase 6 slice 4,
+        // `settings-ownership.md`, "Observable changes"): the list held before the replacement shows
+        // the live list.
+        expect(detached).toHaveLength(3);
         expect(selection.personaId).toBe("u1");
     });
 });

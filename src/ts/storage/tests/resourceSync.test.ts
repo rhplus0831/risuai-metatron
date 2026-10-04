@@ -49,6 +49,7 @@ type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
 type Stores = typeof import("../../stores.svelte");
 type Bootstrap = typeof import("../../bootstrap");
+type DatabaseModule = typeof import("../database.svelte");
 
 /** A character record as the server stores it: its own fields, no chats (they are resources of their own). */
 function character(chaId: string, name: string, extra: Record<string, unknown> = {}) {
@@ -78,10 +79,11 @@ async function boot(options: { prepare?: (server: FakeResourceServer) => void; n
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
+    const database: DatabaseModule = await import("../database.svelte");
 
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
+    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
     stores.selectedCharID.set(-1);
     options.normalize?.(stores.DBState.db);
     fake.requests.length = 0;

@@ -6,7 +6,15 @@ import {
     presetFieldValue,
     type PresetField,
 } from "../../../shared/presets.ts";
-import { FORWARDED_PRESET_KEYS } from "../../../shared/sections.ts";
+import { FORWARDED_PRESET_KEYS, SECTION_FIELDS, SECTION_KIND, type SectionKind } from "../../../shared/sections.ts";
+import {
+    RECORD_ROOT_FIELDS,
+    SELECTABLE_ROOT_FIELDS,
+    replaceRecord,
+    trackedRecord,
+    writeRecordField,
+    type RecordKind,
+} from "./records.svelte";
 import { clearSecret, setSecret } from "./llmSecrets.svelte";
 import { PERSONA_DEFAULTS } from "../../../shared/personas.ts";
 import { selectLoreBookPage, selectPersona, selectPreset, selection } from "./selection.svelte";
@@ -137,8 +145,70 @@ function defineForwarded(raw: object, key: string, get: (db: Db) => unknown, set
     });
 }
 
-/** Installs the forwarding accessors on `raw` (before it is proxied); idempotent. */
+/** Every root field the record accessors serve. */
+const RECORD_ROOT_KEYS: readonly string[] = [
+    ...(Object.values(SECTION_KIND) as SectionKind[]).flatMap(
+        (section) => SECTION_FIELDS[section] as readonly string[],
+    ),
+    ...Object.values(RECORD_ROOT_FIELDS),
+    ...Object.values(SELECTABLE_ROOT_FIELDS).flatMap((names) => [names.items, names.selectedId]),
+];
+
+/**
+ * The record accessors (Phase 6 slice 4, `records.svelte.ts`): every section field reads and writes
+ * its section record; a collection field and `botPresets`, `modules`, `plugins`,
+ * `pluginCustomStorage` are their record's wrapper (`undefined` while the record is absent), and an
+ * assignment replaces the record; `translatorPresets`/`hypaV3Presets` and their selected ids are the
+ * record's `items` and `selectedId`. Every write queues the record's write.
+ */
+function installRecordAccessors(raw: object) {
+    for (const key of RECORD_ROOT_KEYS) {
+        const descriptor = Object.getOwnPropertyDescriptor(raw, key);
+        if (descriptor && "value" in descriptor) {
+            // Its value would be lost under the accessor: `setDatabaseLite` moves it into the records.
+            throw new Error(`${key} is a record field: initialize the records before installing the accessors`);
+        }
+    }
+    for (const section of Object.values(SECTION_KIND) as SectionKind[]) {
+        for (const field of SECTION_FIELDS[section] as readonly string[]) {
+            defineForwarded(
+                raw,
+                field,
+                () => trackedRecord<Record<string, unknown>>(section)?.[field],
+                (_db, value) => untrack(() => writeRecordField(section, field, value)),
+            );
+        }
+    }
+    for (const [kind, field] of Object.entries(RECORD_ROOT_FIELDS)) {
+        defineForwarded(
+            raw,
+            field,
+            () => trackedRecord(kind as RecordKind),
+            (_db, value) => untrack(() => replaceRecord(kind as RecordKind, value)),
+        );
+    }
+    for (const [kind, names] of Object.entries(SELECTABLE_ROOT_FIELDS)) {
+        defineForwarded(
+            raw,
+            names.items,
+            () => trackedRecord<Record<string, unknown>>(kind as RecordKind)?.items,
+            (_db, value) => untrack(() => writeRecordField(kind as RecordKind, "items", value)),
+        );
+        defineForwarded(
+            raw,
+            names.selectedId,
+            () => trackedRecord<Record<string, unknown>>(kind as RecordKind)?.selectedId,
+            (_db, value) => untrack(() => writeRecordField(kind as RecordKind, "selectedId", value)),
+        );
+    }
+}
+
+/**
+ * Installs the forwarding accessors on `raw` (before it is proxied); idempotent. It only defines
+ * accessors: the records behind them are initialized by the installation (`setDatabaseLite`).
+ */
 export function installForwarding<T extends object>(raw: T): T {
+    installRecordAccessors(raw);
     for (const rootKey of FORWARDED_PRESET_KEYS) {
         const field = (presetFieldOf[rootKey] ?? rootKey) as PresetField;
         defineForwarded(

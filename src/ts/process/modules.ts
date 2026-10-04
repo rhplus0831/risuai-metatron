@@ -1,5 +1,14 @@
 import { language } from "src/lang";
-import { alertClear, alertConfirm, alertError, alertModuleSelect, alertNormal, alertStore, alertWait } from "../alert";
+import {
+    alertClear,
+    alertConfirm,
+    alertError,
+    alertModuleSelect,
+    alertNormal,
+    alertStore,
+    alertWait,
+    waitAlert,
+} from "../alert";
 import {
     getCurrentCharacter,
     getCurrentChat,
@@ -29,7 +38,7 @@ import { addModule } from "../storage/collectionStore.svelte";
 import { get } from "svelte/store";
 import { convertCharacterToModule, convertModuleToCharacter } from "../interchangeability";
 import { exportCharacterCard, importCharacterProcess } from "../characterCards";
-import type { RisuModule } from "../../../shared/modules.ts";
+import { upgradeLorebook, type RisuModule } from "../../../shared/modules.ts";
 
 export type { MCPModule, RisuModule } from "../../../shared/modules.ts";
 
@@ -268,6 +277,36 @@ export async function readModule(buf: Buffer): Promise<RisuModule> {
     return module;
 }
 
+/**
+ * Prepares an imported module's lorebook before the module is added (every module import path calls
+ * it): old-format entries are converted (`upgradeLorebook`); a lorebook that is not a list (a
+ * corrupted export) is reported and the user asked whether to import it with an empty one; a
+ * lorebook whose entries cannot be read is reported. Returns false when the module is not to be
+ * imported (the module mutations refuse a non-list lorebook rather than drop it).
+ */
+export async function prepareModuleImport(module: { name?: unknown; lorebook?: unknown }): Promise<boolean> {
+    if (module.lorebook === undefined) {
+        return true;
+    }
+    if (Array.isArray(module.lorebook)) {
+        try {
+            module.lorebook = upgradeLorebook(module.lorebook);
+        } catch (error) {
+            console.error(error);
+            alertError(language.errors.noData);
+            return false;
+        }
+        return true;
+    }
+    alertError(language.bootstrap.dataCorruptionDetected(String(module.name || "Unknown"), typeof module.lorebook));
+    await waitAlert();
+    if (!(await alertConfirm(language.bootstrap.resetLorebookQuestion))) {
+        return false;
+    }
+    module.lorebook = [];
+    return true;
+}
+
 export async function importModule() {
     const f = await selectSingleFile(["json", "lorebook", "risum", "charx"]);
     if (!f) {
@@ -287,8 +326,10 @@ export async function importModule() {
                 return;
             }
             const module = convertCharacterToModule(char);
-            addModule(module);
-            alertNormal(language.successImport);
+            if (await prepareModuleImport(module)) {
+                addModule(module);
+                alertNormal(language.successImport);
+            }
         } catch (error) {
             console.error(error);
             alertError(language.errors.noData);
@@ -299,7 +340,9 @@ export async function importModule() {
         try {
             const buf = Buffer.from(fileData);
             const module = await readModule(buf);
-            addModule(module);
+            if (await prepareModuleImport(module)) {
+                addModule(module);
+            }
         } catch (error) {
             console.error(error);
             alertError(language.errors.noData);
@@ -321,7 +364,9 @@ export async function importModule() {
                     return false;
                 }
             }
-            addModule(importData);
+            if (await prepareModuleImport(importData)) {
+                addModule(importData);
+            }
             return;
         }
         // importData.type === 'risu' in conflict with HypaV3 preset exports
@@ -334,7 +379,9 @@ export async function importModule() {
                 lorebook: lores,
                 id: v4(),
             };
-            addModule(importModule);
+            if (await prepareModuleImport(importModule)) {
+                addModule(importModule);
+            }
             return;
         }
         if (importData.entries) {
@@ -345,7 +392,9 @@ export async function importModule() {
                 lorebook: lores,
                 id: v4(),
             };
-            addModule(importModule);
+            if (await prepareModuleImport(importModule)) {
+                addModule(importModule);
+            }
             return;
         }
         if (importData.type === "regex" && importData.data) {

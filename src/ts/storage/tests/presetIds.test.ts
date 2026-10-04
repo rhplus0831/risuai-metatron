@@ -261,6 +261,7 @@ describe("saveCurrentPreset", () => {
 
     it("writes the canonical form under the current id: no id churn, no credential or global fields", () => {
         bootWith({ botPresets: [{ id: "current", name: "current" }] });
+        llmSecretState.queue.splice(0);
         DBState.db.openAIKey = "sk-live";
         DBState.db.autoSuggestPrefix = "prefix";
         DBState.db.autoSuggestClean = true;
@@ -273,7 +274,13 @@ describe("saveCurrentPreset", () => {
         for (const field of ["openAIKey", "autoSuggestPrefix", "autoSuggestClean", "forceReplaceUrl2"]) {
             expect(Object.hasOwn(saved, field), field).toBe(false);
         }
-        expect(DBState.db.openAIKey).toBe("sk-live");
+        // A credential written to a root field is routed to the credential queue and never held by
+        // the tab (Phase 6 slice 4, `settings-ownership.md`, "Observable changes"): it reads back
+        // `undefined` here, where the fixture has no `llmSecrets` record (`""` with one).
+        expect(llmSecretState.queue.map((op) => op.request)).toEqual([
+            { kind: "put", path: { kind: "flat", field: "openAIKey" }, value: "sk-live" },
+        ]);
+        expect(DBState.db.openAIKey).toBeUndefined();
     });
 
     it("keeps seperateModels null while doNotChangeSeperateModels is on (Astra challenge point 1)", () => {

@@ -1,14 +1,14 @@
 import { DBState } from "../stores.svelte";
 import { detach, requireJsonData, requireObject, writeEntries } from "./mutationValidation";
-import { markPluginStorageDirty } from "./resourceSync.svelte";
+import { batchRecordWrites } from "./records.svelte";
 
 /**
  * The `pluginStorage` mutations (Phase 4). `pluginCustomStorage` holds three things: the custom keys
  * a plugin's `setDatabase` stores at its top level, the v3 `pluginStorage` values under
  * `_pluginStorage`, and the shared `getLocalPluginStorage()` values under `_safeLocalPluginStorage`.
- * Each function checks its value (JSON data), writes the mirror, and marks the record dirty, so the
- * record is saved without a watcher (`PLAN.md` Invariant 2: `pluginStorage` is the collection that
- * switches to explicit mutations). Reads return detached copies. Any string is a valid key: a key
+ * Each function checks its value (JSON data) and writes the record (`records.svelte.ts`, Phase 6
+ * slice 4), inside one `batchRecordWrites` scope, so the record's write is queued once. Reads return
+ * detached copies and never create the record. Any string is a valid key: a key
  * that assigning would not store (`__proto__`, or an inherited name such as `constructor`) gets an
  * own property through a rebuilt dictionary (`writeEntries`).
  */
@@ -53,18 +53,20 @@ function dictionary(name: string, create: boolean): Dictionary | undefined {
 
 /** Sets `key` of the dictionary `name` inside `pluginCustomStorage` (created on demand). */
 function setEntry(name: string, key: string, value: unknown) {
-    const next = writeEntries(dictionary(name, true), [[key, value]]);
-    if (next) {
-        storage()[name] = next;
-    }
-    markPluginStorageDirty();
+    batchRecordWrites(() => {
+        const next = writeEntries(dictionary(name, true), [[key, value]]);
+        if (next) {
+            storage()[name] = next;
+        }
+    });
 }
 
 function removeEntry(name: string, key: string) {
     const values = dictionary(name, false);
     if (values && Object.hasOwn(values, key)) {
-        delete dictionary(name, true)[key];
-        markPluginStorageDirty();
+        batchRecordWrites(() => {
+            delete dictionary(name, true)[key];
+        });
     }
 }
 
@@ -94,8 +96,9 @@ export function removePluginStorageItem(key: string) {
 }
 
 export function clearPluginStorage() {
-    storage()[PLUGIN_STORAGE_KEY] = {};
-    markPluginStorageDirty();
+    batchRecordWrites(() => {
+        storage()[PLUGIN_STORAGE_KEY] = {};
+    });
 }
 
 /** A `getLocalPluginStorage()` value (a copy), or `null`. */
@@ -124,8 +127,9 @@ export function removeSafeLocalPluginValue(key: string) {
 }
 
 export function clearSafeLocalPluginStorage() {
-    storage()[SAFE_LOCAL_PLUGIN_STORAGE_KEY] = {};
-    markPluginStorageDirty();
+    batchRecordWrites(() => {
+        storage()[SAFE_LOCAL_PLUGIN_STORAGE_KEY] = {};
+    });
 }
 
 /**
@@ -139,15 +143,15 @@ export function setPluginCustomValue(key: string, value: unknown) {
         const current = DBState.db.pluginCustomStorage;
         if (current && Object.hasOwn(current, key)) {
             delete current[key];
-            markPluginStorageDirty();
         }
         return;
     }
-    const next = writeEntries(storage(), [[key, detach(value)]]);
-    if (next) {
-        DBState.db.pluginCustomStorage = next;
-    }
-    markPluginStorageDirty();
+    batchRecordWrites(() => {
+        const next = writeEntries(storage(), [[key, detach(value)]]);
+        if (next) {
+            DBState.db.pluginCustomStorage = next;
+        }
+    });
 }
 
 /** Replaces the whole `pluginCustomStorage` object (the `pluginCustomStorage` key of a plugin's `setDatabase`). */
@@ -155,5 +159,4 @@ export function replacePluginCustomStorage(value: unknown) {
     requireObject("pluginCustomStorage", value);
     requireJsonData("pluginCustomStorage", value);
     DBState.db.pluginCustomStorage = detach(value);
-    markPluginStorageDirty();
 }

@@ -4,6 +4,7 @@
     import LoreBookData from "./LoreBookData.svelte";
     import { selectedCharID } from "src/ts/stores.svelte";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
+    import { replaceRecordList } from "src/ts/storage/records.svelte";
     import { onDestroy, onMount, tick } from "svelte";
     import { sleep, sortableOptions } from "src/ts/util";
     import { v4 } from "uuid";
@@ -287,7 +288,8 @@
                 // 4-4. Apply final changed array to appropriate data store
                 if (externalLoreBooks) {
                     // Arrays passed as props must be modified internally to reflect in parent
-                    externalLoreBooks.splice(0, externalLoreBooks.length, ...newArray);
+                    // One write when it is a record's list (a module's lorebook, Phase 6 slice 4).
+                    replaceRecordList(externalLoreBooks, newArray);
                 } else if (submenu === 1) {
                     localLore.value = newArray;
                 } else if (globalMode) {

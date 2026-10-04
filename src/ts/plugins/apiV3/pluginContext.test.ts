@@ -202,6 +202,7 @@ import { DBState, selectedCharID } from "src/ts/stores.svelte";
 import * as chatStore from "src/ts/storage/chatStore.svelte";
 import { removeCharacter } from "src/ts/storage/characterStore.svelte";
 import { installForwarding } from "src/ts/storage/forwarding.svelte";
+import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
 import { selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { doingChat } from "src/ts/process/index.svelte";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
@@ -242,10 +243,11 @@ const chat = (id: string, fields: Record<string, unknown> = {}) => ({
     ...fields,
 });
 
+/** The live database, installed as `setDatabaseLite` installs it (its record fields moved into the records first). */
 function liveDatabase() {
     selectPreset("a");
     selectPersona("p");
-    return installForwarding({
+    const raw: Record<string, unknown> = {
         botPresets: [
             { id: "a", name: "A", temperature: 10, maxContext: 1000 },
             { id: "b", name: "B", temperature: 20, maxContext: 2000 },
@@ -291,7 +293,9 @@ function liveDatabase() {
         requestRetrys: 0,
         fallbackModels: {},
         banCharacterset: [],
-    }) as any;
+    };
+    initializeRecords(takeRecordFields(raw));
+    return installForwarding(raw) as any;
 }
 
 let counter = 0;

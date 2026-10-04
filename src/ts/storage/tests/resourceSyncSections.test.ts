@@ -636,8 +636,13 @@ describe("conflict reloads", () => {
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["ui/main"]);
         expect(db().zoomsize).toBe(77);
-        expect("irisDialogue" in db()).toBe(false);
+        // Every declared section field is an accessor onto the record (Phase 6 slice 4,
+        // `settings-ownership.md`, "Observable changes"): `in` is true and the field reads
+        // `undefined`; the deletion is in the record itself.
+        expect("irisDialogue" in db()).toBe(true);
         expect(db().irisDialogue).toBeUndefined();
+        const records = await import("../records.svelte");
+        expect(Object.hasOwn(plain(records.recordData("ui")), "irisDialogue")).toBe(false);
         expect(db().requestRetrys).toBe(9);
         expect(fake.data("providers", "main").requestRetrys).toBe(9);
         expect(fake.data("ui", "main").zoomsize).toBe(77);

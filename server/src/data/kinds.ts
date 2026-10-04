@@ -21,6 +21,7 @@ import { normalizePresetCollection } from "./normalize/presets.ts";
 import { normalizeProviders } from "./normalize/providers.ts";
 import { normalizeSecrets } from "./normalize/secrets.ts";
 import { requireArrayOfObjects, requireObject } from "./normalize/shared.ts";
+import { normalizeModules } from "./normalize/modules.ts";
 import { normalizeUi } from "./normalize/ui.ts";
 import { carriesSecretPath, maskLlmSecrets, withStoredSecrets } from "../../../shared/llmSecrets.ts";
 import { ResourceValidationError } from "./resourceStore.ts";
@@ -123,7 +124,7 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
         name: RESOURCE_KIND.modules,
         schemaVersion: 1,
         singleton: true,
-        normalize: (input) => requireArrayOfObjects(input, "modules"),
+        normalize: (input) => normalizeModules(input),
     },
     {
         name: RESOURCE_KIND.plugins,

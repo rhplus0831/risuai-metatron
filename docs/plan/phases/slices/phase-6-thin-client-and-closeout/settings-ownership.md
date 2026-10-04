@@ -1,6 +1,6 @@
 # Slice: Settings Ownership
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented 2026-10-04 (Phase 6 slice 4; the plan review's decisions are recorded in the slice commit and the Stop B report).
 
 Phase: [Phase 6](../../phase-6-thin-client-and-closeout.md), "Projections" (the settings
 sections as records, the source of truth flipped under the flat mirror) and the settings part
@@ -131,3 +131,83 @@ The facade doubles the read path for settings until the reader slices land (an a
 record); the cost is a function call per read. Whole-record writes keep Phase 1's conflict
 granularity for sections. The preset and persona accessors (Phase 3) now sit beside section
 accessors on the same raw root; `installForwarding` stays idempotent by descriptor check.
+
+## Implementation notes (2026-10-04)
+
+How the implementation departs from the proposed decisions above, after the plan review (Astra,
+segment B):
+
+- **No `settings.<kind>` object.** The records live in `src/ts/storage/records.svelte.ts`
+  (`trackedRecord(kind)`); `DBState.db`'s accessors are the only public face until the reader
+  slices. There is no `readSetting` (amendment), and `queueRecordWrite` is the records module's own
+  hook into the adapter's `markKey` (`setRecordWriteListener`), not an export of
+  `resourceSync.svelte.ts`.
+- **Installation is explicit.** `setDatabaseLite` moves a fresh object's record fields into the
+  records (`initializeRecords`, the whole set replaced, nothing queued); `installForwarding` only
+  installs accessors and refuses an object that still carries plain record fields.
+- **`llmSecrets` siblings** are written through the record like any section field; the record's text
+  is the siblings only (as before), so no `updateLlmSecretSiblings` function was needed. Credentials
+  written through the record (a flat field, a nested leaf, `OaiCompAPIKeys`, a preset's `proxyKey`,
+  a custom model's `key`, also inside an element or list written whole) are routed to the credential
+  queue or refused before anything changes.
+- **Bulk writers** run in `batchRecordWrites` (one queued write per record): `updateSettings`,
+  `setPluginArgument`, the plugin database setters, the plugin storage writers, and the preset switch
+  helpers; `addAuthRefresh` and `checkCharOrder` build a plain copy and install it once.
+- **Modules.** `normalizeModule` (`shared/modules.ts`) checks the shape (a non-string name or
+  description, a non-list lorebook, regex, or trigger is refused, never dropped) and assigns a
+  missing id on the client; the server's `normalize/modules.ts` applies the same check and returns a
+  valid list unchanged. The old-lorebook conversion (`upgradeLorebook`, what the startup
+  `updateLorebooks` step did) runs only on a module file import, with the corrupted-lorebook prompt,
+  in `importModule`; the startup copy is gone (alpha). Applying it on every write would rewrite
+  entries the MCP tools write.
+- **`updateModule`** checks the patched module on a copy and then patches the live module in place,
+  so a retained reference (the MCP module tools hold one) stays current.
+- **Observable changes:** every declared section field is an enumerable accessor (`in` is true and a
+  snapshot lists it, `undefined` when the record lacks it); a retained wrapper follows its record
+  across replacements (`db.personas` held before a replacement shows the new list); a plugin
+  argument's own `__proto__` key is now saved (the `plugins` projection no longer goes through
+  `$state.snapshot`, which dropped it); a credential written to a root field reads back `""`.
+
+- **After the challenge** (Astra, 2026-10-04): an array mutator prepares and unwraps every inserted
+  value before it runs (a retained wrapper resolves its current element or throws; nothing changes on
+  a refusal); on `presets`/`customModels` the inserted credentials are validated together against the
+  list the call leaves (exactly one owner each), `fill` refuses a credential, and a credential is
+  routed only for a stored element; `defineProperty` accepts only a plain writable, enumerable,
+  configurable data property, checked first; a whole `llmSecrets` replacement carrying a credential is
+  refused; `replaceRecordList` counts the elements it drops as displaced; `updatePersona` and
+  `updateModule` commit in one batch; a write that creates an absent section record is checked
+  before the record is created; `resetRecords` also drops the write listener. Every module import
+  path (the module dialog, the `.risum` drop in `App.svelte`, the encoded and shared module links and
+  the `.risum` file in `characterCards.ts`, the `.charx` conversion) runs `prepareModuleImport`, which
+  refuses an import whose lorebook it cannot read.
+
+### Measurements (the verdict's obligation)
+
+`util/playwright/measureRecords.mjs`, production build, headless Chrome, against a baseline build of
+`35678fd4` (the commit before this slice); task latency (to a message-channel callback) unless noted,
+median of 10, two or more runs each (the script also prints p95: the preset reorder's is about 18 ms at baseline and 28–30 ms with the records):
+
+| Workload                                                    | Baseline   | Records      |
+| ----------------------------------------------------------- | ---------- | ------------ |
+| NovelAI image settings mount (the `NAIImgConfig` controls)  | 4.3–4.8 ms | 4.6–4.7 ms   |
+| A keystroke into `NAIImgConfig.width`                       | 9.2–9.5 ms | 9.8–10 ms    |
+| Preset reorder, 50 presets                                  | 15.3 ms    | 22.2–24.4 ms |
+| Module lorebook drag, 300 entries                           | 92–93 ms   | 104–107 ms   |
+| The same drag to its completion (the handler's own promise) | 102–104 ms | 113–115 ms   |
+
+Mounting and typing are at parity. Both reorders leave exactly the expected order on the server. The
+preset reorder crosses the 16 ms frame and the drag, already six frames at baseline, grows by about
+15%. Both handlers change their list in one write (`moveRecordListItem`, `replaceRecordList`, the
+verdict's remedy), which did not change the numbers: a profile of the reorder puts the added time in
+the list's re-render reading every preset through its wrapper (`resolve`, the wrapper's `get`,
+`childWrapper`), the read cost the verdict accepted without the resolve cache.
+
+**Carried forward (not resolved):** the preset list (`botpreset.svelte`) and the module lorebook list
+re-render through record wrappers. Moving their readers in the reader slices does not by itself
+remove those reads; the reader slice that moves `botpreset.svelte` (slice 6) carries the criterion
+that the preset reorder measured by `measureRecords.mjs` is back within 10% of the baseline (16.8 ms
+median), by a plain-row projection or keyed rendering, or reports the miss at its stop.
+
+Seen while measuring, not this slice's: since live updates (slice 2), the echo of a tab's own save
+schedules a cycle 50 ms later (`noteRemoteChanges`), which sends the edits typed since, so continuous
+typing saves about once per keystroke instead of once per 500 ms debounce (the same at baseline).

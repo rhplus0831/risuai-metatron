@@ -1,3 +1,4 @@
+import type { Database } from "../../../shared/database.ts";
 import { DBState } from "../stores.svelte";
 
 /**
@@ -9,10 +10,12 @@ import { DBState } from "../stores.svelte";
  * `globalApi.svelte.ts` re-exports it for its existing callers and the plugin API.
  */
 export function checkCharOrder() {
-    DBState.db.characterOrder = DBState.db.characterOrder ?? [];
+    // Repaired on a plain copy and installed once (one queued write of the `characterOrder` record).
+    const original = JSON.stringify(DBState.db.characterOrder ?? []);
+    const order = JSON.parse(original) as Database["characterOrder"];
     const ordered = new Set<string>();
-    for (let i = 0; i < DBState.db.characterOrder.length; i++) {
-        const folder = DBState.db.characterOrder[i];
+    for (let i = 0; i < order.length; i++) {
+        const folder = order[i];
         if (typeof folder !== "string" && folder) {
             // A malformed folder (no member list) counts as empty, so it is dropped below.
             if (!Array.isArray(folder.data)) {
@@ -37,21 +40,21 @@ export function checkCharOrder() {
         }
         if (!ordered.has(charId)) {
             if (charId !== "§playground" && !char.trashTime) {
-                DBState.db.characterOrder.push(charId);
+                order.push(charId);
             }
         }
     }
 
-    for (let i = 0; i < DBState.db.characterOrder.length; i++) {
-        const data = DBState.db.characterOrder[i];
+    for (let i = 0; i < order.length; i++) {
+        const data = order[i];
         if (typeof data !== "string") {
             if (!data) {
-                DBState.db.characterOrder.splice(i, 1);
+                order.splice(i, 1);
                 i--;
                 continue;
             }
             if (data.data.length === 0) {
-                DBState.db.characterOrder.splice(i, 1);
+                order.splice(i, 1);
                 i--;
                 continue;
             }
@@ -62,12 +65,14 @@ export function checkCharOrder() {
                     i2--;
                 }
             }
-            DBState.db.characterOrder[i] = data;
         } else {
             if (!charIdSet.has(data)) {
-                DBState.db.characterOrder.splice(i, 1);
+                order.splice(i, 1);
                 i--;
             }
         }
+    }
+    if (DBState.db.characterOrder === undefined || JSON.stringify(order) !== original) {
+        DBState.db.characterOrder = order;
     }
 }

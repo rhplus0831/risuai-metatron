@@ -81,17 +81,21 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
 
 import { DBState } from "src/ts/stores.svelte";
 import { installForwarding } from "src/ts/storage/forwarding.svelte";
+import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
 import { selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { executePluginV3 } from "./v3.svelte";
 
 /**
  * A live database with the forwarding accessors installed, as `setDatabaseLite` installs them in
- * the app: a forwarded key such as `temperature` reads and writes the selected preset (`preset`,
- * selected here), and `selectedPersona` reads this client's persona selection.
+ * the app (its record fields moved into the records first, the whole set replaced): a forwarded
+ * key such as `temperature` reads and writes the selected preset (`preset`, selected here), and
+ * `selectedPersona` reads this client's persona selection.
  */
 function forwardedDatabase(fields: Record<string, unknown>) {
     selectPreset("preset");
-    return installForwarding({ botPresets: [{ id: "preset", name: "P", temperature: 0 }], ...fields }) as any;
+    const raw: Record<string, unknown> = { botPresets: [{ id: "preset", name: "P", temperature: 0 }], ...fields };
+    initializeRecords(takeRecordFields(raw));
+    return installForwarding(raw) as any;
 }
 
 const selectedPresetOf = (db: any) => db.botPresets.find((preset: { id: string }) => preset.id === "preset");

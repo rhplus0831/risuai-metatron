@@ -20,6 +20,7 @@ import { safeStructuredClone } from "../polyfill";
 import { markCharacterDirtyAt } from "./resourceSync.svelte";
 import { writeCharacterFieldsAt } from "./characterStore.svelte";
 import { installForwarding, reconcileSelection, selectedPreset, selectedPresetForWrite } from "./forwarding.svelte";
+import { batchRecordWrites, initializeRecords, takeRecordFields } from "./records.svelte";
 import { copyPresetSecret, setSecret } from "./llmSecrets.svelte";
 import { selectPreset } from "./selection.svelte";
 import type { botPreset, Chat, character, Database, groupChat, Message } from "../../../shared/database.ts";
@@ -68,11 +69,16 @@ export function setDatabase(data: Database) {
 }
 
 /**
- * Installs `data` as `DBState.db`: the forwarding accessors go on first (on the raw object; the
- * live proxy passed back by a plugin setter already has them), then the selection is resolved
- * against the new collections.
+ * Installs `data` as `DBState.db`. A database object without the record accessors (boot's
+ * assembled object, a test fixture) has its record fields moved into the records
+ * (`initializeRecords`: the whole set replaced, nothing queued); the installed proxy passed back
+ * (`checkNewFormat`) keeps them. Then the forwarding accessors go on (on the raw object; idempotent)
+ * and the selection is resolved against the new collections.
  */
 export function setDatabaseLite(data: Database) {
+    if (typeof Object.getOwnPropertyDescriptor(data, "botPresets")?.get !== "function") {
+        initializeRecords(takeRecordFields(data as unknown as Record<string, unknown>));
+    }
     installForwarding(data);
     DBState.db = data;
     reconcileSelection(DBState.db);
@@ -161,6 +167,10 @@ export const defaultSdDataFunc = () => {
  * other preset fields need no saving: the forwarding layer writes them into the preset directly.
  */
 export function saveCurrentPreset() {
+    batchRecordWrites(saveCurrentPresetFields);
+}
+
+function saveCurrentPresetFields() {
     const db = DBState.db;
     const current = selectedPresetForWrite(db);
     if (!current) {
@@ -198,11 +208,14 @@ export function changeToPreset(id: string, savecurrent = true) {
     if (!next) {
         return;
     }
-    if (savecurrent) {
-        saveCurrentPreset();
-    }
-    selectPreset(id);
-    setPreset(db, next);
+    // One queued write per record it changes (the old preset, `providers`).
+    batchRecordWrites(() => {
+        if (savecurrent) {
+            saveCurrentPreset();
+        }
+        selectPreset(id);
+        setPreset(db, next);
+    });
 }
 
 /**
@@ -259,8 +272,10 @@ export function applyPresetTemplate(template: Omit<botPreset, "id">) {
         { ...plainClone(template), name: current.name, image: current.image },
         { id: current.id },
     );
-    db.botPresets[index] = applied;
-    setPreset(db, applied);
+    batchRecordWrites(() => {
+        db.botPresets[index] = applied;
+        setPreset(db, applied);
+    });
 }
 
 import { encode as encodeMsgpack, decode as decodeMsgpack } from "msgpackr/index-no-eval";

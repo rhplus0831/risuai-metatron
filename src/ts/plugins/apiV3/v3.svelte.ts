@@ -39,6 +39,7 @@ import {
     setPluginStorageItem,
 } from "src/ts/storage/pluginStorageStore.svelte";
 import { selectPersona } from "src/ts/storage/selection.svelte";
+import { batchRecordWrites } from "src/ts/storage/records.svelte";
 import { forwardedPresetField, hasPreset, readPresetFieldOf } from "src/ts/storage/forwarding.svelte";
 import {
     currentContext,
@@ -1001,9 +1002,12 @@ function applyPluginDatabase(newDb: Record<string, unknown>, full: boolean, cont
     ) {
         throw new PluginTargetGoneError("preset");
     }
-    for (const key of pluginKeyOrder(newDb)) {
-        warnRefused(`the database key ${key}`, () => applyPluginKey(key, newDb[key], full, context));
-    }
+    // One queued write per settings record the call changed (`records.svelte.ts`).
+    batchRecordWrites(() => {
+        for (const key of pluginKeyOrder(newDb)) {
+            warnRefused(`the database key ${key}`, () => applyPluginKey(key, newDb[key], full, context));
+        }
+    });
 }
 
 //Keys outside allowedDbKeys are stored at the top level of db.pluginCustomStorage

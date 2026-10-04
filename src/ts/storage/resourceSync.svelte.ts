@@ -17,9 +17,7 @@ import {
     SINGLETON_RESOURCE_ID,
 } from "../../../shared/resources.ts";
 import {
-    COLLECTION_FIELDS as SETTINGS_COLLECTION_FIELDS,
     COLLECTION_KIND,
-    COLLECTION_SELECTION_FIELDS,
     type CollectionKind,
     SECTION_FIELDS,
     SECTION_KIND,
@@ -46,6 +44,7 @@ import { alertError, alertNormal, alertTerminal } from "../alert";
 import { assignsInherited } from "./mutationValidation";
 import { DBState, selectedCharID } from "../stores.svelte";
 import { reconcileSelection } from "./forwarding.svelte";
+import { applyRaw, recordData, setRecordWriteListener, type RecordKind } from "./records.svelte";
 import type { character, Chat, Database, groupChat } from "./database.svelte";
 import {
     acceptRemoteCollection,
@@ -119,8 +118,12 @@ import {
  * character record (Phase 2): the chat module (`chatStore.svelte.ts`) queues explicit chat
  * operations, and each cycle sends them in the same batch, after the resource ops.
  *
- * - Watchers mark collections dirty (the selected character, each section, and so on); writers
- *   that change a character while it is not selected call `markCharactersDirty`.
+ * - The settings records (the sections, the collections, `presets`, `modules`, `plugins`,
+ *   `pluginStorage`) are write-through records (`records.svelte.ts`, Phase 6 slice 4): every local
+ *   write of one marks it here at once (`setRecordWriteListener`), and every server copy goes in
+ *   through `applyRaw`, which marks nothing. Characters are still watched (the selected one, and
+ *   membership); writers that change a character while it is not selected call
+ *   `markCharactersDirty`.
  * - A cycle serializes each dirty collection and skips it when the text equals what the server
  *   holds (`persisted`), so hydration and no-op re-renders never become writes. Character membership
  *   is diffed by `chaId` every cycle: a new id is created, a vanished one deleted.
@@ -145,13 +148,6 @@ import {
 type Phase1Collection = "presets" | "modules" | "plugins" | "pluginStorage";
 type Collection = Phase1Collection | SectionKind | CollectionKind;
 
-const COLLECTION_FIELDS = {
-    presets: "botPresets",
-    modules: "modules",
-    plugins: "plugins",
-    pluginStorage: "pluginCustomStorage",
-} as const satisfies Record<Phase1Collection, keyof Database>;
-
 const SECTIONS: readonly SectionKind[] = Object.values(SECTION_KIND);
 const SETTINGS_COLLECTIONS: readonly CollectionKind[] = Object.values(COLLECTION_KIND);
 const COLLECTIONS: readonly Collection[] = [
@@ -165,10 +161,6 @@ const COLLECTIONS: readonly Collection[] = [
 const isSection = (collection: string): collection is SectionKind => SECTIONS.includes(collection as SectionKind);
 const isSettingsCollection = (collection: string): collection is CollectionKind =>
     SETTINGS_COLLECTIONS.includes(collection as CollectionKind);
-const selectionField = (collection: CollectionKind) =>
-    Object.hasOwn(COLLECTION_SELECTION_FIELDS, collection)
-        ? COLLECTION_SELECTION_FIELDS[collection as keyof typeof COLLECTION_SELECTION_FIELDS]
-        : null;
 const DEBOUNCE_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 /** Largest batch body the server accepts (its global body limit is 100 MiB), in UTF-8 bytes. */
@@ -369,14 +361,6 @@ export function markCharactersDirty(ids: readonly string[] | "all") {
     }
 }
 
-/**
- * Marks the `pluginStorage` record for the next compare-and-save: its writers go through
- * `pluginStorageStore.svelte.ts`, which calls this after every write.
- */
-export function markPluginStorageDirty() {
-    markKey(collectionKey("pluginStorage"));
-}
-
 /** `markCharactersDirty` for the character at an index of `DBState.db.characters`. */
 export function markCharacterDirtyAt(index: number) {
     const id = DBState.db.characters?.[index]?.chaId;
@@ -421,42 +405,33 @@ function schedule(delay = DEBOUNCE_MS) {
 }
 
 /**
- * A collection's text as the server stores it. Sections and the settings collections serialize the
- * live values straight from the proxy (like `pluginStorage`): `$state.snapshot` would drop an own
- * `__proto__` key of a user-keyed map (`llmSecrets.presets`, `globalChatVariables`,
- * `OaiCompAPIKeys`), and the text must equal the server's normalized text on an idle boot. The
- * fields go in `SECTION_FIELDS` order and an `undefined` one is left out, as the normalizer does.
- * Reading every field deeply, it also serves as the watchers' dependency read.
+ * A settings record's text as the server stores it, from the record (`records.svelte.ts`), read
+ * untracked: the live value straight from the `$state` data (`$state.snapshot` would drop an own
+ * `__proto__` key of a user-keyed map: `globalChatVariables`, `OaiCompAPIKeys`, plugin storage), so
+ * the text equals the server's normalized text on an idle boot. A section's fields go in
+ * `SECTION_FIELDS` order and an `undefined` one is left out, as the normalizer does.
  */
 function projectCollection(collection: Collection): string | undefined {
-    const db = DBState.db;
-    const fields = db as unknown as Record<string, unknown>;
+    const record = recordData<Record<string, unknown>>(collection as RecordKind);
+    if (record === undefined) {
+        // An absent record (no plugin storage yet) has nothing to write.
+        return undefined;
+    }
     if (isSection(collection)) {
         if (collection === SECTION_KIND.llmSecrets) {
             // Its readable siblings only: the credentials are written through `/api/llm-secrets`.
-            return llmSecretsText(fields);
+            return llmSecretsText(record);
         }
-        const record: Record<string, unknown> = {};
+        const ordered: Record<string, unknown> = {};
         for (const field of SECTION_FIELDS[collection]) {
-            record[field] = fields[field];
+            ordered[field] = record[field];
         }
-        return JSON.stringify(record);
+        return JSON.stringify(ordered);
     }
-    if (isSettingsCollection(collection)) {
-        const value = fields[SETTINGS_COLLECTION_FIELDS[collection]];
-        const selection = selectionField(collection);
-        if (selection) {
-            return JSON.stringify({ items: value, selectedId: fields[selection] });
-        }
-        return JSON.stringify(value);
-    }
-    if (collection === "pluginStorage" || collection === "presets") {
-        // User-chosen keys (plugin storage, a preset's `seperateParameters.overrides`). Serialized
-        // straight from the proxy: `$state.snapshot` assigns `copy[key] = ...`, which would drop an
-        // own `__proto__` key.
-        return JSON.stringify(db[COLLECTION_FIELDS[collection]]);
-    }
-    return JSON.stringify($state.snapshot(db[COLLECTION_FIELDS[collection]]));
+    // User-chosen keys (plugin storage, a preset's `seperateParameters.overrides`, the credential
+    // maps): serialized straight from the live record; `$state.snapshot` would drop an own
+    // `__proto__` key.
+    return JSON.stringify(record);
 }
 
 /**
@@ -1458,8 +1433,10 @@ function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
     if (!changes) {
         return false;
     }
-    const target = (isCharacter ? findMirrorCharacter(item.id) : (DBState.db.statics ??= {} as Database["statics"])) as
-        Record<string, unknown> | undefined;
+    // `statics` is merged into a plain copy of its record, applied raw once (no write of its own).
+    const target = (
+        isCharacter ? findMirrorCharacter(item.id) : { ...(JSON.parse(projected) as Record<string, unknown>) }
+    ) as Record<string, unknown> | undefined;
     if (!target) {
         return false;
     }
@@ -1482,6 +1459,9 @@ function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
         } else {
             target[field] = value;
         }
+    }
+    if (!isCharacter) {
+        applyRaw(COLLECTION_KIND.statics, target);
     }
     // The saved base is the server's record. The local projection stands for it when the two are
     // equal (no echo write for a key-order difference); otherwise the next cycle writes the merge.
@@ -1708,19 +1688,7 @@ export function releaseDeferredCharacters() {
     }
 }
 
-/** Assigns `fields` of `DBState.db` from `next` in place; a field `next` lacks is deleted. */
-function replaceFields(fields: readonly string[], next: Record<string, unknown>) {
-    const db = DBState.db as unknown as Record<string, unknown>;
-    for (const field of fields) {
-        if (Object.hasOwn(next, field)) {
-            db[field] = next[field];
-        } else if (Object.hasOwn(db, field)) {
-            delete db[field];
-        }
-    }
-}
-
-/** Puts a section or settings collection record into `DBState.db` (and `llmSecretState`). */
+/** Puts a section or settings collection record into its record (and `llmSecretState`). */
 function applySettingsRecord(
     kind: SectionKind | CollectionKind,
     data: unknown,
@@ -1730,33 +1698,27 @@ function applySettingsRecord(
         // Singletons: the server never deletes them.
         return;
     }
-    if (isSection(kind)) {
-        if (kind === SECTION_KIND.llmSecrets) {
-            // The masked record: its siblings into the mirror (its credential fields `""`), its
-            // status into `llmSecretState`.
-            replaceFields(SECTION_FIELDS[kind], mirrorFields(data as Record<string, unknown>));
-            setMaskedSecrets(data as MaskedLlmSecrets, secretInvalidate);
-            return;
-        }
-        replaceFields(SECTION_FIELDS[kind], data as Record<string, unknown>);
+    if (kind === SECTION_KIND.llmSecrets) {
+        // The masked record: its mirror form (credential fields `""`) into the record, its status
+        // into `llmSecretState`.
+        applyRaw(kind, mirrorFields(data as Record<string, unknown>));
+        setMaskedSecrets(data as MaskedLlmSecrets, secretInvalidate);
         return;
     }
-    const db = DBState.db as unknown as Record<string, unknown>;
-    const selection = selectionField(kind);
-    if (selection) {
-        const record = data as { items: unknown; selectedId: unknown };
-        db[SETTINGS_COLLECTION_FIELDS[kind]] = record.items;
-        db[selection] = record.selectedId;
-    } else {
-        db[SETTINGS_COLLECTION_FIELDS[kind]] = data;
-    }
+    applyRaw(kind, data);
 }
 
-/** Puts a server record into `DBState.db` in place (data null: the record is gone). */
+/**
+ * Puts a server record into the mirror (data null: the record is gone): a settings record through
+ * `applyRaw` (nothing is marked), a character in place. After `presets` or `personas`, the preset and
+ * persona selections (this tab's) are resolved against the new list.
+ */
 function applyToMirror(kind: string, id: string, data: unknown) {
-    const db = DBState.db as unknown as Record<string, unknown>;
     if (isSection(kind) || isSettingsCollection(kind)) {
         applySettingsRecord(kind, data);
+        if (kind === COLLECTION_KIND.personas) {
+            reconcileSelection(DBState.db);
+        }
         return;
     }
     switch (kind) {
@@ -1765,7 +1727,10 @@ function applyToMirror(kind: string, id: string, data: unknown) {
         case RESOURCE_KIND.plugins:
         case RESOURCE_KIND.pluginStorage:
             if (data !== null) {
-                db[COLLECTION_FIELDS[kind]] = data;
+                applyRaw(kind, data);
+                if (kind === RESOURCE_KIND.presets) {
+                    reconcileSelection(DBState.db);
+                }
             }
             return;
         case RESOURCE_KIND.characters: {
@@ -2069,10 +2034,6 @@ function applyRemoteRecord(
             revision: item.revision,
             text: projectRecord(item.kind, item.id) ?? recordText(item.kind, item.data),
         });
-    }
-    if (isSettingsCollection(item.kind) || item.kind === RESOURCE_KIND.presets) {
-        // The preset and persona selections are this tab's: resolve them against the new list.
-        reconcileSelection(DBState.db);
     }
     if (isNew && collection) {
         applyRemoteCollection(collection);
@@ -2439,6 +2400,10 @@ export function startResourceSync() {
     setChatWorkListener(() => {
         schedule();
     });
+    // The settings records mark themselves: every local write of one (`records.svelte.ts`).
+    setRecordWriteListener((kind) => {
+        markKey(collectionKey(kind));
+    });
     document.addEventListener("visibilitychange", () => {
         if (document.visibilityState !== "hidden" || halted) {
             return;
@@ -2506,26 +2471,6 @@ export function startResourceSync() {
             selectedIndex = value;
         });
 
-        $effect(() => {
-            projectCollection("presets");
-            markKey(collectionKey("presets"));
-        });
-        $effect(() => {
-            $state.snapshot(DBState.db.modules);
-            markKey(collectionKey("modules"));
-        });
-        $effect(() => {
-            $state.snapshot(DBState.db.plugins);
-            markKey(collectionKey("plugins"));
-        });
-        // Each section and each settings collection: the projection reads exactly the fields the record
-        // holds, so an edit marks only its own record.
-        for (const collection of [...SECTIONS, ...SETTINGS_COLLECTIONS] as const) {
-            $effect(() => {
-                projectCollection(collection);
-                markKey(collectionKey(collection));
-            });
-        }
         // Membership: an added, removed, or re-keyed character wakes the loop even when it is not selected.
         $effect(() => {
             for (const character of DBState.db.characters ?? []) {

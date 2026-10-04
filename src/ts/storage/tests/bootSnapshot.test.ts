@@ -13,6 +13,7 @@ import {
     COLLECTION_FIELDS,
     COLLECTION_SELECTION_FIELDS,
     DROPPED_FIELDS,
+    SECTION_FIELDS,
     SELECTION_KEYS,
 } from "../../../../shared/sections.ts";
 import { StoreBackedServer } from "./storeBackedServer";
@@ -106,6 +107,7 @@ async function bootFresh() {
     const database = await import("../database.svelte");
     const forwarding = await import("../forwarding.svelte");
     const selection = await import("../selection.svelte");
+    const records = await import("../records.svelte");
     selection.selectPreset("");
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
@@ -116,6 +118,7 @@ async function bootFresh() {
         snapshot: database.getDatabase({ snapshot: true }) as Record<string, any>,
         selected: JSON.parse(JSON.stringify(forwarding.selectedPreset(db))) as Record<string, unknown>,
         presetCount: db.botPresets.length as number,
+        records,
         close: () => server.current.close(),
     };
 }
@@ -223,8 +226,20 @@ describe("the boot snapshot of a fresh store against the pre-Phase 3 fixture", (
             expect(presetDefaults.sort()).toEqual(nine);
             // The write-only mirror's `""` for the four credentials the fixture left absent (7b).
             expect(absentNowEmptyCredential.sort()).toEqual([...EMPTY_CREDENTIALS].sort());
+            // Every declared section field is an accessor onto its record (Phase 6 slice 4,
+            // `settings-ownership.md`, "Observable changes"): the snapshot lists it, `undefined`
+            // when the record lacks it. Each such field is one its record does not hold.
+            const sectionOf = new Map<string, string>(
+                Object.entries(SECTION_FIELDS).flatMap(([section, fields]) =>
+                    (fields as readonly string[]).map((field) => [field, section] as [string, string]),
+                ),
+            );
+            for (const key of absentNowUndefined.filter((key) => sectionOf.has(key))) {
+                const record = JSON.parse(JSON.stringify(booted.records.recordData(sectionOf.get(key) as never)));
+                expect(Object.hasOwn(record, key), key).toBe(false);
+            }
             // The pre-phase boot left these `undefined` too (the fixture's JSON dropped them).
-            expect(absentNowUndefined.sort()).toEqual([
+            expect(absentNowUndefined.filter((key) => !sectionOf.has(key)).sort()).toEqual([
                 "koboldURL",
                 "localStopStrings",
                 "promptPreprocess",

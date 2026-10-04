@@ -138,6 +138,7 @@ let client: typeof import("../resourceClient");
 let importer: typeof import("../browserLocalImport");
 let permissions: typeof import("../../plugins/apiV3/permissionStore");
 let bootstrap: typeof import("../../bootstrap");
+let database: typeof import("../database.svelte");
 
 async function boot() {
     vi.resetModules();
@@ -148,9 +149,10 @@ async function boot() {
     importer = await import("../browserLocalImport");
     permissions = await import("../../plugins/apiV3/permissionStore");
     bootstrap = await import("../../bootstrap");
+    database = await import("../database.svelte");
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    stores.DBState.db = bootstrap.assembleDatabase(snapshot);
+    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
     stores.selectedCharID.set(-1);
     sync.startResourceSync();
     await tick();

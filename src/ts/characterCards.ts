@@ -40,7 +40,7 @@ import { reencodeImage } from "./process/files/inlays";
 import { PngChunk } from "./pngChunk";
 import type { OnnxModelFiles } from "./process/transformers";
 import { CharXImporter, CharXWriter } from "./process/processzip";
-import { exportModuleLegacy, readModule, type RisuModule } from "./process/modules";
+import { exportModuleLegacy, prepareModuleImport, readModule, type RisuModule } from "./process/modules";
 
 export const hubURL = "/hub-proxy";
 
@@ -377,6 +377,9 @@ export async function characterURLImport() {
                 return false;
             }
         }
+        if (!(await prepareModuleImport(importData))) {
+            return false;
+        }
         addModule(importData);
         alertNormal(language.successImport);
         SettingsMenuIndex.set(14);
@@ -413,6 +416,9 @@ export async function characterURLImport() {
         const module = new Uint8Array(await data.arrayBuffer());
         const md = await readModule(Buffer.from(module));
         md.id = v4();
+        if (!(await prepareModuleImport(md))) {
+            return;
+        }
         addModule(md);
         alertNormal(language.successImport);
         SettingsMenuIndex.set(14);
@@ -469,6 +475,9 @@ export async function characterURLImport() {
         if (name.endsWith("risum")) {
             const md = await readModule(Buffer.from(data));
             md.id = v4();
+            if (!(await prepareModuleImport(md))) {
+                return;
+            }
             addModule(md);
             alertNormal(language.successImport);
             SettingsMenuIndex.set(14);

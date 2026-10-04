@@ -257,7 +257,10 @@ describe("a persona import while the full setter replaces the list", () => {
         // The image is being saved: a plugin's full setter replaces (and normalizes) the list.
         const detached = db().personas;
         await captured.api!.setDatabase({ personas: [{ ...personaA, name: "A from plugin" }, personaB] });
-        expect(db().personas).not.toBe(detached);
+        // A retained wrapper follows its record across replacements (Phase 6 slice 4,
+        // `settings-ownership.md`, "Observable changes"): the list held before the setter is the live
+        // list's wrapper, and it shows the replaced list.
+        expect(db().personas).toBe(detached);
         expect(names()).toEqual(["A from plugin", "B"]);
 
         captured.asset!("assets/imported.png");
@@ -265,6 +268,6 @@ describe("a persona import while the full setter replaces the list", () => {
         expect(names()).toEqual(["A from plugin", "B", "Imported"]);
         expect(db().personas[2]).toMatchObject({ icon: "assets/imported.png", personaPrompt: "ip", note: "n" });
         expect(db().personas[2].id.length).toBeGreaterThan(0);
-        expect(detached).toHaveLength(2);
+        expect(detached).toHaveLength(3);
     });
 });
