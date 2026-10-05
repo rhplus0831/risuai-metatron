@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { selectedChat } from "src/ts/storage/chatStore.svelte";
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { useLocalLoreDraft } from "src/ts/storage/localLoreDraft.svelte";
@@ -16,6 +17,7 @@
     import Help from "src/lib/Others/Help.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
+    const currentChat = $derived(selectedChat());
     let submenu = $state(0);
     interface Props {
         globalMode?: boolean;
@@ -29,7 +31,7 @@
     }
 
     function isAllChatLoreAlwaysActive() {
-        const localLore = currentCharacter.chats[currentCharacter.chatPage].localLore;
+        const localLore = currentChat.localLore;
         return localLore && localLore.every((book) => book.alwaysActive);
     }
 

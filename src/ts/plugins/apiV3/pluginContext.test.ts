@@ -169,8 +169,13 @@ vi.mock("src/ts/process/request/request", () => {
 // The server transform is a stand-in: with the tab's plugin handlers every text is pending as it came
 // (the server's stages before the handlers leave it alone here), and the continuation answers the
 // handlers' texts; without handlers a text is answered as it came.
-vi.mock("src/ts/storage/nodeStorage", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("src/ts/storage/nodeStorage")>();
+//
+// The factory does not load the actual module (as `request` above): since Phase 6 slice 9a its imports
+// reach the chat module and, through it, the transform client, which then bound to the unmocked
+// `authFetch` while the mock was being made. The other export forwards to the actual module at its call.
+vi.mock("src/ts/storage/nodeStorage", () => {
+    type NodeStorageModule = typeof import("src/ts/storage/nodeStorage");
+    const actual = () => vi.importActual<NodeStorageModule>("src/ts/storage/nodeStorage");
     const answer = (id: string, text: string) => ({
         id,
         ok: true,
@@ -180,7 +185,7 @@ vi.mock("src/ts/storage/nodeStorage", async (importOriginal) => {
         cached: false,
     });
     return {
-        ...actual,
+        getNodeServerProxyAuth: async () => (await actual()).getNodeServerProxyAuth(),
         authFetch: vi.fn(async (path: string, init: { body: string }) => {
             const body = JSON.parse(init.body);
             transforms.push({ path, body });
@@ -306,7 +311,19 @@ function liveDatabase() {
         fallbackModels: {},
         banCharacterset: [],
     };
+    // The records hold no chats (Phase 6 slice 9a): the characters' chats are held in the chat
+    // module, as boot assembles them.
+    const characters = raw.characters as { chaId: string; chats: any[] }[];
+    const chats = characters.flatMap((char) =>
+        char.chats.map((entry) => ({ characterId: char.chaId, id: entry.id, revision: "r1", data: entry })),
+    );
+    const orders = characters.map((char) => ({
+        characterId: char.chaId,
+        revision: "o1",
+        ids: char.chats.map((entry) => entry.id),
+    }));
     initializeRecords(takeRecordFields(raw));
+    chatStore.assembleChats(characters, chats, orders);
     return installForwarding(raw) as any;
 }
 
@@ -406,13 +423,13 @@ describe("a chatOutput listener for a chat that is not selected", () => {
         const api = await makeApi();
         const seen: Record<string, unknown> = {};
         const listener = await listenerOf(api, async () => {
-            const character = api.getCharacter();
+            const character = await api.getCharacter();
             seen.chaId = character.chaId;
             seen.chatPage = character.chatPage;
             seen.chatId = character.chats[character.chatPage].id;
             seen.where = where(api);
-            seen.legacy = api.getChar().chaId;
-            api.setCharacter({ ...character, desc: "listener wrote" });
+            seen.legacy = (await api.getChar()).chaId;
+            await api.setCharacter({ ...character, desc: "listener wrote" });
             seen.lore = api.getCurrentLorebookEntries();
         });
         const context = capturePluginContext(refB1);
@@ -433,18 +450,18 @@ describe("a chatOutput listener for a chat that is not selected", () => {
     it("getCharacter reports the hook's chat as chatPage, and setCharacter with that page keeps the user's page; another page selects", async () => {
         const api = await makeApi();
         const listener = await listenerOf(api, async () => {
-            const got = api.getCharacter();
+            const got = await api.getCharacter();
             expect(got.chats.map((entry: any) => entry.id)).toEqual(["b0", "b1", "b2"]);
             expect(got.chatPage).toBe(1);
             // A get, edit, set round trip: the reported page is not a selection change.
-            api.setCharacter({ ...got, name: "Beta 2" });
+            await api.setCharacter({ ...got, name: "Beta 2" });
             expect(characterOf("b").chatPage).toBe(0);
             expect(characterOf("b").name).toBe("Beta 2");
             // An explicit other page is the plugin's selection change, as outside a hook.
-            api.setCharacter({ ...got, chatPage: 2 });
+            await api.setCharacter({ ...got, chatPage: 2 });
             expect(characterOf("b").chatPage).toBe(2);
             // The legacy name reports the same.
-            expect(api.getChar().chatPage).toBe(1);
+            expect((await api.getChar()).chatPage).toBe(1);
         });
         await invokeHook(listener, capturePluginContext(refB1), listenerArg);
         expect(characterOf("b").chatPage).toBe(2);
@@ -456,10 +473,10 @@ describe("a chatOutput listener for a chat that is not selected", () => {
         const api = await makeApi();
         selectedCharID.set(1);
         const listener = await listenerOf(api, async () => {
-            const got = api.getCharacter();
+            const got = await api.getCharacter();
             const target = got.chats[got.chatPage];
             target.note = "noted by the hook";
-            api.setCharacter(got);
+            await api.setCharacter(got);
         });
         const context = capturePluginContext(refB1);
         // The user switches to another chat of the same character while the send runs.
@@ -480,7 +497,7 @@ describe("a chatOutput listener for a chat that is not selected", () => {
         chatStore.selectChat("b", 2);
         const listener = await listenerOf(api, async () => {
             expect(where(api)).toEqual([1, 2]);
-            expect(api.getCharacter().chatPage).toBe(2);
+            expect((await api.getCharacter()).chatPage).toBe(2);
         });
         await invokeHook(listener, undefined, listenerArg);
         expect(where(api)).toEqual([1, 2]);
@@ -569,7 +586,7 @@ describe("settings inside a hook", () => {
         const listener = await listenerOf(api, async () => {
             expect((await api.getDatabase(["temperature", "theme"])).temperature).toBe(10);
             await api.setDatabase({ temperature: 33 });
-            api.setDatabaseLite({ maxContext: 3333, theme: "hooked" });
+            await api.setDatabaseLite({ maxContext: 3333, theme: "hooked" });
             expect(await api.getDatabase(["temperature", "maxContext"])).toEqual({ temperature: 33, maxContext: 3333 });
         });
         const context = capturePluginContext(refB1);
@@ -585,7 +602,7 @@ describe("settings inside a hook", () => {
         expect(selection.presetId).toBe("b");
         // After the hook, the same calls act on the selection.
         expect((await api.getDatabase(["temperature"])).temperature).toBe(20);
-        api.setDatabaseLite({ temperature: 44 });
+        await api.setDatabaseLite({ temperature: 44 });
         expect(preset("b").temperature).toBe(44);
         expect(preset("a").temperature).toBe(33);
     });
@@ -711,10 +728,12 @@ describe("gone targets", () => {
         const listener = await listenerOf(api, async () => {
             expect(await api.getDatabase(["theme"])).toEqual({ theme: "" });
             await expect(api.getDatabase(["temperature"])).rejects.toBeInstanceOf(PluginTargetGoneError);
-            expect(() => api.setDatabaseLite({ theme: "first", temperature: 1 })).toThrow(PluginTargetGoneError);
+            await expect(api.setDatabaseLite({ theme: "first", temperature: 1 })).rejects.toBeInstanceOf(
+                PluginTargetGoneError,
+            );
             await expect(api.setDatabase({ maxContext: 5 })).rejects.toBeInstanceOf(PluginTargetGoneError);
             // A UI key alone, and a custom key that shares a forwarded root name, still land.
-            api.setDatabaseLite({ theme: "ok", aiModel: "custom value" });
+            await api.setDatabaseLite({ theme: "ok", aiModel: "custom value" });
         });
         const context = capturePluginContext(refB1);
         db().botPresets = db().botPresets.filter((entry: { id: string }) => entry.id !== "a");
@@ -738,7 +757,7 @@ describe("the runners", () => {
         const api = await makeApi();
         api.addRisuScriptHandler("process", async (data: string) => {
             const { temperature } = await api.getDatabase(["temperature"]);
-            api.setDatabaseLite({ temperature: temperature + 1 });
+            await api.setDatabaseLite({ temperature: temperature + 1 });
             return `${data}:${temperature}:${where(api).join("/")}`;
         });
         saved(refB1);
@@ -876,13 +895,14 @@ describe("the host functions that forward the hook's target", () => {
         expect(where(other)).toEqual([0, 0]);
         expect(where(api)).toEqual([0, 0]);
 
-        // Outside a hook the same call parses the selected character without a chat ref, unscoped.
+        // Outside a hook the same call parses the selected character, unscoped, with the chat selected
+        // when the call came as its chat ref (Phase 6 slice 9a, "After the challenge" point 2).
         vi.mocked(risuChatParser).mockClear();
         vi.mocked(risuChatParserScoped).mockClear();
         expect(await api.parseRisuChat("outside")).toBe("outside");
         expect(vi.mocked(risuChatParserScoped)).not.toHaveBeenCalled();
         expect((vi.mocked(risuChatParser).mock.calls[0][1] as any).chara.chaId).toBe("a");
-        expect(vi.mocked(risuChatParser).mock.calls[0][1]).not.toHaveProperty("chatRef");
+        expect((vi.mocked(risuChatParser).mock.calls[0][1] as any).chatRef).toEqual({ chaId: "a", chatId: "a0" });
 
         // Without a transform context (the selected chat `a0` is not saved on the server) the script
         // stage is skipped: the parsed text comes back, and no handler and no transform run.
@@ -1005,7 +1025,8 @@ describe("sendChat inside a hook", () => {
 
         expect(await api.sendChat("from outside")).toBe(true);
         expect(texts({ chaId: "a", chatId: "a0" })).toEqual(["hello from a0", "from outside"]);
-        expect(sends[1]).toEqual({ index: -1, arg: {} });
+        // The selected chat, captured when the call came (Phase 6 slice 9a, "After the challenge" point 2).
+        expect(sends[1]).toEqual({ index: -1, arg: { target: { chaId: "a", chatId: "a0" } } });
     });
 
     it("keeps its busy refusal: while a chat is in progress nothing is appended and nothing is sent", async () => {

@@ -32,7 +32,12 @@ import {
 } from "./globalApi.svelte";
 import { compressImage, getImageType } from "./media";
 import { SettingsMenuIndex, settingsOpen } from "./stores.svelte";
-import { addCharacter, characterSnapshot } from "./storage/characterStore.svelte";
+import {
+    addCharacter,
+    type AnyClientCharacter,
+    characterSnapshot,
+    type ClientCharacter,
+} from "./storage/characterStore.svelte";
 import { addModule, incrementStatic } from "./storage/collectionStore.svelte";
 import { hasher } from "./parser/parser.svelte";
 import { type CharacterCardV3, type LorebookEntry } from "@risuai/ccardlib";
@@ -1056,7 +1061,7 @@ function convertCharbook(arg: {
     };
 }
 
-function createBaseV2(char: character) {
+function createBaseV2(char: ClientCharacter) {
     let charBook: charBookEntry[] = [];
     for (const lore of char.globalLore) {
         let ext: {
@@ -1152,7 +1157,7 @@ function createBaseV2(char: character) {
 }
 
 export async function exportCharacterCard(
-    char: character,
+    char: ClientCharacter,
     type: "png" | "json" | "charx" | "charxJpeg" = "png",
     arg: {
         password?: string;
@@ -1461,7 +1466,7 @@ type RisuLorebookEntry = LorebookEntry & {
     folder?: string;
 };
 
-export function createBaseV3(char: character) {
+export function createBaseV3(char: ClientCharacter) {
     let charBook: RisuLorebookEntry[] = [];
     let assets: Array<{
         type: string;
@@ -1739,7 +1744,7 @@ export async function getHubResources(id: string) {
     return Buffer.from(await res.arrayBuffer());
 }
 
-export function isCharacterHasAssets(char: character | groupChat) {
+export function isCharacterHasAssets(char: AnyClientCharacter) {
     if (char.type === "group") {
         return false;
     }

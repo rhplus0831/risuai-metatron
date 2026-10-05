@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
+    import { selectedCharacter, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { activePersona, currentPersonaRecord } from "src/ts/storage/settingsViews.svelte";
     import { onDestroy, onMount } from "svelte";
     import { v4 } from "uuid";
@@ -30,16 +30,21 @@
     import Toggles from "./Toggles.svelte";
     import { changeChatTo, createChatCopyName } from "src/ts/globalApi.svelte";
     import {
+        chatList,
+        type ChatListEntry,
         createChat,
         deleteChat,
+        ensureChatLoaded,
+        findChat,
         isChatGenerating,
         reorderChats,
+        selectedChatId,
         setChatMeta,
     } from "src/ts/storage/chatStore.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
     /** Sets a chat's folder (null or undefined: no folder) through the chat module. */
-    function setChatFolder(chat: DeepReadonly<Chat>, folderId: string | null | undefined) {
+    function setChatFolder(chat: ChatListEntry, folderId: string | null | undefined) {
         const ref = { chaId: chara.chaId, chatId: chat.id };
         if (folderId) {
             setChatMeta(ref, { folderId });
@@ -49,11 +54,64 @@
     }
 
     interface Props {
-        chara: character | groupChat;
+        chara: AnyClientCharacter;
     }
 
     let { chara = $bindable() }: Props = $props();
     let editMode = $state(false);
+    /** The character's chats as list entries (the chat module's; never whole chats). */
+    const chats = $derived(chatList(chara.chaId));
+    const selectedId = $derived(selectedChatId(chara.chaId));
+
+    /** A detached copy of a chat for a copy action, loaded first and found again after the load (null when it is gone). */
+    async function chatCopySource(ref: { chaId: string; chatId: string }): Promise<Chat | null> {
+        await ensureChatLoaded(ref);
+        const chat = findChat(ref);
+        return chat ? ($state.snapshot(chat) as Chat) : null;
+    }
+
+    /**
+     * A chat row's options: copy the chat, or bind or unbind the persona. The chat (and its character)
+     * are captured before the dialogs, so a selection change or a reorder meanwhile cannot redirect them.
+     */
+    async function chatOptions(entry: ChatListEntry) {
+        const ref = { chaId: chara.chaId, chatId: entry.id };
+        const option = await alertChatOptions();
+        switch (option) {
+            case 0: {
+                const source = await chatCopySource(ref);
+                if (!source) {
+                    break;
+                }
+                const created = createChat(
+                    ref.chaId,
+                    { ...source, name: createChatCopyName(source.name, "Copy", ref.chaId), id: v4() },
+                    { index: 0, select: true },
+                );
+                if (selectedCharacter()?.chaId === ref.chaId) {
+                    changeChatTo(created.id);
+                }
+                break;
+            }
+            case 1: {
+                if (findChat(ref)?.bindedPersona) {
+                    const confirm = await alertConfirm(language.doYouWantToUnbindCurrentPersona);
+                    if (confirm && findChat(ref)) {
+                        setChatMeta(ref, { bindedPersona: "" });
+                        alertNormal(language.personaUnbindedSuccess);
+                    }
+                } else {
+                    const confirm = await alertConfirm(language.doYouWantToBindCurrentPersona);
+                    if (confirm && findChat(ref)) {
+                        setChatMeta(ref, { bindedPersona: activePersona.id });
+                        console.log(currentPersonaRecord());
+                        alertNormal(language.personaBindedSuccess);
+                    }
+                }
+                break;
+            }
+        }
+    }
 
     let chatsStb: Sortable[] = [];
     let folderStb: Sortable = null;
@@ -69,37 +127,34 @@
                 new Sortable(chat, {
                     group: "chats",
                     onEnd: async (event) => {
-                        const newChats: DeepReadonly<Chat>[] = [];
-
-                        // const chats: HTMLElement = event.to
-                        // chats.querySelectorAll()
+                        // The list as rendered (the indexes in the DOM are into it), read once:
+                        // a folder change below makes the derived list a new one.
+                        const listed = chats;
+                        const newChats: string[] = [];
 
                         listEle.querySelectorAll("[data-risu-chat-folder-idx]").forEach((folder) => {
                             const folderIdx = parseInt(folder.getAttribute("data-risu-chat-folder-idx"));
                             folder.querySelectorAll("[data-risu-chat-idx]").forEach((chatInFolder) => {
                                 const chatIdx = parseInt(chatInFolder.getAttribute("data-risu-chat-idx"));
-                                const newChat = chara.chats[chatIdx];
+                                const newChat = listed[chatIdx];
                                 if (newChat.folderId !== chara.chatFolders[folderIdx].id) {
                                     setChatFolder(newChat, chara.chatFolders[folderIdx].id);
                                 }
-                                newChats.push(newChat);
+                                newChats.push(newChat.id);
                             });
                         });
 
                         listEle.querySelectorAll("[data-risu-chat-idx]").forEach((chatEle) => {
                             const idx = parseInt(chatEle.getAttribute("data-risu-chat-idx"));
-                            const newChat = chara.chats[idx];
-                            if (newChats.includes(newChat) == false) {
+                            const newChat = listed[idx];
+                            if (newChats.includes(newChat.id) == false) {
                                 setChatFolder(newChat, null);
-                                newChats.push(newChat);
+                                newChats.push(newChat.id);
                             }
                         });
 
                         // The selected chat stays selected (the selection is by id).
-                        reorderChats(
-                            chara.chaId,
-                            newChats.map((chat) => chat.id),
-                        );
+                        reorderChats(chara.chaId, newChats);
 
                         try {
                             this.destroy();
@@ -115,8 +170,9 @@
         folderStb = Sortable.create(folderEles, {
             group: "folders",
             onEnd: async (event) => {
+                const listed = chats;
                 const newFolders: ChatFolder[] = [];
-                const newChats: DeepReadonly<Chat>[] = [];
+                const newChats: string[] = [];
                 const folders: HTMLElement[] = Array.from<HTMLElement>(event.to.children);
 
                 folders.forEach((folder) => {
@@ -125,22 +181,19 @@
 
                     folder.querySelectorAll("[data-risu-chat-idx]").forEach((chatEle) => {
                         const idx = parseInt(chatEle.getAttribute("data-risu-chat-idx"));
-                        newChats.push(chara.chats[idx]);
+                        newChats.push(listed[idx].id);
                     });
                 });
 
                 listEle.querySelectorAll("[data-risu-chat-idx]").forEach((chatEle) => {
                     const idx = parseInt(chatEle.getAttribute("data-risu-chat-idx"));
-                    if (newChats.includes(chara.chats[idx]) == false) {
-                        newChats.push(chara.chats[idx]);
+                    if (newChats.includes(listed[idx].id) == false) {
+                        newChats.push(listed[idx].id);
                     }
                 });
 
                 chara.chatFolders = newFolders;
-                reorderChats(
-                    chara.chaId,
-                    newChats.map((chat) => chat.id),
-                );
+                reorderChats(chara.chaId, newChats);
                 try {
                     folderStb.destroy();
                 } catch (e) {}
@@ -173,7 +226,7 @@
         className="relative bottom-2"
         onclick={() => {
             const cha = chara;
-            const len = chara.chats.length;
+            const len = chats.length;
             const newChat: Chat = {
                 message: [],
                 note: "",
@@ -299,7 +352,7 @@
                                             $ReloadGUIPointer += 1;
                                             const folders = chara.chatFolders;
                                             folders.splice(i, 1);
-                                            chara.chats.forEach((chat) => {
+                                            chats.forEach((chat) => {
                                                 if (chat.folderId == folder.id) {
                                                     setChatFolder(chat, null);
                                                 }
@@ -318,21 +371,21 @@
                                 ? 'hidden'
                                 : ''}"
                         >
-                            {#if chara.chats.filter((chat) => chat.folderId == chara.chatFolders[i].id).length == 0}
+                            {#if chats.filter((chat) => chat.folderId == chara.chatFolders[i].id).length == 0}
                                 <span class="no-sort flex justify-center text-textcolor2">Empty</span>
                                 <div></div>
                             {:else}
-                                {#each chara.chats.filter((chat) => chat.folderId == chara.chatFolders[i].id) as chat}
+                                {#each chats.filter((chat) => chat.folderId == chara.chatFolders[i].id) as chat}
                                     <button
-                                        data-risu-chat-idx={chara.chats.indexOf(chat)}
+                                        data-risu-chat-idx={chats.indexOf(chat)}
                                         onclick={() => {
                                             if (!editMode) {
-                                                changeChatTo(chara.chats.indexOf(chat));
+                                                changeChatTo(chat.id);
                                                 $ReloadGUIPointer += 1;
                                             }
                                         }}
                                         class="risu-chats flex items-center text-textcolor border-solid border-0 border-darkborderc p-2 cursor-pointer rounded-md"
-                                        class:bg-selected={chara.chats.indexOf(chat) === chara.chatPage}
+                                        class:bg-selected={chat.id === selectedId}
                                     >
                                         {#if editMode}
                                             <TextInput
@@ -358,56 +411,7 @@
                                                     }
                                                 }}
                                                 class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
-                                                onclick={async () => {
-                                                    const option = await alertChatOptions();
-                                                    switch (option) {
-                                                        case 0: {
-                                                            const source = $state.snapshot(
-                                                                chara.chats[chara.chats.indexOf(chat)],
-                                                            );
-                                                            const newChat = {
-                                                                ...source,
-                                                                name: createChatCopyName(source.name, "Copy"),
-                                                                id: v4(),
-                                                            };
-                                                            createChat(chara.chaId, newChat, {
-                                                                index: 0,
-                                                                select: true,
-                                                            });
-                                                            changeChatTo(0);
-                                                            break;
-                                                        }
-                                                        case 1: {
-                                                            if (chat.bindedPersona) {
-                                                                const confirm = await alertConfirm(
-                                                                    language.doYouWantToUnbindCurrentPersona,
-                                                                );
-                                                                if (confirm) {
-                                                                    setChatMeta(
-                                                                        { chaId: chara.chaId, chatId: chat.id },
-                                                                        { bindedPersona: "" },
-                                                                    );
-                                                                    alertNormal(language.personaUnbindedSuccess);
-                                                                }
-                                                            } else {
-                                                                const confirm = await alertConfirm(
-                                                                    language.doYouWantToBindCurrentPersona,
-                                                                );
-                                                                if (confirm) {
-                                                                    setChatMeta(
-                                                                        { chaId: chara.chaId, chatId: chat.id },
-                                                                        {
-                                                                            bindedPersona: activePersona.id,
-                                                                        },
-                                                                    );
-                                                                    console.log(currentPersonaRecord());
-                                                                    alertNormal(language.personaBindedSuccess);
-                                                                }
-                                                            }
-                                                            break;
-                                                        }
-                                                    }
-                                                }}
+                                                onclick={() => chatOptions(chat)}
                                             >
                                                 <MenuIcon size={18} />
                                             </div>
@@ -437,7 +441,7 @@
                                                 class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
                                                 onclick={async (e) => {
                                                     e.stopPropagation();
-                                                    exportChat(chara.chats.indexOf(chat));
+                                                    exportChat(chat.id);
                                                 }}
                                             >
                                                 <DownloadIcon size={18} />
@@ -453,7 +457,7 @@
                                                 class="text-textcolor2 hover:text-green-500 cursor-pointer"
                                                 onclick={async (e) => {
                                                     e.stopPropagation();
-                                                    if (chara.chats.length === 1) {
+                                                    if (chats.length === 1) {
                                                         alertError(language.errors.onlyOneChat);
                                                         return;
                                                     }
@@ -488,18 +492,18 @@
             </div>
             <!-- chat without folder div -->
             <div class="risu-chat flex flex-col">
-                {#each chara.chats as chat, i}
+                {#each chats as chat, i}
                     {#if chat.folderId == null}
                         <button
                             data-risu-chat-idx={i}
                             onclick={() => {
                                 if (!editMode) {
-                                    changeChatTo(i);
+                                    changeChatTo(chat.id);
                                     $ReloadGUIPointer += 1;
                                 }
                             }}
                             class="flex items-center text-textcolor border-solid border-0 border-darkborderc p-2 cursor-pointer rounded-md"
-                            class:bg-selected={i === chara.chatPage}
+                            class:bg-selected={chat.id === selectedId}
                         >
                             {#if editMode}
                                 <TextInput
@@ -525,52 +529,7 @@
                                         }
                                     }}
                                     class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
-                                    onclick={async () => {
-                                        const option = await alertChatOptions();
-                                        switch (option) {
-                                            case 0: {
-                                                const source = $state.snapshot(chara.chats[i]);
-                                                const newChat = {
-                                                    ...source,
-                                                    name: createChatCopyName(source.name, "Copy"),
-                                                    id: v4(),
-                                                };
-                                                createChat(chara.chaId, newChat, { index: 0, select: true });
-                                                changeChatTo(0);
-                                                break;
-                                            }
-                                            case 1: {
-                                                const chat = chara.chats[i];
-                                                if (chat.bindedPersona) {
-                                                    const confirm = await alertConfirm(
-                                                        language.doYouWantToUnbindCurrentPersona,
-                                                    );
-                                                    if (confirm) {
-                                                        setChatMeta(
-                                                            { chaId: chara.chaId, chatId: chat.id },
-                                                            { bindedPersona: "" },
-                                                        );
-                                                        alertNormal(language.personaUnbindedSuccess);
-                                                    }
-                                                } else {
-                                                    const confirm = await alertConfirm(
-                                                        language.doYouWantToBindCurrentPersona,
-                                                    );
-                                                    if (confirm) {
-                                                        setChatMeta(
-                                                            { chaId: chara.chaId, chatId: chat.id },
-                                                            {
-                                                                bindedPersona: activePersona.id,
-                                                            },
-                                                        );
-                                                        console.log(currentPersonaRecord());
-                                                        alertNormal(language.personaBindedSuccess);
-                                                    }
-                                                }
-                                                break;
-                                            }
-                                        }
-                                    }}
+                                    onclick={() => chatOptions(chat)}
                                 >
                                     <MenuIcon size={18} />
                                 </div>
@@ -600,7 +559,7 @@
                                     class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
                                     onclick={async (e) => {
                                         e.stopPropagation();
-                                        exportChat(i);
+                                        exportChat(chat.id);
                                     }}
                                 >
                                     <DownloadIcon size={18} />
@@ -616,7 +575,7 @@
                                     class="text-textcolor2 hover:text-green-500 cursor-pointer"
                                     onclick={async (e) => {
                                         e.stopPropagation();
-                                        if (chara.chats.length === 1) {
+                                        if (chats.length === 1) {
                                             alertError(language.errors.onlyOneChat);
                                             return;
                                         }

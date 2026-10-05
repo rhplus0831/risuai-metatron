@@ -2,7 +2,7 @@ import { writable } from "svelte/store";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { DBState } from "../../../stores.svelte";
 import { risuChatParser } from "../../parser.svelte";
-import { resetChatVariables } from "./lib";
+import { holdMockedChats, resetChatVariables } from "./lib";
 import { setChatVar } from "../../chatVar.svelte";
 import { selection } from "../../../storage/selection.svelte";
 
@@ -14,7 +14,6 @@ vi.mock(
         ({
             appVer: "1234.5.67",
             getCurrentCharacter: () => ({}),
-            getCurrentChat: () => DBState.db.characters[0].chats[0],
             getDatabase: () => ({}),
         }) as typeof import("../../../storage/database.svelte"),
 );
@@ -58,6 +57,8 @@ vi.mock(import("../../../stores.svelte"), () => {
 // the character list (`characterList()`, here the mocked `DBState.db.characters`): the fixture's
 // character is the selected one, as `selectedCharID` 0 selected it.
 selection.characterId = "c";
+// The chat module holds the chat (Phase 6 slice 9a): the character in the records, its chat assembled.
+holdMockedChats();
 
 const template = (op: string, body: string) => `{{${op}}}${body}{{/}}`;
 const quickParse = (...args: Parameters<typeof template>) => risuChatParser(template(...args));

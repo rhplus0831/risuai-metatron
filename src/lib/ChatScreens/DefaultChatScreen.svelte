@@ -46,6 +46,7 @@
         isChatGenerating,
         setChatMeta,
         setMessageText,
+        selectedChat,
     } from "../../ts/storage/chatStore.svelte";
     import { editChatSync } from "../../ts/storage/chatEdits";
     import { getCharImage } from "../../ts/characters";
@@ -94,7 +95,8 @@
     let isScrollingToMessage = $state(false);
     let { openModuleList = $bindable(false), openChatList = $bindable(false), customStyle = "" }: Props = $props();
     let currentCharacter = $derived(selectedCharacter());
-    let currentChat = $derived(currentCharacter?.chats[currentCharacter.chatPage]?.message ?? []);
+    let currentChat = $derived(selectedChat());
+    let messages = $derived(currentChat?.message ?? []);
 
     function scrollToBottom() {
         chatsInstance?.scrollToLatestMessage();
@@ -111,7 +113,7 @@
         // Forces the loading of past messages not rendered on the screen
         isScrollingToMessage = true;
         try {
-            const totalMessages = currentChat.length;
+            const totalMessages = messages.length;
             const neededLoadPages = totalMessages - index + 5;
 
             if (loadPages < neededLoadPages) {
@@ -254,7 +256,7 @@
             alertError(language.chatGenerating);
             return;
         }
-        const lastMessage = currentCharacter.chats[currentCharacter.chatPage].message.at(-1);
+        const lastMessage = currentChat.message.at(-1);
         const genId = lastMessage?.generationInfo?.generationId;
         if (genId) {
             const r = Prereroll(genId);
@@ -277,12 +279,10 @@
             return;
         }
         if (rerolls.length === 0) {
-            rerolls.push(
-                safeStructuredClone([currentCharacter.chats[currentCharacter.chatPage].message.at(-1)]) as Message[],
-            );
+            rerolls.push(safeStructuredClone([currentChat.message.at(-1)]) as Message[]);
             rerollid = rerolls.length - 1;
         }
-        let cha = safeStructuredClone(currentCharacter.chats[currentCharacter.chatPage].message) as Message[];
+        let cha = safeStructuredClone(currentChat.message) as Message[];
         if (cha.length === 0) {
             return;
         }
@@ -326,7 +326,7 @@
             alertError(language.chatGenerating);
             return;
         }
-        const lastMessage = currentCharacter.chats[currentCharacter.chatPage].message.at(-1);
+        const lastMessage = currentChat.message.at(-1);
         const genId = lastMessage?.generationInfo?.generationId;
         if (genId) {
             const r = PreUnreroll(genId);
@@ -447,7 +447,7 @@
     }
 
     let { userIconPortrait, currentUsername, userIcon } = $derived.by(() => {
-        const bindedPersona = currentCharacter?.chats?.[currentCharacter?.chatPage]?.bindedPersona;
+        const bindedPersona = currentChat?.bindedPersona;
 
         if (bindedPersona) {
             const persona = settings.personas.find((p) => p.id === bindedPersona);
@@ -689,7 +689,7 @@
             onscroll={(e) => {
                 //@ts-expect-error scrollHeight/clientHeight/scrollTop don't exist on EventTarget, but target is HTMLElement here
                 const scrolled = e.target.scrollHeight - e.target.clientHeight + e.target.scrollTop;
-                if (scrolled < 100 && currentCharacter.chats[currentCharacter.chatPage].message.length > loadPages) {
+                if (scrolled < 100 && currentChat.message.length > loadPages) {
                     loadPages += getAdditionalChatLoadPages(settings.ui);
                 }
                 const chatTarget = e.target as HTMLElement;
@@ -964,7 +964,7 @@
 
             <Chats
                 bind:this={chatsInstance}
-                messages={currentChat}
+                {messages}
                 {loadPages}
                 onReroll={reroll}
                 {unReroll}
@@ -975,16 +975,14 @@
                 bind:hasNewUnreadMessage={showNewMessageButton}
             />
 
-            {#if currentCharacter.chats[currentCharacter.chatPage].message.length <= loadPages}
+            {#if currentChat.message.length <= loadPages}
                 {#if currentCharacter.type !== "group"}
                     <Chat
                         character={createSimpleCharacter(currentCharacter)}
                         name={currentCharacter.name}
-                        message={currentCharacter.chats[currentCharacter.chatPage].fmIndex === -1
+                        message={currentChat.fmIndex === -1
                             ? currentCharacter.firstMessage
-                            : currentCharacter.alternateGreetings[
-                                  currentCharacter.chats[currentCharacter.chatPage].fmIndex
-                              ]}
+                            : currentCharacter.alternateGreetings[currentChat.fmIndex]}
                         role="char"
                         img={getCharImage(currentCharacter.image, "css")}
                         idx={-1}
@@ -1012,10 +1010,10 @@
                             }
                         }}
                         isLastMemory={false}
-                        currentPage={(currentCharacter.chats[currentCharacter.chatPage].fmIndex ?? -1) + 2}
+                        currentPage={(currentChat.fmIndex ?? -1) + 2}
                         totalPages={currentCharacter.alternateGreetings.length + 1}
                     />
-                    {#if aiLawApplies() && currentCharacter.chats[currentCharacter.chatPage].message.length === 0}
+                    {#if aiLawApplies() && currentChat.message.length === 0}
                         <div class="ml-auto mr-auto mt-4 text-textcolor2 italic max-w-2/3 wrap-break-word text-center">
                             {language.aiGenerationWarning}
                         </div>
@@ -1068,16 +1066,12 @@
 
                     <div
                         class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                        class:text-textcolor2={currentCharacter.chats[currentCharacter.chatPage].message.length < 2 ||
-                            currentCharacter.chats[currentCharacter.chatPage].message[
-                                currentCharacter.chats[currentCharacter.chatPage].message.length - 1
-                            ].role !== "char"}
+                        class:text-textcolor2={currentChat.message.length < 2 ||
+                            currentChat.message[currentChat.message.length - 1].role !== "char"}
                         onclick={() => {
                             if (
-                                currentCharacter.chats[currentCharacter.chatPage].message.length < 2 ||
-                                currentCharacter.chats[currentCharacter.chatPage].message[
-                                    currentCharacter.chats[currentCharacter.chatPage].message.length - 1
-                                ].role !== "char"
+                                currentChat.message.length < 2 ||
+                                currentChat.message[currentChat.message.length - 1].role !== "char"
                             ) {
                                 return;
                             }

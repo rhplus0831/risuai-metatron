@@ -873,7 +873,9 @@ describe("a refusal for a generating message", () => {
         const timeouts = vi.spyOn(globalThis, "setTimeout");
         // The list changes through the character module (Phase 6 slice 5: a splice through the
         // facade is refused); removing the selected character selects home.
-        const removed = JSON.parse(JSON.stringify(db().characters[0]));
+        // Phase 6 slice 9a: a copy of the record carries no chats; the legacy shape with them is
+        // built with `withChatsCopy`.
+        const removed = chat.withChatsCopy(JSON.parse(JSON.stringify(db().characters[0])));
         expect(characterStore.removeCharacter("c")).toBe(true);
         await tick();
         await expect(sync.flushResources()).rejects.toThrow(/still being generated/);

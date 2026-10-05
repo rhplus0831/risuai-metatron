@@ -229,8 +229,9 @@ describe("a character's creation (prepareNewCharacter)", () => {
             ttsMode: "",
             postHistoryInstructions: "",
             globalLore: [convertedEntry],
-            chatPage: 0,
         });
+        // Phase 6 slice 9a: `chatPage` is the facade view, not an own key of the record.
+        expect(created.chatPage).toBe(0);
         expect(created.creation_date).toBeGreaterThanOrEqual(started);
         expect(created.chats).toHaveLength(1);
         const chatId = created.chats[0].id;
@@ -350,7 +351,9 @@ describe("canonical character text", () => {
         expect(characterStore.replaceCharacterFields({ chaId: "c", name: "Replaced", extra: 1 })).toBe(true);
         // The defaults are in the mirror before any save; the chats stay the chat module's.
         expect(character("c")).toMatchObject({ name: "Replaced", desc: "", firstMsgIndex: -1, extra: 1 });
-        expect(character("c").chats).toBe(chats);
+        // Phase 6 slice 9a: `chats` is a fresh array on every read; the chats are the same ones.
+        expect(character("c").chats).toEqual(chats);
+        character("c").chats.forEach((entry: unknown, index: number) => expect(entry).toBe(chats[index]));
         await settle();
         expect(characterOps(fake)).toHaveLength(1);
         agree("c");

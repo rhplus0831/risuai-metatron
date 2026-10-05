@@ -4,7 +4,13 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { types } from "node:util";
-import type { ChatGroupResult, ChatOrderRecord, ChatOrderResult, ChatRecord } from "../../../shared/chats.ts";
+import type {
+    ChatGroupResult,
+    ChatOrderRecord,
+    ChatOrderResult,
+    ChatRecord,
+    ChatSummary,
+} from "../../../shared/chats.ts";
 import {
     type BatchConflict,
     type ChangeSet,
@@ -703,15 +709,18 @@ export function createResourceStore(options: {
 
         /**
          * Every record of several kinds, read in one synchronous call, so one committed state. With
-         * `chats`, also every chat (metadata plus messages in order) and every chat order.
+         * `chats`, also every chat (metadata plus messages in order) and every chat order; with
+         * `chatSummaries` (not together with `chats`), every chat's summary (no message rows read)
+         * and every chat order.
          */
         readKinds(
             kindList: readonly ResourceKind[],
-            options: { chats?: boolean } = {},
+            options: { chats?: boolean; chatSummaries?: boolean } = {},
         ): {
             epoch: string;
             kinds: Record<string, StoredResource<unknown>[]>;
             chats?: ChatRecord[];
+            chatSummaries?: ChatSummary[];
             chatOrders?: ChatOrderRecord[];
         } {
             assertOpen();
@@ -720,8 +729,14 @@ export function createResourceStore(options: {
                 assertKind(kind);
                 result[kind.name] = readKind(kind);
             }
+            if (options.chats && options.chatSummaries) {
+                throw new TypeError("readKinds: chats and chatSummaries are exclusive");
+            }
             if (options.chats) {
                 return { epoch, kinds: result, ...chatTables.readAll() };
+            }
+            if (options.chatSummaries) {
+                return { epoch, kinds: result, ...chatTables.readSummaries() };
             }
             return { epoch, kinds: result };
         },
@@ -729,13 +744,15 @@ export function createResourceStore(options: {
         /**
          * Named records, read in one synchronous call; a missing one has revision and data null.
          * `chats` names single chats (missing: revision and data null); `chatCollections` names
-         * characters whose order and every chat are read (no order: null).
+         * characters whose order and every chat are read (no order: null); `chatSummaryCollections`
+         * names characters whose order and every chat's summary are read (no message rows).
          */
         readRefs(
             refs: readonly { kind: ResourceKind; id: string }[],
             options: {
                 chats?: readonly { characterId: string; id: string }[];
                 chatCollections?: readonly string[];
+                chatSummaryCollections?: readonly string[];
             } = {},
         ) {
             assertOpen();
@@ -753,7 +770,14 @@ export function createResourceStore(options: {
                 const collection = chatTables.readCollection(characterId);
                 return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
             });
-            return { epoch, items, chats, chatCollections };
+            if (!options.chatSummaryCollections || options.chatSummaryCollections.length === 0) {
+                return { epoch, items, chats, chatCollections };
+            }
+            const chatSummaryCollections = options.chatSummaryCollections.map((characterId) => {
+                const collection = chatTables.readCollectionSummaries(characterId);
+                return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
+            });
+            return { epoch, items, chats, chatCollections, chatSummaryCollections };
         },
 
         /**

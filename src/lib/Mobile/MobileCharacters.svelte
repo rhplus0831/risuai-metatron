@@ -1,5 +1,6 @@
 <script lang="ts">
-    import { characterList } from "src/ts/storage/characterStore.svelte";
+    import { characterList, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
+    import { chatCount } from "src/ts/storage/chatStore.svelte";
     import { type character, type groupChat } from "src/ts/storage/database.svelte";
     import BarIcon from "../SideBars/BarIcon.svelte";
     import { addCharacter, changeChar, getCharImage } from "src/ts/characters";
@@ -49,7 +50,7 @@
         return agoFormatter.format(-year, "year");
     }
 
-    function sortChar(char: (character | groupChat)[]) {
+    function sortChar(char: AnyClientCharacter[]) {
         return char
             .map((c, i) => ({ c, i }))
             .filter(({ c }) => {
@@ -59,7 +60,7 @@
                 return {
                     name: c.name || "Unnamed",
                     image: c.image,
-                    chats: c.chats.length,
+                    chats: chatCount(c.chaId),
                     chaId: c.chaId,
                     interaction: c.lastInteraction || 0,
                     agoText: makeAgoText(c.lastInteraction || 0),

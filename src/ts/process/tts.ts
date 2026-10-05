@@ -1,4 +1,4 @@
-import { selectedCharacter } from "../storage/characterStore.svelte";
+import { type ClientCharacter, selectedCharacter } from "../storage/characterStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";
 import { auxFetch } from "../network/auxFetch";
 import { isSecretSet } from "../storage/llmSecrets.svelte";
@@ -85,7 +85,7 @@ async function playAudio(
     sourceNode.start();
 }
 
-export async function sayTTS(character: character, text: string) {
+export async function sayTTS(character: ClientCharacter, text: string) {
     try {
         if (!character) {
             const v = selectedCharacter();

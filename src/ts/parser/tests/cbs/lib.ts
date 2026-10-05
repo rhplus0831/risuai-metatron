@@ -1,6 +1,39 @@
 import fc from "fast-check";
 import { DBState } from "src/ts/stores.svelte";
 import { activePreset, settings } from "src/ts/storage/settingsViews.svelte";
+import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
+import { assembleChats, chatList, setChatMeta } from "src/ts/storage/chatStore.svelte";
+import type { Chat } from "src/ts/storage/database.svelte";
+
+type MockedCharacter = { chaId: string; chats: Chat[] };
+
+/**
+ * Installs the mocked `DBState.db.characters` the way boot does (Phase 6 slice 9a: the chat module
+ * checks a character through the records and holds the chats itself): copies of the characters
+ * into the records, with the record fields `fields`, and the characters' chats into the chat module
+ * (`assembleChats`). The mock keeps its plain data; the readers resolve the selected character over
+ * it and its chat in the chat module.
+ */
+export const holdMockedChats = (fields: Record<string, unknown> = {}): void => {
+    const characters = DBState.db.characters as unknown as MockedCharacter[];
+    initializeRecords(
+        takeRecordFields({
+            ...fields,
+            characters: characters.map(({ chats: _chats, ...rest }) => structuredClone(rest)),
+        }),
+    );
+    assembleChats(
+        characters,
+        characters.flatMap((char) =>
+            char.chats.map((chat) => ({ characterId: char.chaId, id: chat.id!, revision: "r1", data: chat })),
+        ),
+        characters.map((char) => ({
+            characterId: char.chaId,
+            revision: "o1",
+            ids: char.chats.map((chat) => chat.id!),
+        })),
+    );
+};
 
 export const cbs = (op: string, ...args: string[]): string =>
     `{{${op}${args.length > 0 ? "::" : ""}${args.join("::")}}}`;
@@ -14,6 +47,10 @@ export const resetChatVariables = (): void => {
         for (const chat of char.chats) {
             // The mocked mirror is plain data here (the module is the only writer in the app).
             (chat as { scriptstate?: Record<string, unknown> }).scriptstate = {};
+        }
+        // The chats `holdMockedChats` put into the chat module (Phase 6 slice 9a).
+        for (const entry of chatList(char.chaId)) {
+            setChatMeta({ chaId: char.chaId, chatId: entry.id }, { scriptstate: {} });
         }
         char.defaultVariables = "";
     }

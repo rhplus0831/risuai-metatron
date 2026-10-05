@@ -7,9 +7,8 @@
     import PlaygroundJinja from "./PlaygroundJinja.svelte";
     import PlaygroundSyntax from "./PlaygroundSyntax.svelte";
     import { createBlankChar } from "src/ts/characters";
-    import { ensureChat, syncChatPage } from "src/ts/storage/chatStore.svelte";
-    import { type character } from "src/ts/storage/database.svelte";
-    import { addCharacter, characterList } from "src/ts/storage/characterStore.svelte";
+    import { ensureChat } from "src/ts/storage/chatStore.svelte";
+    import { addCharacter, characterList, type ClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { selectCharacter } from "src/ts/storage/selection.svelte";
     import PlaygroundImageGen from "./PlaygroundImageGen.svelte";
     import PlaygroundParser from "./PlaygroundParser.svelte";
@@ -24,7 +23,7 @@
     let easterEggTouch = $state(0);
 
     const playgroundChat = () => {
-        const char = characterList().find((entry) => entry?.chaId === "§playground") as character | undefined;
+        const char = characterList().find((entry) => entry?.chaId === "§playground") as ClientCharacter | undefined;
         PlaygroundStore.set(2);
 
         if (char) {
@@ -32,7 +31,6 @@
             char.name = "assistant";
             char.firstMessage = "{{none}}";
             ensureChat(char.chaId);
-            syncChatPage(char.chaId);
 
             selectCharacter(char.chaId);
             return;

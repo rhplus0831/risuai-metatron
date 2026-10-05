@@ -95,7 +95,19 @@ import { executePluginV3 } from "./v3.svelte";
 function forwardedDatabase(fields: Record<string, unknown>) {
     selectPreset("preset");
     const raw: Record<string, unknown> = { botPresets: [{ id: "preset", name: "P", temperature: 0 }], ...fields };
+    // The records hold no chats (Phase 6 slice 9a): the characters' chats are held in the chat
+    // module, as boot assembles them.
+    const characters = (Array.isArray(raw.characters) ? raw.characters : []) as { chaId: string; chats?: any[] }[];
+    const chats = characters.flatMap((char) =>
+        (char.chats ?? []).map((chat) => ({ characterId: char.chaId, id: chat.id, revision: "r1", data: chat })),
+    );
+    const orders = characters.map((char) => ({
+        characterId: char.chaId,
+        revision: "o1",
+        ids: (char.chats ?? []).map((chat) => chat.id),
+    }));
     initializeRecords(takeRecordFields(raw));
+    chatStore.assembleChats(characters, chats, orders);
     return installForwarding(raw) as any;
 }
 
@@ -121,7 +133,7 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
     it("setDatabaseLite assigns allowed keys and routes the rest into pluginCustomStorage", async () => {
         const api = await makeApi();
 
-        api.setDatabaseLite({
+        await api.setDatabaseLite({
             characters: [{ name: "c" }],
             custom: { x: 1 },
             pluginV2: [{ name: "old" }],
@@ -130,14 +142,17 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
         // `characters` is reconciled on the live mirror: a new character is added with a `chaId`, the
         // shared defaults and a `creation_date` (prepared as a creation, Phase 6 slice 5b), and ids for its
         // chats (a default chat when it has none), usable at once.
+        // (Phase 6 slice 9a: the chats are the facade view, not own keys of the record.)
         expect(DBState.db.characters).toEqual([
             {
                 ...normalizeCharacter({ name: "c" }),
                 chaId: expect.any(String),
                 creation_date: expect.any(Number),
-                chatPage: 0,
-                chats: [{ id: expect.any(String), message: [], note: "", name: "Chat 1", localLore: [], fmIndex: -1 }],
             },
+        ]);
+        expect(DBState.db.characters[0].chatPage).toBe(0);
+        expect(DBState.db.characters[0].chats).toEqual([
+            { id: expect.any(String), message: [], note: "", name: "Chat 1", localLore: [], fmIndex: -1 },
         ]);
         expect(DBState.db.pluginCustomStorage).toEqual({ custom: { x: 1 }, pluginV2: [{ name: "old" }] });
         expect("custom" in DBState.db).toBe(false);
@@ -168,7 +183,7 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
         // Both setters apply the collection's contract (`shared/personas.ts`): a missing or empty id
         // gets one, an existing id is kept, a non-object entry is dropped, and the four persona fields
         // are filled as strings (`note` here).
-        api.setDatabaseLite({ personas });
+        await api.setDatabaseLite({ personas });
         const lite = DBState.db.personas as any[];
         expect(lite).toHaveLength(3);
         expect(lite[0]).toEqual({ name: "no id", icon: "", personaPrompt: "", note: "", id: expect.any(String) });
@@ -191,7 +206,7 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
         DBState.db.pluginCustomStorage = { _pluginStorage: { k: 1 } };
         const api = await makeApi();
 
-        api.setDatabaseLite({ custom: 1 });
+        await api.setDatabaseLite({ custom: 1 });
         await api.setDatabase({ other: 2 });
 
         expect(DBState.db.pluginCustomStorage).toEqual({ _pluginStorage: { k: 1 }, custom: 1, other: 2 });
@@ -233,7 +248,7 @@ describe("v3 setDatabase / setDatabaseLite against server-normalized fields", ()
     it("keeps a section, collection, or selection field when a plugin writes null or undefined, and warns", async () => {
         const api = await makeApi();
 
-        api.setDatabaseLite({ askRemoval: null, personas: undefined, customCSS: null, theme: undefined });
+        await api.setDatabaseLite({ askRemoval: null, personas: undefined, customCSS: null, theme: undefined });
         expect(DBState.db.askRemoval).toBe(true);
         expect(DBState.db.personas).toEqual(personas);
         expect(DBState.db.customCSS).toBe("");
@@ -258,7 +273,7 @@ describe("v3 setDatabase / setDatabaseLite against server-normalized fields", ()
         selectPersona("q");
         expect(DBState.db.selectedPersona).toBe(1);
 
-        api.setDatabaseLite({ temperature: null, selectedPersona: undefined });
+        await api.setDatabaseLite({ temperature: null, selectedPersona: undefined });
         expect(selectedPresetOf(DBState.db).temperature).toBe(0);
         expect(DBState.db.temperature).toBe(0);
         expect(DBState.db.selectedPersona).toBe(1);
@@ -279,7 +294,7 @@ describe("v3 setDatabase / setDatabaseLite against server-normalized fields", ()
 
     it("accepts a non-null value of a server-normalized field as-is (the server repairs a malformed one on write)", async () => {
         const api = await makeApi();
-        api.setDatabaseLite({ askRemoval: "yes", customCSS: ".x {}", theme: "dark" });
+        await api.setDatabaseLite({ askRemoval: "yes", customCSS: ".x {}", theme: "dark" });
         expect(DBState.db.askRemoval).toBe("yes");
         expect(DBState.db.customCSS).toBe(".x {}");
         expect(DBState.db.theme).toBe("dark");
@@ -385,23 +400,23 @@ describe("v3 character setters and the generation lock", () => {
 
     it("keeps a generating character that setDatabaseLite's list omits, and refuses to replace it by another id", async () => {
         const api = await makeApi();
-        api.setDatabaseLite({ characters: [liveCharacters()[1]] });
+        await api.setDatabaseLite({ characters: [liveCharacters()[1]] });
         expect(DBState.db.characters.map((character: any) => character.chaId)).toEqual(["c", "d"]);
         expect(chatStore.isMessageLocked(refK, "a")).toBe(true);
         expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/removal was skipped/));
 
-        api.setCharacterToIndex(0, { chaId: "other", type: "character", name: "Other", chats: [], chatPage: 0 });
+        await api.setCharacterToIndex(0, { chaId: "other", type: "character", name: "Other", chats: [], chatPage: 0 });
         expect(DBState.db.characters.map((character: any) => character.chaId)).toEqual(["c", "d"]);
         expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/replacement was skipped/));
         // A character that is not generating can be replaced.
-        api.setCharacterToIndex(1, { chaId: "other", type: "character", name: "Other", chats: [], chatPage: 0 });
+        await api.setCharacterToIndex(1, { chaId: "other", type: "character", name: "Other", chats: [], chatPage: 0 });
         expect(DBState.db.characters.map((character: any) => character.chaId)).toEqual(["c", "other"]);
     });
 
     it("refuses a character list with duplicate ids before changing anything", async () => {
         const api = await makeApi();
         const [c, d] = liveCharacters();
-        api.setDatabaseLite({ characters: [{ ...c, name: "renamed" }, d, { ...c, name: "again" }] });
+        await api.setDatabaseLite({ characters: [{ ...c, name: "renamed" }, d, { ...c, name: "again" }] });
         expect(DBState.db.characters.map((character: any) => [character.chaId, character.name])).toEqual([
             ["c", "C"],
             ["d", "D"],
@@ -412,8 +427,8 @@ describe("v3 character setters and the generation lock", () => {
 
     it("setChatToIndex skips a chat change that touches the generating message, and applies one that does not", async () => {
         const api = await makeApi();
-        const current = api.getChatFromIndex(0, 0);
-        api.setChatToIndex(0, 0, {
+        const current = await api.getChatFromIndex(0, 0);
+        await api.setChatToIndex(0, 0, {
             ...current,
             note: "plugin note",
             message: [message("a", "rewritten by the plugin"), current.message[1]],
@@ -422,7 +437,7 @@ describe("v3 character setters and the generation lock", () => {
         expect((chatStore.findChat(refK) as any).note).toBe("");
         expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/message being generated/), expect.anything());
 
-        api.setChatToIndex(0, 0, {
+        await api.setChatToIndex(0, 0, {
             ...current,
             note: "plugin note",
             message: [current.message[0], message("b", "edited by the plugin", "user")],
@@ -468,7 +483,7 @@ describe("v3 character setters normalize new characters", () => {
     it("gives a character added by a list, with or without a chaId, chat and message ids at once, and keeps the existing ones", async () => {
         const api = await makeApi();
         const existing = JSON.parse(JSON.stringify(DBState.db.characters));
-        api.setDatabaseLite({
+        await api.setDatabaseLite({
             characters: [
                 ...existing,
                 {
@@ -501,17 +516,17 @@ describe("v3 character setters normalize new characters", () => {
         const api = await makeApi();
         const existing = JSON.parse(JSON.stringify(DBState.db.characters));
         const twice = { name: "alias", chats: [] };
-        api.setDatabaseLite({ characters: [...existing, twice, twice] });
+        await api.setDatabaseLite({ characters: [...existing, twice, twice] });
         expect(DBState.db.characters.map((character: any) => character.chaId)).toEqual(["c", "d"]);
         expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/duplicate chaId/));
         // The same object once is an ordinary new character.
-        api.setDatabaseLite({ characters: [...existing, twice] });
+        await api.setDatabaseLite({ characters: [...existing, twice] });
         expect(DBState.db.characters.map((character: any) => character.name)).toEqual(["C", "D", "alias"]);
     });
 
     it("normalizes a replacement character in setCharacterToIndex, and skips one whose chaId another character has", async () => {
         const api = await makeApi();
-        api.setCharacterToIndex(1, {
+        await api.setCharacterToIndex(1, {
             name: "replacement",
             chats: [{ message: [], note: "", name: "R", localLore: [] }],
         });
@@ -522,7 +537,13 @@ describe("v3 character setters normalize new characters", () => {
         expect(r.chatPage).toBe(0);
         expect(chatStore.findChat({ chaId: r.chaId, chatId: r.chats[0].id })).toBeDefined();
 
-        api.setCharacterToIndex(1, { chaId: "c", type: "character", name: "a copy of c", chats: [], chatPage: 0 });
+        await api.setCharacterToIndex(1, {
+            chaId: "c",
+            type: "character",
+            name: "a copy of c",
+            chats: [],
+            chatPage: 0,
+        });
         expect(DBState.db.characters.map((character: any) => character.chaId)).toEqual(["c", r.chaId]);
         expect((DBState.db.characters[1] as any).name).toBe("replacement");
         expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/another character already has/));
@@ -531,7 +552,7 @@ describe("v3 character setters normalize new characters", () => {
     it("setCharacterToIndex prepares a new character as a creation, and gives a same-id replacement the defaults only (Phase 6 slice 5b)", async () => {
         const api = await makeApi();
         const oldLore = { key: "k", content: "<char>", bookVersion: 1 };
-        api.setCharacterToIndex(1, {
+        await api.setCharacterToIndex(1, {
             chaId: "n",
             name: "new",
             firstMsgIndex: 1,
@@ -552,7 +573,7 @@ describe("v3 character setters normalize new characters", () => {
         expect(created.chats[0]).toMatchObject({ name: "Chat 1", note: "moved", fmIndex: 1, localLore: [] });
 
         // The same id: a whole replacement of the character's fields, with the defaults, no creation step.
-        api.setCharacterToIndex(1, { chaId: "n", name: "replaced", globalLore: [oldLore], ttsMode: "none" });
+        await api.setCharacterToIndex(1, { chaId: "n", name: "replaced", globalLore: [oldLore], ttsMode: "none" });
         const replaced = DBState.db.characters[1] as any;
         expect(replaced).toMatchObject({ chaId: "n", name: "replaced", desc: "", ttsMode: "none" });
         expect(JSON.parse(JSON.stringify(replaced.globalLore))).toEqual([oldLore]);
@@ -593,25 +614,26 @@ describe("v3 index APIs address the character list's position", () => {
 
     it("read the list position, unchanged by a reorder of the sidebar's order, with detached results", async () => {
         const api = await makeApi();
-        const read = () => [0, 1, 2, 3, -1].map((index) => api.getCharacterFromIndex(index)?.chaId ?? null);
-        expect(read()).toEqual(["c", "d", "e", null, null]);
+        const read = async () =>
+            Promise.all([0, 1, 2, 3, -1].map(async (index) => (await api.getCharacterFromIndex(index))?.chaId ?? null));
+        expect(await read()).toEqual(["c", "d", "e", null, null]);
         expect(api.getCurrentCharacterIndex()).toBe(1);
         expect(api.getCurrentChatIndex()).toBe(0);
-        expect(api.getChatFromIndex(2, 0).id).toBe("ke");
-        expect(api.getChatFromIndex(3, 0)).toBeNull();
+        expect((await api.getChatFromIndex(2, 0)).id).toBe("ke");
+        expect(await api.getChatFromIndex(3, 0)).toBeNull();
 
         // The sidebar's drag writes the order record; the plugin's indexes stay the list's.
         settings.characterOrder = ["c", "e", "d"];
-        expect(read()).toEqual(["c", "d", "e", null, null]);
+        expect(await read()).toEqual(["c", "d", "e", null, null]);
         expect(api.getCurrentCharacterIndex()).toBe(1);
 
-        const copy = api.getCharacterFromIndex(0);
+        const copy = await api.getCharacterFromIndex(0);
         copy.name = "changed by the plugin";
         expect(DBState.db.characters[0].name).toBe("Zed");
 
         // The selected character moves down when an earlier one leaves the list; its index follows.
         removeCharacter("c");
         expect(api.getCurrentCharacterIndex()).toBe(0);
-        expect(api.getCharacterFromIndex(0).chaId).toBe("d");
+        expect((await api.getCharacterFromIndex(0)).chaId).toBe("d");
     });
 });

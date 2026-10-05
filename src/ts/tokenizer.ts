@@ -1,4 +1,4 @@
-import { selectedCharacter } from "./storage/characterStore.svelte";
+import { type AnyClientCharacter, selectedCharacter } from "./storage/characterStore.svelte";
 import { settings, activePreset } from "./storage/settingsViews.svelte";
 import type { Tiktoken } from "@dqbd/tiktoken";
 import type { Tokenizer } from "@mlc-ai/web-tokenizers";
@@ -400,7 +400,7 @@ export async function strongBan(data: string, bias: { [key: number]: number }) {
     return bias;
 }
 
-export async function getCharToken(char?: character | groupChat | null) {
+export async function getCharToken(char?: AnyClientCharacter | null) {
     let persistant = 0;
     let dynamic = 0;
 

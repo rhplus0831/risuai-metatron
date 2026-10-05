@@ -24,7 +24,7 @@
     import { type DeepReadonly, type Message } from "src/ts/storage/database.svelte";
     import { translateHTML } from "src/ts/translator/translator";
     import { alertConfirm } from "src/ts/alert";
-    import { currentChatRef } from "src/ts/storage/chatStore.svelte";
+    import { currentChatRef, selectedChat } from "src/ts/storage/chatStore.svelte";
     import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type {
         SummaryItemState,
@@ -140,7 +140,7 @@
 
     function isOrphan(): boolean {
         const char = currentCharacter;
-        const chat = char.chats[currentCharacter.chatPage];
+        const chat = selectedChat();
 
         for (const chatMemo of summary.chatMemos) {
             if (chatMemo == null) {
@@ -188,7 +188,7 @@
 
     async function getMessageFromChatMemo(chatMemo: string | null): Promise<DeepReadonly<Message> | null> {
         const char = currentCharacter;
-        const chat = char.chats[currentCharacter.chatPage];
+        const chat = selectedChat();
         const shouldProcess = getCurrentHypaV3Preset().settings.processRegexScript;
 
         let msg = null;

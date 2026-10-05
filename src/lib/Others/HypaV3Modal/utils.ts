@@ -1,3 +1,4 @@
+import { selectedChat } from "src/ts/storage/chatStore.svelte";
 import { selectedCharacter } from "../../../ts/storage/characterStore.svelte";
 import { risuChatParser } from "src/ts/parser/parser.svelte";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
@@ -78,7 +79,7 @@ export function handleDualAction(element: HTMLElement, params: DualActionParams 
 
 export function getFirstMessage(): string | null {
     const char = selectedCharacter();
-    const chat = char.chats[selectedCharacter().chatPage];
+    const chat = selectedChat();
 
     return chat.fmIndex === -1
         ? char.firstMessage

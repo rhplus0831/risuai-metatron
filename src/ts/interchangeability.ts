@@ -53,7 +53,7 @@ export function convertModuleToCharacter(m: RisuModule): character {
     return safeStructuredClone(char);
 }
 
-export function convertCharacterToModule(c: character): RisuModule {
+export function convertCharacterToModule(c: Omit<character, "chats" | "chatPage">): RisuModule {
     const mod: RisuModule = {
         name: c.name,
         description: c.creatorNotes,

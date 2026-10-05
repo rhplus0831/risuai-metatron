@@ -417,15 +417,18 @@ describe("which remote changes are merged", () => {
 describe("a running generation's character (the generation deferral is gone)", () => {
     /**
      * Makes `a` generating as the app does: a server job of this tab streams into a chat of it (the
-     * mirror's chats are local, so the chat is placed there directly). Returns the job's end. Since
-     * Phase 6 slice 5 nothing holds a generating character back: the merge takes what it takes while
-     * idle, and any other change conflicts at once.
+     * mirror's chats are local, so the chat is placed there directly; since Phase 6 slice 9a through
+     * the chat module, `installCharacterChats`). Returns the job's end. Since Phase 6 slice 5 nothing
+     * holds a generating character back: the merge takes what it takes while idle, and any other
+     * change conflicts at once.
      */
     async function generate(db: () => any) {
         const chat = await import("../chatStore.svelte");
-        db().characters.find((entry: any) => entry.chaId === "a").chats = [
-            { id: "ka", name: "K", note: "", localLore: [], message: [{ role: "char", data: "", chatId: "r" }] },
-        ];
+        chat.installCharacterChats(
+            "a",
+            [{ id: "ka", name: "K", note: "", localLore: [], message: [{ role: "char", data: "", chatId: "r" }] }],
+            db().characters.find((entry: any) => entry.chaId === "a"),
+        );
         chat.applyServerGeneration(
             { chaId: "a", chatId: "ka" },
             { jobId: "J", messageId: "r", generationId: "g1", text: "so far", seq: 0 },

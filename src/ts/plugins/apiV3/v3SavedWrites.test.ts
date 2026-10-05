@@ -137,10 +137,10 @@ describe("plugin storage writes sent without the watcher", () => {
     it("a custom key of setDatabase, its deletion, and a whole-root replacement reach the record", async () => {
         const { api, sync, storage } = await boot();
         await api.setDatabase({ custom: { v: 1 } });
-        api.setDatabaseLite({ other: "o" });
+        await api.setDatabaseLite({ other: "o" });
         await sync.flushResources();
         expect(storage()).toEqual({ custom: { v: 1 }, other: "o" });
-        api.setDatabaseLite({ custom: undefined });
+        await api.setDatabaseLite({ custom: undefined });
         await sync.flushResources();
         expect(storage()).toEqual({ other: "o" });
         await api.setDatabase({ pluginCustomStorage: { _pluginStorage: { k: 1 }, _safeLocalPluginStorage: { s: 2 } } });
@@ -217,7 +217,7 @@ describe("the other setters land in their owners' records", () => {
     it("a forwarded key reaches the selected preset of the presets record and no other", async () => {
         const { api, sync, record, selection } = await boot();
         await api.setDatabase({ temperature: 77 });
-        api.setDatabaseLite({ maxContext: 4321 });
+        await api.setDatabaseLite({ maxContext: 4321 });
         await sync.flushResources();
         const presets = record("presets");
         const selected = presets.find((preset: any) => preset.id === selection.presetId);
@@ -229,7 +229,7 @@ describe("the other setters land in their owners' records", () => {
 
     it("an explicit characterOrder sent before the characters it names is the saved order", async () => {
         const { api, sync, record, fake, db } = await boot();
-        api.setDatabaseLite({
+        await api.setDatabaseLite({
             characterOrder: [{ id: "f", name: "F", color: "", data: ["e", "c"] }, "d"],
             characters: [
                 plain(db().characters[0]),

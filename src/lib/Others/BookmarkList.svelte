@@ -8,18 +8,18 @@
     import { createSimpleCharacter, bookmarkListOpen, ScrollToMessageStore } from "src/ts/stores.svelte";
     import { language } from "src/lang";
     import { alertInput } from "src/ts/alert";
-    import { currentChatRef, findChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
+    import { currentChatRef, findChat, selectedChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
     const close = () => ($bookmarkListOpen = false);
     let chara = $derived(currentCharacter);
+    const currentChat = $derived(selectedChat());
     const simpleChar = $derived(createSimpleCharacter(chara));
 
     const messageMap = $derived.by(() => {
-        if (!chara) return new Map();
+        if (!chara || !currentChat) return new Map();
 
-        const chat = chara.chats[chara.chatPage];
-        const allMessages = chat.message;
+        const allMessages = currentChat.message;
         const map = new Map();
 
         allMessages.forEach((m, index) => {
@@ -30,10 +30,9 @@
     });
 
     const bookmarkedMessages = $derived.by(() => {
-        if (!chara) return [];
+        if (!chara || !currentChat) return [];
 
-        const chat = chara.chats[chara.chatPage];
-        const bookmarkIds = chat.bookmarks ?? [];
+        const bookmarkIds = currentChat.bookmarks ?? [];
         const map = messageMap;
 
         const messages = bookmarkIds
@@ -96,8 +95,8 @@
     async function editName(chatId: string) {
         // The chat is captured before the dialog, so a chat switch cannot redirect the rename.
         const ref = currentChatRef();
-        const chat = chara.chats[chara.chatPage];
-        const newName = await alertInput(language.bookmarkAskNameOrCancel, [], chat.bookmarkNames?.[chatId] || "");
+        const chat = ref ? findChat(ref) : undefined;
+        const newName = await alertInput(language.bookmarkAskNameOrCancel, [], chat?.bookmarkNames?.[chatId] || "");
         const current = ref ? findChat(ref) : undefined;
         if (ref && current && newName && newName.trim() !== "") {
             setChatMeta(ref, { bookmarkNames: { ...(current.bookmarkNames ?? {}), [chatId]: newName } });
@@ -173,8 +172,7 @@
                             tabindex="0"
                         >
                             <span class="grow text-left truncate"
-                                >{chara.chats[chara.chatPage].bookmarkNames?.[msg.chatId] ||
-                                    msg.data.substring(0, 30) + "..."}</span
+                                >{currentChat?.bookmarkNames?.[msg.chatId] || msg.data.substring(0, 30) + "..."}</span
                             >
                             <div class="shrink-0 flex items-center gap-2 ml-2">
                                 <button

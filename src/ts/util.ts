@@ -1,4 +1,5 @@
 import { characterList, selectedCharacter } from "./storage/characterStore.svelte";
+import { findChat, selectedChat } from "./storage/chatStore.svelte";
 import { settings, activePreset, activePersona, currentPersonaRecord } from "./storage/settingsViews.svelte";
 import { get, writable, type Writable } from "svelte/store";
 import type { Message } from "./storage/database.svelte";
@@ -69,13 +70,9 @@ export const replacePlaceholders = (msg: string, name: string) => {
 /** The persona bound to `chatRef`'s chat (default: the selected chat), or null. */
 export function checkPersonaBinded(chatRef?: { chaId: string; chatId: string } | null) {
     try {
-        const character = chatRef
-            ? characterList().find((entry) => entry?.chaId === chatRef.chaId)
-            : selectedCharacter();
-        const chat = chatRef
-            ? character.chats.find((entry) => entry.id === chatRef.chatId)
-            : character.chats[character.chatPage];
-        if (!chat.bindedPersona) {
+        // A loaded chat: the selected one, or the `chatRef` chat its caller loaded.
+        const chat = chatRef ? findChat(chatRef) : selectedChat();
+        if (!chat?.bindedPersona) {
             return null;
         }
         const persona = settings.personas.find((v) => v.id === chat.bindedPersona);

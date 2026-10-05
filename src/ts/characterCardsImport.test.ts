@@ -114,7 +114,8 @@ async function boot() {
         expect(record.chaId).toBe(chaId);
         expect(fake.chat(chaId, character.chats[0].id)).not.toBeNull();
         expect(booted.record("characterOrder")).toContain(chaId);
-        return { chaId, character: plain(character), record };
+        // A plain copy carries no chats (Phase 6 slice 9a): the legacy shape is built with `withChatsCopy`.
+        return { chaId, character: plain(booted.chat.withChatsCopy(plain(character))), record };
     };
     return { ...booted, cards, ids, order, added };
 }

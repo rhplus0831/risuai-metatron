@@ -19,7 +19,7 @@ import { hasher } from "./parser/parser.svelte";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
 import { startResourceSync } from "./storage/resourceSync.svelte";
-import { selectChat } from "./storage/chatStore.svelte";
+import { chatList, currentChatRef, selectChat, selectedChat } from "./storage/chatStore.svelte";
 import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storage/resourceClient";
 import { AutoStorage } from "./storage/autoStorage";
 import { updateAnimationSpeed } from "./gui/animation";
@@ -1313,12 +1313,10 @@ $effect.root(() => {
         if (!chatFoldedState.data) {
             return;
         }
-        const char = selectedCharacter();
-        const chat = char.chats[char.chatPage];
-        if (chatFoldedState.data.targetCharacterId !== char.chaId) {
+        const ref = currentChatRef();
+        if (chatFoldedState.data.targetCharacterId !== ref?.chaId) {
             chatFoldedState.data = null;
-        }
-        if (chatFoldedState.data.targetChatId !== chat.id) {
+        } else if (chatFoldedState.data.targetChatId !== ref.chatId) {
             chatFoldedState.data = null;
         }
     });
@@ -1328,9 +1326,8 @@ $effect.root(() => {
             chatFoldedStateMessageIndex.index = -1;
             return;
         }
-        const char = selectedCharacter();
-        const chat = char.chats[char.chatPage];
-        const messageIndex = chat.message.findIndex((v) => {
+        const chat = selectedChat();
+        const messageIndex = (chat?.message ?? []).findIndex((v) => {
             return chatFoldedState.data?.targetMessageId === v.chatId;
         });
         if (messageIndex === -1) {
@@ -1345,23 +1342,23 @@ $effect.root(() => {
 export function foldChatToMessage(targetMessageIdOrIndex: string | number) {
     let targetMessageId = "";
     if (typeof targetMessageIdOrIndex === "number") {
-        const char = selectedCharacter();
-        const chat = char.chats[char.chatPage];
-        const message = chat.message[targetMessageIdOrIndex];
-        targetMessageId = message.chatId;
+        const message = selectedChat()?.message[targetMessageIdOrIndex];
+        targetMessageId = message?.chatId;
     } else {
         targetMessageId = targetMessageIdOrIndex;
     }
-    const char = selectedCharacter();
-    const chat = char.chats[char.chatPage];
+    const ref = currentChatRef();
+    if (!ref) {
+        return;
+    }
     chatFoldedState.data = {
-        targetCharacterId: char.chaId,
-        targetChatId: chat.id,
+        targetCharacterId: ref.chaId,
+        targetChatId: ref.chatId,
         targetMessageId: targetMessageId,
     };
 }
 
-/** Selects a chat of the selected character by id or index (per tab; `chatPage` follows). */
+/** Selects a chat of the selected character by id or by its index in the list (per tab). */
 export function changeChatTo(IdOrIndex: string | number) {
     const character = selectedCharacter();
     if (!character) {
@@ -1371,12 +1368,17 @@ export function changeChatTo(IdOrIndex: string | number) {
     ReloadGUIPointer.set(Math.random());
 }
 
-export function createChatCopyName(originalName: string, type: "Copy" | "Branch"): string {
+/** A name for a copy or branch of a chat, unique among the chats of `chaId` (default: the selected character). */
+export function createChatCopyName(
+    originalName: string,
+    type: "Copy" | "Branch",
+    chaId: string = selectedCharacter()?.chaId ?? "",
+): string {
     let name = originalName.replaceAll(/\(((Copy|Branch)( \d+)?)\)$/g, "").trim();
     let copyIndex = 1;
     let newName = `${name} (${type})`;
-    const char = selectedCharacter();
-    while (char.chats.find((v) => v.name === newName)) {
+    const names = new Set(chatList(chaId).map((entry) => entry.name));
+    while (names.has(newName)) {
         copyIndex++;
         newName = `${name} (${type} ${copyIndex})`;
     }

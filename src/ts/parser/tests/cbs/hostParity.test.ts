@@ -51,6 +51,7 @@ vi.mock(import("../../../globalApi.svelte"), () => ({
 import { risuChatParser } from "../../parser.svelte";
 import { CurrentTriggerIdStore, DBState, selectedCharID } from "../../../stores.svelte";
 import { installFlatDatabase } from "../../../storage/tests/installFlatDatabase";
+import { assembleChats } from "../../../storage/chatStore.svelte";
 
 type ParityCase = {
     name: string;
@@ -102,7 +103,20 @@ beforeEach(() => {
     // The capture installed as `setDatabaseLite` installs a database (`database.svelte` is mocked
     // here), since the parser reads the settings through the record views (Phase 6 slice 7). It is
     // the flat shape the Node host reads: its root preset fields become the one preset's.
-    DBState.db = installFlatDatabase(JSON.parse(JSON.stringify(parity.database)), "parity-preset");
+    const database = JSON.parse(JSON.stringify(parity.database));
+    // The records hold no chats (Phase 6 slice 9a): the capture's chats are held in the chat module,
+    // as boot assembles them (every chat page of the capture is 0, its first chat).
+    const characters = database.characters as { chaId: string; chats: { id: string }[] }[];
+    const chats = characters.flatMap((char) =>
+        char.chats.map((chat) => ({ characterId: char.chaId, id: chat.id, revision: "r1", data: chat as any })),
+    );
+    const orders = characters.map((char) => ({
+        characterId: char.chaId,
+        revision: "o1",
+        ids: char.chats.map((chat) => chat.id),
+    }));
+    DBState.db = installFlatDatabase(database, "parity-preset");
+    assembleChats(DBState.db.characters, chats, orders);
     selectedCharID.set(parity.selectedCharID);
     CurrentTriggerIdStore.set(null);
 });

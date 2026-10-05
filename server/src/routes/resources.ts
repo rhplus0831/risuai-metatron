@@ -89,7 +89,14 @@ export function registerResourceRoutes(
         if (chats !== undefined && chats !== "1") {
             return c.json({ error: "chats query parameter must be 1" }, 400);
         }
-        const read = store.readKinds(selected, { chats: chats === "1" });
+        const chatSummaries = c.req.query("chatSummaries");
+        if (chatSummaries !== undefined && chatSummaries !== "1") {
+            return c.json({ error: "chatSummaries query parameter must be 1" }, 400);
+        }
+        if (chats !== undefined && chatSummaries !== undefined) {
+            return c.json({ error: "chats and chatSummaries cannot be combined" }, 400);
+        }
+        const read = store.readKinds(selected, { chats: chats === "1", chatSummaries: chatSummaries === "1" });
         for (const kind of selected) {
             if (kind.project) {
                 read.kinds[kind.name] = read.kinds[kind.name].map((record) => ({
@@ -110,11 +117,19 @@ export function registerResourceRoutes(
         if (!parsed.ok) {
             return parsed.response;
         }
-        const { refs = [], chats = [], chatCollections = [] } = parsed.body as Record<string, unknown>;
+        const {
+            refs = [],
+            chats = [],
+            chatCollections = [],
+            chatSummaryCollections = [],
+        } = parsed.body as Record<string, unknown>;
         if (!Array.isArray(refs) || !Array.isArray(chats) || !Array.isArray(chatCollections)) {
             return c.json({ error: "Body must be { refs?, chats?, chatCollections? } of arrays" }, 400);
         }
-        const total = refs.length + chats.length + chatCollections.length;
+        if (!Array.isArray(chatSummaryCollections)) {
+            return c.json({ error: "chatSummaryCollections must be an array of character ids" }, 400);
+        }
+        const total = refs.length + chats.length + chatCollections.length + chatSummaryCollections.length;
         if (total === 0 || total > MAX_BATCH_OPERATIONS) {
             return c.json({ error: `Body must name 1 to ${MAX_BATCH_OPERATIONS} entries` }, 400);
         }
@@ -136,8 +151,11 @@ export function registerResourceRoutes(
         if (!chatCollections.every(isValidResourceId)) {
             return c.json({ error: "chatCollections must be character ids" }, 400);
         }
+        if (!chatSummaryCollections.every(isValidResourceId)) {
+            return c.json({ error: "chatSummaryCollections must be character ids" }, 400);
+        }
         try {
-            const read = store.readRefs(resolved, { chats: chatRefs, chatCollections });
+            const read = store.readRefs(resolved, { chats: chatRefs, chatCollections, chatSummaryCollections });
             return c.json({
                 ...read,
                 items: read.items.map((item) => ({ ...item, data: project(kinds.get(item.kind), item.data) })),

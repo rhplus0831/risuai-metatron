@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { selectedChat } from "src/ts/storage/chatStore.svelte";
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { type SerializableHypaV3Data, getCurrentHypaV3Preset } from "src/ts/process/memory/hypav3";
     import { type DeepReadonly, type Message } from "src/ts/storage/database.svelte";
@@ -14,7 +15,7 @@
 
     async function getNextSummarizationTarget(): Promise<DeepReadonly<Message> | null> {
         const char = currentCharacter;
-        const chat = char.chats[currentCharacter.chatPage];
+        const chat = selectedChat();
         const shouldProcess = getCurrentHypaV3Preset().settings.processRegexScript;
 
         // Summaries exist

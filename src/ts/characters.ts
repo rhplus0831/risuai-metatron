@@ -27,7 +27,8 @@ import { AppendableBuffer, changeChatTo, checkCharOrder, downloadFile, getFileSr
 import { parseMarkdownSafe } from "./parser/parser.svelte";
 import { translateHTML } from "./translator/translator";
 import { doingChat } from "./process/index.svelte";
-import { createChat, ensureChat, isCharacterGenerating, syncChatPage } from "./storage/chatStore.svelte";
+import { createChat, ensureChat, ensureChatLoaded, findChat, isCharacterGenerating } from "./storage/chatStore.svelte";
+import { readChatsDetached } from "./storage/chatEdits";
 import { importCharacter } from "./characterCards";
 import { PngChunk } from "./pngChunk";
 
@@ -216,11 +217,10 @@ export function rmCharEmotion(chaId: string, emotionId: number) {
     }
 }
 
-export async function exportChat(page: number) {
+/** Exports one chat of the selected character (by id), whatever the selection is after the dialogs. */
+export async function exportChat(chatId: string) {
     try {
-        // The character and chat are the ones selected now, whatever the selection is after the dialogs.
         const chaId = selectedCharacter()?.chaId;
-        const chatId = selectedCharacter()?.chats?.[page]?.id;
         const mode = await alertSelect([
             "Export as JSON",
             "Export as TXT",
@@ -235,9 +235,13 @@ export async function exportChat(page: number) {
             mode === "2" || mode === "3"
                 ? (await alertSelect([language.includePersonaName, language.hidePersonaName])) === "1"
                 : false;
+        if (chaId !== undefined) {
+            await ensureChatLoaded({ chaId, chatId });
+        }
+        // Found again after the load: the chat as it is now.
         const char = chaId === undefined ? undefined : characterRecord(chaId);
-        const found = char?.chats?.find((entry) => entry?.id === chatId);
-        if (!char || chatId === undefined || !found) {
+        const found = char ? findChat({ chaId: char.chaId, chatId }) : undefined;
+        if (!char || !found) {
             return;
         }
         // A copy: the chat can change while the export translates.
@@ -577,8 +581,11 @@ export async function exportAllChats() {
     try {
         const char = selectedCharacter();
         const date = new Date().toISOString().replace(/[:.]/g, "-");
-        const allChats = char.chats;
-        const allFolders = char.chatFolders;
+        // The character, name, and folders as the export starts; the chats as saved, read from the server.
+        const chaId = char.chaId;
+        const name = char.name;
+        const allFolders = JSON.parse(JSON.stringify(char.chatFolders ?? []));
+        const allChats = (await readChatsDetached([chaId])).get(chaId) ?? [];
         const stringl = Buffer.from(
             JSON.stringify({
                 type: "risuAllChats",
@@ -588,7 +595,7 @@ export async function exportAllChats() {
             }),
             "utf-8",
         );
-        await downloadFile(`${char.name}_all_chats_${date}`.replace(/[<>:"/\\|?*.,]/g, "") + ".json", stringl);
+        await downloadFile(`${name}_all_chats_${date}`.replace(/[<>:"/\\|?*.,]/g, "") + ".json", stringl);
         alertNormal(language.successExport);
     } catch (error) {
         alertError(error);
@@ -837,7 +844,6 @@ export async function changeChar(
     // no longer stamps `lastInteraction`; a send does). The defaults come from creation and the server.
     if (characterRecord(chaId)) {
         ensureChat(chaId);
-        syncChatPage(chaId);
     }
     selectCharacter(chaId);
 }

@@ -13,13 +13,14 @@
     import SettingRenderer from "../Setting/SettingRenderer.svelte";
     import { checkPersonaBinded, getUserName } from "src/ts/util";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
+    import { selectedChat } from "src/ts/storage/chatStore.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
     let configPage: "list" | "add" | "addSettingsSubmenu" = $state("list");
     let search = $state("");
 
     let bindedPersona = $derived.by(() => {
-        currentCharacter.chatPage;
+        selectedChat();
         return checkPersonaBinded();
     });
 

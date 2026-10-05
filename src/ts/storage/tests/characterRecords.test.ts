@@ -30,6 +30,7 @@ import {
     selection,
 } from "../selection.svelte";
 import { evaluateInDerived } from "./derivedProbe.svelte";
+import { assembleChats, findChat } from "../chatStore.svelte";
 
 // Phase 6 slice 5a (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/character-ownership.md`,
 // "5a as built" and "After the challenge"): the character list of the production records module and
@@ -56,6 +57,24 @@ const character = (chaId: string, extra: Record<string, unknown> = {}) => ({
     chatPage: 0,
     ...extra,
 });
+
+/**
+ * Holds the fixture characters' chats in the chat module the way boot does (Phase 6 slice 9a: the
+ * records hold none; a wrapper answers `chats`/`chatPage` from the chat module).
+ */
+function holdChats(characters: { chaId: string; chats: any[] }[]) {
+    assembleChats(
+        characters,
+        characters.flatMap((entry) =>
+            entry.chats.map((chat) => ({ characterId: entry.chaId, id: chat.id, revision: "r1", data: chat })),
+        ),
+        characters.map((entry) => ({
+            characterId: entry.chaId,
+            revision: "o1",
+            ids: entry.chats.map((chat) => chat.id),
+        })),
+    );
+}
 
 /** Runs `write`, which must throw `errorClass`, and checks that nothing changed and nothing was queued. */
 function refused(write: () => unknown, errorClass: new (...args: any[]) => Error = TypeError) {
@@ -286,63 +305,81 @@ describe("ownership across characters (plan review point 1)", () => {
 describe("the local fields (plan review point 3)", () => {
     it("reads chats, chatPage, and reloadKeys raw through every trap, and writes them raw with no notification", () => {
         initializeRecords({ characters: [character("a", { reloadKeys: 0 })] });
+        holdChats([character("a")]);
         const a = byId("a");
-        const chats = raw("a").chats;
-        expect(a.chats).toBe(chats);
+        // Phase 6 slice 9a: the record holds no chats; the wrapper answers them from the chat module.
+        expect(raw("a").chats).toBeUndefined();
+        expect(raw("a").chatPage).toBeUndefined();
+        const held = findChat({ chaId: "a", chatId: "ka" });
+        expect(a.chats).toEqual([held]);
+        expect(a.chats[0]).toBe(held);
+        expect(a.chatPage).toBe(0);
         expect(isRecordWrapper(a.chats)).toBe(false);
         expect(isRecordWrapper(a.chats[0])).toBe(false);
-        expect(Object.getOwnPropertyDescriptor(a, "chats")!.value).toBe(chats);
+        expect(Object.getOwnPropertyDescriptor(a, "chats")).toBeUndefined();
 
-        a.chats[0].message.push({ role: "char", data: "streamed" });
-        a.chats.push({ id: "k2", message: [], localLore: [] });
-        a.chats[0].localLore.push({ key: "lore", content: "local" });
-        a.chatPage = 1;
+        // Writing, defining, or deleting a chat field is refused, with nothing changed.
+        refused(() => (a.chats = []));
+        refused(() => (a.chatPage = 1));
+        refused(() =>
+            Object.defineProperty(a, "chatPage", { value: 0, writable: true, enumerable: true, configurable: true }),
+        );
+        refused(() => delete a.chats);
         a.reloadKeys += 1;
-        Object.defineProperty(a, "chatPage", { value: 0, writable: true, enumerable: true, configurable: true });
+        Object.defineProperty(a, "reloadKeys", { value: 0, writable: true, enumerable: true, configurable: true });
         delete a.reloadKeys;
         a.reloadKeys = 5;
         expect(notified).toEqual([]);
-        expect(raw("a").chats).toBe(chats);
-        expect(raw("a").chats[0].message.map((entry: any) => entry.data)).toEqual(["hi", "streamed"]);
-        expect(raw("a").chatPage).toBe(0);
+        expect(findChat({ chaId: "a", chatId: "ka" })).toBe(held);
+        expect(held!.message.map((entry: any) => entry.data)).toEqual(["hi"]);
         expect(raw("a").reloadKeys).toBe(5);
     });
 
     it("stores a wrapper assigned into a local field as a detached copy", () => {
         initializeRecords({ characters: [character("a", { globalLore: [{ content: "1" }] })] });
         const a = byId("a");
-        a.chats = a.globalLore;
+        a.reloadKeys = a.globalLore;
         expect(notified).toEqual([]);
-        expect(isRecordWrapper(raw("a").chats)).toBe(false);
+        expect(isRecordWrapper(raw("a").reloadKeys)).toBe(false);
         a.globalLore[0].content = "2";
-        expect(raw("a").chats).toEqual([{ content: "1" }]);
+        expect(raw("a").reloadKeys).toEqual([{ content: "1" }]);
     });
 
     it("keeps the same character's chats by identity across a same-id replacement and a raw server copy", () => {
         initializeRecords({ characters: [character("a", { reloadKeys: 3 })] });
-        const chats = raw("a").chats;
+        holdChats([character("a")]);
+        const chats = byId("a").chats;
+        const held = findChat({ chaId: "a", chatId: "ka" });
         replaceCharacterRecordAt(0, { chaId: "a", name: "replaced", chats, chatPage: 0 });
-        expect(raw("a").chats).toBe(chats);
+        expect(byId("a").chats).toEqual(chats);
+        expect(findChat({ chaId: "a", chatId: "ka" })).toBe(held);
         applyRawCharacter("a", { chaId: "a", name: "server" });
-        expect(raw("a").chats).toBe(chats);
-        expect(raw("a").chatPage).toBe(0);
+        expect(byId("a").chats).toEqual(chats);
+        expect(findChat({ chaId: "a", chatId: "ka" })).toBe(held);
+        expect(byId("a").chatPage).toBe(0);
+        expect(raw("a").chats).toBeUndefined();
         expect(raw("a").name).toBe("server");
     });
 
     it("copies another character's live chats when a whole character is stored with them", () => {
         initializeRecords({ characters: [character("a")] });
-        const chats = raw("a").chats;
+        holdChats([character("a")]);
+        const chats = byId("a").chats;
         insertCharacterRecord({ chaId: "b", name: "B", chats, chatPage: 0 });
-        expect(raw("b").chats).not.toBe(chats);
-        expect(raw("b").chats).toEqual(JSON.parse(JSON.stringify(chats)));
-        byId("b").chats[0].message.push({ role: "char", data: "only b" });
-        expect(raw("a").chats[0].message).toHaveLength(1);
+        // Phase 6 slice 9a: the record drops them; b holds no chats until the chat module installs some.
+        expect(raw("b").chats).toBeUndefined();
+        expect(byId("b").chats).toEqual([]);
+        expect(byId("a").chats).toEqual(chats);
+        expect(findChat({ chaId: "a", chatId: "ka" })!.message).toHaveLength(1);
     });
 
     it("appends a server copy of a character the list lacks with empty chats, and removes one for null", () => {
         initializeRecords({ characters: [character("a")] });
+        holdChats([character("a")]);
         applyRawCharacter("n", { chaId: "n", name: "N", chats: [{ id: "ignored" }] });
-        expect(raw("n")).toMatchObject({ chaId: "n", name: "N", chats: [], chatPage: 0 });
+        expect(raw("n")).toEqual({ chaId: "n", name: "N" });
+        expect(byId("n").chats).toEqual([]);
+        expect(byId("n").chatPage).toBe(0);
         applyRawCharacter("n", null);
         expect(raw("n")).toBeUndefined();
         expect(notified).toEqual([]);

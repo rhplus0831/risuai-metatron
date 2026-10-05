@@ -55,9 +55,18 @@ import {
     appendMessage,
     applyChatResult,
     captureChatBaseline,
+    chatList,
+    currentChatRef,
+    ensureChatLoaded,
+    findChat,
     isCharacterGenerating,
+    loadChats,
+    pinChats,
     reconcileCharacterChats,
     selectChat,
+    selectedChat,
+    selectedChatIndex,
+    withChatsCopy,
 } from "src/ts/storage/chatStore.svelte";
 import { SafeLocalPluginStorage, SafeLocalStorage, tagWhitelist } from "../pluginSafeClass";
 import DOMPurify from "dompurify";
@@ -734,42 +743,81 @@ function contextTarget(context: PluginCallContext) {
     if (!character) {
         throw new PluginTargetGoneError("character");
     }
-    const chatIndex = (character.chats ?? []).findIndex((chat) => chat?.id === context.chatRef.chatId);
-    if (chatIndex === -1) {
+    const chatIndex = chatList(character.chaId).findIndex((entry) => entry.id === context.chatRef.chatId);
+    const chat = chatIndex === -1 ? undefined : findChat(context.chatRef);
+    if (!chat) {
         throw new PluginTargetGoneError("chat");
     }
-    return { characterIndex, character, chatIndex, chat: character.chats[chatIndex] };
+    return { characterIndex, character, chatIndex, chat };
 }
 
 /**
- * The hook's character with a context, else the selected one (a snapshot). A hook's character
- * reports the hook's chat as its `chatPage`, so `chats[chatPage]` is the chat the hook runs for.
+ * Runs `run` (synchronous) once the chats of `chaIds` are loaded, with them pinned from before the
+ * load until it returns (Phase 6 slice 9a: boot loads every chat, so the load resolves at once).
+ * The targets are captured by id before the load and found again inside `run`.
  */
-const getChar = (context: PluginCallContext | undefined) => {
-    if (context) {
-        const { character, chatIndex } = contextTarget(context);
-        return { ...$state.snapshot(character), chatPage: chatIndex };
+async function withChatsLoaded<T>(chaIds: readonly (string | undefined)[], run: () => T): Promise<T> {
+    const ids = [...new Set(chaIds.filter((chaId): chaId is string => typeof chaId === "string"))];
+    const releases = ids.map((chaId) => pinChats(chaId));
+    try {
+        for (const chaId of ids) {
+            await loadChats(chaId);
+        }
+        return run();
+    } finally {
+        for (const release of releases) {
+            release();
+        }
     }
-    const chaId = selectedCharacter()?.chaId;
-    return chaId === undefined ? undefined : characterSnapshot(chaId);
+}
+
+/**
+ * The hook's character with a context, else the selected one: a detached copy in the legacy shape,
+ * with its chats (`withChatsCopy`). A hook's character reports the hook's chat as its `chatPage`, so
+ * `chats[chatPage]` is the chat the hook runs for.
+ */
+const getChar = async (context: PluginCallContext | undefined) => {
+    const chaId = context ? context.chatRef.chaId : selectedCharacter()?.chaId;
+    if (chaId === undefined) {
+        return undefined;
+    }
+    return withChatsLoaded([chaId], () => {
+        if (context) {
+            const { character } = contextTarget(context);
+            return withChatsCopy($state.snapshot(character), context.chatRef.chatId);
+        }
+        const snapshot = characterSnapshot(chaId);
+        return snapshot === undefined ? undefined : withChatsCopy(snapshot);
+    });
 };
 
 /**
- * Applies a character to the hook's character with a context, else to the selected one. Inside a
- * hook, a `chatPage` naming the hook's chat is what `getChar` reported, not a change of the user's
- * chat selection, so it is not applied.
+ * Applies a character to the hook's character with a context, else to the selected one (the one
+ * selected when the call came; its chats are loaded first). Inside a hook, a `chatPage` naming the
+ * hook's chat is what `getChar` reported, not a change of the user's chat selection, so it is not
+ * applied.
  */
-const setChar = (context: PluginCallContext | undefined, char: any) => {
-    if (!context) {
-        applyPluginCharacter(selectedIndex(), char);
-        return;
+const setChar = async (context: PluginCallContext | undefined, char: any) => {
+    const chaId = context ? context.chatRef.chaId : selectedCharacter()?.chaId;
+    if (context) {
+        // Before the load: a `chatPage` naming the hook's chat (as `getChar` reported it then) is not
+        // a selection change, whatever the order is after the load.
+        const { chatIndex } = contextTarget(context);
+        if (char && typeof char === "object" && char.chatPage === chatIndex) {
+            const { chatPage: _reported, ...rest } = char;
+            char = rest;
+        }
     }
-    const { characterIndex, chatIndex } = contextTarget(context);
-    if (char && typeof char === "object" && char.chatPage === chatIndex) {
-        const { chatPage: _reported, ...rest } = char;
-        char = rest;
-    }
-    applyPluginCharacter(characterIndex, char);
+    await withChatsLoaded([chaId], () => {
+        if (!context) {
+            applyPluginCharacter(
+                chaId === undefined ? -1 : characterList().findIndex((entry) => entry?.chaId === chaId),
+                char,
+            );
+            return;
+        }
+        applyPluginCharacter(contextTarget(context).characterIndex, char);
+    });
 };
 
 /** Runs a plugin write; a refused value (`MutationValidationError`) is warned about and changes nothing. */
@@ -831,16 +879,25 @@ function applyPluginCharacter(index: number, char: any) {
  * (`removeCharacter`), except a character that is generating a reply: it stays (with a console
  * warning). The mirror keeps its order.
  */
-function applyPluginCharacters(incoming: unknown) {
+function applyPluginCharacters(incoming: unknown, vanished: ReadonlySet<string> = new Set()) {
     requireArray("characters", incoming);
-    const entries = Array.from(incoming, (char, i) => {
+    const checked = Array.from(incoming, (char, i) => {
         checkCharacterInput(char, `characters[${i}]`);
         return char;
     });
-    const ids = entries.map((char) => char.chaId).filter((id): id is string => typeof id === "string" && id !== "");
-    if (new Set(ids).size !== ids.length || new Set(entries).size !== entries.length) {
+    const checkedIds = checked
+        .map((char) => char.chaId)
+        .filter((id): id is string => typeof id === "string" && id !== "");
+    if (new Set(checkedIds).size !== checkedIds.length || new Set(checked).size !== checked.length) {
         throw new MutationValidationError("characters", "duplicate chaId values (or one object listed twice)");
     }
+    // The whole list is checked first; then an entry whose existing character was deleted while its
+    // chats loaded (`vanished`, captured before the load) is skipped, never turned into a creation.
+    if ([...vanished].some((chaId) => checkedIds.includes(chaId))) {
+        console.warn("[Plugin] Skipped characters that were deleted while their chats loaded");
+    }
+    const entries = checked.filter((char) => !(typeof char.chaId === "string" && vanished.has(char.chaId)));
+    const ids = checkedIds.filter((chaId) => !vanished.has(chaId));
     const kept = new Set(ids);
     const existing = characterList().map((character) => character?.chaId);
     // Every new character is prepared (checked, normalized, its creation steps done) before the list
@@ -968,10 +1025,16 @@ function selectPersonaAt(index: unknown) {
  * `pluginCustomStorage`. `plugins` is the list to install: the full setter passes the plugins the
  * user confirmed (added or updated by name), the lite one the whole list (replaced).
  */
-function applyPluginKey(key: string, value: unknown, full: boolean, context: PluginCallContext | undefined) {
+function applyPluginKey(
+    key: string,
+    value: unknown,
+    full: boolean,
+    context: PluginCallContext | undefined,
+    vanished: ReadonlySet<string> = new Set(),
+) {
     switch (key) {
         case "characters":
-            return applyPluginCharacters(value);
+            return applyPluginCharacters(value, vanished);
         case "personas":
             return setPersonas(value);
         case "modules":
@@ -1007,7 +1070,12 @@ function applyPluginKey(key: string, value: unknown, full: boolean, context: Plu
  * forwarded preset key goes to the hook's preset; when that preset is gone, nothing is applied
  * (`PluginTargetGoneError`).
  */
-function applyPluginDatabase(newDb: Record<string, unknown>, full: boolean, context: PluginCallContext | undefined) {
+function applyPluginDatabase(
+    newDb: Record<string, unknown>,
+    full: boolean,
+    context: PluginCallContext | undefined,
+    vanished: ReadonlySet<string> = new Set(),
+) {
     if (
         context &&
         Object.keys(newDb).some((key) => allowedDbKeys.includes(key) && forwardedPresetField(key) !== undefined) &&
@@ -1018,14 +1086,33 @@ function applyPluginDatabase(newDb: Record<string, unknown>, full: boolean, cont
     // One queued write per settings record the call changed (`records.svelte.ts`).
     batchRecordWrites(() => {
         for (const key of pluginKeyOrder(newDb)) {
-            warnRefused(`the database key ${key}`, () => applyPluginKey(key, newDb[key], full, context));
+            warnRefused(`the database key ${key}`, () => applyPluginKey(key, newDb[key], full, context, vanished));
         }
     });
 }
 
+/** The existing characters whose chats a plugin's `characters` reconciles (loaded first). */
+function charactersReconciled(newDb: Record<string, unknown>): string[] {
+    const incoming = newDb && typeof newDb === "object" ? newDb.characters : undefined;
+    if (!Array.isArray(incoming)) {
+        return [];
+    }
+    const existing = new Set(characterList().map((character) => character?.chaId));
+    return incoming
+        .map((char) => (char && typeof char === "object" ? (char as { chaId?: unknown }).chaId : undefined))
+        .filter((chaId): chaId is string => typeof chaId === "string" && existing.has(chaId));
+}
+
+/** Which of `targets` (existing characters captured before the load) left the list during it. */
+function vanishedOf(targets: readonly string[]): Set<string> {
+    const present = new Set(characterList().map((character) => character?.chaId));
+    return new Set(targets.filter((chaId) => !present.has(chaId)));
+}
+
 //Keys outside allowedDbKeys are stored at the top level of db.pluginCustomStorage
-const setPluginDatabaseLite = (newDb: any, context: PluginCallContext | undefined) => {
-    applyPluginDatabase(newDb, false, context);
+const setPluginDatabaseLite = async (newDb: any, context: PluginCallContext | undefined) => {
+    const targets = charactersReconciled(newDb);
+    await withChatsLoaded(targets, () => applyPluginDatabase(newDb, false, context, vanishedOf(targets)));
 };
 
 const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefined) => {
@@ -1044,8 +1131,9 @@ const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefi
         // Only the plugins the user confirms are installed; the installed ones stay.
         newDb = { ...newDb, plugins: await handlePluginInstallViaPlugin(plugins) };
     }
-    // No await from here on: a forwarded preset field lands in the hook's preset, else in the one selected now.
-    applyPluginDatabase(newDb, true, context);
+    // After the chats load, no await: a forwarded preset field lands in the hook's preset, else in the one selected now.
+    const targets = charactersReconciled(newDb);
+    await withChatsLoaded(targets, () => applyPluginDatabase(newDb, true, context, vanishedOf(targets)));
 };
 
 const readAssetImage = (path: string) => {
@@ -1250,23 +1338,35 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             if (!conf) {
                 return null;
             }
-            const db = DBState.db;
-            // Inside a hook, the forwarded preset keys come from the hook's preset (refused when it is
-            // gone), so a read-modify-write through setDatabase stays in one preset.
-            let liteDB = {};
-            for (const key of allowedDbKeys) {
-                if (includeOnly !== "all" && !includeOnly.includes(key)) {
-                    continue;
-                }
-                let value = (db as any)[key];
-                if (context && forwardedPresetField(key) !== undefined) {
-                    if (!hasPreset(db, context.presetId)) {
-                        throw new PluginTargetGoneError("preset");
+            const included = (key: string) => includeOnly === "all" || includeOnly.includes(key);
+            // The characters' chats are loaded (and pinned) first; then every key is read in one
+            // synchronous pass, so the snapshot is one state of the tab.
+            const characterIds = included("characters") ? characterList().map((character) => character?.chaId) : [];
+            const liteDB = await withChatsLoaded(characterIds, () => {
+                const db = DBState.db;
+                // Inside a hook, the forwarded preset keys come from the hook's preset (refused when it
+                // is gone), so a read-modify-write through setDatabase stays in one preset.
+                const snapshot: Record<string, unknown> = {};
+                for (const key of allowedDbKeys) {
+                    if (!included(key)) {
+                        continue;
                     }
-                    value = readPresetFieldOf(db, context.presetId, key);
+                    if (key === "characters") {
+                        // The legacy shape: each character with its chats.
+                        snapshot[key] = characterList().map((character) => withChatsCopy($state.snapshot(character)));
+                        continue;
+                    }
+                    let value = (db as any)[key];
+                    if (context && forwardedPresetField(key) !== undefined) {
+                        if (!hasPreset(db, context.presetId)) {
+                            throw new PluginTargetGoneError("preset");
+                        }
+                        value = readPresetFieldOf(db, context.presetId, key);
+                    }
+                    snapshot[key] = $state.snapshot(value);
                 }
-                (liteDB as any)[key] = $state.snapshot(value);
-            }
+                return snapshot;
+            });
             return liteDB;
         },
 
@@ -1363,27 +1463,40 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             warnRefused(`the argument ${key}`, () => setPluginArgument(plugin.name, key, value));
         },
         // The plugin index APIs address the character list by position (creation order).
-        getCharacterFromIndex: (index: number) => {
-            const character = characterList()[index];
-            if (character) {
-                return $state.snapshot(character);
+        getCharacterFromIndex: async (index: number) => {
+            const chaId = characterList()[index]?.chaId;
+            if (chaId === undefined) {
+                return null;
             }
-            return null;
+            return withChatsLoaded([chaId], () => {
+                const snapshot = characterSnapshot(chaId);
+                return snapshot === undefined ? null : withChatsCopy(snapshot);
+            });
         },
-        setCharacterToIndex: (index: number, char: any) => {
-            if (characterList()[index]) {
-                applyPluginCharacter(Number(index), char);
+        setCharacterToIndex: async (index: number, char: any) => {
+            // The character at the index when the call came, found again by id after its chats load.
+            const chaId = characterList()[index]?.chaId;
+            if (chaId === undefined) {
+                return;
             }
-        },
-        getChatFromIndex: (characterIndex: number, chatIndex: number) => {
-            const character = characterList()[characterIndex];
-            if (character) {
-                const chats = character.chats;
-                if (chats && chats[chatIndex]) {
-                    return $state.snapshot(chats[chatIndex]);
+            await withChatsLoaded([chaId], () => {
+                const at = characterList().findIndex((entry) => entry?.chaId === chaId);
+                if (at !== -1) {
+                    applyPluginCharacter(at, char);
                 }
+            });
+        },
+        getChatFromIndex: async (characterIndex: number, chatIndex: number) => {
+            const chaId = characterList()[characterIndex]?.chaId;
+            const chatId = chaId === undefined ? undefined : chatList(chaId)[chatIndex]?.id;
+            if (chaId === undefined || chatId === undefined) {
+                return null;
             }
-            return null;
+            const ref = { chaId, chatId };
+            await ensureChatLoaded(ref);
+            // Found again after the load: the chat as it is now (none when it was deleted meanwhile).
+            const chat = findChat(ref);
+            return chat ? $state.snapshot(chat) : null;
         },
         parseRisuChat: async (
             text: string,
@@ -1398,12 +1511,25 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             },
         ) => {
             const context = currentContext(contextOwner);
+            // The hook's chat (refused at once when it is gone), else the one selected when the call
+            // came, loaded first; the target is found again after the load.
+            if (context) {
+                contextTarget(context);
+            }
+            const ref = context ? context.chatRef : currentChatRef();
+            if (ref) {
+                await ensureChatLoaded(ref);
+            }
             const target = context ? contextTarget(context) : undefined;
-            const char = target ? target.character : selectedCharacter();
+            const char = target
+                ? target.character
+                : ref
+                  ? characterList().find((entry) => entry?.chaId === ref.chaId)
+                  : selectedCharacter();
             if (!char) {
                 throw new Error("No character selected");
             }
-            const chat = target ? target.chat : char.chats?.[char.chatPage];
+            const chat = target ? target.chat : ref ? findChat(ref) : undefined;
             if (!chat) {
                 throw new Error("No active chat found");
             }
@@ -1416,9 +1542,12 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 ...(role ? { chatRole: role } : {}),
                 ...(options?.cbsConditions ?? {}),
             };
+            // The captured chat throughout (the hook's, else the one selected when the call came), so a
+            // selection change during the load does not redirect the parse.
+            const chatRef = context ? context.chatRef : { chaId: char.chaId, chatId: chat.id };
             const parseArg = {
                 chara: char,
-                ...(context ? { chatRef: context.chatRef } : {}),
+                chatRef,
                 chatID,
                 role,
                 runVar: options?.runVar,
@@ -1441,7 +1570,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             // The server transform, for the hook's chat, preset, and persona when inside one. Without a
             // context (no chat, a chat not saved on the server yet) the regex stage is skipped.
             const transform = captureTransform(chatID, {
-                chatRef: context?.chatRef ?? (target ? { chaId: char.chaId, chatId: chat.id } : null),
+                chatRef,
                 pluginContext: context,
             });
             if (!transform) {
@@ -1450,19 +1579,22 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             return (await serverProcessScript(char, parsed, "editprocess", chatID, cbsConditions, transform, "message"))
                 .data;
         },
-        setChatToIndex: (characterIndex: number, chatIndex: number, chat: any) => {
-            const character = characterList()[characterIndex];
-            if (character) {
-                const target = character.chats?.[chatIndex];
-                if (target?.id && chat && typeof chat === "object") {
-                    // Last writer wins: the plugin's chat is diffed against the chat as it is now.
-                    const ref = { chaId: character.chaId, chatId: target.id };
-                    try {
-                        applyChatResult(captureChatBaseline(ref), { ...chat, id: target.id });
-                    } catch (error) {
-                        console.warn("[Plugin] Skipped a chat change to a message being generated", error);
-                    }
-                }
+        setChatToIndex: async (characterIndex: number, chatIndex: number, chat: any) => {
+            // The chat at the indexes when the call came, by id, loaded first.
+            const chaId = characterList()[characterIndex]?.chaId;
+            const chatId = chaId === undefined ? undefined : chatList(chaId)[chatIndex]?.id;
+            if (chaId === undefined || chatId === undefined || !chat || typeof chat !== "object") {
+                return;
+            }
+            const ref = { chaId, chatId };
+            if (!(await ensureChatLoaded(ref))) {
+                return;
+            }
+            // Last writer wins: the plugin's chat is diffed against the chat as it is now.
+            try {
+                applyChatResult(captureChatBaseline(ref), { ...chat, id: chatId });
+            } catch (error) {
+                console.warn("[Plugin] Skipped a chat change to a message being generated", error);
             }
         },
         getCurrentCharacterIndex: () => {
@@ -1474,7 +1606,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             if (context) {
                 return contextTarget(context).chatIndex;
             }
-            return selectedCharacter().chatPage;
+            return selectedChatIndex(selectedCharacter().chaId);
         },
         getCurrentLorebookEntries: () => {
             const context = currentContext(contextOwner);
@@ -1490,9 +1622,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             if (!char) {
                 return [];
             }
-            const page = char.chatPage;
             const characterLore = char.globalLore ?? [];
-            const chatLore = char.chats?.[page]?.localLore ?? [];
+            const chatLore = selectedChat()?.localLore ?? [];
             const moduleLore = getModuleLorebooks();
             return $state.snapshot([...characterLore, ...chatLore, ...moduleLore]);
         },
@@ -1886,14 +2017,26 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 throw new Error("Sending chat with plugin-based model is currently blocked");
             }
 
-            // Inside a hook, the send goes to the hook's chat, else to the selected one.
+            // Inside a hook, the send goes to the hook's chat (refused at once when it is gone), else to
+            // the selected one; loaded first, the target found again after the load.
+            if (context) {
+                contextTarget(context);
+            }
+            const ref = context ? context.chatRef : currentChatRef();
+            if (ref) {
+                await ensureChatLoaded(ref);
+            }
             const target = context ? contextTarget(context) : undefined;
-            const char = target ? target.character : selectedCharacter();
+            const char = target
+                ? target.character
+                : ref
+                  ? characterList().find((entry) => entry?.chaId === ref.chaId)
+                  : selectedCharacter();
             if (!char) {
                 throw new Error("No character selected");
             }
 
-            const chat = target ? target.chat : char.chats[char.chatPage];
+            const chat = target ? target.chat : ref ? findChat(ref) : undefined;
             if (!chat) {
                 throw new Error("No active chat found");
             }
@@ -1906,7 +2049,12 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
 
             try {
-                await processSendChat(-1, context ? { target: context.chatRef, pluginContext: context } : {});
+                // The chat captured before the load (the hook's, else the one selected when the call came).
+                const sendTarget = { chaId: char.chaId, chatId: chat.id };
+                await processSendChat(
+                    -1,
+                    context ? { target: context.chatRef, pluginContext: context } : { target: sendTarget },
+                );
             } finally {
                 // Plugin API path does not pass through the UI unlock logic,
                 // so release doingChat here on both success and failure.

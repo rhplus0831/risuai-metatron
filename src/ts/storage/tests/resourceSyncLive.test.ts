@@ -177,10 +177,10 @@ async function boot(options: { secret?: boolean } = {}) {
     const db = () => stores.DBState.db as any;
     const character = (id = "c") => db().characters.find((entry: any) => entry.chaId === id);
     const chatIds = (id = "c") => character(id).chats.map((entry: any) => entry.id);
+    // The chat module's own read (Phase 6 slice 9a): the facade's `chats` builds a fresh list on
+    // every read, which a check over a thousand chats would rebuild once per chat.
     const texts = (chaId: string, chatId: string) =>
-        character(chaId)
-            .chats.find((entry: any) => entry.id === chatId)
-            .message.map((message: any) => message.data);
+        chatModule.findChat({ chaId, chatId })!.message.map((message: any) => message.data);
     return {
         fake,
         sync,
@@ -269,7 +269,9 @@ describe("records another writer committed", () => {
         await settle(fake);
         expect(element.name).toBe("D remote");
         expect(entry.content).toBe("remote");
-        expect(element.chats).toBe(chats);
+        // Phase 6 slice 9a: `chats` is a fresh array on every read; the chats are the same ones.
+        expect(element.chats).toEqual(chats);
+        element.chats.forEach((entry: unknown, index: number) => expect(entry).toBe(chats[index]));
         expect(fake.batchCount()).toBe(batches);
         noNotice();
         const held = fake.record("characters", "d")!.revision;

@@ -1,26 +1,16 @@
 <script lang="ts">
-    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
+    import type { AnyClientCharacter, ClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
-    import type {
-        character,
-        groupChat,
-        DeepReadonly,
-        Message,
-        StreamingDisplayOptimizationMode,
-    } from "src/ts/storage/database.svelte";
+    import type { DeepReadonly, Message, StreamingDisplayOptimizationMode } from "src/ts/storage/database.svelte";
     import { mount, onDestroy, unmount } from "svelte";
     import Chat from "./Chat.svelte";
     import { getCharImage } from "src/ts/characters";
     import { createSimpleCharacter, ReloadChatPointer } from "src/ts/stores.svelte";
-    import { streamingState } from "src/ts/storage/chatStore.svelte";
+    import { currentChatRef, selectedChatId, streamingState } from "src/ts/storage/chatStore.svelte";
     import { chatFoldedStateMessageIndex } from "src/ts/globalApi.svelte";
     import { get } from "svelte/store";
 
-    const getCurrentChatRoomId = () => {
-        const char = selectedCharacter();
-        if (!char) return null;
-        return char.chats?.[char.chatPage]?.id ?? null;
-    };
+    const getCurrentChatRoomId = () => currentChatRef()?.chatId ?? null;
 
     let {
         messages,
@@ -34,7 +24,7 @@
         hasNewUnreadMessage = $bindable(false),
     }: {
         messages: readonly DeepReadonly<Message>[];
-        currentCharacter: character | groupChat;
+        currentCharacter: AnyClientCharacter;
         onReroll: () => void;
         unReroll: () => void;
         currentUsername: string;
@@ -81,12 +71,12 @@
         const simpleChar = createSimpleCharacter(currentCharacter);
         let loadStart = messages.length - 1;
         let loadEnd = messages.length - loadPages;
-        const currentChat = currentCharacter.chats?.[currentCharacter.chatPage];
+        const currentChatId = selectedChatId(currentCharacter.chaId);
         const configuredPerformanceMode = settings.ui.streamingDisplayOptimizationMode ?? "off";
         const streaming =
             streamingState.messageId !== null &&
             streamingState.chaId === currentCharacter.chaId &&
-            streamingState.chatId === currentChat?.id;
+            streamingState.chatId === currentChatId;
         const performanceMode = streaming ? streamingState.mode : configuredPerformanceMode;
         // The streaming message by id, not by position (another message may follow it).
         const activeStreamingIndex =
@@ -107,7 +97,7 @@
             const messageLargePortrait =
                 message.role === "user"
                     ? (userIconPortrait ?? false)
-                    : ((currentCharacter as character).largePortrait ?? false);
+                    : ((currentCharacter as ClientCharacter).largePortrait ?? false);
             const reloadPointer = reloadPointerMap[i] ?? 0;
             const activeStreamingMessage = i === activeStreamingIndex && message.role === "char";
             const hashMessageData = activeStreamingMessage ? "" : message.data;

@@ -1,4 +1,4 @@
-import { selectedCharacter } from "../storage/characterStore.svelte";
+import { type AnyClientCharacter, selectedCharacter } from "../storage/characterStore.svelte";
 import { settings, activePreset } from "../storage/settingsViews.svelte";
 import { get } from "svelte/store";
 import { parseChatML } from "../parser/chatML";
@@ -272,7 +272,7 @@ export async function translateHTML(
     }
     // The server transform's context: the caller's, or captured before the first await.
     const transform = capturedTransform === undefined ? captureTransform(chatID) : capturedTransform;
-    let alwaysExistChar: character | groupChat | simpleCharacterArgument;
+    let alwaysExistChar: AnyClientCharacter | simpleCharacterArgument;
     if (charArg !== "") {
         if (typeof charArg === "string") {
             alwaysExistChar = selectedCharacter();
@@ -650,7 +650,7 @@ interface pEdittransScript {
 export function applyEdittransRegex(
     text: string,
     charArg: simpleCharacterArgument | string,
-    alwaysExistChar: character | groupChat | simpleCharacterArgument,
+    alwaysExistChar: AnyClientCharacter | simpleCharacterArgument,
     chatID = -1,
 ): string {
     if (charArg === "") return text;

@@ -25,6 +25,7 @@ const deps = vi.hoisted(() => ({
     heldChat: vi.fn<(ref: { chaId: string; chatId: string }) => string | null>(),
     heldRecord: vi.fn<(kind: string, id: string) => string | null>(),
     contexts: [] as unknown[],
+    selection: null as { characterId: string | null } | null,
     mcps: new Map<string, { callTool: (tool: string, args: unknown) => Promise<unknown> }>(),
     sayTTS: vi.fn(),
     stableDiff: vi.fn<(char: unknown, text: string, target: { check?: () => void }) => Promise<unknown>>(),
@@ -46,9 +47,37 @@ vi.mock("../storage/resourceSync.svelte", () => ({
     applyHydration: (record: unknown) => deps.applyHydration(record),
     heldRecordRevision: (kind: string, id: string) => deps.heldRecord(kind, id),
 }));
-vi.mock("../storage/chatStore.svelte", () => ({
-    heldChatRevision: (ref: { chaId: string; chatId: string }) => deps.heldChat(ref),
-}));
+// The chat module's readers the dispatcher calls (Phase 6 slice 9a), over the mocked mirror's chats:
+// the fixture's characters hold them here, the selected chat at `chatPage`, as the mirror did. The
+// selected character is the real selection's (`deps.selection`, set in `beforeEach`).
+vi.mock("../storage/chatStore.svelte", async () => {
+    const { DBState } = await import("../stores.svelte");
+    type Owner = { chaId: string; chatPage?: number; chats?: { id: string }[] };
+    const owner = (chaId: string) =>
+        (DBState.db.characters as unknown as Owner[]).find((entry) => entry?.chaId === chaId);
+    const selectedChatId = (chaId: string) => {
+        const found = owner(chaId);
+        return found?.chats?.[found.chatPage ?? 0]?.id ?? null;
+    };
+    return {
+        heldChatRevision: (ref: { chaId: string; chatId: string }) => deps.heldChat(ref),
+        selectedChatId,
+        currentChatRef: () => {
+            const chaId = deps.selection?.characterId ?? null;
+            const chatId = chaId === null ? null : selectedChatId(chaId);
+            return chaId !== null && chatId !== null ? { chaId, chatId } : null;
+        },
+        findChat: (ref: { chaId: string; chatId: string }) =>
+            owner(ref.chaId)?.chats?.find((chat) => chat.id === ref.chatId),
+        chatList: (chaId: string) =>
+            (owner(chaId)?.chats ?? []).map((chat) => ({ id: chat.id, name: "", fmIndex: -1 })),
+        withChatsCopy: (copy: { chaId: string }) => ({
+            ...copy,
+            chats: JSON.parse(JSON.stringify(owner(copy.chaId)?.chats ?? [])),
+            chatPage: owner(copy.chaId)?.chatPage ?? 0,
+        }),
+    };
+});
 vi.mock("../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
     return {
@@ -187,7 +216,8 @@ beforeEach(async () => {
     hooks = (await import("../plugins/pluginHooks")).pluginHooks;
     channel = await import("./jobChannel");
     // The tab shows the fixture's character (the readers resolve it by `selection.characterId`).
-    (await import("../storage/selection.svelte")).selection.characterId = "c";
+    deps.selection = (await import("../storage/selection.svelte")).selection;
+    deps.selection.characterId = "c";
     tx = transport();
 });
 

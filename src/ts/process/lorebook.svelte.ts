@@ -11,7 +11,7 @@ import { downloadFile } from "../globalApi.svelte";
 import { getModuleLorebooks } from "./modules";
 import { activateLore } from "../../../shared/lore/activation.ts";
 import { v4 } from "uuid";
-import { type ChatRef, currentChatRef, findChat, setChatMeta } from "../storage/chatStore.svelte";
+import { type ChatRef, currentChatRef, findChat, selectedChat, setChatMeta } from "../storage/chatStore.svelte";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { findCharacter, updateCharacter } from "../storage/characterStore.svelte";
 import { upgradeLorebook } from "../../../shared/modules.ts";
@@ -39,11 +39,10 @@ export function addLorebook(type: number) {
             selective: false,
         });
     } else {
-        const page = char.chatPage;
         appendLocalLore([
             {
                 key: "",
-                comment: `New Lore ${char.chats[page].localLore.length + 1}`,
+                comment: `New Lore ${(selectedChat()?.localLore?.length ?? 0) + 1}`,
                 content: "",
                 mode: "normal",
                 insertorder: 100,
@@ -92,7 +91,7 @@ export function addLorebookFolder(type: number) {
 export async function loadLoreBookV3Prompt(chatRef?: ChatRef | null) {
     const ref = chatRef ?? currentChatRef();
     const char = ref ? characterList().find((entry) => entry?.chaId === ref.chaId) : selectedCharacter();
-    const lorechat = ref ? findChat(ref) : char.chats[char.chatPage];
+    const lorechat = ref ? findChat(ref) : selectedChat();
     return await activateLore(
         {
             character: char,
@@ -205,8 +204,8 @@ export function convertExternalLorebook(entries: { [key: string]: CCLorebook }) 
 export async function exportLoreBook(mode: "global" | "local" | "sglobal") {
     try {
         const char = selectedCharacter();
-        const page = mode === "sglobal" ? -1 : char.chatPage;
-        const lore = mode === "global" ? char.globalLore : char.chats[page].localLore;
+        const chat = mode === "sglobal" ? undefined : selectedChat();
+        const lore = mode === "global" ? char.globalLore : chat.localLore;
         const stringl = Buffer.from(
             JSON.stringify({
                 type: "risu",

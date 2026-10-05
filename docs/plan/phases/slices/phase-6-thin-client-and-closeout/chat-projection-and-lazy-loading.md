@@ -1,6 +1,6 @@
 # Slice: Chat Projection And Lazy Loading
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: 9a implemented (2026-10-05; records and readers, eager boot); 9b (summaries at boot, pins, LRU) planned.
 
 Phase: [Phase 6](../../phase-6-thin-client-and-closeout.md), "Projections" (the selected chat's
 loaded pages), "Lazy loading" (chat summaries per character, the full message list only for the
@@ -173,3 +173,178 @@ Plugin getters that used to be instantaneous now await a server read the first t
 that calls `getChar` in a tight loop is slower (documented). The `localStorage` chat preference
 keeps naming chats by id; an id another tab deleted falls back to the first chat as today. The
 facade's transitional chat view exists only inside this slice.
+
+## Implementation notes, 9a (2026-10-05)
+
+Split per `implementation-plan.md` "Slice 9a": the chats move out of the character records and every
+reader moves; boot stays eager (`readKinds(kinds, { chats: true })`).
+
+- **The chat module's store.**
+  - `chatStore.svelte.ts` holds, per character, `{ ids, chats }` in `$state`: the ids in order are
+    the membership, `chats` the loaded chats by id (every member is loaded in 9a, every loaded chat
+    is a member).
+  - The selected chat id per character is a reactive map (`chosen`). The index (`chatPage`) is
+    derived and is no longer stored; `syncChatPage` is gone. A membership change that removes the
+    chosen chat falls back to the first chat. A reorder keeps it. A read never writes it.
+  - Every membership rule (the last-chat guard, the reorder permutation, reconciliation,
+    normalization, the work indexes) reads the ids. A load never adds a chat to a list: a chat that
+    is not a member is not fetched by `ensureChatLoaded`, and `loadChat` reads its character's whole
+    list instead (`applyRemoteCollection`).
+- **Readers.** `chatList(chaId)` (`ChatListEntry`: `id`, `name`, `folderId`, `bindedPersona`,
+  `fmIndex`; no revision), `chatCount`, `selectedChatId`, `selectedChatIndex`, `selectedChat()`,
+  `findChat`, and `currentChatRef()` (through `selection.characterId`).
+- **Loading.**
+  - `ensureChatLoaded(ref)` returns a listed chat at once in 9a.
+  - `loadChat(ref)` adopts a read under `finishIdleChatRefresh`'s safeguards (`adoptChatRead`).
+  - `loadChats(chaId)` resolves at once with the current local list (it does not refresh).
+  - `pinChats(chaId)` counts consumers; eviction (9b) will read it.
+- **Detached reads.** `readChatsDetached(chaIds)` (`chatEdits.ts`):
+  - It flushes first, and refuses when the flush fails or a discard names `characters/<id>`,
+    `chats/<id>`, or `chats/<id>/…` of the requested characters.
+  - It then reads `chatCollections`, chunked by 500, and rebuilds each order with the assembly rule
+    (`orderChats`). An empty request reads nothing.
+- **Records** (`records.svelte.ts`).
+  - The raw character objects hold no `chats`/`chatPage`. They are stripped at
+    `initializeRecords`, `storedCharacter` (also the same-owner shortcut, which never has them), and
+    `applyRawCharacter`.
+  - A character wrapper answers both from the view the chat module registers
+    (`setCharacterChatView`). The view is not an own key, so snapshots, spreads, JSON, and the save
+    projection are chat-free (the projection keeps its exclusion as a defense).
+  - Setting, defining, or deleting either field on a wrapper throws.
+  - `reloadKeys` stays a raw local field.
+- **Characters** (`characterStore.svelte.ts`).
+  - `ClientCharacter`/`ClientGroup`/`AnyClientCharacter` (the shared shape `Omit` `chats` and
+    `chatPage`) are the readers' types. `shared/database.ts` is unchanged (R12).
+  - `prepareNewCharacter` keeps the chats apart (`PreparedCharacter.chats`). `addPreparedCharacter`
+    and `replaceCharacterAt` hand them to `installCharacterChats` after every refusing check and
+    before inserting the record, and on a throw drop them with `forgetCharacterChats`.
+  - `replaceCharacterFields` filters the input through `INPUT_EXCLUDED` (`chats`, `chatPage`,
+    `reloadKeys`).
+- **Boot.** `assembleDatabase` assembles chat-free characters and calls `assembleChats`, which
+  replaces the module's store and clears its pins.
+- **Server.**
+  - `ChatSummary` (`shared/chats.ts`): `characterId`, `id`, `revision`, `name` (default `""`),
+    `folderId?`, `bindedPersona?`, `fmIndex` (default -1).
+  - `readSummaries`/`readCollectionSummaries` pick those fields from the stored metadata, read no
+    message rows, and put no memory, bookmarks, or `toolCalls` in the response.
+  - `readKinds(..., { chatSummaries })` and `GET ?chatSummaries=1`: a 400 together with `chats=1`.
+  - `readRefs(..., { chatSummaryCollections })` and the POST body field: validated like
+    `chatCollections`, counted in the cap, and in the result only when asked.
+  - Nothing on the client calls them yet (9b's boot).
+- **Plugins** (`v3.svelte.ts`).
+  - `getChar`/`getCharacter`, `getCharacterFromIndex`, and `getDatabase` with `characters` capture
+    their targets by id, pin, await `loadChats`, then build detached legacy copies from the store
+    (`withChatsCopy`).
+  - `getChatFromIndex`, `setChatToIndex`, `parseRisuChat`, and `sendChat` capture the chat by id,
+    refuse a gone hook target at once (`PluginTargetGoneError`), and await `ensureChatLoaded`.
+  - The setters capture, pin, load, then apply synchronously inside the existing batch and refusal
+    machinery (`withChatsLoaded`), and return Promises.
+  - The hook's chat for `getCurrentLorebookEntries`, `contextTarget`, and the index reads come from
+    `chatList`.
+- **Other readers.**
+  - The chat screen, its rows, the chat lists (`SideChatList`, `ChatList`, by id, `data-risu-chat-idx`
+    into `chatList`), bookmarks, the HypaV3 modal, the alert's generation info and HypaV2 editor,
+    DevTool, CharConfig, the lorebook settings, the module chat menu, `CustomSidebar`, and
+    `Suggestion` (its request is now tracked by chat id) read `selectedChat()`/`chatList()`.
+  - `changeChatTo` keeps its id-or-index overload. `exportChat` takes a chat id. `exportAllChats` and
+    `exportAsDataset` read detached.
+  - The branch view pins the character's chats before `loadChats` and renders `getChatBranches(chaId)`
+    by chat id; the pin is released on close.
+  - `addGroupChar` writes the captured group's selected chat.
+  - The MCP host's `currentMessages` loads the character's selected chat. The shared RisuAccess host
+    contract reads chat-free characters (`RisuAccessCharacter`).
+  - `jobChannel` (the reload notice, the `selectedChat` callback, `chatOutput` with `withChatsCopy`
+    for the speaker), `chatVar`, `checkPersonaBinded`, `getModules`, `localLoreDraft`, the module
+    effect in `stores.svelte.ts`, the fold effects, and the request's chat ref read the module.
+  - The shared CBS evaluator gets the legacy shape through `withCompatChats` (`risuChatParser`,
+    `risuChatParserScoped`, `findCharacterById`). Chat-independent parameters are widened to the
+    client type.
+- **Synchronous readers that need a loaded chat.** `capturePluginContext`, `transformClient`'s
+  context, the MCP tool records (`encodeToolCall`/`decodeToolCall`), the commands, the CBS host, and
+  `checkPersonaBinded` read a loaded chat synchronously. In 9a boot loads every chat. 9b must pin and
+  load the selected or referenced chat before each of them runs.
+
+### After the challenge
+
+Astra's challenge (2026-10-05) raised ten points; all were fixed:
+
+1. The held dictionaries key ids through `slot()` (a `#` prefix). An id named like an
+   `Object.prototype` member is an own key. The `$state` objects stay deeply reactive.
+2. Outside a hook, `parseRisuChat` and `sendChat` pass the captured chat (`chatRef`, the send's
+   `target`, the transform's `chatRef`), so a selection change during the load does not redirect them.
+3. A local removal (`removeCharacter`, `removeCharacters`) and a replacement with another id
+   (`replaceCharacterAt`) drop the old character's held chats at once (`forgetCharacterChats`). Chat
+   writes (`requireChat`) also need the chat's owner in the list.
+4. `getChatFromIndex`, `editChat`, `exportChat`, and the chat list's copy find their chat again after
+   the load.
+5. `setChar` resolves the hook's reported `chatPage` before the load. The database setters capture the
+   existing characters they reconcile, and skip, with a warning, an entry whose character was deleted
+   during the load (it is never recreated).
+6. `getDatabase` loads first, then reads every requested key in one synchronous pass.
+7. Loads are fenced on the owner's lifetime (`lifetimeOf`: renewed on install and forget, and by every
+   boot assembly).
+8. The chat list's options menu is one handler that captures the chat before its dialogs. It copies
+   into the captured owner (`createChatCopyName` takes the owner) and selects the copy only when that
+   character is still selected.
+9. Pins count per lifetime: a release from before a reset never takes a later pin.
+10. The branch view loads untracked, so its effect follows the alert only.
+
+### Deviations
+
+- **The facade view stays until `aggregate-removal`.** R14 moved the CBS host to slice 10, so the
+  shared registry's `contextChat` and the evaluator's group path still read
+  `DBState.db.characters[i].chats`. The spec's "transitional within" 9a no longer holds.
+- **Plugin getters build from the store, not `readChatsDetached`.** Single-character getters and
+  `getDatabase` keep today's local reads with no global save dependency (Astra's plan review,
+  point 5). Whether `getDatabase` reads detached under eviction is 9b's decision; P11's detached
+  `readKinds` is not used.
+- **`reloadKeys` stays on the client type.** It is a render key the UI reads, so the client view
+  type keeps it and is documented as not the persisted record type.
+- **`Suggestion`'s stale-request cancel** compares chat ids. The old index check skipped the first
+  chat (`> 0`).
+- **`exportLoreBook("sglobal")`** keeps throwing as before (it reads no chat).
+
+### Measurements
+
+These are production builds in headless Chrome, against the slice 8 build (`1ab264df`), two runs
+each.
+
+`util/playwright/measureChats.mjs` (new): 50 characters, one with 30 chats, one of which has 2,000
+messages; a 200-chunk server stream.
+
+| Workload                                   | Baseline (`1ab264df`) | This slice     |
+| ------------------------------------------ | --------------------- | -------------- |
+| Boot until the sidebar shows (median of 3) | 525 / 524 ms          | 489 / 512 ms   |
+| JS heap after a collection                 | 13.1 / 13.1 MB        | 13.1 / 13.1 MB |
+| Switch to the 2,000-message chat           | 39.7 / 37.7 ms        | 37.1 / 37.2 ms |
+| Switch to a 20-message chat                | 31.8 / 30.8 ms        | 30.8 / 31.4 ms |
+| Select the 30-chat character               | 33.3 / 32.9 ms        | 31.7 / 32.5 ms |
+| Frame interval while streaming (p95)       | 16.8 / 16.7 ms        | 16.8 / 16.8 ms |
+| Long tasks while streaming                 | 0 / 0                 | 0 / 0          |
+
+`util/playwright/measureCharacters.mjs`, the slice 8 workloads:
+
+| Workload                         | Baseline (`1ab264df`) | This slice       |
+| -------------------------------- | --------------------- | ---------------- |
+| Select the big character         | 34.5 / 36.4 ms        | 35.7 / 33.8 ms   |
+| Select a small character         | 7.0 / 7.3 ms          | 7.2 / 7.7 ms     |
+| A keystroke into the description | 9.9 / 9.9 ms          | 9.9 / 9.7 ms     |
+| Lorebook drag, 300 entries       | 106.7 / 108.4 ms      | 117.9 / 108.7 ms |
+
+Every check passed in all eight runs.
+
+### Review
+
+The review found no problem. It added three test files:
+
+- `server/src/tests/chatSummaries.test.ts`: the summary reads and their route validation.
+- `src/ts/storage/tests/chatProjection.test.ts`: the chat-free records, list reactivity,
+  selection, loading and its fences, pins, cleanup, prototype-named ids, the remote collection
+  paths, `readChatsDetached`, and `exportAsDataset`.
+- `src/ts/plugins/apiV3/hostApiChats.test.ts`: the plugin getters and setters over the chat
+  module.
+
+The reviewer drove these checks in the browser: switching chats, bookmarks, the branch view and
+its pin, the HypaV3 modal, dataset export, the MCP chat history tool, a send while another chat of
+the same character is selected, and two tabs converging on chat renames. All passed with no page
+error. A plugin calling `getChar` and `setChar` is covered by the tests, not by the browser.

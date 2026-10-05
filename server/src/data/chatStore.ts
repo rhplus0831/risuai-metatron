@@ -6,6 +6,7 @@ import type {
     ChatOrderRecord,
     ChatOrderResult,
     ChatRecord,
+    ChatSummary,
     CheckpointOutcome,
 } from "../../../shared/chats.ts";
 import { CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
@@ -491,6 +492,25 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         const data = JSON.parse(row.meta) as Chat;
         data.message = messages as Chat["message"];
         return { characterId, id: row.id, revision: tokens.token(row.seq, row.revision), data };
+    }
+
+    /** A chat's summary from its row: the listed fields picked from its metadata (no message rows read). */
+    function chatSummary(characterId: string, row: { seq: number; id: string; revision: number; meta: string }) {
+        const meta = JSON.parse(row.meta) as Record<string, unknown>;
+        const summary: ChatSummary = {
+            characterId,
+            id: row.id,
+            revision: tokens.token(row.seq, row.revision),
+            name: typeof meta.name === "string" ? meta.name : "",
+            fmIndex: typeof meta.fmIndex === "number" ? meta.fmIndex : -1,
+        };
+        if (typeof meta.folderId === "string") {
+            summary.folderId = meta.folderId;
+        }
+        if (typeof meta.bindedPersona === "string") {
+            summary.bindedPersona = meta.bindedPersona;
+        }
+        return summary;
     }
 
     function readOrder(characterId: string): { seq: number; revision: number; ids: string[] } | null {
@@ -1021,6 +1041,42 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 ids: JSON.parse(row.ids) as string[],
             }));
             return { chats, chatOrders };
+        },
+
+        /** Every chat's summary (no message rows read) and every chat order, in one read. */
+        readSummaries(): { chatSummaries: ChatSummary[]; chatOrders: ChatOrderRecord[] } {
+            const chatSummaries = (
+                selectAllChats.all() as {
+                    seq: number;
+                    characterId: string;
+                    id: string;
+                    revision: number;
+                    meta: string;
+                }[]
+            ).map((row) => chatSummary(row.characterId, row));
+            const chatOrders = (
+                selectAllOrders.all() as { seq: number; characterId: string; revision: number; ids: string }[]
+            ).map((row) => ({
+                characterId: row.characterId,
+                revision: tokens.token(row.seq, row.revision),
+                ids: JSON.parse(row.ids) as string[],
+            }));
+            return { chatSummaries, chatOrders };
+        },
+
+        /** A character's order and its chats' summaries (no message rows read), or null when it has no order. */
+        readCollectionSummaries(characterId: string): { order: ChatOrderRecord; chats: ChatSummary[] } | null {
+            const order = readOrder(characterId);
+            if (!order) {
+                return null;
+            }
+            const chats = (
+                selectCharacterChats.all(characterId) as { seq: number; id: string; revision: number; meta: string }[]
+            ).map((row) => chatSummary(characterId, row));
+            return {
+                order: { characterId, revision: tokens.token(order.seq, order.revision), ids: order.ids },
+                chats,
+            };
         },
 
         /** One chat, or null when it does not exist. */

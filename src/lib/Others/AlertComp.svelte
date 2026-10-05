@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { findChat, loadChats, pinChats, selectedChat } from "src/ts/storage/chatStore.svelte";
+    import { untrack } from "svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import { alertGenerationInfoStore } from "../../ts/alert";
@@ -24,12 +26,13 @@
     import ModuleChatMenu from "../Setting/Pages/Module/ModuleChatMenu.svelte";
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
     import { getChatBranches } from "src/ts/gui/branches";
-    import { type Chat, getCurrentChat } from "src/ts/storage/database.svelte";
+    import { type Chat } from "src/ts/storage/database.svelte";
     import { translateStackTrace } from "../../ts/sourcemap";
     import { getDetailedOSLabel, getFallbackOSLabel, getRisuEnvironmentLabel } from "src/ts/platform";
     import versionData from "../../../version.json";
 
     const currentCharacter = $derived(selectedCharacter());
+    const currentChat = $derived(selectedChat());
     let showDetails = $state(false);
     let translatedStackTrace = $state("");
     let stackTraceTranslationFailed = $state(false);
@@ -155,6 +158,44 @@
         }
     });
 
+    /**
+     * The character whose chats the branch view shows: its chats are pinned while the view is open
+     * (pinned before they load) and the view renders once they are loaded.
+     */
+    let branchCharacter: string | null = $state(null);
+    $effect(() => {
+        if ($alertStore.type !== "branches") {
+            return;
+        }
+        const chaId = untrack(() => selectedCharacter()?.chaId);
+        if (chaId === undefined) {
+            return;
+        }
+        const release = pinChats(chaId);
+        let open = true;
+        // Untracked: the effect follows the alert only (the branches below follow the chats).
+        untrack(() => loadChats(chaId))
+            .then(() => {
+                if (open) {
+                    branchCharacter = chaId;
+                }
+            })
+            .catch((error) => console.error(error));
+        return () => {
+            open = false;
+            release();
+            branchCharacter = null;
+        };
+    });
+    const branches = $derived(branchCharacter === null ? [] : getChatBranches(branchCharacter));
+
+    /** The text of a branch node: the message at its depth in the chat it was first seen in. */
+    function branchText(chatId: string, y: number): string {
+        return branchCharacter === null
+            ? ""
+            : (findChat({ chaId: branchCharacter, chatId })?.message[y - 1]?.data ?? "");
+    }
+
     async function loadTranslatedTrace() {
         if (isTranslating || translatedStackTrace || stackTraceTranslationFailed || !$alertStore.stackTrace) return;
         isTranslating = true;
@@ -183,7 +224,7 @@
 
     /** Edits the text of one HypaV2 chunk of the selected chat (the whole memory data is saved through the chat module). */
     function setHypaV2ChunkText(list: "chunks" | "mainChunks", index: number, text: string) {
-        const data = getCurrentChat()?.hypaV2Data;
+        const data = selectedChat()?.hypaV2Data;
         if (!data?.[list]?.[index]) {
             return;
         }
@@ -495,8 +536,7 @@
                         <span class="text-amber-500 justify-self-end">{$alertGenerationInfoStore.genInfo.model}</span>
                         <span class="text-green-500">ID</span>
                         <span class="text-green-500 justify-self-end"
-                            >{currentCharacter.chats[currentCharacter.chatPage].message[$alertGenerationInfoStore.idx]
-                                .chatId ?? "None"}</span
+                            >{currentChat.message[$alertGenerationInfoStore.idx].chatId ?? "None"}</span
                         >
                         <span class="text-red-500">GenID</span>
                         <span class="text-red-500 justify-self-end"
@@ -504,22 +544,16 @@
                         >
                         <span class="text-cyan-500">Saying</span>
                         <span class="text-cyan-500 justify-self-end"
-                            >{currentCharacter.chats[currentCharacter.chatPage].message[$alertGenerationInfoStore.idx]
-                                .saying}</span
+                            >{currentChat.message[$alertGenerationInfoStore.idx].saying}</span
                         >
                         <span class="text-purple-500">Size</span>
                         <span class="text-purple-500 justify-self-end"
-                            >{JSON.stringify(
-                                currentCharacter.chats[currentCharacter.chatPage].message[
-                                    $alertGenerationInfoStore.idx
-                                ],
-                            ).length} Bytes</span
+                            >{JSON.stringify(currentChat.message[$alertGenerationInfoStore.idx]).length} Bytes</span
                         >
                         <span class="text-yellow-500">Time</span>
                         <span class="text-yellow-500 justify-self-end"
                             >{new Date(
-                                currentCharacter.chats[currentCharacter.chatPage].message[$alertGenerationInfoStore.idx]
-                                    .time ?? 0,
+                                currentChat.message[$alertGenerationInfoStore.idx].time ?? 0,
                             ).toLocaleString()}</span
                         >
                         {#if $alertGenerationInfoStore.genInfo.stageTiming}
@@ -547,7 +581,7 @@
                         {/if}
 
                         <span class="text-green-500">Tokens</span>
-                        {#await tokenize(currentCharacter.chats[currentCharacter.chatPage].message[$alertGenerationInfoStore.idx].data)}
+                        {#await tokenize(currentChat.message[$alertGenerationInfoStore.idx].data)}
                             <span class="text-green-500 justify-self-end">Loading</span>
                         {:then tokens}
                             <span class="text-green-500 justify-self-end">{tokens}</span>
@@ -576,27 +610,25 @@
                     {/await}
                 {/if}
                 {#if generationInfoMenuIndex === 3}
-                    {#if Object.keys(currentCharacter.chats[currentCharacter.chatPage].message[$alertGenerationInfoStore.idx].promptInfo || {}).length === 0}
+                    {#if Object.keys(currentChat.message[$alertGenerationInfoStore.idx].promptInfo || {}).length === 0}
                         <div class="text-gray-300 text-lg mt-2">{language.promptInfoEmptyMessage}</div>
                     {:else}
                         <div class="grid grid-cols-2 gap-y-2 gap-x-4 mt-4">
                             <span class="text-blue-500">Preset Name</span>
                             <span class="text-blue-500 justify-self-end"
-                                >{currentCharacter.chats[currentCharacter.chatPage].message[
-                                    $alertGenerationInfoStore.idx
-                                ].promptInfo.promptName}</span
+                                >{currentChat.message[$alertGenerationInfoStore.idx].promptInfo.promptName}</span
                             >
                             <span class="text-purple-500">Toggles</span>
                             <div
                                 class="col-span-2 max-h-32 overflow-y-auto border border-stone-500 rounded-sm p-2 bg-gray-900"
                             >
-                                {#if currentCharacter.chats[currentCharacter.chatPage].message[$alertGenerationInfoStore.idx].promptInfo.promptToggles.length === 0}
+                                {#if currentChat.message[$alertGenerationInfoStore.idx].promptInfo.promptToggles.length === 0}
                                     <div class="text-gray-500 italic text-center py-4">
                                         {language.promptInfoEmptyToggle}
                                     </div>
                                 {:else}
                                     <div class="grid grid-cols-2 gap-y-2 gap-x-4">
-                                        {#each currentCharacter.chats[currentCharacter.chatPage].message[$alertGenerationInfoStore.idx].promptInfo.promptToggles as toggle}
+                                        {#each currentChat.message[$alertGenerationInfoStore.idx].promptInfo.promptToggles as toggle}
                                             <span class="text-gray-200 truncate">{toggle.key}</span>
                                             <span class="text-gray-200 justify-self-end truncate">{toggle.value}</span>
                                         {/each}
@@ -607,12 +639,12 @@
                             <div
                                 class="col-span-2 max-h-80 overflow-y-auto border border-stone-500 rounded-sm p-4 bg-gray-900"
                             >
-                                {#if !currentCharacter.chats[currentCharacter.chatPage].message[$alertGenerationInfoStore.idx].promptInfo.promptText}
+                                {#if !currentChat.message[$alertGenerationInfoStore.idx].promptInfo.promptText}
                                     <div class="text-gray-500 italic text-center py-4">
                                         {language.promptInfoEmptyText}
                                     </div>
                                 {:else}
-                                    {#each currentCharacter.chats[currentCharacter.chatPage].message[$alertGenerationInfoStore.idx].promptInfo.promptText as block}
+                                    {#each currentChat.message[$alertGenerationInfoStore.idx].promptInfo.promptText as block}
                                         <div class="mb-2">
                                             <div class="font-bold text-gray-600">{block.role}</div>
                                             <pre
@@ -656,7 +688,7 @@
                 </div>
                 {#if generationInfoMenuIndex === 0}
                     <div class="flex flex-col gap-2 w-full">
-                        {#each currentCharacter.chats[currentCharacter.chatPage].hypaV2Data.chunks as chunk, i}
+                        {#each currentChat.hypaV2Data.chunks as chunk, i}
                             <TextAreaInput
                                 bind:value={() => chunk.text, (text) => setHypaV2ChunkText("chunks", i, text)}
                             />
@@ -665,7 +697,7 @@
                         <!-- Adding non-bound chunk is not okay, change the user flow to edit existing ones. -->
                     </div>
                 {:else}
-                    {#each currentCharacter.chats[currentCharacter.chatPage].hypaV2Data.mainChunks as chunk, i}
+                    {#each currentChat.hypaV2Data.mainChunks as chunk, i}
                         <!-- Summarized should be mainChunks, afaik. Be aware of that chunks are created with mainChunks, however this editing would not change related chunks. -->
                         <div class="flex flex-col p-2 rounded-md border-darkborderc border">
                             {#if i === 0}
@@ -967,7 +999,7 @@
             </button>
         </div>
 
-        {#each getChatBranches() as obj}
+        {#each branches as obj}
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
             <div
@@ -976,21 +1008,19 @@
                 style="top: {obj.y * 80 + 24}px; left: {obj.x * 80 + 24}px"
                 onmouseenter={() => {
                     if (branchHover === null) {
-                        const char = selectedCharacter();
                         branchHover = {
                             x: obj.x,
                             y: obj.y,
-                            content: char.chats[obj.chatId].message[obj.y - 1].data,
+                            content: branchText(obj.chatId, obj.y),
                         };
                     }
                 }}
                 onclick={() => {
                     if (branchHover === null) {
-                        const char = selectedCharacter();
                         branchHover = {
                             x: obj.x,
                             y: obj.y,
-                            content: char.chats[obj.chatId].message[obj.y - 1].data,
+                            content: branchText(obj.chatId, obj.y),
                         };
                     }
                 }}

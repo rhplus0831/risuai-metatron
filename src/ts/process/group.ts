@@ -1,5 +1,5 @@
 import { characterList, selectedCharacter } from "../storage/characterStore.svelte";
-import { appendMessage } from "../storage/chatStore.svelte";
+import { appendMessage, selectedChatId } from "../storage/chatStore.svelte";
 import shuffle from "lodash/shuffle";
 import { findCharacterbyId } from "../util";
 import { alertConfirm, alertError, alertSelectChar } from "../alert";
@@ -26,10 +26,11 @@ export async function addGroupChar() {
                     return;
                 }
                 if (loadFirstMessage) {
-                    const chat = group.chats[group.chatPage];
-                    if (chat?.id) {
+                    // The captured group's selected chat (not whatever character is selected now).
+                    const chatId = selectedChatId(group.chaId);
+                    if (chatId !== null) {
                         appendMessage(
-                            { chaId: group.chaId, chatId: chat.id },
+                            { chaId: group.chaId, chatId },
                             { role: "char", data: findCharacterbyId(res).firstMessage, saying: res },
                         );
                     }

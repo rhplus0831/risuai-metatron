@@ -1,22 +1,39 @@
-import { getDatabase } from "./database.svelte";
 import { downloadFile } from "../globalApi.svelte";
-import { alertNormal } from "../alert";
+import { alertError, alertNormal } from "../alert";
 import { language } from "src/lang";
+import { characterList } from "./characterStore.svelte";
+import { readChatsDetached } from "./chatEdits";
 
+/**
+ * Exports every chat of every character (not groups) as a dataset: the characters as they are when
+ * the export starts, their chats as saved, read from the server (`readChatsDetached`, which saves
+ * what is queued first and refuses when a conflict discarded a local change).
+ */
 export async function exportAsDataset() {
-    const db = getDatabase({ snapshot: true });
+    const characters = characterList()
+        .filter((char) => char && char.type !== "group")
+        .map((char) => ({
+            chaId: char.chaId,
+            name: char.name,
+            description: char.type === "group" ? undefined : char.desc,
+            lorebook: JSON.parse(JSON.stringify(char.globalLore ?? [])),
+        }));
+    let chats: Awaited<ReturnType<typeof readChatsDetached>>;
+    try {
+        chats = await readChatsDetached(characters.map((char) => char.chaId));
+    } catch (error) {
+        alertError(error);
+        return;
+    }
 
     let dataset = [];
-    for (const char of db.characters) {
-        if (char.type === "group") {
-            continue;
-        }
-        for (const chat of char.chats) {
+    for (const char of characters) {
+        for (const chat of chats.get(char.chaId) ?? []) {
             dataset.push({
                 name: char.name,
-                description: char.desc,
+                description: char.description,
                 chats: chat.message,
-                lorebook: char.globalLore,
+                lorebook: char.lorebook,
             });
         }
     }

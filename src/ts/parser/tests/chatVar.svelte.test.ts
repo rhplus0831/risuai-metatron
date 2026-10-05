@@ -2,11 +2,10 @@ import fc from "fast-check";
 import { writable } from "svelte/store";
 import { beforeEach, expect, test, vi } from "vitest";
 import { DBState } from "../../stores.svelte";
-import { initializeRecords, takeRecordFields } from "../../storage/records.svelte";
 import { selection } from "../../storage/selection.svelte";
 import { activePreset, settings } from "../../storage/settingsViews.svelte";
 import { getChatVar, getGlobalChatVar, setChatVar } from "../chatVar.svelte";
-import { resetChatVariables } from "./cbs/lib";
+import { holdMockedChats, resetChatVariables } from "./cbs/lib";
 
 //#region module mocks
 
@@ -16,7 +15,6 @@ vi.mock(
         ({
             appVer: "1234.5.67",
             getCurrentCharacter: () => ({}),
-            getCurrentChat: () => DBState.db.characters[0].chats[0],
             getDatabase: () => ({}),
         }) as typeof import("../../storage/database.svelte"),
 );
@@ -56,13 +54,12 @@ vi.mock(import("../../stores.svelte"), () => {
 
 // The settings live in the records (installed as `setDatabaseLite` installs a database), which
 // `chatVar.svelte` reads through the settings views (Phase 6 slice 7): the global variables, and
-// the template's default variables in the selected preset. The character stays on `DBState.db`.
-initializeRecords(
-    takeRecordFields({
-        globalChatVariables: {},
-        botPresets: [{ id: "preset", name: "Preset", templateDefaultVariables: "" }],
-    }),
-);
+// the template's default variables in the selected preset. The character stays on `DBState.db`;
+// since Phase 6 slice 9a a copy is in the records too, and its chat in the chat module.
+holdMockedChats({
+    globalChatVariables: {},
+    botPresets: [{ id: "preset", name: "Preset", templateDefaultVariables: "" }],
+});
 
 // The readers resolve the selected character by `selection.characterId` (Phase 6 slice 8), over
 // the character list (`characterList()`, here the mocked `DBState.db.characters`): the fixture's

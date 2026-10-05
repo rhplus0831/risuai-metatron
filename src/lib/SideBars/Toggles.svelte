@@ -1,11 +1,12 @@
 <script lang="ts">
-    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
+    import { selectedCharacter, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { getModuleToggles } from "src/ts/process/modules";
     import { parseToggleSyntax, type sidebarToggle, type sidebarToggleGroup } from "src/ts/util";
     import { language } from "src/lang";
     import type { PromptItem } from "src/ts/process/prompt";
-    import { getCurrentChat, type character, type groupChat } from "src/ts/storage/database.svelte";
+    import { type character, type groupChat } from "src/ts/storage/database.svelte";
+    import { selectedChat } from "src/ts/storage/chatStore.svelte";
     import Accordion from "../UI/Accordion.svelte";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import CheckInput from "../UI/GUI/CheckInput.svelte";
@@ -24,7 +25,7 @@
 
     const currentCharacter = $derived(selectedCharacter());
     interface Props {
-        chara?: character | groupChat;
+        chara?: AnyClientCharacter;
         noContainer?: boolean;
     }
 
@@ -260,10 +261,10 @@
     {#if chara}
         <div class="flex mt-2 items-center w-full">
             <CheckInput
-                check={getCurrentChat()?.useLocallySetGlobalVariables}
+                check={selectedChat()?.useLocallySetGlobalVariables}
                 name={language.localToggles}
                 onChange={() => {
-                    const chat = getCurrentChat();
+                    const chat = selectedChat();
                     if (chat) {
                         setCurrentChatMeta({ useLocallySetGlobalVariables: !chat.useLocallySetGlobalVariables });
                     }

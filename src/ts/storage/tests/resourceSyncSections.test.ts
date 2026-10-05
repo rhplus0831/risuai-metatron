@@ -472,7 +472,8 @@ describe("assembleDatabase", () => {
         expect(db.modules).toEqual([]);
         expect(db.plugins).toEqual([]);
         expect(db.pluginCustomStorage).toEqual({});
-        expect(db.characters).toEqual([{ chaId: "a", name: "Alice", type: "character", chats: [], chatPage: 0 }]);
+        // Phase 6 slice 9a: the assembly holds the chats in the chat module and writes none onto the characters.
+        expect(db.characters).toEqual([{ chaId: "a", name: "Alice", type: "character" }]);
         expect(db).not.toHaveProperty("presets");
         expect(db.openAIKey).toBe("");
         expect(secrets.isSecretSet(presetPath("p"))).toBe(true);

@@ -11,13 +11,8 @@ import {
     alertWait,
     waitAlert,
 } from "../alert";
-import {
-    getCurrentChat,
-    setDatabase,
-    type customscript,
-    type loreBook,
-    type triggerscript,
-} from "../storage/database.svelte";
+import { setDatabase, type customscript, type loreBook, type triggerscript } from "../storage/database.svelte";
+import { findChat, selectedChat } from "../storage/chatStore.svelte";
 import {
     AppendableBuffer,
     downloadFile,
@@ -460,7 +455,7 @@ export type ModuleChatRef = { chaId: string; chatId: string } | null | undefined
  */
 export function getModules(chatRef?: ModuleChatRef) {
     const character = chatRef ? characterList().find((entry) => entry?.chaId === chatRef.chaId) : selectedCharacter();
-    const currentChat = chatRef ? character?.chats?.find((chat) => chat.id === chatRef.chatId) : getCurrentChat();
+    const currentChat = chatRef ? findChat(chatRef) : selectedChat();
     const persona = checkPersonaBinded(chatRef);
     let ids = settings.enabledModules ?? [];
     if (currentChat) {

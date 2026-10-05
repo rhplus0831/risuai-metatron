@@ -1,14 +1,10 @@
 <script lang="ts">
+    import { selectedChat } from "src/ts/storage/chatStore.svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "../../lang";
     import { tokenizeAccurate } from "../../ts/tokenizer";
-    import {
-        getCurrentChat,
-        saveImage as saveAsset,
-        type character,
-        type groupChat,
-    } from "../../ts/storage/database.svelte";
+    import { saveImage as saveAsset, type character, type groupChat } from "../../ts/storage/database.svelte";
     import { setCurrentChatMeta } from "../../ts/storage/chatEdits";
     import { untrack } from "svelte";
     import { CharConfigSubMenu, hypaV3ModalOpen } from "../../ts/stores.svelte";
@@ -76,6 +72,7 @@
     import { convertCharacterToModule } from "src/ts/interchangeability";
 
     const currentCharacter = $derived(selectedCharacter());
+    const currentChat = $derived(selectedChat());
     let iconRemoveMode = $state(false);
     let viewSubMenu = $state(0);
     let emos: [string, string][] = $state([]);
@@ -121,7 +118,7 @@
         const chara = currentCharacter;
         const desc = chara.type !== "group" ? (chara as character).desc : null;
         const firstMsg = chara.type !== "group" ? chara.firstMessage : null;
-        const localNote = chara.chats[chara.chatPage].note;
+        const localNote = currentChat?.note;
 
         untrack(() => {
             loadTokenize(desc, firstMsg, localNote);
@@ -412,9 +409,7 @@
     <TextAreaInput
         margin="both"
         autocomplete="off"
-        bind:value={
-            () => currentCharacter.chats[currentCharacter.chatPage].note, (note) => setCurrentChatMeta({ note })
-        }
+        bind:value={() => currentChat.note, (note) => setCurrentChatMeta({ note })}
         highlight
         placeholder={getAuthorNoteDefaultText()}
     />
@@ -1508,7 +1503,7 @@
         {#if settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2}
             <Button
                 onclick={() => {
-                    if (!getCurrentChat()?.hypaV2Data) {
+                    if (!selectedChat()?.hypaV2Data) {
                         setCurrentChatMeta({ hypaV2Data: { lastMainChunkID: 0, mainChunks: [], chunks: [] } });
                     }
                     showHypaV2Alert();
@@ -1526,14 +1521,13 @@
             >
                 {language.hypaMemoryV3Modal}
             </Button>
-        {:else if (currentCharacter.chats[currentCharacter.chatPage].supaMemoryData && currentCharacter.chats[currentCharacter.chatPage].supaMemoryData.length > 4) || currentCharacter.supaMemory}
+        {:else if (currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || currentCharacter.supaMemory}
             <span class="text-textcolor mt-4">{language.SuperMemory}</span>
             <TextAreaInput
                 margin="both"
                 autocomplete="off"
                 bind:value={
-                    () => currentCharacter.chats[currentCharacter.chatPage].supaMemoryData,
-                    (supaMemoryData) => setCurrentChatMeta({ supaMemoryData })
+                    () => currentChat.supaMemoryData, (supaMemoryData) => setCurrentChatMeta({ supaMemoryData })
                 }
             ></TextAreaInput>
         {/if}
@@ -1557,14 +1551,13 @@
             {language.convertToModule}
         </Button>
     {:else}
-        {#if (currentCharacter.chats[currentCharacter.chatPage].supaMemoryData && currentCharacter.chats[currentCharacter.chatPage].supaMemoryData.length > 4) || currentCharacter.supaMemory}
+        {#if (currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || currentCharacter.supaMemory}
             <span class="text-textcolor mt-4">{language.SuperMemory}</span>
             <TextAreaInput
                 margin="both"
                 autocomplete="off"
                 bind:value={
-                    () => currentCharacter.chats[currentCharacter.chatPage].supaMemoryData,
-                    (supaMemoryData) => setCurrentChatMeta({ supaMemoryData })
+                    () => currentChat.supaMemoryData, (supaMemoryData) => setCurrentChatMeta({ supaMemoryData })
                 }
             ></TextAreaInput>
         {/if}

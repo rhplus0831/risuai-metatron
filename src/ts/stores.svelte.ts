@@ -1,4 +1,5 @@
-import { selectedCharacter } from "./storage/characterStore.svelte";
+import { type AnyClientCharacter, selectedCharacter } from "./storage/characterStore.svelte";
+import { selectedChat } from "./storage/chatStore.svelte";
 import { settings, activePreset } from "./storage/settingsViews.svelte";
 import { writable } from "svelte/store";
 import type { character, Database, groupChat } from "./storage/database.svelte";
@@ -87,7 +88,7 @@ CustomCSSStore.subscribe((css) => {
     }
 });
 
-export function createSimpleCharacter(char: character | groupChat) {
+export function createSimpleCharacter(char: AnyClientCharacter | null | undefined) {
     if (!char || char.type === "group") {
         return null;
     }
@@ -184,7 +185,7 @@ $effect.root(() => {
         $state.snapshot(settings.modules);
         settings.enabledModules;
         settings.enabledModules?.length;
-        selectedCharacter()?.chats?.[selectedCharacter()?.chatPage]?.modules?.length;
+        selectedChat()?.modules?.length;
         selectedCharacter()?.hideChatIcon;
         selectedCharacter()?.backgroundHTML;
         activePreset.moduleIntergration;

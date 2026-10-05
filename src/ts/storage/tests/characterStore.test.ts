@@ -127,8 +127,10 @@ describe("updateCharacter", () => {
         const copy = plain(character("c"));
         expect(copy).toMatchObject({ toString: "x", constructor: 1, valueOf: "v", hasOwnProperty: 2, desc: "d" });
         expect(Object.hasOwn(character("c"), "toString")).toBe(true);
-        // The chats are the same values: the chat module still addresses them.
-        expect(character("c").chats).toBe(chatsBefore);
+        // The chats are the same values: the chat module still addresses them. (Phase 6 slice 9a: the
+        // facade's `chats` is a fresh array on every read, so the chats are compared one by one.)
+        expect(character("c").chats).toEqual(chatsBefore);
+        character("c").chats.forEach((entry: unknown, index: number) => expect(entry).toBe(chatsBefore[index]));
         chat.appendMessage(refK, m("d", "D"));
         await sync.flushResources();
         expect(record("characters", "c")).toMatchObject({ toString: "x", constructor: 1, valueOf: "v", desc: "d" });
@@ -206,7 +208,9 @@ describe("replaceCharacterFields", () => {
         );
         expect(characterStore.replaceCharacterFields(replacement)).toBe(true);
         expect(character("c").name).toBe("Replaced");
-        expect(character("c").chats).toBe(chatsBefore);
+        // Phase 6 slice 9a: `chats` is a fresh array on every read; the chats are the same ones.
+        expect(character("c").chats).toEqual(chatsBefore);
+        character("c").chats.forEach((entry: unknown, index: number) => expect(entry).toBe(chatsBefore[index]));
         expect(character("c").chatPage).toBe(0);
         expect(Object.hasOwn(plain(character("c")), "__proto__")).toBe(true);
         await sync.flushResources();
@@ -480,15 +484,18 @@ describe("the readers' API (selectedCharacter, characterList, characterSnapshot)
     });
 
     it("characterSnapshot is a detached copy with the chats: changing it writes nothing", async () => {
-        const { fake, sync, characterStore, character } = await boot();
+        const { fake, sync, characterStore, character, chat } = await boot();
         const copy = characterStore.characterSnapshot("c")!;
         expect(copy.chaId).toBe("c");
-        expect(copy.chats.map((chat) => chat.id)).toEqual(["k", "j"]);
-        expect(copy.chats[0].message.map((message) => message.data)).toEqual(["A", "B", "C"]);
+        // Phase 6 slice 9a: the snapshot carries no chats; the legacy shape is built with `withChatsCopy`.
+        expect(copy).not.toHaveProperty("chats");
+        const legacy = chat.withChatsCopy(copy);
+        expect(legacy.chats.map((entry) => entry.id)).toEqual(["k", "j"]);
+        expect(legacy.chats[0].message.map((message) => message.data)).toEqual(["A", "B", "C"]);
         expect(copy).not.toBe(character("c"));
         const batches = fake.batchCount();
         copy.name = "changed copy";
-        (copy.chats[0].message as unknown[]).push({ role: "user", data: "copy only" });
+        (legacy.chats[0].message as unknown[]).push({ role: "user", data: "copy only" });
         expect(character("c").name).toBe("C");
         expect(character("c").chats[0].message).toHaveLength(3);
         await sync.flushResources();

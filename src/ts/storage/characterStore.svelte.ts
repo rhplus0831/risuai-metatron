@@ -9,7 +9,13 @@ import { DBState } from "../stores.svelte";
 import { CharacterShapeError, normalizeCharacter } from "../../../shared/characters.ts";
 import { ModuleShapeError, upgradeLorebook } from "../../../shared/modules.ts";
 import type { Chat } from "../../../shared/database.ts";
-import { isCharacterGenerating, normalizeNewCharacter, prepareChatInput } from "./chatStore.svelte";
+import {
+    forgetCharacterChats,
+    installCharacterChats,
+    isCharacterGenerating,
+    normalizeNewCharacter,
+    prepareChatInput,
+} from "./chatStore.svelte";
 import { checkCharOrder } from "./characterOrder";
 import {
     CHARACTER_FIXED_FIELDS,
@@ -37,20 +43,30 @@ export { selectCharacter };
  * detached copy before the mirror changes (a refusal throws `MutationValidationError` and changes
  * nothing) and writes the character record by `chaId`. Since Phase 6 slice 5 the characters are
  * write-through records (`records.svelte.ts`): every write of a character's own fields queues its
- * save, and the list's membership changes only here (add, replace at an index, remove). An existing
- * character's chats are the chat module's (`chatStore.svelte.ts`): only a character new to the
- * mirror brings its chats with it.
+ * save, and the list's membership changes only here (add, replace at an index, remove). The chats
+ * are the chat module's (`chatStore.svelte.ts`; Phase 6 slice 9a): a character new to the list hands
+ * its chats to it (`installCharacterChats`), and the records hold no chats.
  */
 
 type AnyCharacter = character | groupChat;
 
+/**
+ * The client's view of a character (Phase 6 slice 9a): a character record without its chats, which
+ * the chat module holds (`chatList`, `selectedChat`, `findChat`). It keeps the render key
+ * `reloadKeys`, which the UI reads and is never saved; it is not the persisted record type. The shared
+ * `character`/`groupChat` shapes keep `chats`/`chatPage` for the server, cards, and plugin snapshots.
+ */
+export type ClientCharacter = Omit<character, "chats" | "chatPage">;
+export type ClientGroup = Omit<groupChat, "chats" | "chatPage">;
+export type AnyClientCharacter = ClientCharacter | ClientGroup;
+
 /** Fields a character patch may not set (`CHARACTER_FIXED_FIELDS`, shared with the server's RisuAccess host). */
 const FIXED_FIELDS = CHARACTER_FIXED_FIELDS;
-/** Fields the mirror keeps when a character's own fields are replaced (chats are written only through the chat module). */
-const LOCAL_FIELDS = new Set(["chats", "chatPage", "reloadKeys"]);
+/** Fields of an input that never become record fields (the chats go to the chat module; the render key is client-only). */
+const INPUT_EXCLUDED = new Set(["chats", "chatPage", "reloadKeys"]);
 
-function list(): AnyCharacter[] {
-    return DBState.db.characters ?? [];
+function list(): AnyClientCharacter[] {
+    return (DBState.db.characters ?? []) as AnyClientCharacter[];
 }
 
 function indexOf(chaId: string): number {
@@ -95,10 +111,11 @@ export function checkCharacterInput(char: unknown, key = "character"): asserts c
     });
 }
 
-/** A character ready to be installed: checked, detached, normalized, its creation steps done. */
+/** A character ready to be installed: checked, detached, normalized, its creation steps done; its chats apart. */
 export interface PreparedCharacter {
-    readonly copy: AnyCharacter;
+    readonly copy: AnyClientCharacter;
     readonly chaId: string;
+    readonly chats: Chat[];
 }
 
 const preparedCharacters = new WeakSet<PreparedCharacter>();
@@ -164,7 +181,13 @@ export function prepareNewCharacter(char: unknown, key = "character"): PreparedC
         chat.note = ((chat.note ?? "") + "\n" + instructions).trim();
         copy.postHistoryInstructions = "";
     }
-    const prepared: PreparedCharacter = { copy: copy as unknown as AnyCharacter, chaId: copy.chaId as string };
+    delete copy.chats;
+    delete copy.chatPage;
+    const prepared: PreparedCharacter = {
+        copy: copy as unknown as AnyClientCharacter,
+        chaId: copy.chaId as string,
+        chats,
+    };
     preparedCharacters.add(prepared);
     return prepared;
 }
@@ -177,27 +200,28 @@ function requirePrepared(prepared: PreparedCharacter) {
 
 /**
  * The character list (each element a character record's wrapper, in creation order; `[]` before an
- * installation). Read it for display and lookups; change membership only through this module.
+ * installation). Read it for display and lookups; change membership only through this module. Its
+ * chats are the chat module's (`chatList`).
  */
-export function characterList(): AnyCharacter[] {
+export function characterList(): AnyClientCharacter[] {
     return list();
 }
 
-/** A detached copy of the character with `chaId` (with its chats), or `undefined`. */
-export function characterSnapshot(chaId: string): AnyCharacter | undefined {
+/** A detached copy of the character with `chaId`, without chats (add them from the chat module), or `undefined`. */
+export function characterSnapshot(chaId: string): AnyClientCharacter | undefined {
     const record = untrack(() => list().find((entry) => entry?.chaId === chaId));
-    return record === undefined ? undefined : ($state.snapshot(record) as AnyCharacter);
+    return record === undefined ? undefined : ($state.snapshot(record) as AnyClientCharacter);
 }
 
-/** The mirror record of a character, typed read-only: change it through `updateCharacter`. */
-export function findCharacter(chaId: string): DeepReadonly<AnyCharacter> | undefined {
+/** The record of a character, typed read-only: change it through `updateCharacter`. */
+export function findCharacter(chaId: string): DeepReadonly<AnyClientCharacter> | undefined {
     return list().find((entry) => entry?.chaId === chaId);
 }
 
 /**
- * Adds a character (with its chats) to the mirror, prepared as a creation (`prepareNewCharacter`),
- * gives its chats ids, and puts it into the character order. A `chaId` another character has is
- * refused. Returns the id.
+ * Adds a character to the list, prepared as a creation (`prepareNewCharacter`): its chats go to the
+ * chat module, which gives them ids, and it goes into the character order. A `chaId` another
+ * character has is refused. Returns the id.
  */
 export function addCharacter(char: unknown): string {
     return addPreparedCharacter(prepareNewCharacter(char));
@@ -206,11 +230,17 @@ export function addCharacter(char: unknown): string {
 /** `addCharacter` for a character prepared before (a caller's preflight of a whole list). */
 export function addPreparedCharacter(prepared: PreparedCharacter): string {
     requirePrepared(prepared);
-    const { copy, chaId } = prepared;
+    const { copy, chaId, chats } = prepared;
     if (indexOf(chaId) !== -1) {
         throw new MutationValidationError("character", `a character with chaId ${chaId} already exists`);
     }
-    insertCharacterRecord(copy as unknown as Record<string, unknown>);
+    installCharacterChats(chaId, chats, copy);
+    try {
+        insertCharacterRecord(copy as unknown as Record<string, unknown>);
+    } catch (error) {
+        forgetCharacterChats(chaId);
+        throw error;
+    }
     normalizeNewCharacter(chaId);
     checkCharOrder();
     return chaId;
@@ -218,7 +248,7 @@ export function addPreparedCharacter(prepared: PreparedCharacter): string {
 
 /**
  * Sets own fields of a character: the whole patch is checked and detached first, then assigned on
- * the mirror record (`undefined` removes the field). `chats`, `chatPage`, `reloadKeys`, `chaId`,
+ * the record (`undefined` removes the field). `chats`, `chatPage`, `reloadKeys`, `chaId`,
  * and `type` are refused. Returns `false`, changing nothing, when no character has `chaId`.
  */
 export function updateCharacter(chaId: string, patch: Record<string, unknown>): boolean {
@@ -242,7 +272,7 @@ export function updateCharacter(chaId: string, patch: Record<string, unknown>): 
 
 /**
  * Replaces every own field of the existing character with `char.chaId` by `char`'s (last writer
- * wins), keeping the mirror's chats, chat selection, and render key. `char` must name its
+ * wins), keeping its render key (its chats and chat selection are the chat module's). `char` must name its
  * character. Returns `false`, changing nothing, when no character has that id.
  */
 export function replaceCharacterFields(char: unknown): boolean {
@@ -253,7 +283,7 @@ export function replaceCharacterFields(char: unknown): boolean {
     }
     // A whole replacement gets the shared defaults at once, so what is saved is what the server holds.
     const fields = normalizedFields(
-        detach(Object.fromEntries(Object.entries(char).filter(([field]) => !LOCAL_FIELDS.has(field)))),
+        detach(Object.fromEntries(Object.entries(char).filter(([field]) => !INPUT_EXCLUDED.has(field)))),
         "character",
     );
     const index = indexOf(chaId);
@@ -276,7 +306,7 @@ export function replaceCharacterAt(index: number, char: unknown): string {
     if (!Number.isInteger(index) || index < 0 || index > characters.length) {
         throw new MutationValidationError("index", "no character at this index");
     }
-    const { copy, chaId } = prepareNewCharacter(char);
+    const { copy, chaId, chats } = prepareNewCharacter(char);
     const current = characters[index];
     if (current && current.chaId === chaId) {
         throw new MutationValidationError("character", "the character at this index has this chaId already");
@@ -287,7 +317,20 @@ export function replaceCharacterAt(index: number, char: unknown): string {
     if (characters.some((other, i) => i !== index && other?.chaId === chaId)) {
         throw new MutationValidationError("character", `a character with chaId ${chaId} already exists`);
     }
-    replaceCharacterRecordAt(index, copy as unknown as Record<string, unknown>);
+    // Read before the replacement: the old wrapper is detached once its character leaves the list.
+    const replacedId = current?.chaId;
+    installCharacterChats(chaId, chats, copy);
+    try {
+        replaceCharacterRecordAt(index, copy as unknown as Record<string, unknown>);
+    } catch (error) {
+        forgetCharacterChats(chaId);
+        throw error;
+    }
+    if (replacedId !== undefined) {
+        // The character that left the list: its chats are no longer held (the save loop deletes it
+        // with them on the server).
+        forgetCharacterChats(replacedId);
+    }
     normalizeNewCharacter(chaId);
     return chaId;
 }
@@ -307,6 +350,8 @@ export function removeCharacter(chaId: string): boolean {
         throw new MutationValidationError("character", "the character is generating a reply");
     }
     removeCharacterRecords([chaId]);
+    // Its chats are no longer held (the save loop deletes the character with them on the server).
+    forgetCharacterChats(chaId);
     checkCharOrder();
     return true;
 }
@@ -321,12 +366,15 @@ export function removeCharacters(ids: readonly string[]): string[] {
         return [];
     }
     const removed = removeCharacterRecords(removable);
+    for (const chaId of removed) {
+        forgetCharacterChats(chaId);
+    }
     checkCharOrder();
     return removed;
 }
 
 /** The selected character's record (its wrapper), or `undefined` at home. */
-export function selectedCharacter(): AnyCharacter | undefined {
+export function selectedCharacter(): AnyClientCharacter | undefined {
     const chaId = selection.characterId;
     return chaId === null ? undefined : list().find((entry) => entry?.chaId === chaId);
 }
@@ -351,10 +399,10 @@ onCharacterSelected((chaId) => {
  * Legacy only: the shared body of `setCurrentCharacter` and `setCharacterByIndex`
  * (`database.svelte.ts`, the core-app wrappers until `aggregate-removal`), and of
  * `replaceCharacterFields` after its checks. Replaces the own fields of the record at `index` with
- * `char`'s, keeping the mirror's chats, selection, and render key (one queued save). Not validated
- * or detached. External contracts never call it.
+ * `char`'s, keeping the render key (one queued save; any `chats`/`chatPage` in `char` are not record
+ * fields and are dropped). Not validated or detached. External contracts never call it.
  */
-export function writeCharacterFieldsAt(index: number, char: AnyCharacter) {
+export function writeCharacterFieldsAt(index: number, char: AnyCharacter | AnyClientCharacter) {
     const current = list()[index];
     if (current === char) {
         return;
@@ -365,8 +413,6 @@ export function writeCharacterFieldsAt(index: number, char: AnyCharacter) {
     }
     replaceCharacterRecordAt(index, {
         ...char,
-        chats: current.chats,
-        chatPage: current.chatPage,
         reloadKeys: current.reloadKeys,
     } as unknown as Record<string, unknown>);
 }

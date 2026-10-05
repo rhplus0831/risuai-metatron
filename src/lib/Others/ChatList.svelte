@@ -9,9 +9,19 @@
     import { findCharacterbyId } from "../../ts/util";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import { changeChatTo } from "src/ts/globalApi.svelte";
-    import { createChat, deleteChat, isChatGenerating, setChatMeta } from "src/ts/storage/chatStore.svelte";
+    import {
+        chatList,
+        createChat,
+        deleteChat,
+        isChatGenerating,
+        selectedChatId,
+        setChatMeta,
+    } from "src/ts/storage/chatStore.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
+    // The chat list entries and the selected chat id (the chat module's).
+    const chats = $derived(currentCharacter ? chatList(currentCharacter.chaId) : []);
+    const selectedId = $derived(currentCharacter ? selectedChatId(currentCharacter.chaId) : null);
     let editMode = $state(false);
     /** @type {{close?: any}} */
     let { close = () => {} } = $props();
@@ -27,16 +37,16 @@
                 </button>
             </div>
         </div>
-        {#each currentCharacter.chats as chat, i}
+        {#each chats as chat}
             <button
                 onclick={() => {
                     if (!editMode) {
-                        changeChatTo(i);
+                        changeChatTo(chat.id);
                         close();
                     }
                 }}
                 class="flex items-center text-textcolor border-t-1 border-solid border-0 border-darkborderc p-2 cursor-pointer"
-                class:bg-selected={i === currentCharacter.chatPage}
+                class:bg-selected={chat.id === selectedId}
             >
                 {#if editMode}
                     <TextInput
@@ -58,7 +68,7 @@
                         tabindex="0"
                         onclick={async (e) => {
                             e.stopPropagation();
-                            exportChat(i);
+                            exportChat(chat.id);
                         }}
                         onkeydown={() => {}}
                     >
@@ -70,7 +80,7 @@
                         tabindex="0"
                         onclick={async (e) => {
                             e.stopPropagation();
-                            if (currentCharacter.chats.length === 1) {
+                            if (chats.length === 1) {
                                 alertError(language.errors.onlyOneChat);
                                 return;
                             }
@@ -101,7 +111,7 @@
                 class="text-textcolor2 hover:text-green-500 cursor-pointer mr-1"
                 onclick={() => {
                     const cha = currentCharacter;
-                    const len = currentCharacter.chats.length;
+                    const len = chats.length;
                     // A group chat starts with each member's first message.
                     const message =
                         cha.type === "group"

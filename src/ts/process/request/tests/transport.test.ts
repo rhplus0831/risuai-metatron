@@ -103,6 +103,7 @@ import { selectCharacter, selectPersona, selectPreset } from "src/ts/storage/sel
 import { activePreset } from "src/ts/storage/settingsViews.svelte";
 import { takeRootPresetFields } from "src/ts/storage/tests/installFlatDatabase";
 import { requestServer } from "../transport";
+import { assembleChats } from "src/ts/storage/chatStore.svelte";
 
 /**
  * The settings installed in the records (as `setDatabaseLite` installs a database), since the
@@ -122,12 +123,23 @@ function installSettings() {
         { id: "persona-1", name: "Persona 1" },
         { id: "persona-2", name: "Persona 2" },
     ];
-    raw.characters = [
+    const characters = [
         { chaId: "char-1", type: "character", name: "Char 1", chatPage: 0, chats: [{ id: "chat-1", message: [] }] },
         { chaId: "char-2", type: "character", name: "Char 2", chatPage: 0, chats: [{ id: "chat-2", message: [] }] },
     ];
+    // The records hold no chats (Phase 6 slice 9a): the chat module holds them, as boot assembles them.
+    const chats = characters.flatMap((char) =>
+        char.chats.map((chat) => ({ characterId: char.chaId, id: chat.id, revision: "r1", data: chat as never })),
+    );
+    const orders = characters.map((char) => ({
+        characterId: char.chaId,
+        revision: "o1",
+        ids: char.chats.map((chat) => chat.id),
+    }));
+    raw.characters = characters;
     initializeRecords(takeRecordFields(raw));
     DBState.db = installForwarding(raw) as never;
+    assembleChats(characters, chats, orders);
     selectPreset("preset-1");
     selectPersona("persona-1");
     selectCharacter("char-1");

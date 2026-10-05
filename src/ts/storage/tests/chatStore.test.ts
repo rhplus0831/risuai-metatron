@@ -305,8 +305,10 @@ describe("membership and selection", () => {
             [record("one"), record("two"), record("extra")],
             [{ characterId: "z", revision: "o", ids: ["two", "missing", "one"] }],
         );
-        expect(characters[0].chats.map((entry: any) => entry.id)).toEqual(["two", "one", "extra"]);
-        expect(characters[0].chatPage).toBe(0);
+        // Phase 6 slice 9a: the chats are held in the module; nothing is written onto the characters.
+        expect(chat.chatList("z").map((entry) => entry.id)).toEqual(["two", "one", "extra"]);
+        expect(chat.selectedChatIndex("z")).toBe(0);
+        expect(characters[0]).toEqual({ chaId: "z", chats: [], chatPage: 3 });
         expect(console.error).toHaveBeenCalledTimes(2);
     });
 });
@@ -842,7 +844,9 @@ describe("new characters", () => {
     it("normalizeNewCharacter gives a new character's chats and messages ids (a default chat when it has none) without queuing anything; adoptCharacter queues the creates once", async () => {
         const { server, stores, chat, records } = await boot();
         // The list changes only through its operations (Phase 6 slice 5): the raw insertion
-        // `addCharacter` makes, here without the normalization this case calls by hand.
+        // `addCharacter` makes, here without the normalization this case calls by hand. Since Phase 6
+        // slice 9a the record holds no chats: they are installed in the chat module first
+        // (`installCharacterChats`, as `addCharacter` does).
         for (const character of [
             {
                 chaId: "n",
@@ -860,6 +864,11 @@ describe("new characters", () => {
             },
             { chaId: "e", name: "E", chats: [] },
         ]) {
+            chat.installCharacterChats(
+                character.chaId,
+                character.chats as any,
+                character as { firstMsgIndex?: unknown },
+            );
             records.insertCharacterRecord(character);
         }
         chat.normalizeNewCharacter("n");

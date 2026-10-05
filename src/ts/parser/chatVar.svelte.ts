@@ -1,17 +1,15 @@
 import { characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { settings, activePreset } from "../storage/settingsViews.svelte";
 import { parseKeyValue } from "../util";
-import { getCurrentChat } from "../storage/database.svelte";
 import { setCurrentChatMeta } from "../storage/chatEdits";
-import { type ChatRef, findChat, setChatMeta } from "../storage/chatStore.svelte";
+import { type ChatRef, findChat, selectedChat, setChatMeta } from "../storage/chatStore.svelte";
 
 export function getChatVar(key: string): string {
     const char = selectedCharacter();
     if (!char) {
         return "null";
     }
-    const chat = char.chats[char.chatPage];
-    const state = chat?.scriptstate?.["$" + key];
+    const state = selectedChat()?.scriptstate?.["$" + key];
     if (state === undefined || state === null) {
         const defaultVariables = parseKeyValue(char.defaultVariables).concat(
             parseKeyValue(activePreset.templateDefaultVariables),
@@ -29,7 +27,7 @@ export function getChatVar(key: string): string {
 
 /** Sets a chat variable of the selected chat (a `scriptstate` write through the chat module). */
 export function setChatVar(key: string, value: string): boolean {
-    const chat = getCurrentChat();
+    const chat = selectedChat();
     const stateKey = "$" + key;
     if (!chat || chat.scriptstate?.[stateKey] === value) {
         return false;
@@ -67,13 +65,13 @@ export function setChatVarOf(ref: ChatRef | null, key: string, value: string): b
 
 export function getGLChatVar(key: string): string {
     console.log("getGLChatVar", key);
-    const chat = getCurrentChat();
+    const chat = selectedChat();
     return chat?.GLGlobalVariables?.[key];
 }
 
 export function setGLChatVar(key: string, value: string) {
     console.log("setGLChatVar", key, value);
-    const chat = getCurrentChat();
+    const chat = selectedChat();
     if (chat) {
         setCurrentChatMeta({ GLGlobalVariables: { ...$state.snapshot(chat.GLGlobalVariables ?? {}), [key]: value } });
     }
@@ -81,7 +79,7 @@ export function setGLChatVar(key: string, value: string) {
 
 /** Removes a per-chat global variable of the selected chat. */
 function deleteGLChatVar(key: string) {
-    const chat = getCurrentChat();
+    const chat = selectedChat();
     if (chat?.GLGlobalVariables && Object.hasOwn(chat.GLGlobalVariables, key)) {
         const next = { ...$state.snapshot(chat.GLGlobalVariables) };
         delete next[key];
@@ -107,7 +105,7 @@ export function getGlobalChatVar(key: string): string {
 }
 
 export function setGlobalChatVar(key: string, value: string) {
-    if (getCurrentChat()?.useLocallySetGlobalVariables) {
+    if (selectedChat()?.useLocallySetGlobalVariables) {
         setGLChatVar(key, value);
         return;
     } else if (getGLChatVar(key) !== undefined) {

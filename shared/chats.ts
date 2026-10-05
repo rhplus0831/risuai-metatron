@@ -92,6 +92,22 @@ export type ChatRecord = { characterId: string; id: string; revision: string; da
 export type ChatOrderRecord = { characterId: string; revision: string; ids: string[] };
 
 /**
+ * A chat's summary (Phase 6 slice 9a): what a chat list shows, projected from the stored metadata
+ * without reading message rows. It carries no messages, memory (`hypaV2Data`, `hypaV3Data`,
+ * `supaMemoryData`), bookmarks, or `toolCalls`; it is never a `Chat`. `fmIndex` and `name` arrive
+ * defaulted (the server's chat normalizer stores both).
+ */
+export type ChatSummary = {
+    characterId: string;
+    id: string;
+    revision: string;
+    name: string;
+    folderId?: string;
+    bindedPersona?: string;
+    fmIndex: number;
+};
+
+/**
  * A 409 entry for a chat group (revision null: the chat is gone). `reason: "generating"`: the group
  * touches a message a server generation job owns (Phase 5); retry after the job ends instead of
  * reloading.

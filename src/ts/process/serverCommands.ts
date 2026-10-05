@@ -1,3 +1,4 @@
+import type { AnyClientCharacter } from "../storage/characterStore.svelte";
 import { activePreset, activePersona } from "../storage/settingsViews.svelte";
 import type {
     GenerationCommand,
@@ -21,7 +22,6 @@ import {
 } from "../network/generationJobs";
 import { type ChatRef, findChat, heldChatRevision } from "../storage/chatStore.svelte";
 import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
-import { type character, type groupChat } from "../storage/database.svelte";
 import {
     flushResources,
     GenerationBlockedError,
@@ -206,7 +206,7 @@ export type ServerJobRequest = {
  * before the flush ends runs nothing.
  */
 export async function runServerJob(
-    char: character | groupChat,
+    char: AnyClientCharacter,
     ref: ChatRef | null,
     request: ServerJobRequest,
     options: {
@@ -316,7 +316,7 @@ export async function runServerJob(
  * command; a group chat refuses it.
  */
 async function runServerCommand(
-    char: character | groupChat,
+    char: AnyClientCharacter,
     command: GenerationCommand,
     ref: ChatRef | null,
     options: { triggerId?: string; onStart?: () => void } = {},
@@ -346,7 +346,7 @@ function commandLabel(command: GenerationCommand): string {
 }
 
 /** A Lua button (`risu-btn`) run by the server (Phase 5 slice 8a). */
-export async function runServerButton(char: character | groupChat, data: string, ref: ChatRef | null): Promise<void> {
+export async function runServerButton(char: AnyClientCharacter, data: string, ref: ChatRef | null): Promise<void> {
     await runServerCommand(char, { type: "button", data }, ref);
 }
 
@@ -355,7 +355,7 @@ export async function runServerButton(char: character | groupChat, data: string,
  * is the job's `triggerId` (`{{trigger_id}}`). `onStart` runs once the job exists.
  */
 export async function runServerManualTrigger(
-    char: character | groupChat,
+    char: AnyClientCharacter,
     name: string,
     ref: ChatRef | null,
     options: { triggerId?: string; onStart?: () => void } = {},

@@ -3,6 +3,7 @@
     import { settings } from "src/ts/storage/settingsViews.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
+    const currentChat = $derived(selectedChat());
     /**
      * The server manual trigger whose id `CurrentTriggerIdStore` holds (Phase 5 slice 8b): only the
      * invocation that set it clears it, so a refused click or an older timer leaves a newer one alone.
@@ -82,6 +83,8 @@
         replaceMessage,
         setChatMeta,
         setMessageText,
+        selectedChat,
+        selectedChatId,
     } from "../../ts/storage/chatStore.svelte";
     import { HideIconStore, ReloadGUIPointer } from "../../ts/stores.svelte";
     import AutoresizeArea from "../UI/GUI/TextAreaResizable.svelte";
@@ -162,8 +165,8 @@
     /** The chat this message is shown in (a branched or copied chat shares its source's message ids). */
     let displayedChat = $derived.by((): ChatRef | null => {
         const character = currentCharacter;
-        const chat = character?.chats?.[character.chatPage];
-        return character && chat?.id ? { chaId: character.chaId, chatId: chat.id } : null;
+        const chatId = character ? selectedChatId(character.chaId) : null;
+        return character && chatId !== null ? { chaId: character.chaId, chatId } : null;
     });
     /**
      * Whether this message is locked by a server generation job (its edit, delete, and regenerate are
@@ -353,7 +356,7 @@
         try {
             const cbsConditions: CbsConditions = {
                 firstmsg: firstMessage ?? false,
-                chatRole: currentCharacter.chats[currentCharacter.chatPage]?.message?.[idx]?.role ?? null,
+                chatRole: currentChat?.message?.[idx]?.role ?? null,
             };
             return cbsConditions;
         } catch (e) {
@@ -521,10 +524,7 @@
         }
     }
 
-    let isBookmarked = $derived(
-        messageId !== undefined &&
-            (currentCharacter?.chats[currentCharacter.chatPage]?.bookmarks?.includes(messageId) ?? false),
-    );
+    let isBookmarked = $derived(messageId !== undefined && (currentChat?.bookmarks?.includes(messageId) ?? false));
 
     async function toggleBookmark() {
         const target = messageTarget();
@@ -611,9 +611,7 @@
                     hover:ring-darkbutton hover:ring-3 rounded-md hover:text-textcolor transition-all flex justify-center items-center"
                 onclick={() => {
                     const currentGenerationInfo =
-                        idx >= 0
-                            ? currentCharacter.chats[currentCharacter.chatPage].message[idx].generationInfo
-                            : messageGenerationInfo;
+                        idx >= 0 ? currentChat.message[idx].generationInfo : messageGenerationInfo;
 
                     alertRequestData({
                         genInfo: currentGenerationInfo,
@@ -1548,7 +1546,7 @@
 <div
     class="flex max-w-full justify-center risu-chat"
     data-chat-index={idx}
-    data-chat-id={currentCharacter?.chats?.[currentCharacter?.chatPage]?.message?.[idx]?.chatId ?? ""}
+    data-chat-id={currentChat?.message?.[idx]?.chatId ?? ""}
     style={isLastMemory ? `border-top:${settings.ui.memoryLimitThickness}px solid rgba(98, 114, 164, 0.7);` : ""}
     onclickcapture={handleButtonTriggerWithin}
 >
@@ -1566,7 +1564,7 @@
                     class:rounded-tr-none={role === "user"}
                 >
                     <p class="text-gray-800">{@render textBox()}</p>
-                    {#if currentCharacter?.chats?.[currentCharacter?.chatPage]?.message?.[idx]?.time}
+                    {#if currentChat?.message?.[idx]?.time}
                         <span class="text-xs text-textcolor2 mt-1 block">
                             {new Intl.DateTimeFormat(undefined, {
                                 hour: "2-digit",
@@ -1575,7 +1573,7 @@
                                 month: "2-digit",
                                 day: "2-digit",
                                 hour12: false,
-                            }).format(currentCharacter.chats[currentCharacter.chatPage].message[idx].time)}
+                            }).format(currentChat.message[idx].time)}
                         </span>
                     {/if}
                 </div>
@@ -1620,13 +1618,9 @@
             {@render senderIcon({ rounded: settings.ui.roundIcons })}
             <span class="flex flex-col ml-4 w-full max-w-full min-w-0 text-black">
                 <div class="flexium items-center chat-width">
-                    {#if currentCharacter?.chaId === "§playground" && !blankMessage && currentCharacter?.chats?.[currentCharacter?.chatPage]?.message?.[idx]}
+                    {#if currentCharacter?.chaId === "§playground" && !blankMessage && currentChat?.message?.[idx]}
                         <span class="chat-width text-xl border-darkborderc flex items-center text-textcolor">
-                            <span
-                                >{currentCharacter.chats[currentCharacter.chatPage].message[idx].role === "char"
-                                    ? "Assistant"
-                                    : "User"}</span
-                            >
+                            <span>{currentChat.message[idx].role === "char" ? "Assistant" : "User"}</span>
                             <button
                                 class="ml-2 text-textcolor2 hover:text-textcolor"
                                 class:opacity-50={locked}

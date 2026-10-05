@@ -1,5 +1,9 @@
 <script lang="ts">
-    import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
+    import {
+        selectedCharacter,
+        type AnyClientCharacter,
+        type ClientCharacter,
+    } from "src/ts/storage/characterStore.svelte";
     import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { requestChatData } from "src/ts/process/request/request";
     import { doingChat, type OpenAIChat } from "../../ts/process/index.svelte";
@@ -10,7 +14,7 @@
     import { language } from "src/lang";
     import { getUserName, replacePlaceholders } from "../../ts/util";
     import { onDestroy } from "svelte";
-    import { setChatMeta } from "src/ts/storage/chatStore.svelte";
+    import { findChat, selectedChat, selectedChatId, setChatMeta } from "src/ts/storage/chatStore.svelte";
     import { ParseMarkdown } from "src/ts/parser/parser.svelte";
     import { defaultAutoSuggestPrompt } from "../../ts/storage/defaultPrompts.js";
 
@@ -21,16 +25,15 @@
     }
 
     let { send, messageInput }: Props = $props();
-    let suggestMessages: readonly string[] = $state(
-        selectedCharacter()?.chats[selectedCharacter().chatPage]?.suggestMessages,
-    );
+    let suggestMessages: readonly string[] = $state(selectedChat()?.suggestMessages);
     let suggestMessagesTranslated: string[] = $state();
     let toggleTranslate: boolean = $state(settings.memoryTranslateMedia.autoTranslate);
     let progress: boolean = $state();
-    let progressChatPage = -1;
+    /** The chat a running request is for (by id), or null. */
+    let progressChatId: string | null = null;
     let abortController: AbortController | undefined;
     let suggestionRequestId = 0;
-    let chatPage: number = $state();
+    let chatId: string | null = $state(null);
 
     const cancelSuggestionRequest = () => {
         suggestionRequestId += 1;
@@ -41,11 +44,10 @@
 
     const updateSuggestions = () => {
         if (currentCharacter !== undefined && !$doingChat) {
-            if (progressChatPage > 0 && progressChatPage != chatPage) {
+            if (progressChatId !== null && progressChatId !== chatId) {
                 cancelSuggestionRequest();
             }
-            let currentChar = currentCharacter;
-            suggestMessages = currentChar?.chats[currentChar.chatPage].suggestMessages;
+            suggestMessages = selectedChat()?.suggestMessages;
         }
     };
 
@@ -60,12 +62,13 @@
         }
 
         const requestCharId = currentCharacter.chaId;
-        const currentChar: character | groupChat = currentCharacter;
+        const currentChar: AnyClientCharacter = currentCharacter;
         if (!currentChar) {
             return;
         }
-        const requestChatPage = currentChar.chatPage;
-        const currentChat = currentChar.chats[requestChatPage];
+        const requestChatId = selectedChatId(currentChar.chaId);
+        const currentChat =
+            requestChatId === null ? undefined : findChat({ chaId: currentChar.chaId, chatId: requestChatId });
         if (!currentChat) {
             return;
         }
@@ -115,13 +118,13 @@
         suggestionRequestId = requestId;
         abortController = requestController;
         progress = true;
-        progressChatPage = requestChatPage;
+        progressChatId = requestChatId;
 
         requestChatData(
             {
                 formated: promptbody,
                 bias: {},
-                currentChar: currentChar as character,
+                currentChar: currentChar as ClientCharacter,
             },
             "submodel",
             requestController?.signal ?? null,
@@ -130,10 +133,8 @@
                 const stillCurrentRequest =
                     suggestionRequestId === requestId &&
                     selectedCharacter()?.chaId === requestCharId &&
-                    selectedCharacter()?.chatPage === requestChatPage;
-                const currentTargetChat = characterList().find((entry) => entry?.chaId === requestCharId)?.chats[
-                    requestChatPage
-                ];
+                    selectedChatId(requestCharId) === requestChatId;
+                const currentTargetChat = findChat(requestChatRef);
                 if (
                     rq2.type !== "fail" &&
                     rq2.type !== "streaming" &&
@@ -190,8 +191,7 @@
 
     $effect.pre(() => {
         currentCharacter?.chaId;
-        //FIXME add selectedChatPage for optimize render
-        chatPage = currentCharacter.chatPage;
+        chatId = currentCharacter ? selectedChatId(currentCharacter.chaId) : null;
         updateSuggestions();
     });
     $effect.pre(() => {

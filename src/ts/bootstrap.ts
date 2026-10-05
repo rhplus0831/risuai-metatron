@@ -134,7 +134,8 @@ export async function loadData() {
  * Builds the in-memory `Database` from the server resources: the five sections (their
  * `SECTION_FIELDS`), the collections (`translatorPresets` and `hypaV3Presets` unpack
  * `{ items, selectedId }` into their two fields), the Phase 1 collections, and the characters in
- * creation order, each with its chats in their server order. The flat preset and persona fields
+ * creation order, without chats: the chat module holds every chat in its server order (`assembleChats`,
+ * eager boot). The flat preset and persona fields
  * and the selection indexes are not assembled: the forwarding layer serves them
  * (`forwarding.svelte.ts`). The server creates and normalizes
  * every section and collection, so a missing one is an error, not a default. The `llmSecrets`

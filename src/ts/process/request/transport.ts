@@ -1,4 +1,5 @@
 import { selectedCharacter } from "../../storage/characterStore.svelte";
+import { currentChatRef } from "../../storage/chatStore.svelte";
 import { settings, activePreset, activePersona } from "../../storage/settingsViews.svelte";
 import {
     REQUEST_ARG_KEYS,
@@ -52,9 +53,7 @@ function fail(result: string): ClientResponse {
 }
 
 function selectedChatRef(): { chaId: string; chatId: string } | null {
-    const char = selectedCharacter();
-    const chat = char?.chats?.[char.chatPage];
-    return char?.chaId && chat?.id ? { chaId: char.chaId, chatId: chat.id } : null;
+    return currentChatRef();
 }
 
 /** `decodeToolCall(inner)` for every marker in the prompt, by inner text (the server looks them up). */

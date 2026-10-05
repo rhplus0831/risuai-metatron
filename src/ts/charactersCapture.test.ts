@@ -203,7 +203,7 @@ describe("handlers that await keep their target", () => {
         chat.selectChat("c", "k");
         const dialog = gate<string>();
         alerts.select.mockReturnValueOnce(dialog.promise);
-        const running = characters.exportChat(0);
+        const running = characters.exportChat("k");
         await settleMicrotasks();
         chat.reorderChats("c", ["j", "k"]);
         characterStore.selectCharacter("d");
@@ -224,7 +224,7 @@ describe("handlers that await keep their target", () => {
         chat.selectChat("c", "k");
         const dialog = gate<string>();
         alerts.select.mockReturnValueOnce(dialog.promise);
-        const running = characters.exportChat(0);
+        const running = characters.exportChat("k");
         await settleMicrotasks();
         chat.deleteChat({ chaId: "c", chatId: "k" });
         dialog.resolve("0");

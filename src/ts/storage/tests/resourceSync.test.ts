@@ -148,8 +148,14 @@ describe("seeding and no echo", () => {
         const { fake, sync, db, stores } = await boot();
         stores.selectedCharID.set(0);
         await tick();
-        db().characters[0].chats = [{ id: "a-chat", message: [{ role: "user", data: "hi", chatId: "m1" }] }];
-        db().characters[0].chatPage = 0;
+        // Phase 6 slice 9a: a wrapper refuses a `chats`/`chatPage` write; the chat module holds them.
+        const chat = await import("../chatStore.svelte");
+        chat.installCharacterChats(
+            "a",
+            [{ id: "a-chat", message: [{ role: "user", data: "hi", chatId: "m1" }] } as any],
+            db().characters[0],
+        );
+        chat.selectChat("a", 0);
         db().characters[0].reloadKeys = { 0: 1 };
         await sync.flushResources();
         // Chats are saved by the chat module; the selection and the render key are client-only.
@@ -380,14 +386,25 @@ describe("conflicts", () => {
 describe("a generating character (the generation deferral is gone)", () => {
     /**
      * Makes `chaId` generating as the app does: a server job of this tab streams into a chat of it
-     * (the mirror's chats are local, so the chat is placed there directly). Returns the job's end.
+     * (the mirror's chats are local, so the chat is placed there directly; since Phase 6 slice 9a
+     * through the chat module, `installCharacterChats`). Returns the job's end.
      */
     async function generate(db: () => any, chaId: string) {
         const chat = await import("../chatStore.svelte");
         const character = db().characters.find((entry: any) => entry.chaId === chaId);
-        character.chats = [
-            { id: `k${chaId}`, name: "K", note: "", localLore: [], message: [{ role: "char", data: "", chatId: "r" }] },
-        ];
+        chat.installCharacterChats(
+            chaId,
+            [
+                {
+                    id: `k${chaId}`,
+                    name: "K",
+                    note: "",
+                    localLore: [],
+                    message: [{ role: "char", data: "", chatId: "r" }],
+                },
+            ],
+            character,
+        );
         chat.applyServerGeneration(
             { chaId, chatId: `k${chaId}` },
             { jobId: `J${chaId}`, messageId: "r", generationId: `g${chaId}`, text: "so far", seq: 0 },

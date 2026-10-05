@@ -6,6 +6,7 @@ import { findModule, setModuleEnabled, updateModule } from "src/ts/storage/colle
 import { MutationValidationError } from "src/ts/storage/mutationValidation";
 import type { RisuAccessHost, RisuAccessWrite } from "../../../../../shared/mcp/risuaccess/host.ts";
 import { getCharacter } from "./utils";
+import { ensureChatLoaded, selectedChatId } from "src/ts/storage/chatStore.svelte";
 
 /** A mutation's outcome as the shared handlers take it: a refused value is an answer, not a throw. */
 function written(write: () => boolean): RisuAccessWrite {
@@ -27,7 +28,11 @@ export const tabRisuAccessHost: RisuAccessHost = {
     getCharacter,
     findCharacter,
     characters: () => characterList(),
-    currentMessages: async (char) => char.chats[char.chatPage].message,
+    // The character's selected chat in this tab, loaded first.
+    currentMessages: async (char) => {
+        const chatId = selectedChatId(char.chaId);
+        return chatId === null ? [] : ((await ensureChatLoaded({ chaId: char.chaId, chatId }))?.message ?? []);
+    },
     updateCharacter: (chaId, patch) => written(() => updateCharacter(chaId, patch)),
     modules: () => settings.modules,
     enabledModules: () => settings.enabledModules || [],

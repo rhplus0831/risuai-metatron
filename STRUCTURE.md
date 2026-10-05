@@ -60,10 +60,12 @@ Data and persistence (details: `docs/structure/persistence.md`)
   shapes (`Database`, `character`, `groupChat`, `Chat`, `Message`, `botPreset`) live in
   `shared/database.ts` and are re-exported by `src/ts/storage/database.svelte.ts`. `shared/` is
   compiled by both the client and the strict server project: no DOM types, runes, or enums, and
-  only relative `.ts` imports between `shared/` files (`persistence.md`). `character.chats` and
-  `chatPage` are read-only mirror fields (`DeepReadonly`): only the chat module
-  (`src/ts/storage/chatStore.svelte.ts`) writes them, and every chat change goes through its
-  functions (`appendMessage`, `setMessageText`, `setChatMeta`, `applyChatResult`, ...), addressed by
+  only relative `.ts` imports between `shared/` files (`persistence.md`). The chats are not part of
+  the character records (Phase 6 slice 9a): the chat module (`src/ts/storage/chatStore.svelte.ts`)
+  holds them, the client reads them through `chatList`, `selectedChat`, and `findChat` (the client's
+  character type, `ClientCharacter`, has no `chats` or `chatPage`; the facade's
+  `DBState.db.characters[i].chats`/`chatPage` is a read-only view for the shared CBS host until
+  slice 10), only the chat module writes them, and every chat change goes through its functions (`appendMessage`, `setMessageText`, `setChatMeta`, `applyChatResult`, ...), addressed by
   chat id and message id (`Message.chatId`), never by index after an await. Svelte `bind:` on a
   chat field bypasses the type check: bind a getter/setter pair or a synced editing copy. Beside
   it, the mutation modules own the other records for the external contracts (plugins, MCP,

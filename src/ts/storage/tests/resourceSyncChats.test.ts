@@ -136,14 +136,15 @@ afterEach(() => {
 
 describe("boot and mixed batches", () => {
     it("hydrates the chats without echoing anything back, and keeps chats out of the character record", async () => {
-        const { fake, sync, db, bootBatches, mirrorIds } = await boot();
+        const { fake, sync, chat, db, bootBatches, mirrorIds } = await boot();
         expect(bootBatches).toEqual([]);
         expect(mirrorIds()).toEqual(["k", "j"]);
         expect(db().characters[0].chatPage).toBe(0);
         await sync.flushResources();
         expect(fake.batchCount()).toBe(0);
         db().characters[0].name = "renamed";
-        db().characters[0].chatPage = 1;
+        // Phase 6 slice 9a: a wrapper refuses a `chatPage` write; the selection is the chat module's.
+        chat.selectChat("c", 1);
         // The write itself queues the character's save (Phase 6 slice 5: no mark).
         await sync.flushResources();
         const saved = fake.record("characters", "c")!.data as any;

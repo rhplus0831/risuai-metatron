@@ -1,7 +1,5 @@
-import { get } from "svelte/store";
 import { untrack } from "svelte";
-import { DBState, selectedCharID } from "../stores.svelte";
-import { currentChatRef, setChatMeta } from "./chatStore.svelte";
+import { currentChatRef, selectedChat, setChatMeta } from "./chatStore.svelte";
 import type { loreBook } from "./database.svelte";
 
 /**
@@ -21,14 +19,10 @@ export function useLocalLoreDraft(): typeof localLoreDraft {
     }
     started = true;
     $effect.root(() => {
-        let selected = $state(get(selectedCharID));
-        selectedCharID.subscribe((value) => {
-            selected = value;
-        });
         $effect.pre(() => {
-            const character = DBState.db.characters?.[selected];
-            const chat = character?.chats?.[character.chatPage];
-            const key = chat?.id ? `${character.chaId}\u0000${chat.id}` : "";
+            const ref = currentChatRef();
+            const chat = selectedChat();
+            const key = ref && chat ? `${ref.chaId}\u0000${ref.chatId}` : "";
             const text = JSON.stringify($state.snapshot(chat?.localLore ?? []));
             untrack(() => {
                 if (key !== localLoreDraft.key || text !== synced) {

@@ -132,11 +132,11 @@ describe("a hook's writes reach the records its context names", () => {
     it("setCharacter from a listener of a non-selected character's chat is saved to that character's record", async () => {
         const seen: Record<string, unknown> = {};
         const { run, sync, record, stores, db, fake } = await boot(async (api) => {
-            const character = api.getCharacter();
+            const character = await api.getCharacter();
             seen.chaId = character.chaId;
             seen.chatId = character.chats[character.chatPage].id;
             seen.chatIndex = api.getCurrentChatIndex();
-            api.setCharacter({ ...character, desc: "listener wrote" });
+            await api.setCharacter({ ...character, desc: "listener wrote" });
         });
         expect(get(stores.selectedCharID)).toBe(-1);
         const before = record("characters", "c");
@@ -156,7 +156,7 @@ describe("a hook's writes reach the records its context names", () => {
     it("setDatabase({ temperature }) after a preset switch lands in the hook's preset of the presets record", async () => {
         const { capture, runWith, sync, record, selection, selectionModule } = await boot(async (api) => {
             await api.setDatabase({ temperature: 77 });
-            api.setDatabaseLite({ maxContext: 4321 });
+            await api.setDatabaseLite({ maxContext: 4321 });
         });
         const hookPreset = selection.presetId;
         const other = record("presets").find((preset: any) => preset.id !== hookPreset).id;
@@ -183,7 +183,7 @@ describe("the callback persistence contract (beginMutationScope + flushResources
         const { run, sync, record, fake, db } = await boot(async (api) => {
             // Another tab writes the `ui` record while the hook runs; the hook's write then conflicts.
             fake.set("ui", "main", { ...fake.record("ui", "main")!.data, theme: "remote" });
-            api.setDatabaseLite({ theme: "from the hook" });
+            await api.setDatabaseLite({ theme: "from the hook" });
         });
         const scope = sync.beginMutationScope();
         await run(refK);
@@ -195,8 +195,8 @@ describe("the callback persistence contract (beginMutationScope + flushResources
 
     it("reports nothing when the hook's writes all persisted", async () => {
         const { run, sync, record, characterStore } = await boot(async (api) => {
-            api.setDatabaseLite({ theme: "quiet" });
-            api.setCharacter({ ...api.getCharacter(), desc: "quiet too" });
+            await api.setDatabaseLite({ theme: "quiet" });
+            await api.setCharacter({ ...(await api.getCharacter()), desc: "quiet too" });
         });
         const scope = sync.beginMutationScope();
         await run(refJ);

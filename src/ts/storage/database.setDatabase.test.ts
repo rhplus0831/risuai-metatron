@@ -34,6 +34,7 @@ vi.mock("../parser/parser.svelte", () => ({
 
 import { setDatabase, type Database } from "./database.svelte";
 import { DBState } from "../stores.svelte";
+import { assembleChats, seedChats } from "./chatStore.svelte";
 
 function legacySave(extra: Record<string, unknown>): Database {
     return {
@@ -88,23 +89,29 @@ describe("setDatabase after cold storage removal", () => {
         // field and a chat whose only message is a cold pointer. No migration reads
         // them anymore, and setDatabase must not choke on them.
         const pointer = "COLDSTORAGE" + "22222222-2222-2222-2222-222222222222";
-        setDatabase(
-            legacySave({
-                characters: [
-                    {
-                        type: "character",
-                        name: "stub",
-                        chaId: "stub-id",
-                        chatPage: 0,
-                        coldstorage: "33333333-3333-3333-3333-333333333333",
-                        coldStoragedChats: ["22222222-2222-2222-2222-222222222222"],
-                        chats: [
-                            { message: [{ role: "char", data: pointer, time: 1 }], note: "", name: "", localLore: [] },
-                        ],
-                    },
-                ],
-            }),
-        );
+        const characters = [
+            {
+                type: "character",
+                name: "stub",
+                chaId: "stub-id",
+                chatPage: 0,
+                coldstorage: "33333333-3333-3333-3333-333333333333",
+                coldStoragedChats: ["22222222-2222-2222-2222-222222222222"],
+                chats: [{ message: [{ role: "char", data: pointer, time: 1 }], note: "", name: "", localLore: [] }],
+            },
+        ];
+        // Phase 6 slice 9a: the character records hold no chats; the chat module holds them, the way
+        // boot assembles them (a chat record always carries its chat's id).
+        const chats = characters[0].chats.map((chat, index) => ({
+            characterId: "stub-id",
+            id: `chat-${index}`,
+            revision: "r1",
+            data: { ...chat, id: `chat-${index}` } as any,
+        }));
+        const orders = [{ characterId: "stub-id", revision: "o1", ids: chats.map((record) => record.id) }];
+        setDatabase(legacySave({ characters }));
+        seedChats(chats, orders);
+        assembleChats(DBState.db.characters, chats, orders);
 
         const char = DBState.db.characters[0] as any;
         expect(char.chats[0].message[0].data).toBe(pointer);

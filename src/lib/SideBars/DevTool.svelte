@@ -10,9 +10,8 @@
     import { getCharToken, getChatToken } from "src/ts/tokenizer";
     import { tokenizePreset } from "src/ts/process/prompt";
 
-    import { appendMessage, currentChatRef, findChat } from "src/ts/storage/chatStore.svelte";
+    import { appendMessage, currentChatRef, findChat, selectedChat } from "src/ts/storage/chatStore.svelte";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
-    import { getCurrentChat } from "src/ts/storage/database.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import { HardDriveUploadIcon, PlusIcon, TrashIcon } from "@lucide/svelte";
     import { selectSingleFile } from "src/ts/util";
@@ -24,6 +23,7 @@
     import { getModules } from "src/ts/process/modules";
 
     const currentCharacter = $derived(selectedCharacter());
+    const currentChat = $derived(selectedChat());
     let previewMode = $state("chat");
     let previewJoin = $state("yes");
     let instructType = $state("chatml");
@@ -115,7 +115,7 @@
 
     /** Sets one chat variable of the selected chat (through the chat module). */
     function setScriptVariable(key: string, value: string | number) {
-        const chat = getCurrentChat();
+        const chat = selectedChat();
         if (chat) {
             setCurrentChatMeta({ scriptstate: { ...$state.snapshot(chat.scriptstate ?? {}), [key]: value } });
         }
@@ -124,23 +124,21 @@
 
 <Accordion styled name={"Variables"}>
     <div class="rounded-md border border-darkborderc grid grid-cols-2 gap-2 p-2">
-        {#if currentCharacter.chats[currentCharacter.chatPage].scriptstate && Object.keys(currentCharacter.chats[currentCharacter.chatPage].scriptstate).length > 0}
-            {#each Object.keys(currentCharacter.chats[currentCharacter.chatPage].scriptstate) as key}
+        {#if currentChat.scriptstate && Object.keys(currentChat.scriptstate).length > 0}
+            {#each Object.keys(currentChat.scriptstate) as key}
                 <span>{key}</span>
-                {#if typeof currentCharacter.chats[currentCharacter.chatPage].scriptstate[key] === "object"}
+                {#if typeof currentChat.scriptstate[key] === "object"}
                     <div class="p-2 text-center">Object</div>
-                {:else if typeof currentCharacter.chats[currentCharacter.chatPage].scriptstate[key] === "string"}
+                {:else if typeof currentChat.scriptstate[key] === "string"}
                     <TextInput
                         bind:value={
-                            () => currentCharacter.chats[currentCharacter.chatPage].scriptstate[key] as string,
-                            (value) => setScriptVariable(key, value)
+                            () => currentChat.scriptstate[key] as string, (value) => setScriptVariable(key, value)
                         }
                     />
-                {:else if typeof currentCharacter.chats[currentCharacter.chatPage].scriptstate[key] === "number"}
+                {:else if typeof currentChat.scriptstate[key] === "number"}
                     <NumberInput
                         bind:value={
-                            () => currentCharacter.chats[currentCharacter.chatPage].scriptstate[key] as number,
-                            (value) => setScriptVariable(key, value)
+                            () => currentChat.scriptstate[key] as number, (value) => setScriptVariable(key, value)
                         }
                     />
                 {/if}
@@ -164,7 +162,7 @@
             <span>Character Dynamic</span>
             <div class="p-2 text-center">{token.dynamic} Tokens</div>
         {/await}
-        {#await getChatToken(currentCharacter.chats[currentCharacter.chatPage])}
+        {#await getChatToken(currentChat)}
             <span>Current Chat</span>
             <div class="p-2 text-center">Loading...</div>
         {:then token}

@@ -1665,8 +1665,8 @@ function applyToMirror(kind: string, id: string, data: unknown) {
             if (data === null && !existed) {
                 return;
             }
-            // The raw path: the server record has only the character's own fields, so the mirror's
-            // chats, chat selection, and render key are kept; a new one's chats arrive with a
+            // The raw path: the server record has only the character's own fields, so its render key
+            // is kept and its chats stay the chat module's; a new one's chats arrive with a
             // collection read (`recoverFromConflict`). A removed selected character selects home.
             applyRawCharacter(id, data as Record<string, unknown> | null);
             if (data === null) {

@@ -85,8 +85,36 @@ const recordKinds = new Set<string>(RECORD_KINDS);
 export const CHARACTERS = "characters";
 /** A kind the wrapper machinery tracks: a settings record or the character list. */
 type TrackedKind = RecordKind | typeof CHARACTERS;
-/** Fields of a character that are not part of its record: the chat module's mirror and the render key. */
-const CHARACTER_LOCAL_FIELDS: ReadonlySet<string> = new Set(["chats", "chatPage", "reloadKeys"]);
+/** Fields of a character that are not part of its record: the render key. */
+const CHARACTER_LOCAL_FIELDS: ReadonlySet<string> = new Set(["reloadKeys"]);
+/**
+ * The facade view's fields of a character (Phase 6 slice 9a): never stored on the record (the chat
+ * module holds the chats); a character element wrapper answers them from `setCharacterChatView`.
+ */
+const CHARACTER_CHAT_FIELDS: ReadonlySet<string> = new Set(["chats", "chatPage"]);
+
+type CharacterChatView = { chats: (chaId: string) => unknown; chatPage: (chaId: string) => number };
+let characterChatView: CharacterChatView | null = null;
+
+/**
+ * Registers the facade view of a character's chats (`chatStore.svelte.ts`): what a character element
+ * wrapper answers for `chats` and `chatPage` until `aggregate-removal`. Not an own key of the wrapper,
+ * so snapshots, spreads, and the save projection are chat-free; writing either is refused.
+ */
+export function setCharacterChatView(view: CharacterChatView | null) {
+    characterChatView = view;
+}
+
+/** Drops the facade view's fields from a raw character (they are never stored on the record). */
+function stripChatFields(character: Record<string, unknown>) {
+    for (const field of CHARACTER_CHAT_FIELDS) {
+        delete character[field];
+    }
+}
+
+function refuseChatFieldWrite(prop: string): never {
+    throw new TypeError(`characters: ${prop} is written through the chat module (chatStore)`);
+}
 
 /** Whether `kind` is held by the records (the save loop's settings kinds). */
 export function isRecordKind(kind: string): kind is RecordKind {
@@ -425,6 +453,7 @@ export function initializeRecords(fields: RecordFields) {
             character.chaId = v4();
         }
         seen.add(character.chaId as string);
+        stripChatFields(character);
     }
     bumpEpoch(metaOf(CHARACTERS));
     untrack(() => {
@@ -1315,8 +1344,11 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
         refuseListWrite(`writing ${prop}`);
     }
     if (isCharacterElement(node)) {
+        if (CHARACTER_CHAT_FIELDS.has(prop)) {
+            refuseChatFieldWrite(prop);
+        }
         if (CHARACTER_LOCAL_FIELDS.has(prop)) {
-            // Outside the record: the chat module's mirror and the render key, stored raw, nothing queued.
+            // Outside the record: the render key, stored raw, nothing queued.
             target[prop] = isRecordWrapper(value) ? detachedCopy(value as object) : value;
             return true;
         }
@@ -1477,6 +1509,10 @@ function createNode(
             if (typeof prop === "symbol") {
                 return Reflect.get(resolved, prop);
             }
+            if (CHARACTER_CHAT_FIELDS.has(prop) && isCharacterElement(node)) {
+                const chaId = resolved.chaId as string;
+                return prop === "chats" ? characterChatView?.chats(chaId) : characterChatView?.chatPage(chaId);
+            }
             const value = resolved[prop];
             if (typeof value === "function" && Array.isArray(resolved) && MUTATORS.has(prop)) {
                 if (isCharacterList(node)) {
@@ -1535,6 +1571,9 @@ function createNode(
                 }
                 assertUniqueIds(node);
                 const resolved = resolve(node);
+                if (typeof prop === "string" && CHARACTER_CHAT_FIELDS.has(prop) && isCharacterElement(node)) {
+                    refuseChatFieldWrite(prop);
+                }
                 if (isCharacterLocal(node, prop)) {
                     return Reflect.deleteProperty(resolved, prop);
                 }
@@ -1572,6 +1611,9 @@ function createNode(
                 assertUniqueIds(node);
                 const resolved = resolve(node);
                 if (isCharacterElement(node) && typeof prop === "string") {
+                    if (CHARACTER_CHAT_FIELDS.has(prop)) {
+                        refuseChatFieldWrite(prop);
+                    }
                     if (CHARACTER_LOCAL_FIELDS.has(prop) || prop === "chaId") {
                         // The `set` way: raw for a local field, the id refused unless unchanged.
                         return writeThrough(node, prop, descriptor.value);
@@ -1743,8 +1785,10 @@ export function replaceRecordList(list: unknown[], items: readonly unknown[]) {
 // The character list (Phase 6 slice 5, `character-ownership`).
 //
 // `DBState.db.characters` is the list's wrapper (`trackedCharacters`): an element is one character,
-// by id on `chaId`; a write under it (any depth, except its local fields `chats`, `chatPage`,
-// `reloadKeys`, which stay raw) queues that character's save. The list's membership changes only
+// by id on `chaId`; a write under it (any depth, except its local field `reloadKeys`, which stays raw)
+// queues that character's save. Its `chats` and `chatPage` are the chat module's facade view (Phase 6
+// slice 9a; `setCharacterChatView`): never stored on the record, written only through the chat
+// module. The list's membership changes only
 // through the operations below, which `characterStore` calls: each validates first, changes the raw
 // list once, queues the membership change and the characters it stored, and runs the selection's hook.
 // The raw path (`applyRawCharacter`, `patchRawCharacter`) is the save loop's: it queues nothing.
@@ -1825,6 +1869,10 @@ function storedCharacter(value: unknown, chaId: string, current: CharacterObject
     const source = (node ? detachedCopy(value) : value) as CharacterObject;
     const out: CharacterObject = {};
     for (const key of Object.keys(source)) {
+        if (CHARACTER_CHAT_FIELDS.has(key)) {
+            // The chats are the chat module's (the caller handed them to it).
+            continue;
+        }
         const entry = source[key];
         let stored: unknown;
         if (CHARACTER_LOCAL_FIELDS.has(key)) {
@@ -1921,8 +1969,8 @@ export function removeCharacterRecords(ids: readonly string[]): string[] {
 
 /**
  * The raw path of a server copy of one character (a conflict reload, a live update, a job
- * hydration): its own fields replaced (its local fields kept), a new one appended with no chats, or
- * removed (`null`). Queues nothing; retained wrappers of that character follow it by path.
+ * hydration): its own fields replaced (its render key kept), a new one appended (its chats come from
+ * the chat module's collection read), or removed (`null`). Queues nothing; retained wrappers of that character follow it by path.
  */
 export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
     untrack(() => {
@@ -1934,16 +1982,14 @@ export function applyRawCharacter(chaId: string, data: CharacterObject | null) {
                 list.splice(index, 1);
             }
         } else if (index === -1) {
-            list.push({ ...data, chaId, chats: [], chatPage: 0 });
+            const added: CharacterObject = { ...data, chaId };
+            stripChatFields(added);
+            list.push(added);
         } else {
             const local = list[index];
-            list[index] = {
-                ...data,
-                chaId,
-                chats: local.chats,
-                chatPage: local.chatPage,
-                reloadKeys: local.reloadKeys,
-            };
+            const replaced: CharacterObject = { ...data, chaId, reloadKeys: local.reloadKeys };
+            stripChatFields(replaced);
+            list[index] = replaced;
         }
     });
     runMembershipHook();

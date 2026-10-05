@@ -1,12 +1,14 @@
-import { selectedCharacter } from "../storage/characterStore.svelte";
+import { findCharacter } from "../storage/characterStore.svelte";
+import { chatList, findChat } from "../storage/chatStore.svelte";
 
 type ChatBranch = {
     children: Map<string, ChatBranch>;
     maxChildren: number;
-    chatId: number;
+    /** The chat the branch was first seen in (its id; `""` for the root). */
+    chatId: string;
 };
 
-function search(left: string[], branch: ChatBranch, chatId: number) {
+function search(left: string[], branch: ChatBranch, chatId: string) {
     if (left.length === 0) {
         return;
     }
@@ -43,7 +45,7 @@ type RenderedBranch = {
     connectY: number;
     content: string;
     multiChild: boolean;
-    chatId: number;
+    chatId: string;
 };
 
 function renderBranch(branch: ChatBranch, x: number, y: number, connectX = -1, connectY = -1): RenderedBranch[] {
@@ -65,25 +67,35 @@ function renderBranch(branch: ChatBranch, x: number, y: number, connectX = -1, c
     return rendered;
 }
 
-export function getChatBranches() {
-    const character = selectedCharacter();
+/**
+ * The branch view of a character's chats (every chat's greeting and messages as a tree). Reads the
+ * loaded chats synchronously: the caller pins the character's chats and awaits `loadChats` first.
+ */
+export function getChatBranches(chaId: string) {
+    const character = findCharacter(chaId);
 
     const mainBranch: ChatBranch = {
         children: new Map(),
         maxChildren: 0,
-        chatId: -1,
+        chatId: "",
     };
+    if (!character) {
+        return [];
+    }
 
-    let i = 0;
-    for (const chat of character.chats) {
+    for (const entry of chatList(chaId)) {
+        const chat = findChat({ chaId, chatId: entry.id });
+        if (!chat) {
+            continue;
+        }
         const fm = chat.fmIndex === -1 ? character.firstMessage : character.alternateGreetings?.[chat.fmIndex ?? 0];
         // const chatList = [fm].concat(chat.message.map((v) => v.data))
-        const chatList: string[] = [simpleHasher(fm)];
+        const hashes: string[] = [simpleHasher(fm)];
         for (const message of chat.message) {
-            chatList.push(simpleHasher(message.data));
+            hashes.push(simpleHasher(message.data));
         }
 
-        search(chatList, mainBranch, i++);
+        search(hashes, mainBranch, entry.id);
     }
 
     getMaxChildren(mainBranch);

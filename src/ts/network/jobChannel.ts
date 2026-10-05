@@ -1,4 +1,4 @@
-import { selectedCharacter, characterList } from "../storage/characterStore.svelte";
+import { characterList } from "../storage/characterStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
 import { get } from "svelte/store";
@@ -37,7 +37,14 @@ import { registeredCustomPluginMCPs } from "../process/mcp/pluginmcp";
 import type { character } from "../storage/database.svelte";
 import { invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../plugins/pluginHooks";
-import { heldChatRevision } from "../storage/chatStore.svelte";
+import {
+    chatList,
+    currentChatRef,
+    findChat,
+    heldChatRevision,
+    selectedChatId,
+    withChatsCopy,
+} from "../storage/chatStore.svelte";
 import {
     applyHydration,
     beginMutationScope,
@@ -211,9 +218,9 @@ function applyEffect(notice: GenerationNotice) {
             return;
         case "reloadChat": {
             const { chaId, chatId, messageId } = notice.payload;
-            const character = selectedCharacter();
-            const chat = character?.chaId === chaId ? character.chats?.[character.chatPage] : undefined;
-            const index = chat?.id === chatId ? (chat.message?.findIndex((m) => m.chatId === messageId) ?? -1) : -1;
+            const selected = currentChatRef();
+            const chat = selected?.chaId === chaId && selected.chatId === chatId ? findChat(selected) : undefined;
+            const index = chat ? (chat.message?.findIndex((m) => m.chatId === messageId) ?? -1) : -1;
             if (index !== -1) {
                 ReloadChatPointer.update((value) => {
                     value[index] = (value[index] ?? 0) + 1;
@@ -513,7 +520,7 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
         case "selectedChat": {
             // The chat of a character this tab has selected (the selection is the tab's own).
             const target = characterList().find((entry) => entry?.chaId === String(payload.characterId));
-            const chatId = target?.chats?.[target.chatPage]?.id;
+            const chatId = target ? selectedChatId(target.chaId) : null;
             return typeof chatId === "string" ? { chatId } : null;
         }
         case "generateImage": {
@@ -577,15 +584,16 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                 // The plugin's `characterIndex` is the list position (the plugin index API's mapping).
                 const characterIndex = characterList().findIndex((entry) => entry?.chaId === chaId);
                 const owner = characterList()[characterIndex];
-                const chatIndex = owner?.chats?.findIndex((entry) => entry?.id === chatId) ?? -1;
-                const chat = owner?.chats?.[chatIndex];
+                const chatIndex = owner ? chatList(owner.chaId).findIndex((entry) => entry.id === chatId) : -1;
+                const chat = chatIndex === -1 ? undefined : findChat({ chaId, chatId });
                 const speaker = characterList().find((entry) => entry?.chaId === speakerId);
                 if (!owner || !chat || !speaker) {
                     throw new CallbackFailed("hook", "The chat the output listeners run for is gone");
                 }
                 try {
                     await invokeHook(listener, context, {
-                        char: plain(speaker),
+                        // The legacy shape a plugin listener gets: the speaker with its chats.
+                        char: withChatsCopy(plain(speaker)),
                         chat: plain(chat),
                         characterIndex,
                         chatIndex,

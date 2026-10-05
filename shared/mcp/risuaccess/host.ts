@@ -21,6 +21,12 @@ export abstract class MCPToolHandler {
 export type RisuAccessWrite = { ok: true } | { ok: false; notFound: true } | { ok: false; error: string };
 
 /**
+ * A character as the tools read it: its own fields. Its chats are not part of it (the tab's records
+ * hold none since Phase 6 slice 9a; `currentMessages` reads the current chat).
+ */
+export type RisuAccessCharacter = Omit<character, "chats" | "chatPage"> | Omit<groupChat, "chats" | "chatPage">;
+
+/**
  * What the RisuAccess tools (`internal:risuai`) need from where they run (Phase 5 slice 12b): the
  * tab's mirror and mutation modules (`src/ts/process/mcp/risuaccess/`), or the server's store inside
  * a job (`server/src/mcp/internal.ts`). The handlers hold no data of their own.
@@ -31,12 +37,14 @@ export type RisuAccessWrite = { ok: true } | { ok: false; notFound: true } | { o
  */
 export type RisuAccessHost = {
     /** The character a tool names: by `chaId`, else by name; the current one for an empty id. */
-    getCharacter(id: string): DeepReadonly<character | groupChat> | undefined;
+    getCharacter(id: string): DeepReadonly<RisuAccessCharacter> | undefined;
     /** The character with `chaId`, as it is now. */
-    findCharacter(chaId: string): DeepReadonly<character | groupChat> | undefined;
-    characters(): readonly DeepReadonly<character | groupChat>[];
+    findCharacter(chaId: string): DeepReadonly<RisuAccessCharacter> | undefined;
+    characters(): readonly DeepReadonly<RisuAccessCharacter>[];
     /** The messages of the character's current chat, oldest first. */
-    currentMessages(char: DeepReadonly<character>): Promise<readonly DeepReadonly<Message>[]>;
+    currentMessages(
+        char: DeepReadonly<Omit<character, "chats" | "chatPage">>,
+    ): Promise<readonly DeepReadonly<Message>[]>;
     /** Sets own fields of a character (`updateCharacter`'s rules: the fixed fields are refused). */
     updateCharacter(chaId: string, patch: Record<string, unknown>): RisuAccessWrite;
     modules(): readonly DeepReadonly<RisuModule>[];

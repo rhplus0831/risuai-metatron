@@ -95,7 +95,10 @@ export function getDatabase(options: getDatabaseOptions = {}): Database {
     return DBState.db as Database;
 }
 
-/** The selected character: its record (live), or with `{ snapshot: true }` a detached copy with its chats. */
+/**
+ * The selected character: its record (live; its `chats`/`chatPage` are the chat module's facade view),
+ * or with `{ snapshot: true }` a detached copy without chats (Phase 6 slice 9a).
+ */
 export function getCurrentCharacter(options: getDatabaseOptions = {}): character | groupChat {
     const db = getDatabase(options);
     return db.characters?.[get(selectedCharID)];
@@ -103,8 +106,8 @@ export function getCurrentCharacter(options: getDatabaseOptions = {}): character
 
 /**
  * Replaces a character's own fields with `char`'s, for the character with `char.chaId` (the one a
- * caller captured, not whatever is selected now). The mirror keeps its chats, selection, and render
- * key: chats are written only through the chat module, and a caller's copy may hold stale ones.
+ * caller captured, not whatever is selected now). Its render key is kept; any chats in `char` are
+ * dropped: chats are written only through the chat module, and a caller's copy may hold stale ones.
  */
 export function setCurrentCharacter(char: character | groupChat) {
     const index = DBState.db.characters?.findIndex((entry) => entry?.chaId === char.chaId) ?? -1;
@@ -114,20 +117,15 @@ export function setCurrentCharacter(char: character | groupChat) {
     writeCharacterFieldsAt(index, char);
 }
 
-/** The character at an index: its record (live), or with `{ snapshot: true }` a detached copy with its chats. */
+/** The character at an index: its record (live), or with `{ snapshot: true }` a detached copy without chats. */
 export function getCharacterByIndex(index: number, options: getDatabaseOptions = {}): character | groupChat {
     const db = getDatabase(options);
     return db.characters?.[index];
 }
 
-/** `setCurrentCharacter` for the character at an index (the mirror's chats are kept the same way). */
+/** `setCurrentCharacter` for the character at an index (its chats are left to the chat module the same way). */
 export function setCharacterByIndex(index: number, char: character | groupChat) {
     writeCharacterFieldsAt(index, char);
-}
-
-export function getCurrentChat() {
-    const char = getCurrentCharacter();
-    return char?.chats?.[char.chatPage];
 }
 
 export const saveImage = saveImageGlobal;

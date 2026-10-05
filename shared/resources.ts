@@ -5,6 +5,7 @@ import type {
     ChatOrderRecord,
     ChatOrderResult,
     ChatRecord,
+    ChatSummary,
 } from "./chats.ts";
 import type { Database } from "./database.ts";
 import type {
@@ -165,6 +166,9 @@ export type ResourceReadKindsResult = {
     kinds: Record<string, ResourceRecord[]>;
     /** With `chats=1`: every chat and every chat order. */
     chats?: ChatRecord[];
+    /** With `chatSummaries=1` (not with `chats=1`): every chat's summary, without messages. */
+    chatSummaries?: ChatSummary[];
+    /** With `chats=1` or `chatSummaries=1`: every chat order. */
     chatOrders?: ChatOrderRecord[];
 };
 
@@ -175,6 +179,8 @@ export type ResourceReadRefsResult = {
     chats?: (ChatRecord | { characterId: string; id: string; revision: null; data: null })[];
     /** The named characters' orders (null: no order) and all their chats. */
     chatCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatRecord[] }[];
+    /** The named characters' orders (null: no order) and their chats' summaries. */
+    chatSummaryCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatSummary[] }[];
 };
 
 /**

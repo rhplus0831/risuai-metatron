@@ -181,7 +181,19 @@ function liveDatabase(fields: Record<string, unknown> = {}) {
         seperateModelsForAxModels: false,
         ...fields,
     };
+    // The records hold no chats (Phase 6 slice 9a): the characters' chats are held in the chat
+    // module, as boot assembles them.
+    const characters = raw.characters as { chaId: string; chats?: any[] }[];
+    const chats = characters.flatMap((char) =>
+        (char.chats ?? []).map((chat) => ({ characterId: char.chaId, id: chat.id, revision: "r1", data: chat })),
+    );
+    const orders = characters.map((char) => ({
+        characterId: char.chaId,
+        revision: "o1",
+        ids: (char.chats ?? []).map((chat) => chat.id),
+    }));
     initializeRecords(takeRecordFields(raw));
+    chatStore.assembleChats(characters, chats, orders);
     return installForwarding(raw) as any;
 }
 
@@ -216,7 +228,7 @@ describe("the routing table: settings keys", () => {
         ["PresensePenalty", 3, 4],
     ] as const)("%s lands in the selected preset by id, through both setters", async (key, lite, full) => {
         const api = await makeApi();
-        api.setDatabaseLite({ [key]: lite });
+        await api.setDatabaseLite({ [key]: lite });
         expect(preset("a")[key]).toBe(lite);
         expect(preset("b")[key]).toBeUndefined();
         expect(db()[key]).toBe(lite);
@@ -245,7 +257,7 @@ describe("the routing table: settings keys", () => {
         "%s lands in its section at the root and in no preset, through both setters",
         async (key, lite, full) => {
             const api = await makeApi();
-            api.setDatabaseLite({ [key]: lite });
+            await api.setDatabaseLite({ [key]: lite });
             expect(plain(db()[key])).toEqual(lite);
             await api.setDatabase({ [key]: full });
             expect(plain(db()[key])).toEqual(full);
@@ -259,7 +271,7 @@ describe("the routing table: settings keys", () => {
 describe("the routing table: collections, the selection, and custom keys", () => {
     it("modules and enabledModules go through setModules and setEnabledModules", async () => {
         const api = await makeApi();
-        api.setDatabaseLite({ modules: [{ name: "lite" }], enabledModules: ["x", "x", "y"] });
+        await api.setDatabaseLite({ modules: [{ name: "lite" }], enabledModules: ["x", "x", "y"] });
         expect(db().modules).toEqual([{ name: "lite", id: expect.any(String) }]);
         expect(db().enabledModules).toEqual(["x", "y"]);
         await api.setDatabase({ modules: [{ id: "keep", name: "full" }], enabledModules: ["keep"] });
@@ -270,7 +282,7 @@ describe("the routing table: collections, the selection, and custom keys", () =>
 
     it("personas go through setPersonas (the collection's contract), through both setters", async () => {
         const api = await makeApi();
-        api.setDatabaseLite({ personas: [{ name: "lite", icon: "", personaPrompt: "" }] });
+        await api.setDatabaseLite({ personas: [{ name: "lite", icon: "", personaPrompt: "" }] });
         expect(db().personas).toEqual([
             { name: "lite", icon: "", personaPrompt: "", note: "", id: expect.any(String) },
         ]);
@@ -285,7 +297,7 @@ describe("the routing table: collections, the selection, and custom keys", () =>
             { id: "n0", name: "N0", icon: "", personaPrompt: "" },
             { id: "n1", name: "N1", icon: "", personaPrompt: "" },
         ];
-        api.setDatabaseLite({ selectedPersona: 1, personas: list });
+        await api.setDatabaseLite({ selectedPersona: 1, personas: list });
         expect(selection.personaId).toBe("n1");
         expect(db().selectedPersona).toBe(1);
 
@@ -295,7 +307,7 @@ describe("the routing table: collections, the selection, and custom keys", () =>
 
         // An index naming no persona of the new list is refused; the selection resolved by
         // `setPersonas` (the same id, still present) stays.
-        api.setDatabaseLite({ selectedPersona: 5, personas: list });
+        await api.setDatabaseLite({ selectedPersona: 5, personas: list });
         expect(selection.personaId).toBe("n0");
         expect(warnings()).toEqual([expect.stringMatching(/^\[Plugin\] Refused the database key selectedPersona;/)]);
     });
@@ -303,7 +315,7 @@ describe("the routing table: collections, the selection, and custom keys", () =>
     it("plugins go through setPlugins in the lite setter (the whole list, no prompt)", async () => {
         DBState.db.plugins = [{ name: "installed", script: "s", version: "3.0", realArg: {} }] as any;
         const api = await makeApi();
-        api.setDatabaseLite({ plugins: [{ name: "lite", script: "l", version: "3.0" }] });
+        await api.setDatabaseLite({ plugins: [{ name: "lite", script: "l", version: "3.0" }] });
         expect(db().plugins).toEqual([{ name: "lite", script: "l", version: "3.0" }]);
         expect(alerts.confirm).not.toHaveBeenCalled();
     });
@@ -311,12 +323,12 @@ describe("the routing table: collections, the selection, and custom keys", () =>
     it("pluginCustomStorage replaces the whole object through both setters, and a list is refused", async () => {
         DBState.db.pluginCustomStorage = { old: 1, _pluginStorage: { k: 1 } };
         const api = await makeApi();
-        api.setDatabaseLite({ pluginCustomStorage: { lite: true } });
+        await api.setDatabaseLite({ pluginCustomStorage: { lite: true } });
         expect(plain(db().pluginCustomStorage)).toEqual({ lite: true });
         await api.setDatabase({ pluginCustomStorage: { _pluginStorage: { full: 1 } } });
         expect(plain(db().pluginCustomStorage)).toEqual({ _pluginStorage: { full: 1 } });
         expect(await api._getPluginStorage("full")).toBe(1);
-        api.setDatabaseLite({ pluginCustomStorage: ["nope"] });
+        await api.setDatabaseLite({ pluginCustomStorage: ["nope"] });
         expect(plain(db().pluginCustomStorage)).toEqual({ _pluginStorage: { full: 1 } });
         expect(warnings()).toEqual([
             expect.stringMatching(/^\[Plugin\] Refused the database key pluginCustomStorage;/),
@@ -329,22 +341,22 @@ describe("the routing table: collections, the selection, and custom keys", () =>
             characterOrder: ["c", "d"],
         });
         const api = await makeApi();
-        api.setDatabaseLite({ characterOrder: ["d", "c"] });
+        await api.setDatabaseLite({ characterOrder: ["d", "c"] });
         expect(plain(db().characterOrder)).toEqual(["d", "c"]);
         await api.setDatabase({ characterOrder: [{ id: "f", name: "F", color: "", data: ["c", "d"] }] });
         expect(plain(db().characterOrder)).toEqual([{ id: "f", name: "F", color: "", data: ["c", "d"] }]);
-        api.setDatabaseLite({ characterOrder: ["c", 5] });
+        await api.setDatabaseLite({ characterOrder: ["c", 5] });
         expect(plain(db().characterOrder)).toEqual([{ id: "f", name: "F", color: "", data: ["c", "d"] }]);
         expect(warnings()).toEqual([expect.stringMatching(/^\[Plugin\] Refused the database key characterOrder;/)]);
     });
 
     it("a key outside allowedDbKeys lands at the top level of pluginCustomStorage, and undefined removes it", async () => {
         const api = await makeApi();
-        api.setDatabaseLite({ custom: { x: 1 }, pluginV2: [] });
+        await api.setDatabaseLite({ custom: { x: 1 }, pluginV2: [] });
         await api.setDatabase({ other: "o" });
         expect(plain(db().pluginCustomStorage)).toEqual({ custom: { x: 1 }, pluginV2: [], other: "o" });
         expect("custom" in db()).toBe(false);
-        api.setDatabaseLite({ custom: undefined, never: undefined });
+        await api.setDatabaseLite({ custom: undefined, never: undefined });
         expect(plain(db().pluginCustomStorage)).toEqual({ pluginV2: [], other: "o" });
         expect(console.warn).not.toHaveBeenCalled();
     });
@@ -371,7 +383,7 @@ describe("characters through the character mutations", () => {
 
     it("a reordered list keeps the mirror order, appends a new character, and removes an omitted one (both setters)", async () => {
         const api = await makeApi();
-        api.setDatabaseLite({ characters: [character("d", "D"), character("c", "C2"), incoming("e", "E")] });
+        await api.setDatabaseLite({ characters: [character("d", "D"), character("c", "C2"), incoming("e", "E")] });
         expect(ids()).toEqual(["c", "d", "e"]);
         expect(db().characters[0].name).toBe("C2");
         expect(db().characters[2].chats).toHaveLength(1);
@@ -394,7 +406,7 @@ describe("characters through the character mutations", () => {
             { name: "bad type", type: "person" },
             "not an object",
         ]) {
-            api.setDatabaseLite({ characters: [character("c", "renamed"), incoming("e", "E"), bad] });
+            await api.setDatabaseLite({ characters: [character("c", "renamed"), incoming("e", "E"), bad] });
         }
         await api.setDatabase({ characters: [character("c", "renamed"), incoming("e", "E"), { chaId: 5 }] });
         expect(ids()).toEqual(["c", "d"]);
@@ -414,7 +426,7 @@ describe("characters through the character mutations", () => {
             { ...incoming("f", "bad lore"), globalLore: [null] },
             { ...incoming("f", "bad group"), type: "group", characters: "e" },
         ]) {
-            api.setDatabaseLite({ characters: [character("c", "renamed"), incoming("e", "E"), bad] });
+            await api.setDatabaseLite({ characters: [character("c", "renamed"), incoming("e", "E"), bad] });
         }
         expect(ids()).toEqual(["c", "d"]);
         expect(plain(db().characters)).toEqual(before);
@@ -424,7 +436,7 @@ describe("characters through the character mutations", () => {
             true,
         );
         // A valid list then lands with its new entry created once (its creation steps done).
-        api.setDatabaseLite({ characters: [character("c", "renamed"), incoming("e", "E")] });
+        await api.setDatabaseLite({ characters: [character("c", "renamed"), incoming("e", "E")] });
         expect(ids()).toEqual(["c", "e"]);
         const e = db().characters[1];
         expect(e).toMatchObject({ type: "character", desc: "", firstMsgIndex: -1, creation_date: expect.any(Number) });
@@ -435,7 +447,7 @@ describe("characters through the character mutations", () => {
 
     it("a non-list characters value is refused with a warning, while the other keys land", async () => {
         const api = await makeApi();
-        api.setDatabaseLite({ theme: "before", characters: { chaId: "c" }, customCSS: "after" });
+        await api.setDatabaseLite({ theme: "before", characters: { chaId: "c" }, customCSS: "after" });
         expect(ids()).toEqual(["c", "d"]);
         expect(db().theme).toBe("before");
         expect(db().customCSS).toBe("after");
@@ -448,7 +460,7 @@ describe("characterOrder is applied after characters (Astra challenge point 1)",
 
     it("an explicit order of ids the same call adds survives, with the order key first or last (both setters)", async () => {
         const api = await makeApi();
-        api.setDatabaseLite({ characterOrder: ["b", "a"], characters: [incoming("a", "A"), incoming("b", "B")] });
+        await api.setDatabaseLite({ characterOrder: ["b", "a"], characters: [incoming("a", "A"), incoming("b", "B")] });
         expect(ids()).toEqual(["a", "b"]);
         expect(plain(db().characterOrder)).toEqual(["b", "a"]);
 
@@ -464,7 +476,7 @@ describe("characterOrder is applied after characters (Astra challenge point 1)",
 
     it("folder membership of added characters survives", async () => {
         const api = await makeApi();
-        api.setDatabaseLite({
+        await api.setDatabaseLite({
             characterOrder: [folder(["b", "a"])],
             characters: [incoming("a", "A"), incoming("b", "B")],
         });
@@ -483,7 +495,10 @@ describe("characterOrder is applied after characters (Astra challenge point 1)",
             characterOrder: ["c", "d"],
         });
         const api = await makeApi();
-        api.setDatabaseLite({ characterOrder: ["e", "d"], characters: [character("d", "D"), incoming("e", "E")] });
+        await api.setDatabaseLite({
+            characterOrder: ["e", "d"],
+            characters: [character("d", "D"), incoming("e", "E")],
+        });
         expect(ids()).toEqual(["d", "e"]);
         expect(plain(db().characterOrder)).toEqual(["e", "d"]);
     });
@@ -506,7 +521,7 @@ describe("characterOrder is applied after characters (Astra challenge point 1)",
         });
         try {
             const api = await makeApi();
-            api.setDatabaseLite({ characterOrder: ["d"], characters: [character("d", "D")] });
+            await api.setDatabaseLite({ characterOrder: ["d"], characters: [character("d", "D")] });
             expect(ids()).toEqual(["c", "d"]);
             expect(plain(db().characterOrder)).toEqual(["d"]);
             expect(warnings()).toEqual([expect.stringMatching(/removal was skipped/)]);
@@ -520,7 +535,7 @@ describe("characterOrder is applied after characters (Astra challenge point 1)",
     it("a refused order leaves the characters applied, and their added ids repaired into the old order", async () => {
         DBState.db = liveDatabase({ characters: [character("c", "C")], characterOrder: ["c"] });
         const api = await makeApi();
-        api.setDatabaseLite({ characterOrder: "c,e", characters: [character("c", "C"), incoming("e", "E")] });
+        await api.setDatabaseLite({ characterOrder: "c,e", characters: [character("c", "C"), incoming("e", "E")] });
         expect(ids()).toEqual(["c", "e"]);
         expect(plain(db().characterOrder)).toEqual(["c", "e"]);
         expect(warnings()).toEqual([expect.stringMatching(/^\[Plugin\] Refused the database key characterOrder;/)]);
@@ -530,7 +545,7 @@ describe("characterOrder is applied after characters (Astra challenge point 1)",
 describe("the per-key contract (A14)", () => {
     it("a refused key between two valid keys keeps its previous value while both valid keys land (both setters)", async () => {
         const api = await makeApi();
-        api.setDatabaseLite({ theme: "lite", temperature: "hot", customCSS: "lite css" });
+        await api.setDatabaseLite({ theme: "lite", temperature: "hot", customCSS: "lite css" });
         expect(db().theme).toBe("lite");
         expect(db().customCSS).toBe("lite css");
         expect(preset("a").temperature).toBeUndefined();
@@ -553,8 +568,13 @@ describe("the per-key contract (A14)", () => {
     it("a preset field written while the selected preset is gone throws MutationTargetGoneError to the plugin", async () => {
         const api = await makeApi();
         selectPreset("gone");
-        expect(() => api.setDatabaseLite({ theme: "first", temperature: 1 })).toThrow(MutationTargetGoneError);
+        await expect(api.setDatabaseLite({ theme: "first", temperature: 1 })).rejects.toBeInstanceOf(
+            MutationTargetGoneError,
+        );
         expect(db().theme).toBe("first");
+        // The setters are async since Phase 6 slice 9a: the selection's repair ran during the first
+        // call's awaits, so the preset is gone again for the second.
+        selectPreset("gone");
         await expect(api.setDatabase({ temperature: 2 })).rejects.toBeInstanceOf(MutationTargetGoneError);
         expect(preset("a").temperature).toBeUndefined();
         expect(preset("b").temperature).toBeUndefined();
@@ -567,7 +587,9 @@ describe("the per-key contract (A14)", () => {
         // non-list, so the records are forgotten after the install instead): the character routing
         // passes its checks and fails at the list operation.
         resetRecords();
-        expect(() => api.setDatabaseLite({ characters: [incoming("e", "E")] })).toThrow(/characters are not loaded/);
+        await expect(api.setDatabaseLite({ characters: [incoming("e", "E")] })).rejects.toThrow(
+            /characters are not loaded/,
+        );
         await expect(api.setDatabase({ characters: [incoming("e", "E")] })).rejects.toThrow(
             /characters are not loaded/,
         );
@@ -629,7 +651,7 @@ describe("the full setter's plugins key", () => {
 describe("reserved storage namespaces a plugin replaced (Astra challenge point 2)", () => {
     it("a list in _pluginStorage is read by index, listed, removed from, and written to without losing an entry", async () => {
         const api = await makeApi();
-        api.setDatabaseLite({ _pluginStorage: ["saved", { deep: true }] });
+        await api.setDatabaseLite({ _pluginStorage: ["saved", { deep: true }] });
         expect(await api._getPluginStorage("0")).toBe("saved");
         expect(await api._getPluginStorage("1")).toEqual({ deep: true });
         expect(await api._getPluginStorage("length")).toBeNull();
@@ -671,7 +693,7 @@ describe("reserved storage namespaces a plugin replaced (Astra challenge point 2
 
     it("own constructor and __proto__ entries of a replaced namespace stay readable, writable, and removable", async () => {
         const api = await makeApi();
-        api.setDatabaseLite({ _pluginStorage: JSON.parse('{"constructor": 1, "__proto__": 2, "plain": 3}') });
+        await api.setDatabaseLite({ _pluginStorage: JSON.parse('{"constructor": 1, "__proto__": 2, "plain": 3}') });
         expect(await api._getPluginStorage("constructor")).toBe(1);
         expect(await api._getPluginStorage("__proto__")).toBe(2);
         expect(await api._getPluginStorage("toString")).toBeNull();

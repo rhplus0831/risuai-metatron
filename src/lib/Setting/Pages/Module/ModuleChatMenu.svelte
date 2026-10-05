@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { selectedChat } from "src/ts/storage/chatStore.svelte";
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { CircleCheckIcon, Waypoints, XIcon } from "@lucide/svelte";
@@ -12,6 +13,7 @@
     import { SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
+    const currentChat = $derived(selectedChat());
     interface Props {
         close?: any;
         alertMode?: boolean;
@@ -87,18 +89,14 @@
                                 </button>
                             {:else}
                                 <button
-                                    class={currentCharacter.chats[currentCharacter.chatPage].modules?.includes(
-                                        rmodule.id,
-                                    )
+                                    class={currentChat.modules?.includes(rmodule.id)
                                         ? "mr-2 cursor-pointer text-blue-500"
                                         : currentCharacter?.modules?.includes(rmodule.id)
                                           ? "mr-2 cursor-pointer text-violet-500"
                                           : "text-textcolor2 hover:text-blue-400 mr-2 cursor-pointer"}
                                     onclick={async (e) => {
                                         e.stopPropagation();
-                                        const chatModules = [
-                                            ...(currentCharacter.chats[currentCharacter.chatPage].modules ?? []),
-                                        ];
+                                        const chatModules = [...(currentChat.modules ?? [])];
                                         setCurrentChatMeta({
                                             modules: chatModules.includes(rmodule.id)
                                                 ? chatModules.filter((id) => id !== rmodule.id)

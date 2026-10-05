@@ -157,7 +157,9 @@ describe("server copies of a character", () => {
             }),
         ).toBe(true);
         expect(held.content).toBe("from the plugin");
-        expect(character("c").chats).toBe(chats);
+        // Phase 6 slice 9a: `chats` is a fresh array on every read; the chats are the same ones.
+        expect(character("c").chats).toEqual(chats);
+        character("c").chats.forEach((entry: unknown, index: number) => expect(entry).toBe(chats[index]));
         held.content = "edited in the editor";
         await sync.flushResources();
         expect(record("characters", "c").globalLore).toEqual([{ key: "k", content: "edited in the editor" }]);
@@ -166,18 +168,21 @@ describe("server copies of a character", () => {
 
 describe("the snapshot getters (plan review point 6)", () => {
     it("give a detached copy with the chats; writing into it changes and saves nothing", async () => {
-        const { fake, sync, database, character, stores } = await boot();
+        const { fake, sync, database, character, stores, chat } = await boot();
         stores.selectedCharID.set(0);
         for (const copy of [
             database.getCurrentCharacter({ snapshot: true }) as any,
             database.getCharacterByIndex(0, { snapshot: true }) as any,
         ]) {
             expect(copy.chaId).toBe("c");
-            expect(copy.chats.map((chat: any) => chat.id)).toEqual(["k", "j"]);
+            // Phase 6 slice 9a: a snapshot carries no chats; the legacy shape is built with `withChatsCopy`.
+            expect(copy).not.toHaveProperty("chats");
+            const legacy = chat.withChatsCopy(copy) as any;
+            expect(legacy.chats.map((entry: any) => entry.id)).toEqual(["k", "j"]);
             expect(copy).not.toBe(character("c"));
-            expect(copy.chats).not.toBe(character("c").chats);
+            expect(legacy.chats[0]).not.toBe(character("c").chats[0]);
             copy.name = "changed in the copy";
-            copy.chats[0].message.push(m("z", "Z"));
+            legacy.chats[0].message.push(m("z", "Z"));
         }
         expect(character("c").name).toBe("C");
         expect(character("c").chats[0].message).toHaveLength(3);
@@ -257,9 +262,10 @@ describe("work outside the character record", () => {
         ]);
         const copy = fake.chat("c", "j")!;
         expect(chat.hydrateChat({ characterId: "c", id: "j", revision: copy.revision, data: copy.data })).toBe(true);
-        // The render key and the chat page are local fields too.
+        // The render key is a local field too, and the chat page is the chat module's selection
+        // (Phase 6 slice 9a: a wrapper refuses a `chatPage` write).
         character("c").reloadKeys = (character("c").reloadKeys ?? 0) + 1;
-        character("c").chatPage = 0;
+        chat.selectChat("c", 0);
         await tick();
         await sync.flushResources();
         await vi.advanceTimersByTimeAsync(3000);

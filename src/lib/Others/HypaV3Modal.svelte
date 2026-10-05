@@ -32,13 +32,14 @@
     import { shouldShowSummary, isGuidLike, parseSelectionInput } from "./HypaV3Modal/utils";
     import type { OpenAIChat } from "src/ts/process/index.svelte";
 
-    import { currentChatRef, setChatMeta } from "src/ts/storage/chatStore.svelte";
+    import { currentChatRef, setChatMeta, selectedChat } from "src/ts/storage/chatStore.svelte";
     import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
 
     const currentCharacter = $derived(selectedCharacter());
+    const currentChat = $derived(selectedChat());
     /** The selected chat's memory data as the chat holds it (read-only). */
-    const chatHypaV3Data = $derived(currentCharacter.chats[currentCharacter.chatPage].hypaV3Data);
+    const chatHypaV3Data = $derived(currentChat.hypaV3Data);
 
     // The modal and its children edit a copy of the memory data; every change of the copy is written
     // to the chat through the chat module, and a change of the chat's copy from elsewhere (a
@@ -619,7 +620,7 @@
 
     function isHypaV2ConversionPossible(): boolean {
         const char = currentCharacter;
-        const chat = char.chats[currentCharacter.chatPage];
+        const chat = selectedChat();
 
         return chat.hypaV3Data?.summaries?.length === 0 && chat.hypaV2Data != null;
     }
@@ -627,7 +628,7 @@
     function convertHypaV2ToV3(): { success: boolean; error?: string } {
         try {
             const char = currentCharacter;
-            const chat = char.chats[currentCharacter.chatPage];
+            const chat = selectedChat();
             const hypaV2Data = chat.hypaV2Data;
 
             if (chat.hypaV3Data?.summaries?.length > 0) {

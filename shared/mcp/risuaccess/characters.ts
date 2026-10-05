@@ -63,7 +63,7 @@ export class CharacterHandler extends MCPToolHandler {
         id: string,
         tool: string,
         action: (name: string) => string,
-        write: (char: DeepReadonly<character>) => RPCToolCallContent[],
+        write: (char: DeepReadonly<Omit<character, "chats" | "chatPage">>) => RPCToolCallContent[],
     ): Promise<RPCToolCallContent[]> {
         const char = this.host.getCharacter(id);
         if (!char) {

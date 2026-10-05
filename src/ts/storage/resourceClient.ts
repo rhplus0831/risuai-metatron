@@ -158,21 +158,30 @@ async function sendJson<T>(path: string, init: RequestInit & { mutation?: boolea
 
 const jsonHeaders = { "content-type": "application/json" };
 
-/** Every record of `kinds`; with `chats`, also every chat and chat order (the boot read). */
+/**
+ * Every record of `kinds`; with `chats`, also every chat and chat order (the boot read); with
+ * `chatSummaries` (not together with `chats`), every chat's summary and chat order instead.
+ */
 export async function readKinds(
     kinds: readonly string[],
-    options: { chats?: boolean } = {},
+    options: { chats?: boolean; chatSummaries?: boolean } = {},
 ): Promise<ResourceReadKindsResult> {
-    const query = `kinds=${kinds.map(encodeURIComponent).join(",")}${options.chats ? "&chats=1" : ""}`;
+    const query =
+        `kinds=${kinds.map(encodeURIComponent).join(",")}` +
+        `${options.chats ? "&chats=1" : ""}${options.chatSummaries ? "&chatSummaries=1" : ""}`;
     return checkedEpoch(await sendJson<ResourceReadKindsResult>(`/api/resources?${query}`));
 }
 
-/** Named records, chats (`chats`), and characters' whole chat lists with their order (`chatCollections`). */
+/**
+ * Named records, chats (`chats`), characters' whole chat lists with their order (`chatCollections`),
+ * and characters' chat summaries with their order (`chatSummaryCollections`).
+ */
 export async function readRefs(
     refs: readonly { kind: string; id: string }[],
     options: {
         chats?: readonly { characterId: string; id: string }[];
         chatCollections?: readonly string[];
+        chatSummaryCollections?: readonly string[];
     } = {},
 ): Promise<ResourceReadRefsResult> {
     return checkedEpoch(

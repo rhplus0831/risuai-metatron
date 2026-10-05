@@ -2,9 +2,8 @@ import fc from "fast-check";
 import { writable } from "svelte/store";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { risuChatParser } from "../../parser.svelte";
-import { initializeRecords, takeRecordFields } from "../../../storage/records.svelte";
 import { selection } from "../../../storage/selection.svelte";
-import { trimVarPrefix, validCBSArgProp } from "./lib";
+import { holdMockedChats, trimVarPrefix, validCBSArgProp } from "./lib";
 
 //#region module mocks
 
@@ -14,7 +13,6 @@ vi.mock(
         ({
             appVer: "1234.5.67",
             getCurrentCharacter: () => ({}),
-            getCurrentChat: () => ({}),
             getDatabase: () => ({}),
         }) as typeof import("../../../storage/database.svelte"),
 );
@@ -24,14 +22,22 @@ vi.mock(import("../../../globalApi.svelte"), () => ({
     getFileSrc: () => Promise.resolve(""),
 }));
 
-/** Returns accessed key as the value. */
+/**
+ * Returns accessed key as the value. It reports no prototype and answers no symbol key, so the chat
+ * module's `$state` holds it as it is (Phase 6 slice 9a: the selected chat is read from the chat
+ * module, and `$state` would wrap a plain object in its own proxy, which answers only the keys the
+ * storage has).
+ */
 const varStorage = vi.hoisted(
     () =>
         new Proxy(
             {},
             {
                 get(_, prop) {
-                    return trimVarPrefix(prop);
+                    return typeof prop === "symbol" ? undefined : trimVarPrefix(prop);
+                },
+                getPrototypeOf() {
+                    return null;
                 },
             },
         ),
@@ -79,11 +85,10 @@ vi.mock(import("../../../storage/settingsViews.svelte"), async (importOriginal) 
 
 // The template's default variables live in the selected preset's record (installed as
 // `setDatabaseLite` installs a database); the character stays on `DBState.db`.
-initializeRecords(
-    takeRecordFields({
-        botPresets: [{ id: "preset", name: "Preset", templateDefaultVariables: "" }],
-    }),
-);
+// Since Phase 6 slice 9a a copy of the character is in the records too, and its chat in the chat module.
+holdMockedChats({
+    botPresets: [{ id: "preset", name: "Preset", templateDefaultVariables: "" }],
+});
 
 // The readers resolve the selected character by `selection.characterId` (Phase 6 slice 8), over
 // the character list (`characterList()`, here the mocked `DBState.db.characters`): the fixture's

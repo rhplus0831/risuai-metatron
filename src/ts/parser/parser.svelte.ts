@@ -1,4 +1,5 @@
-import { selectedCharacter } from "../storage/characterStore.svelte";
+import { type AnyClientCharacter, selectedCharacter } from "../storage/characterStore.svelte";
+import { withCompatChats } from "../storage/chatStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";
 import DOMPurify from "dompurify";
 import markdownit from "markdown-it";
@@ -484,7 +485,7 @@ const videoExtensions = ["mp4", "webm", "avi", "m4p", "m4v"];
 
 async function parseAdditionalAssets(
     data: string,
-    char: simpleCharacterArgument | character,
+    char: simpleCharacterArgument | character | AnyClientCharacter,
     mode: "normal" | "back",
     arg: { ch: number },
 ) {
@@ -604,7 +605,11 @@ async function parseAdditionalAssets(
     return data;
 }
 
-function getClosestMatch(char: simpleCharacterArgument | character, name: string, assetPaths: AssetPaths) {
+function getClosestMatch(
+    char: simpleCharacterArgument | character | AnyClientCharacter,
+    name: string,
+    assetPaths: AssetPaths,
+) {
     if (!char.additionalAssets) return null;
 
     let closest = "";
@@ -750,7 +755,7 @@ function parseThoughtsAndTools(data: string) {
 
 export async function ParseMarkdown(
     data: string,
-    charArg: character | simpleCharacterArgument | groupChat | string = null,
+    charArg: character | simpleCharacterArgument | groupChat | AnyClientCharacter | string = null,
     mode: "normal" | "back" | "pretranslate" | "notrim" = "normal",
     chatID = -1,
     cbsConditions: CbsConditions = {},
@@ -1110,12 +1115,26 @@ function clientCbsHost(): CbsHost {
         getTriggerId: () => get(CurrentTriggerIdStore),
         getViewport: () => ({ width: window.innerWidth, height: window.innerHeight }),
         getBrowserLanguage: () => navigator.language,
-        findCharacterById: findCharacterbyId,
+        // The shared evaluator reads the legacy shape (its chats) until `aggregate-removal`.
+        findCharacterById: (id) => withCompatChats(findCharacterbyId(id)) as character,
     };
 }
 
-export function risuChatParser(da: string, arg: CbsParseArg = {}): string {
-    return clientCbsEvaluator().risuChatParser(da, arg);
+/** `CbsParseArg` as the client passes it: `chara` may be a chat-free client character (Phase 6 slice 9a). */
+export type ClientCbsParseArg = Omit<CbsParseArg, "chara"> & {
+    chara?: CbsParseArg["chara"] | AnyClientCharacter | null;
+};
+
+/** The argument the shared evaluator gets: a character in the legacy shape it reads (`withCompatChats`). */
+function sharedParseArg(arg: ClientCbsParseArg): CbsParseArg {
+    if (!arg.chara || typeof arg.chara !== "object") {
+        return arg as CbsParseArg;
+    }
+    return { ...arg, chara: withCompatChats(arg.chara) as character | groupChat };
+}
+
+export function risuChatParser(da: string, arg: ClientCbsParseArg = {}): string {
+    return clientCbsEvaluator().risuChatParser(da, sharedParseArg(arg));
 }
 
 const presetFieldOf: Record<string, string> = PRESET_ROOT_ALIASES;
@@ -1132,7 +1151,7 @@ const scopedEvaluators = new Map<string, CbsEvaluator>();
  */
 export function risuChatParserScoped(
     da: string,
-    arg: CbsParseArg,
+    arg: ClientCbsParseArg,
     scope: { presetId: string; personaId: string },
 ): string {
     const key = `${scope.presetId}\u0000${scope.personaId}`;
@@ -1187,7 +1206,7 @@ export function risuChatParserScoped(
         }
         scopedEvaluators.set(key, evaluator);
     }
-    return evaluator.risuChatParser(da, arg);
+    return evaluator.risuChatParser(da, sharedParseArg(arg));
 }
 
 export function applyMarkdownToNode(node: Node) {

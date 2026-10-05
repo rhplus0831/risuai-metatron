@@ -1,4 +1,4 @@
-import { selectedCharacter } from "../../storage/characterStore.svelte";
+import { type ClientCharacter, selectedCharacter } from "../../storage/characterStore.svelte";
 import { settings, activePreset } from "../../storage/settingsViews.svelte";
 import { language } from "../../../lang";
 import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/modellist";
@@ -26,7 +26,7 @@ interface requestDataArgument {
     formated: OpenAIChat[];
     bias: { [key: number]: number };
     biasString?: [string, number][];
-    currentChar?: character;
+    currentChar?: ClientCharacter;
     temperature?: number;
     maxTokens?: number;
     PresensePenalty?: number;
