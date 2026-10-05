@@ -1,9 +1,9 @@
 <script>
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { alertConfirm, alertError } from "../../ts/alert";
     import { language } from "../../lang";
 
-    import { DBState } from "src/ts/stores.svelte";
-    import { ReloadGUIPointer, selectedCharID } from "../../ts/stores.svelte";
+    import { ReloadGUIPointer } from "../../ts/stores.svelte";
     import { DownloadIcon, SquarePenIcon, HardDriveUploadIcon, PlusIcon, TrashIcon, XIcon } from "@lucide/svelte";
     import { exportChat, importChat } from "../../ts/characters";
     import { findCharacterbyId } from "../../ts/util";
@@ -11,6 +11,7 @@
     import { changeChatTo } from "src/ts/globalApi.svelte";
     import { createChat, deleteChat, isChatGenerating, setChatMeta } from "src/ts/storage/chatStore.svelte";
 
+    const currentCharacter = $derived(selectedCharacter());
     let editMode = $state(false);
     /** @type {{close?: any}} */
     let { close = () => {} } = $props();
@@ -26,7 +27,7 @@
                 </button>
             </div>
         </div>
-        {#each DBState.db.characters[$selectedCharID].chats as chat, i}
+        {#each currentCharacter.chats as chat, i}
             <button
                 onclick={() => {
                     if (!editMode) {
@@ -35,14 +36,14 @@
                     }
                 }}
                 class="flex items-center text-textcolor border-t-1 border-solid border-0 border-darkborderc p-2 cursor-pointer"
-                class:bg-selected={i === DBState.db.characters[$selectedCharID].chatPage}
+                class:bg-selected={i === currentCharacter.chatPage}
             >
                 {#if editMode}
                     <TextInput
                         value={chat.name}
                         oninput={(e) =>
                             setChatMeta(
-                                { chaId: DBState.db.characters[$selectedCharID].chaId, chatId: chat.id },
+                                { chaId: currentCharacter.chaId, chatId: chat.id },
                                 { name: e.currentTarget.value },
                             )}
                         padding={false}
@@ -69,11 +70,11 @@
                         tabindex="0"
                         onclick={async (e) => {
                             e.stopPropagation();
-                            if (DBState.db.characters[$selectedCharID].chats.length === 1) {
+                            if (currentCharacter.chats.length === 1) {
                                 alertError(language.errors.onlyOneChat);
                                 return;
                             }
-                            const ref = { chaId: DBState.db.characters[$selectedCharID].chaId, chatId: chat.id };
+                            const ref = { chaId: currentCharacter.chaId, chatId: chat.id };
                             if (isChatGenerating(ref)) {
                                 alertError(language.chatGenerating);
                                 return;
@@ -99,8 +100,8 @@
             <button
                 class="text-textcolor2 hover:text-green-500 cursor-pointer mr-1"
                 onclick={() => {
-                    const cha = DBState.db.characters[$selectedCharID];
-                    const len = DBState.db.characters[$selectedCharID].chats.length;
+                    const cha = currentCharacter;
+                    const len = currentCharacter.chats.length;
                     // A group chat starts with each member's first message.
                     const message =
                         cha.type === "group"

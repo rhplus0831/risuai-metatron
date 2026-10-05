@@ -1,10 +1,11 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { useLocalLoreDraft } from "src/ts/storage/localLoreDraft.svelte";
     import { XIcon, LinkIcon, SunIcon, BookCopyIcon, FolderIcon, FolderOpen, PlusIcon } from "@lucide/svelte";
     import { v4 } from "uuid";
     import { language } from "../../../lang";
-    import { getCurrentCharacter, getCurrentChat, type loreBook } from "../../../ts/storage/database.svelte";
+    import { getCurrentChat, type loreBook } from "../../../ts/storage/database.svelte";
     import { alertConfirm, alertMd } from "../../../ts/alert";
     import Check from "../../UI/GUI/CheckInput.svelte";
     import Help from "../../Others/Help.svelte";
@@ -87,7 +88,7 @@
     }
     function getParentLoreName(book: loreBook) {
         if (book.mode === "child") {
-            const value = getCurrentCharacter()?.globalLore.find((e) => e.id === book.id);
+            const value = selectedCharacter()?.globalLore.find((e) => e.id === book.id);
             if (value) {
                 return value.comment.length === 0
                     ? value.key.length === 0
@@ -296,7 +297,7 @@
                 <div class="flex items-center mt-4">
                     <Check bind:check={value.alwaysActive} name={language.alwaysActive} />
                 </div>
-                {#if !value.alwaysActive && getCurrentCharacter()?.globalLore?.includes(value) && settings.ui.localActivationInGlobalLorebook}
+                {#if !value.alwaysActive && selectedCharacter()?.globalLore?.includes(value) && settings.ui.localActivationInGlobalLorebook}
                     <div class="flex items-center mt-2">
                         <Check
                             check={isLocallyActivated(value)}

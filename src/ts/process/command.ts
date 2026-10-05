@@ -1,5 +1,5 @@
+import { characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { get } from "svelte/store";
-import { getDatabase } from "../storage/database.svelte";
 import {
     appendMessage,
     type ChatRef,
@@ -9,7 +9,6 @@ import {
     setChatMeta,
     setMessageText,
 } from "../storage/chatStore.svelte";
-import { selectedCharID } from "../stores.svelte";
 import { alertInput, alertMd, alertNormal, alertSelect } from "../alert";
 import { sayTTS } from "./tts";
 import { risuChatParser } from "../parser/parser.svelte";
@@ -91,10 +90,7 @@ export async function processMultiCommand(command: string, ref: ChatRef | null =
 }
 
 async function processCommand(command: string, pipe: string, ref: ChatRef | null): Promise<false | string> {
-    const db = getDatabase();
-    const currentChar = ref
-        ? db.characters.find((character) => character?.chaId === ref.chaId)
-        : db.characters[get(selectedCharID)];
+    const currentChar = ref ? characterList().find((character) => character?.chaId === ref.chaId) : selectedCharacter();
     if (!currentChar) {
         // Its character went away; `false` would mean "not a command" and send the line as text.
         return "";

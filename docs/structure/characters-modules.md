@@ -50,7 +50,7 @@
 - `interchangeability.ts`: `convertModuleToCharacter`, `convertCharacterToModule`, persona↔character, persona↔module (an embedded module ID is normalized to `$embedded`).
 - `persona.ts`: `changeUserPersona(id)` (selects the persona for this client; the persona fields are forwarded, so nothing is copied), `selectUserImg` (captures the selected persona before the file dialog and sets its icon, keeping its id, so bound chats stay bound). `exportUserPersona`/`importUserPersona` use a PNG `persona` tEXt chunk.
 - UI:
-  - `CharConfig.svelte`: the main editor, binding `DBState.db.characters[$selectedCharID]`. Tabs cover identity, greetings, images, emotions, assets, lore, regex, triggers, TTS, export, and delete.
+  - `CharConfig.svelte`: the main editor, binding the selected character's record (`currentCharacter`, `$derived(selectedCharacter())`). Tabs cover identity, greetings, images, emotions, assets, lore, regex, triggers, TTS, export, and delete.
   - Lorebook:
     - `LoreBookSetting.svelte`: tabs for character, chat, and settings.
     - `LoreBookList.svelte`: SortableJS lists and folders.
@@ -140,7 +140,8 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 
 ## Tests
 
-- `src/ts/characterCardsImport.test.ts`: JSON V2, off-spec JSON, PNG, and CharX imports over the real store (fixtures in `storage/tests/importFixtures.ts`), the stamp, and a refused card.
+- `src/ts/characterCardsImport.test.ts`: JSON V2, off-spec JSON, PNG, and CharX imports over the real store (fixtures in `storage/tests/importFixtures.ts`), the stamp, and a refused card. It also checks that each import returns its own `chaId` (also when two run at once), and that a multi-file `importCharacter` returns the last one imported, or `null` when none was.
+- `src/ts/charactersCapture.test.ts`: `changeChar` and the add dialog select by id. `addCharEmotion`, `exportChat`, `addGroupChar`, and `applyModule` keep the target they captured before their awaits.
 - `src/ts/charactersImportChat.test.ts`: `importChat`'s target captured before the dialog (the selection moved, a reorder, a same-id replacement, a deletion), name substitution, and folder remapping.
 - `src/ts/process/modulesImport.test.ts`: `importModule` for `.risum`, CharX, module JSON, lore, and regex files, and a refused CharX module.
 - `src/ts/personaImport.test.ts` and `src/ts/process/lorebookImport.test.ts`: the persona import's id and icon order, the persona export keeping the persona selected at its start while the selection and the name change during its awaits, and the global lore import by the captured id.

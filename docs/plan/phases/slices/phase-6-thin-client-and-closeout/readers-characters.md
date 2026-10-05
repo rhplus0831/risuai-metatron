@@ -1,6 +1,6 @@
 # Slice: Readers, Characters
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented 2026-10-05 (see "Implementation notes").
 
 Phase: [Phase 6](../../phase-6-thin-client-and-closeout.md), "Projections" (`CharConfig.svelte`,
 `DefaultChatScreen.svelte`, and `Chat.svelte` of the named top consumers, for their character
@@ -90,3 +90,80 @@ lists only chat reads (`.chats[` and `.chatPage`) owned by the next slice.
 
 The chat reads inside the same components stay on the facade until
 `chat-projection-and-lazy-loading`; these files are edited again there (sequential).
+
+## Implementation notes (2026-10-05)
+
+After the plan review (Astra, segment C):
+
+- **The readers' API** (`characterStore.svelte.ts`): `selectedCharacter()` (already there), `characterList()`
+  (the list wrapper), `characterSnapshot(chaId)` (a detached copy with its chats); `findCharacter` stays
+  read-only typed, and a writer uses the writable wrapper from `characterList()`/`selectedCharacter()` or a
+  mutation function. A component reads the selected character as
+  `const currentCharacter = $derived(selectedCharacter())` (one lookup per selection or membership change); a
+  handler that runs later reads `selectedCharacter()` when it runs. `Toggles`/`SideChatList` get the record as
+  a plain prop (they never reassign it). A scripted rewrite replaced the `characters[$selectedCharID]`,
+  `characters[selIdState.selId]`, `characters[get(selectedCharID)]` reads and `getCurrentCharacter()`; the rest
+  was done by hand.
+- **Ids, not indexes.** Home checks test for no selected character; active rows and change detection compare
+  `chaId`s (`DefaultChatScreen`'s reroll reset and auto mode, `Suggestion`'s request guard). The Sidebar,
+  grid catalog, and mobile list rows carry their `chaId`, and `changeChar(chaId)` selects it.
+  `selectCharImg`, `dumpCharImage`, `changeCharImage`, `addCharEmotion`, `rmCharEmotion`, and `exportChar`
+  take a `chaId`. Handlers that await capture the character first and find it again after each await:
+  `exportChat`, `addCharEmotion`, `addGroupChar`, `applyModule` (now targeting the character selected when
+  its dialog opened), CharConfig's additional assets, VITS model, and reference audio, and the Sidebar's
+  folder actions (by folder id). `applyModule`'s write-back is gone (its pushes write through).
+- **Imports** return the new character's `chaId` from every branch (`importCharacterCardSpec`,
+  `importCharacterProcess`, `importCharacter` the last one it imported, `createNewCharacter`,
+  `createNewGroup`), and `addCharacter()` and the Realm import select that id, not the last in the list;
+  `returnCharacter` mode still returns the detached character.
+- **Hotkeys** sort a copy of the list by name and step by `chaId`. The bounds are fixed: previous does nothing
+  from the first character or home, next does nothing from the last and selects the first from home (they
+  used to refuse position 0 both ways, previous refused the last, and previous from home threw).
+- **Plugin index APIs** keep the list position as their index (`getCharacterFromIndex`, `setCharacterToIndex`,
+  `getChatFromIndex`, `setChatToIndex`, `getCurrentCharacterIndex`, a hook's `characterIndex`).
+- **The order:** the Sidebar's reorders, `getFolderIndex`, and `checkCharOrder` read and write
+  `settings.characterOrder` and resolve characters through `characterList()`.
+- **Left in place**, with their owners: the chat module's reads (`chatStore.svelte.ts`) and
+  `localLoreDraft.svelte.ts` (slice 9a); for slice 10, `database.svelte.ts`' legacy wrappers
+  (`getCurrentCharacter`, `setCurrentCharacter`, `getCharacterByIndex`, no caller left outside storage),
+  `characterStore`'s own `list()`, the records and resource sync, the boot assembly, the snapshot consumers
+  (`backuplocal.ts`, `exportAsDataset.ts`), the CBS host's `getSelectedCharID`, and `selectedCharID`/`selIdState`
+  as subscription shims.
+- **After the challenge** (Astra, 2026-10-05): the Sidebar's folder menu captures the folder's id and name
+  before its first dialog (the row it reads from is live); `exportChat` captures the chat's id with the
+  character's and exports a copy of that chat; `importCharacter` returns the last id it imported even when a
+  later file throws; the hotkeys read the selected id once.
+
+### Measurements
+
+`util/playwright/measureCharacters.mjs` (300 characters, one with a 300-entry lorebook and a 400-message
+chat), production builds, headless Chrome, against the slice 7 build (`d6fd621b`) on the same machine;
+task-latency medians of 10 (typing: 101), two runs each:
+
+| Workload                         | Baseline (`d6fd621b`) | This slice       |
+| -------------------------------- | --------------------- | ---------------- |
+| Select the big character         | 37.0 / 37.6 ms        | 36.1 / 36.6 ms   |
+| Select a small character         | 7.0 / 7.1 ms          | 7.2 / 8.1 ms     |
+| A keystroke into the description | 10.4 / 10.6 ms        | 10.0 / 10.1 ms   |
+| Lorebook drag, 300 entries       | 115.4 / 117.9 ms      | 109.1 / 105.5 ms |
+
+Every check passed in all four runs (the typed description and the dragged order on the server, one batch
+each, no page error, no unexpected egress).
+
+### After the review
+
+The review (2026-10-05) found no problem.
+
+- **Before the review:** in `characterStore.svelte.ts`, the `./selection.svelte` import was moved ahead of `../stores.svelte`. The modules `stores.svelte` and `parser.svelte` now import `characterStore`. Under Vitest's loader, their module effects called `selectedCharacter()` before `selection` was bound, which threw 14 unhandled TDZ errors. While modules load, `selection.characterId` is `null`, so the call now returns early. Native ESM is not affected.
+- **After the review:** three small fixes.
+  - `SideChatList` passes `chara` to `Toggles` without `bind:`. The binding produced Svelte's dev-only `ownership_invalid_binding` warning.
+  - An unused import was removed from `chatTemplate.ts`.
+  - `activeHotkeys`' doc comment is back above it.
+- **Review-step tests:**
+  - New files: `src/ts/charactersCapture.test.ts` and `e2e/readersCharacters.spec.ts`.
+  - Cases added to:
+    - `hotkey.test.ts`: the bounds of the first, last, and home positions;
+    - `storage/tests/characterStore.test.ts`: reads follow the id across a removal;
+    - `characterCardsImport.test.ts`: the returned ids;
+    - `plugins/apiV3/hostApi.test.ts`: the index APIs keep the list position.
+- **Defect at the base, not fixed here:** a lorebook entry's prompt can still have focus when the selection changes, for example by the next-character hotkey. When the field unmounts, its `onchange` writes into the new character's missing entry. This throws `TypeError` and then `state_unsafe_mutation`, and CharConfig stops following its submenu. A mouse click blurs the field first, so clicking does not trigger it.

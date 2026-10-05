@@ -1,6 +1,7 @@
+import { selectCharacter } from "./storage/selection.svelte";
 import { settings } from "./storage/settingsViews.svelte";
 import { get, writable } from "svelte/store";
-import { saveImage, type character, type Chat, defaultSdDataFunc, getDatabase } from "./storage/database.svelte";
+import { saveImage, type character, type Chat, defaultSdDataFunc } from "./storage/database.svelte";
 import { alertAddCharacter, alertConfirm, alertError, alertNormal, alertSelect, alertStore, alertWait } from "./alert";
 import { language } from "../lang";
 import {
@@ -13,12 +14,14 @@ import {
 } from "./util";
 import { v4 as uuidv4, v4 } from "uuid";
 import { getImageType } from "./media";
-import { DBState, OpenRealmStore, selectedCharID } from "./stores.svelte";
+import { OpenRealmStore } from "./stores.svelte";
 import {
     addCharacter as addCharacterRecord,
     findCharacter,
     removeCharacter,
+    selectedCharacter,
     updateCharacter,
+    characterList,
 } from "./storage/characterStore.svelte";
 import { AppendableBuffer, changeChatTo, checkCharOrder, downloadFile, getFileSrc } from "./globalApi.svelte";
 import { parseMarkdownSafe } from "./parser/parser.svelte";
@@ -29,7 +32,7 @@ import { importCharacter } from "./characterCards";
 import { PngChunk } from "./pngChunk";
 
 export function createNewCharacter() {
-    return findCharacterIndexbyId(addCharacterRecord(createBlankChar()));
+    return addCharacterRecord(createBlankChar());
 }
 
 export function createNewGroup() {
@@ -60,7 +63,7 @@ export function createNewGroup() {
         characterTalks: [],
         characterActive: [],
     });
-    return findCharacterIndexbyId(chaId);
+    return chaId;
 }
 
 export async function getCharImage(loc: string, type: "plain" | "css" | "contain" | "lgcss") {
@@ -90,12 +93,16 @@ export async function getCharImage(loc: string, type: "plain" | "css" | "contain
     }
 }
 
-export async function selectCharImg(charIndex: number) {
-    const target = DBState.db.characters[charIndex];
+/** The character record with `chaId` (its writable wrapper), or `undefined`. */
+function characterRecord(chaId: string) {
+    return characterList().find((entry) => entry?.chaId === chaId);
+}
+
+export async function selectCharImg(chaId: string) {
+    const target = characterRecord(chaId);
     if (!target) {
         return;
     }
-    const chaId = target.chaId;
     const isCharacter = target.type === "character";
     const selected = await selectSingleFile(["png", "webp", "gif", "jpg", "jpeg"]);
     if (!selected) {
@@ -142,22 +149,21 @@ export async function selectCharImg(charIndex: number) {
     }
 
     const imgp = await saveImage(img);
-    charIndex = findCharacterIndexbyId(chaId);
-    if (charIndex === -1) {
+    const current = characterRecord(chaId);
+    if (!current) {
         return;
     }
-    const current = DBState.db.characters[charIndex];
     if (current.type === "character" && Object.keys(pngExif).length > 0) {
         current.extentions ??= {};
         current.extentions.pngExif = { ...current.extentions.pngExif, ...pngExif };
     }
-    dumpCharImage(charIndex);
+    dumpCharImage(chaId);
     current.image = imgp;
 }
 
-export function dumpCharImage(charIndex: number) {
-    const char = DBState.db.characters[charIndex] as character;
-    if (!char.image || char.image === "") {
+export function dumpCharImage(chaId: string) {
+    const char = characterRecord(chaId) as character | undefined;
+    if (!char || !char.image || char.image === "") {
         return;
     }
     char.ccAssets ??= [];
@@ -170,45 +176,51 @@ export function dumpCharImage(charIndex: number) {
     char.image = "";
 }
 
-export function changeCharImage(charIndex: number, changeIndex: number) {
-    const char = DBState.db.characters[charIndex] as character;
+export function changeCharImage(chaId: string, changeIndex: number) {
+    const char = characterRecord(chaId) as character | undefined;
+    if (!char) {
+        return;
+    }
     const image = char.ccAssets[changeIndex].uri;
     char.ccAssets.splice(changeIndex, 1);
-    dumpCharImage(charIndex);
+    dumpCharImage(chaId);
     char.image = image;
 }
 
 export const addingEmotion = writable(false);
 
-export async function addCharEmotion(charId: number) {
+export async function addCharEmotion(chaId: string) {
     addingEmotion.set(true);
     const selected = await selectMultipleFile(["png", "webp", "gif"]);
     if (!selected) {
         addingEmotion.set(false);
         return;
     }
-    let db = DBState.db;
     for (const f of selected) {
         const img = f.data;
         const imgp = await saveImage(img);
         const name = f.name.replace(".png", "").replace(".webp", "");
-        let dbChar = db.characters[charId];
-        if (dbChar.type !== "group") {
+        // Found again after each save: the character can be deleted meanwhile.
+        const dbChar = characterRecord(chaId);
+        if (dbChar && dbChar.type !== "group") {
             dbChar.emotionImages.push([name, imgp]);
         }
     }
     addingEmotion.set(false);
 }
 
-export function rmCharEmotion(charId: number, emotionId: number) {
-    let dbChar = DBState.db.characters[charId];
-    if (dbChar.type !== "group") {
+export function rmCharEmotion(chaId: string, emotionId: number) {
+    const dbChar = characterRecord(chaId);
+    if (dbChar && dbChar.type !== "group") {
         dbChar.emotionImages.splice(emotionId, 1);
     }
 }
 
 export async function exportChat(page: number) {
     try {
+        // The character and chat are the ones selected now, whatever the selection is after the dialogs.
+        const chaId = selectedCharacter()?.chaId;
+        const chatId = selectedCharacter()?.chats?.[page]?.id;
         const mode = await alertSelect([
             "Export as JSON",
             "Export as TXT",
@@ -223,10 +235,13 @@ export async function exportChat(page: number) {
             mode === "2" || mode === "3"
                 ? (await alertSelect([language.includePersonaName, language.hidePersonaName])) === "1"
                 : false;
-        const selectedID = get(selectedCharID);
-        const db = DBState.db;
-        const chat = db.characters[selectedID].chats[page];
-        const char = db.characters[selectedID];
+        const char = chaId === undefined ? undefined : characterRecord(chaId);
+        const found = char?.chats?.find((entry) => entry?.id === chatId);
+        if (!char || chatId === undefined || !found) {
+            return;
+        }
+        // A copy: the chat can change while the export translates.
+        const chat = JSON.parse(JSON.stringify(found)) as Chat;
         const date = new Date().toJSON();
         const htmlChatParse = async (v: string) => {
             v = parseMarkdownSafe(v);
@@ -248,7 +263,7 @@ export async function exportChat(page: number) {
         if (mode === "0") {
             let folders = [];
             if (chat.folderId) {
-                folders = db.characters[selectedID].chatFolders?.filter((f) => f.id === chat.folderId);
+                folders = char.chatFolders?.filter((f) => f.id === chat.folderId);
             }
             const stringl = Buffer.from(
                 JSON.stringify({
@@ -411,7 +426,7 @@ export async function exportChat(page: number) {
 
 export async function importChat() {
     // The character is the one selected when the import starts, captured by id before the file dialog.
-    const chaId = DBState.db.characters[get(selectedCharID)]?.chaId;
+    const chaId = selectedCharacter()?.chaId;
     if (!chaId) {
         return;
     }
@@ -469,7 +484,7 @@ export async function importChat() {
 
             addChats([newChat]);
             // Only while the importing character is still the one on screen.
-            if (DBState.db.characters[get(selectedCharID)]?.chaId === chaId) {
+            if (selectedCharacter()?.chaId === chaId) {
                 changeChatTo(0);
             }
             alertNormal(language.successImport);
@@ -560,9 +575,7 @@ export async function importChat() {
 
 export async function exportAllChats() {
     try {
-        const selectedID = get(selectedCharID);
-        const db = getDatabase();
-        const char = db.characters[selectedID];
+        const char = selectedCharacter();
         const date = new Date().toISOString().replace(/[:.]/g, "-");
         const allChats = char.chats;
         const allFolders = char.chatFolders;
@@ -656,10 +669,8 @@ export async function makeGroupImage() {
             type: "wait",
             msg: `Loading..`,
         });
-        const db = getDatabase();
-        const charID = get(selectedCharID);
-        const group = db.characters[charID];
-        if (group.type !== "group") {
+        const group = selectedCharacter();
+        if (group?.type !== "group") {
             return;
         }
         const chaId = group.chaId;
@@ -714,9 +725,9 @@ export async function makeGroupImage() {
         const uri = canvas.toDataURL();
         canvas.remove();
         const image = await saveImage(dataURLtoBuffer(uri));
-        const index = findCharacterIndexbyId(chaId);
-        if (index !== -1) {
-            DBState.db.characters[index].image = image;
+        const target = characterRecord(chaId);
+        if (target) {
+            target.image = image;
         }
         alertStore.set({
             type: "none",
@@ -748,9 +759,8 @@ export async function removeChar(
     name: string,
     type: "normal" | "permanent" | "permanentForce" = "normal",
 ) {
-    const db = getDatabase();
     // The character is resolved by id after the confirmations (the list may change meanwhile).
-    const chaId = typeof identifier === "string" ? identifier : db.characters[identifier]?.chaId;
+    const chaId = typeof identifier === "string" ? identifier : characterList()[identifier]?.chaId;
     if (type !== "permanentForce") {
         const conf = await alertConfirm(language.removeConfirm + name);
         if (!conf) {
@@ -776,7 +786,7 @@ export async function removeChar(
     } else {
         removeCharacter(chaId);
     }
-    selectedCharID.set(-1);
+    selectCharacter(null);
 }
 
 export async function addCharacter(
@@ -787,32 +797,33 @@ export async function addCharacter(
     const reseter = arg.reseter ?? (() => {});
     const r = await alertAddCharacter();
     if (r === "importFromRealm") {
-        selectedCharID.set(-1);
+        selectCharacter(null);
         OpenRealmStore.set(true);
         return;
     }
     reseter();
+    // The character this call created or imported is selected (not whichever is last in the list).
+    let created: string | null;
     switch (r) {
         case "createfromScratch":
-            createNewCharacter();
+            created = createNewCharacter();
             break;
         case "createGroup":
-            createNewGroup();
+            created = createNewGroup();
             break;
         case "importCharacter":
-            await importCharacter();
+            created = await importCharacter();
             break;
         default:
             return;
     }
-    let db = getDatabase();
-    if (db.characters[db.characters.length - 1]) {
-        changeChar(db.characters.length - 1);
+    if (created) {
+        changeChar(created);
     }
 }
 
 export async function changeChar(
-    index: number,
+    chaId: string,
     arg: {
         reseter?: () => any;
     } = {},
@@ -824,10 +835,9 @@ export async function changeChar(
     reseter();
     // A selection only makes sure the character has a chat and shows its chat (owner decision 2: it
     // no longer stamps `lastInteraction`; a send does). The defaults come from creation and the server.
-    const chaId = DBState.db.characters[index]?.chaId;
-    if (chaId !== undefined) {
+    if (characterRecord(chaId)) {
         ensureChat(chaId);
         syncChatPage(chaId);
     }
-    selectedCharID.set(index);
+    selectCharacter(chaId);
 }

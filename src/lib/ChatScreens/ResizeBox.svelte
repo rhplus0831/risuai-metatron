@@ -4,8 +4,6 @@
     import TransitionImage from "./TransitionImage.svelte";
     import { getEmotion } from "../../ts/util";
 
-    import { DBState } from "src/ts/stores.svelte";
-
     let box = $state();
     let isResizing = false;
     let initialWidth;
@@ -60,7 +58,7 @@
 
 <div class="box bg-darkbg/70" bind:this={box} style="width: {$ViewBoxsize.width}px; height: {$ViewBoxsize.height}px;">
     <!-- Your content here -->
-    <TransitionImage classType="risu" src={getEmotion(DBState.db, $CharEmotion, "plain")} />
+    <TransitionImage classType="risu" src={getEmotion($CharEmotion, "plain")} />
     <div
         role="button"
         tabindex="0"

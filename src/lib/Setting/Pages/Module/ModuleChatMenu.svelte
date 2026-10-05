@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { CircleCheckIcon, Waypoints, XIcon } from "@lucide/svelte";
     import { language } from "src/lang";
@@ -6,11 +7,11 @@
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import type { RisuModule } from "src/ts/process/modules";
 
-    import { DBState, ReloadGUIPointer } from "src/ts/stores.svelte";
-    import { selectedCharID } from "src/ts/stores.svelte";
+    import { ReloadGUIPointer } from "src/ts/stores.svelte";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import { SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
 
+    const currentCharacter = $derived(selectedCharacter());
     interface Props {
         close?: any;
         alertMode?: boolean;
@@ -86,19 +87,17 @@
                                 </button>
                             {:else}
                                 <button
-                                    class={DBState.db.characters[$selectedCharID].chats[
-                                        DBState.db.characters[$selectedCharID].chatPage
-                                    ].modules?.includes(rmodule.id)
+                                    class={currentCharacter.chats[currentCharacter.chatPage].modules?.includes(
+                                        rmodule.id,
+                                    )
                                         ? "mr-2 cursor-pointer text-blue-500"
-                                        : DBState.db.characters[$selectedCharID]?.modules?.includes(rmodule.id)
+                                        : currentCharacter?.modules?.includes(rmodule.id)
                                           ? "mr-2 cursor-pointer text-violet-500"
                                           : "text-textcolor2 hover:text-blue-400 mr-2 cursor-pointer"}
                                     onclick={async (e) => {
                                         e.stopPropagation();
                                         const chatModules = [
-                                            ...(DBState.db.characters[$selectedCharID].chats[
-                                                DBState.db.characters[$selectedCharID].chatPage
-                                            ].modules ?? []),
+                                            ...(currentCharacter.chats[currentCharacter.chatPage].modules ?? []),
                                         ];
                                         setCurrentChatMeta({
                                             modules: chatModules.includes(rmodule.id)
@@ -110,16 +109,16 @@
                                     oncontextmenu={(e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
-                                        if (!DBState.db.characters[$selectedCharID].modules) {
-                                            DBState.db.characters[$selectedCharID].modules = [];
+                                        if (!currentCharacter.modules) {
+                                            currentCharacter.modules = [];
                                         }
-                                        if (DBState.db.characters[$selectedCharID].modules.includes(rmodule.id)) {
-                                            DBState.db.characters[$selectedCharID].modules.splice(
-                                                DBState.db.characters[$selectedCharID].modules.indexOf(rmodule.id),
+                                        if (currentCharacter.modules.includes(rmodule.id)) {
+                                            currentCharacter.modules.splice(
+                                                currentCharacter.modules.indexOf(rmodule.id),
                                                 1,
                                             );
                                         } else {
-                                            DBState.db.characters[$selectedCharID].modules.push(rmodule.id);
+                                            currentCharacter.modules.push(rmodule.id);
                                         }
                                         $ReloadGUIPointer += 1;
                                     }}

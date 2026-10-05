@@ -1,9 +1,10 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { untrack } from "svelte";
     import { ChevronUpIcon, ChevronDownIcon } from "@lucide/svelte";
     import { type SerializableSummary, summarize } from "src/ts/process/memory/hypav3";
     import { alertNormalWait } from "src/ts/alert";
-    import { DBState, selectedCharID, hypaV3ModalOpen } from "src/ts/stores.svelte";
+    import { hypaV3ModalOpen } from "src/ts/stores.svelte";
     import { language } from "src/lang";
     import { translateHTML } from "src/ts/translator/translator";
     import { alertConfirmTwice } from "./HypaV3Modal/utils";
@@ -35,10 +36,9 @@
     import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
 
+    const currentCharacter = $derived(selectedCharacter());
     /** The selected chat's memory data as the chat holds it (read-only). */
-    const chatHypaV3Data = $derived(
-        DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].hypaV3Data,
-    );
+    const chatHypaV3Data = $derived(currentCharacter.chats[currentCharacter.chatPage].hypaV3Data);
 
     // The modal and its children edit a copy of the memory data; every change of the copy is written
     // to the chat through the chat module, and a change of the chat's copy from elsewhere (a
@@ -618,16 +618,16 @@
     }
 
     function isHypaV2ConversionPossible(): boolean {
-        const char = DBState.db.characters[$selectedCharID];
-        const chat = char.chats[DBState.db.characters[$selectedCharID].chatPage];
+        const char = currentCharacter;
+        const chat = char.chats[currentCharacter.chatPage];
 
         return chat.hypaV3Data?.summaries?.length === 0 && chat.hypaV2Data != null;
     }
 
     function convertHypaV2ToV3(): { success: boolean; error?: string } {
         try {
-            const char = DBState.db.characters[$selectedCharID];
-            const chat = char.chats[DBState.db.characters[$selectedCharID].chatPage];
+            const char = currentCharacter;
+            const chat = char.chats[currentCharacter.chatPage];
             const hypaV2Data = chat.hypaV2Data;
 
             if (chat.hypaV3Data?.summaries?.length > 0) {

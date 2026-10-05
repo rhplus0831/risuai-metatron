@@ -1,3 +1,4 @@
+import { selectedCharacter, characterList, characterSnapshot } from "../../storage/characterStore.svelte";
 import { settings, activePreset } from "../../storage/settingsViews.svelte";
 import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
 import {
@@ -10,7 +11,7 @@ import {
     type ReplacerFunction,
 } from "../pluginHooks";
 import { SandboxHost } from "./factory";
-import { getCurrentCharacter, getDatabase } from "src/ts/storage/database.svelte";
+import { getDatabase } from "src/ts/storage/database.svelte";
 import {
     addPreparedCharacter,
     checkCharacterInput,
@@ -40,7 +41,7 @@ import {
     setPluginCustomValue,
     setPluginStorageItem,
 } from "src/ts/storage/pluginStorageStore.svelte";
-import { selectPersona } from "src/ts/storage/selection.svelte";
+import { selectPersona, selectedIndex } from "src/ts/storage/selection.svelte";
 import { batchRecordWrites } from "src/ts/storage/records.svelte";
 import { forwardedPresetField, hasPreset, readPresetFieldOf } from "src/ts/storage/forwarding.svelte";
 import {
@@ -68,7 +69,6 @@ import {
     bodyIntercepterStore,
     chatPanelStore,
     DBState,
-    selectedCharID,
     type MenuDef,
 } from "src/ts/stores.svelte";
 import { v4 } from "uuid";
@@ -728,7 +728,7 @@ const authorizationHeaders = ["x-api-key", "authorization", "proxy-authorization
  * `PluginTargetGoneError` when either was deleted: the call is refused, never redirected.
  */
 function contextTarget(context: PluginCallContext) {
-    const characters = DBState.db.characters ?? [];
+    const characters = characterList();
     const characterIndex = characters.findIndex((entry) => entry?.chaId === context.chatRef.chaId);
     const character = characters[characterIndex];
     if (!character) {
@@ -750,7 +750,8 @@ const getChar = (context: PluginCallContext | undefined) => {
         const { character, chatIndex } = contextTarget(context);
         return { ...$state.snapshot(character), chatPage: chatIndex };
     }
-    return getCurrentCharacter({ snapshot: true });
+    const chaId = selectedCharacter()?.chaId;
+    return chaId === undefined ? undefined : characterSnapshot(chaId);
 };
 
 /**
@@ -760,7 +761,7 @@ const getChar = (context: PluginCallContext | undefined) => {
  */
 const setChar = (context: PluginCallContext | undefined, char: any) => {
     if (!context) {
-        applyPluginCharacter(get(selectedCharID), char);
+        applyPluginCharacter(selectedIndex(), char);
         return;
     }
     const { characterIndex, chatIndex } = contextTarget(context);
@@ -793,7 +794,7 @@ function warnRefused(what: string, write: () => void) {
  */
 function applyPluginCharacter(index: number, char: any) {
     warnRefused("a character", () => {
-        const current = DBState.db.characters?.[index];
+        const current = characterList()[index];
         if (!current || !char || typeof char !== "object" || char.chaId !== current.chaId) {
             // The two ordinary skips keep the warnings plugins have seen.
             if (current && isCharacterGenerating(current.chaId)) {
@@ -803,7 +804,7 @@ function applyPluginCharacter(index: number, char: any) {
             const chaId = char && typeof char === "object" ? char.chaId : undefined;
             if (
                 typeof chaId === "string" &&
-                DBState.db.characters.some((other, i) => i !== index && other?.chaId === chaId)
+                characterList().some((other, i) => i !== index && other?.chaId === chaId)
             ) {
                 console.warn("[Plugin] Skipped a character whose chaId another character already has");
                 return;
@@ -841,7 +842,7 @@ function applyPluginCharacters(incoming: unknown) {
         throw new MutationValidationError("characters", "duplicate chaId values (or one object listed twice)");
     }
     const kept = new Set(ids);
-    const existing = (DBState.db.characters ?? []).map((character) => character?.chaId);
+    const existing = characterList().map((character) => character?.chaId);
     // Every new character is prepared (checked, normalized, its creation steps done) before the list
     // changes, so an entry refused there leaves the whole list unapplied.
     const prepared = new Map(
@@ -857,7 +858,7 @@ function applyPluginCharacters(incoming: unknown) {
             addPreparedCharacter(ready);
         } else {
             applyPluginCharacter(
-                DBState.db.characters.findIndex((entry) => entry?.chaId === char.chaId),
+                characterList().findIndex((entry) => entry?.chaId === char.chaId),
                 char,
             );
         }
@@ -1361,29 +1362,23 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         setArgument: async (key: string, value: string) => {
             warnRefused(`the argument ${key}`, () => setPluginArgument(plugin.name, key, value));
         },
+        // The plugin index APIs address the character list by position (creation order).
         getCharacterFromIndex: (index: number) => {
-            const db = DBState.db;
-            const charIds = Object.keys(db.characters);
-            const charId = charIds[index];
-            if (charId) {
-                return $state.snapshot(db.characters[charId]);
+            const character = characterList()[index];
+            if (character) {
+                return $state.snapshot(character);
             }
             return null;
         },
         setCharacterToIndex: (index: number, char: any) => {
-            const db = DBState.db;
-            const charIds = Object.keys(db.characters);
-            const charId = charIds[index];
-            if (charId) {
-                applyPluginCharacter(Number(charId), char);
+            if (characterList()[index]) {
+                applyPluginCharacter(Number(index), char);
             }
         },
         getChatFromIndex: (characterIndex: number, chatIndex: number) => {
-            const db = DBState.db;
-            const charIds = Object.keys(db.characters);
-            const charId = charIds[characterIndex];
-            if (charId) {
-                const chats = db.characters[charId].chats;
+            const character = characterList()[characterIndex];
+            if (character) {
+                const chats = character.chats;
                 if (chats && chats[chatIndex]) {
                     return $state.snapshot(chats[chatIndex]);
                 }
@@ -1403,9 +1398,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             },
         ) => {
             const context = currentContext(contextOwner);
-            const db = DBState.db;
             const target = context ? contextTarget(context) : undefined;
-            const char = target ? target.character : db.characters[get(selectedCharID)];
+            const char = target ? target.character : selectedCharacter();
             if (!char) {
                 throw new Error("No character selected");
             }
@@ -1457,11 +1451,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 .data;
         },
         setChatToIndex: (characterIndex: number, chatIndex: number, chat: any) => {
-            const db = DBState.db;
-            const charIds = Object.keys(db.characters);
-            const charId = charIds[characterIndex];
-            if (charId) {
-                const character = db.characters[charId];
+            const character = characterList()[characterIndex];
+            if (character) {
                 const target = character.chats?.[chatIndex];
                 if (target?.id && chat && typeof chat === "object") {
                     // Last writer wins: the plugin's chat is diffed against the chat as it is now.
@@ -1476,16 +1467,14 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         getCurrentCharacterIndex: () => {
             const context = currentContext(contextOwner);
-            return context ? contextTarget(context).characterIndex : get(selectedCharID);
+            return context ? contextTarget(context).characterIndex : selectedIndex();
         },
         getCurrentChatIndex: () => {
             const context = currentContext(contextOwner);
             if (context) {
                 return contextTarget(context).chatIndex;
             }
-            const db = DBState.db;
-            const charId = get(selectedCharID);
-            return db.characters[charId].chatPage;
+            return selectedCharacter().chatPage;
         },
         getCurrentLorebookEntries: () => {
             const context = currentContext(contextOwner);
@@ -1497,8 +1486,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                     ...getModuleLorebooks(context.chatRef),
                 ]);
             }
-            const charId = get(selectedCharID);
-            const char = DBState.db.characters[charId];
+            const char = selectedCharacter();
             if (!char) {
                 return [];
             }
@@ -1900,7 +1888,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
 
             // Inside a hook, the send goes to the hook's chat, else to the selected one.
             const target = context ? contextTarget(context) : undefined;
-            const char = target ? target.character : DBState.db.characters[get(selectedCharID)];
+            const char = target ? target.character : selectedCharacter();
             if (!char) {
                 throw new Error("No character selected");
             }

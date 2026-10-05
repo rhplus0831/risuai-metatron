@@ -1,10 +1,11 @@
+import { selectedCharacter } from "../../storage/characterStore.svelte";
 import { settings, activePreset } from "../../storage/settingsViews.svelte";
 import { language } from "../../../lang";
 import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/modellist";
 import { risuEscape, risuUnescape } from "../../parser/parser.svelte";
 import { capturePluginContext, invokeHook, type PluginCallContext } from "../../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../../plugins/pluginHooks";
-import { getCurrentCharacter, type character } from "../../storage/database.svelte";
+import { type character } from "../../storage/database.svelte";
 import type { ChatRef } from "../../storage/chatStore.svelte";
 import { sleep } from "../../util";
 import type { OpenAIChat } from "../index.svelte";
@@ -485,7 +486,7 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
 async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const formated = arg.formated;
     const aiModel = arg.aiModel;
-    const currentChar = getCurrentCharacter();
+    const currentChar = selectedCharacter();
     const maxTokens = arg.maxTokens;
     const temperature = arg.temperature;
     const realModel = aiModel.split(":::")[1];

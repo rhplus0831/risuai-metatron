@@ -1,9 +1,8 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings, selectedLoreBookPage } from "src/ts/storage/settingsViews.svelte";
     import { type loreBook } from "src/ts/storage/database.svelte";
-    import { DBState } from "src/ts/stores.svelte";
     import LoreBookData from "./LoreBookData.svelte";
-    import { selectedCharID } from "src/ts/stores.svelte";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
     import { replaceRecordList } from "src/ts/storage/records.svelte";
     import { onDestroy, onMount, tick } from "svelte";
@@ -12,6 +11,7 @@
     import { alertError } from "src/ts/alert";
     import { useLocalLoreDraft } from "src/ts/storage/localLoreDraft.svelte";
 
+    const currentCharacter = $derived(selectedCharacter());
     // The selected chat's local lorebook is edited on a copy that is saved through the chat module.
     const localLore = useLocalLoreDraft();
 
@@ -68,7 +68,7 @@
                 (item) => (!showFolder && !item.folder) || showFolder === item.folder,
             ).length;
         } else {
-            expectedElements = DBState.db.characters[$selectedCharID].globalLore.filter(
+            expectedElements = currentCharacter.globalLore.filter(
                 (item) => (!showFolder && !item.folder) || showFolder === item.folder,
             ).length;
         }
@@ -193,7 +193,7 @@
                     currentArray = settings.loreBook[selectedLoreBookPage()].data;
                 } else {
                     // Use character global lorebook (default)
-                    currentArray = DBState.db.characters[$selectedCharID].globalLore;
+                    currentArray = currentCharacter.globalLore;
                 }
 
                 const sourceIdx = oldIndex; // Store SortableJS provided index
@@ -296,7 +296,7 @@
                 } else if (globalMode) {
                     settings.loreBook[selectedLoreBookPage()].data = newArray;
                 } else {
-                    DBState.db.characters[$selectedCharID].globalLore = newArray;
+                    currentCharacter.globalLore = newArray;
                 }
 
                 // ===== Stage 5: Force UI synchronization and SortableJS reinitialization =====
@@ -425,18 +425,18 @@
                 {/each}
             {/if}
         {:else if submenu === 0}
-            {@const visibleItems = DBState.db.characters[$selectedCharID].globalLore.filter(
+            {@const visibleItems = currentCharacter.globalLore.filter(
                 (book) => (!showFolder && !book.folder) || showFolder === book.folder,
             )}
             {@const lastVisibleItem = visibleItems[visibleItems.length - 1]}
-            {#if DBState.db.characters[$selectedCharID].globalLore.length === 0}
+            {#if currentCharacter.globalLore.length === 0}
                 <span class="text-textcolor2">No Lorebook</span>
             {:else}
-                {#each DBState.db.characters[$selectedCharID].globalLore as book, i}
+                {#each currentCharacter.globalLore as book, i}
                     {#if (!showFolder && !book.folder) || showFolder === book.folder}
                         <LoreBookData
                             {idgroup}
-                            bind:value={DBState.db.characters[$selectedCharID].globalLore[i]}
+                            bind:value={currentCharacter.globalLore[i]}
                             idx={i}
                             isOpen={openedRefs.has(book)}
                             openFolders={openFolders()}
@@ -448,7 +448,7 @@
                                     onClose(false, book);
                                 }
 
-                                let lore = DBState.db.characters[$selectedCharID].globalLore;
+                                let lore = currentCharacter.globalLore;
 
                                 // When deleting a folder, also delete all items that belong to that folder
                                 if (book.mode === "folder") {
@@ -466,12 +466,12 @@
                                     lore.splice(i, 1);
                                 }
 
-                                DBState.db.characters[$selectedCharID].globalLore = lore;
+                                currentCharacter.globalLore = lore;
                             }}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
                             {lorePlus}
-                            bind:externalLoreBooks={DBState.db.characters[$selectedCharID].globalLore}
+                            bind:externalLoreBooks={currentCharacter.globalLore}
                         />
                     {:else}
                         <!-- Hidden marker for filtered items (for SortableJS) -->

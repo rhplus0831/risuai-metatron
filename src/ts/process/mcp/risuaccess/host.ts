@@ -1,10 +1,9 @@
 import { settings } from "../../../storage/settingsViews.svelte";
 import { language } from "src/lang";
 import { alertConfirm } from "src/ts/alert";
-import { findCharacter, updateCharacter } from "src/ts/storage/characterStore.svelte";
+import { findCharacter, updateCharacter, characterList } from "src/ts/storage/characterStore.svelte";
 import { findModule, setModuleEnabled, updateModule } from "src/ts/storage/collectionStore.svelte";
 import { MutationValidationError } from "src/ts/storage/mutationValidation";
-import { DBState } from "src/ts/stores.svelte";
 import type { RisuAccessHost, RisuAccessWrite } from "../../../../../shared/mcp/risuaccess/host.ts";
 import { getCharacter } from "./utils";
 
@@ -27,7 +26,7 @@ function written(write: () => boolean): RisuAccessWrite {
 export const tabRisuAccessHost: RisuAccessHost = {
     getCharacter,
     findCharacter,
-    characters: () => DBState.db.characters,
+    characters: () => characterList(),
     currentMessages: async (char) => char.chats[char.chatPage].message,
     updateCharacter: (chaId, patch) => written(() => updateCharacter(chaId, patch)),
     modules: () => settings.modules,

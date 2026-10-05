@@ -1,17 +1,16 @@
 <script lang="ts">
     import { ArrowLeft } from "@lucide/svelte";
     import { language } from "src/lang";
-    import { PlaygroundStore, SizeStore, selectedCharID } from "src/ts/stores.svelte";
+    import { PlaygroundStore, SizeStore } from "src/ts/stores.svelte";
     import PlaygroundEmbedding from "./PlaygroundEmbedding.svelte";
     import PlaygroundTokenizer from "./PlaygroundTokenizer.svelte";
     import PlaygroundJinja from "./PlaygroundJinja.svelte";
     import PlaygroundSyntax from "./PlaygroundSyntax.svelte";
-    import { findCharacterIndexbyId } from "src/ts/util";
     import { createBlankChar } from "src/ts/characters";
     import { ensureChat, syncChatPage } from "src/ts/storage/chatStore.svelte";
     import { type character } from "src/ts/storage/database.svelte";
-    import { DBState } from "src/ts/stores.svelte";
-    import { addCharacter } from "src/ts/storage/characterStore.svelte";
+    import { addCharacter, characterList } from "src/ts/storage/characterStore.svelte";
+    import { selectCharacter } from "src/ts/storage/selection.svelte";
     import PlaygroundImageGen from "./PlaygroundImageGen.svelte";
     import PlaygroundParser from "./PlaygroundParser.svelte";
     import ToolConversion from "./ToolConversion.svelte";
@@ -25,18 +24,17 @@
     let easterEggTouch = $state(0);
 
     const playgroundChat = () => {
-        const charIndex = findCharacterIndexbyId("§playground");
+        const char = characterList().find((entry) => entry?.chaId === "§playground") as character | undefined;
         PlaygroundStore.set(2);
 
-        if (charIndex !== -1) {
-            const char = DBState.db.characters[charIndex] as character;
+        if (char) {
             char.utilityBot = true;
             char.name = "assistant";
             char.firstMessage = "{{none}}";
             ensureChat(char.chaId);
             syncChatPage(char.chaId);
 
-            selectedCharID.set(charIndex);
+            selectCharacter(char.chaId);
             return;
         }
 

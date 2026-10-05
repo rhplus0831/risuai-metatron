@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { settings, activePreset, activePersona, currentPersonaRecord } from "src/ts/storage/settingsViews.svelte";
     import Suggestion from "./Suggestion.svelte";
     import {
@@ -23,7 +24,6 @@
         SparkleIcon,
     } from "@lucide/svelte";
     import {
-        selectedCharID,
         PlaygroundStore,
         createSimpleCharacter,
         hypaV3ModalOpen,
@@ -48,7 +48,6 @@
         setMessageText,
     } from "../../ts/storage/chatStore.svelte";
     import { editChatSync } from "../../ts/storage/chatEdits";
-    import { DBState } from "src/ts/stores.svelte";
     import { getCharImage } from "../../ts/characters";
     import { doingChat, sendChat } from "../../ts/process/index.svelte";
     import { sleep } from "../../ts/util";
@@ -86,7 +85,7 @@
     let autoMode = $state(false);
     let rerolls: Message[][] = [];
     let rerollid = -1;
-    let lastCharId = -1;
+    let lastCharId: string | undefined = undefined;
     let doingChatInputTranslate = false;
     let toggleStickers: boolean = $state(false);
     let fileInput: string[] = $state([]);
@@ -94,7 +93,7 @@
     let chatsInstance: any = $state();
     let isScrollingToMessage = $state(false);
     let { openModuleList = $bindable(false), openChatList = $bindable(false), customStyle = "" }: Props = $props();
-    let currentCharacter = $derived(DBState.db.characters[$selectedCharID]);
+    let currentCharacter = $derived(selectedCharacter());
     let currentChat = $derived(currentCharacter?.chats[currentCharacter.chatPage]?.message ?? []);
 
     function scrollToBottom() {
@@ -180,7 +179,7 @@
         if ($doingChat) {
             return;
         }
-        if (lastCharId !== $selectedCharID) {
+        if (lastCharId !== currentCharacter?.chaId) {
             rerolls = [];
             rerollid = -1;
         }
@@ -191,7 +190,7 @@
         if (!ref) {
             return;
         }
-        const characterOf = () => DBState.db.characters.find((character) => character?.chaId === ref.chaId);
+        const characterOf = () => characterList().find((character) => character?.chaId === ref.chaId);
 
         if (messageInput.startsWith("/")) {
             const commandProcessed = await processMultiCommand(messageInput);
@@ -242,7 +241,7 @@
         if ($doingChat) {
             return;
         }
-        if (lastCharId !== $selectedCharID) {
+        if (lastCharId !== currentCharacter?.chaId) {
             rerolls = [];
             rerollid = -1;
         }
@@ -255,10 +254,7 @@
             alertError(language.chatGenerating);
             return;
         }
-        const lastMessage =
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message.at(
-                -1,
-            );
+        const lastMessage = currentCharacter.chats[currentCharacter.chatPage].message.at(-1);
         const genId = lastMessage?.generationInfo?.generationId;
         if (genId) {
             const r = Prereroll(genId);
@@ -282,17 +278,11 @@
         }
         if (rerolls.length === 0) {
             rerolls.push(
-                safeStructuredClone([
-                    DBState.db.characters[$selectedCharID].chats[
-                        DBState.db.characters[$selectedCharID].chatPage
-                    ].message.at(-1),
-                ]) as Message[],
+                safeStructuredClone([currentCharacter.chats[currentCharacter.chatPage].message.at(-1)]) as Message[],
             );
             rerollid = rerolls.length - 1;
         }
-        let cha = safeStructuredClone(
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message,
-        ) as Message[];
+        let cha = safeStructuredClone(currentCharacter.chats[currentCharacter.chatPage].message) as Message[];
         if (cha.length === 0) {
             return;
         }
@@ -323,7 +313,7 @@
         if ($doingChat) {
             return;
         }
-        if (lastCharId !== $selectedCharID) {
+        if (lastCharId !== currentCharacter?.chaId) {
             rerolls = [];
             rerollid = -1;
         }
@@ -336,10 +326,7 @@
             alertError(language.chatGenerating);
             return;
         }
-        const lastMessage =
-            DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message.at(
-                -1,
-            );
+        const lastMessage = currentCharacter.chats[currentCharacter.chatPage].message.at(-1);
         const genId = lastMessage?.generationInfo?.generationId;
         if (genId) {
             const r = PreUnreroll(genId);
@@ -430,7 +417,7 @@
             console.error(error);
             alertError(error);
         }
-        lastCharId = $selectedCharID;
+        lastCharId = currentCharacter?.chaId;
         $doingChat = false;
         if (settings.ui.playMessage) {
             const audio = new Audio(sendSound);
@@ -449,20 +436,18 @@
             autoMode = false;
             return;
         }
-        const selectedChar = $selectedCharID;
+        const selectedChar = currentCharacter?.chaId;
         autoMode = true;
         while (autoMode) {
             await sendChatMain();
-            if (selectedChar !== $selectedCharID) {
+            if (selectedChar !== selectedCharacter()?.chaId) {
                 autoMode = false;
             }
         }
     }
 
     let { userIconPortrait, currentUsername, userIcon } = $derived.by(() => {
-        const bindedPersona =
-            DBState?.db?.characters?.[$selectedCharID]?.chats?.[DBState?.db?.characters?.[$selectedCharID]?.chatPage]
-                ?.bindedPersona;
+        const bindedPersona = currentCharacter?.chats?.[currentCharacter?.chatPage]?.bindedPersona;
 
         if (bindedPersona) {
             const persona = settings.personas.find((p) => p.id === bindedPersona);
@@ -690,7 +675,7 @@
             Loading...
         </div>
     {/if}
-    {#if $selectedCharID < 0}
+    {#if currentCharacter === undefined}
         {#if $PlaygroundStore === 0}
             <MainMenu />
         {:else}
@@ -704,11 +689,7 @@
             onscroll={(e) => {
                 //@ts-expect-error scrollHeight/clientHeight/scrollTop don't exist on EventTarget, but target is HTMLElement here
                 const scrolled = e.target.scrollHeight - e.target.clientHeight + e.target.scrollTop;
-                if (
-                    scrolled < 100 &&
-                    DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
-                        .message.length > loadPages
-                ) {
+                if (scrolled < 100 && currentCharacter.chats[currentCharacter.chatPage].message.length > loadPages) {
                     loadPages += getAdditionalChatLoadPages(settings.ui);
                 }
                 const chatTarget = e.target as HTMLElement;
@@ -825,7 +806,7 @@
                         <Send />
                     </button>
                 {/if}
-                {#if DBState.db.characters[$selectedCharID]?.chaId !== "§playground"}
+                {#if currentCharacter?.chaId !== "§playground"}
                     <button
                         onclick={(e) => {
                             openMenu = !openMenu;
@@ -851,7 +832,7 @@
                     </div>
                 {/if}
             </div>
-            {#if settings.memoryTranslateMedia.useAutoTranslateInput && DBState.db.characters[$selectedCharID]?.chaId !== "§playground"}
+            {#if settings.memoryTranslateMedia.useAutoTranslateInput && currentCharacter?.chaId !== "§playground"}
                 <div class="flex items-center mt-2 mb-2">
                     <label for="messageInputTranslate" class="text-textcolor ml-4">
                         <LanguagesIcon />
@@ -994,28 +975,24 @@
                 bind:hasNewUnreadMessage={showNewMessageButton}
             />
 
-            {#if DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message.length <= loadPages}
-                {#if DBState.db.characters[$selectedCharID].type !== "group"}
+            {#if currentCharacter.chats[currentCharacter.chatPage].message.length <= loadPages}
+                {#if currentCharacter.type !== "group"}
                     <Chat
-                        character={createSimpleCharacter(DBState.db.characters[$selectedCharID])}
-                        name={DBState.db.characters[$selectedCharID].name}
-                        message={DBState.db.characters[$selectedCharID].chats[
-                            DBState.db.characters[$selectedCharID].chatPage
-                        ].fmIndex === -1
-                            ? DBState.db.characters[$selectedCharID].firstMessage
-                            : DBState.db.characters[$selectedCharID].alternateGreetings[
-                                  DBState.db.characters[$selectedCharID].chats[
-                                      DBState.db.characters[$selectedCharID].chatPage
-                                  ].fmIndex
+                        character={createSimpleCharacter(currentCharacter)}
+                        name={currentCharacter.name}
+                        message={currentCharacter.chats[currentCharacter.chatPage].fmIndex === -1
+                            ? currentCharacter.firstMessage
+                            : currentCharacter.alternateGreetings[
+                                  currentCharacter.chats[currentCharacter.chatPage].fmIndex
                               ]}
                         role="char"
-                        img={getCharImage(DBState.db.characters[$selectedCharID].image, "css")}
+                        img={getCharImage(currentCharacter.image, "css")}
                         idx={-1}
-                        altGreeting={DBState.db.characters[$selectedCharID].alternateGreetings.length > 0}
-                        largePortrait={DBState.db.characters[$selectedCharID].largePortrait}
+                        altGreeting={currentCharacter.alternateGreetings.length > 0}
+                        largePortrait={currentCharacter.largePortrait}
                         firstMessage={true}
                         onReroll={() => {
-                            const cha = DBState.db.characters[$selectedCharID];
+                            const cha = selectedCharacter();
                             const ref = currentChatRef();
                             const chat = ref ? findChat(ref) : undefined;
                             if (cha.type !== "group" && ref && chat) {
@@ -1025,7 +1002,7 @@
                             }
                         }}
                         unReroll={() => {
-                            const cha = DBState.db.characters[$selectedCharID];
+                            const cha = selectedCharacter();
                             const ref = currentChatRef();
                             const chat = ref ? findChat(ref) : undefined;
                             if (cha.type !== "group" && ref && chat) {
@@ -1035,21 +1012,19 @@
                             }
                         }}
                         isLastMemory={false}
-                        currentPage={(DBState.db.characters[$selectedCharID].chats[
-                            DBState.db.characters[$selectedCharID].chatPage
-                        ].fmIndex ?? -1) + 2}
-                        totalPages={DBState.db.characters[$selectedCharID].alternateGreetings.length + 1}
+                        currentPage={(currentCharacter.chats[currentCharacter.chatPage].fmIndex ?? -1) + 2}
+                        totalPages={currentCharacter.alternateGreetings.length + 1}
                     />
-                    {#if aiLawApplies() && DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message.length === 0}
+                    {#if aiLawApplies() && currentCharacter.chats[currentCharacter.chatPage].message.length === 0}
                         <div class="ml-auto mr-auto mt-4 text-textcolor2 italic max-w-2/3 wrap-break-word text-center">
                             {language.aiGenerationWarning}
                         </div>
                     {/if}
-                    {#if !DBState.db.characters[$selectedCharID].removedQuotes && DBState.db.characters[$selectedCharID].creatorNotes.length >= 2}
+                    {#if !currentCharacter.removedQuotes && currentCharacter.creatorNotes.length >= 2}
                         <CreatorQuote
-                            quote={DBState.db.characters[$selectedCharID].creatorNotes}
+                            quote={currentCharacter.creatorNotes}
                             onRemove={() => {
-                                const cha = DBState.db.characters[$selectedCharID];
+                                const cha = selectedCharacter();
                                 if (cha.type !== "group") {
                                     cha.removedQuotes = true;
                                 }
@@ -1068,7 +1043,7 @@
                         e.stopPropagation();
                     }}
                 >
-                    {#if DBState.db.characters[$selectedCharID].type === "group"}
+                    {#if currentCharacter.type === "group"}
                         <div
                             class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
                             onclick={runAutoMode}
@@ -1079,7 +1054,7 @@
                     {/if}
 
                     <!-- svelte-ignore block_empty -->
-                    {#if DBState.db.characters[$selectedCharID].ttsMode === "webspeech" || DBState.db.characters[$selectedCharID].ttsMode === "elevenlab"}
+                    {#if currentCharacter.ttsMode === "webspeech" || currentCharacter.ttsMode === "elevenlab"}
                         <div
                             class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
                             onclick={() => {
@@ -1093,27 +1068,15 @@
 
                     <div
                         class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                        class:text-textcolor2={DBState.db.characters[$selectedCharID].chats[
-                            DBState.db.characters[$selectedCharID].chatPage
-                        ].message.length < 2 ||
-                            DBState.db.characters[$selectedCharID].chats[
-                                DBState.db.characters[$selectedCharID].chatPage
-                            ].message[
-                                DBState.db.characters[$selectedCharID].chats[
-                                    DBState.db.characters[$selectedCharID].chatPage
-                                ].message.length - 1
+                        class:text-textcolor2={currentCharacter.chats[currentCharacter.chatPage].message.length < 2 ||
+                            currentCharacter.chats[currentCharacter.chatPage].message[
+                                currentCharacter.chats[currentCharacter.chatPage].message.length - 1
                             ].role !== "char"}
                         onclick={() => {
                             if (
-                                DBState.db.characters[$selectedCharID].chats[
-                                    DBState.db.characters[$selectedCharID].chatPage
-                                ].message.length < 2 ||
-                                DBState.db.characters[$selectedCharID].chats[
-                                    DBState.db.characters[$selectedCharID].chatPage
-                                ].message[
-                                    DBState.db.characters[$selectedCharID].chats[
-                                        DBState.db.characters[$selectedCharID].chatPage
-                                    ].message.length - 1
+                                currentCharacter.chats[currentCharacter.chatPage].message.length < 2 ||
+                                currentCharacter.chats[currentCharacter.chatPage].message[
+                                    currentCharacter.chats[currentCharacter.chatPage].message.length - 1
                                 ].role !== "char"
                             ) {
                                 return;

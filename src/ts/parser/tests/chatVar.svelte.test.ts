@@ -3,6 +3,7 @@ import { writable } from "svelte/store";
 import { beforeEach, expect, test, vi } from "vitest";
 import { DBState } from "../../stores.svelte";
 import { initializeRecords, takeRecordFields } from "../../storage/records.svelte";
+import { selection } from "../../storage/selection.svelte";
 import { activePreset, settings } from "../../storage/settingsViews.svelte";
 import { getChatVar, getGlobalChatVar, setChatVar } from "../chatVar.svelte";
 import { resetChatVariables } from "./cbs/lib";
@@ -62,6 +63,11 @@ initializeRecords(
         botPresets: [{ id: "preset", name: "Preset", templateDefaultVariables: "" }],
     }),
 );
+
+// The readers resolve the selected character by `selection.characterId` (Phase 6 slice 8), over
+// the character list (`characterList()`, here the mocked `DBState.db.characters`): the fixture's
+// character is the selected one, as `selectedCharID` 0 selected it.
+selection.characterId = "c";
 
 const anyValidDefaultVarKey = fc.string({ minLength: 1, unit: "grapheme" }).filter((s) => !/[=\n]/.test(s));
 const anyValidDefaultVarValue = fc

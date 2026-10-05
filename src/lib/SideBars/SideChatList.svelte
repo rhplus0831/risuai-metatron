@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { activePersona, currentPersonaRecord } from "src/ts/storage/settingsViews.svelte";
     import { onDestroy, onMount } from "svelte";
     import { v4 } from "uuid";
@@ -15,8 +16,7 @@
     } from "@lucide/svelte";
 
     import type { Chat, ChatFolder, character, DeepReadonly, groupChat } from "src/ts/storage/database.svelte";
-    import { DBState, ReloadGUIPointer } from "src/ts/stores.svelte";
-    import { selectedCharID } from "src/ts/stores.svelte";
+    import { ReloadGUIPointer } from "src/ts/stores.svelte";
 
     import CheckInput from "../UI/GUI/CheckInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
@@ -37,6 +37,7 @@
         setChatMeta,
     } from "src/ts/storage/chatStore.svelte";
 
+    const currentCharacter = $derived(selectedCharacter());
     /** Sets a chat's folder (null or undefined: no folder) through the chat module. */
     function setChatFolder(chat: DeepReadonly<Chat>, folderId: string | null | undefined) {
         const ref = { chaId: chara.chaId, chatId: chat.id };
@@ -712,8 +713,8 @@
             </button>
         </div>
 
-        {#if DBState.db.characters[$selectedCharID]?.chaId !== "§playground"}
-            <Toggles bind:chara />
+        {#if currentCharacter?.chaId !== "§playground"}
+            <Toggles {chara} />
         {/if}
     </div>
     {#if chara.type === "group"}

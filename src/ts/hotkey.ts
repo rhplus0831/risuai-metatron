@@ -1,7 +1,9 @@
+import { selectCharacter } from "./storage/selection.svelte";
+import { characterList, selectedCharacter } from "./storage/characterStore.svelte";
 import { settings } from "./storage/settingsViews.svelte";
 import { get } from "svelte/store";
 import { alertMd, alertSelect, alertToast, alertWait, doingAlert, alertRequestLogs, terminalNotice } from "./alert";
-import { changeToPreset as changeToPreset2, getDatabase } from "./storage/database.svelte";
+import { changeToPreset as changeToPreset2 } from "./storage/database.svelte";
 import {
     alertStore,
     openPersonaList,
@@ -11,7 +13,6 @@ import {
     popUpEditorStore,
     QuickSettings,
     SafeModeStore,
-    selectedCharID,
     settingsOpen,
 } from "./stores.svelte";
 import { language } from "src/lang";
@@ -35,8 +36,6 @@ export function initHotkey() {
         ) {
             return;
         }
-
-        const database = getDatabase();
 
         const hotKeys = activeHotkeys(settings.hotkeys ?? defaultHotkeys, settings.ui);
 
@@ -88,7 +87,7 @@ export function initHotkey() {
                     break;
                 }
                 case "home": {
-                    selectedCharID.set(-1);
+                    selectCharacter(null);
                     break;
                 }
                 case "presets": {
@@ -105,37 +104,27 @@ export function initHotkey() {
                     break;
                 }
                 case "prevChar": {
-                    const sorted = database.characters
-                        .map((v, i) => {
-                            return { name: v.name, i };
-                        })
-                        .sort((a, b) => a.name.localeCompare(b.name));
-                    const currentIndex = sorted.findIndex((v) => v.i === get(selectedCharID));
-                    if (currentIndex === 0) {
+                    // By name; from the first character (or home) there is no previous one.
+                    const sorted = sortedByName();
+                    const selectedId = selectedCharacter()?.chaId;
+                    const currentIndex = sorted.findIndex((v) => v.chaId === selectedId);
+                    if (currentIndex <= 0) {
                         return;
                     }
-                    if (currentIndex >= sorted.length - 1) {
-                        return;
-                    }
-                    selectedCharID.set(sorted[currentIndex - 1].i);
+                    selectCharacter(sorted[currentIndex - 1].chaId);
                     PlaygroundStore.set(0);
                     OpenRealmStore.set(false);
                     break;
                 }
                 case "nextChar": {
-                    const sorted = database.characters
-                        .map((v, i) => {
-                            return { name: v.name, i };
-                        })
-                        .sort((a, b) => a.name.localeCompare(b.name));
-                    const currentIndex = sorted.findIndex((v) => v.i === get(selectedCharID));
-                    if (currentIndex === 0) {
-                        return;
-                    }
+                    // By name; from home it is the first character, from the last there is none.
+                    const sorted = sortedByName();
+                    const selectedId = selectedCharacter()?.chaId;
+                    const currentIndex = sorted.findIndex((v) => v.chaId === selectedId);
                     if (currentIndex >= sorted.length - 1) {
                         return;
                     }
-                    selectedCharID.set(sorted[currentIndex + 1].i);
+                    selectCharacter(sorted[currentIndex + 1].chaId);
                     PlaygroundStore.set(0);
                     OpenRealmStore.set(false);
                     break;
@@ -145,7 +134,7 @@ export function initHotkey() {
                     break;
                 }
                 case "previewRequest": {
-                    if (get(doingChat) && get(selectedCharID) !== -1) {
+                    if (get(doingChat) && selectedCharacter() !== undefined) {
                         return false;
                     }
                     alertWait("Loading...");
@@ -332,6 +321,13 @@ async function quickMenu() {
     if (sel === 1) {
         openPersonaList.set(!get(openPersonaList));
     }
+}
+
+/** The characters (a copy of the list's rows) sorted by name, for the previous/next hotkeys. */
+function sortedByName(): { name: string; chaId: string }[] {
+    return characterList()
+        .map((v) => ({ name: v.name, chaId: v.chaId }))
+        .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**

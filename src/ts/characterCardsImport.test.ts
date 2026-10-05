@@ -158,8 +158,8 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         const { cards, ids, added, db, stores } = await boot();
         const before = ids();
         const card = cardV2("Json", { character_book: characterBook("Json Lore", "json lore") });
-        const index = await cards.importCharacterProcess({ name: "card.json", data: encode(card) });
-        expect(index).toBe(db().characters.length - 1);
+        const chaId = await cards.importCharacterProcess({ name: "card.json", data: encode(card) });
+        expect(chaId).toBe(db().characters[db().characters.length - 1].chaId);
         const { character, record } = await added(before);
         expect(character.name).toBe("Json");
         expect(character.firstMessage).toBe("hello from Json");
@@ -214,8 +214,8 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         const { cards, ids, added, db } = await boot();
         const before = ids();
         const png = pngWithText({ chara: cardV2("Png", {}, { additionalText: "from png" }) });
-        const index = await cards.importCharacterProcess({ name: "card.png", data: png });
-        expect(index).toBe(db().characters.length - 1);
+        const chaId = await cards.importCharacterProcess({ name: "card.png", data: png });
+        expect(chaId).toBe(db().characters[db().characters.length - 1].chaId);
         const { character, record } = await added(before);
         expect(character.name).toBe("Png");
         expect(character.image).toBe("asset-1");
@@ -228,8 +228,8 @@ describe("importCharacterProcess creates the character through addCharacter", ()
     it("a CharX card (`card.json`, V3) through the real zip importer: the V3 fields land and the stamp goes up", async () => {
         const { cards, ids, added, db } = await boot();
         const before = ids();
-        const index = await cards.importCharacterProcess({ name: "card.charx", data: charx(cardV3("Charx")) });
-        expect(index).toBe(db().characters.length - 1);
+        const chaId = await cards.importCharacterProcess({ name: "card.charx", data: charx(cardV3("Charx")) });
+        expect(chaId).toBe(db().characters[db().characters.length - 1].chaId);
         const { character, record } = await added(before);
         expect(character.name).toBe("Charx");
         expect(character.nickname).toBe("Charx nick");
@@ -324,5 +324,72 @@ describe("a refused or rejected card", () => {
         expect(alerts.error).toHaveBeenCalledWith(language.errors.noData);
         expect(ids()).toEqual(before);
         expect(db().statics.imports).toBe(1);
+    });
+});
+
+// Phase 6 slice 8: the import result is the id of the character the import added (from
+// `addCharacter`), on every branch, and no id when the import added none; `importCharacter` (the
+// add dialog's entry, whose result `addCharacter()` selects) returns the last id it imported, also
+// when a later file of the same selection throws (Astra challenge point 3).
+describe("the import result is the new character's id", () => {
+    const deep = () => cardV2("Deep", { extensions: { risuai: {}, deep: nested(300) } });
+
+    it("an off-spec JSON card returns its new id; a rejected JSON file and a PNG without a card return none", async () => {
+        const { cards, ids } = await boot();
+        const before = ids();
+        const chaId = await cards.importCharacterProcess({
+            name: "off.json",
+            data: encode({ name: "Off", description: "off desc", first_mes: "hi off" }),
+        });
+        expect(ids()).toEqual([...before, chaId]);
+        // Not the character that is last in the list (the old result).
+        expect(
+            await cards.importCharacterProcess({ name: "bad.json", data: encode({ name: "Bad", description: "d" }) }),
+        ).toBeFalsy();
+        expect(await cards.importCharacterProcess({ name: "blank.png", data: pngWithText({}) })).toBeFalsy();
+        expect(ids()).toEqual([...before, chaId]);
+    });
+
+    it("two imports running at once each return the id of the character they added", async () => {
+        const { cards, ids, character } = await boot();
+        const before = ids();
+        const [one, two] = await Promise.all([
+            cards.importCharacterProcess({ name: "one.json", data: encode(cardV2("One")) }),
+            cards.importCharacterProcess({ name: "two.png", data: pngWithText({ chara: cardV2("Two") }) }),
+        ]);
+        expect(new Set(ids().slice(before.length))).toEqual(new Set([one, two]));
+        expect(character(one!).name).toBe("One");
+        expect(character(two!).name).toBe("Two");
+    });
+
+    it("importCharacter returns the last id it imported: of two cards the second, and the first when a later file throws or is rejected", async () => {
+        const { cards, ids } = await boot();
+        const before = ids();
+        picker.files = [
+            new File([encode(cardV2("First"))], "first.json"),
+            new File([encode(cardV2("Second"))], "second.json"),
+        ];
+        const second = await cards.importCharacter();
+        const added = ids().slice(before.length);
+        expect(added).toHaveLength(2);
+        expect(second).toBe(added[1]);
+
+        picker.files = [
+            new File([encode(cardV2("Kept"))], "kept.json"),
+            new File([encode({ name: "Bad", description: "d" })], "bad.json"),
+        ];
+        const kept = await cards.importCharacter();
+        expect(kept).toBe(ids()[ids().length - 1]);
+        expect(kept).not.toBe(second);
+
+        picker.files = [new File([encode(cardV2("Before throw"))], "ok.json"), new File([encode(deep())], "deep.json")];
+        const beforeThrow = await cards.importCharacter();
+        expect(alerts.error).toHaveBeenCalledWith(expect.any(Error));
+        expect(beforeThrow).toBe(ids()[ids().length - 1]);
+        expect(beforeThrow).not.toBe(kept);
+
+        // Nothing imported: no id.
+        picker.files = [new File([encode(deep())], "deep.json")];
+        expect(await cards.importCharacter()).toBeNull();
     });
 });

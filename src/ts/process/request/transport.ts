@@ -1,3 +1,4 @@
+import { selectedCharacter } from "../../storage/characterStore.svelte";
 import { settings, activePreset, activePersona } from "../../storage/settingsViews.svelte";
 import {
     REQUEST_ARG_KEYS,
@@ -18,7 +19,6 @@ import { generationClientId } from "src/ts/network/generationJobs";
 import { risuChatParserScoped } from "src/ts/parser/parser.svelte";
 import { capturePluginContext, type PluginCallContext } from "src/ts/plugins/apiV3/pluginContext";
 import { pluginHooks } from "src/ts/plugins/pluginHooks";
-import { getCurrentCharacter } from "src/ts/storage/database.svelte";
 import { authFetch } from "src/ts/storage/nodeStorage";
 import { epochMismatch, getResourceEpoch } from "src/ts/storage/resourceClient";
 import { flushResources } from "src/ts/storage/resourceSync.svelte";
@@ -52,7 +52,7 @@ function fail(result: string): ClientResponse {
 }
 
 function selectedChatRef(): { chaId: string; chatId: string } | null {
-    const char = getCurrentCharacter();
+    const char = selectedCharacter();
     const chat = char?.chats?.[char.chatPage];
     return char?.chaId && chat?.id ? { chaId: char.chaId, chatId: chat.id } : null;
 }
@@ -132,7 +132,7 @@ export async function requestServer(
             presetId,
             personaId,
             selectedPersonaId,
-            selectedCharacterId: getCurrentCharacter()?.chaId ?? null,
+            selectedCharacterId: selectedCharacter()?.chaId ?? null,
             speakerId: arg.currentChar?.chaId ?? null,
             mainModel: { imageInput: mainModel.flags.includes(LLMFlags.hasImageInput) },
             // `encode`'s scope (`src/ts/tokenizer.ts`), as the tab would tokenize now.

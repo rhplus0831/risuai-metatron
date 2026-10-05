@@ -1,3 +1,4 @@
+import { selectedCharacter } from "./storage/characterStore.svelte";
 import { settings, activePreset } from "./storage/settingsViews.svelte";
 import { writable } from "svelte/store";
 import type { character, Database, groupChat } from "./storage/database.svelte";
@@ -183,10 +184,9 @@ $effect.root(() => {
         $state.snapshot(settings.modules);
         settings.enabledModules;
         settings.enabledModules?.length;
-        DBState?.db?.characters?.[selIdState.selId]?.chats?.[DBState?.db?.characters?.[selIdState.selId]?.chatPage]
-            ?.modules?.length;
-        DBState?.db?.characters?.[selIdState.selId]?.hideChatIcon;
-        DBState?.db?.characters?.[selIdState.selId]?.backgroundHTML;
+        selectedCharacter()?.chats?.[selectedCharacter()?.chatPage]?.modules?.length;
+        selectedCharacter()?.hideChatIcon;
+        selectedCharacter()?.backgroundHTML;
         activePreset.moduleIntergration;
         moduleUpdate();
     });

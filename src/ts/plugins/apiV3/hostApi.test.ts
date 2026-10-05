@@ -560,3 +560,58 @@ describe("v3 character setters normalize new characters", () => {
         expect(replaced.chats[0]).toMatchObject({ note: "moved", fmIndex: 1 });
     });
 });
+
+// Phase 6 slice 8: the plugin index APIs keep the character list's position (creation order) as
+// their index, now read through `characterList()`/`selectedCharacter()`. The sidebar's order
+// (`characterOrder`, which its drag rewrites) and the name order of the previous/next hotkeys are
+// not the plugin's index; a getter's result is a detached copy.
+import { settings } from "src/ts/storage/settingsViews.svelte";
+import { selectCharacter } from "src/ts/storage/selection.svelte";
+import { removeCharacter } from "src/ts/storage/characterStore.svelte";
+
+describe("v3 index APIs address the character list's position", () => {
+    const character = (chaId: string, name: string) => ({
+        chaId,
+        type: "character",
+        name,
+        chatPage: 0,
+        chats: [{ id: `k${chaId}`, name: `K${chaId}`, note: "", localLore: [], message: [] }],
+    });
+
+    beforeEach(() => {
+        DBState.db = forwardedDatabase({
+            characters: [character("c", "Zed"), character("d", "Amy"), character("e", "Bob")],
+            characterOrder: ["e", "d", "c"],
+            pluginCustomStorage: undefined,
+        });
+        selectCharacter("d");
+    });
+
+    afterEach(() => {
+        selectCharacter(null);
+    });
+
+    it("read the list position, unchanged by a reorder of the sidebar's order, with detached results", async () => {
+        const api = await makeApi();
+        const read = () => [0, 1, 2, 3, -1].map((index) => api.getCharacterFromIndex(index)?.chaId ?? null);
+        expect(read()).toEqual(["c", "d", "e", null, null]);
+        expect(api.getCurrentCharacterIndex()).toBe(1);
+        expect(api.getCurrentChatIndex()).toBe(0);
+        expect(api.getChatFromIndex(2, 0).id).toBe("ke");
+        expect(api.getChatFromIndex(3, 0)).toBeNull();
+
+        // The sidebar's drag writes the order record; the plugin's indexes stay the list's.
+        settings.characterOrder = ["c", "e", "d"];
+        expect(read()).toEqual(["c", "d", "e", null, null]);
+        expect(api.getCurrentCharacterIndex()).toBe(1);
+
+        const copy = api.getCharacterFromIndex(0);
+        copy.name = "changed by the plugin";
+        expect(DBState.db.characters[0].name).toBe("Zed");
+
+        // The selected character moves down when an earlier one leaves the list; its index follows.
+        removeCharacter("c");
+        expect(api.getCurrentCharacterIndex()).toBe(0);
+        expect(api.getCharacterFromIndex(0).chaId).toBe("d");
+    });
+});

@@ -1,3 +1,4 @@
+import { selectedCharacter, characterList } from "../storage/characterStore.svelte";
 import { settings, activePreset } from "../storage/settingsViews.svelte";
 import { language } from "src/lang";
 import {
@@ -11,9 +12,7 @@ import {
     waitAlert,
 } from "../alert";
 import {
-    getCurrentCharacter,
     getCurrentChat,
-    setCurrentCharacter,
     setDatabase,
     type customscript,
     type loreBook,
@@ -33,7 +32,7 @@ import { v4 } from "uuid";
 import { convertExternalLorebook } from "./lorebook.svelte";
 import { compressImage } from "../media";
 import { decodeRPack, encodeRPack } from "../rpack/rpack_js";
-import { DBState, HideIconStore, moduleBackgroundEmbedding, ReloadGUIPointer } from "../stores.svelte";
+import { HideIconStore, moduleBackgroundEmbedding, ReloadGUIPointer } from "../stores.svelte";
 import { addModule } from "../storage/collectionStore.svelte";
 import { get } from "svelte/store";
 import { convertCharacterToModule, convertModuleToCharacter } from "../interchangeability";
@@ -321,7 +320,7 @@ export async function importModule() {
                 data: buf,
                 returnCharacter: true,
             });
-            if (!char || typeof char === "number") {
+            if (!char || typeof char === "string") {
                 alertError(language.errors.noData);
                 return;
             }
@@ -460,9 +459,7 @@ export type ModuleChatRef = { chaId: string; chatId: string } | null | undefined
  * list, the chat's and the character's modules, and the bound persona's embedded module.
  */
 export function getModules(chatRef?: ModuleChatRef) {
-    const character = chatRef
-        ? DBState.db.characters?.find((entry) => entry?.chaId === chatRef.chaId)
-        : getCurrentCharacter();
+    const character = chatRef ? characterList().find((entry) => entry?.chaId === chatRef.chaId) : selectedCharacter();
     const currentChat = chatRef ? character?.chats?.find((chat) => chat.id === chatRef.chatId) : getCurrentChat();
     const persona = checkPersonaBinded(chatRef);
     let ids = settings.enabledModules ?? [];
@@ -572,6 +569,8 @@ export function getModuleMcps() {
 }
 
 export async function applyModule() {
+    // The character selected when the dialog opened, found again after it (it can be deleted meanwhile).
+    const chaId = selectedCharacter()?.chaId;
     const sel = await alertModuleSelect();
     if (!sel) {
         return;
@@ -582,7 +581,7 @@ export async function applyModule() {
         return;
     }
 
-    const currentChar = getCurrentCharacter();
+    const currentChar = chaId === undefined ? undefined : characterList().find((entry) => entry?.chaId === chaId);
     if (!currentChar) {
         return;
     }
@@ -605,8 +604,6 @@ export async function applyModule() {
             currentChar.triggerscript.push(trigger);
         }
     }
-
-    setCurrentCharacter(currentChar);
 
     alertNormal(language.successApplyModule);
 }
@@ -636,7 +633,7 @@ export function moduleUpdate() {
     if (backgroundEmbedding) {
         moduleBackgroundEmbedding.set(backgroundEmbedding);
     }
-    HideIconStore.set(getCurrentCharacter()?.hideChatIcon || moduleHideIcon);
+    HideIconStore.set(selectedCharacter()?.hideChatIcon || moduleHideIcon);
 
     if (lastModuleIds !== ids) {
         ReloadGUIPointer.set(get(ReloadGUIPointer) + 1);

@@ -4,6 +4,7 @@ import { DBState } from "../../../stores.svelte";
 import { risuChatParser } from "../../parser.svelte";
 import { resetChatVariables } from "./lib";
 import { setChatVar } from "../../chatVar.svelte";
+import { selection } from "../../../storage/selection.svelte";
 
 //#region module mocks
 
@@ -52,6 +53,11 @@ vi.mock(import("../../../stores.svelte"), () => {
 });
 
 //#endregion
+
+// The readers resolve the selected character by `selection.characterId` (Phase 6 slice 8), over
+// the character list (`characterList()`, here the mocked `DBState.db.characters`): the fixture's
+// character is the selected one, as `selectedCharID` 0 selected it.
+selection.characterId = "c";
 
 const template = (op: string, body: string) => `{{${op}}}${body}{{/}}`;
 const quickParse = (...args: Parameters<typeof template>) => risuChatParser(template(...args));

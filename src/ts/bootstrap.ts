@@ -11,8 +11,8 @@ import {
 } from "../../shared/sections.ts";
 import { mirrorFields, setMaskedSecrets } from "./storage/llmSecrets.svelte";
 import type { MaskedLlmSecrets } from "../../shared/llmSecrets.ts";
-import { loadSelection } from "./storage/selection.svelte";
-import { botMakerMode, selectedCharID, loadedStore, LoadingStatusState } from "./stores.svelte";
+import { loadSelection, selectCharacter } from "./storage/selection.svelte";
+import { botMakerMode, loadedStore, LoadingStatusState } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./alert";
 import { characterURLImport } from "./characterCards";
@@ -114,7 +114,7 @@ export async function loadData() {
                 botMakerMode.set(true);
             }
             loadedStore.set(true);
-            selectedCharID.set(-1);
+            selectCharacter(null);
             // A server job of this tab that a reload interrupted (a Lua button, Phase 5 slice 8a)
             // is attached again; nothing is sent when the tab has none.
             void import("./process/serverCommands")

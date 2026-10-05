@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import type {
         character,
@@ -10,15 +11,13 @@
     import { mount, onDestroy, unmount } from "svelte";
     import Chat from "./Chat.svelte";
     import { getCharImage } from "src/ts/characters";
-    import { createSimpleCharacter, DBState, selectedCharID, ReloadChatPointer } from "src/ts/stores.svelte";
+    import { createSimpleCharacter, ReloadChatPointer } from "src/ts/stores.svelte";
     import { streamingState } from "src/ts/storage/chatStore.svelte";
     import { chatFoldedStateMessageIndex } from "src/ts/globalApi.svelte";
     import { get } from "svelte/store";
 
     const getCurrentChatRoomId = () => {
-        const charId = get(selectedCharID);
-        if (charId < 0) return null;
-        const char = DBState.db.characters[charId];
+        const char = selectedCharacter();
         if (!char) return null;
         return char.chats?.[char.chatPage]?.id ?? null;
     };

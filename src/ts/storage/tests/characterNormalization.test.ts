@@ -686,7 +686,7 @@ describe("a selection", () => {
         };
         const indexOf = (id: string) => stores.DBState.db.characters.findIndex((entry: any) => entry.chaId === id);
         for (const id of ["c", added, "c"]) {
-            await changeChar(indexOf(id));
+            await changeChar(id);
             expect(get(stores.selectedCharID)).toBe(indexOf(id));
         }
         await settle();

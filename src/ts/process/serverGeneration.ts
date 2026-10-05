@@ -2,8 +2,7 @@ import type { GenerationKind } from "../../../shared/jobs.ts";
 import type { PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { type ChatRef, currentChatRef, findChat } from "../storage/chatStore.svelte";
 import { incrementStatic } from "../storage/collectionStore.svelte";
-import { updateCharacter } from "../storage/characterStore.svelte";
-import { DBState } from "../stores.svelte";
+import { updateCharacter, characterList } from "../storage/characterStore.svelte";
 import { addRerolls } from "./prereroll";
 import { runServerJob, type ServerCommandOutcome } from "./serverCommands";
 
@@ -43,7 +42,7 @@ export async function sendChatOnServer(
     arg: ServerSendArg,
 ): Promise<{ ok: boolean; outcome: ServerCommandOutcome; result?: unknown; refusal?: ServerSendRefusal }> {
     const ref = arg.target ?? currentChatRef();
-    const char = ref ? DBState.db.characters.find((entry) => entry?.chaId === ref.chaId) : undefined;
+    const char = ref ? characterList().find((entry) => entry?.chaId === ref.chaId) : undefined;
     if (!ref || !char || !findChat(ref)) {
         return { ok: false, outcome: "refused", refusal: "definite" };
     }

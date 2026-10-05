@@ -1,6 +1,6 @@
+import { selectedCharacter } from "../../storage/characterStore.svelte";
 import { activePreset } from "../../storage/settingsViews.svelte";
 import type { OpenAIChat } from "../index.svelte";
-import { getCurrentCharacter } from "src/ts/storage/database.svelte";
 import { getUserName } from "src/ts/util";
 import { chatTemplates, renderChatTemplate, templateEffect } from "../../../../shared/prompt/chatTemplate.ts";
 
@@ -15,7 +15,7 @@ export const applyChatTemplate = (
         custom?: string;
     } = {},
 ) => {
-    const currentChar = getCurrentCharacter();
+    const currentChar = selectedCharacter();
     const type = arg.type ?? activePreset.instructChatTemplate;
     if (!type) {
         throw new Error("Template type is not set");

@@ -1,9 +1,7 @@
+import { selectedCharacter, characterList } from "../storage/characterStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";
-import { get } from "svelte/store";
 import { getChatVar, getChatVarOf, setChatVar, setChatVarOf } from "../parser/chatVar.svelte";
-import { selectedCharID } from "../stores.svelte";
 import { type Message, type loreBook } from "../storage/database.svelte";
-import { DBState } from "../stores.svelte";
 import { tokenize } from "../tokenizer";
 import { risuChatParser } from "../parser/parser.svelte";
 import { findCharacterbyId, getUserName, pickHashRand, selectSingleFile } from "../util";
@@ -28,11 +26,11 @@ function appendLocalLore(entries: loreBook[]) {
 }
 
 export function addLorebook(type: number) {
-    const selectedID = get(selectedCharID);
+    const char = selectedCharacter();
     if (type === 0) {
-        DBState.db.characters[selectedID].globalLore.push({
+        char.globalLore.push({
             key: "",
-            comment: `New Lore ${DBState.db.characters[selectedID].globalLore.length + 1}`,
+            comment: `New Lore ${char.globalLore.length + 1}`,
             content: "",
             mode: "normal",
             insertorder: 100,
@@ -41,11 +39,11 @@ export function addLorebook(type: number) {
             selective: false,
         });
     } else {
-        const page = DBState.db.characters[selectedID].chatPage;
+        const page = char.chatPage;
         appendLocalLore([
             {
                 key: "",
-                comment: `New Lore ${DBState.db.characters[selectedID].chats[page].localLore.length + 1}`,
+                comment: `New Lore ${char.chats[page].localLore.length + 1}`,
                 content: "",
                 mode: "normal",
                 insertorder: 100,
@@ -58,10 +56,10 @@ export function addLorebook(type: number) {
 }
 
 export function addLorebookFolder(type: number) {
-    const selectedID = get(selectedCharID);
+    const char = selectedCharacter();
     const id = v4();
     if (type === 0) {
-        DBState.db.characters[selectedID].globalLore.push({
+        char.globalLore.push({
             key: "\uf000folder:" + id,
             comment: `New Folder`,
             content: "",
@@ -93,9 +91,7 @@ export function addLorebookFolder(type: number) {
  */
 export async function loadLoreBookV3Prompt(chatRef?: ChatRef | null) {
     const ref = chatRef ?? currentChatRef();
-    const char = ref
-        ? DBState.db.characters.find((entry) => entry?.chaId === ref.chaId)
-        : DBState.db.characters[get(selectedCharID)];
+    const char = ref ? characterList().find((entry) => entry?.chaId === ref.chaId) : selectedCharacter();
     const lorechat = ref ? findChat(ref) : char.chats[char.chatPage];
     return await activateLore(
         {
@@ -120,8 +116,7 @@ export async function loadLoreBookV3Prompt(chatRef?: ChatRef | null) {
 }
 
 export async function importLoreBook(mode: "global" | "local" | "sglobal") {
-    const selectedID = get(selectedCharID);
-    const chaId = DBState.db.characters[selectedID]?.chaId;
+    const chaId = selectedCharacter()?.chaId;
     // The chat (for local lore) is captured before the file dialog, so a chat switch cannot redirect it.
     const chatTarget = mode === "local" ? currentChatRef() : null;
     const lore: loreBook[] = [];
@@ -209,12 +204,9 @@ export function convertExternalLorebook(entries: { [key: string]: CCLorebook }) 
 
 export async function exportLoreBook(mode: "global" | "local" | "sglobal") {
     try {
-        const selectedID = get(selectedCharID);
-        const page = mode === "sglobal" ? -1 : DBState.db.characters[selectedID].chatPage;
-        const lore =
-            mode === "global"
-                ? DBState.db.characters[selectedID].globalLore
-                : DBState.db.characters[selectedID].chats[page].localLore;
+        const char = selectedCharacter();
+        const page = mode === "sglobal" ? -1 : char.chatPage;
+        const lore = mode === "global" ? char.globalLore : char.chats[page].localLore;
         const stringl = Buffer.from(
             JSON.stringify({
                 type: "risu",

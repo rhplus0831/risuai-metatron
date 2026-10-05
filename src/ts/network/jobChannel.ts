@@ -1,3 +1,4 @@
+import { selectedCharacter, characterList } from "../storage/characterStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
 import { get } from "svelte/store";
@@ -48,11 +49,9 @@ import {
     alertStore as alertState,
     bodyIntercepterStore,
     CharEmotion,
-    DBState,
     hypaV3ProgressStore,
     ReloadChatPointer,
     ReloadGUIPointer,
-    selectedCharID,
 } from "../stores.svelte";
 
 /**
@@ -212,7 +211,7 @@ function applyEffect(notice: GenerationNotice) {
             return;
         case "reloadChat": {
             const { chaId, chatId, messageId } = notice.payload;
-            const character = DBState.db.characters?.[get(selectedCharID)];
+            const character = selectedCharacter();
             const chat = character?.chaId === chaId ? character.chats?.[character.chatPage] : undefined;
             const index = chat?.id === chatId ? (chat.message?.findIndex((m) => m.chatId === messageId) ?? -1) : -1;
             if (index !== -1) {
@@ -239,7 +238,7 @@ function applyEffect(notice: GenerationNotice) {
             return;
         case "tts": {
             const { chaId, text } = notice.payload;
-            const character = DBState.db.characters?.find((entry) => entry?.chaId === chaId);
+            const character = characterList().find((entry) => entry?.chaId === chaId);
             if (character && character.type !== "group") {
                 void import("../process/tts").then(({ sayTTS }) => sayTTS(character, text)).catch(console.error);
             }
@@ -513,7 +512,7 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
         }
         case "selectedChat": {
             // The chat of a character this tab has selected (the selection is the tab's own).
-            const target = DBState.db.characters.find((entry) => entry?.chaId === String(payload.characterId));
+            const target = characterList().find((entry) => entry?.chaId === String(payload.characterId));
             const chatId = target?.chats?.[target.chatPage]?.id;
             return typeof chatId === "string" ? { chatId } : null;
         }
@@ -521,7 +520,7 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             // Lua `generateImage` on the server (Phase 5 slice 8a): generated here with the tab's
             // image settings and keys, written as an inlay, answered with its id.
             const characterId = String(payload.characterId);
-            const target = DBState.db.characters.find((entry) => entry?.chaId === characterId);
+            const target = characterList().find((entry) => entry?.chaId === characterId);
             if (!target || target.type === "group") {
                 throw new CallbackFailed("hook", "The character to generate for is gone");
             }
@@ -575,11 +574,12 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             // run, one it added does.
             for (const listener of pluginHooks.chatOutput) {
                 stillWanted();
-                const characterIndex = DBState.db.characters.findIndex((entry) => entry?.chaId === chaId);
-                const owner = DBState.db.characters[characterIndex];
+                // The plugin's `characterIndex` is the list position (the plugin index API's mapping).
+                const characterIndex = characterList().findIndex((entry) => entry?.chaId === chaId);
+                const owner = characterList()[characterIndex];
                 const chatIndex = owner?.chats?.findIndex((entry) => entry?.id === chatId) ?? -1;
                 const chat = owner?.chats?.[chatIndex];
-                const speaker = DBState.db.characters.find((entry) => entry?.chaId === speakerId);
+                const speaker = characterList().find((entry) => entry?.chaId === speakerId);
                 if (!owner || !chat || !speaker) {
                     throw new CallbackFailed("hook", "The chat the output listeners run for is gone");
                 }
@@ -601,7 +601,7 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             // The image view of a server send's reply (slice 11a): `stableDiff` with the tab's image
             // settings and keys; its prompt request runs for the job's chat, preset, and persona.
             const characterId = String(payload.characterId);
-            const target = DBState.db.characters.find((entry) => entry?.chaId === characterId);
+            const target = characterList().find((entry) => entry?.chaId === characterId);
             if (!target || target.type === "group") {
                 throw new CallbackFailed("hook", "The character to generate for is gone");
             }
@@ -871,7 +871,7 @@ export async function registeredHooks(): Promise<GenerationHooks> {
  * its group, oldest first (`GenerationClientEnv.emotions`).
  */
 export function recentEmotions(chaId: string): Record<string, string[]> {
-    const owner = DBState.db.characters?.find((entry) => entry?.chaId === chaId);
+    const owner = characterList().find((entry) => entry?.chaId === chaId);
     const ids = owner?.type === "group" ? owner.characters : [chaId];
     const shown = get(CharEmotion);
     const emotions: Record<string, string[]> = {};

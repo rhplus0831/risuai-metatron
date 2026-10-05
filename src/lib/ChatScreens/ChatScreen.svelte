@@ -1,9 +1,9 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { getCustomBackground, getEmotion } from "../../ts/util";
 
-    import { DBState } from "src/ts/stores.svelte";
-    import { CharEmotion, selectedCharID } from "../../ts/stores.svelte";
+    import { CharEmotion } from "../../ts/stores.svelte";
     import ResizeBox from "./ResizeBox.svelte";
     import DefaultChatScreen from "./DefaultChatScreen.svelte";
     import defaultWallpaper from "../../etc/bg.jpg";
@@ -12,6 +12,8 @@
     import BackgroundDom from "./BackgroundDom.svelte";
     import SideBarArrow from "../UI/GUI/SideBarArrow.svelte";
     import ModuleChatMenu from "../Setting/Pages/Module/ModuleChatMenu.svelte";
+
+    const currentCharacter = $derived(selectedCharacter());
     let openChatList = $state(false);
     let openModuleList = $state(false);
 
@@ -41,20 +43,20 @@
     <div class="grow h-full flex justify-center relative" style={bgImg.length < 4 ? wallPaper : bgImg}>
         <SideBarArrow />
         <BackgroundDom />
-        {#if $selectedCharID >= 0}
-            {#if DBState.db.characters[$selectedCharID].viewScreen !== "none"}
+        {#if currentCharacter !== undefined}
+            {#if currentCharacter.viewScreen !== "none"}
                 <div
                     class="h-full mr-10 flex justify-end halfw"
                     style:width="{42 * (settings.ui.waifuWidth2 / 100)}rem"
                 >
-                    <TransitionImage classType="waifu" src={getEmotion(DBState.db, $CharEmotion, "plain")} />
+                    <TransitionImage classType="waifu" src={getEmotion($CharEmotion, "plain")} />
                 </div>
             {/if}
         {/if}
         <div
             class="h-full w-2xl"
             style:width="{42 * (settings.ui.waifuWidth / 100)}rem"
-            class:halfwp={$selectedCharID >= 0 && DBState.db.characters[$selectedCharID].viewScreen !== "none"}
+            class:halfwp={currentCharacter !== undefined && currentCharacter.viewScreen !== "none"}
         >
             <DefaultChatScreen
                 customStyle={`${externalStyles}backdrop-filter: blur(4px);`}
@@ -68,8 +70,8 @@
         <SideBarArrow />
         <BackgroundDom />
         <div style={bgImg} class="h-full w-full" class:max-w-6xl={settings.ui.classicMaxWidth}>
-            {#if $selectedCharID >= 0}
-                {#if DBState.db.characters[$selectedCharID].viewScreen !== "none" && (DBState.db.characters[$selectedCharID].type === "group" || !DBState.db.characters[$selectedCharID].inlayViewScreen)}
+            {#if currentCharacter !== undefined}
+                {#if currentCharacter.viewScreen !== "none" && (currentCharacter.type === "group" || !currentCharacter.inlayViewScreen)}
                     <ResizeBox />
                 {/if}
             {/if}

@@ -1,10 +1,9 @@
 <script lang="ts">
+    import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { requestChatData } from "src/ts/process/request/request";
     import { doingChat, type OpenAIChat } from "../../ts/process/index.svelte";
     import { type character, type DeepReadonly, type Message, type groupChat } from "../../ts/storage/database.svelte";
-    import { DBState } from "src/ts/stores.svelte";
-    import { selectedCharID } from "../../ts/stores.svelte";
     import { translate } from "src/ts/translator/translator";
     import { CopyIcon, LanguagesIcon, RefreshCcwIcon } from "@lucide/svelte";
     import { alertConfirm } from "src/ts/alert";
@@ -15,6 +14,7 @@
     import { ParseMarkdown } from "src/ts/parser/parser.svelte";
     import { defaultAutoSuggestPrompt } from "../../ts/storage/defaultPrompts.js";
 
+    const currentCharacter = $derived(selectedCharacter());
     interface Props {
         send: () => any;
         messageInput: (string: string) => any;
@@ -22,7 +22,7 @@
 
     let { send, messageInput }: Props = $props();
     let suggestMessages: readonly string[] = $state(
-        DBState.db.characters[$selectedCharID]?.chats[DBState.db.characters[$selectedCharID].chatPage]?.suggestMessages,
+        selectedCharacter()?.chats[selectedCharacter().chatPage]?.suggestMessages,
     );
     let suggestMessagesTranslated: string[] = $state();
     let toggleTranslate: boolean = $state(settings.memoryTranslateMedia.autoTranslate);
@@ -40,22 +40,27 @@
     };
 
     const updateSuggestions = () => {
-        if ($selectedCharID > -1 && !$doingChat) {
+        if (currentCharacter !== undefined && !$doingChat) {
             if (progressChatPage > 0 && progressChatPage != chatPage) {
                 cancelSuggestionRequest();
             }
-            let currentChar = DBState.db.characters[$selectedCharID];
+            let currentChar = currentCharacter;
             suggestMessages = currentChar?.chats[currentChar.chatPage].suggestMessages;
         }
     };
 
     const requestSuggestions = () => {
-        if ($doingChat || $selectedCharID <= -1 || (suggestMessages && suggestMessages.length > 0) || progress) {
+        if (
+            $doingChat ||
+            currentCharacter === undefined ||
+            (suggestMessages && suggestMessages.length > 0) ||
+            progress
+        ) {
             return;
         }
 
-        const requestCharId = $selectedCharID;
-        const currentChar: character | groupChat = DBState.db.characters[requestCharId];
+        const requestCharId = currentCharacter.chaId;
+        const currentChar: character | groupChat = currentCharacter;
         if (!currentChar) {
             return;
         }
@@ -124,9 +129,11 @@
             .then((rq2) => {
                 const stillCurrentRequest =
                     suggestionRequestId === requestId &&
-                    $selectedCharID === requestCharId &&
-                    DBState.db.characters[requestCharId]?.chatPage === requestChatPage;
-                const currentTargetChat = DBState.db.characters[requestCharId]?.chats[requestChatPage];
+                    selectedCharacter()?.chaId === requestCharId &&
+                    selectedCharacter()?.chatPage === requestChatPage;
+                const currentTargetChat = characterList().find((entry) => entry?.chaId === requestCharId)?.chats[
+                    requestChatPage
+                ];
                 if (
                     rq2.type !== "fail" &&
                     rq2.type !== "streaming" &&
@@ -182,9 +189,9 @@
     });
 
     $effect.pre(() => {
-        $selectedCharID;
+        currentCharacter?.chaId;
         //FIXME add selectedChatPage for optimize render
-        chatPage = DBState.db.characters[$selectedCharID].chatPage;
+        chatPage = currentCharacter.chatPage;
         updateSuggestions();
     });
     $effect.pre(() => {

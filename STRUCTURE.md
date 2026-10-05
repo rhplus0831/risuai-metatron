@@ -145,9 +145,10 @@ UI conventions (details: `docs/structure/ui-theming.md`, `docs/structure/setting
 - U3. User-facing errors and confirmations go through `src/ts/alert.ts` (`alertError`,
   `alertConfirm`, `alertSelect`, `alertInput`, ...), not `window.alert`.
 - U4. There is no router. The screen is chosen by ordered conditionals in `src/App.svelte` and
-  `src/lib/ChatScreens/DefaultChatScreen.svelte`, driven by stores. `selectedCharID === -1`
-  means the home screen. `selectedCharID` is an index view of the selected character's id
-  (`selection.characterId`, per tab); select by id with `selectCharacter`.
+  `src/lib/ChatScreens/DefaultChatScreen.svelte`, driven by stores. The selected character is
+  `selection.characterId` (per tab; `null` is the home screen), read as `selectedCharacter()`
+  (`characterStore.svelte.ts`) and set with `selectCharacter(chaId)`. `selectedCharID` is an index
+  view of it, kept as a subscription shim; readers resolve characters by id, not by that index.
 
 Release
 

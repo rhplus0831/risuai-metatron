@@ -186,6 +186,8 @@ beforeEach(async () => {
     stores.CharEmotion.set({});
     hooks = (await import("../plugins/pluginHooks")).pluginHooks;
     channel = await import("./jobChannel");
+    // The tab shows the fixture's character (the readers resolve it by `selection.characterId`).
+    (await import("../storage/selection.svelte")).selection.characterId = "c";
     tx = transport();
 });
 

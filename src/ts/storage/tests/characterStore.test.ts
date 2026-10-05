@@ -416,3 +416,83 @@ describe("checkCharOrder", () => {
         expect(globalApi.checkCharOrder.toString()).toBe(characterOrder.checkCharOrder.toString());
     });
 });
+
+// Phase 6 slice 8 (`readers-characters.md`): the readers' API. Components read the selected
+// character as `$derived(selectedCharacter())` and bind its fields (the editors' nested lorebook
+// entries included); a write through that wrapper is one save of that character's record. A
+// writer for another character takes its writable wrapper from `characterList()`. `characterSnapshot`
+// is the detached copy the card export and the plugin `getChar` take.
+describe("the readers' API (selectedCharacter, characterList, characterSnapshot)", () => {
+    const entry = (content: string) => ({
+        key: "k",
+        comment: "entry",
+        content,
+        mode: "normal" as const,
+        insertorder: 100,
+        alwaysActive: false,
+        secondkey: "",
+        selective: false,
+    });
+    const opsOf = (batches: any[]) => batches.map((batch) => batch.ops.map((op: any) => `${op.kind}/${op.id}`));
+
+    it("a lorebook entry edit through the selected wrapper queues one write of that character only", async () => {
+        const { fake, sync, characterStore, record } = await boot();
+        const d = characterStore.addCharacter({ chaId: "d", name: "D", globalLore: [entry("d lore")] });
+        characterStore.selectCharacter("c");
+        characterStore.selectedCharacter()!.globalLore.push(entry("first"));
+        await sync.flushResources();
+        const before = fake.batchCount();
+
+        // As the editor's nested binding writes it (`bind:value` on `globalLore[i]`, then `.content`).
+        const lore = characterStore.selectedCharacter()!.globalLore;
+        lore[0].content = "edited once";
+        lore[0].content = "edited twice";
+        await sync.flushResources();
+        const batches = fake.batchBodies().slice(before);
+        expect(opsOf(batches)).toEqual([["characters/c"]]);
+        expect(batches[0].chats ?? []).toEqual([]);
+        expect(record("characters", "c").globalLore.map((item: any) => item.content)).toEqual(["edited twice"]);
+        expect(record("characters", d).globalLore.map((item: any) => item.content)).toEqual(["d lore"]);
+
+        // A writer for a character that is not selected takes its wrapper from the list.
+        const after = fake.batchCount();
+        characterStore.characterList().find((item) => item.chaId === d)!.globalLore[0].content = "d edited";
+        await sync.flushResources();
+        expect(opsOf(fake.batchBodies().slice(after))).toEqual([[`characters/${d}`]]);
+        expect(record("characters", d).globalLore[0].content).toBe("d edited");
+        expect(record("characters", "c").globalLore[0].content).toBe("edited twice");
+    });
+
+    it("characterList is the list in creation order, and selectedCharacter follows the id, not the position", async () => {
+        const { characterStore, stores } = await boot();
+        expect(characterStore.selectedCharacter()).toBeUndefined();
+        const a = characterStore.addCharacter({ name: "A" });
+        expect(characterStore.characterList().map((item) => item.chaId)).toEqual(["c", a]);
+        expect(characterStore.characterList()[1]).toBe(stores.DBState.db.characters[1]);
+        characterStore.selectCharacter(a);
+        const selected = characterStore.selectedCharacter();
+        characterStore.removeCharacter("c");
+        expect(characterStore.selectedCharacter()).toBe(selected);
+        expect(characterStore.selectedCharacter()!.chaId).toBe(a);
+        // An unknown id selects home.
+        characterStore.selectCharacter("nope");
+        expect(characterStore.selectedCharacter()).toBeUndefined();
+    });
+
+    it("characterSnapshot is a detached copy with the chats: changing it writes nothing", async () => {
+        const { fake, sync, characterStore, character } = await boot();
+        const copy = characterStore.characterSnapshot("c")!;
+        expect(copy.chaId).toBe("c");
+        expect(copy.chats.map((chat) => chat.id)).toEqual(["k", "j"]);
+        expect(copy.chats[0].message.map((message) => message.data)).toEqual(["A", "B", "C"]);
+        expect(copy).not.toBe(character("c"));
+        const batches = fake.batchCount();
+        copy.name = "changed copy";
+        (copy.chats[0].message as unknown[]).push({ role: "user", data: "copy only" });
+        expect(character("c").name).toBe("C");
+        expect(character("c").chats[0].message).toHaveLength(3);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(batches);
+        expect(characterStore.characterSnapshot("nope")).toBeUndefined();
+    });
+});

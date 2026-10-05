@@ -1,22 +1,31 @@
+import { characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { appendMessage } from "../storage/chatStore.svelte";
 import shuffle from "lodash/shuffle";
 import { findCharacterbyId } from "../util";
 import { alertConfirm, alertError, alertSelectChar } from "../alert";
 import { language } from "src/lang";
-import { get } from "svelte/store";
-import { getDatabase, setDatabase } from "../storage/database.svelte";
-import { DBState, selectedCharID } from "../stores.svelte";
+import { setDatabase } from "../storage/database.svelte";
 
 export async function addGroupChar() {
-    let selectedId = get(selectedCharID);
-    let group = DBState.db.characters[selectedId];
-    if (group.type === "group") {
+    const chaId = selectedCharacter()?.chaId;
+    // The group is found again after each dialog: the selection can change and the group can be deleted meanwhile.
+    const groupOf = () => {
+        const found = characterList().find((entry) => entry?.chaId === chaId);
+        return found?.type === "group" ? found : undefined;
+    };
+    if (groupOf()) {
         const res = await alertSelectChar();
-        if (res) {
+        let group = groupOf();
+        if (res && group) {
             if (group.characters.includes(res)) {
                 alertError(language.errors.alreadyCharInGroup);
             } else {
-                if (await alertConfirm(language.askLoadFirstMsg)) {
+                const loadFirstMessage = await alertConfirm(language.askLoadFirstMsg);
+                group = groupOf();
+                if (!group) {
+                    return;
+                }
+                if (loadFirstMessage) {
                     const chat = group.chats[group.chatPage];
                     if (chat?.id) {
                         appendMessage(
@@ -35,9 +44,8 @@ export async function addGroupChar() {
 }
 
 export function rmCharFromGroup(index: number) {
-    let selectedId = get(selectedCharID);
-    let group = DBState.db.characters[selectedId];
-    if (group.type === "group") {
+    const group = selectedCharacter();
+    if (group?.type === "group") {
         group.characters.splice(index, 1);
         group.characterTalks.splice(index, 1);
         group.characterActive.splice(index, 1);

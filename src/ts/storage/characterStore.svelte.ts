@@ -3,6 +3,8 @@ import { v4 } from "uuid";
 import type { character, groupChat } from "../../../shared/database.ts";
 import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
+// Before `../stores.svelte`: its module effects read `selectedCharacter()` while this module is still loading.
+import { onCharacterSelected, selectCharacter, selection } from "./selection.svelte";
 import { DBState } from "../stores.svelte";
 import { CharacterShapeError, normalizeCharacter } from "../../../shared/characters.ts";
 import { ModuleShapeError, upgradeLorebook } from "../../../shared/modules.ts";
@@ -25,7 +27,6 @@ import {
     removeCharacterRecords,
     replaceCharacterRecordAt,
 } from "./records.svelte";
-import { onCharacterSelected, selectCharacter, selection } from "./selection.svelte";
 import { settings } from "./settingsViews.svelte";
 
 export { selectCharacter };
@@ -172,6 +173,20 @@ function requirePrepared(prepared: PreparedCharacter) {
     if (!preparedCharacters.has(prepared)) {
         throw new MutationValidationError("character", "not prepared by prepareNewCharacter");
     }
+}
+
+/**
+ * The character list (each element a character record's wrapper, in creation order; `[]` before an
+ * installation). Read it for display and lookups; change membership only through this module.
+ */
+export function characterList(): AnyCharacter[] {
+    return list();
+}
+
+/** A detached copy of the character with `chaId` (with its chats), or `undefined`. */
+export function characterSnapshot(chaId: string): AnyCharacter | undefined {
+    const record = untrack(() => list().find((entry) => entry?.chaId === chaId));
+    return record === undefined ? undefined : ($state.snapshot(record) as AnyCharacter);
 }
 
 /** The mirror record of a character, typed read-only: change it through `updateCharacter`. */

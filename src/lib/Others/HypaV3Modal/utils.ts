@@ -1,9 +1,8 @@
-import { get } from "svelte/store";
+import { selectedCharacter } from "../../../ts/storage/characterStore.svelte";
 import { risuChatParser } from "src/ts/parser/parser.svelte";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
 import { type DeepReadonly, type Message } from "src/ts/storage/database.svelte";
 import { alertConfirm } from "src/ts/alert";
-import { DBState, selectedCharID } from "src/ts/stores.svelte";
 import { language } from "src/lang";
 
 export async function alertConfirmTwice(firstMessage: string, secondMessage: string): Promise<boolean> {
@@ -78,8 +77,8 @@ export function handleDualAction(element: HTMLElement, params: DualActionParams 
 }
 
 export function getFirstMessage(): string | null {
-    const char = DBState.db.characters[get(selectedCharID)];
-    const chat = char.chats[DBState.db.characters[get(selectedCharID)].chatPage];
+    const char = selectedCharacter();
+    const chat = char.chats[selectedCharacter().chatPage];
 
     return chat.fmIndex === -1
         ? char.firstMessage
@@ -92,7 +91,7 @@ export async function processRegexScript(
     msg: DeepReadonly<Message>,
     msgIndex: number = -1,
 ): Promise<DeepReadonly<Message>> {
-    const char = DBState.db.characters[get(selectedCharID)];
+    const char = selectedCharacter();
     const transform = captureTransform(msgIndex);
     const source = risuChatParser(msg.data, { chara: char, role: msg.role });
     // Without a context the regex stage is skipped (Phase 5 cutover): the CBS-parsed text stays.

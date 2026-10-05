@@ -1,4 +1,4 @@
-import { getCurrentCharacter } from "../storage/database.svelte";
+import { selectedCharacter } from "../storage/characterStore.svelte";
 
 type ChatBranch = {
     children: Map<string, ChatBranch>;
@@ -66,7 +66,7 @@ function renderBranch(branch: ChatBranch, x: number, y: number, connectX = -1, c
 }
 
 export function getChatBranches() {
-    const character = getCurrentCharacter();
+    const character = selectedCharacter();
 
     const mainBranch: ChatBranch = {
         children: new Map(),

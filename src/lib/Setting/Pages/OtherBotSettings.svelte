@@ -1,10 +1,10 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { language } from "src/lang";
     import Help from "src/lib/Others/Help.svelte";
     import { selectSingleFile } from "src/ts/util";
-    import { DBState, selectedCharID } from "src/ts/stores.svelte";
     import { saveAsset, downloadFile, globalFetch } from "src/ts/globalApi.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
@@ -24,6 +24,7 @@
     import { createHypaV3Preset } from "src/ts/process/memory/hypav3";
     import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 
+    const currentCharacter = $derived(selectedCharacter());
     let submenu = $state(settings.ui.useLegacyGUI ? -1 : 0);
 
     // HypaV3: the selected preset, by id (`hypaV3PresetId`); the first one when that id is gone.
@@ -70,7 +71,7 @@
 
     async function getMaxMemoryRatio(): Promise<number> {
         const promptTemplateToken = await tokenizePreset(activePreset.promptTemplate);
-        const char = DBState.db.characters[$selectedCharID];
+        const char = currentCharacter;
         const charToken = await getCharToken(char);
         const maxLoreToken = char.loreSettings?.tokenBudget ?? settings.providers.loreBookToken;
         const maxResponse = activePreset.maxResponse;

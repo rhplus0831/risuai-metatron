@@ -1,5 +1,6 @@
 import type { Database } from "../../../shared/database.ts";
-import { DBState } from "../stores.svelte";
+import { characterList } from "./characterStore.svelte";
+import { settings } from "./settingsViews.svelte";
 
 /**
  * Checks and updates the character order in the database (the `characterOrder` mutation: every
@@ -11,7 +12,7 @@ import { DBState } from "../stores.svelte";
  */
 export function checkCharOrder() {
     // Repaired on a plain copy and installed once (one queued write of the `characterOrder` record).
-    const original = JSON.stringify(DBState.db.characterOrder ?? []);
+    const original = JSON.stringify(settings.characterOrder ?? []);
     const order = JSON.parse(original) as Database["characterOrder"];
     const ordered = new Set<string>();
     for (let i = 0; i < order.length; i++) {
@@ -32,8 +33,9 @@ export function checkCharOrder() {
 
     const charIdSet = new Set<string>();
 
-    for (let i = 0; i < DBState.db.characters.length; i++) {
-        const char = DBState.db.characters[i];
+    const characters = characterList();
+    for (let i = 0; i < characters.length; i++) {
+        const char = characters[i];
         const charId = char.chaId;
         if (!char.trashTime) {
             charIdSet.add(charId);
@@ -72,7 +74,7 @@ export function checkCharOrder() {
             }
         }
     }
-    if (DBState.db.characterOrder === undefined || JSON.stringify(order) !== original) {
-        DBState.db.characterOrder = order;
+    if (settings.characterOrder === undefined || JSON.stringify(order) !== original) {
+        settings.characterOrder = order;
     }
 }

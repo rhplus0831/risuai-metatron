@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { tick, untrack } from "svelte";
     import {
         LanguagesIcon,
@@ -23,7 +24,6 @@
     import { type DeepReadonly, type Message } from "src/ts/storage/database.svelte";
     import { translateHTML } from "src/ts/translator/translator";
     import { alertConfirm } from "src/ts/alert";
-    import { DBState, selectedCharID } from "src/ts/stores.svelte";
     import { currentChatRef } from "src/ts/storage/chatStore.svelte";
     import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type {
@@ -36,6 +36,7 @@
     } from "./types";
     import { alertConfirmTwice, handleDualAction, getFirstMessage, processRegexScript, getCategoryName } from "./utils";
 
+    const currentCharacter = $derived(selectedCharacter());
     interface Props {
         summaryIndex: number;
         hypaV3Data: SerializableHypaV3Data;
@@ -138,8 +139,8 @@
     }
 
     function isOrphan(): boolean {
-        const char = DBState.db.characters[$selectedCharID];
-        const chat = char.chats[DBState.db.characters[$selectedCharID].chatPage];
+        const char = currentCharacter;
+        const chat = char.chats[currentCharacter.chatPage];
 
         for (const chatMemo of summary.chatMemos) {
             if (chatMemo == null) {
@@ -186,8 +187,8 @@
     }
 
     async function getMessageFromChatMemo(chatMemo: string | null): Promise<DeepReadonly<Message> | null> {
-        const char = DBState.db.characters[$selectedCharID];
-        const chat = char.chats[DBState.db.characters[$selectedCharID].chatPage];
+        const char = currentCharacter;
+        const chat = char.chats[currentCharacter.chatPage];
         const shouldProcess = getCurrentHypaV3Preset().settings.processRegexScript;
 
         let msg = null;

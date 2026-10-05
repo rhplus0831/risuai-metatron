@@ -1,13 +1,8 @@
+import { selectedCharacter } from "./storage/characterStore.svelte";
 import { settings, activePreset } from "./storage/settingsViews.svelte";
 import type { Tiktoken } from "@dqbd/tiktoken";
 import type { Tokenizer } from "@mlc-ai/web-tokenizers";
-import {
-    type groupChat,
-    type character,
-    type Chat,
-    type DeepReadonly,
-    getCurrentCharacter,
-} from "./storage/database.svelte";
+import { type groupChat, type character, type Chat, type DeepReadonly } from "./storage/database.svelte";
 import type { MultiModal, OpenAIChat } from "./process/index.svelte";
 import { supportsInlayImage } from "./process/files/inlays";
 import { risuChatParser } from "./parser/parser.svelte";
@@ -410,7 +405,7 @@ export async function getCharToken(char?: character | groupChat | null) {
     let dynamic = 0;
 
     if (!char) {
-        const c = getCurrentCharacter();
+        const c = selectedCharacter();
         char = c;
     }
     if (char.type === "group") {

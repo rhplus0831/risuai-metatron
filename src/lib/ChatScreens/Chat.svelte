@@ -1,5 +1,8 @@
 <script module lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
+
+    const currentCharacter = $derived(selectedCharacter());
     /**
      * The server manual trigger whose id `CurrentTriggerIdStore` holds (Phase 5 slice 8b): only the
      * invocation that set it clears it, so a refused click or an older timer leaves a newer one alone.
@@ -42,7 +45,7 @@
     import { getModelInfo } from "src/ts/model/modellist";
     import { runServerButton, runServerManualTrigger } from "src/ts/process/serverCommands";
     import { sayTTS } from "src/ts/process/tts";
-    import { DBState, ReloadChatPointer, CurrentTriggerIdStore, popupStore } from "src/ts/stores.svelte";
+    import { ReloadChatPointer, CurrentTriggerIdStore, popupStore } from "src/ts/stores.svelte";
     import { capitalize, getUserIcon, getUserName, sleep } from "src/ts/util";
     import { onDestroy, onMount, untrack } from "svelte";
     import { type Unsubscriber } from "svelte/store";
@@ -64,7 +67,6 @@
         type simpleCharacterArgument,
     } from "../../ts/parser/parser.svelte";
     import {
-        getCurrentCharacter,
         type Message,
         type MessageGenerationInfo,
         type StreamingDisplayOptimizationMode,
@@ -81,8 +83,7 @@
         setChatMeta,
         setMessageText,
     } from "../../ts/storage/chatStore.svelte";
-    import { selectedCharID } from "../../ts/stores.svelte";
-    import { HideIconStore, ReloadGUIPointer, selIdState } from "../../ts/stores.svelte";
+    import { HideIconStore, ReloadGUIPointer } from "../../ts/stores.svelte";
     import AutoresizeArea from "../UI/GUI/TextAreaResizable.svelte";
     import ChatBody from "./ChatBody.svelte";
     import PopupButton from "../UI/PopupButton.svelte";
@@ -160,7 +161,7 @@
     let translationViewControlsDisabled = $derived(editMode || editTranslationMode || loadingTranslationEdit);
     /** The chat this message is shown in (a branched or copied chat shares its source's message ids). */
     let displayedChat = $derived.by((): ChatRef | null => {
-        const character = DBState.db.characters[selIdState.selId];
+        const character = currentCharacter;
         const chat = character?.chats?.[character.chatPage];
         return character && chat?.id ? { chaId: character.chaId, chatId: chat.id } : null;
     });
@@ -352,9 +353,7 @@
         try {
             const cbsConditions: CbsConditions = {
                 firstmsg: firstMessage ?? false,
-                chatRole:
-                    DBState.db.characters[selIdState.selId].chats[DBState.db.characters[selIdState.selId].chatPage]
-                        ?.message?.[idx]?.role ?? null,
+                chatRole: currentCharacter.chats[currentCharacter.chatPage]?.message?.[idx]?.role ?? null,
             };
             return cbsConditions;
         } catch (e) {
@@ -465,7 +464,7 @@
     }
 
     async function handleButtonTriggerWithin(event: UIEvent) {
-        const currentChar = getCurrentCharacter();
+        const currentChar = selectedCharacter();
         if (!currentChar || currentChar.type === "group") {
             return;
         }
@@ -524,10 +523,7 @@
 
     let isBookmarked = $derived(
         messageId !== undefined &&
-            (DBState.db.characters[selIdState.selId]?.chats[
-                DBState.db.characters[selIdState.selId].chatPage
-            ]?.bookmarks?.includes(messageId) ??
-                false),
+            (currentCharacter?.chats[currentCharacter.chatPage]?.bookmarks?.includes(messageId) ?? false),
     );
 
     async function toggleBookmark() {
@@ -616,9 +612,7 @@
                 onclick={() => {
                     const currentGenerationInfo =
                         idx >= 0
-                            ? DBState.db.characters[$selectedCharID].chats[
-                                  DBState.db.characters[$selectedCharID].chatPage
-                              ].message[idx].generationInfo
+                            ? currentCharacter.chats[currentCharacter.chatPage].message[idx].generationInfo
                             : messageGenerationInfo;
 
                     alertRequestData({
@@ -784,13 +778,13 @@
                 {@render translationButton()}
                 {#if window.innerWidth >= 640}
                     {@render majorIconButtonsBody(false)}
-                    {#if DBState.db.characters[selIdState.selId]}
+                    {#if currentCharacter}
                         <PopupButton>
                             {@render minorIconButtonsBody(true)}
                         </PopupButton>
                     {/if}
                 {:else}
-                    {#if DBState.db.characters[selIdState.selId]}
+                    {#if currentCharacter}
                         <PopupButton>
                             {@render majorIconButtonsBody(true)}
                             {@render minorIconButtonsBody(true)}
@@ -826,7 +820,7 @@
 
                         const parser = new DOMParser();
                         const doc = parser.parseFromString(
-                            await ParseMarkdown(copyText, getCurrentCharacter(), "normal", idx, getCbsCondition()),
+                            await ParseMarkdown(copyText, selectedCharacter(), "normal", idx, getCbsCondition()),
                             "text/html",
                         );
 
@@ -941,8 +935,7 @@
                         let hasValidImage = false;
 
                         try {
-                            const iconImage =
-                                (await getFileSrc(DBState.db.characters[selIdState.selId].image ?? "")) ?? "";
+                            const iconImage = (await getFileSrc(currentCharacter.image ?? "")) ?? "";
 
                             if (
                                 iconImage &&
@@ -1108,7 +1101,7 @@
         </button>
     {/if}
     {#if idx > -1}
-        {#if DBState.db.characters[selIdState.selId].type !== "group" && DBState.db.characters[selIdState.selId].ttsMode !== "none" && DBState.db.characters[selIdState.selId].ttsMode}
+        {#if currentCharacter.type !== "group" && currentCharacter.ttsMode !== "none" && currentCharacter.ttsMode}
             <button
                 class="flex items-center hover:text-blue-500 transition-colors button-icon-tts"
                 onclick={() => {
@@ -1267,8 +1260,8 @@
 
             if (settings.ui.createFolderOnBranch && !currentChat.folderId) {
                 const folderId = v4();
-                DBState.db.characters[selIdState.selId].chatFolders ??= [];
-                DBState.db.characters[selIdState.selId].chatFolders.unshift({
+                currentCharacter.chatFolders ??= [];
+                currentCharacter.chatFolders.unshift({
                     id: folderId,
                     name: `Branches of ${currentChat.name}`,
                     folded: false,
@@ -1357,7 +1350,7 @@
 
 {#snippet senderIcon(options: { rounded?: boolean; styleFix?: string } = {})}
     {#if !blankMessage && !$HideIconStore}
-        {#if DBState.db.characters[selIdState.selId]?.chaId === "§playground"}
+        {#if currentCharacter?.chaId === "§playground"}
             <div
                 class="shadow-lg border-textcolor2 border flex justify-center items-center text-textcolor2"
                 style={options?.styleFix ??
@@ -1555,9 +1548,7 @@
 <div
     class="flex max-w-full justify-center risu-chat"
     data-chat-index={idx}
-    data-chat-id={DBState.db.characters?.[selIdState.selId]?.chats?.[
-        DBState.db.characters?.[selIdState.selId]?.chatPage
-    ]?.message?.[idx]?.chatId ?? ""}
+    data-chat-id={currentCharacter?.chats?.[currentCharacter?.chatPage]?.message?.[idx]?.chatId ?? ""}
     style={isLastMemory ? `border-top:${settings.ui.memoryLimitThickness}px solid rgba(98, 114, 164, 0.7);` : ""}
     onclickcapture={handleButtonTriggerWithin}
 >
@@ -1575,7 +1566,7 @@
                     class:rounded-tr-none={role === "user"}
                 >
                     <p class="text-gray-800">{@render textBox()}</p>
-                    {#if DBState.db.characters?.[selIdState.selId]?.chats?.[DBState.db.characters?.[selIdState.selId]?.chatPage]?.message?.[idx]?.time}
+                    {#if currentCharacter?.chats?.[currentCharacter?.chatPage]?.message?.[idx]?.time}
                         <span class="text-xs text-textcolor2 mt-1 block">
                             {new Intl.DateTimeFormat(undefined, {
                                 hour: "2-digit",
@@ -1584,11 +1575,7 @@
                                 month: "2-digit",
                                 day: "2-digit",
                                 hour12: false,
-                            }).format(
-                                DBState.db.characters[selIdState.selId].chats[
-                                    DBState.db.characters[selIdState.selId].chatPage
-                                ].message[idx].time,
-                            )}
+                            }).format(currentCharacter.chats[currentCharacter.chatPage].message[idx].time)}
                         </span>
                     {/if}
                 </div>
@@ -1633,12 +1620,10 @@
             {@render senderIcon({ rounded: settings.ui.roundIcons })}
             <span class="flex flex-col ml-4 w-full max-w-full min-w-0 text-black">
                 <div class="flexium items-center chat-width">
-                    {#if DBState.db.characters[selIdState.selId]?.chaId === "§playground" && !blankMessage && DBState.db.characters[selIdState.selId]?.chats?.[DBState.db.characters[selIdState.selId]?.chatPage]?.message?.[idx]}
+                    {#if currentCharacter?.chaId === "§playground" && !blankMessage && currentCharacter?.chats?.[currentCharacter?.chatPage]?.message?.[idx]}
                         <span class="chat-width text-xl border-darkborderc flex items-center text-textcolor">
                             <span
-                                >{DBState.db.characters[selIdState.selId].chats[
-                                    DBState.db.characters[selIdState.selId].chatPage
-                                ].message[idx].role === "char"
+                                >{currentCharacter.chats[currentCharacter.chatPage].message[idx].role === "char"
                                     ? "Assistant"
                                     : "User"}</span
                             >

@@ -1,6 +1,6 @@
 <script lang="ts">
+    import { characterList } from "src/ts/storage/characterStore.svelte";
     import { type character, type groupChat } from "src/ts/storage/database.svelte";
-    import { DBState } from "src/ts/stores.svelte";
     import BarIcon from "../SideBars/BarIcon.svelte";
     import { addCharacter, changeChar, getCharImage } from "src/ts/characters";
     import { MessageSquareIcon, PlusIcon } from "@lucide/svelte";
@@ -55,12 +55,12 @@
             .filter(({ c }) => {
                 return !hideTrash || !c.trashTime;
             })
-            .map(({ c, i }) => {
+            .map(({ c }) => {
                 return {
                     name: c.name || "Unnamed",
                     image: c.image,
                     chats: c.chats.length,
-                    i: i,
+                    chaId: c.chaId,
                     interaction: c.lastInteraction || 0,
                     agoText: makeAgoText(c.lastInteraction || 0),
                 };
@@ -75,13 +75,13 @@
 </script>
 
 <div class="flex flex-col items-center w-full overflow-y-auto h-full">
-    {#each sortChar(DBState.db.characters) as char, i}
+    {#each sortChar(characterList()) as char, i}
         {#if normalizeSearch(char.name).includes(normalizedSearch)}
             <button
                 class="flex p-2 border-t-darkborderc gap-2 w-full"
                 class:border-t={i !== 0}
                 onclick={() => {
-                    changeChar(char.i);
+                    changeChar(char.chaId);
                     endGrid();
                 }}
             >

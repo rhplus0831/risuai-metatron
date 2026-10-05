@@ -1,14 +1,14 @@
+import { selectedCharacter } from "../storage/characterStore.svelte";
 import { settings, activePreset } from "../storage/settingsViews.svelte";
 import { get } from "svelte/store";
 import { parseChatML } from "../parser/chatML";
-import { getDatabase, type character, type customscript, type groupChat } from "../storage/database.svelte";
+import { type character, type customscript, type groupChat } from "../storage/database.svelte";
 import { defaultTranslatorPrompt, getCurrentTranslatorPresetFromState, type TranslatorPreset } from "./presets";
 import { globalFetch } from "../globalApi.svelte";
 import { alertError } from "../alert";
 import { requestChatData } from "../process/request/request";
 import { doingChat, type OpenAIChat } from "../process/index.svelte";
 import { applyMarkdownToNode, risuChatParser, type simpleCharacterArgument } from "../parser/parser.svelte";
-import { selectedCharID } from "../stores.svelte";
 import { getModuleRegexScripts } from "../process/modules";
 import { getNodetextToSentence, sleep } from "../util";
 import { type CapturedTransform, captureTransform, serverProcessScript } from "../parser/transformClient";
@@ -275,9 +275,7 @@ export async function translateHTML(
     let alwaysExistChar: character | groupChat | simpleCharacterArgument;
     if (charArg !== "") {
         if (typeof charArg === "string") {
-            const db = getDatabase();
-            const charId = get(selectedCharID);
-            alwaysExistChar = db.characters[charId];
+            alwaysExistChar = selectedCharacter();
         } else {
             alwaysExistChar = charArg;
         }
@@ -529,9 +527,7 @@ async function translateLLM(
         return `<style-data style-index="${styleDecodes.length - 1}"></style-data>`;
     });
 
-    const db = getDatabase();
-    const charIndex = get(selectedCharID);
-    const currentChar = db.characters[charIndex];
+    const currentChar = selectedCharacter();
     let translatorNote = "";
     console.log(arg.translatorNote);
     if (arg.translatorNote) {

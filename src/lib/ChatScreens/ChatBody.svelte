@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import isEqual from "lodash/isEqual";
     import { sleep } from "src/ts/util";
@@ -15,7 +16,6 @@
     import { getLLMCache, translateHTML } from "../../ts/translator/translator";
     import { type CapturedTransform, captureTransform } from "../../ts/parser/transformClient";
     import { getModuleAssets } from "src/ts/process/modules";
-    import { getCurrentCharacter } from "src/ts/storage/database.svelte";
     import { getFileSrc } from "src/ts/globalApi.svelte";
 
     interface Props {
@@ -225,7 +225,7 @@
         ) as NodeListOf<HTMLImageElement>;
 
         if (imgs.length > 0) {
-            const currentCharacter = getCurrentCharacter();
+            const currentCharacter = selectedCharacter();
             const styl = currentCharacter.prebuiltAssetStyle;
             const assets = getModuleAssets().concat(currentCharacter.additionalAssets ?? []);
             const normalizedAssets = assets.map((asset) => {

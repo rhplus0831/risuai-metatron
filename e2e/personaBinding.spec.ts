@@ -87,10 +87,11 @@ test("an icon picked while another persona is selected lands on the persona the 
         const { DBState, selectedCharID } = await import("/src/ts/stores.svelte.ts");
         const { createNewCharacter } = await import("/src/ts/characters.ts");
         const { setChatMeta } = await import("/src/ts/storage/chatStore.svelte.ts");
-        const index = createNewCharacter();
-        selectedCharID.set(index);
+        // `createNewCharacter` returns the new character's id (Phase 6 slice 8); the shim selects by index.
+        const chaId = createNewCharacter();
+        selectedCharID.set(DBState.db.characters.findIndex((entry) => entry.chaId === chaId));
         await new Promise((resolve) => setTimeout(resolve, 500));
-        const char = DBState.db.characters[index];
+        const char = DBState.db.characters.find((entry) => entry.chaId === chaId)!;
         const chat = char.chats[char.chatPage] ?? char.chats[0];
         setChatMeta(
             { chaId: char.chaId, chatId: chat.id },

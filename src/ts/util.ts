@@ -1,8 +1,7 @@
+import { characterList, selectedCharacter } from "./storage/characterStore.svelte";
 import { settings, activePreset, activePersona, currentPersonaRecord } from "./storage/settingsViews.svelte";
 import { get, writable, type Writable } from "svelte/store";
-import type { Database, Message } from "./storage/database.svelte";
-import { getDatabase } from "./storage/database.svelte";
-import { DBState, selectedCharID } from "./stores.svelte";
+import type { Message } from "./storage/database.svelte";
 import { createBlankChar, getCharImage } from "./characters";
 import { isIOS } from "src/ts/platform";
 import type { Attachment } from "svelte/attachments";
@@ -60,9 +59,7 @@ export async function selectMultipleFile(ext: string[]) {
 }
 
 export const replacePlaceholders = (msg: string, name: string) => {
-    let db = getDatabase();
-    let selectedChar = get(selectedCharID);
-    let currentChar = db.characters[selectedChar];
+    let currentChar = selectedCharacter();
     return msg
         .replace(/({{char}})|({{Char}})|(<Char>)|(<char>)/gi, currentChar.name)
         .replace(/({{user}})|({{User}})|(<User>)|(<user>)/gi, getUserName())
@@ -72,10 +69,9 @@ export const replacePlaceholders = (msg: string, name: string) => {
 /** The persona bound to `chatRef`'s chat (default: the selected chat), or null. */
 export function checkPersonaBinded(chatRef?: { chaId: string; chatId: string } | null) {
     try {
-        let db = DBState.db;
         const character = chatRef
-            ? db.characters.find((entry) => entry?.chaId === chatRef.chaId)
-            : db.characters[get(selectedCharID)];
+            ? characterList().find((entry) => entry?.chaId === chatRef.chaId)
+            : selectedCharacter();
         const chat = chatRef
             ? character.chats.find((entry) => entry.id === chatRef.chatId)
             : character.chats[character.chatPage];
@@ -194,8 +190,7 @@ export async function getCustomBackground(db: string) {
 }
 
 export function findCharacterbyId(id: string) {
-    const db = getDatabase();
-    for (const char of db.characters) {
+    for (const char of characterList()) {
         if (char.type !== "group") {
             if (char.chaId === id) {
                 return char;
@@ -208,9 +203,8 @@ export function findCharacterbyId(id: string) {
 }
 
 export function findCharacterIndexbyId(id: string) {
-    const db = getDatabase();
     let i = 0;
-    for (const char of db.characters) {
+    for (const char of characterList()) {
         if (char.chaId === id) {
             return i;
         }
@@ -220,10 +214,9 @@ export function findCharacterIndexbyId(id: string) {
 }
 
 export function getCharacterIndexObject() {
-    const db = getDatabase();
     let i = 0;
     let result: { [key: string]: number } = {};
-    for (const char of db.characters) {
+    for (const char of characterList()) {
         result[char.chaId] = i;
         i += 1;
     }
@@ -243,12 +236,10 @@ export function defaultEmotion(em: [string, string][]) {
 }
 
 export async function getEmotion(
-    db: Database,
     chaEmotion: { [key: string]: [string, string, number][] },
     type: "contain" | "plain" | "css",
 ) {
-    const selectedChar = get(selectedCharID);
-    const currentDat = db.characters[selectedChar];
+    const currentDat = selectedCharacter();
     if (!currentDat) {
         return [];
     }

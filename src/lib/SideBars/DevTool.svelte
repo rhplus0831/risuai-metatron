@@ -1,6 +1,6 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { activePreset } from "src/ts/storage/settingsViews.svelte";
-    import { selectedCharID } from "src/ts/stores.svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import NumberInput from "../UI/GUI/NumberInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
@@ -10,7 +10,6 @@
     import { getCharToken, getChatToken } from "src/ts/tokenizer";
     import { tokenizePreset } from "src/ts/process/prompt";
 
-    import { DBState } from "src/ts/stores.svelte";
     import { appendMessage, currentChatRef, findChat } from "src/ts/storage/chatStore.svelte";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import { getCurrentChat } from "src/ts/storage/database.svelte";
@@ -24,6 +23,7 @@
     import { loadLoreBookV3Prompt } from "src/ts/process/lorebook.svelte";
     import { getModules } from "src/ts/process/modules";
 
+    const currentCharacter = $derived(selectedCharacter());
     let previewMode = $state("chat");
     let previewJoin = $state("yes");
     let instructType = $state("chatml");
@@ -124,28 +124,22 @@
 
 <Accordion styled name={"Variables"}>
     <div class="rounded-md border border-darkborderc grid grid-cols-2 gap-2 p-2">
-        {#if DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate && Object.keys(DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate).length > 0}
-            {#each Object.keys(DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate) as key}
+        {#if currentCharacter.chats[currentCharacter.chatPage].scriptstate && Object.keys(currentCharacter.chats[currentCharacter.chatPage].scriptstate).length > 0}
+            {#each Object.keys(currentCharacter.chats[currentCharacter.chatPage].scriptstate) as key}
                 <span>{key}</span>
-                {#if typeof DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate[key] === "object"}
+                {#if typeof currentCharacter.chats[currentCharacter.chatPage].scriptstate[key] === "object"}
                     <div class="p-2 text-center">Object</div>
-                {:else if typeof DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate[key] === "string"}
+                {:else if typeof currentCharacter.chats[currentCharacter.chatPage].scriptstate[key] === "string"}
                     <TextInput
                         bind:value={
-                            () =>
-                                DBState.db.characters[$selectedCharID].chats[
-                                    DBState.db.characters[$selectedCharID].chatPage
-                                ].scriptstate[key] as string,
+                            () => currentCharacter.chats[currentCharacter.chatPage].scriptstate[key] as string,
                             (value) => setScriptVariable(key, value)
                         }
                     />
-                {:else if typeof DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].scriptstate[key] === "number"}
+                {:else if typeof currentCharacter.chats[currentCharacter.chatPage].scriptstate[key] === "number"}
                     <NumberInput
                         bind:value={
-                            () =>
-                                DBState.db.characters[$selectedCharID].chats[
-                                    DBState.db.characters[$selectedCharID].chatPage
-                                ].scriptstate[key] as number,
+                            () => currentCharacter.chats[currentCharacter.chatPage].scriptstate[key] as number,
                             (value) => setScriptVariable(key, value)
                         }
                     />
@@ -159,7 +153,7 @@
 
 <Accordion styled name={"Tokens"}>
     <div class="rounded-md border border-darkborderc grid grid-cols-2 gap-2 p-2">
-        {#await getCharToken(DBState.db.characters[$selectedCharID])}
+        {#await getCharToken(currentCharacter)}
             <span>Character Persistant</span>
             <div class="p-2 text-center">Loading...</div>
             <span>Character Dynamic</span>
@@ -170,7 +164,7 @@
             <span>Character Dynamic</span>
             <div class="p-2 text-center">{token.dynamic} Tokens</div>
         {/await}
-        {#await getChatToken(DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage])}
+        {#await getChatToken(currentCharacter.chats[currentCharacter.chatPage])}
             <span>Current Chat</span>
             <div class="p-2 text-center">Loading...</div>
         {:then token}

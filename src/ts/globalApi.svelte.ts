@@ -1,16 +1,15 @@
+import { selectedCharacter } from "./storage/characterStore.svelte";
 import { settings } from "./storage/settingsViews.svelte";
 import { checkNullish, sleep } from "./util";
 import { v4 as uuidv4, v4 } from "uuid";
 import { get } from "svelte/store";
 import streamSaver from "streamsaver";
-import { setDatabase, defaultSdDataFunc, appVer, getCurrentCharacter, appSubVer } from "./storage/database.svelte";
+import { setDatabase, defaultSdDataFunc, appVer, appSubVer } from "./storage/database.svelte";
 import {
     botMakerMode,
-    selectedCharID,
     loadedStore,
     DBState,
     LoadingStatusState,
-    selIdState,
     ReloadGUIPointer,
     bodyIntercepterStore,
 } from "./stores.svelte";
@@ -1314,7 +1313,7 @@ $effect.root(() => {
         if (!chatFoldedState.data) {
             return;
         }
-        const char = DBState.db.characters[selIdState.selId];
+        const char = selectedCharacter();
         const chat = char.chats[char.chatPage];
         if (chatFoldedState.data.targetCharacterId !== char.chaId) {
             chatFoldedState.data = null;
@@ -1329,7 +1328,7 @@ $effect.root(() => {
             chatFoldedStateMessageIndex.index = -1;
             return;
         }
-        const char = DBState.db.characters[selIdState.selId];
+        const char = selectedCharacter();
         const chat = char.chats[char.chatPage];
         const messageIndex = chat.message.findIndex((v) => {
             return chatFoldedState.data?.targetMessageId === v.chatId;
@@ -1346,14 +1345,14 @@ $effect.root(() => {
 export function foldChatToMessage(targetMessageIdOrIndex: string | number) {
     let targetMessageId = "";
     if (typeof targetMessageIdOrIndex === "number") {
-        const char = getCurrentCharacter();
+        const char = selectedCharacter();
         const chat = char.chats[char.chatPage];
         const message = chat.message[targetMessageIdOrIndex];
         targetMessageId = message.chatId;
     } else {
         targetMessageId = targetMessageIdOrIndex;
     }
-    const char = getCurrentCharacter();
+    const char = selectedCharacter();
     const chat = char.chats[char.chatPage];
     chatFoldedState.data = {
         targetCharacterId: char.chaId,
@@ -1364,7 +1363,7 @@ export function foldChatToMessage(targetMessageIdOrIndex: string | number) {
 
 /** Selects a chat of the selected character by id or index (per tab; `chatPage` follows). */
 export function changeChatTo(IdOrIndex: string | number) {
-    const character = DBState.db.characters[selIdState.selId];
+    const character = selectedCharacter();
     if (!character) {
         return;
     }
@@ -1376,7 +1375,7 @@ export function createChatCopyName(originalName: string, type: "Copy" | "Branch"
     let name = originalName.replaceAll(/\(((Copy|Branch)( \d+)?)\)$/g, "").trim();
     let copyIndex = 1;
     let newName = `${name} (${type})`;
-    const char = getCurrentCharacter();
+    const char = selectedCharacter();
     while (char.chats.find((v) => v.name === newName)) {
         copyIndex++;
         newName = `${name} (${type} ${copyIndex})`;

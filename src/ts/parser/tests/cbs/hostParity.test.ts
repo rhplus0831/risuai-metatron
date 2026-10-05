@@ -17,7 +17,9 @@ const holder = vi.hoisted(() => ({
 
 vi.mock(import("../../../stores.svelte"), async () => {
     const { writable } = await vi.importActual<typeof import("svelte/store")>("svelte/store");
-    holder.selectedCharID = writable(0);
+    // The real selection's index shim, as `stores.svelte` exports it (Phase 6 slice 8: the readers
+    // resolve the selected character by `selection.characterId`, which `set(index)` selects).
+    holder.selectedCharID = (await import("../../../storage/selection.svelte")).selectedCharacterIndex;
     holder.triggerId = writable<string | null>(null);
     return {
         DBState: holder.dbState,

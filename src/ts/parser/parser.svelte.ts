@@ -1,17 +1,16 @@
+import { selectedCharacter } from "../storage/characterStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";
 import DOMPurify from "dompurify";
 import markdownit from "markdown-it";
 import {
     appVer,
-    getCurrentCharacter,
     getDatabase,
-    type Database,
     type character,
     type customscript,
     type groupChat,
     type triggerscript,
 } from "../storage/database.svelte";
-import { CurrentTriggerIdStore, DBState, selIdState } from "../stores.svelte";
+import { CurrentTriggerIdStore, DBState } from "../stores.svelte";
 import { aiWatermarkingLawApplies, getFileSrc } from "../globalApi.svelte";
 import {
     getChatVar,
@@ -467,8 +466,7 @@ export function resetAssetsCache(charAssets: string[][], emoAssets: string[][], 
 
 $effect.root(() => {
     $effect(() => {
-        const charId = selIdState.selId;
-        const char = DBState.db.characters?.[charId];
+        const char = selectedCharacter();
         if (!char || char.type !== "character") {
             return;
         }
@@ -595,7 +593,7 @@ async function parseAdditionalAssets(
     });
 
     if (needsSourceAccess) {
-        const chara = getCurrentCharacter();
+        const chara = selectedCharacter();
         if (chara.image) {
         }
         data = data.replace(/\uE9b4CHAR\uE9b4/g, chara.image ? await getFileSrc(chara.image) : "");

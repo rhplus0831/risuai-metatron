@@ -98,7 +98,7 @@ Theme and GUI helpers:
 
 ## State
 
-- Components mutate the settings through the record views (`settings.ui.*`, `settingsViews.svelte.ts`) and the characters through `DBState.db.characters`, and rely on the records' write-through saves: each write queues the record it changed (`persistence.md`).
+- Components mutate the settings through the record views (`settings.ui.*`, `settingsViews.svelte.ts`) and the characters through the character module's records (`selectedCharacter()`, `characterList()`), and rely on the records' write-through saves: each write queues the record it changed (`persistence.md`).
 - Invalidation signals:
   - `ReloadGUIPointer`: structural changes.
   - `ReloadChatPointer`: message re-render.

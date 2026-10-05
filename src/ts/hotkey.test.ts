@@ -40,9 +40,9 @@ import { setDatabase, type Database } from "./storage/database.svelte";
 import { setRecordWriteListener } from "./storage/records.svelte";
 import { llmSecretState, setMaskedSecrets } from "./storage/llmSecrets.svelte";
 import { maskLlmSecrets } from "../../shared/llmSecrets.ts";
-import { selection, selectPreset } from "./storage/selection.svelte";
+import { selectCharacter, selection, selectPreset } from "./storage/selection.svelte";
 import { settings } from "./storage/settingsViews.svelte";
-import { DBState, popUpEditorStore, settingsOpen } from "./stores.svelte";
+import { DBState, popUpEditorStore, selectedCharID, settingsOpen } from "./stores.svelte";
 
 let installed = false;
 
@@ -225,5 +225,62 @@ describe("the stored hotkeys and their ui toggle (Phase 6 slice 7)", () => {
             window.removeEventListener("scrollToActiveCharacter", scrolls);
             settingsOpen.set(false);
         }
+    });
+});
+
+describe("the previous/next character hotkeys (Phase 6 slice 8)", () => {
+    // `prevChar` (Ctrl+[) and `nextChar` (Ctrl+]) step through a copy of the character list sorted by
+    // name and select by `chaId`. The slice fixed their bounds: previous does nothing from the first
+    // character or from home, next does nothing from the last and selects the first from home.
+    const pressChar = (key: "[" | "]") =>
+        document.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey: true, bubbles: true, cancelable: true }));
+    const character = (chaId: string, name: string) => ({ chaId, name, type: "character", chats: [], chatPage: 0 });
+
+    beforeEach(() => {
+        // Created in this order (the list position), not in name order.
+        setDatabase({
+            characters: [character("c", "Carol"), character("a", "Alice"), character("b", "Bob")],
+            botPresets: [{ id: "a", name: "A" }],
+        } as unknown as Database);
+    });
+
+    afterEach(() => {
+        selectCharacter(null);
+    });
+
+    it("next selects the first by name from home, steps by name, and does nothing from the last", () => {
+        expect(selection.characterId).toBeNull();
+        pressChar("]");
+        expect(selection.characterId).toBe("a");
+        pressChar("]");
+        expect(selection.characterId).toBe("b");
+        pressChar("]");
+        expect(selection.characterId).toBe("c");
+        pressChar("]");
+        expect(selection.characterId).toBe("c");
+        // The list itself is not sorted (the plugin index APIs address its positions).
+        expect(DBState.db.characters.map((entry) => entry.chaId)).toEqual(["c", "a", "b"]);
+    });
+
+    it("previous steps back by name, does nothing from the first, and does nothing from home", () => {
+        selectCharacter("c");
+        pressChar("[");
+        expect(selection.characterId).toBe("b");
+        pressChar("[");
+        expect(selection.characterId).toBe("a");
+        pressChar("[");
+        expect(selection.characterId).toBe("a");
+
+        selectCharacter(null);
+        expect(() => pressChar("[")).not.toThrow();
+        expect(selection.characterId).toBeNull();
+    });
+
+    it("previous works from the last character by name (it used to refuse it)", () => {
+        selectCharacter("c");
+        expect(get(selectedCharID)).toBe(0);
+        pressChar("[");
+        expect(selection.characterId).toBe("b");
+        expect(get(selectedCharID)).toBe(2);
     });
 });

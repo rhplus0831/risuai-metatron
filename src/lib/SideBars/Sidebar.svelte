@@ -1,10 +1,11 @@
 <script lang="ts">
+    import { selectCharacter } from "src/ts/storage/selection.svelte";
+    import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
         CharEmotion,
         DynamicGUI,
         botMakerMode,
-        selectedCharID,
         settingsOpen,
         sideBarClosing,
         sideBarStore,
@@ -14,7 +15,6 @@
         additionalHamburgerMenu,
     } from "../../ts/stores.svelte";
     import { setDatabase, type folder } from "../../ts/storage/database.svelte";
-    import { DBState } from "src/ts/stores.svelte";
     import BarIcon from "./BarIcon.svelte";
     import SidebarIndicator from "./SidebarIndicator.svelte";
     import {
@@ -44,6 +44,8 @@
     import QuickSettingsGui from "../Others/QuickSettingsGUI.svelte";
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
     import { RISU_SIDEBAR_DRAG_TYPE } from "src/ts/dragTypes";
+
+    const currentCharacter = $derived(selectedCharacter());
     let sideBarMode = $state(0);
     let editMode = $state(false);
     let menuMode = $state(0);
@@ -57,7 +59,7 @@
         CharEmotion.set({});
     }
 
-    type sortTypeNormal = { type: "normal"; img: string; index: number; name: string };
+    type sortTypeNormal = { type: "normal"; img: string; chaId: string; name: string };
     type sortType =
         | sortTypeNormal
         | { type: "folder"; folder: sortTypeNormal[]; id: string; name: string; color: string; img?: string };
@@ -81,10 +83,10 @@
             if (typeof id === "string") {
                 const index = idObject[id] ?? -1;
                 if (index !== -1) {
-                    const cha = DBState.db.characters[index];
+                    const cha = characterList()[index];
                     newCharImages.push({
                         img: cha.image ?? "",
-                        index: index,
+                        chaId: cha.chaId,
                         type: "normal",
                         name: cha.name,
                     });
@@ -95,10 +97,10 @@
                 for (const id of folder.data) {
                     const index = idObject[id] ?? -1;
                     if (index !== -1) {
-                        const cha = DBState.db.characters[index];
+                        const cha = characterList()[index];
                         folderCharImages.push({
                             img: cha.image ?? "",
-                            index: index,
+                            chaId: cha.chaId,
                             type: "normal",
                             name: cha.name,
                         });
@@ -126,16 +128,16 @@
         if (mainIndex.index === targetIndex.index && mainIndex.folder === targetIndex.folder) {
             return;
         }
-        let db = DBState.db;
+        const order = settings.characterOrder;
         let mainFolderIndex = mainIndex.folder ? getFolderIndex(mainIndex.folder) : null;
         let targetFolderIndex = targetIndex.folder ? getFolderIndex(targetIndex.folder) : null;
-        let mainFolderId = mainIndex.folder ? (db.characterOrder[mainFolderIndex] as folder).id : "";
+        let mainFolderId = mainIndex.folder ? (order[mainFolderIndex] as folder).id : "";
         let movingFolder: folder | false = false;
         let mainId = "";
         if (mainIndex.folder) {
-            mainId = (db.characterOrder[mainFolderIndex] as folder).data[mainIndex.index];
+            mainId = (order[mainFolderIndex] as folder).data[mainIndex.index];
         } else {
-            const da = db.characterOrder[mainIndex.index];
+            const da = order[mainIndex.index];
             if (typeof da !== "string") {
                 mainId = da.id;
                 movingFolder = $state.snapshot(da);
@@ -147,18 +149,18 @@
             }
         }
         if (targetIndex.folder) {
-            const folder = db.characterOrder[targetFolderIndex] as folder;
+            const folder = order[targetFolderIndex] as folder;
             folder.data.splice(targetIndex.index, 0, mainId);
-            db.characterOrder[targetFolderIndex] = folder;
+            order[targetFolderIndex] = folder;
         } else if (movingFolder) {
-            db.characterOrder.splice(targetIndex.index, 0, movingFolder);
+            order.splice(targetIndex.index, 0, movingFolder);
         } else {
-            db.characterOrder.splice(targetIndex.index, 0, mainId);
+            order.splice(targetIndex.index, 0, mainId);
         }
         if (mainIndex.folder) {
             mainFolderIndex = -1;
-            for (let i = 0; i < db.characterOrder.length; i++) {
-                const a = db.characterOrder[i];
+            for (let i = 0; i < order.length; i++) {
+                const a = order[i];
                 if (typeof a !== "string") {
                     if (a.id === mainFolderId) {
                         mainFolderIndex = i;
@@ -167,42 +169,45 @@
                 }
             }
             if (mainFolderIndex !== -1) {
-                const folder: folder = db.characterOrder[mainFolderIndex] as folder;
+                const folder: folder = order[mainFolderIndex] as folder;
                 const ind =
                     mainIndex.index > targetIndex.index ? folder.data.lastIndexOf(mainId) : folder.data.indexOf(mainId);
                 if (ind !== -1) {
                     folder.data.splice(ind, 1);
                 }
-                db.characterOrder[mainFolderIndex] = folder;
+                order[mainFolderIndex] = folder;
             } else {
                 console.log("folder not found");
             }
         } else if (movingFolder) {
             let idList: string[] = [];
-            for (const ord of db.characterOrder) {
+            for (const ord of order) {
                 idList.push(typeof ord === "string" ? ord : ord.id);
             }
             const ind = mainIndex.index > targetIndex.index ? idList.lastIndexOf(mainId) : idList.indexOf(mainId);
             if (ind !== -1) {
-                db.characterOrder.splice(ind, 1);
+                order.splice(ind, 1);
             }
         } else {
-            const ind =
-                mainIndex.index > targetIndex.index
-                    ? db.characterOrder.lastIndexOf(mainId)
-                    : db.characterOrder.indexOf(mainId);
+            const ind = mainIndex.index > targetIndex.index ? order.lastIndexOf(mainId) : order.indexOf(mainId);
             if (ind !== -1) {
-                db.characterOrder.splice(ind, 1);
+                order.splice(ind, 1);
             }
         }
 
-        DBState.db.characterOrder = db.characterOrder;
+        settings.characterOrder = order;
         checkCharOrder();
     };
 
+    /** The folder with `id` in the character order (its wrapper), found now; `undefined` once it is gone. */
+    function folderById(id: string): folder | undefined {
+        const index = getFolderIndex(id);
+        return index === -1 ? undefined : (settings.characterOrder[index] as folder);
+    }
+
     function getFolderIndex(id: string) {
-        for (let i = 0; i < DBState.db.characterOrder.length; i++) {
-            const data = DBState.db.characterOrder[i];
+        for (let i = 0; i < settings.characterOrder.length; i++) {
+            const data = settings.characterOrder[i];
             if (typeof data !== "string" && data.id === id) {
                 return i;
             }
@@ -211,17 +216,14 @@
     }
 
     function scrollToActiveCharacter() {
-        const selectedId = $selectedCharID;
-        if (selectedId === -1) return;
-
-        const characterId = DBState.db.characters[selectedId]?.chaId;
+        const characterId = selectedCharacter()?.chaId;
         if (!characterId) return;
 
         let targetFolderId: string | null = null;
 
         for (const item of charImages) {
             if (item.type === "folder") {
-                const foundChar = item.folder.find((c) => DBState.db.characters[c.index]?.chaId === characterId);
+                const foundChar = item.folder.find((c) => c.chaId === characterId);
                 if (foundChar) {
                     targetFolderId = item.id;
                     break;
@@ -263,14 +265,14 @@
         if (mainIndex.index === targetIndex.index && mainIndex.folder === targetIndex.folder) {
             return;
         }
-        let db = DBState.db;
+        const order = settings.characterOrder;
         let mainFolderIndex = mainIndex.folder ? getFolderIndex(mainIndex.folder) : null;
-        let mainFolder = db.characterOrder[mainFolderIndex] as folder;
+        let mainFolder = order[mainFolderIndex] as folder;
         if (targetIndex.folder) {
             return;
         }
-        const main = mainIndex.folder ? mainFolder.data[mainIndex.index] : db.characterOrder[mainIndex.index];
-        const target = db.characterOrder[targetIndex.index];
+        const main = mainIndex.folder ? mainFolder.data[mainIndex.index] : order[mainIndex.index];
+        const target = order[targetIndex.index];
         if (typeof main !== "string") {
             return;
         }
@@ -281,24 +283,24 @@
                 color: "",
                 id: v4(),
             };
-            db.characterOrder[targetIndex.index] = newFolder;
+            order[targetIndex.index] = newFolder;
             if (mainIndex.folder) {
                 mainFolder.data.splice(mainIndex.index, 1);
-                db.characterOrder[mainFolderIndex] = mainFolder;
+                order[mainFolderIndex] = mainFolder;
             } else {
-                db.characterOrder.splice(mainIndex.index, 1);
+                order.splice(mainIndex.index, 1);
             }
         } else {
             target.data.push(main);
             if (mainIndex.folder) {
                 mainFolder.data.splice(mainIndex.index, 1);
-                db.characterOrder[mainFolderIndex] = mainFolder;
+                order[mainFolderIndex] = mainFolder;
             } else {
-                db.characterOrder.splice(mainIndex.index, 1);
+                order.splice(mainIndex.index, 1);
             }
         }
 
-        DBState.db.characterOrder = db.characterOrder;
+        settings.characterOrder = order;
         checkCharOrder();
     };
 
@@ -390,10 +392,10 @@
     >
         <button
             class="flex items-center justify-center py-2 flex-col gap-1 w-full mt-4"
-            class:text-textcolor2={!($selectedCharID < 0 && $PlaygroundStore === 0 && !$settingsOpen)}
+            class:text-textcolor2={!(currentCharacter === undefined && $PlaygroundStore === 0 && !$settingsOpen)}
             onclick={() => {
                 reseter();
-                selectedCharID.set(-1);
+                selectCharacter(null);
                 PlaygroundStore.set(0);
                 OpenRealmStore.set(false);
             }}
@@ -419,7 +421,7 @@
         </button>
         <button
             class="flex items-center justify-center py-2 flex-col gap-1 w-full"
-            class:text-textcolor2={!($selectedCharID >= 0)}
+            class:text-textcolor2={!(currentCharacter !== undefined)}
             onclick={() => {
                 reseter();
                 openGrid();
@@ -430,10 +432,10 @@
         </button>
         <button
             class="flex items-center justify-center py-2 flex-col gap-1 w-full"
-            class:text-textcolor2={!($selectedCharID < 0 && $PlaygroundStore !== 0)}
+            class:text-textcolor2={!(currentCharacter === undefined && $PlaygroundStore !== 0)}
             onclick={() => {
                 reseter();
-                selectedCharID.set(-1);
+                selectCharacter(null);
                 PlaygroundStore.set(1);
             }}
         >
@@ -478,7 +480,7 @@
                         <BarIcon
                             onClick={() => {
                                 reseter();
-                                selectedCharID.set(-1);
+                                selectCharacter(null);
                                 PlaygroundStore.set(0);
                                 OpenRealmStore.set(false);
                             }}><HomeIcon /></BarIcon
@@ -487,11 +489,11 @@
                         <BarIcon
                             onClick={() => {
                                 reseter();
-                                if ($selectedCharID === -1 && $PlaygroundStore !== 0) {
+                                if (currentCharacter === undefined && $PlaygroundStore !== 0) {
                                     PlaygroundStore.set(0);
                                     return;
                                 }
-                                selectedCharID.set(-1);
+                                selectCharacter(null);
                                 PlaygroundStore.set(1);
                             }}><ShellIcon /></BarIcon
                         >
@@ -565,7 +567,7 @@
                     ondragenter={preventAll}
                 >
                     <SidebarIndicator
-                        isActive={char.type === "normal" && $selectedCharID === char.index && sideBarMode !== 1}
+                        isActive={char.type === "normal" && currentCharacter?.chaId === char.chaId && sideBarMode !== 1}
                     />
                     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
                     <div
@@ -573,13 +575,13 @@
                         tabindex="0"
                         onclick={() => {
                             if (char.type === "normal") {
-                                changeChar(char.index, { reseter });
+                                changeChar(char.chaId, { reseter });
                             }
                         }}
                         onkeydown={(e) => {
                             if (e.key === "Enter") {
                                 if (char.type === "normal") {
-                                    changeChar(char.index, { reseter });
+                                    changeChar(char.chaId, { reseter });
                                 }
                             }
                         }}
@@ -590,7 +592,7 @@
                                 size="56"
                                 rounded={IconRounded}
                                 name={char.name}
-                                chaId={DBState.db.characters[char.index]?.chaId}
+                                chaId={char.chaId}
                             />
                         {:else if char.type === "folder"}
                             {#key char.color}
@@ -605,6 +607,9 @@
                                         backgroundimg={char.img ? getCharImage(char.img, "plain") : ""}
                                         oncontextmenu={async (e) => {
                                             e.preventDefault();
+                                            // The folder this menu was opened for (the row can move during the dialogs).
+                                            const folderId = char.id;
+                                            const folderName = char.name;
                                             const sel = parseInt(
                                                 await alertSelect([
                                                     language.renameFolder,
@@ -614,15 +619,13 @@
                                                 ]),
                                             );
                                             if (sel === 0) {
-                                                const v = await alertInput(language.changeFolderName, [], char.name);
-                                                const db = DBState.db;
+                                                const v = await alertInput(language.changeFolderName, [], folderName);
                                                 if (v) {
-                                                    const oder = db.characterOrder[ind];
-                                                    if (typeof oder === "string") {
+                                                    const oder = folderById(folderId);
+                                                    if (!oder) {
                                                         return;
                                                     }
                                                     oder.name = v;
-                                                    db.characterOrder[ind] = oder;
                                                 }
                                             } else if (sel === 1) {
                                                 const colors = [
@@ -636,20 +639,17 @@
                                                     "default",
                                                 ];
                                                 const sel = parseInt(await alertSelect(colors));
-                                                const db = DBState.db;
-                                                const oder = db.characterOrder[ind];
-                                                if (typeof oder === "string") {
+                                                const oder = folderById(folderId);
+                                                if (!oder) {
                                                     return;
                                                 }
                                                 oder.color = colors[sel].toLocaleLowerCase();
-                                                db.characterOrder[ind] = oder;
                                             } else if (sel === 2) {
                                                 const sel = parseInt(
                                                     await alertSelect(["Reset to Default Image", "Select Image File"]),
                                                 );
-                                                const db = DBState.db;
-                                                const oder = db.characterOrder[ind];
-                                                if (typeof oder === "string") {
+                                                const oder = folderById(folderId);
+                                                if (!oder) {
                                                     return;
                                                 }
 
@@ -671,11 +671,14 @@
                                                         }
 
                                                         const folderImageData = await saveAsset(folderImage.data);
-
-                                                        oder.imgFile = folderImageData;
+                                                        // Found again: the folder can be removed during the dialog and the save.
+                                                        const target = folderById(folderId);
+                                                        if (!target) {
+                                                            return;
+                                                        }
+                                                        target.imgFile = folderImageData;
                                                         // Shown from `imgFile`; a resolved URL is page-local.
-                                                        oder.img = "";
-                                                        db.characterOrder[ind] = oder;
+                                                        target.img = "";
                                                         break;
                                                 }
                                             }
@@ -780,20 +783,22 @@
                                     }}
                                     ondragenter={preventAll}
                                 >
-                                    <SidebarIndicator isActive={$selectedCharID === char2.index && sideBarMode !== 1} />
+                                    <SidebarIndicator
+                                        isActive={currentCharacter?.chaId === char2.chaId && sideBarMode !== 1}
+                                    />
                                     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
                                     <div
                                         role="button"
                                         tabindex="0"
                                         onclick={() => {
                                             if (char2.type === "normal") {
-                                                changeChar(char2.index, { reseter });
+                                                changeChar(char2.chaId, { reseter });
                                             }
                                         }}
                                         onkeydown={(e) => {
                                             if (e.key === "Enter") {
                                                 if (char2.type === "normal") {
-                                                    changeChar(char2.index, { reseter });
+                                                    changeChar(char2.chaId, { reseter });
                                                 }
                                             }
                                         }}
@@ -803,7 +808,7 @@
                                             size="56"
                                             rounded={IconRounded}
                                             name={char2.name}
-                                            chaId={DBState.db.characters[char2.index]?.chaId}
+                                            chaId={char2.chaId}
                                         />
                                     </div>
                                 </div>
@@ -915,7 +920,7 @@
                         <BarIcon
                             onClick={() => {
                                 reseter();
-                                selectedCharID.set(-1);
+                                selectCharacter(null);
                                 PlaygroundStore.set(0);
                                 OpenRealmStore.set(false);
                             }}><HomeIcon /></BarIcon
@@ -924,11 +929,11 @@
                         <BarIcon
                             onClick={() => {
                                 reseter();
-                                if ($selectedCharID === -1 && $PlaygroundStore !== 0) {
+                                if (currentCharacter === undefined && $PlaygroundStore !== 0) {
                                     PlaygroundStore.set(0);
                                     return;
                                 }
-                                selectedCharID.set(-1);
+                                selectCharacter(null);
                                 PlaygroundStore.set(1);
                             }}><ShellIcon /></BarIcon
                         >
@@ -999,13 +1004,13 @@
         <!-- <button class="border-none bg-transparent p-0 text-textcolor"><X /></button> -->
     </button>
     {#if sideBarMode === 0}
-        {#if $selectedCharID < 0 || $settingsOpen}
+        {#if currentCharacter === undefined || $settingsOpen}
             <div>
                 <h1 class="text-xl">Welcome to RisuAI!</h1>
                 <span class="text-xs text-textcolor2">Select a bot to start chatting</span>
             </div>
-        {:else if DBState.db.characters[$selectedCharID]?.chaId === "§playground"}
-            <SideChatList bind:chara={DBState.db.characters[$selectedCharID]} />
+        {:else if currentCharacter?.chaId === "§playground"}
+            <SideChatList chara={currentCharacter} />
         {:else}
             <div
                 class="w-full h-8 min-h-8 border-l border-b border-r border-selected relative bottom-6 rounded-b-md flex"
@@ -1045,7 +1050,7 @@
             {:else if $botMakerMode}
                 <CharConfig />
             {:else}
-                <SideChatList bind:chara={DBState.db.characters[$selectedCharID]} />
+                <SideChatList chara={currentCharacter} />
             {/if}
         {/if}
     {/if}

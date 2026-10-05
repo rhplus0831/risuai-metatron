@@ -103,16 +103,15 @@ test("the character flows run through the records without an error, save, and su
     const created = await page.evaluate(async () => {
         const { DBState } = await import("/src/ts/stores.svelte.ts");
         const { createNewCharacter, createNewGroup, changeChar } = await import("/src/ts/characters.ts");
+        // The creations return the new character's id, and `changeChar` takes one (Phase 6 slice 8).
+        const byId = (chaId: string) => DBState.db.characters.find((entry) => entry.chaId === chaId)!;
         const character = createNewCharacter();
-        DBState.db.characters[character].name = "Alpha";
-        DBState.db.characters[character].creatorNotes = "A creator quote";
+        byId(character).name = "Alpha";
+        byId(character).creatorNotes = "A creator quote";
         const group = createNewGroup();
-        DBState.db.characters[group].name = "The group";
+        byId(group).name = "The group";
         await changeChar(character);
-        return {
-            alpha: DBState.db.characters[character].chaId,
-            group: DBState.db.characters[group].chaId,
-        };
+        return { alpha: character, group };
     });
     await settle(page);
     expect(await selectedId(page)).toBe(created.alpha);
@@ -205,8 +204,7 @@ test("the character flows run through the records without an error, save, and su
     // The group's settings pages mount too.
     await page.evaluate(async (group) => {
         const { changeChar } = await import("/src/ts/characters.ts");
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        await changeChar(DBState.db.characters.findIndex((entry: any) => entry.chaId === group));
+        await changeChar(group);
     }, created.group);
     await settle(page);
     expect(await selectedId(page)).toBe(created.group);

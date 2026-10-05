@@ -38,7 +38,6 @@ const stubs = vi.hoisted(() => ({
         useTokenizerCaching: true,
     } as Record<string, unknown>,
     selected: {
-        character: { chaId: "char-1", chatPage: 0, chats: [{ id: "chat-1" }] } as Record<string, unknown> | null,
         bound: null as { id: string } | null,
     },
 }));
@@ -75,9 +74,8 @@ vi.mock("src/ts/plugins/apiV3/pluginContext", async () => {
 vi.mock("src/ts/plugins/pluginHooks", () => ({
     pluginHooks: { providerOptions: new Map([["legacy", { tokenizer: "llama" }]]) },
 }));
-vi.mock("src/ts/storage/database.svelte", () => ({
-    getCurrentCharacter: () => stubs.selected.character,
-}));
+// The stores' module effect (`modules.ts`' `getModules`) reads the selected chat; no module is enabled here.
+vi.mock("src/ts/storage/database.svelte", () => ({ getCurrentChat: () => undefined }));
 vi.mock("src/ts/storage/nodeStorage", () => ({
     authFetch: (path: string, init?: RequestInit) => stubs.fetch(path, init),
 }));
@@ -98,8 +96,10 @@ vi.mock("../../mcp/mcp", () => ({
     encodeToolCall: stubs.encodeToolCall,
 }));
 
+import { DBState } from "src/ts/stores.svelte";
+import { installForwarding } from "src/ts/storage/forwarding.svelte";
 import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
-import { selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
+import { selectCharacter, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { activePreset } from "src/ts/storage/settingsViews.svelte";
 import { takeRootPresetFields } from "src/ts/storage/tests/installFlatDatabase";
 import { requestServer } from "../transport";
@@ -107,8 +107,9 @@ import { requestServer } from "../transport";
 /**
  * The settings installed in the records (as `setDatabaseLite` installs a database), since the
  * transport reads them through the record views (Phase 6 slice 7): `stubs.db`'s preset fields in
- * each of the two presets, its section fields in their sections, two personas; preset-1 and
- * persona-1 selected.
+ * each of the two presets, its section fields in their sections, two personas, two characters
+ * (the transport reads the selected one, Phase 6 slice 8); preset-1, persona-1, and char-1
+ * selected.
  */
 function installSettings() {
     const raw = { ...stubs.db };
@@ -121,9 +122,15 @@ function installSettings() {
         { id: "persona-1", name: "Persona 1" },
         { id: "persona-2", name: "Persona 2" },
     ];
+    raw.characters = [
+        { chaId: "char-1", type: "character", name: "Char 1", chatPage: 0, chats: [{ id: "chat-1", message: [] }] },
+        { chaId: "char-2", type: "character", name: "Char 2", chatPage: 0, chats: [{ id: "chat-2", message: [] }] },
+    ];
     initializeRecords(takeRecordFields(raw));
+    DBState.db = installForwarding(raw) as never;
     selectPreset("preset-1");
     selectPersona("persona-1");
+    selectCharacter("char-1");
 }
 
 const modelInfo = { id: "reverse_proxy", tokenizer: 1, flags: [] } as never;
@@ -198,7 +205,6 @@ beforeEach(() => {
     stubs.channelCall = null;
     stubs.dynamicIds.clear();
     installSettings();
-    stubs.selected.character = { chaId: "char-1", chatPage: 0, chats: [{ id: "chat-1" }] };
     stubs.selected.bound = null;
     (globalThis as { Image?: unknown }).Image = class {
         src = "";
@@ -233,7 +239,7 @@ describe("the request body", () => {
         // The selection moves and the caller mutates its inputs while the save flushes.
         selectPreset("preset-2");
         selectPersona("persona-2");
-        stubs.selected.character = { chaId: "char-2", chatPage: 0, chats: [{ id: "chat-2" }] };
+        selectCharacter("char-2");
         activePreset.aiModel = "with-images";
         (tools[0].inputSchema as { type: string }).type = "mutated";
         arg.formated[0].content = "mutated";
@@ -620,7 +626,7 @@ describe("the callbacks", () => {
             ]),
         );
         const pending = requestServer(baseArg() as never, "model", null, modelInfo);
-        stubs.selected.character = { chaId: "char-2", chatPage: 0, chats: [{ id: "chat-2" }] };
+        selectCharacter("char-2");
         await pending;
         await flushTick();
         expect(stubs.parserScoped.mock.calls[0]).toEqual([
@@ -628,7 +634,7 @@ describe("the callbacks", () => {
             { chatRef: { chaId: "char-1", chatId: "chat-1" } },
             { presetId: "preset-1", personaId: "persona-1" },
         ]);
-        stubs.selected.character = null;
+        selectCharacter(null);
         stubs.fetch.mockResolvedValueOnce(
             sseResponse([
                 accepted,

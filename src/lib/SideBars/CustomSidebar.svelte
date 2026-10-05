@@ -1,7 +1,8 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings, activePreset, activePersona, currentPresetRecord } from "src/ts/storage/settingsViews.svelte";
     import { Cog, PinIcon } from "@lucide/svelte";
-    import { DBState, openPersonaList, openPresetList, selectedCharID } from "src/ts/stores.svelte";
+    import { openPersonaList, openPresetList } from "src/ts/stores.svelte";
     import Button from "../UI/GUI/Button.svelte";
     import type { CustomSideBarItem } from "src/ts/storage/database.svelte";
     import { language } from "src/lang";
@@ -12,11 +13,13 @@
     import SettingRenderer from "../Setting/SettingRenderer.svelte";
     import { checkPersonaBinded, getUserName } from "src/ts/util";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
+
+    const currentCharacter = $derived(selectedCharacter());
     let configPage: "list" | "add" | "addSettingsSubmenu" = $state("list");
     let search = $state("");
 
     let bindedPersona = $derived.by(() => {
-        DBState.db.characters[$selectedCharID].chatPage;
+        currentCharacter.chatPage;
         return checkPersonaBinded();
     });
 

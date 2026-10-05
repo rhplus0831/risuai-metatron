@@ -62,7 +62,7 @@ Screen selection. `App.svelte` checks these in order:
 
 Inside `DefaultChatScreen.svelte`:
 
-- `$selectedCharID < 0 && $PlaygroundStore === 0` → `MainMenu`.
+- No selected character (`currentCharacter === undefined`) and `$PlaygroundStore === 0` → `MainMenu`.
 - `$PlaygroundStore > 0` → lazy `PlaygroundMenu`.
 - Otherwise the chat.
 
@@ -95,7 +95,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 ## Invariants
 
 - Do not flip `loadedStore` to true before `setDatabase`, `checkNewFormat`, and theme setup finish. `App` assumes `DBState.db` is normalized after that point. When `loadData` fails it only calls `alertError`, and the loading screen stays up.
-- `selectedCharID === -1` is the home sentinel. Components index `DBState.db.characters[$selectedCharID]` whenever it is nonnegative.
+- No selected character is home. Components read the selected character as `const currentCharacter = $derived(selectedCharacter())` (Phase 6 slice 8) and the list as `characterList()`, never by indexing `DBState.db.characters` with `$selectedCharID`; a handler that awaits captures the `chaId` first and finds the character again after the await.
 - Call `saveDb()` only once, from `loadData`. It installs the save adapter's effects; `startResourceSync` ignores a second call.
 - `isNodeServer` depends on `server/src/app.ts` (`GET /` and `/index.html`) or the Vite dev plugin `risu-node-flag` injecting `globalThis.__NODE__ = true` into `index.html`. Keep everything the app needs behind the dynamic `boot.ts` import so the notice path initializes nothing.
 - New hotkey actions need:

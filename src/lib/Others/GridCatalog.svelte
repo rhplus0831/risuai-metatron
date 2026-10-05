@@ -1,10 +1,8 @@
 <script lang="ts">
+    import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { changeChar, getCharImage, removeChar, restoreChar } from "../../ts/characters";
-    import { type Database } from "../../ts/storage/database.svelte";
-    import { DBState } from "src/ts/stores.svelte";
     import BarIcon from "../SideBars/BarIcon.svelte";
     import { ArrowLeft, User, Users, SquareMousePointer, TrashIcon, Undo2Icon } from "@lucide/svelte";
-    import { selectedCharID } from "../../ts/stores.svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
     import { language } from "src/lang";
@@ -18,7 +16,7 @@
     let search = $state("");
     let selected = $state(3);
 
-    function formatChars(search: string, db: Database, trash = false) {
+    function formatChars(search: string, trash = false) {
         let charas: {
             image: string;
             index: number;
@@ -28,8 +26,9 @@
             chaId: string;
         }[] = [];
 
-        for (let i = 0; i < db.characters.length; i++) {
-            const c = db.characters[i];
+        const characters = characterList();
+        for (let i = 0; i < characters.length; i++) {
+            const c = characters[i];
             if (c.trashTime && !trash) {
                 continue;
             }
@@ -105,7 +104,7 @@
                 </Button>
                 <div class="grow"></div>
                 <span class="text-textcolor2 text-sm">
-                    {formatChars(search, DBState.db).length}
+                    {formatChars(search).length}
                     {language.character}
                 </span>
             </div>
@@ -113,21 +112,21 @@
         {#if selected === 0}
             <div class="w-full flex justify-center">
                 <div class="flex flex-wrap gap-2 w-full justify-center">
-                    {#each formatChars(search, DBState.db) as char}
+                    {#each formatChars(search) as char}
                         <div class="flex items-center text-textcolor">
                             {#if char.image}
                                 <BarIcon
                                     onClick={() => {
-                                        changeChar(char.index);
+                                        changeChar(char.chaId);
                                     }}
                                     additionalStyle={getCharImage(char.image, "css")}
                                 ></BarIcon>
                             {:else}
                                 <BarIcon
                                     onClick={() => {
-                                        changeChar(char.index);
+                                        changeChar(char.chaId);
                                     }}
-                                    additionalStyle={char.index === $selectedCharID
+                                    additionalStyle={char.chaId === selectedCharacter()?.chaId
                                         ? "background:var(--risu-theme-selected)"
                                         : ""}
                                 >
@@ -143,11 +142,11 @@
                 </div>
             </div>
         {:else if selected === 1}
-            {#each formatChars(search, DBState.db) as char}
+            {#each formatChars(search) as char}
                 <div class="flex p-2 border border-darkborderc rounded-md mb-2">
                     <BarIcon
                         onClick={() => {
-                            changeChar(char.index);
+                            changeChar(char.chaId);
                         }}
                         additionalStyle={getCharImage(char.image, "css")}
                     ></BarIcon>
@@ -162,7 +161,7 @@
                             <button
                                 class="hover:text-textcolor text-textcolor2"
                                 onclick={() => {
-                                    changeChar(char.index);
+                                    changeChar(char.chaId);
                                 }}
                             >
                                 <SquareMousePointer />
@@ -181,11 +180,11 @@
             {/each}
         {:else if selected === 2}
             <span class="text-textcolor2 text-sm mb-2">{language.trashDesc}</span>
-            {#each formatChars(search, DBState.db, true) as char}
+            {#each formatChars(search, true) as char}
                 <div class="flex p-2 border border-darkborderc rounded-md mb-2">
                     <BarIcon
                         onClick={() => {
-                            changeChar(char.index);
+                            changeChar(char.chaId);
                         }}
                         additionalStyle={getCharImage(char.image, "css")}
                     ></BarIcon>

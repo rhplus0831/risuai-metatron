@@ -1,14 +1,12 @@
+import { characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { settings, activePreset } from "../storage/settingsViews.svelte";
-import { get } from "svelte/store";
-import { DBState, selectedCharID } from "../stores.svelte";
 import { parseKeyValue } from "../util";
 import { getCurrentChat } from "../storage/database.svelte";
 import { setCurrentChatMeta } from "../storage/chatEdits";
 import { type ChatRef, findChat, setChatMeta } from "../storage/chatStore.svelte";
 
 export function getChatVar(key: string): string {
-    const selectedChar = get(selectedCharID);
-    const char = DBState.db.characters[selectedChar];
+    const char = selectedCharacter();
     if (!char) {
         return "null";
     }
@@ -42,7 +40,7 @@ export function setChatVar(key: string, value: string): boolean {
 
 /** `getChatVar` for a given chat (a caller that captured its chat before an await). */
 export function getChatVarOf(ref: ChatRef | null, key: string): string {
-    const char = ref ? DBState.db.characters.find((entry) => entry?.chaId === ref.chaId) : undefined;
+    const char = ref ? characterList().find((entry) => entry?.chaId === ref.chaId) : undefined;
     if (!char) {
         return "null";
     }

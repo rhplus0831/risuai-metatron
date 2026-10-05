@@ -1,8 +1,9 @@
+import { selectedCharacter } from "../storage/characterStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";
 import { auxFetch } from "../network/auxFetch";
 import { isSecretSet } from "../storage/llmSecrets.svelte";
 import { alertError } from "../alert";
-import { getCurrentCharacter, type character } from "../storage/database.svelte";
+import { type character } from "../storage/database.svelte";
 import { runTranslator, translateVox } from "../translator/translator";
 import { globalFetch, loadAsset } from "../globalApi.svelte";
 import { language } from "src/lang";
@@ -87,7 +88,7 @@ async function playAudio(
 export async function sayTTS(character: character, text: string) {
     try {
         if (!character) {
-            const v = getCurrentCharacter();
+            const v = selectedCharacter();
             if (v.type === "group") {
                 return;
             }

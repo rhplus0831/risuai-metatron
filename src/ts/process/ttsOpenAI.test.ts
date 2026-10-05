@@ -26,9 +26,11 @@ vi.mock("../alert", () => ({ alertError: (message: string) => deps.alertError(me
 vi.mock("../storage/database.svelte", () => ({
     getDatabase: () => deps.db,
     getCurrentCharacter: () => null,
+    // The stores' module effect (`modules.ts`' `getModules`) reads the selected chat; none is selected here.
+    getCurrentChat: () => undefined,
 }));
 vi.mock("../translator/translator", () => ({ runTranslator: vi.fn(), translateVox: vi.fn() }));
-vi.mock("../util", () => ({ sleep: vi.fn() }));
+vi.mock("../util", () => ({ sleep: vi.fn(), checkPersonaBinded: () => null }));
 vi.mock("./transformers", () => ({ runVITS: vi.fn() }));
 vi.mock("src/lang", () => ({
     language: { ttsCustomUrlNeedsKey: "custom-url-needs-key", errors: { httpError: "HTTP error: " } },

@@ -1,22 +1,18 @@
 <script lang="ts">
+    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { onMount, onDestroy } from "svelte";
     import { XIcon, TrashIcon, PencilIcon, BookOpenCheckIcon, BookLockIcon, ArrowRightIcon } from "@lucide/svelte";
     import Chat from "../ChatScreens/Chat.svelte";
     import { getCharImage } from "src/ts/characters";
     import { findCharacterbyId, getUserName, getUserIcon } from "src/ts/util";
-    import {
-        createSimpleCharacter,
-        bookmarkListOpen,
-        DBState,
-        selectedCharID,
-        ScrollToMessageStore,
-    } from "src/ts/stores.svelte";
+    import { createSimpleCharacter, bookmarkListOpen, ScrollToMessageStore } from "src/ts/stores.svelte";
     import { language } from "src/lang";
     import { alertInput } from "src/ts/alert";
     import { currentChatRef, findChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
 
+    const currentCharacter = $derived(selectedCharacter());
     const close = () => ($bookmarkListOpen = false);
-    let chara = $derived(DBState.db.characters[$selectedCharID]);
+    let chara = $derived(currentCharacter);
     const simpleChar = $derived(createSimpleCharacter(chara));
 
     const messageMap = $derived.by(() => {

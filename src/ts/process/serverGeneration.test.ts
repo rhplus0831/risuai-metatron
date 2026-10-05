@@ -27,7 +27,11 @@ const stubs = vi.hoisted(() => ({
 vi.mock("./serverCommands", () => ({ runServerJob: stubs.run }));
 vi.mock("../storage/chatStore.svelte", () => ({ findChat: stubs.findChat, currentChatRef: stubs.currentChatRef }));
 vi.mock("../storage/collectionStore.svelte", () => ({ incrementStatic: stubs.incrementStatic }));
-vi.mock("../storage/characterStore.svelte", () => ({ updateCharacter: stubs.updateCharacter }));
+// The character list as the real module serves it (the records' list, here the stub list).
+vi.mock("../storage/characterStore.svelte", () => ({
+    updateCharacter: stubs.updateCharacter,
+    characterList: () => stubs.db.characters,
+}));
 vi.mock("../stores.svelte", () => ({ DBState: { db: stubs.db } }));
 vi.mock("./prereroll", () => ({ addRerolls: stubs.addRerolls }));
 
