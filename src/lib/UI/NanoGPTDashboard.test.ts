@@ -17,15 +17,13 @@ vi.mock("src/ts/model/nanogpt", () => ({
     getNanoGPTBalance: () => nano.balance(),
     getNanoGPTSubscription: () => nano.subscription(),
 }));
-vi.mock("src/ts/storage/database.svelte", () => ({
-    getDatabase: () => dbRef.db,
-}));
 vi.mock("src/lang", () => ({
     language: new Proxy({} as Record<string, unknown>, {
         get: (_target, key) => (typeof key === "string" && /Until$|PeriodEnd$/.test(key) ? () => key : String(key)),
     }),
 }));
 
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import NanoGPTDashboard from "./NanoGPTDashboard.svelte";
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
@@ -41,7 +39,10 @@ let target: HTMLElement;
 const mounted: ReturnType<typeof mount>[] = [];
 
 beforeEach(() => {
-    dbRef.db = { nanogptSubscriptionState: "" };
+    // Installed as `setDatabaseLite` installs a database (its fields moved into the records, the
+    // accessors on), since the dashboard writes the state through the settings views (Phase 6
+    // slice 7): `dbRef.db` reads and writes the same record.
+    dbRef.db = installFlatDatabase({ nanogptSubscriptionState: "" });
     nano.balance.mockResolvedValue(null);
     target = document.createElement("div");
     document.body.appendChild(target);

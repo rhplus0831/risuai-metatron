@@ -215,6 +215,7 @@ import { removeCharacter } from "src/ts/storage/characterStore.svelte";
 import { installForwarding } from "src/ts/storage/forwarding.svelte";
 import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
 import { selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
+import { settings } from "src/ts/storage/settingsViews.svelte";
 import { doingChat } from "src/ts/process/index.svelte";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
@@ -375,6 +376,21 @@ describe("capturePluginContext", () => {
         expect(capturePluginContext(refA1)!.presetId).toBe("b");
         expect(capturePluginContext(null)).toBeUndefined();
         expect(capturePluginContext(undefined)).toBeUndefined();
+    });
+
+    it("resolves through the settings views (Phase 6 slice 7): a bound persona that is gone, and a selection naming no record, fall back as before", () => {
+        expect(capturePluginContext(refB1)).toEqual({ chatRef: refB1, presetId: "a", personaId: "q" });
+        selectPersona("q");
+        expect(capturePluginContext(refA1)!.personaId).toBe("q");
+        // The bound persona `q` deleted: the chat's binding names no record, so the selected persona
+        // is captured (the selection, which named `q`, falls back to the first persona and selects it).
+        settings.personas.splice(1, 1);
+        expect(capturePluginContext(refB1)).toEqual({ chatRef: refB1, presetId: "a", personaId: "p" });
+        expect(selection.personaId).toBe("p");
+        // A preset selection naming no record: the first preset, which becomes the selection.
+        selectPreset("gone");
+        expect(capturePluginContext(refA1)!.presetId).toBe("a");
+        expect(selection.presetId).toBe("a");
     });
 
     it("is a copy: the runner's ref object is not shared", () => {
@@ -607,6 +623,33 @@ describe("settings inside a hook", () => {
         expect(preset("a").temperature).toBe(55);
         expect(preset("b").temperature).toBe(21);
         expect(db().plugins.map((plugin: any) => plugin.name)).toEqual(["installed-by-hook"]);
+    });
+});
+
+describe("the theme getters (Phase 6 slice 7)", () => {
+    // `getColorScheme`/`getTextTheme` read the ui record through the settings views, as it is at
+    // each call, and hand the plugin a detached copy: a change the plugin makes to it reaches nothing.
+    it("answer the ui record at each call with detached copies", async () => {
+        const api = await makeApi();
+        const scheme = { type: "dark", bgcolor: "#101010", textcolor: "#202020" };
+        settings.ui.colorSchemeName = "custom";
+        settings.ui.colorScheme = scheme as any;
+        settings.ui.textTheme = "custom";
+        settings.ui.customTextTheme = { FontColorStandard: "#303030" } as any;
+
+        const colors = api.getColorScheme();
+        expect(colors).toEqual({ name: "custom", scheme });
+        const text = api.getTextTheme();
+        expect(text).toEqual({ name: "custom", customTheme: { FontColorStandard: "#303030" } });
+        colors.scheme.bgcolor = "#ffffff";
+        text.customTheme.FontColorStandard = "#ffffff";
+        expect(settings.ui.colorScheme.bgcolor).toBe("#101010");
+        expect(settings.ui.customTextTheme.FontColorStandard).toBe("#303030");
+
+        settings.ui.colorScheme = { ...scheme, bgcolor: "#404040" } as any;
+        settings.ui.textTheme = "standard";
+        expect(api.getColorScheme().scheme.bgcolor).toBe("#404040");
+        expect(api.getTextTheme().name).toBe("standard");
     });
 });
 

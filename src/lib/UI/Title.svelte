@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { DBState } from "src/ts/stores.svelte";
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { openURL } from "src/ts/globalApi.svelte";
 
     let specialDay = $state("");
@@ -20,9 +20,9 @@
         specialDay = "halloween";
     }
     if (today.getMonth() === 8 && today.getDate() === 16) {
-        if (DBState.db.language === "ko") {
+        if (settings.ui.language === "ko") {
             specialDay = "chuseok";
-        } else if (DBState.db.language === "zh-Hant" || DBState.db.language === "zh") {
+        } else if (settings.ui.language === "zh-Hant" || settings.ui.language === "zh") {
             specialDay = "midAutumn";
         }
     }

@@ -1,8 +1,8 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
     import { ParseMarkdown } from "src/ts/parser/parser.svelte";
     import { parseMultilangString, toLangName } from "src/ts/util";
-    import { DBState } from "src/ts/stores.svelte";
 
     interface Props {
         value: string;
@@ -12,7 +12,7 @@
     let { value, markdown = false }: Props = $props();
     let valueObject: { [code: string]: string } = $derived(parseMultilangString(value));
 
-    let userLang = $derived(DBState.db.language);
+    let userLang = $derived(settings.ui.language);
 
     let defaultLang = $derived.by(() => {
         if (valueObject[userLang] !== undefined) return userLang;

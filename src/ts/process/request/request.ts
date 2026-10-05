@@ -1,9 +1,10 @@
+import { settings, activePreset } from "../../storage/settingsViews.svelte";
 import { language } from "../../../lang";
 import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/modellist";
 import { risuEscape, risuUnescape } from "../../parser/parser.svelte";
 import { capturePluginContext, invokeHook, type PluginCallContext } from "../../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../../plugins/pluginHooks";
-import { getCurrentCharacter, getDatabase, type character } from "../../storage/database.svelte";
+import { getCurrentCharacter, type character } from "../../storage/database.svelte";
 import type { ChatRef } from "../../storage/chatStore.svelte";
 import { sleep } from "../../util";
 import type { OpenAIChat } from "../index.svelte";
@@ -103,10 +104,9 @@ export async function requestChatData(
     model: ModelModeExtended,
     abortSignal: AbortSignal = null,
 ): Promise<requestDataResponse> {
-    const db = getDatabase();
     arg.pluginContext ??= capturePluginContext(arg.chatRef);
     const pluginContext = arg.pluginContext;
-    const fallBackModels: string[] = safeStructuredClone(db?.fallbackModels?.[model] ?? []);
+    const fallBackModels: string[] = safeStructuredClone(settings.providers.fallbackModels?.[model] ?? []);
     const tools = arg.tools ?? (await getTools());
     fallBackModels.push("");
     let da: requestDataResponse;
@@ -172,9 +172,9 @@ export async function requestChatData(
                 }
             }
 
-            if (da.type === "success" && db.banCharacterset?.length > 0) {
+            if (da.type === "success" && settings.providers.banCharacterset?.length > 0) {
                 let failed = false;
-                for (const set of db.banCharacterset) {
+                for (const set of settings.providers.banCharacterset) {
                     console.log(set);
                     const checkRegex = new RegExp(`\\p{Script=${set}}`, "gu");
 
@@ -190,7 +190,11 @@ export async function requestChatData(
                 }
             }
 
-            if (da.type === "success" && fallbackIndex !== fallBackModels.length - 1 && db.fallbackWhenBlankResponse) {
+            if (
+                da.type === "success" &&
+                fallbackIndex !== fallBackModels.length - 1 &&
+                settings.providers.fallbackWhenBlankResponse
+            ) {
                 if (da.result.trim() === "") {
                     break;
                 }
@@ -208,13 +212,13 @@ export async function requestChatData(
 
             if (da.failByServerError) {
                 await sleep(1000);
-                if (db.antiServerOverloads) {
+                if (settings.providers.antiServerOverloads) {
                     trys -= 0.5; // reduce trys by 0.5, so that it will retry twice as much
                 }
             }
 
             trys += 1;
-            if (trys > db.requestRetrys) {
+            if (trys > settings.providers.requestRetrys) {
                 const isPluginModel = da.model === "custom" || da.model?.startsWith("pluginmodel:::");
                 if (fallbackIndex === fallBackModels.length - 1 || isPluginModel) {
                     return da;
@@ -235,7 +239,6 @@ export async function requestChatData(
 export function reformater(formated: OpenAIChat[], modelInfo: LLMModel | LLMFlags[]) {
     const flags = Array.isArray(modelInfo) ? modelInfo : modelInfo.flags;
 
-    const db = getDatabase();
     let systemPrompt: OpenAIChat | null = null;
 
     if (!flags.includes(LLMFlags.hasFullSystemPrompt)) {
@@ -252,10 +255,10 @@ export function reformater(formated: OpenAIChat[], modelInfo: LLMModel | LLMFlag
 
         for (let i = 0; i < formated.length; i++) {
             if (formated[i].role === "system") {
-                formated[i].content = db.systemContentReplacement
-                    ? db.systemContentReplacement.replace("{{slot}}", formated[i].content)
+                formated[i].content = activePreset.systemContentReplacement
+                    ? activePreset.systemContentReplacement.replace("{{slot}}", formated[i].content)
                     : `system: ${formated[i].content}`;
-                formated[i].role = db.systemRoleReplacement || "user";
+                formated[i].role = activePreset.systemRoleReplacement || "user";
             }
         }
     }
@@ -321,16 +324,15 @@ export async function requestChatDataMain(
     model: ModelModeExtended,
     abortSignal: AbortSignal = null,
 ): Promise<requestDataResponse> {
-    const db = getDatabase();
     // The server transport sends the caller's arguments as they are; the defaults below mutate `arg`.
     const original = { ...arg };
     const targ: RequestDataArgumentExtended = arg;
 
-    targ.aiModel = arg.staticModel ? arg.staticModel : model === "model" ? db.aiModel : db.subModel;
+    targ.aiModel = arg.staticModel ? arg.staticModel : model === "model" ? activePreset.aiModel : activePreset.subModel;
     targ.modelInfo = getModelInfo(targ.aiModel);
-    if (db.seperateModelsForAxModels && !arg.staticModel) {
-        if (db.seperateModels[model]) {
-            targ.aiModel = db.seperateModels[model];
+    if (settings.providers.seperateModelsForAxModels && !arg.staticModel) {
+        if (settings.providers.seperateModels[model]) {
+            targ.aiModel = settings.providers.seperateModels[model];
             targ.modelInfo = getModelInfo(targ.aiModel);
         }
     }
@@ -349,26 +351,21 @@ export async function requestChatDataMain(
     }
 
     targ.formated = safeStructuredClone(arg.formated);
-    targ.maxTokens = arg.maxTokens ?? db.maxResponse;
-    targ.temperature = arg.temperature ?? db.temperature / 100;
+    targ.maxTokens = arg.maxTokens ?? activePreset.maxResponse;
+    targ.temperature = arg.temperature ?? activePreset.temperature / 100;
     targ.bias = arg.bias;
     targ.currentChar = arg.currentChar;
-    targ.useStreaming = arg.forceStreaming ? true : db.useStreaming && arg.useStreaming;
+    targ.useStreaming = arg.forceStreaming ? true : settings.providers.useStreaming && arg.useStreaming;
     targ.continue = arg.continue ?? false;
     targ.biasString = arg.biasString ?? [];
-    targ.multiGen = db.genTime > 1 && targ.aiModel.startsWith("gpt") && !arg.continue && !arg.noMultiGen;
+    targ.multiGen =
+        settings.providers.genTime > 1 && targ.aiModel.startsWith("gpt") && !arg.continue && !arg.noMultiGen;
     targ.abortSignal = abortSignal;
     targ.mode = model;
-    targ.extractJson = arg.extractJson ?? db.extractJson;
-    if (targ.aiModel === "reverse_proxy") {
-        targ.modelInfo.internalID = db.customProxyRequestModel;
-        targ.modelInfo.format = db.customAPIFormat;
-        targ.customURL = db.forceReplaceUrl;
-        targ.key = db.proxyKey;
-    }
+    targ.extractJson = arg.extractJson ?? activePreset.extractJson;
     if (targ.aiModel.startsWith("xcustom:::")) {
         // (Not reached: an `xcustom:::` model goes to the server, which holds its key.)
-        const found = db.customModels.find((m) => m.id === targ.aiModel);
+        const found = settings.customModels.find((m) => m.id === targ.aiModel);
         targ.customURL = found?.url;
     }
 
@@ -390,13 +387,12 @@ export async function requestChatDataMain(
 }
 
 async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
-    const db = getDatabase();
     const isV3Model = arg.aiModel.startsWith("pluginmodel:::");
     const responseModel = isV3Model ? arg.aiModel : "custom";
     try {
         const formated = arg.formated;
         const maxTokens = arg.maxTokens;
-        const model = isV3Model ? arg.aiModel.replace("pluginmodel:::", "") : db.currentPluginProvider;
+        const model = isV3Model ? arg.aiModel.replace("pluginmodel:::", "") : activePreset.currentPluginProvider;
         const providerFunction = pluginHooks.providers.get(model);
 
         if (arg.previewBody) {
@@ -480,7 +476,7 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
         console.error(error);
         return {
             type: "fail",
-            result: `Plugin Error from ${db.currentPluginProvider}: ` + JSON.stringify(error),
+            result: `Plugin Error from ${activePreset.currentPluginProvider}: ` + JSON.stringify(error),
             model: responseModel,
         };
     }
@@ -488,7 +484,6 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
 
 async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const formated = arg.formated;
-    const db = getDatabase();
     const aiModel = arg.aiModel;
     const currentChar = getCurrentCharacter();
     const maxTokens = arg.maxTokens;
@@ -507,10 +502,10 @@ async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestD
     const transformersParams = {
         temperature: temperature,
         max_new_tokens: maxTokens,
-        top_k: db.ooba.top_k,
-        top_p: db.ooba.top_p,
-        repetition_penalty: db.ooba.repetition_penalty,
-        typical_p: db.ooba.typical_p,
+        top_k: activePreset.ooba.top_k,
+        top_p: activePreset.ooba.top_p,
+        repetition_penalty: activePreset.ooba.repetition_penalty,
+        typical_p: activePreset.ooba.typical_p,
     } as any;
 
     const finalParams = applyAdditionalParameters(transformersParams, {}, getAdditionalParameters(arg.aiModel));

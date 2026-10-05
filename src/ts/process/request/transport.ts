@@ -1,3 +1,4 @@
+import { settings, activePreset, activePersona } from "../../storage/settingsViews.svelte";
 import {
     REQUEST_ARG_KEYS,
     type BufferedResponse,
@@ -17,8 +18,7 @@ import { generationClientId } from "src/ts/network/generationJobs";
 import { risuChatParserScoped } from "src/ts/parser/parser.svelte";
 import { capturePluginContext, type PluginCallContext } from "src/ts/plugins/apiV3/pluginContext";
 import { pluginHooks } from "src/ts/plugins/pluginHooks";
-import { getCurrentCharacter, getDatabase } from "src/ts/storage/database.svelte";
-import { selectedPersona, selectedPreset } from "src/ts/storage/forwarding.svelte";
+import { getCurrentCharacter } from "src/ts/storage/database.svelte";
 import { authFetch } from "src/ts/storage/nodeStorage";
 import { epochMismatch, getResourceEpoch } from "src/ts/storage/resourceClient";
 import { flushResources } from "src/ts/storage/resourceSync.svelte";
@@ -108,17 +108,16 @@ export async function requestServer(
     modelInfo: LLMModel,
 ): Promise<ClientResponse> {
     // Everything that depends on the selection is read now, before any await.
-    const db = getDatabase();
     const chatRef = arg.chatRef ?? null;
     // A parse the server asks for without a chat runs on the chat that was selected now.
     const parseChatRef = chatRef ?? selectedChatRef();
     const pluginContext = arg.pluginContext ?? capturePluginContext(parseChatRef);
-    const presetId = pluginContext?.presetId || selectedPreset(db)?.id || "";
-    const selectedPersonaId = selectedPersona(db)?.id ?? "";
+    const presetId = pluginContext?.presetId || activePreset.id || "";
+    const selectedPersonaId = activePersona.id ?? "";
     // `getUserName()` (no chat): the selected chat's bound persona, else the selected persona.
     const personaId = checkPersonaBinded()?.id ?? selectedPersonaId;
     const scope = { presetId, personaId: pluginContext?.personaId || personaId };
-    const mainModel = getModelInfo(db.aiModel);
+    const mainModel = getModelInfo(activePreset.aiModel);
     const args: Record<string, unknown> = {};
     for (const key of REQUEST_ARG_KEYS) {
         if (arg[key] !== undefined) {
@@ -139,14 +138,15 @@ export async function requestServer(
             // `encode`'s scope (`src/ts/tokenizer.ts`), as the tab would tokenize now.
             // A field a fresh store has not set yet is sent as the value `encode` treats it as.
             tokenizer: {
-                aiModel: db.aiModel ?? "",
-                currentPluginProvider: db.currentPluginProvider ?? "",
+                aiModel: activePreset.aiModel ?? "",
+                currentPluginProvider: activePreset.currentPluginProvider ?? "",
                 modelTokenizer: mainModel.tokenizer,
                 ...(mainModel.internalID !== undefined ? { modelInternalID: mainModel.internalID } : {}),
-                pluginTokenizer: pluginHooks.providerOptions.get(db.currentPluginProvider)?.tokenizer ?? "none",
-                customTokenizer: db.customTokenizer ?? "",
-                googleClaudeTokenizing: !!db.googleClaudeTokenizing,
-                useTokenizerCaching: !!db.useTokenizerCaching,
+                pluginTokenizer:
+                    pluginHooks.providerOptions.get(activePreset.currentPluginProvider)?.tokenizer ?? "none",
+                customTokenizer: settings.providers.customTokenizer ?? "",
+                googleClaudeTokenizing: !!settings.providers.googleClaudeTokenizing,
+                useTokenizerCaching: !!settings.providers.useTokenizerCaching,
             },
         },
         arg: requestArgs,

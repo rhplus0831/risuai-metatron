@@ -1,9 +1,9 @@
+import { settings } from "../../storage/settingsViews.svelte";
 import { auxFetchJson } from "../../network/auxFetch";
 import localforage from "localforage";
 import { globalFetch } from "src/ts/globalApi.svelte";
 import { runEmbedding } from "../transformers";
 import { appendLastPath } from "src/ts/util";
-import { getDatabase } from "src/ts/storage/database.svelte";
 import { isContextModel, getContextProvider } from "./contextualEmbedding";
 import type { HypaModel } from "../../../../shared/memory.ts";
 
@@ -42,13 +42,12 @@ export class HypaProcesser {
             name: "hypaVector",
         });
         this.vectors = [];
-        const db = getDatabase();
         if (model === "auto") {
-            this.model = db.hypaModel || "MiniLM";
+            this.model = settings.memoryTranslateMedia.hypaModel || "MiniLM";
         } else {
             this.model = model;
         }
-        this.customEmbeddingUrl = customEmbeddingUrl?.trim() || db.hypaCustomSettings?.url?.trim() || "";
+        this.customEmbeddingUrl = customEmbeddingUrl?.trim() || settings.secrets.hypaCustomSettings?.url?.trim() || "";
     }
 
     async embedDocuments(texts: string[]): Promise<VectorArray[]> {
@@ -97,23 +96,23 @@ export class HypaProcesser {
                 ? customEmbeddingUrl
                 : appendLastPath(customEmbeddingUrl, "embeddings");
 
-            const db = getDatabase();
             const fetchArgs = {
                 headers: {
-                    ...(db.hypaCustomSettings?.key?.trim()
-                        ? { Authorization: "Bearer " + db.hypaCustomSettings.key.trim() }
+                    ...(settings.secrets.hypaCustomSettings?.key?.trim()
+                        ? { Authorization: "Bearer " + settings.secrets.hypaCustomSettings.key.trim() }
                         : {}),
                 },
                 body: {
                     input: input,
-                    ...(db.hypaCustomSettings?.model?.trim() ? { model: db.hypaCustomSettings.model.trim() } : {}),
+                    ...(settings.secrets.hypaCustomSettings?.model?.trim()
+                        ? { model: settings.secrets.hypaCustomSettings.model.trim() }
+                        : {}),
                 },
             };
 
             gf = await globalFetch(replaceUrl.toString(), fetchArgs);
         }
         if (this.model === "ada" || this.model === "openai3small" || this.model === "openai3large") {
-            const db = getDatabase();
             const models = {
                 ada: "text-embedding-ada-002",
                 openai3small: "text-embedding-3-small",
@@ -161,10 +160,9 @@ export class HypaProcesser {
     }
 
     async addText(texts: string[]) {
-        const db = getDatabase();
         const suffix =
-            this.model === "custom" && db.hypaCustomSettings?.model?.trim()
-                ? `-${db.hypaCustomSettings.model.trim()}`
+            this.model === "custom" && settings.secrets.hypaCustomSettings?.model?.trim()
+                ? `-${settings.secrets.hypaCustomSettings.model.trim()}`
                 : "";
 
         for (let i = 0; i < texts.length; i++) {

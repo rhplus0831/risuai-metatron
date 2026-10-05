@@ -1,3 +1,4 @@
+import { settings, activePreset } from "../storage/settingsViews.svelte";
 import { language } from "src/lang";
 import {
     alertClear,
@@ -12,7 +13,6 @@ import {
 import {
     getCurrentCharacter,
     getCurrentChat,
-    getDatabase,
     setCurrentCharacter,
     setDatabase,
     type customscript,
@@ -416,10 +416,9 @@ export async function importModule() {
 }
 
 function getModuleById(id: string) {
-    const db = getDatabase();
-    for (let i = 0; i < db.modules.length; i++) {
-        if (db.modules[i].id === id) {
-            return db.modules[i];
+    for (let i = 0; i < settings.modules.length; i++) {
+        if (settings.modules[i].id === id) {
+            return settings.modules[i];
         }
     }
 
@@ -433,9 +432,8 @@ function getModuleById(id: string) {
 }
 
 function getModuleByIds(ids: string[]) {
-    const db = getDatabase();
     const idSet = new Set(ids);
-    const modules = db.modules.filter((m) => idSet.has(m.id) || (m.namespace && idSet.has(m.namespace)));
+    const modules = settings.modules.filter((m) => idSet.has(m.id) || (m.namespace && idSet.has(m.namespace)));
     return deduplicateModuleById(modules);
 }
 
@@ -467,8 +465,7 @@ export function getModules(chatRef?: ModuleChatRef) {
         : getCurrentCharacter();
     const currentChat = chatRef ? character?.chats?.find((chat) => chat.id === chatRef.chatId) : getCurrentChat();
     const persona = checkPersonaBinded(chatRef);
-    const db = getDatabase();
-    let ids = db.enabledModules ?? [];
+    let ids = settings.enabledModules ?? [];
     if (currentChat) {
         ids = ids.concat(currentChat.modules ?? []);
     }
@@ -478,8 +475,8 @@ export function getModules(chatRef?: ModuleChatRef) {
     if (persona && persona.embeddedModule) {
         ids = ids.concat([persona.embeddedModule?.id]);
     }
-    if (db.moduleIntergration) {
-        const intList = db.moduleIntergration.split(",").map((s) => s.trim());
+    if (activePreset.moduleIntergration) {
+        const intList = activePreset.moduleIntergration.split(",").map((s) => s.trim());
         ids = ids.concat(intList);
     }
     const idsJoined = ids.join("-");

@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings, activePreset, activePersona, currentPersonaRecord } from "src/ts/storage/settingsViews.svelte";
     import Suggestion from "./Suggestion.svelte";
     import {
         CameraIcon,
@@ -81,7 +82,7 @@
     let messageInput: string = $state("");
     let messageInputTranslate: string = $state("");
     let openMenu = $state(false);
-    let loadPages = $state(getInitialChatLoadPages(DBState.db));
+    let loadPages = $state(getInitialChatLoadPages(settings.ui));
     let autoMode = $state(false);
     let rerolls: Message[][] = [];
     let rerollid = -1;
@@ -217,7 +218,7 @@
         if (messageInput === "") {
             if (char.type !== "group") {
                 if (cha.length === 0 || cha[cha.length - 1].role !== "user") {
-                    if (DBState.db.useSayNothing) {
+                    if (settings.ui.useSayNothing) {
                         appendMessage(ref, { role: "user", data: "*says nothing*" });
                     }
                 }
@@ -431,7 +432,7 @@
         }
         lastCharId = $selectedCharID;
         $doingChat = false;
-        if (DBState.db.playMessage) {
+        if (settings.ui.playMessage) {
             const audio = new Audio(sendSound);
             audio.play().catch(() => {});
         }
@@ -464,7 +465,7 @@
                 ?.bindedPersona;
 
         if (bindedPersona) {
-            const persona = DBState.db.personas.find((p) => p.id === bindedPersona);
+            const persona = settings.personas.find((p) => p.id === bindedPersona);
             if (persona) {
                 return {
                     currentUsername: persona.name,
@@ -474,11 +475,11 @@
             }
         }
 
-        const selectedPersonaIndex = DBState.db.selectedPersona;
+        const persona = currentPersonaRecord();
         return {
-            currentUsername: DBState.db.username,
-            userIconPortrait: DBState.db.personas[selectedPersonaIndex].largePortrait,
-            userIcon: DBState.db.personas[selectedPersonaIndex].icon,
+            currentUsername: activePersona.name,
+            userIconPortrait: persona.largePortrait,
+            userIcon: persona.icon,
         };
     });
 
@@ -512,7 +513,7 @@
     });
 
     async function updateInputTransateMessage(reverse: boolean) {
-        if (!DBState.db.useAutoTranslateInput) {
+        if (!settings.memoryTranslateMedia.useAutoTranslateInput) {
             return;
         }
         if (isExpTranslator()) {
@@ -604,7 +605,7 @@
                 mergedCanvas.remove();
             }
             alertNormal(language.screenshotSaved);
-            loadPages = getInitialChatLoadPages(DBState.db);
+            loadPages = getInitialChatLoadPages(settings.ui);
         } catch (error) {
             console.error(error);
             alertError("Error while taking screenshot");
@@ -622,7 +623,7 @@
     }}
 >
     {#if showNewMessageButton}
-        {#if DBState.db.newMessageButtonStyle === "bottom-center" || !DBState.db.newMessageButtonStyle}
+        {#if settings.ui.newMessageButtonStyle === "bottom-center" || !settings.ui.newMessageButtonStyle}
             <button
                 class="absolute bottom-16 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-4 py-2 rounded-full shadow-lg z-50 flex items-center gap-2 hover:bg-blue-600 transition-colors"
                 onclick={scrollToBottom}
@@ -632,7 +633,7 @@
             </button>
         {/if}
 
-        {#if DBState.db.newMessageButtonStyle === "bottom-right"}
+        {#if settings.ui.newMessageButtonStyle === "bottom-right"}
             <button
                 class="absolute bottom-20 right-4 bg-blue-500 text-white px-4 py-2 rounded-full shadow-lg z-50 flex items-center gap-2 hover:bg-blue-600 transition-colors"
                 onclick={scrollToBottom}
@@ -642,7 +643,7 @@
             </button>
         {/if}
 
-        {#if DBState.db.newMessageButtonStyle === "bottom-left"}
+        {#if settings.ui.newMessageButtonStyle === "bottom-left"}
             <button
                 class="absolute bottom-20 left-4 bg-blue-500 text-white px-4 py-2 rounded-full shadow-lg z-50 flex items-center gap-2 hover:bg-blue-600 transition-colors"
                 onclick={scrollToBottom}
@@ -652,7 +653,7 @@
             </button>
         {/if}
 
-        {#if DBState.db.newMessageButtonStyle === "floating-circle"}
+        {#if settings.ui.newMessageButtonStyle === "floating-circle"}
             <button
                 class="absolute bottom-36 right-4 bg-blue-500 text-white w-12 h-12 rounded-full shadow-lg z-50 flex items-center justify-center hover:bg-blue-600 transition-colors"
                 onclick={scrollToBottom}
@@ -662,7 +663,7 @@
             </button>
         {/if}
 
-        {#if DBState.db.newMessageButtonStyle === "right-center"}
+        {#if settings.ui.newMessageButtonStyle === "right-center"}
             <button
                 class="absolute top-1/2 right-2 -translate-y-1/2 bg-blue-500 text-white px-2 py-3 rounded-l-lg shadow-lg z-50 flex flex-col items-center gap-1 hover:bg-blue-600 transition-colors"
                 onclick={scrollToBottom}
@@ -672,7 +673,7 @@
             </button>
         {/if}
 
-        {#if DBState.db.newMessageButtonStyle === "top-bar"}
+        {#if settings.ui.newMessageButtonStyle === "top-bar"}
             <button
                 class="absolute top-2 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-6 py-1.5 rounded-full shadow-lg z-50 flex items-center gap-2 hover:bg-blue-600 transition-colors text-sm"
                 onclick={scrollToBottom}
@@ -708,11 +709,11 @@
                     DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
                         .message.length > loadPages
                 ) {
-                    loadPages += getAdditionalChatLoadPages(DBState.db);
+                    loadPages += getAdditionalChatLoadPages(settings.ui);
                 }
                 const chatTarget = e.target as HTMLElement;
                 const chatsContainer =
-                    DBState.db.fixedChatTextarea && chatTarget.children[1]
+                    settings.ui.fixedChatTextarea && chatTarget.children[1]
                         ? chatTarget.children[1]
                         : chatTarget.children[0];
                 const lastEl = chatsContainer?.firstElementChild;
@@ -725,12 +726,12 @@
             }}
         >
             <div
-                class="{DBState.db.fixedChatTextarea
+                class="{settings.ui.fixedChatTextarea
                     ? 'sticky pt-2 pb-2 right-0 bottom-0 bg-bgcolor'
                     : 'mt-2 mb-2'} flex items-stretch w-full"
-                style={DBState.db.fixedChatTextarea ? "z-index:29;" : ""}
+                style={settings.ui.fixedChatTextarea ? "z-index:29;" : ""}
             >
-                {#if DBState.db.useChatSticker && currentCharacter.type !== "group"}
+                {#if settings.ui.useChatSticker && currentCharacter.type !== "group"}
                     <div
                         onclick={() => {
                             toggleStickers = !toggleStickers;
@@ -748,10 +749,10 @@
                     bind:this={inputEle}
                     onkeydown={(e) => {
                         if (e.key.toLocaleLowerCase() === "enter" && !e.isComposing) {
-                            if (DBState.db.sendWithEnter && !e.shiftKey) {
+                            if (settings.ui.sendWithEnter && !e.shiftKey) {
                                 send();
                                 e.preventDefault();
-                            } else if (!DBState.db.sendWithEnter && e.shiftKey) {
+                            } else if (!settings.ui.sendWithEnter && e.shiftKey) {
                                 send();
                                 e.preventDefault();
                             }
@@ -850,7 +851,7 @@
                     </div>
                 {/if}
             </div>
-            {#if DBState.db.useAutoTranslateInput && DBState.db.characters[$selectedCharID]?.chaId !== "§playground"}
+            {#if settings.memoryTranslateMedia.useAutoTranslateInput && DBState.db.characters[$selectedCharID]?.chaId !== "§playground"}
                 <div class="flex items-center mt-2 mb-2">
                     <label for="messageInputTranslate" class="text-textcolor ml-4">
                         <LanguagesIcon />
@@ -862,7 +863,7 @@
                         bind:this={inputTranslateEle}
                         onkeydown={(e) => {
                             if (e.key.toLocaleLowerCase() === "enter" && !e.shiftKey) {
-                                if (DBState.db.sendWithEnter) {
+                                if (settings.ui.sendWithEnter) {
                                     send();
                                     e.preventDefault();
                                 }
@@ -939,14 +940,14 @@
                 </div>
             {/if}
 
-            {#if DBState.db.useAutoSuggestions}
+            {#if settings.ui.useAutoSuggestions}
                 <Suggestion
                     messageInput={(msg) =>
                         (messageInput =
-                            (DBState.db.subModel === "textgen_webui" ||
-                                DBState.db.subModel === "mancer" ||
-                                DBState.db.subModel.startsWith("local_")) &&
-                            DBState.db.autoSuggestClean
+                            (activePreset.subModel === "textgen_webui" ||
+                                activePreset.subModel === "mancer" ||
+                                activePreset.subModel.startsWith("local_")) &&
+                            settings.ui.autoSuggestClean
                                 ? msg.replace(/ +\(.+?\) *$| - [^"'*]*?$/, "")
                                 : msg)}
                     {send}
@@ -1060,7 +1061,7 @@
 
             {#if openMenu}
                 <div
-                    class="{DBState.db.fixedChatTextarea
+                    class="{settings.ui.fixedChatTextarea
                         ? 'fixed'
                         : 'absolute'} right-2 bottom-16 p-5 bg-darkbg flex flex-col gap-3 text-textcolor rounded-md"
                     onclick={(e) => {
@@ -1124,7 +1125,7 @@
                         <span class="ml-2">{language.continueResponse}</span>
                     </div>
 
-                    {#if DBState.db.showMenuChatList}
+                    {#if settings.ui.showMenuChatList}
                         <div
                             class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
                             onclick={() => {
@@ -1137,7 +1138,7 @@
                         </div>
                     {/if}
 
-                    {#if DBState.db.enableRisuaiProTools}
+                    {#if settings.ui.enableRisuaiProTools}
                         <div
                             class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
                             onclick={() => {
@@ -1162,12 +1163,12 @@
                         </div>
                     {/each}
 
-                    {#if DBState.db.showMenuHypaMemoryModal}
-                        {#if (DBState.db.supaModelType !== "none" && DBState.db.hypav2) || DBState.db.hypaV3}
+                    {#if settings.ui.showMenuHypaMemoryModal}
+                        {#if (settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2) || settings.memoryTranslateMedia.hypaV3}
                             <div
                                 class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
                                 onclick={() => {
-                                    if (DBState.db.hypav2) {
+                                    if (settings.memoryTranslateMedia.hypav2) {
                                         const ref = currentChatRef();
                                         if (ref && !findChat(ref)?.hypaV2Data) {
                                             setChatMeta(ref, {
@@ -1175,7 +1176,7 @@
                                             });
                                         }
                                         showHypaV2Alert();
-                                    } else if (DBState.db.hypaV3) {
+                                    } else if (settings.memoryTranslateMedia.hypaV3) {
                                         $hypaV3ModalOpen = true;
                                     }
 
@@ -1184,18 +1185,23 @@
                             >
                                 <BrainIcon />
                                 <span class="ml-2">
-                                    {DBState.db.hypav2 ? language.hypaMemoryV2Modal : language.hypaMemoryV3Modal}
+                                    {settings.memoryTranslateMedia.hypav2
+                                        ? language.hypaMemoryV2Modal
+                                        : language.hypaMemoryV3Modal}
                                 </span>
                             </div>
                         {/if}
                     {/if}
 
-                    {#if DBState.db.translator !== ""}
+                    {#if settings.memoryTranslateMedia.translator !== ""}
                         <div
                             class={"flex items-center cursor-pointer " +
-                                (DBState.db.useAutoTranslateInput ? "text-green-500" : "lg:hover:text-green-500")}
+                                (settings.memoryTranslateMedia.useAutoTranslateInput
+                                    ? "text-green-500"
+                                    : "lg:hover:text-green-500")}
                             onclick={() => {
-                                DBState.db.useAutoTranslateInput = !DBState.db.useAutoTranslateInput;
+                                settings.memoryTranslateMedia.useAutoTranslateInput =
+                                    !settings.memoryTranslateMedia.useAutoTranslateInput;
                             }}
                         >
                             <GlobeIcon />
@@ -1235,9 +1241,9 @@
 
                     <div
                         class={"flex items-center cursor-pointer " +
-                            (DBState.db.useAutoSuggestions ? "text-green-500" : "lg:hover:text-green-500")}
+                            (settings.ui.useAutoSuggestions ? "text-green-500" : "lg:hover:text-green-500")}
                         onclick={async () => {
-                            DBState.db.useAutoSuggestions = !DBState.db.useAutoSuggestions;
+                            settings.ui.useAutoSuggestions = !settings.ui.useAutoSuggestions;
                         }}
                     >
                         <ReplyIcon />
@@ -1255,7 +1261,7 @@
                         <span class="ml-2">{language.modules}</span>
                     </div>
 
-                    {#if DBState.db.sideMenuRerollButton}
+                    {#if settings.ui.sideMenuRerollButton}
                         <div
                             class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
                             onclick={reroll}

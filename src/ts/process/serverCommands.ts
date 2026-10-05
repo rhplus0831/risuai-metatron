@@ -1,3 +1,4 @@
+import { activePreset, activePersona } from "../storage/settingsViews.svelte";
 import type {
     GenerationCommand,
     GenerationContext,
@@ -20,8 +21,7 @@ import {
 } from "../network/generationJobs";
 import { type ChatRef, findChat, heldChatRevision } from "../storage/chatStore.svelte";
 import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
-import { getDatabase, type character, type groupChat } from "../storage/database.svelte";
-import { selectedPersona, selectedPreset } from "../storage/forwarding.svelte";
+import { type character, type groupChat } from "../storage/database.svelte";
 import {
     flushResources,
     GenerationBlockedError,
@@ -219,9 +219,8 @@ export async function runServerJob(
     if (!ref) {
         return refused;
     }
-    const db = getDatabase();
-    const presetId = options.identity ? options.identity.presetId : (selectedPreset(db)?.id ?? null);
-    const selectedPersonaId = selectedPersona(db)?.id ?? null;
+    const presetId = options.identity ? options.identity.presetId : (activePreset.id ?? null);
+    const selectedPersonaId = activePersona.id ?? null;
     // `getUserName(ref)`: the chat's bound persona, else the selected one.
     const personaId = options.identity
         ? options.identity.personaId

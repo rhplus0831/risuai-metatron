@@ -1,5 +1,6 @@
 import fc from "fast-check";
 import { DBState } from "src/ts/stores.svelte";
+import { activePreset, settings } from "src/ts/storage/settingsViews.svelte";
 
 export const cbs = (op: string, ...args: string[]): string =>
     `{{${op}${args.length > 0 ? "::" : ""}${args.join("::")}}}`;
@@ -17,8 +18,9 @@ export const resetChatVariables = (): void => {
         char.defaultVariables = "";
     }
 
-    DBState.db.globalChatVariables = {};
-    DBState.db.templateDefaultVariables = "";
+    // The settings are read through the record views (Phase 6 slice 7): reset there.
+    settings.globalChatVariables = {};
+    activePreset.templateDefaultVariables = "";
 };
 
 export const trimVarPrefix = (key: unknown): string => {

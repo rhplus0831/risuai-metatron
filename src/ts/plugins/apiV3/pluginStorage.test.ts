@@ -10,8 +10,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // - `setItem` JSON-normalizes the value and rejects what the save file cannot
 //   hold (BigInt) without touching the database,
 // - falsy stored values survive `getItem`; only a missing key yields null.
-// The storage functions write the live `DBState.db` through `pluginStorageStore.svelte.ts`, so the
-// database under test is `DBState.db` (a fresh object per case).
+// The storage functions write the records through `pluginStorageStore.svelte.ts`, so the database
+// under test is `DBState.db` over freshly installed records (per case).
 
 type CapturedApi = Record<string, (...args: any[]) => any>;
 
@@ -73,6 +73,7 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
 }));
 
 import { DBState } from "src/ts/stores.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { executePluginV3 } from "./v3.svelte";
 
 const db = () => DBState.db as { pluginCustomStorage: Record<string, any> | undefined };
@@ -90,7 +91,10 @@ async function makeApi(): Promise<CapturedApi> {
 
 describe("v3 pluginStorage without cold storage", () => {
     beforeEach(() => {
-        DBState.db = { pluginCustomStorage: undefined } as any;
+        // Installed as `setDatabaseLite` installs a database (`database.svelte` is mocked here): its
+        // fields moved into the records, the accessors on, since the storage functions write the
+        // records through the settings views (Phase 6 slice 7).
+        DBState.db = installFlatDatabase({ pluginCustomStorage: undefined } as any);
     });
 
     it("stores values inline under pluginCustomStorage._pluginStorage and reads them back", async () => {

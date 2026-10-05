@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { activePreset } from "src/ts/storage/settingsViews.svelte";
     import type { PromptItem, PromptItemChat, PromptRole } from "src/ts/process/prompt";
     import OptionInput from "./GUI/OptionInput.svelte";
     import TextAreaInput from "./GUI/TextAreaInput.svelte";
@@ -8,7 +9,6 @@
     import CheckInput from "./GUI/CheckInput.svelte";
     import { ArrowDown, ArrowUp, XIcon } from "@lucide/svelte";
     import TextInput from "./GUI/TextInput.svelte";
-    import { DBState } from "src/ts/stores.svelte";
     import { RISU_PROMPT_DRAG_TYPE } from "src/ts/dragTypes";
 
     interface Props {
@@ -112,17 +112,17 @@
             return;
         }
 
-        const ind = DBState.db.promptTemplate.findIndex((item, index) => {
+        const ind = activePreset.promptTemplate.findIndex((item, index) => {
             return JSON.stringify(item) === JSON.stringify(prompt);
         });
 
         if (ind !== -1) {
-            DBState.db.promptTemplate.splice(ind, 1);
+            activePreset.promptTemplate.splice(ind, 1);
         }
-        const myInd = DBState.db.promptTemplate.findIndex((item, index) => {
+        const myInd = activePreset.promptTemplate.findIndex((item, index) => {
             return JSON.stringify(item) === JSON.stringify(promptItem);
         });
-        DBState.db.promptTemplate.splice(myInd, 0, prompt);
+        activePreset.promptTemplate.splice(myInd, 0, prompt);
     }
 
     const isPromptDrag = (e: DragEvent) => {
@@ -288,7 +288,7 @@
             <OptionInput value="chatML">{"chatML"}</OptionInput>
             <OptionInput value="cache">{language.cachePoint}</OptionInput>
 
-            {#if DBState.db.promptSettings.customChainOfThought}
+            {#if activePreset.promptSettings.customChainOfThought}
                 <OptionInput value="cot">{language.cot}</OptionInput>
             {/if}
         </SelectInput>
@@ -352,7 +352,7 @@
                         }}
                     />
                 {/if}
-                {#if DBState.db.promptSettings.sendChatAsSystem}
+                {#if activePreset.promptSettings.sendChatAsSystem}
                     <CheckInput name={language.chatAsOriginalOnSystem} bind:check={promptItem.chatAsOriginalOnSystem} />
                 {/if}
             {/if}

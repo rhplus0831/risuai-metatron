@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import type {
         character,
         groupChat,
@@ -82,7 +83,7 @@
         let loadStart = messages.length - 1;
         let loadEnd = messages.length - loadPages;
         const currentChat = currentCharacter.chats?.[currentCharacter.chatPage];
-        const configuredPerformanceMode = DBState.db.streamingDisplayOptimizationMode ?? "off";
+        const configuredPerformanceMode = settings.ui.streamingDisplayOptimizationMode ?? "off";
         const streaming =
             streamingState.messageId !== null &&
             streamingState.chaId === currentCharacter.chaId &&
@@ -225,8 +226,8 @@
         // Only auto-scroll if it's the same chat and new messages were added
         if (isSameChat && messages.length > previousLength) {
             const lastMsg = messages[messages.length - 1];
-            if (lastMsg && lastMsg.role === "char" && DBState.db.autoScrollToNewMessage) {
-                if (wasAtBottom || DBState.db.alwaysScrollToNewMessage) {
+            if (lastMsg && lastMsg.role === "char" && settings.ui.autoScrollToNewMessage) {
+                if (wasAtBottom || settings.ui.alwaysScrollToNewMessage) {
                     const element = chatBody.firstElementChild;
                     if (element) {
                         setTimeout(() => {

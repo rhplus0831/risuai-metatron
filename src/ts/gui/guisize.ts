@@ -1,20 +1,19 @@
+import { settings } from "../storage/settingsViews.svelte";
 import { writable } from "svelte/store";
-import { getDatabase } from "../storage/database.svelte";
 
 export let textAreaSize = writable(0);
 export let sideBarSize = writable(0);
 export let textAreaTextSize = writable(0);
 
 export function updateGuisize() {
-    let db = getDatabase();
     const root = document.querySelector(":root") as HTMLElement;
     if (!root) {
         return;
     }
-    textAreaSize.set(db.textAreaSize);
-    sideBarSize.set(db.sideBarSize);
-    textAreaTextSize.set(db.textAreaTextSize);
-    root.style.setProperty("--sidebar-size", 24 + 4 * db.sideBarSize + "rem");
+    textAreaSize.set(settings.ui.textAreaSize);
+    sideBarSize.set(settings.ui.sideBarSize);
+    textAreaTextSize.set(settings.ui.textAreaTextSize);
+    root.style.setProperty("--sidebar-size", 24 + 4 * settings.ui.sideBarSize + "rem");
 }
 
 export function guiSizeText(num: number) {

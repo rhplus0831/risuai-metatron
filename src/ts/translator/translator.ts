@@ -1,3 +1,4 @@
+import { settings, activePreset } from "../storage/settingsViews.svelte";
 import { get } from "svelte/store";
 import { parseChatML } from "../parser/chatML";
 import { getDatabase, type character, type customscript, type groupChat } from "../storage/database.svelte";
@@ -28,11 +29,13 @@ export const LLMCacheStorage = localforage.createInstance({
 let waitTrans = 0;
 
 export function getCurrentTranslatorPreset(): TranslatorPreset {
-    return getCurrentTranslatorPresetFromState(getDatabase());
+    return getCurrentTranslatorPresetFromState({
+        translatorPresets: settings.translatorPresets.items,
+        translatorPresetId: settings.translatorPresets.selectedId,
+    });
 }
 
 export async function translate(text: string, reverse: boolean) {
-    let db = getDatabase();
     if (!reverse) {
         const ind = cache.origin.indexOf(text);
         if (ind !== -1) {
@@ -45,7 +48,12 @@ export async function translate(text: string, reverse: boolean) {
         }
     }
 
-    return runTranslator(text, reverse, db.translator, db.aiModel.startsWith("novellist") ? "ja" : "en");
+    return runTranslator(
+        text,
+        reverse,
+        settings.memoryTranslateMedia.translator,
+        activePreset.aiModel.startsWith("novellist") ? "ja" : "en",
+    );
 }
 
 export async function runTranslator(
@@ -114,22 +122,21 @@ export async function runTranslator(
 }
 
 async function translateMain(text: string, arg: { from: string; to: string; host: string; translatorNote?: string }) {
-    let db = getDatabase();
-    if (db.translatorType === "llm") {
+    if (settings.memoryTranslateMedia.translatorType === "llm") {
         const tr = arg.to || "en";
         return translateLLM(text, { to: tr, from: arg.from, translatorNote: arg.translatorNote });
     }
-    if (db.translatorType === "deepl") {
+    if (settings.memoryTranslateMedia.translatorType === "deepl") {
         const body = {
             text: [text],
             target_lang: arg.to.toLocaleUpperCase(),
         };
-        let url = db.deeplOptions.freeApi
+        let url = settings.secrets.deeplOptions.freeApi
             ? "https://api-free.deepl.com/v2/translate"
             : "https://api.deepl.com/v2/translate";
         const f = await globalFetch(url, {
             headers: {
-                Authorization: "DeepL-Auth-Key " + db.deeplOptions.key,
+                Authorization: "DeepL-Auth-Key " + settings.secrets.deeplOptions.key,
                 "Content-Type": "application/json",
             },
             body: body,
@@ -140,8 +147,8 @@ async function translateMain(text: string, arg: { from: string; to: string; host
         }
         return f.data.translations[0].text;
     }
-    if (db.translatorType === "deeplX") {
-        if (!db.noWaitForTranslate) {
+    if (settings.memoryTranslateMedia.translatorType === "deeplX") {
+        if (!settings.memoryTranslateMedia.noWaitForTranslate) {
             if (waitTrans - Date.now() > 0) {
                 const waitTime = waitTrans - Date.now();
                 waitTrans = Date.now() + 3000;
@@ -149,7 +156,7 @@ async function translateMain(text: string, arg: { from: string; to: string; host
             }
         }
 
-        let url = db.deeplXOptions.url ?? "http://localhost:1188";
+        let url = settings.secrets.deeplXOptions.url ?? "http://localhost:1188";
 
         if (url.endsWith("/")) {
             url = url.slice(0, -1);
@@ -163,8 +170,8 @@ async function translateMain(text: string, arg: { from: string; to: string; host
 
         const body = { text: text, target_lang: arg.to.toLocaleUpperCase(), source_lang: arg.from.toLocaleUpperCase() };
 
-        if (db.deeplXOptions.token.trim() !== "") {
-            headers["Authorization"] = "Bearer " + db.deeplXOptions.token;
+        if (settings.secrets.deeplXOptions.token.trim() !== "") {
+            headers["Authorization"] = "Bearer " + settings.secrets.deeplXOptions.token;
         }
 
         //Since the DeepLX API is non-CORS restricted, we can use the plain fetch function
@@ -176,7 +183,7 @@ async function translateMain(text: string, arg: { from: string; to: string; host
 
         return f.data.data;
     }
-    if (db.translatorType == "bergamot") {
+    if (settings.memoryTranslateMedia.translatorType == "bergamot") {
         if (!bergamotTranslate) {
             const bergamotTranslator = await import("./bergamotTranslator");
             bergamotTranslate = bergamotTranslator.bergamotTranslate;
@@ -184,7 +191,7 @@ async function translateMain(text: string, arg: { from: string; to: string; host
 
         return bergamotTranslate(text, arg.from, arg.to, false);
     }
-    if (db.useExperimentalGoogleTranslator) {
+    if (settings.memoryTranslateMedia.useExperimentalGoogleTranslator) {
         try {
             const ua = navigator.userAgent;
             const d = await globalFetch(
@@ -207,7 +214,7 @@ async function translateMain(text: string, arg: { from: string; to: string; host
     }
 
     const url =
-        `https://${arg.host}/translate_a/single?client=gtx&dt=t&sl=${db.translatorInputLanguage}&tl=${arg.to}&q=` +
+        `https://${arg.host}/translate_a/single?client=gtx&dt=t&sl=${settings.memoryTranslateMedia.translatorInputLanguage}&tl=${arg.to}&q=` +
         encodeURIComponent(text);
 
     const f = await fetch(url, {
@@ -244,8 +251,11 @@ async function jaTrans(text: string) {
 }
 
 export function isExpTranslator() {
-    const db = getDatabase();
-    return db.translatorType === "llm" || db.translatorType === "deepl" || db.translatorType === "deeplX";
+    return (
+        settings.memoryTranslateMedia.translatorType === "llm" ||
+        settings.memoryTranslateMedia.translatorType === "deepl" ||
+        settings.memoryTranslateMedia.translatorType === "deeplX"
+    );
 }
 
 export async function translateHTML(
@@ -279,29 +289,28 @@ export async function translateHTML(
             chaId: "simple",
         };
     }
-    let db = getDatabase();
     let DoingChat = get(doingChat);
     if (DoingChat) {
         if (isExpTranslator()) {
-            if (!(db.translatorType === "llm" && (await getLLMCache(html)) !== null)) {
+            if (!(settings.memoryTranslateMedia.translatorType === "llm" && (await getLLMCache(html)) !== null)) {
                 return html;
             }
         }
     }
-    if (db.translatorType === "llm") {
-        const tr = db.translator || "en";
-        const from = db.translatorInputLanguage;
+    if (settings.memoryTranslateMedia.translatorType === "llm") {
+        const tr = settings.memoryTranslateMedia.translator || "en";
+        const from = settings.memoryTranslateMedia.translatorInputLanguage;
         const r = await translateLLM(html, { to: tr, from: from, regenerate });
-        if (db.playMessageOnTranslateEnd) {
+        if (settings.memoryTranslateMedia.playMessageOnTranslateEnd) {
             const audio = new Audio(sendSound);
             audio.play().catch(() => {});
         }
 
         return applyEdittransRegex(r, charArg, alwaysExistChar, chatID);
     }
-    if (db.translatorType == "bergamot" && db.htmlTranslation) {
-        const from = db.aiModel.startsWith("novellist") ? "ja" : "en";
-        const to = db.translator || "en";
+    if (settings.memoryTranslateMedia.translatorType == "bergamot" && settings.memoryTranslateMedia.htmlTranslation) {
+        const from = activePreset.aiModel.startsWith("novellist") ? "ja" : "en";
+        const to = settings.memoryTranslateMedia.translator || "en";
 
         if (!bergamotTranslate) {
             const bergamotTranslator = await import("./bergamotTranslator");
@@ -439,7 +448,11 @@ export async function translateHTML(
                 return;
             }
             // combineTranslation feature
-            if (db.combineTranslation && node.nodeName.toLowerCase() === "p" && node instanceof HTMLElement) {
+            if (
+                settings.memoryTranslateMedia.combineTranslation &&
+                node.nodeName.toLowerCase() === "p" &&
+                node instanceof HTMLElement
+            ) {
                 const children = Array.from(node.childNodes);
                 const blacklist = ["img", "iframe", "script", "style", "div", "button", "audio", "video"];
                 const hasBlacklistChild = children.some((child) => blacklist.includes(child.nodeName.toLowerCase()));
@@ -496,7 +509,7 @@ export async function translateHTML(
 }
 
 function needSuperChunkedTranslate() {
-    return getDatabase().translatorType === "deeplX";
+    return settings.memoryTranslateMedia.translatorType === "deeplX";
 }
 
 async function translateLLM(
@@ -646,9 +659,10 @@ export function applyEdittransRegex(
 ): string {
     if (charArg === "") return text;
 
-    const db = getDatabase();
     let scripts: customscript[] = [];
-    scripts = (db.presetRegex ?? []).concat(getModuleRegexScripts() ?? []).concat(alwaysExistChar?.customscript ?? []);
+    scripts = (activePreset.regex ?? [])
+        .concat(getModuleRegexScripts() ?? [])
+        .concat(alwaysExistChar?.customscript ?? []);
 
     const parsedScripts: pEdittransScript[] = [];
     let orderChanged = false;

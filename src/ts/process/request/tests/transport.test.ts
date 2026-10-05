@@ -1,4 +1,6 @@
-// @vitest-environment node
+// The default (happy-dom) environment, not `node`: the transport reads the settings through the
+// record views (Phase 6 slice 7), whose records need Svelte's client `$state` (the node environment
+// compiles `.svelte.ts` modules for the server, where `$state` is not a proxy).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LlmRequestBody, LlmRequestEvent, StreamResponseChunk } from "../../../../../shared/llm/request.ts";
 
@@ -36,8 +38,6 @@ const stubs = vi.hoisted(() => ({
         useTokenizerCaching: true,
     } as Record<string, unknown>,
     selected: {
-        preset: { id: "preset-1" },
-        persona: { id: "persona-1" },
         character: { chaId: "char-1", chatPage: 0, chats: [{ id: "chat-1" }] } as Record<string, unknown> | null,
         bound: null as { id: string } | null,
     },
@@ -58,26 +58,25 @@ vi.mock("src/ts/model/modellist", () => ({
 vi.mock("src/ts/network/channelCallSource", () => ({ activeChannelCall: () => stubs.channelCall }));
 vi.mock("src/ts/network/generationJobs", () => ({ generationClientId: () => "tab-1" }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParserScoped: stubs.parserScoped }));
-vi.mock("src/ts/plugins/apiV3/pluginContext", () => ({
-    capturePluginContext: (chatRef: { chaId: string; chatId: string } | null) =>
-        chatRef
-            ? {
-                  chatRef,
-                  presetId: stubs.selected.preset.id,
-                  personaId: stubs.selected.bound?.id ?? stubs.selected.persona.id,
-              }
-            : undefined,
-}));
+vi.mock("src/ts/plugins/apiV3/pluginContext", async () => {
+    // The selection is the real one (the records' preset and persona are selected by id).
+    const { selection } = await import("src/ts/storage/selection.svelte");
+    return {
+        capturePluginContext: (chatRef: { chaId: string; chatId: string } | null) =>
+            chatRef
+                ? {
+                      chatRef,
+                      presetId: selection.presetId,
+                      personaId: stubs.selected.bound?.id ?? selection.personaId,
+                  }
+                : undefined,
+    };
+});
 vi.mock("src/ts/plugins/pluginHooks", () => ({
     pluginHooks: { providerOptions: new Map([["legacy", { tokenizer: "llama" }]]) },
 }));
 vi.mock("src/ts/storage/database.svelte", () => ({
-    getDatabase: () => stubs.db,
     getCurrentCharacter: () => stubs.selected.character,
-}));
-vi.mock("src/ts/storage/forwarding.svelte", () => ({
-    selectedPreset: () => stubs.selected.preset,
-    selectedPersona: () => stubs.selected.persona,
 }));
 vi.mock("src/ts/storage/nodeStorage", () => ({
     authFetch: (path: string, init?: RequestInit) => stubs.fetch(path, init),
@@ -99,7 +98,33 @@ vi.mock("../../mcp/mcp", () => ({
     encodeToolCall: stubs.encodeToolCall,
 }));
 
+import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
+import { selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
+import { activePreset } from "src/ts/storage/settingsViews.svelte";
+import { takeRootPresetFields } from "src/ts/storage/tests/installFlatDatabase";
 import { requestServer } from "../transport";
+
+/**
+ * The settings installed in the records (as `setDatabaseLite` installs a database), since the
+ * transport reads them through the record views (Phase 6 slice 7): `stubs.db`'s preset fields in
+ * each of the two presets, its section fields in their sections, two personas; preset-1 and
+ * persona-1 selected.
+ */
+function installSettings() {
+    const raw = { ...stubs.db };
+    const preset = takeRootPresetFields(raw);
+    raw.botPresets = [
+        { ...preset, id: "preset-1", name: "Preset 1" },
+        { ...preset, id: "preset-2", name: "Preset 2" },
+    ];
+    raw.personas = [
+        { id: "persona-1", name: "Persona 1" },
+        { id: "persona-2", name: "Persona 2" },
+    ];
+    initializeRecords(takeRecordFields(raw));
+    selectPreset("preset-1");
+    selectPersona("persona-1");
+}
 
 const modelInfo = { id: "reverse_proxy", tokenizer: 1, flags: [] } as never;
 const baseArg = () => ({ formated: [{ role: "user" as const, content: "hi" }], bias: {}, useStreaming: false });
@@ -172,11 +197,9 @@ beforeEach(() => {
     stubs.parserScoped.mockImplementation((text) => `parsed:${text}`);
     stubs.channelCall = null;
     stubs.dynamicIds.clear();
-    stubs.selected.preset = { id: "preset-1" };
-    stubs.selected.persona = { id: "persona-1" };
+    installSettings();
     stubs.selected.character = { chaId: "char-1", chatPage: 0, chats: [{ id: "chat-1" }] };
     stubs.selected.bound = null;
-    stubs.db.aiModel = "reverse_proxy";
     (globalThis as { Image?: unknown }).Image = class {
         src = "";
     };
@@ -208,10 +231,10 @@ describe("the request body", () => {
         const pending = requestServer(arg as never, "submodel", null, modelInfo);
         expect(stubs.fetch).not.toHaveBeenCalled();
         // The selection moves and the caller mutates its inputs while the save flushes.
-        stubs.selected.preset = { id: "preset-2" };
-        stubs.selected.persona = { id: "persona-2" };
+        selectPreset("preset-2");
+        selectPersona("persona-2");
         stubs.selected.character = { chaId: "char-2", chatPage: 0, chats: [{ id: "chat-2" }] };
-        stubs.db.aiModel = "with-images";
+        activePreset.aiModel = "with-images";
         (tools[0].inputSchema as { type: string }).type = "mutated";
         arg.formated[0].content = "mutated";
         release();
@@ -256,8 +279,8 @@ describe("the request body", () => {
     it("falls back to the selection for a request without a chat, sends a dynamic model's descriptor, the active job callback, and the prompt's tool records", async () => {
         stubs.dynamicIds.add("dynamic_google_x");
         stubs.channelCall = { jobId: "job-1", callbackId: "cb-1" };
-        stubs.db.aiModel = "with-images";
-        stubs.db.currentPluginProvider = "legacy";
+        activePreset.aiModel = "with-images";
+        activePreset.currentPluginProvider = "legacy";
         stubs.decodeToolCall.mockImplementation(async (inner) =>
             inner === "id-1name" ? { call: { id: "id-1", name: "name", arg: {} }, response: [] } : undefined,
         );
@@ -298,7 +321,7 @@ describe("the request body", () => {
         expect(body.toolRecords).toEqual({
             "id-1name": { call: { id: "id-1", name: "name", arg: {} }, response: [] },
         });
-        stubs.db.currentPluginProvider = "";
+        activePreset.currentPluginProvider = "";
     });
 
     it("sends nothing when the flush is refused, or the caller aborted before, during the flush, or during the tool-record read", async () => {
@@ -534,7 +557,7 @@ describe("the events", () => {
 describe("the callbacks", () => {
     it("parses a `cbs` callback with the captured chat and scope (or the payload's chat), and answers each callback once by id", async () => {
         stubs.selected.bound = { id: "bound-1" };
-        stubs.selected.preset = { id: "preset-1" };
+        selectPreset("preset-1");
         stubs.parserScoped.mockImplementationOnce(() => {
             throw new Error("bad macro");
         });

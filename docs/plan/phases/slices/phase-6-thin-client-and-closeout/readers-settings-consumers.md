@@ -1,6 +1,6 @@
 # Slice: Readers, Settings Consumers Outside The Settings Pages
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented 2026-10-05 (see "Implementation notes").
 
 Phase: [Phase 6](../../phase-6-thin-client-and-closeout.md), "Projections" ("components bind
 to these instead of `DBState.db`"; the settings reads of `DefaultChatScreen.svelte` and
@@ -94,3 +94,43 @@ reads (owned by the next slices).
 fix. `AlertComp.svelte`, `DevTool.svelte`, `Toggles.svelte`, `CustomSidebar.svelte`, and the
 chat screens are edited by two reader slices (different reads, sequential where they overlap:
 this slice first, then `readers-characters`).
+
+## Implementation notes (2026-10-05)
+
+After the plan review (Astra, segment C):
+
+- **The readers** use the slice 6 views (`settings.<section>.<field>`, `settings.<collection>`,
+  `activePreset`, `activePersona`, `currentPresetRecord()`/`currentPersonaRecord()`,
+  `selectedLoreBookPage()`), not `DBState.db` or a `getDatabase()` local; no view or write path was added.
+  A scripted rewrite mapped every `DBState.db.<root>` of a settings root, and every settings read through
+  a `db` local bound to `getDatabase()`/`DBState.db` within that local's block (deleting the local when
+  nothing else used it; a local kept for character reads stays for slice 8); the rest was done by hand.
+  The writes are the views' (the spec's `updateSettings` is an equivalent path), so `WelcomeRisu`,
+  `collectionStore`, and `pluginStorageStore` write exactly as before. Reads stay where they ran (inside
+  their `$derived`/`$effect`, after the same awaits); leaf snapshots stay leaf snapshots.
+- **Selection fallbacks.** `selectedPreset(db)?.id`/`selectedPersona(db)?.id` became `activePreset.id`/
+  `activePersona.id` only where they were the fallback after a captured context (`transformClient.ts`,
+  `request/transport.ts`, `serverCommands.ts`, which still tells an identity holding `null` from no
+  identity, `pluginContext.ts`); the index reads (`personas[selectedPersona]`,
+  `botPresets[botPresetsId]`, `loreBook[loreBookPage]`) became the record or `selectedLoreBookPage()`.
+  `getUserIconProtrait` returns `false` without a persona, as its `catch` did.
+- **`exportUserPersona`** reads the four persona strings once before its first await (it took a
+  snapshot of the whole database for them).
+- **`browserLocalImport.ts`** writes its two fields (`irisDialogue`, `googleSearchCredentials`) through
+  `readSettingsRoot`/`writeSettingsRoot`, with the same undefined-only write, flush, and server readback.
+- **`request.ts`**: the `reverse_proxy` branch (the one `proxyKey` read in the tab) was unreachable, since
+  that model is OpenAI-compatible and returns through the server first; removed.
+- **Left in place**, with their owners: the character and chat reads (slices 8 and 9a), with
+  `Sidebar.svelte`'s `characterOrder` reorders and `getFolderIndex`, `storage/characterOrder.ts`,
+  `getEmotion(DBState.db, …)` (`ChatScreen`, `EmotionBox`, `ResizeBox`), `GridCatalog.svelte`'s
+  `formatChars`, and `localLoreDraft.svelte.ts` (9a); for slice 10, the parser's CBS hosts
+  (`parser.svelte.ts` `getDatabase: () => getDatabase()` and the scoped host), the plugin host's database
+  API (`v3.svelte.ts` `getDatabase` and `applyPluginDatabase`'s preset check), `collectionStore`'s
+  `updateSettings` (a dynamic-key writer over the facade) and `setPersonas`' `reconcileSelection(DBState.db)`,
+  the snapshot consumers (`backuplocal.ts`,
+  `exportAsDataset.ts`, `characterCards.ts`' export, `SettingsExportButtons.svelte`), `bootstrap.ts`'
+  assembly and `checkNewFormat`, and the storage layer's own facade, records, preset functions, and
+  resource sync.
+- **After the challenge** (Astra, 2026-10-05): `characterStore`'s HypaV3 toggle on selection reads
+  `settings.memoryTranslateMedia.hypaV3` and the selected HypaV3 preset through the narrow adapter; the
+  structure docs list the retained paths.

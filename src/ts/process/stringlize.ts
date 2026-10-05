@@ -1,5 +1,5 @@
+import { settings, activePreset, activePersona } from "../storage/settingsViews.svelte";
 import type { OpenAIChat } from "./index.svelte";
-import { getDatabase } from "../storage/database.svelte";
 import { getUserName } from "../util";
 
 export function multiChatReplacer() {}
@@ -41,9 +41,8 @@ export function stringlizeChatOba(
     suggesting: boolean,
     continued: boolean,
 ) {
-    const db = getDatabase();
     let resultString: string[] = [];
-    let { systemPrefix, userPrefix, assistantPrefix, seperator } = db.ooba.formating;
+    let { systemPrefix, userPrefix, assistantPrefix, seperator } = activePreset.ooba.formating;
     systemPrefix = systemPrefix ?? "";
     userPrefix = userPrefix ?? "";
     assistantPrefix = assistantPrefix ?? "";
@@ -68,7 +67,7 @@ export function stringlizeChatOba(
             prefix = appendWhitespace(systemPrefix, seperator);
             name = "";
         }
-        if (db.ooba.formating.useName) {
+        if (activePreset.ooba.formating.useName) {
             console.log(name);
             resultString.push(prefix + name + form.content);
         } else {
@@ -76,17 +75,19 @@ export function stringlizeChatOba(
         }
     }
     if (!continued) {
-        if (db.ooba.formating.useName) {
+        if (activePreset.ooba.formating.useName) {
             if (suggesting) {
                 resultString.push(
-                    appendWhitespace(assistantPrefix, seperator) + `${getUserName()}:\n` + db.autoSuggestPrefix,
+                    appendWhitespace(assistantPrefix, seperator) +
+                        `${getUserName()}:\n` +
+                        settings.ui.autoSuggestPrefix,
                 );
             } else {
                 resultString.push(assistantPrefix + `${characterName}:`);
             }
         } else {
             if (suggesting) {
-                resultString.push(appendWhitespace(assistantPrefix, seperator) + `\n` + db.autoSuggestPrefix);
+                resultString.push(appendWhitespace(assistantPrefix, seperator) + `\n` + settings.ui.autoSuggestPrefix);
             } else {
                 resultString.push(assistantPrefix);
             }
@@ -101,12 +102,11 @@ function toTitleCase(s: string) {
     return s[0].toUpperCase() + s.slice(1).toLowerCase();
 }
 export function getStopStrings(suggesting: boolean = false) {
-    const db = getDatabase();
-    let { userPrefix, seperator } = db.ooba.formating;
+    let { userPrefix, seperator } = activePreset.ooba.formating;
     if (!seperator) {
         seperator = "\n";
     }
-    const { username } = db;
+    const username = activePersona.name;
     const stopStrings = ["GPT4 User", "</s>", "<|end", "<|im_end", userPrefix, `${username}:`];
     if (suggesting) {
         stopStrings.push("\n\n");
@@ -146,7 +146,6 @@ export function unstringlizeChat(text: string, formated: OpenAIChat[], char: str
 export function getUnstringlizerChunks(formated: OpenAIChat[], char: string, mode: "ain" | "normal" = "normal") {
     let chunks: string[] = ["system note:", "system:", "system note：", "system："];
     let charNames: string[] = [];
-    const db = getDatabase();
     if (char) {
         charNames.push(char);
         if (mode === "ain") {
@@ -195,7 +194,6 @@ export function getUnstringlizerChunks(formated: OpenAIChat[], char: string, mod
 
 export function stringlizeAINChat(formated: OpenAIChat[], char: string, continued: boolean) {
     let resultString: string[] = [];
-    const db = getDatabase();
 
     for (const form of formated) {
         console.log(form);
@@ -270,7 +268,6 @@ function extractAINOutputStrings(inputString: string, characters: string[]) {
 }
 
 export function unstringlizeAIN(data: string, formated: OpenAIChat[], char: string = "") {
-    const db = getDatabase();
     const chunksResult = getUnstringlizerChunks(formated, char, "ain");
     const chunks = chunksResult.chunks;
     let result: ["char" | "user", string][] = [];

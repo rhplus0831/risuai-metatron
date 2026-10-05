@@ -1,3 +1,4 @@
+import { settings, activePreset, activePersona, currentPersonaRecord } from "./storage/settingsViews.svelte";
 import { get, writable, type Writable } from "svelte/store";
 import type { Database, Message } from "./storage/database.svelte";
 import { getDatabase } from "./storage/database.svelte";
@@ -81,7 +82,7 @@ export function checkPersonaBinded(chatRef?: { chaId: string; chatId: string } |
         if (!chat.bindedPersona) {
             return null;
         }
-        const persona = db.personas.find((v) => v.id === chat.bindedPersona);
+        const persona = settings.personas.find((v) => v.id === chat.bindedPersona);
         return persona;
     } catch (error) {
         return null;
@@ -93,8 +94,7 @@ export function getUserName(chatRef?: { chaId: string; chatId: string } | null) 
     if (bindedPersona) {
         return bindedPersona.name;
     }
-    const db = getDatabase();
-    return db.username ?? "User";
+    return activePersona.name ?? "User";
 }
 
 export function getUserIcon(chatRef?: { chaId: string; chatId: string } | null) {
@@ -102,8 +102,7 @@ export function getUserIcon(chatRef?: { chaId: string; chatId: string } | null) 
     if (bindedPersona) {
         return bindedPersona.icon;
     }
-    const db = getDatabase();
-    return db.userIcon ?? "";
+    return activePersona.icon ?? "";
 }
 
 export function getPersonaPrompt(chatRef?: { chaId: string; chatId: string } | null) {
@@ -111,8 +110,7 @@ export function getPersonaPrompt(chatRef?: { chaId: string; chatId: string } | n
     if (bindedPersona) {
         return bindedPersona.personaPrompt;
     }
-    const db = getDatabase();
-    return db.personaPrompt ?? "";
+    return activePersona.personaPrompt ?? "";
 }
 
 export function getUserIconProtrait() {
@@ -121,8 +119,11 @@ export function getUserIconProtrait() {
         if (bindedPersona) {
             return bindedPersona.largePortrait;
         }
-        const db = getDatabase();
-        return db.personas[db.selectedPersona].largePortrait;
+        const persona = currentPersonaRecord();
+        if (!persona) {
+            return false;
+        }
+        return persona.largePortrait;
     } catch (error) {
         return false;
     }
@@ -133,7 +134,7 @@ export function selectFileByDom(allowedExtensions: string[], multiple: "multiple
         const fileInput = document.createElement("input");
         fileInput.type = "file";
         fileInput.multiple = multiple === "multiple";
-        const acceptAll = getDatabase().allowAllExtentionFiles || isIOS() || allowedExtensions[0] === "*";
+        const acceptAll = settings.ui.allowAllExtentionFiles || isIOS() || allowedExtensions[0] === "*";
         if (!acceptAll) {
             if (allowedExtensions && allowedExtensions.length) {
                 fileInput.accept = allowedExtensions.map((ext) => `.${ext}`).join(",");
@@ -313,8 +314,7 @@ export async function getEmotion(
 }
 
 export function getAuthorNoteDefaultText() {
-    const db = getDatabase();
-    const template = db.promptTemplate;
+    const template = activePreset.promptTemplate;
     if (!template) {
         return "";
     }

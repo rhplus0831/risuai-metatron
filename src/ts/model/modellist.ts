@@ -1,4 +1,4 @@
-import { getDatabase } from "../storage/database.svelte";
+import { settings, activePreset } from "../storage/settingsViews.svelte";
 import {
     LLMFlags,
     LLMProvider,
@@ -13,7 +13,6 @@ import {
 import { BASE_LLM_MODELS, resolveModelInfo } from "../../../shared/llm/models.ts";
 import { auxFetch } from "../network/auxFetch";
 import { isSecretSet } from "../storage/llmSecrets.svelte";
-import { DBState } from "../stores.svelte";
 import { customV3ProviderMetaStore } from "../plugins/apiV3/v3.svelte";
 
 // Re-export types for backwards compatibility
@@ -39,7 +38,7 @@ function pushDynamicModel(model: LLMModel) {
 }
 
 export async function registerModelDynamic() {
-    if (!DBState.db.dynamicModelRegistry) {
+    if (!settings.providers.dynamicModelRegistry) {
         return;
     }
     //google
@@ -204,11 +203,10 @@ export async function registerModelDynamic() {
 globalThis.registerModelDynamic = registerModelDynamic;
 
 export function getModelInfo(id?: string | null): LLMModel {
-    const db = getDatabase();
     return resolveModelInfo(id, {
-        enableCustomFlags: db.enableCustomFlags,
-        customFlags: db.customFlags,
-        customModels: db?.customModels,
+        enableCustomFlags: activePreset.enableCustomFlags,
+        customFlags: activePreset.customFlags,
+        customModels: settings.customModels,
         extraModels: LLMModels,
         pluginModels: customV3ProviderMetaStore,
     });

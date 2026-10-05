@@ -1,10 +1,10 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { BookIcon, ImageIcon, PaperclipIcon, SmileIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import { alertNormal } from "src/ts/alert";
     import { hubURL, type hubType, downloadRisuHub, getRealmInfo } from "src/ts/characterCards";
 
-    import { DBState } from "src/ts/stores.svelte";
     import RealmLicense from "./RealmLicense.svelte";
     import MultiLangDisplay from "../GUI/MultiLangDisplay.svelte";
     import { tooltip } from "src/ts/gui/tooltip";
@@ -44,7 +44,7 @@
                 >
             {/if}
             <div class="flex justify-start gap-4 mt-4">
-                {#if DBState.db.hideAllImages}
+                {#if settings.ui.hideAllImages}
                     <div class="h-36 w-36 rounded-md bg-darkbutton flex items-center justify-center text-textcolor2">
                         <span class="text-4xl">?</span>
                     </div>

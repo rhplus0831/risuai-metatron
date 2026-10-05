@@ -56,7 +56,7 @@ Screen selection. `App.svelte` checks these in order:
 1. April Fools branch.
 2. Loading.
 3. `CustomGUISettingMenuStore`.
-4. `!DBState.db.didFirstSetup` → `WelcomeRisu`.
+4. `!settings.ui.didFirstSetup` → `WelcomeRisu`.
 5. `$settingsOpen` → `Settings`.
 6. Otherwise `Sidebar` + `ChatScreen`.
 

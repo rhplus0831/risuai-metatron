@@ -1,7 +1,7 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { onMount } from "svelte";
 
-    import { DBState } from "src/ts/stores.svelte";
     import { longpress } from "src/ts/gui/longtouch";
 
     let textarea: HTMLElement = $state();
@@ -36,5 +36,5 @@
     use:longpress={handleLongPress}
     bind:value
     class="rounded-md p-2 text-textcolor bg-transparent resize-none overflow-y-hidden border border-darkborderc w-full message-edit-area"
-    style:font-size="{0.875 * (DBState.db.zoomsize / 100)}rem"
-    style:line-height="{(DBState.db.lineHeight ?? 1.25) * (DBState.db.zoomsize / 100)}rem"></textarea>
+    style:font-size="{0.875 * (settings.ui.zoomsize / 100)}rem"
+    style:line-height="{(settings.ui.lineHeight ?? 1.25) * (settings.ui.zoomsize / 100)}rem"></textarea>

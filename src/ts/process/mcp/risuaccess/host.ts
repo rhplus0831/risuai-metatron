@@ -1,3 +1,4 @@
+import { settings } from "../../../storage/settingsViews.svelte";
 import { language } from "src/lang";
 import { alertConfirm } from "src/ts/alert";
 import { findCharacter, updateCharacter } from "src/ts/storage/characterStore.svelte";
@@ -29,8 +30,8 @@ export const tabRisuAccessHost: RisuAccessHost = {
     characters: () => DBState.db.characters,
     currentMessages: async (char) => char.chats[char.chatPage].message,
     updateCharacter: (chaId, patch) => written(() => updateCharacter(chaId, patch)),
-    modules: () => DBState.db.modules,
-    enabledModules: () => DBState.db.enabledModules || [],
+    modules: () => settings.modules,
+    enabledModules: () => settings.enabledModules || [],
     findModule,
     updateModule: (id, patch, enabled) => {
         const result = written(() => updateModule(id, patch));

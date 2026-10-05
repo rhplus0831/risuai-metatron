@@ -1,4 +1,5 @@
 <script module lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     /**
      * The server manual trigger whose id `CurrentTriggerIdStore` holds (Phase 5 slice 8b): only the
      * invocation that set it clears it, so a refused click or an older timer leaves a newer one alone.
@@ -247,9 +248,9 @@
             return;
         }
 
-        const rm = DBState.db.askRemoval ? await alertConfirm(language.removeChat) : true;
+        const rm = settings.ui.askRemoval ? await alertConfirm(language.removeChat) : true;
         if (rm) {
-            if (DBState.db.instantRemove || rec) {
+            if (settings.ui.instantRemove || rec) {
                 const r = await alertConfirm(language.instantRemoveConfirm);
                 if (!r) {
                     removeFromMessage(target);
@@ -331,7 +332,7 @@
     }
 
     async function getTranslationPartialEditContext() {
-        if (!translated || DBState.db.translatorType !== "llm") {
+        if (!translated || settings.memoryTranslateMedia.translatorType !== "llm") {
             return null;
         }
 
@@ -365,10 +366,10 @@
     }
 
     async function getTranslationCacheKey(): Promise<string> {
-        if (DBState.db.translateBeforeHTMLFormatting) {
+        if (settings.memoryTranslateMedia.translateBeforeHTMLFormatting) {
             return msgDisplay;
         }
-        if (!DBState.db.legacyTranslation) {
+        if (!settings.memoryTranslateMedia.legacyTranslation) {
             return await ParseMarkdown(msgDisplay, character, "pretranslate", idx, getCbsCondition());
         }
         return await ParseMarkdown(msgDisplay, character, "notrim", idx, getCbsCondition());
@@ -608,7 +609,7 @@
 
 {#snippet genInfo()}
     <div class="flex flex-col items-end">
-        {#if messageGenerationInfo && (DBState.db.requestInfoInsideChat || aiLawApplies())}
+        {#if messageGenerationInfo && (settings.ui.requestInfoInsideChat || aiLawApplies())}
             <button
                 class="text-sm p-1 text-textcolor2 border-darkborderc float-end mr-2 my-1
                     hover:ring-darkbutton hover:ring-3 rounded-md hover:text-textcolor transition-all flex justify-center items-center"
@@ -632,7 +633,7 @@
                 </span>
             </button>
         {/if}
-        {#if DBState.db.translatorType === "llm" && translated}
+        {#if settings.memoryTranslateMedia.translatorType === "llm" && translated}
             <button
                 class={"text-sm p-1 text-textcolor2 border-darkborderc float-end mr-2 my-1 rounded-md transition-all flex justify-center items-center " +
                     (translationViewControlsDisabled
@@ -725,12 +726,12 @@
             class:prose-invert={$ColorSchemeTypeStore}
             bind:this={bodyRoot}
             onclick={() => {
-                if (DBState.db.clickToEdit && idx > -1 && !isOptimizedStreamingMessage) {
+                if (settings.ui.clickToEdit && idx > -1 && !isOptimizedStreamingMessage) {
                     startOriginalEdit();
                 }
             }}
-            style:font-size="{0.875 * (DBState.db.zoomsize / 100)}rem"
-            style:line-height="{(DBState.db.lineHeight ?? 1.25) * (DBState.db.zoomsize / 100)}rem"
+            style:font-size="{0.875 * (settings.ui.zoomsize / 100)}rem"
+            style:line-height="{(settings.ui.lineHeight ?? 1.25) * (settings.ui.zoomsize / 100)}rem"
         >
             {#key `${totalLengthPointer}|${chatReloadPointer}`}
                 <ChatBody
@@ -751,13 +752,13 @@
                 />
             {/key}
         </span>
-        {#if idx >= 0 && !editMode && !editTranslationMode && !isOptimizedStreamingMessage && !locked && partialEditEnabled && (DBState.db.enableBlockPartialEdit || DBState.db.enableDragPartialEdit)}
+        {#if idx >= 0 && !editMode && !editTranslationMode && !isOptimizedStreamingMessage && !locked && partialEditEnabled && (settings.ui.enableBlockPartialEdit || settings.ui.enableDragPartialEdit)}
             <PartialEditController
                 messageData={message}
                 chatIndex={idx}
                 {bodyRoot}
-                blockEditEnabled={DBState.db.enableBlockPartialEdit}
-                dragEditEnabled={DBState.db.enableDragPartialEdit}
+                blockEditEnabled={settings.ui.enableBlockPartialEdit}
+                dragEditEnabled={settings.ui.enableDragPartialEdit}
                 translatedView={translated}
                 getTranslationEditContext={getTranslationPartialEditContext}
                 on:save={handlePartialEditSave}
@@ -805,7 +806,7 @@
 {/snippet}
 
 {#snippet majorIconButtonsBody(showNames: boolean)}
-    {#if DBState.db.useChatCopy && !blankMessage}
+    {#if settings.ui.useChatCopy && !blankMessage}
         <button
             class="flex items-center hover:text-blue-500 transition-colors button-icon-copy"
             onclick={async () => {
@@ -1137,7 +1138,7 @@
 {/snippet}
 
 {#snippet translationButton(showNames = false)}
-    {#if DBState.db.translator !== "" && !blankMessage && !isOptimizedStreamingMessage}
+    {#if settings.memoryTranslateMedia.translator !== "" && !blankMessage && !isOptimizedStreamingMessage}
         <button
             class={"flex items-center transition-colors button-icon-translate " +
                 (translationViewControlsDisabled
@@ -1176,7 +1177,7 @@
 
 {#snippet rerolls()}
     {#if rerollIcon || altGreeting}
-        {#if DBState.db.swipe || altGreeting}
+        {#if settings.ui.swipe || altGreeting}
             <button
                 class="flex items-center hover:text-blue-500 transition-colors button-icon-unreroll"
                 class:dyna-icon={rerollIcon === "dynamic"}
@@ -1186,7 +1187,7 @@
             >
                 <ArrowLeft size={22} />
             </button>
-            {#if firstMessage && DBState.db.swipe && DBState.db.showFirstMessagePages}
+            {#if firstMessage && settings.ui.swipe && settings.ui.showFirstMessagePages}
                 <span class="flex items-center text-xs text-textcolor2">{currentPage}/{totalPages}</span>
             {/if}
             <button
@@ -1236,7 +1237,7 @@
             {/if}
         </button>
     {/if}
-    {#if DBState.db.enableBookmark}
+    {#if settings.ui.enableBookmark}
         <button
             class="flex items-center hover:text-blue-500 transition-colors button-icon-bookmark {isBookmarked
                 ? 'text-yellow-400'
@@ -1264,7 +1265,7 @@
                 return;
             }
 
-            if (DBState.db.createFolderOnBranch && !currentChat.folderId) {
+            if (settings.ui.createFolderOnBranch && !currentChat.folderId) {
                 const folderId = v4();
                 DBState.db.characters[selIdState.selId].chatFolders ??= [];
                 DBState.db.characters[selIdState.selId].chatFolders.unshift({
@@ -1360,7 +1361,7 @@
             <div
                 class="shadow-lg border-textcolor2 border flex justify-center items-center text-textcolor2"
                 style={options?.styleFix ??
-                    `height:${(DBState.db.iconsize * 3.5) / 100}rem;width:${(DBState.db.iconsize * 3.5) / 100}rem;min-width:${(DBState.db.iconsize * 3.5) / 100}rem`}
+                    `height:${(settings.ui.iconsize * 3.5) / 100}rem;width:${(settings.ui.iconsize * 3.5) / 100}rem;min-width:${(settings.ui.iconsize * 3.5) / 100}rem`}
                 class:rounded-md={options?.rounded}
                 class:rounded-full={options?.rounded}
             >
@@ -1375,7 +1376,7 @@
                 <div
                     class="shadow-lg bg-textcolor2"
                     style={options?.styleFix ??
-                        `height:${(DBState.db.iconsize * 3.5) / 100}rem;width:${(DBState.db.iconsize * 3.5) / 100}rem;min-width:${(DBState.db.iconsize * 3.5) / 100}rem`}
+                        `height:${(settings.ui.iconsize * 3.5) / 100}rem;width:${(settings.ui.iconsize * 3.5) / 100}rem;min-width:${(settings.ui.iconsize * 3.5) / 100}rem`}
                     class:rounded-md={!options?.rounded}
                     class:rounded-full={options?.rounded}
                 ></div>
@@ -1385,7 +1386,7 @@
                         class="shadow-lg bg-textcolor2"
                         style={m +
                             (options?.styleFix ??
-                                `height:${(DBState.db.iconsize * 3.5) / 100 / 0.75}rem;width:${(DBState.db.iconsize * 3.5) / 100}rem;min-width:${(DBState.db.iconsize * 3.5) / 100}rem`)}
+                                `height:${(settings.ui.iconsize * 3.5) / 100 / 0.75}rem;width:${(settings.ui.iconsize * 3.5) / 100}rem;min-width:${(settings.ui.iconsize * 3.5) / 100}rem`)}
                         class:rounded-md={!options?.rounded}
                         class:rounded-full={options?.rounded}
                     ></div>
@@ -1394,7 +1395,7 @@
                         class="shadow-lg bg-textcolor2"
                         style={m +
                             (options?.styleFix ??
-                                `height:${(DBState.db.iconsize * 3.5) / 100}rem;width:${(DBState.db.iconsize * 3.5) / 100}rem;min-width:${(DBState.db.iconsize * 3.5) / 100}rem`)}
+                                `height:${(settings.ui.iconsize * 3.5) / 100}rem;width:${(settings.ui.iconsize * 3.5) / 100}rem;min-width:${(settings.ui.iconsize * 3.5) / 100}rem`)}
                         class:rounded-md={!options?.rounded}
                         class:rounded-full={options?.rounded}
                     ></div>
@@ -1557,13 +1558,13 @@
     data-chat-id={DBState.db.characters?.[selIdState.selId]?.chats?.[
         DBState.db.characters?.[selIdState.selId]?.chatPage
     ]?.message?.[idx]?.chatId ?? ""}
-    style={isLastMemory ? `border-top:${DBState.db.memoryLimitThickness}px solid rgba(98, 114, 164, 0.7);` : ""}
+    style={isLastMemory ? `border-top:${settings.ui.memoryLimitThickness}px solid rgba(98, 114, 164, 0.7);` : ""}
     onclickcapture={handleButtonTriggerWithin}
 >
     <div
         class="text-textcolor mt-1 ml-4 mr-4 mb-1 p-2 bg-transparent grow border-t-gray-900 border-opacity/30 border-transparent flexium items-start max-w-full"
     >
-        {#if DBState.db.theme === "mobilechat" && !blankMessage}
+        {#if settings.ui.theme === "mobilechat" && !blankMessage}
             <div class={role === "user" ? "flex items-start w-full justify-end" : "flex items-start"}>
                 {#if role !== "user"}
                     {@render senderIcon({ rounded: true })}
@@ -1595,7 +1596,7 @@
                     {@render senderIcon({ rounded: true })}
                 {/if}
             </div>
-        {:else if DBState.db.theme === "cardboard" && !blankMessage}
+        {:else if settings.ui.theme === "cardboard" && !blankMessage}
             <div class="w-full flex flex-col px-0 sm:px-4 py-4 relative">
                 <div
                     class="bg-linear-to-b from-gray-100 to-gray-200 rounded-lg shadow-lg border-gray-400 border p-4 flex flex-col"
@@ -1626,10 +1627,10 @@
                     {@render iconButtons({ applyTextColors: false })}
                 </div>
             </div>
-        {:else if DBState.db.theme === "customHTML" && !blankMessage}
-            {@render renderGuiHtmlPart(RenderGUIHtml(DBState.db.guiHTML))}
+        {:else if settings.ui.theme === "customHTML" && !blankMessage}
+            {@render renderGuiHtmlPart(RenderGUIHtml(settings.ui.guiHTML))}
         {:else}
-            {@render senderIcon({ rounded: DBState.db.roundIcons })}
+            {@render senderIcon({ rounded: settings.ui.roundIcons })}
             <span class="flex flex-col ml-4 w-full max-w-full min-w-0 text-black">
                 <div class="flexium items-center chat-width">
                     {#if DBState.db.characters[selIdState.selId]?.chaId === "§playground" && !blankMessage && DBState.db.characters[selIdState.selId]?.chats?.[DBState.db.characters[selIdState.selId]?.chatPage]?.message?.[idx]}

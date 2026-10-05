@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
 
 // Phase 5 Stop D fixes (slice 13d, D1): the tab's graph memory host (`src/ts/process/mcp/graphmem.ts`)
 // with the real `HypaProcesser` (`src/ts/process/memory/hypamemory.ts`) over a fake custom embedding
@@ -21,9 +22,6 @@ vi.mock("src/ts/parser/chatVar.svelte", () => ({
     setChatVar: (key: string, value: string) => {
         vars[key] = value;
     },
-}));
-vi.mock("src/ts/storage/database.svelte", () => ({
-    getDatabase: () => ({ hypaModel: "custom", hypaCustomSettings: { url: "http://embed.test/v1", model: "emb" } }),
 }));
 vi.mock("src/ts/globalApi.svelte", () => ({
     globalFetch: vi.fn(async (url: string, arg: { body: { input: string | string[] } }) => {
@@ -62,6 +60,12 @@ vi.mock("localforage", () => ({
         }),
     },
 }));
+
+// The embedding settings installed in the records (as `setDatabaseLite` installs a database), which
+// `HypaProcesser` reads through the settings views (Phase 6 slice 7).
+initializeRecords(
+    takeRecordFields({ hypaModel: "custom", hypaCustomSettings: { url: "http://embed.test/v1", model: "emb" } }),
+);
 
 beforeEach(() => {
     for (const key of Object.keys(vars)) {

@@ -1,6 +1,7 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { XIcon } from "@lucide/svelte";
-    import { getDatabase, type PromptDiffPrefs } from "../../ts/storage/database.svelte";
+    import { type PromptDiffPrefs } from "../../ts/storage/database.svelte";
     import type {
         PromptItem,
         PromptItemPlain,
@@ -149,8 +150,7 @@
         contextRadius: 3,
     };
 
-    const db = getDatabase();
-    const prefs = db.promptDiffPrefs;
+    const prefs = settings.ui.promptDiffPrefs;
 
     let diffStyle = $state<DiffStyle>(prefs?.diffStyle ?? DEFAULT_PROMPT_DIFF_PREFS.diffStyle);
     let formatStyle = $state<FormatStyle>(prefs?.formatStyle ?? DEFAULT_PROMPT_DIFF_PREFS.formatStyle);
@@ -165,9 +165,7 @@
     let expandedRanges = $state<ExpandedRange[]>([]);
 
     function savePrefsToDB() {
-        const db = getDatabase();
-
-        db.promptDiffPrefs = {
+        settings.ui.promptDiffPrefs = {
             ...DEFAULT_PROMPT_DIFF_PREFS,
             diffStyle,
             formatStyle,
@@ -355,8 +353,7 @@
 
         const isPromptItemChat = (item: PromptItem): item is PromptItemChat => item.type === "chat";
 
-        const db = getDatabase();
-        const formated = safeStructuredClone(db.botPresets[id].promptTemplate);
+        const formated = safeStructuredClone(settings.presets[id].promptTemplate);
         const cards: PromptCard[] = [];
 
         for (let i = 0; i < formated.length; i++) {

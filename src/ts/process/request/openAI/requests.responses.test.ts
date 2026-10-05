@@ -4,6 +4,7 @@ import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer } from "src/ts/model/typ
 import { fetchNative } from "src/ts/globalApi.svelte";
 import { callTool } from "../../mcp/mcp";
 import { __testResponsesAPI, requestOpenAIResponseAPI } from "../tests/oracle/openAI/requests";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 
 const mocks = vi.hoisted(() => ({
     db: {
@@ -197,6 +198,45 @@ function sseStream(events: string[]) {
         },
     });
 }
+
+/**
+ * The credentials the oracle (the pre-cutover client code) reads from `getDatabase()`. The records
+ * never serve them (`llmSecrets` is write-only: a credential reads `""`), so they stay plain, on
+ * an overlay of the installed database.
+ */
+const ORACLE_CREDENTIALS = new Set(["OaiCompAPIKeys", "openAIKey", "nanogptKey", "proxyKey"]);
+
+/**
+ * `mocks.db` installed as `setDatabaseLite` installs a database (`database.svelte` is mocked here):
+ * its fields moved into the records, the accessors on, the selection resolved, since the request
+ * helpers (`shared.ts`) read the settings through the record views (Phase 6 slice 7) while the
+ * oracle reads `getDatabase()`, which serves the same records (and the plain credentials). The
+ * fixture is the flat shape, with the preset fields on its root: they become the one preset's.
+ */
+function installDatabase() {
+    const raw = mocks.db as Record<string, unknown>;
+    const credentials: Record<string, unknown> = {};
+    for (const key of ORACLE_CREDENTIALS) {
+        if (Object.hasOwn(raw, key)) {
+            credentials[key] = raw[key];
+            delete raw[key];
+        }
+    }
+    installFlatDatabase(raw, "responses-preset");
+    const isCredential = (key: string | symbol): key is string =>
+        typeof key === "string" && ORACLE_CREDENTIALS.has(key);
+    mocks.db = new Proxy(raw, {
+        get: (target, key) => (isCredential(key) ? credentials[key] : Reflect.get(target, key)),
+        set: (target, key, value) => {
+            if (isCredential(key)) {
+                credentials[key] = value;
+                return true;
+            }
+            return Reflect.set(target, key, value);
+        },
+    }) as typeof mocks.db;
+}
+installDatabase();
 
 describe("OpenAI Responses API helpers", () => {
     beforeEach(() => {

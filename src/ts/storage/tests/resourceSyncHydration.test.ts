@@ -736,7 +736,8 @@ describe("the streaming state follows a job's stream", () => {
         expect(state(chat)).toEqual(none);
 
         // Without the setting: "off". A generation that starts with a chunk sets it too.
-        delete db().streamingDisplayOptimizationMode;
+        // Cleared in its record: a `delete` would remove the facade's accessor and leave the record.
+        db().streamingDisplayOptimizationMode = undefined;
         apply("K", chunk("g2", 0, "FIRST", "c"));
         expect(state(chat)).toEqual({ ...refK, messageId: "c", mode: "off" });
     });

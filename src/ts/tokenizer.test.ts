@@ -1,18 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { installFlatDatabase } from "./storage/tests/installFlatDatabase";
 import { encode } from "./tokenizer";
 
-const mocks = vi.hoisted(() => ({
-    db: {
+const mocks = vi.hoisted(() => {
+    const fixture = {
         aiModel: "hf:::Xenova/opt-350m",
         currentPluginProvider: "",
         customTokenizer: "",
         enableCustomFlags: false,
         googleClaudeTokenizing: false,
         useTokenizerCaching: false,
-    },
-    constructedWith: [] as string[],
-}));
+    };
+    return { fixture, db: { ...fixture } as typeof fixture, constructedWith: [] as string[] };
+});
 
 vi.mock("src/ts/storage/database.svelte", () => ({
     getCurrentCharacter: () => null,
@@ -59,6 +60,11 @@ vi.mock("src/etc/o200k_base.json", () => ({
     pat_str: "",
 }));
 
+// `mocks.db` installed as `setDatabaseLite` installs a database (`database.svelte` is mocked here),
+// since the tokenizer reads the settings through the record views (Phase 6 slice 7): its root preset
+// fields become the one preset's, and its writes go through the accessors to the records.
+installFlatDatabase(mocks.db, "tokenizer-preset");
+
 describe("encode", () => {
     it("tokenizes WebLLM models (LLMTokenizer.Local) with the default tiktoken encoder", async () => {
         const result = await encode("hi");
@@ -69,7 +75,7 @@ describe("encode", () => {
 });
 
 describe("the routing shared with the server (Phase 5 slice 4)", () => {
-    const base = { ...mocks.db };
+    const base = { ...mocks.fixture };
     const restore = () => Object.assign(mocks.db, base);
 
     it("a legacy plugin provider without options counts with o200k_base; a `custom` tokenizer without its function answers [0]", async () => {

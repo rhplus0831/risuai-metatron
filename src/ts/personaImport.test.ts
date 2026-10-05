@@ -197,3 +197,74 @@ describe("importUserPersona adds the persona through addPersona", () => {
         expect(record("personas")).toEqual(before);
     });
 });
+
+// Phase 6 slice 7: `exportUserPersona` reads the selected persona's four fields through
+// `activePersona` once, before its first await (it took a snapshot of the whole database for them).
+// A selection change, or an edit of the persona, while the icon is being read changes nothing in
+// the export: the image read, the card in the PNG, and the file name are all the persona that was
+// selected when the export started.
+describe("exportUserPersona", () => {
+    it("exports the persona selected at its start, though the selection and the persona change while its icon is read", async () => {
+        const { persona, collectionStore, selection } = await boot();
+        const globalApi = await import("./globalApi.svelte");
+        const { PngChunk } = await import("./pngChunk");
+        const { selectPersona } = await import("./storage/selection.svelte");
+        collectionStore.setPersonas([
+            { id: "pa", name: "Al:ice", icon: "icon-a", personaPrompt: "prompt a", note: "note a" },
+            { id: "pb", name: "Bob", icon: "icon-b", personaPrompt: "prompt b", note: "note b" },
+        ]);
+        selectPersona("pa");
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        vi.mocked(globalApi.readImage).mockImplementation(async () => {
+            await held;
+            return pngWithText({});
+        });
+        const downloads: { name: string; data: Uint8Array }[] = [];
+        vi.mocked(globalApi.downloadFile).mockImplementation(async (name: string, data: any) => {
+            downloads.push({ name, data });
+        });
+
+        let settled = false;
+        const run = persona.exportUserPersona().finally(() => {
+            settled = true;
+        });
+        await Promise.resolve();
+        expect(vi.mocked(globalApi.readImage).mock.calls).toEqual([["icon-a"]]);
+        // While the icon is read: another persona is selected, and the exported one is edited.
+        selectPersona("pb");
+        collectionStore.updatePersona("pa", { name: "Changed", personaPrompt: "changed", note: "changed" });
+        expect(selection.personaId).toBe("pb");
+        release();
+        for (let i = 0; i < 100 && !settled; i++) {
+            await vi.advanceTimersByTimeAsync(10);
+        }
+        await run;
+
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(alerts.normal).toHaveBeenCalledWith(language.successExport);
+        expect(downloads.map((entry) => entry.name)).toEqual(["Alice_export.png"]);
+        let card: unknown;
+        for await (const chunk of PngChunk.readGenerator(downloads[0].data)) {
+            if (chunk && typeof chunk === "object" && "key" in chunk && chunk.key === "persona") {
+                card = JSON.parse(Buffer.from(chunk.value, "base64").toString("utf-8"));
+                break;
+            }
+        }
+        expect(card).toEqual({ name: "Al:ice", personaPrompt: "prompt a", note: "note a" });
+    });
+
+    it("refuses a persona without a name or a prompt and reads nothing", async () => {
+        const { persona, collectionStore } = await boot();
+        const globalApi = await import("./globalApi.svelte");
+        const { selectPersona } = await import("./storage/selection.svelte");
+        collectionStore.setPersonas([{ id: "pa", name: "A", icon: "icon-a", personaPrompt: "", note: "" }]);
+        selectPersona("pa");
+        await persona.exportUserPersona();
+        expect(alerts.error).toHaveBeenCalledWith("username or persona prompt is empty");
+        expect(globalApi.readImage).not.toHaveBeenCalled();
+        expect(globalApi.downloadFile).not.toHaveBeenCalled();
+    });
+});

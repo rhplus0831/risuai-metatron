@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import type { RisuModule } from "src/ts/process/modules";
 import type { customscript, loreBook } from "src/ts/storage/database.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { DBState } from "src/ts/stores.svelte";
 import { beforeEach, expect, test, vi } from "vitest";
 import type { RPCToolCallTextContent } from "../../mcplib";
@@ -31,6 +32,11 @@ vi.mock(import("src/ts/stores.svelte"), () => {
 });
 
 //#endregion
+
+// The mocked `DBState.db` installed as `setDatabaseLite` installs a database: its fields moved into
+// the records, the accessors on, since the handler reads the modules through the settings views
+// (Phase 6 slice 7). `DBState.db.modules` and `DBState.db.enabledModules` are those records.
+installFlatDatabase(DBState.db);
 
 const makeLorebook = (name: string): loreBook => ({
     alwaysActive: false,
@@ -151,7 +157,8 @@ test("lists lorebooks of a module with pagination", async () => {
     expect(await instance.handle("risu-list-module-lorebooks", { count: 3, offset: 3, id: "A" })).toMatchSnapshot();
     expect(await instance.handle("risu-list-module-lorebooks", { count: 3, offset: 10, id: "A" })).toMatchSnapshot();
 
-    module.lorebook = [];
+    // A change goes through the record (the stored module), not the object assigned into it.
+    DBState.db.modules[0].lorebook = [];
 
     expect(await instance.handle("risu-list-module-lorebooks", { id: "A" })).toEqual(makeToolResponse([]));
 });
@@ -183,7 +190,8 @@ test("lists all regex scripts of a module", async () => {
 
     expect(await instance.handle("risu-get-module-regex-scripts", { id: "A" })).toMatchSnapshot();
 
-    module.regex = [];
+    // A change goes through the record (the stored module), not the object assigned into it.
+    DBState.db.modules[0].regex = [];
 
     expect(await instance.handle("risu-get-module-regex-scripts", { id: "A" })).toEqual(makeToolResponse([]));
 });

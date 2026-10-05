@@ -1,9 +1,10 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { textAreaSize, textAreaTextSize } from "src/ts/gui/guisize";
     import { highlighter, getNewHighlightId, removeHighlight, AllCBS } from "src/ts/gui/highlight";
     import { sleep } from "src/ts/util";
     import { onDestroy, onMount } from "svelte";
-    import { DBState, disableHighlight, popUpEditorStore } from "src/ts/stores.svelte";
+    import { disableHighlight, popUpEditorStore } from "src/ts/stores.svelte";
     import { isMobile } from "src/ts/platform";
     import { hotkeyMatches } from "src/ts/hotkey";
     interface Props {
@@ -280,7 +281,7 @@
                 if (
                     (e.ctrlKey || e.shiftKey || e.altKey) &&
                     hotkeyMatches(
-                        DBState.db.hotkeys.find((hk) => hk.action === "popupEditor"),
+                        settings.hotkeys.find((hk) => hk.action === "popupEditor"),
                         e,
                     )
                 ) {
@@ -300,7 +301,7 @@
                 }
             }}
             oncontextmenu={(e) => {
-                if (DBState.db.longPressToPopupEditor) {
+                if (settings.ui.longPressToPopupEditor) {
                     e.preventDefault();
                     popUpEditorStore.value = value;
                     popUpEditorStore.mode = "default";

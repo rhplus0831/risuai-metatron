@@ -48,6 +48,7 @@ vi.mock(import("../../../globalApi.svelte"), () => ({
 
 import { risuChatParser } from "../../parser.svelte";
 import { CurrentTriggerIdStore, DBState, selectedCharID } from "../../../stores.svelte";
+import { installFlatDatabase } from "../../../storage/tests/installFlatDatabase";
 
 type ParityCase = {
     name: string;
@@ -96,7 +97,10 @@ afterAll(() => {
 beforeEach(() => {
     vi.useFakeTimers({ now: new Date(parity.fixedTime), toFake: ["Date"] });
     vi.spyOn(console, "log").mockImplementation(() => {});
-    DBState.db = JSON.parse(JSON.stringify(parity.database));
+    // The capture installed as `setDatabaseLite` installs a database (`database.svelte` is mocked
+    // here), since the parser reads the settings through the record views (Phase 6 slice 7). It is
+    // the flat shape the Node host reads: its root preset fields become the one preset's.
+    DBState.db = installFlatDatabase(JSON.parse(JSON.stringify(parity.database)), "parity-preset");
     selectedCharID.set(parity.selectedCharID);
     CurrentTriggerIdStore.set(null);
 });

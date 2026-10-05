@@ -1,4 +1,7 @@
-// @vitest-environment node
+// The default (happy-dom) environment, not `node`: the client adapters read part of the settings
+// through the record views (Phase 6 slice 7), whose records need Svelte's client `$state` (the node
+// environment compiles `.svelte.ts` modules for the server, where `$state` is not a proxy).
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LLMFlags, LLMFormat, type LLMModel } from "../../../../../shared/llm.ts";
 import { resolveModelInfo } from "../../../../../shared/llm/models.ts";
@@ -16,10 +19,11 @@ import { normalizePresets } from "../../../../../shared/presets.ts";
 // `request.ts` itself (NovelAI, Ooba, Kobold, NovelList, Cohere, Horde, Ollama, Echo) have no client
 // module left to run; their port is reviewed by diff and exercised in `server/src/tests/`.
 
-// The server modules are loaded at run time, never imported: an import (even a type import) would
+// The server modules are loaded at run time (by path: happy-dom's `URL` resolves against the page's
+// location), never imported: an import (even a type import) would
 // put `server/src` into the client's TypeScript program, which `pnpm check` runs over `src/`.
 const serverModule = <T = any>(file: string): Promise<T> =>
-    vi.importActual<T>(new URL(`../../../../../server/src/${file}`, import.meta.url).pathname);
+    vi.importActual<T>(path.resolve(import.meta.dirname, `../../../../../server/src/${file}`));
 const [
     { normalizeLlmSecrets },
     { normalizeProviders },
@@ -74,7 +78,9 @@ const nextId = () => `id-${++clientState.ids}`;
 vi.mock("uuid", () => ({ v4: () => nextId() }));
 vi.mock("node:crypto", async (importOriginal) => {
     const actual = await importOriginal<typeof import("node:crypto")>();
-    return { ...actual, randomUUID: () => nextId() };
+    const randomUUID = () => nextId();
+    // The happy-dom environment reads a builtin's named imports through its default export.
+    return { ...actual, default: { ...actual, randomUUID }, randomUUID };
 });
 vi.mock("src/lang", () => ({
     language: {
@@ -151,8 +157,10 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     textifyReadableStream: (stream: ReadableStream<Uint8Array>) => new Response(stream).text(),
 }));
 vi.mock("src/ts/util", async () => {
+    // A path, not a URL: happy-dom's `URL` resolves against the page's location.
+    const { resolve } = await import("node:path");
     const util = await vi.importActual<Record<string, unknown>>(
-        new URL("../../../../../server/src/llm/util.ts", import.meta.url).pathname,
+        resolve(import.meta.dirname, "../../../../../server/src/llm/util.ts"),
     );
     return {
         ...util,
@@ -198,6 +206,8 @@ vi.mock("../../mcp/mcp", () => ({
     decodeToolCall: async (inner: string) => clientState.known.get(inner),
 }));
 
+import { selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { requestClaude } from "./oracle/anthropic";
 import { requestGoogleCloudVertex } from "./oracle/google";
 import { requestOpenAI, requestOpenAILegacyInstruct, requestOpenAIResponseAPI } from "./oracle/openAI/requests";
@@ -351,12 +361,26 @@ async function drain(response: any): Promise<{ result: unknown; chunks: unknown[
     return { result: rest, chunks };
 }
 
+/**
+ * The client's settings installed in the records (as `setDatabaseLite` installs a database), from a
+ * copy of the client's database: the adapters' shared helpers (`shared.ts`) read the record views
+ * (Phase 6 slice 7), while the oracle adapters read `getDatabase()`, the database itself. The
+ * database is the flat shape the server loads, with the preset fields on its root: they become
+ * preset `p`'s, the one the scenario selects.
+ */
+function installRecords(db: Record<string, unknown>) {
+    installFlatDatabase(JSON.parse(JSON.stringify(db)), "p");
+    selectPreset("p");
+    selectPersona("u");
+}
+
 async function runClient(scenario: Scenario, loaded: ReturnType<typeof settings>): Promise<Recorded> {
     const db: Record<string, any> = JSON.parse(JSON.stringify(loaded.db));
     // The client read its stored Vertex token until its expiry; the server keeps one in memory.
     db.vertexAccessToken = SECRETS.vertexToken;
     db.vertexAccessTokenExpires = Date.now() + 10_000_000;
     clientState.db = db;
+    installRecords(db);
     clientState.selectedCharacterName = loaded.selectedCharacterName;
     clientState.userName = loaded.userName;
     clientState.upstream = scenario.upstream;

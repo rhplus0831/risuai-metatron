@@ -1,3 +1,4 @@
+import { settings } from "../storage/settingsViews.svelte";
 import DOMPurify from "dompurify";
 import markdownit from "markdown-it";
 import {
@@ -78,7 +79,7 @@ DOMPurify.addHook("uponSanitizeElement", (node: HTMLElement, data) => {
     }
     if (data.tagName === "img") {
         // Hide external images when hideAllImages is enabled
-        if (DBState.db?.hideAllImages) {
+        if (settings.ui.hideAllImages) {
             const src = node.getAttribute("src") || "";
             // Replace with placeholder if it's an external/loaded image
             if (src && !src.startsWith("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP")) {
@@ -103,7 +104,7 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
     switch (data.attrName) {
         case "style": {
             // Remove background-image URLs when hideAllImages is enabled
-            if (DBState.db?.hideAllImages && data.attrValue) {
+            if (settings.ui.hideAllImages && data.attrValue) {
                 // Remove background-image property from inline styles
                 data.attrValue = data.attrValue.replace(/background(-image)?:\s*url\([^)]*\);?/gi, "");
                 // Also remove background property if it contains url()
@@ -151,8 +152,8 @@ export { risuEscape, risuUnescape };
 
 function renderMarkdown(md: markdownit, data: string) {
     let quotes = ["“", "”", "‘", "’"];
-    if (DBState.db?.customQuotes) {
-        quotes = DBState.db.customQuotesData ?? quotes;
+    if (settings.ui.customQuotes) {
+        quotes = settings.ui.customQuotesData ?? quotes;
     }
     data = data.replace(/\$\$(.*?)\$\$/gs, (match: string, content: string) => {
         try {
@@ -174,10 +175,10 @@ function renderMarkdown(md: markdownit, data: string) {
     });
     let text = risuUnescape(md.render(data.replace(/“|”/g, '"').replace(/‘|’/g, "'")));
 
-    if (DBState.db?.unformatQuotes) {
+    if (settings.ui.unformatQuotes) {
         text = text.replace(/\uE9b0/gu, quotes[0]).replace(/\uE9b1/gu, quotes[1]);
         text = text.replace(/\uE9b2/gu, quotes[2]).replace(/\uE9b3/gu, quotes[3]);
-    } else if (DBState.db?.blockquoteStyling) {
+    } else if (settings.ui.blockquoteStyling) {
         text = text
             .replace(/\uE9b0(.+?)\uE9b1/gmu, (full, content) => {
                 content = content
@@ -490,8 +491,8 @@ async function parseAdditionalAssets(
     arg: { ch: number },
 ) {
     const assetWidthString =
-        (DBState.db.assetWidth && DBState.db.assetWidth !== -1) || DBState.db.assetWidth === 0
-            ? `max-width:${DBState.db.assetWidth}rem;`
+        (settings.ui.assetWidth && settings.ui.assetWidth !== -1) || settings.ui.assetWidth === 0
+            ? `max-width:${settings.ui.assetWidth}rem;`
             : "";
 
     if (char.type === "character" && (!assetsCache || !emoAssetsCache)) {
@@ -509,7 +510,7 @@ async function parseAdditionalAssets(
 
         // Skip image-related assets when hideAllImages is enabled
         // raw and path are also included as they're used in CSS background-image
-        if (DBState.db.hideAllImages && imageCBS.includes(type)) {
+        if (settings.ui.hideAllImages && imageCBS.includes(type)) {
             return ""; // Hide the image asset
         }
 
@@ -537,7 +538,7 @@ async function parseAdditionalAssets(
         let match = assetPaths?.[name];
 
         if (!match) {
-            if (DBState.db.legacyMediaFindings) {
+            if (settings.ui.legacyMediaFindings) {
                 return "";
             }
 
@@ -625,7 +626,7 @@ function getClosestMatch(char: simpleCharacterArgument | character, name: string
         }
     }
 
-    if (closestDist > DBState.db.assetMaxDifference) {
+    if (closestDist > settings.ui.assetMaxDifference) {
         return null;
     }
 
@@ -691,7 +692,7 @@ async function parseInlayAssets(data: string) {
             switch (asset?.type) {
                 case "image":
                     // Hide inlay images when hideAllImages is enabled
-                    if (DBState.db.hideAllImages) {
+                    if (settings.ui.hideAllImages) {
                         data = data.replace(inlay, "");
                         break;
                     }
@@ -1057,7 +1058,7 @@ function decodeStyleContent(hexText: string): { css?: string; fallback?: string 
             }),
         };
     } catch (error) {
-        if (DBState.db.returnCSSError) {
+        if (settings.ui.returnCSSError) {
             return { fallback: `CSS ERROR: ${error}` };
         }
         return { fallback: "" };

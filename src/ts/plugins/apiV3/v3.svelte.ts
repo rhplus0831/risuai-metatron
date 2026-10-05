@@ -1,3 +1,4 @@
+import { settings, activePreset } from "../../storage/settingsViews.svelte";
 import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
 import {
     customProviderStore,
@@ -874,9 +875,8 @@ function applyPluginCharacters(incoming: unknown) {
 }
 
 const getArg = (arg: string) => {
-    const db = getDatabase();
     const [name, realArg] = arg.split("::");
-    for (const plugin of db.plugins) {
+    for (const plugin of settings.plugins) {
         if (plugin.name === name) {
             return plugin.realArg[realArg];
         }
@@ -952,7 +952,7 @@ function pluginKeyOrder(newDb: Record<string, unknown>): string[] {
 
 /** Selects the persona at an index of the persona list, on this client only. */
 function selectPersonaAt(index: unknown) {
-    const persona = typeof index === "number" ? DBState.db.personas?.[index] : undefined;
+    const persona = typeof index === "number" ? settings.personas?.[index] : undefined;
     if (typeof persona?.id !== "string") {
         throw new MutationValidationError("selectedPersona", "no persona at this index");
     }
@@ -1300,10 +1300,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             updateColorScheme();
         },
         getColorScheme: () => {
-            const db = DBState.db;
             return {
-                name: db.colorSchemeName,
-                scheme: $state.snapshot(db.colorScheme),
+                name: settings.ui.colorSchemeName,
+                scheme: $state.snapshot(settings.ui.colorScheme),
             };
         },
 
@@ -1340,10 +1339,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             updateTextThemeAndCSS();
         },
         getTextTheme: () => {
-            const db = DBState.db;
             return {
-                name: db.textTheme,
-                customTheme: $state.snapshot(db.customTextTheme),
+                name: settings.ui.textTheme,
+                customTheme: $state.snapshot(settings.ui.customTextTheme),
             };
         },
 
@@ -1354,8 +1352,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
 
         //New APIs for v3
         getArgument: async (key: string) => {
-            const db = getDatabase();
-            for (const p of db.plugins) {
+            for (const p of settings.plugins) {
                 if (p.name === plugin.name) {
                     return p.realArg[key];
                 }
@@ -1896,7 +1893,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 throw new Error("A chat is already in progress");
             }
 
-            if (getModelInfo(DBState.db.aiModel).id.startsWith("pluginmodel:::")) {
+            if (getModelInfo(activePreset.aiModel).id.startsWith("pluginmodel:::")) {
                 // Executing plugin provider is block because it can be used for loopholes for ipc right now.
                 throw new Error("Sending chat with plugin-based model is currently blocked");
             }
@@ -1938,7 +1935,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         postPluginChannelMessage: (pluginName: string, channelName: string, message: any) => {
             const currentPluginName = plugin.name;
-            const receiverPlugin = DBState.db.plugins.find((p) => p.name === pluginName);
+            const receiverPlugin = settings.plugins.find((p) => p.name === pluginName);
 
             if (!receiverPlugin) {
                 console.warn(

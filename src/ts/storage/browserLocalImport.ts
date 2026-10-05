@@ -1,7 +1,7 @@
+import { readSettingsRoot, writeSettingsRoot } from "./settingsViews.svelte";
 import localforage from "localforage";
 import type { Database } from "../../../shared/database.ts";
 import { type InlayResource, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
-import { DBState } from "../stores.svelte";
 import {
     hasPermissionGrant,
     getLastGrantTime,
@@ -213,8 +213,8 @@ async function importSectionField<K extends keyof typeof importedFieldSection>(
     if (!accept(value)) {
         return;
     }
-    if (DBState.db[field] === undefined) {
-        DBState.db[field] = JSON.parse(JSON.stringify(value));
+    if (readSettingsRoot(field) === undefined) {
+        writeSettingsRoot(field, JSON.parse(JSON.stringify(value)));
         await flushResources();
     }
     if ((await readServerField(field)) !== undefined) {

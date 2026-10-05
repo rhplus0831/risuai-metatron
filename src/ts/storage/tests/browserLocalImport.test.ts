@@ -345,6 +345,27 @@ describe("Iris dialogue and Google credentials", () => {
     });
 });
 
+describe("Iris dialogue when the save fails (Phase 6 slice 7: written through the settings views)", () => {
+    it("keeps the local dialogue until the server holds it, and deletes it on a later run once it does", async () => {
+        const dialogue = [{ speaker: "Iris", text: "hi", tip: "t" }];
+        table(IRIS).set("current_dialogue", dialogue);
+        fake.failNext = { status: 500, times: 50, match: (path) => path === "/api/resources/batch" };
+        await importer.importBrowserLocalData();
+        expect(fake.data("ui", "main").irisDialogue).toBeUndefined();
+        expect(table(IRIS).get("current_dialogue")).toEqual(dialogue);
+        // The ui record holds it (queued): only the server's copy lets the local entry go.
+        const { settings } = await import("../settingsViews.svelte");
+        expect(JSON.parse(JSON.stringify(settings.ui.irisDialogue))).toEqual(dialogue);
+
+        fake.failNext = null;
+        await sync.flushResources();
+        expect(fake.data("ui", "main").irisDialogue).toEqual(dialogue);
+        await importer.importBrowserLocalData();
+        expect(table(IRIS).size).toBe(0);
+        expect(fake.data("ui", "main").irisDialogue).toEqual(dialogue);
+    });
+});
+
 describe("the run as a whole", () => {
     it("continues after a failed step, drops the old caches, and stops on a restore", async () => {
         table(INLAY).set("broken", { name: "b.png", ext: "png", type: "image", data: new Blob(["b"]) });

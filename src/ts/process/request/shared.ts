@@ -1,4 +1,4 @@
-import { getDatabase } from "src/ts/storage/database.svelte";
+import { settings, activePreset } from "../../storage/settingsViews.svelte";
 import { parseAdditionalParamJsonValue } from "./additionalParams";
 
 import type { LLMParameter } from "../../../../shared/llm.ts";
@@ -33,21 +33,19 @@ export function setObjectValue<T>(obj: T, key: string, value: any): T {
 }
 
 export function getAdditionalParameters(aiModel?: string): [string, string][] {
-    const db = getDatabase();
-
     if (!aiModel) {
         return [];
     }
 
     if (aiModel === "reverse_proxy") {
-        return [...(db.additionalParams ?? [])];
+        return [...(settings.providers.additionalParams ?? [])];
     }
 
     if (!aiModel.startsWith("xcustom:::")) {
-        return db.applyAdditionalParamsToAll ? [...(db.additionalParams ?? [])] : [];
+        return settings.providers.applyAdditionalParamsToAll ? [...(settings.providers.additionalParams ?? [])] : [];
     }
 
-    const found = db.customModels.find((model) => model.id === aiModel);
+    const found = settings.customModels.find((model) => model.id === aiModel);
     const params = found?.params;
     if (!params) {
         return [];
@@ -131,7 +129,6 @@ export function applyParameters(
         modelId: string;
     },
 ): Record<string, any> {
-    const db = getDatabase();
     const reasoningDisabledEffort = parameters.includes("reasoning_effort_none") ? "none" : "minimal";
     const reasoningMinEffort = parameters.includes("reasoning_effort_min_medium") ? "medium" : "low";
     const supportsXHighReasoning = parameters.includes("reasoning_effort_xhigh");
@@ -168,10 +165,13 @@ export function applyParameters(
         return ["low", "medium", "high"][verbosity] ?? "medium";
     }
 
-    if (db.seperateParametersEnabled && (modelMode !== "model" || db.seperateParametersByModel)) {
-        let sepParams = db.seperateParameters[modelMode];
-        if (db.seperateParametersByModel) {
-            sepParams = db.seperateParameters.overrides[arg.modelId];
+    if (
+        activePreset.seperateParametersEnabled &&
+        (modelMode !== "model" || settings.providers.seperateParametersByModel)
+    ) {
+        let sepParams = settings.providers.seperateParameters[modelMode];
+        if (settings.providers.seperateParametersByModel) {
+            sepParams = settings.providers.seperateParameters.overrides[arg.modelId];
 
             if (!sepParams) {
                 throw new Error(
@@ -180,7 +180,7 @@ export function applyParameters(
             }
         }
         if (modelMode === "submodel") {
-            sepParams = db.seperateParameters["otherAx"];
+            sepParams = settings.providers.seperateParameters["otherAx"];
         }
 
         for (const parameter of parameters) {
@@ -263,37 +263,37 @@ export function applyParameters(
         if (isReasoningCapabilityParameter(parameter)) {
             continue;
         }
-        if (parameter === "top_k" && arg.ignoreTopKIfZero && db.top_k === 0) {
+        if (parameter === "top_k" && arg.ignoreTopKIfZero && activePreset.top_k === 0) {
             continue;
         }
         switch (parameter) {
             case "temperature": {
-                value = db.temperature === -1000 ? -1000 : db.temperature / 100;
+                value = activePreset.temperature === -1000 ? -1000 : activePreset.temperature / 100;
                 break;
             }
             case "top_k": {
-                value = db.top_k;
+                value = activePreset.top_k;
                 break;
             }
             case "repetition_penalty": {
-                value = db.repetition_penalty;
+                value = activePreset.repetition_penalty;
                 break;
             }
             case "min_p": {
-                value = db.min_p;
+                value = activePreset.min_p;
                 break;
             }
             case "top_a": {
-                value = db.top_a;
+                value = activePreset.top_a;
                 break;
             }
             case "top_p": {
-                value = db.top_p;
+                value = activePreset.top_p;
                 break;
             }
             case "reasoning_effort": {
                 value = getEffort(
-                    db.reasoningEffort,
+                    activePreset.reasonEffort,
                     reasoningDisabledEffort,
                     supportsXHighReasoning,
                     reasoningMinEffort,
@@ -301,19 +301,19 @@ export function applyParameters(
                 break;
             }
             case "verbosity": {
-                value = getVerbosity(db.verbosity);
+                value = getVerbosity(activePreset.verbosity);
                 break;
             }
             case "frequency_penalty": {
-                value = db.frequencyPenalty === -1000 ? -1000 : db.frequencyPenalty / 100;
+                value = activePreset.frequencyPenalty === -1000 ? -1000 : activePreset.frequencyPenalty / 100;
                 break;
             }
             case "presence_penalty": {
-                value = db.PresensePenalty === -1000 ? -1000 : db.PresensePenalty / 100;
+                value = activePreset.PresensePenalty === -1000 ? -1000 : activePreset.PresensePenalty / 100;
                 break;
             }
             case "thinking_tokens": {
-                value = db.thinkingTokens;
+                value = activePreset.thinkingTokens;
                 break;
             }
         }

@@ -1,9 +1,10 @@
+import { settings as appSettings, activePreset } from "../../storage/settingsViews.svelte";
 import { type memoryVector, HypaProcesser, similarity } from "./hypamemory";
 import { isContextModel, getContextProvider } from "./contextualEmbedding";
 import { TaskRateLimiter } from "./taskRateLimiter";
 import { type EmbeddingText, type EmbeddingResult, HypaProcessorV2 } from "./hypamemoryv2";
 import { parseChatML } from "src/ts/parser/chatML";
-import { type Chat, type character, type groupChat, getDatabase } from "src/ts/storage/database.svelte";
+import { type Chat, type character, type groupChat } from "src/ts/storage/database.svelte";
 import { type OpenAIChat } from "../index.svelte";
 import { requestChatData } from "../request/request";
 import { chatCompletion, unloadEngine } from "../webllm";
@@ -116,7 +117,6 @@ async function hypaMemoryV3MainExp(
     tokenizer: ChatTokenizer,
     context?: SummarizeContext,
 ): Promise<HypaV3Result> {
-    const db = getDatabase();
     const settings = getCurrentHypaV3Preset().settings;
 
     // Validate settings
@@ -129,7 +129,7 @@ async function hypaMemoryV3MainExp(
     }
 
     // Initial token correction
-    currentTokens -= db.maxResponse;
+    currentTokens -= activePreset.maxResponse;
 
     // Load existing hypa data if available
     const data: HypaV3Data = room.hypaV3Data
@@ -810,7 +810,6 @@ async function hypaMemoryV3Main(
     tokenizer: ChatTokenizer,
     context?: SummarizeContext,
 ): Promise<HypaV3Result> {
-    const db = getDatabase();
     const settings = getCurrentHypaV3Preset().settings;
 
     // Validate settings
@@ -823,7 +822,7 @@ async function hypaMemoryV3Main(
     }
 
     // Initial token correction
-    currentTokens -= db.maxResponse;
+    currentTokens -= activePreset.maxResponse;
 
     // Load existing hypa data if available
     const data: HypaV3Data = room.hypaV3Data
@@ -1160,7 +1159,7 @@ async function hypaMemoryV3Main(
         });
 
         // Initialize embedding processor
-        const processor = new HypaProcesserEx(db.hypaModel);
+        const processor = new HypaProcesserEx(appSettings.memoryTranslateMedia.hypaModel);
 
         // Add summaryChunks to processor for similarity search
         try {
@@ -1467,7 +1466,6 @@ export async function summarize(
     isResummarize: boolean = false,
     context?: SummarizeContext,
 ): Promise<string> {
-    const db = getDatabase();
     const settings = getCurrentHypaV3Preset().settings;
 
     const strMessages = oaiMessages.map((chat) => `${chat.role}: ${sanitizeSummaryContent(chat.content)}`).join("\n");
@@ -1493,7 +1491,7 @@ export async function summarize(
 
     // API
     if (settings.summarizationModel === "subModel") {
-        console.log(logPrefix, `Using ax model ${db.subModel} for summarization.`);
+        console.log(logPrefix, `Using ax model ${activePreset.subModel} for summarization.`);
 
         const response = await requestChatData(
             {
@@ -1561,7 +1559,10 @@ export async function summarize(
 }
 
 export function getCurrentHypaV3Preset(): HypaV3Preset {
-    const preset = selectedHypaV3Preset(getDatabase());
+    const preset = selectedHypaV3Preset({
+        hypaV3Presets: appSettings.hypaV3Presets.items,
+        hypaV3PresetId: appSettings.hypaV3Presets.selectedId,
+    });
 
     if (!preset) {
         throw new Error("Preset not found. Please select a valid preset.");

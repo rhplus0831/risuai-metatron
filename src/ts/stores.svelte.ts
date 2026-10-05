@@ -1,3 +1,4 @@
+import { settings, activePreset } from "./storage/settingsViews.svelte";
 import { writable } from "svelte/store";
 import type { character, Database, groupChat } from "./storage/database.svelte";
 import { type simpleCharacterArgument } from "./parser/parser.svelte";
@@ -179,14 +180,14 @@ ReloadGUIPointer.subscribe(() => {
 
 $effect.root(() => {
     $effect(() => {
-        $state.snapshot(DBState.db.modules);
-        DBState?.db?.enabledModules;
-        DBState?.db?.enabledModules?.length;
+        $state.snapshot(settings.modules);
+        settings.enabledModules;
+        settings.enabledModules?.length;
         DBState?.db?.characters?.[selIdState.selId]?.chats?.[DBState?.db?.characters?.[selIdState.selId]?.chatPage]
             ?.modules?.length;
         DBState?.db?.characters?.[selIdState.selId]?.hideChatIcon;
         DBState?.db?.characters?.[selIdState.selId]?.backgroundHTML;
-        DBState?.db?.moduleIntergration;
+        activePreset.moduleIntergration;
         moduleUpdate();
     });
 });

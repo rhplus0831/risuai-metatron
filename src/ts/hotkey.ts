@@ -1,9 +1,9 @@
+import { settings } from "./storage/settingsViews.svelte";
 import { get } from "svelte/store";
 import { alertMd, alertSelect, alertToast, alertWait, doingAlert, alertRequestLogs, terminalNotice } from "./alert";
 import { changeToPreset as changeToPreset2, getDatabase } from "./storage/database.svelte";
 import {
     alertStore,
-    DBState,
     openPersonaList,
     openPresetList,
     OpenRealmStore,
@@ -38,7 +38,7 @@ export function initHotkey() {
 
         const database = getDatabase();
 
-        const hotKeys = activeHotkeys(database?.hotkeys ?? defaultHotkeys, database);
+        const hotKeys = activeHotkeys(settings.hotkeys ?? defaultHotkeys, settings.ui);
 
         let hotkeyRan = false;
         for (const hotkey of hotKeys) {
@@ -175,7 +175,7 @@ export function initHotkey() {
                     break;
                 }
                 case "scrollToActiveChar": {
-                    if (database.enableScrollToActiveChar !== false) {
+                    if (settings.ui.enableScrollToActiveChar !== false) {
                         window.dispatchEvent(new CustomEvent("scrollToActiveCharacter"));
                     }
                     break;
@@ -309,8 +309,7 @@ export function initHotkey() {
                 const isCharacterDrag = types.includes(RISU_SIDEBAR_DRAG_TYPE);
 
                 if (isCharacterDrag) {
-                    const db = getDatabase();
-                    if (db.enableScrollToActiveChar !== false) {
+                    if (settings.ui.enableScrollToActiveChar !== false) {
                         const now = Date.now();
                         if (now - lastScrollTime > SCROLL_COOLDOWN) {
                             lastScrollTime = now;
@@ -348,7 +347,7 @@ export function activeHotkeys<T extends { action: string }>(
         : hotkeys;
 }
 
-export function hotkeyMatches(hotkey: (typeof DBState.db.hotkeys)[number], ev: KeyboardEvent): boolean {
+export function hotkeyMatches(hotkey: (typeof settings.hotkeys)[number], ev: KeyboardEvent): boolean {
     if (!hotkey) {
         return false;
     }
@@ -388,8 +387,7 @@ function changeToPreset(num: number) {
     // The popup editor writes its draft back to the field it was opened on when it closes; with a
     // forwarded preset field that is the selected preset, so the selection must not change meanwhile.
     if (!doingAlert() && !popUpEditorStore.open) {
-        let db = getDatabase();
-        let pres = db.botPresets;
+        let pres = settings.presets;
         if (pres.length > num) {
             alertToast(`Changed to Preset: ${pres[num].name}`);
             changeToPreset2(pres[num].id);

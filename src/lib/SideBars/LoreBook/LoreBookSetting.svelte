@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { useLocalLoreDraft } from "src/ts/storage/localLoreDraft.svelte";
     import { DBState } from "src/ts/stores.svelte";
     import { language } from "../../../lang";
@@ -144,8 +145,8 @@
                 check={true}
                 onChange={() => {
                     DBState.db.characters[$selectedCharID].loreSettings = {
-                        tokenBudget: DBState.db.loreBookToken,
-                        scanDepth: DBState.db.loreBookDepth,
+                        tokenBudget: settings.providers.loreBookToken,
+                        scanDepth: settings.memoryTranslateMedia.loreBookDepth,
                         recursiveScanning: false,
                     };
                 }}
@@ -154,7 +155,7 @@
         </div>
     {/if}
     <div class="flex items-center mt-4">
-        {#if DBState.db.useExperimental}
+        {#if settings.ui.useExperimental}
             <Check bind:check={DBState.db.characters[$selectedCharID].lorePlus} name={language.lorePlus}
                 ><Help key="lorePlus"></Help><Help key="experimental"></Help></Check
             >
@@ -195,7 +196,7 @@
         >
             <HardDriveUploadIcon />
         </button>
-        {#if DBState.db.bulkEnabling}
+        {#if settings.ui.bulkEnabling}
             <button
                 onclick={() => {
                     toggleCharacterLoreAlwaysActive();

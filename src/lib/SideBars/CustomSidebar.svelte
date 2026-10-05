@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings, activePreset, activePersona, currentPresetRecord } from "src/ts/storage/settingsViews.svelte";
     import { Cog, PinIcon } from "@lucide/svelte";
     import { DBState, openPersonaList, openPresetList, selectedCharID } from "src/ts/stores.svelte";
     import Button from "../UI/GUI/Button.svelte";
@@ -23,19 +24,19 @@
         if (bindedPersona) {
             return bindedPersona?.name;
         }
-        return DBState.db.username;
+        return activePersona.name;
     });
 </script>
 
 <div class="rounded-sm flex flex-col w-full gap-2">
-    {#each DBState.db.customSidebarItems as item}
+    {#each settings.customSidebarItems as item}
         {#if item.type === "model"}
-            <ModelList bind:value={DBState.db.aiModel} noMargin />
+            <ModelList bind:value={activePreset.aiModel} noMargin />
         {:else if item.type === "preset"}
             <Button
                 onclick={() => {
                     openPresetList.set(!get(openPresetList));
-                }}>{DBState.db.botPresets?.[DBState.db.botPresetsId]?.name || language.presets}</Button
+                }}>{currentPresetRecord()?.name || language.presets}</Button
             >
         {:else if item.type === "persona"}
             <Button
@@ -65,7 +66,7 @@
                         if (checkPersonaBinded()) {
                             setCurrentChatMeta({ bindedPersona: "" });
                         } else {
-                            setCurrentChatMeta({ bindedPersona: DBState.db.personas[DBState.db.selectedPersona].id });
+                            setCurrentChatMeta({ bindedPersona: activePersona.id });
                         }
                     }}
                 >

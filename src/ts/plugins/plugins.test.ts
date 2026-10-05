@@ -49,8 +49,14 @@ vi.mock("./apiV3/transpiler", () => ({
 }));
 
 import { language } from "src/lang";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { importPlugin, loadPlugins } from "./plugins.svelte";
 import { pluginHooks } from "./pluginHooks";
+
+// `mocks.db` installed as `setDatabaseLite` installs a database (`database.svelte` is mocked here):
+// its fields moved into the records, the accessors on, since the plugin functions read and write
+// the plugin list through the settings views (Phase 6 slice 7). `mocks.db.plugins` is that record.
+installFlatDatabase(mocks.db);
 
 const script = (header: string) => `//@name test_plugin\n${header}\nconsole.log("hi");\n`;
 

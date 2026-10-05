@@ -1,3 +1,4 @@
+import { settings } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
 import { get } from "svelte/store";
 import type { ChannelChunk } from "../../../shared/jobs.ts";
@@ -245,7 +246,7 @@ function applyEffect(notice: GenerationNotice) {
             return;
         }
         case "notification":
-            if (DBState.db.notification) {
+            if (settings.ui.notification) {
                 void Notification.requestPermission()
                     .then((permission) => {
                         if (permission === "granted") {

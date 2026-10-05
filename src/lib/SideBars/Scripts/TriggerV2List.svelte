@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { PlusIcon, ArrowLeftIcon, DownloadIcon, UploadIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import Button from "src/lib/UI/GUI/Button.svelte";
@@ -18,7 +19,6 @@
         type triggerV2IfAdvanced,
     } from "../../../../shared/triggers.ts";
     import { onDestroy, onMount } from "svelte";
-    import { DBState } from "src/ts/stores.svelte";
     import { RISU_EFFECT_DRAG_TYPE, RISU_TRIGGER_DRAG_TYPE } from "src/ts/dragTypes";
 
     interface Props {
@@ -474,7 +474,7 @@
     });
 
     const getFilteredTriggers = () => {
-        const allCategories = DBState.db.showDeprecatedTriggerV2
+        const allCategories = settings.ui.showDeprecatedTriggerV2
             ? effectCategories
             : Object.fromEntries(Object.entries(effectCategories).filter(([key]) => key !== "Deprecated"));
 
@@ -483,7 +483,7 @@
     };
 
     const getAvailableCategories = () => {
-        const allCategories = DBState.db.showDeprecatedTriggerV2
+        const allCategories = settings.ui.showDeprecatedTriggerV2
             ? effectCategories
             : Object.fromEntries(Object.entries(effectCategories).filter(([key]) => key !== "Deprecated"));
 
@@ -3126,7 +3126,7 @@
                             <div class="hidden md:block p-4 border-t border-darkborderc">
                                 <div class="text-textcolor2 text-xs">
                                     <CheckInput
-                                        bind:check={DBState.db.showDeprecatedTriggerV2}
+                                        bind:check={settings.ui.showDeprecatedTriggerV2}
                                         name={language.showDeprecatedTriggerV2}
                                         grayText
                                     />
@@ -3167,7 +3167,7 @@
                             <div class="md:hidden p-4 border-t border-darkborderc">
                                 <div class="text-textcolor2 text-xs">
                                     <CheckInput
-                                        bind:check={DBState.db.showDeprecatedTriggerV2}
+                                        bind:check={settings.ui.showDeprecatedTriggerV2}
                                         name={language.showDeprecatedTriggerV2}
                                         grayText
                                     />

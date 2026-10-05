@@ -1,7 +1,7 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { CheckIcon, XIcon } from "@lucide/svelte";
     import { createEventDispatcher, onDestroy } from "svelte";
-    import { DBState } from "src/ts/stores.svelte";
     import { language } from "src/lang";
     import {
         findAllOriginalRangesFromHtml,
@@ -812,8 +812,8 @@
                 class="partial-edit-textarea"
                 onkeydown={handleKeydown}
                 oninput={adjustHeight}
-                style:font-size="{0.875 * (DBState.db.zoomsize / 100)}rem"
-                style:line-height="{(DBState.db.lineHeight ?? 1.25) * (DBState.db.zoomsize / 100)}rem"></textarea>
+                style:font-size="{0.875 * (settings.ui.zoomsize / 100)}rem"
+                style:line-height="{(settings.ui.lineHeight ?? 1.25) * (settings.ui.zoomsize / 100)}rem"></textarea>
             <div class="partial-edit-buttons">
                 <button
                     type="button"

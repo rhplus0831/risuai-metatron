@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { requestChatData } from "src/ts/process/request/request";
     import { doingChat, type OpenAIChat } from "../../ts/process/index.svelte";
     import { type character, type DeepReadonly, type Message, type groupChat } from "../../ts/storage/database.svelte";
@@ -24,7 +25,7 @@
         DBState.db.characters[$selectedCharID]?.chats[DBState.db.characters[$selectedCharID].chatPage]?.suggestMessages,
     );
     let suggestMessagesTranslated: string[] = $state();
-    let toggleTranslate: boolean = $state(DBState.db.autoTranslate);
+    let toggleTranslate: boolean = $state(settings.memoryTranslateMedia.autoTranslate);
     let progress: boolean = $state();
     let progressChatPage = -1;
     let abortController: AbortController | undefined;
@@ -71,8 +72,8 @@
         let lastMessages: DeepReadonly<Message>[] = messages.slice(Math.max(messages.length - 10, 0));
         if (lastMessages.length === 0) return;
         const prompt =
-            DBState.db.autoSuggestPrompt && DBState.db.autoSuggestPrompt.length > 0
-                ? DBState.db.autoSuggestPrompt
+            activePreset.autoSuggestPrompt && activePreset.autoSuggestPrompt.length > 0
+                ? activePreset.autoSuggestPrompt
                 : defaultAutoSuggestPrompt;
         let promptbody: OpenAIChat[] = [
             {
@@ -88,14 +89,14 @@
         ];
 
         if (
-            DBState.db.subModel === "textgen_webui" ||
-            DBState.db.subModel === "mancer" ||
-            DBState.db.subModel.startsWith("local_")
+            activePreset.subModel === "textgen_webui" ||
+            activePreset.subModel === "mancer" ||
+            activePreset.subModel.startsWith("local_")
         ) {
             promptbody = [
                 {
                     role: "system",
-                    content: replacePlaceholders(DBState.db.autoSuggestPrompt, currentChar.name),
+                    content: replacePlaceholders(activePreset.autoSuggestPrompt, currentChar.name),
                 },
                 ...lastMessages.map(({ role, data }) => ({
                     role: role === "user" ? ("user" as const) : ("assistant" as const),
@@ -198,7 +199,7 @@
             <div>{language.creatingSuggestions}</div>
         </div>
     {:else if !$doingChat}
-        {#if DBState.db.translator !== ""}
+        {#if settings.memoryTranslateMedia.translator !== ""}
             <div class="flex mr-2 mb-2">
                 <button
                     class={"bg-textcolor2 hover:bg-darkbutton font-bold py-2 px-4 rounded-sm " +
@@ -238,7 +239,7 @@
                         send();
                     }}
                 >
-                    {#await ParseMarkdown(DBState.db.translator !== "" && toggleTranslate && suggestMessagesTranslated && suggestMessagesTranslated.length > 0 ? (suggestMessagesTranslated[i] ?? suggest) : suggest) then md}
+                    {#await ParseMarkdown(settings.memoryTranslateMedia.translator !== "" && toggleTranslate && suggestMessagesTranslated && suggestMessagesTranslated.length > 0 ? (suggestMessagesTranslated[i] ?? suggest) : suggest) then md}
                         {@html md}
                     {/await}
                 </button>

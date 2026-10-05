@@ -22,7 +22,13 @@ vi.mock("../parser/parser.svelte", () => ({
     },
 }));
 
+import { installFlatDatabase } from "../storage/tests/installFlatDatabase";
 import { applyEdittransRegex } from "./translator";
+
+// `database` installed as `setDatabaseLite` installs a database (`database.svelte` is mocked here),
+// since the translator reads the preset's scripts through the record views (Phase 6 slice 7): its
+// root `presetRegex` becomes the one preset's `regex`, which its writes reach through the accessors.
+installFlatDatabase(database, "translator-preset");
 
 const script = (v: Partial<customscript>): customscript =>
     ({

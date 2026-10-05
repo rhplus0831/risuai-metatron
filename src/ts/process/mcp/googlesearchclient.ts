@@ -1,8 +1,8 @@
+import { settings } from "../../storage/settingsViews.svelte";
 import { MCPClientLike } from "./internalmcp";
 import type { MCPTool, RPCToolCallContent } from "./mcplib";
 import { fetchNative } from "../../globalApi.svelte";
 import { alertInput } from "../../alert";
-import { DBState } from "../../stores.svelte";
 import { updateSettings } from "../../storage/collectionStore.svelte";
 
 interface WebSearchArgs {
@@ -36,11 +36,11 @@ export class GoogleSearchClient extends MCPClientLike {
 
     // Read from the root settings on every use, so a change from another tab applies.
     private get API_KEY() {
-        return DBState.db.googleSearchCredentials?.apiKey ?? "";
+        return settings.secrets.googleSearchCredentials?.apiKey ?? "";
     }
 
     private get SEARCH_ENGINE_ID() {
-        return DBState.db.googleSearchCredentials?.searchEngineId ?? "";
+        return settings.secrets.googleSearchCredentials?.searchEngineId ?? "";
     }
 
     constructor() {
@@ -60,7 +60,7 @@ export class GoogleSearchClient extends MCPClientLike {
     }
 
     private async initializeCredentials(): Promise<void> {
-        const storedCredentials = DBState.db.googleSearchCredentials;
+        const storedCredentials = settings.secrets.googleSearchCredentials;
 
         if (storedCredentials && storedCredentials.apiKey && storedCredentials.searchEngineId) {
             return;

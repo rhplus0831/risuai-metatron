@@ -43,26 +43,26 @@ vi.mock(import("../../globalApi.svelte"), () => ({
 import { risuChatParser, risuChatParserScoped } from "../parser.svelte";
 import { PluginTargetGoneError } from "../../plugins/apiV3/pluginContext";
 import { DBState } from "../../stores.svelte";
+import { installForwarding } from "../../storage/forwarding.svelte";
+import { initializeRecords, takeRecordFields } from "../../storage/records.svelte";
+import { selectPersona, selectPreset } from "../../storage/selection.svelte";
 
-/** The tab's database as the forwarding layer serves it: the selected preset and persona under their root names. */
+/**
+ * The tab's database, installed as `setDatabaseLite` installs one (`database.svelte` is mocked
+ * here): its fields moved into the records, the forwarding accessors on, and the preset and persona
+ * selected, since the parser reads the settings through the record views (Phase 6 slice 7). The
+ * forwarding layer serves the selected preset and persona under their root names.
+ */
 function database(selected: { preset: string; persona: string }) {
-    const presets = [
-        { id: "p-ctx", name: "Context", aiModel: "ctx-model", maxContext: 1111 },
-        { id: "p-sel", name: "Selected", aiModel: "sel-model", maxContext: 2222 },
-    ];
-    const personas = [
-        { id: "u-ctx", name: "Ctx Persona", personaPrompt: "the context persona" },
-        { id: "u-sel", name: "Sel Persona", personaPrompt: "the selected persona" },
-    ];
-    const preset = presets.find((entry) => entry.id === selected.preset)!;
-    const persona = personas.find((entry) => entry.id === selected.persona)!;
-    return {
-        botPresets: presets,
-        personas,
-        aiModel: preset.aiModel,
-        maxContext: preset.maxContext,
-        username: persona.name,
-        personaPrompt: persona.personaPrompt,
+    const raw = {
+        botPresets: [
+            { id: "p-ctx", name: "Context", aiModel: "ctx-model", maxContext: 1111, templateDefaultVariables: "" },
+            { id: "p-sel", name: "Selected", aiModel: "sel-model", maxContext: 2222, templateDefaultVariables: "" },
+        ],
+        personas: [
+            { id: "u-ctx", name: "Ctx Persona", personaPrompt: "the context persona" },
+            { id: "u-sel", name: "Sel Persona", personaPrompt: "the selected persona" },
+        ],
         characters: [
             {
                 chaId: "c",
@@ -73,8 +73,12 @@ function database(selected: { preset: string; persona: string }) {
             },
         ],
         globalChatVariables: {},
-        templateDefaultVariables: "",
     };
+    initializeRecords(takeRecordFields(raw));
+    installForwarding(raw);
+    selectPreset(selected.preset);
+    selectPersona(selected.persona);
+    return raw as any;
 }
 
 beforeEach(() => {

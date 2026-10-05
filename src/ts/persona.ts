@@ -1,4 +1,5 @@
-import { getDatabase, saveImage } from "./storage/database.svelte";
+import { settings, activePersona } from "./storage/settingsViews.svelte";
+import { saveImage } from "./storage/database.svelte";
 import { selectSingleFile, sleep } from "./util";
 import { alertError, alertNormal, alertStore } from "./alert";
 import { AppendableBuffer, downloadFile, readImage } from "./globalApi.svelte";
@@ -6,9 +7,7 @@ import { language } from "src/lang";
 import { reencodeImage } from "./process/files/inlays";
 import { PngChunk } from "./pngChunk";
 import { newPersonaId } from "../../shared/presets.ts";
-import { selectedPersona } from "./storage/forwarding.svelte";
 import { selectPersona } from "./storage/selection.svelte";
-import { DBState } from "./stores.svelte";
 import { addPersona } from "./storage/collectionStore.svelte";
 
 /**
@@ -17,13 +16,13 @@ import { addPersona } from "./storage/collectionStore.svelte";
  * icon is dropped if the persona was deleted meanwhile.
  */
 export async function selectUserImg() {
-    const personaId = selectedPersona(DBState.db)?.id;
+    const personaId = activePersona.id;
     const selected = await selectSingleFile(["png"]);
     if (!selected || !personaId) {
         return;
     }
     const icon = await saveImage(selected.data);
-    const persona = DBState.db.personas.find((entry) => entry.id === personaId);
+    const persona = settings.personas.find((entry) => entry.id === personaId);
     if (persona) {
         persona.icon = icon;
     }
@@ -34,7 +33,7 @@ export async function selectUserImg() {
  * so nothing is copied.
  */
 export function changeUserPersona(id: string) {
-    if (DBState.db.personas.some((persona) => persona.id === id)) {
+    if (settings.personas.some((persona) => persona.id === id)) {
         selectPersona(id);
     }
 }
@@ -46,14 +45,18 @@ interface PersonaCard {
 }
 
 export async function exportUserPersona() {
-    let db = getDatabase({ snapshot: true });
-    if (!db.username || !db.personaPrompt) {
+    // The selected persona's fields, read once now: the selection can change during the awaits below.
+    const username = activePersona.name;
+    const personaPrompt = activePersona.personaPrompt;
+    const userIcon = activePersona.icon;
+    const userNote = activePersona.note;
+    if (!username || !personaPrompt) {
         alertError("username or persona prompt is empty");
         return;
     }
 
     let img: Uint8Array;
-    if (!db.userIcon) {
+    if (!userIcon) {
         const canvas = document.createElement("canvas");
         canvas.width = 256;
         canvas.height = 256;
@@ -64,13 +67,13 @@ export async function exportUserPersona() {
         const base64 = dataUrl.split(",")[1];
         img = new Uint8Array(Buffer.from(base64, "base64"));
     } else {
-        img = await readImage(db.userIcon);
+        img = await readImage(userIcon);
     }
 
     let card: PersonaCard = safeStructuredClone({
-        name: db.username,
-        personaPrompt: db.personaPrompt,
-        note: db.userNote,
+        name: username,
+        personaPrompt,
+        note: userNote,
     });
 
     alertStore.set({
@@ -90,7 +93,7 @@ export async function exportUserPersona() {
     });
 
     await sleep(10);
-    await downloadFile(`${db.username.replace(/[<>:"/\\|?*\.\,]/g, "")}_export.png`, img);
+    await downloadFile(`${username.replace(/[<>:"/\\|?*\.\,]/g, "")}_export.png`, img);
 
     alertNormal(language.successExport);
 }

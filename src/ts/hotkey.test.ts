@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { Writable } from "svelte/store";
+import { get, type Writable } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Phase 3, slice 5: the preset hotkeys (Ctrl+1 to Ctrl+9) map their index to the preset's id and
@@ -41,7 +41,8 @@ import { setRecordWriteListener } from "./storage/records.svelte";
 import { llmSecretState, setMaskedSecrets } from "./storage/llmSecrets.svelte";
 import { maskLlmSecrets } from "../../shared/llmSecrets.ts";
 import { selection, selectPreset } from "./storage/selection.svelte";
-import { DBState, popUpEditorStore } from "./stores.svelte";
+import { settings } from "./storage/settingsViews.svelte";
+import { DBState, popUpEditorStore, settingsOpen } from "./stores.svelte";
 
 let installed = false;
 
@@ -180,6 +181,49 @@ describe("hotkey matching", () => {
             ]);
         } finally {
             setRecordWriteListener(null);
+        }
+    });
+});
+
+describe("the stored hotkeys and their ui toggle (Phase 6 slice 7)", () => {
+    // `initHotkey` reads the `hotkeys` record and the `ui` section's `enableScrollToActiveChar`
+    // through the settings views at each key press: an edit of either is what the next press uses.
+    // The facade is taken away once the records are installed (as slice 10 leaves it).
+    const pressWith = (key: string) =>
+        document.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey: true, bubbles: true, cancelable: true }));
+
+    it("dispatch the stored hotkeys, follow an edit of the record, and drop scrollToActiveChar while its toggle is off", () => {
+        setDatabase({
+            characters: [],
+            botPresets: [{ id: "a", name: "A" }],
+            hotkeys: [
+                { key: "j", ctrl: true, action: "settings" },
+                { key: "k", ctrl: true, action: "scrollToActiveChar" },
+            ],
+            enableScrollToActiveChar: true,
+        } as unknown as Database);
+        DBState.db = {} as Database;
+        const scrolls = vi.fn();
+        window.addEventListener("scrollToActiveCharacter", scrolls);
+        try {
+            settingsOpen.set(false);
+            pressWith("j");
+            expect(get(settingsOpen)).toBe(true);
+            pressWith("k");
+            expect(scrolls).toHaveBeenCalledTimes(1);
+
+            settings.ui.enableScrollToActiveChar = false;
+            pressWith("k");
+            expect(scrolls).toHaveBeenCalledTimes(1);
+
+            settings.hotkeys[0].key = "m";
+            pressWith("j");
+            expect(get(settingsOpen)).toBe(true);
+            pressWith("m");
+            expect(get(settingsOpen)).toBe(false);
+        } finally {
+            window.removeEventListener("scrollToActiveCharacter", scrolls);
+            settingsOpen.set(false);
         }
     });
 });

@@ -1,7 +1,8 @@
+import { settings } from "./storage/settingsViews.svelte";
 import { get, readonly, writable } from "svelte/store";
 import { sleep } from "./util";
 import { language } from "../lang";
-import { getDatabase, type MessageGenerationInfo } from "./storage/database.svelte";
+import { type MessageGenerationInfo } from "./storage/database.svelte";
 import { alertStore as alertStoreImported } from "./stores.svelte";
 
 export interface alertData {
@@ -48,7 +49,6 @@ export const alertStore = {
 
 export function alertError(msg: string | Error) {
     console.error(msg);
-    const db = getDatabase();
 
     let stackTrace: string | undefined = undefined;
 
@@ -77,7 +77,7 @@ export function alertError(msg: string | Error) {
 
     //check if it's a known error
     if (msg.includes("Failed to fetch") || msg.includes("NetworkError when attempting to fetch resource.")) {
-        submsg = db.usePlainFetch ? language.errors.networkFetchPlain : language.errors.networkFetch;
+        submsg = settings.providers.usePlainFetch ? language.errors.networkFetchPlain : language.errors.networkFetch;
     }
 
     alertStoreImported.set({

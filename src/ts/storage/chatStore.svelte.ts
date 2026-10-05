@@ -1,3 +1,4 @@
+import { settings } from "./settingsViews.svelte";
 import { get } from "svelte/store";
 import { v4 as uuidv4 } from "uuid";
 import type {
@@ -499,7 +500,7 @@ export function applyServerGeneration(
         setStreamingState({
             ...ref,
             messageId: update.messageId,
-            mode: DBState.db.streamingDisplayOptimizationMode ?? "off",
+            mode: settings.ui.streamingDisplayOptimizationMode ?? "off",
         });
         streamingGeneration = update.generationId;
     }

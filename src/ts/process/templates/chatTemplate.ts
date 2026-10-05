@@ -1,5 +1,6 @@
+import { activePreset } from "../../storage/settingsViews.svelte";
 import type { OpenAIChat } from "../index.svelte";
-import { getCurrentCharacter, getDatabase } from "src/ts/storage/database.svelte";
+import { getCurrentCharacter } from "src/ts/storage/database.svelte";
 import { getUserName } from "src/ts/util";
 import { chatTemplates, renderChatTemplate, templateEffect } from "../../../../shared/prompt/chatTemplate.ts";
 
@@ -14,15 +15,14 @@ export const applyChatTemplate = (
         custom?: string;
     } = {},
 ) => {
-    const db = getDatabase();
     const currentChar = getCurrentCharacter();
-    const type = arg.type ?? db.instructChatTemplate;
+    const type = arg.type ?? activePreset.instructChatTemplate;
     if (!type) {
         throw new Error("Template type is not set");
     }
     return renderChatTemplate(messages, {
         type,
-        jinjaTemplate: arg.custom ?? db.JinjaTemplate,
+        jinjaTemplate: arg.custom ?? activePreset.JinjaTemplate,
         characterName: () => currentChar.name,
         userName: () => getUserName(),
     });

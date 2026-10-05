@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
         CharEmotion,
         DynamicGUI,
@@ -76,7 +77,7 @@
     $effect(() => {
         let newCharImages: sortType[] = [];
         const idObject = getCharacterIndexObject();
-        for (const id of DBState.db.characterOrder) {
+        for (const id of settings.characterOrder) {
             if (typeof id === "string") {
                 const index = idObject[id] ?? -1;
                 if (index !== -1) {
@@ -116,8 +117,8 @@
         if (!isEqual(charImages, newCharImages)) {
             charImages = newCharImages;
         }
-        if (IconRounded !== DBState.db.roundIcons) {
-            IconRounded = DBState.db.roundIcons;
+        if (IconRounded !== settings.ui.roundIcons) {
+            IconRounded = settings.ui.roundIcons;
         }
     });
 
@@ -378,7 +379,7 @@
     };
 </script>
 
-{#if DBState.db.menuSideBar}
+{#if settings.ui.menuSideBar}
     <div
         class="h-full w-20 min-w-20 flex-col items-center bg-bgcolor text-textcolor shadow-lg relative rs-sidebar"
         class:editMode
@@ -449,7 +450,7 @@
         class:hidden
         class:flex={!hidden}
     >
-        {#if !DBState.db.hamburgerButtonBottom}
+        {#if !settings.ui.hamburgerButtonBottom}
             <button
                 class="flex h-8 min-h-8 w-14 min-w-14 cursor-pointer text-white mt-2 items-center justify-center rounded-md bg-textcolor2 transition-colors hover:bg-blue-500"
                 onclick={() => {
@@ -691,7 +692,7 @@
                                             openFolders = openFolders;
                                         }}
                                     >
-                                        {#if DBState.db.showFolderName}
+                                        {#if settings.ui.showFolderName}
                                             <div class="h-full w-full flex justify-center items-center">
                                                 <span class="hyphens-auto truncate font-bold">{char.name}</span>
                                             </div>
@@ -893,7 +894,7 @@
                 >
             </div>
         </div>
-        {#if DBState.db.hamburgerButtonBottom}
+        {#if settings.ui.hamburgerButtonBottom}
             <div class="border-t border-t-selected w-full relative text-white">
                 {#if menuMode === 1}
                     <div
@@ -1025,7 +1026,7 @@
                     class="grow rounded-br-md"
                     class:text-textcolor2={!$botMakerMode || devTool}>{language.character}</button
                 >
-                {#if DBState.db.enableDevTools}
+                {#if settings.ui.enableDevTools}
                     <button
                         onclick={() => {
                             devTool = true;

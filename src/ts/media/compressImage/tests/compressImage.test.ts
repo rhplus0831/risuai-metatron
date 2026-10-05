@@ -1,18 +1,11 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { DBState } from "../../../stores.svelte";
+import { initializeRecords, takeRecordFields } from "../../../storage/records.svelte";
+import { settings } from "../../../storage/settingsViews.svelte";
 import { compressImage } from "../compressImage";
 
-vi.mock(
-    import("../../../stores.svelte"),
-    () =>
-        ({
-            DBState: {
-                db: {
-                    imageCompression: false,
-                },
-            },
-        }) as typeof import("../../../stores.svelte"),
-);
+// The setting is installed in the records (as `setDatabaseLite` installs a database) and changed
+// through the settings views, which `compressImage` reads (Phase 6 slice 7).
+initializeRecords(takeRecordFields({ imageCompression: false }));
 
 const doLossyCompressionMock = vi.fn();
 vi.mock(import("../lossyCompression"), () => ({
@@ -25,7 +18,7 @@ beforeEach(() => {
 
 describe("imageCompression disabled", () => {
     beforeEach(() => {
-        DBState.db.imageCompression = false;
+        settings.memoryTranslateMedia.imageCompression = false;
     });
 
     test("returns original data without compression", async () => {
@@ -37,7 +30,7 @@ describe("imageCompression disabled", () => {
 
 describe("imageCompression enabled", () => {
     beforeEach(() => {
-        DBState.db.imageCompression = true;
+        settings.memoryTranslateMedia.imageCompression = true;
     });
 
     test("returns original data for Unknown type", async () => {

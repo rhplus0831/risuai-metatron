@@ -1,6 +1,6 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import isEqual from "lodash/isEqual";
-    import { DBState } from "src/ts/stores.svelte";
     import { sleep } from "src/ts/util";
     import { alertError } from "../../ts/alert";
     import {
@@ -98,11 +98,14 @@
                 lastChatId = chatID;
                 let translateText = false;
                 try {
-                    if (DBState.db.autoTranslate) {
-                        if (DBState.db.autoTranslateCachedOnly && DBState.db.translatorType === "llm") {
-                            const cache = DBState.db.translateBeforeHTMLFormatting
+                    if (settings.memoryTranslateMedia.autoTranslate) {
+                        if (
+                            settings.memoryTranslateMedia.autoTranslateCachedOnly &&
+                            settings.memoryTranslateMedia.translatorType === "llm"
+                        ) {
+                            const cache = settings.memoryTranslateMedia.translateBeforeHTMLFormatting
                                 ? await getLLMCache(data)
-                                : !DBState.db.legacyTranslation
+                                : !settings.memoryTranslateMedia.legacyTranslation
                                   ? await getLLMCache(
                                         await ParseMarkdown(
                                             data,
@@ -139,13 +142,16 @@
                 }
             }
             if (retranslate || translated) {
-                if (DBState.db.showTranslationLoading && !preservePendingContent) {
+                if (settings.ui.showTranslationLoading && !preservePendingContent) {
                     lastParsed = `<div style="display:flex;justify-content:center;align-items:center;height:48px;"><div style="animation: spin 1s linear infinite; border-radius: 50%; height: 32px; width: 32px; border: 2px solid #3b82f6; border-top: 2px solid transparent;"></div></div><style>@keyframes spin { to { transform: rotate(360deg); } }</style>`;
                 }
 
                 let transResult;
 
-                if (DBState.db.translatorType === "llm" && DBState.db.translateBeforeHTMLFormatting) {
+                if (
+                    settings.memoryTranslateMedia.translatorType === "llm" &&
+                    settings.memoryTranslateMedia.translateBeforeHTMLFormatting
+                ) {
                     await sleep(100);
                     translating = true;
                     data = await translateHTML(data, false, charArg, chatID, retranslate, transform);
@@ -154,7 +160,7 @@
                     lastParsedQueue = marked;
                     lastCharArg = charArg;
                     transResult = marked;
-                } else if (!DBState.db.legacyTranslation) {
+                } else if (!settings.memoryTranslateMedia.legacyTranslation) {
                     const marked = await ParseMarkdown(
                         data,
                         charArg,
@@ -211,7 +217,7 @@
     };
 
     const checkImg = () => {
-        if (!DBState.db.newImageHandlingBeta || !bodyRoot) {
+        if (!settings.memoryTranslateMedia.newImageHandlingBeta || !bodyRoot) {
             return;
         }
         const imgs = bodyRoot.querySelectorAll(

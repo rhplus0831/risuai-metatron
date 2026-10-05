@@ -1,3 +1,4 @@
+import { settings, activePreset } from "../storage/settingsViews.svelte";
 import { get } from "svelte/store";
 import { DBState, selectedCharID } from "../stores.svelte";
 import { parseKeyValue } from "../util";
@@ -15,7 +16,7 @@ export function getChatVar(key: string): string {
     const state = chat?.scriptstate?.["$" + key];
     if (state === undefined || state === null) {
         const defaultVariables = parseKeyValue(char.defaultVariables).concat(
-            parseKeyValue(DBState.db.templateDefaultVariables),
+            parseKeyValue(activePreset.templateDefaultVariables),
         );
         const findResult = defaultVariables.find((f) => {
             return f[0] === key;
@@ -48,7 +49,7 @@ export function getChatVarOf(ref: ChatRef | null, key: string): string {
     const state = findChat(ref)?.scriptstate?.["$" + key];
     if (state === undefined || state === null) {
         const defaultVariables = parseKeyValue(char.defaultVariables).concat(
-            parseKeyValue(DBState.db.templateDefaultVariables),
+            parseKeyValue(activePreset.templateDefaultVariables),
         );
         return defaultVariables.find((f) => f[0] === key)?.[1] ?? "null";
     }
@@ -96,7 +97,7 @@ export function getGlobalChatVarOf(ref: ChatRef | null, key: string): string {
     if (vt !== "null" && vt) {
         return vt;
     }
-    return DBState.db.globalChatVariables[key] ?? "null";
+    return settings.globalChatVariables[key] ?? "null";
 }
 
 export function getGlobalChatVar(key: string): string {
@@ -104,7 +105,7 @@ export function getGlobalChatVar(key: string): string {
     if (vt !== "null" && vt) {
         return vt;
     }
-    return DBState.db.globalChatVariables[key] ?? "null";
+    return settings.globalChatVariables[key] ?? "null";
 }
 
 export function setGlobalChatVar(key: string, value: string) {
@@ -114,7 +115,7 @@ export function setGlobalChatVar(key: string, value: string) {
     } else if (getGLChatVar(key) !== undefined) {
         deleteGLChatVar(key);
     }
-    DBState.db.globalChatVariables[key] = value;
+    settings.globalChatVariables[key] = value;
 }
 
 export function isLocallyHandledGlobalChatVar(key: string): boolean {

@@ -1,7 +1,6 @@
+import { settings, activePreset, activePersona } from "../../storage/settingsViews.svelte";
 import { untrack } from "svelte";
-import { DBState } from "../../stores.svelte";
 import { findChat, type ChatRef } from "../../storage/chatStore.svelte";
-import { selectedPersona, selectedPreset } from "../../storage/forwarding.svelte";
 
 /**
  * The call context of a plugin hook (Phase 4, `PLAN.md` Decision 5 for client hooks): the chat a hook
@@ -40,11 +39,11 @@ export function capturePluginContext(chatRef: ChatRef | null | undefined): Plugi
     }
     return untrack(() => {
         const bound = findChat(chatRef)?.bindedPersona;
-        const boundPersona = bound ? DBState.db.personas?.find((persona) => persona?.id === bound) : undefined;
+        const boundPersona = bound ? settings.personas?.find((persona) => persona?.id === bound) : undefined;
         return {
             chatRef: { chaId: chatRef.chaId, chatId: chatRef.chatId },
-            presetId: selectedPreset(DBState.db)?.id ?? "",
-            personaId: boundPersona?.id ?? selectedPersona(DBState.db)?.id ?? "",
+            presetId: activePreset.id ?? "",
+            personaId: boundPersona?.id ?? activePersona.id ?? "",
         };
     });
 }

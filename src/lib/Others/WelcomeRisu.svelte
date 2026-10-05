@@ -1,9 +1,9 @@
 <script lang="ts">
+    import { settings, activePreset, activePersona } from "src/ts/storage/settingsViews.svelte";
     import { setSecret } from "src/ts/storage/llmSecrets.svelte";
     import { Send } from "@lucide/svelte";
     import { changeLanguage, language } from "src/lang";
     import { applyPresetTemplate } from "src/ts/storage/database.svelte";
-    import { DBState } from "src/ts/stores.svelte";
     import Chat from "../ChatScreens/Chat.svelte";
     import { prebuiltPresets } from "src/ts/process/templates/templates";
     import { updateTextThemeAndCSS } from "src/ts/gui/colorscheme";
@@ -23,7 +23,7 @@
         const usableLangs = ["de", "en", "ko", "cn", "vi", "zh-Hant"];
         if (usableLangs.includes(browserLangShort)) {
             changeLanguage(browserLangShort);
-            DBState.db.language = browserLangShort;
+            settings.ui.language = browserLangShort;
             step = 1;
         }
     }
@@ -33,7 +33,7 @@
         switch (step) {
             case 1: {
                 if (input.length > 0) {
-                    DBState.db.username = input;
+                    activePersona.name = input;
                     step = 2;
                     input = "";
                 }
@@ -76,86 +76,86 @@
         if (step === 10) {
             setTimeout(() => {
                 applyPresetTemplate(prebuiltPresets.OAI2);
-                DBState.db.textTheme = "highcontrast";
+                settings.ui.textTheme = "highcontrast";
                 updateTextThemeAndCSS();
 
                 switch (chatMemorySelection) {
                     case 0: {
-                        DBState.db.maxContext = 16000;
-                        DBState.db.maxResponse = 1000;
+                        activePreset.maxContext = 16000;
+                        activePreset.maxResponse = 1000;
                         break;
                     }
                     case 1: {
-                        DBState.db.maxContext = 8000;
-                        DBState.db.maxResponse = 500;
+                        activePreset.maxContext = 8000;
+                        activePreset.maxResponse = 500;
                         break;
                     }
                     case 2: {
-                        DBState.db.maxContext = 12000;
-                        DBState.db.maxResponse = 800;
+                        activePreset.maxContext = 12000;
+                        activePreset.maxResponse = 800;
                         break;
                     }
                     case 3: {
-                        DBState.db.maxContext = 100000;
-                        DBState.db.maxResponse = 1000;
+                        activePreset.maxContext = 100000;
+                        activePreset.maxResponse = 1000;
                         break;
                     }
                 }
 
                 if (provider === "claude") {
-                    DBState.db.aiModel = "claude-sonnet-4-6";
-                    DBState.db.subModel = "claude-sonnet-4-6";
+                    activePreset.aiModel = "claude-sonnet-4-6";
+                    activePreset.subModel = "claude-sonnet-4-6";
                 }
 
                 if (provider === "openai") {
-                    DBState.db.aiModel = "gpt4o-chatgpt";
-                    DBState.db.subModel = "gpt4o-chatgpt";
+                    activePreset.aiModel = "gpt4o-chatgpt";
+                    activePreset.subModel = "gpt4o-chatgpt";
                 }
 
                 if (provider === "openrouter") {
-                    DBState.db.aiModel = "openrouter";
-                    DBState.db.subModel = "openrouter";
-                    DBState.db.openrouterRequestModel = "risu/free";
+                    activePreset.aiModel = "openrouter";
+                    activePreset.subModel = "openrouter";
+                    activePreset.openrouterRequestModel = "risu/free";
                 }
                 if (provider === "horde") {
-                    DBState.db.aiModel = "horde:::auto";
-                    DBState.db.subModel = "horde:::auto";
+                    activePreset.aiModel = "horde:::auto";
+                    activePreset.subModel = "horde:::auto";
                 }
                 if (chatLang !== 0) {
-                    switch (DBState.db.language) {
+                    switch (settings.ui.language) {
                         case "de": {
-                            DBState.db.translator = "de";
+                            settings.memoryTranslateMedia.translator = "de";
                             break;
                         }
                         case "en": {
-                            DBState.db.translator = "en";
+                            settings.memoryTranslateMedia.translator = "en";
                             break;
                         }
                         case "ko": {
-                            DBState.db.translator = "ko";
+                            settings.memoryTranslateMedia.translator = "ko";
                             break;
                         }
                         case "cn": {
-                            DBState.db.translator = "zh";
+                            settings.memoryTranslateMedia.translator = "zh";
                             break;
                         }
                         case "vi": {
-                            DBState.db.translator = "vi";
+                            settings.memoryTranslateMedia.translator = "vi";
                             break;
                         }
                         case "zh-Hant": {
-                            DBState.db.translator = "zh-TW";
+                            settings.memoryTranslateMedia.translator = "zh-TW";
                             break;
                         }
                     }
                 }
                 if (chatLang === 1) {
-                    DBState.db.autoTranslate = true;
-                    DBState.db.translatorType = "google";
-                    DBState.db.useAutoTranslateInput = true;
+                    settings.memoryTranslateMedia.autoTranslate = true;
+                    settings.memoryTranslateMedia.translatorType = "google";
+                    settings.memoryTranslateMedia.useAutoTranslateInput = true;
                 }
 
-                DBState.db.didFirstSetup = true;
+                settings.ui.didFirstSetup = true;
             }, 1000);
         }
     });
@@ -186,7 +186,7 @@
                             class="hover:text-green-500 transition-colors"
                             onclick={() => {
                                 changeLanguage("de");
-                                DBState.db.language = "de";
+                                settings.ui.language = "de";
                                 step = 1;
                             }}>• Deutsch</button
                         >
@@ -194,7 +194,7 @@
                             class="hover:text-green-500 transition-colors"
                             onclick={() => {
                                 changeLanguage("en");
-                                DBState.db.language = "en";
+                                settings.ui.language = "en";
                                 step = 1;
                             }}>• English</button
                         >
@@ -202,7 +202,7 @@
                             class="hover:text-green-500 transition-colors"
                             onclick={() => {
                                 changeLanguage("ko");
-                                DBState.db.language = "ko";
+                                settings.ui.language = "ko";
                                 step = 1;
                             }}>• 한국어</button
                         >
@@ -210,7 +210,7 @@
                             class="hover:text-green-500 transition-colors"
                             onclick={() => {
                                 changeLanguage("cn");
-                                DBState.db.language = "cn";
+                                settings.ui.language = "cn";
                                 step = 1;
                             }}>• 中文</button
                         >
@@ -218,7 +218,7 @@
                             class="hover:text-green-500 transition-colors"
                             onclick={() => {
                                 changeLanguage("zh-Hant");
-                                DBState.db.language = "zh-Hant";
+                                settings.ui.language = "zh-Hant";
                                 step = 1;
                             }}>• 中文(繁體)</button
                         >
@@ -226,7 +226,7 @@
                             class="hover:text-green-500 transition-colors"
                             onclick={() => {
                                 changeLanguage("vi");
-                                DBState.db.language = "vi";
+                                settings.ui.language = "vi";
                                 step = 1;
                             }}>• Tiếng Việt</button
                         >
@@ -234,11 +234,11 @@
                 {:else}
                     <Chat name="Airisu" img={airisuStyle} message={language.setup.welcome} isLastMemory={false} />
                     {#if step >= 2}
-                        <Chat name={DBState.db.username} message={DBState.db.username} isLastMemory={false} />
+                        <Chat name={activePersona.name} message={activePersona.name} isLastMemory={false} />
                         <Chat
                             name="Airisu"
                             img={airisuStyle}
-                            message={language.setup.setupLaterMessage.replace("{username}", DBState.db.username)}
+                            message={language.setup.setupLaterMessage.replace("{username}", activePersona.name)}
                             isLastMemory={false}
                         />
                     {/if}
@@ -270,14 +270,14 @@
                     {/if}
                     {#if step >= 3}
                         <Chat
-                            name={DBState.db.username}
+                            name={activePersona.name}
                             message={language.setup.setupMessageOption1}
                             isLastMemory={false}
                         />
                         <Chat
                             name="Airisu"
                             img={airisuStyle}
-                            message={language.setup.welcome2.replace("{username}", DBState.db.username)}
+                            message={language.setup.welcome2.replace("{username}", activePersona.name)}
                             isLastMemory={false}
                         />
                     {/if}
@@ -330,7 +330,7 @@
                         </div>
                     {/if}
                     {#if step >= 4}
-                        <Chat name={DBState.db.username} message={provider} isLastMemory={false} />
+                        <Chat name={activePersona.name} message={provider} isLastMemory={false} />
                         {#if provider === "openai"}
                             <Chat
                                 name="Airisu"
@@ -360,7 +360,7 @@
                         {/if}
                     {/if}
                     {#if step >= 5}
-                        <Chat name={DBState.db.username} message="<HIDDEN>" isLastMemory={false} />
+                        <Chat name={activePersona.name} message="<HIDDEN>" isLastMemory={false} />
                         <Chat
                             name="Airisu"
                             img={airisuStyle}
@@ -410,7 +410,7 @@
                     {/if}
                     {#if step >= 6}
                         <Chat
-                            name={DBState.db.username}
+                            name={activePersona.name}
                             message={language.setup[`chooseChatTypeOption${chatLang + 1}`]}
                             isLastMemory={false}
                         />

@@ -1,5 +1,6 @@
+import { settings } from "../storage/settingsViews.svelte";
 import { get } from "svelte/store";
-import { getDatabase, type character } from "../storage/database.svelte";
+import { type character } from "../storage/database.svelte";
 import { requestChatData } from "./request/request";
 import type { PluginCallContext } from "../plugins/apiV3/pluginContext";
 import type { ChatRef } from "../storage/chatStore.svelte";
@@ -22,9 +23,7 @@ export async function stableDiff(
     prompt: string,
     target: { chatRef?: ChatRef | null; pluginContext?: PluginCallContext; check?: () => void } = {},
 ) {
-    let db = getDatabase();
-
-    if (db.sdProvider === "") {
+    if (settings.memoryTranslateMedia.sdProvider === "") {
         alertError("Stable diffusion is not set in settings.");
         return false;
     }
@@ -83,26 +82,25 @@ export async function generateAIImage(
     neg: string,
     returnSdData: string,
 ): Promise<string | false> {
-    const db = getDatabase();
-    console.log(db.sdProvider);
-    if (db.sdProvider === "webui") {
-        const uri = new URL(db.webUiUrl);
+    console.log(settings.memoryTranslateMedia.sdProvider);
+    if (settings.memoryTranslateMedia.sdProvider === "webui") {
+        const uri = new URL(settings.memoryTranslateMedia.webUiUrl);
         uri.pathname = "/sdapi/v1/txt2img";
         try {
             const da = await globalFetch(uri.toString(), {
                 body: {
-                    width: db.sdConfig.width,
-                    height: db.sdConfig.height,
+                    width: settings.memoryTranslateMedia.sdConfig.width,
+                    height: settings.memoryTranslateMedia.sdConfig.height,
                     seed: -1,
-                    steps: db.sdSteps,
-                    cfg_scale: db.sdCFG,
+                    steps: settings.memoryTranslateMedia.sdSteps,
+                    cfg_scale: settings.memoryTranslateMedia.sdCFG,
                     prompt: genPrompt,
                     negative_prompt: neg,
-                    sampler_name: db.sdConfig.sampler_name,
-                    enable_hr: db.sdConfig.enable_hr,
-                    denoising_strength: db.sdConfig.denoising_strength,
-                    hr_scale: db.sdConfig.hr_scale,
-                    hr_upscaler: db.sdConfig.hr_upscaler,
+                    sampler_name: settings.memoryTranslateMedia.sdConfig.sampler_name,
+                    enable_hr: settings.memoryTranslateMedia.sdConfig.enable_hr,
+                    denoising_strength: settings.memoryTranslateMedia.sdConfig.denoising_strength,
+                    hr_scale: settings.memoryTranslateMedia.sdConfig.hr_scale,
+                    hr_upscaler: settings.memoryTranslateMedia.sdConfig.hr_upscaler,
                 },
                 headers: {
                     "Content-Type": "application/json",
@@ -134,7 +132,7 @@ export async function generateAIImage(
             return false;
         }
     }
-    if (db.sdProvider === "novelai") {
+    if (settings.memoryTranslateMedia.sdProvider === "novelai") {
         genPrompt = genPrompt
             .replaceAll("\\(", "♧")
             .replaceAll("\\)", "♤")
@@ -148,36 +146,37 @@ export async function generateAIImage(
         const commonReq = {
             body: {
                 input: genPrompt,
-                model: db.NAIImgModel,
+                model: settings.memoryTranslateMedia.NAIImgModel,
                 parameters: {
                     params_version: 3,
                     add_original_image: true,
-                    cfg_rescale: db.NAIImgConfig.cfg_rescale,
+                    cfg_rescale: settings.memoryTranslateMedia.NAIImgConfig.cfg_rescale,
                     controlnet_strength: 1,
                     dynamic_thresholding:
-                        db.NAIImgModel.includes("nai-diffusion-3") ||
-                        db.NAIImgModel.includes("nai-diffusion-furry-3") ||
-                        db.NAIImgModel.includes("nai-diffusion-2")
-                            ? db.NAIImgConfig.decrisp
+                        settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-3") ||
+                        settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-furry-3") ||
+                        settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-2")
+                            ? settings.memoryTranslateMedia.NAIImgConfig.decrisp
                             : false,
                     n_samples: 1,
-                    width: db.NAIImgConfig.width,
-                    height: db.NAIImgConfig.height,
-                    sampler: db.NAIImgConfig.sampler,
-                    steps: db.NAIImgConfig.steps,
-                    scale: db.NAIImgConfig.scale,
+                    width: settings.memoryTranslateMedia.NAIImgConfig.width,
+                    height: settings.memoryTranslateMedia.NAIImgConfig.height,
+                    sampler: settings.memoryTranslateMedia.NAIImgConfig.sampler,
+                    steps: settings.memoryTranslateMedia.NAIImgConfig.steps,
+                    scale: settings.memoryTranslateMedia.NAIImgConfig.scale,
                     negative_prompt: neg,
                     sm:
-                        db.NAIImgModel.includes("nai-diffusion-3") ||
-                        db.NAIImgModel.includes("nai-diffusion-furry-3") ||
-                        db.NAIImgModel.includes("nai-diffusion-2")
-                            ? db.NAIImgConfig.sm
+                        settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-3") ||
+                        settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-furry-3") ||
+                        settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-2")
+                            ? settings.memoryTranslateMedia.NAIImgConfig.sm
                             : undefined,
                     sm_dyn:
-                        db.NAIImgModel.includes("nai-diffusion-3") || db.NAIImgModel.includes("nai-diffusion-furry-3")
-                            ? db.NAIImgConfig.sm_dyn
+                        settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-3") ||
+                        settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-furry-3")
+                            ? settings.memoryTranslateMedia.NAIImgConfig.sm_dyn
                             : undefined,
-                    noise_schedule: db.NAIImgConfig.noise_schedule,
+                    noise_schedule: settings.memoryTranslateMedia.NAIImgConfig.noise_schedule,
                     normalize_reference_strength_multiple: true,
                     ucPreset: 3,
                     uncond_scale: 1,
@@ -187,7 +186,7 @@ export async function generateAIImage(
                     //add v4
                     autoSmea: false,
                     use_coords: false,
-                    legacy_uc: db.NAIImgConfig.legacy_uc,
+                    legacy_uc: settings.memoryTranslateMedia.NAIImgConfig.legacy_uc,
                     v4_prompt: {
                         caption: {
                             base_caption: genPrompt,
@@ -201,7 +200,7 @@ export async function generateAIImage(
                             base_caption: neg,
                             char_captions: [],
                         },
-                        legacy_uc: db.NAIImgConfig.legacy_uc,
+                        legacy_uc: settings.memoryTranslateMedia.NAIImgConfig.legacy_uc,
                     },
                     reference_image_multiple: [],
                     reference_strength_multiple: [],
@@ -223,44 +222,53 @@ export async function generateAIImage(
                 },
             },
             headers: {
-                Authorization: "Bearer " + db.NAIApiKey,
+                Authorization: "Bearer " + settings.secrets.NAIApiKey,
             },
             rawResponse: true,
         };
 
         // Add Variety+ option
-        if (db.NAIImgConfig.variety_plus) {
+        if (settings.memoryTranslateMedia.NAIImgConfig.variety_plus) {
             if (
-                db.NAIImgModel.includes("nai-diffusion-4-full") ||
-                db.NAIImgModel.includes("nai-diffusion-4-curated") ||
-                db.NAIImgModel.includes("nai-diffusion-3") ||
-                db.NAIImgModel.includes("nai-diffusion-furry-3")
+                settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-full") ||
+                settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-curated") ||
+                settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-3") ||
+                settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-furry-3")
             ) {
                 commonReq.body.parameters.skip_cfg_above_sigma =
-                    Math.sqrt(db.NAIImgConfig.width * db.NAIImgConfig.height) * 0.01889;
+                    Math.sqrt(
+                        settings.memoryTranslateMedia.NAIImgConfig.width *
+                            settings.memoryTranslateMedia.NAIImgConfig.height,
+                    ) * 0.01889;
             }
             if (
-                db.NAIImgModel.includes("nai-diffusion-4-5-full") ||
-                db.NAIImgModel.includes("nai-diffusion-4-5-curated")
+                settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-5-full") ||
+                settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-5-curated")
             ) {
                 commonReq.body.parameters.skip_cfg_above_sigma =
-                    Math.sqrt(db.NAIImgConfig.width * db.NAIImgConfig.height) * 0.05766;
+                    Math.sqrt(
+                        settings.memoryTranslateMedia.NAIImgConfig.width *
+                            settings.memoryTranslateMedia.NAIImgConfig.height,
+                    ) * 0.05766;
             }
         }
 
         // Add vibe reference_image_multiple if exists
-        if (db.NAIImgConfig.reference_mode === "vibe" && db.NAIImgConfig.vibe_data) {
-            const vibeData = db.NAIImgConfig.vibe_data;
+        if (
+            settings.memoryTranslateMedia.NAIImgConfig.reference_mode === "vibe" &&
+            settings.memoryTranslateMedia.NAIImgConfig.vibe_data
+        ) {
+            const vibeData = settings.memoryTranslateMedia.NAIImgConfig.vibe_data;
             // Determine which model to use based on vibe_model_selection or fallback to current model
             const modelKey =
-                db.NAIImgConfig.vibe_model_selection ||
-                (db.NAIImgModel.includes("nai-diffusion-4-full")
+                settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection ||
+                (settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-full")
                     ? "v4full"
-                    : db.NAIImgModel.includes("nai-diffusion-4-curated")
+                    : settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-curated")
                       ? "v4curated"
-                      : db.NAIImgModel.includes("nai-diffusion-4-5-full")
+                      : settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-5-full")
                         ? "v4-5full"
-                        : db.NAIImgModel.includes("nai-diffusion-4-5-curated")
+                        : settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-5-curated")
                           ? "v4-5curated"
                           : null);
 
@@ -274,11 +282,11 @@ export async function generateAIImage(
                 }
 
                 // Use selected encoding or first available
-                let encodingKey = db.NAIImgConfig.vibe_model_selection
+                let encodingKey = settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection
                     ? Object.keys(vibeData.encodings[modelKey]).find(
                           (key) =>
                               vibeData.encodings[modelKey][key].params.information_extracted ===
-                              (db.NAIImgConfig.InfoExtracted || 1),
+                              (settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted || 1),
                       )
                     : Object.keys(vibeData.encodings[modelKey])[0];
 
@@ -289,9 +297,9 @@ export async function generateAIImage(
 
                     // Add reference_strength_multiple if it exists
                     const strength =
-                        db.NAIImgConfig.reference_strength_multiple &&
-                        db.NAIImgConfig.reference_strength_multiple.length > 0
-                            ? db.NAIImgConfig.reference_strength_multiple[0]
+                        settings.memoryTranslateMedia.NAIImgConfig.reference_strength_multiple &&
+                        settings.memoryTranslateMedia.NAIImgConfig.reference_strength_multiple.length > 0
+                            ? settings.memoryTranslateMedia.NAIImgConfig.reference_strength_multiple[0]
                             : 0.5;
                     commonReq.body.parameters.reference_strength_multiple.push(strength);
                 }
@@ -299,18 +307,22 @@ export async function generateAIImage(
         }
 
         if (
-            db.NAIImgConfig.reference_mode === "character" &&
-            (db.NAIImgModel.includes("nai-diffusion-4-5-full") || db.NAIImgModel.includes("nai-diffusion-4-5-curated"))
+            settings.memoryTranslateMedia.NAIImgConfig.reference_mode === "character" &&
+            (settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-5-full") ||
+                settings.memoryTranslateMedia.NAIImgModel.includes("nai-diffusion-4-5-curated"))
         ) {
             let base64img = "";
-            if (!db.NAIImgConfig.character_image || db.NAIImgConfig.character_image === "") {
+            if (
+                !settings.memoryTranslateMedia.NAIImgConfig.character_image ||
+                settings.memoryTranslateMedia.NAIImgConfig.character_image === ""
+            ) {
                 const charimg = currentChar.image;
                 const img = await readImage(charimg);
                 if (img) {
                     base64img = Buffer.from(img).toString("base64");
                 }
             } else {
-                base64img = db.NAIImgConfig.character_base64image;
+                base64img = settings.memoryTranslateMedia.NAIImgConfig.character_base64image;
             }
 
             try {
@@ -354,10 +366,11 @@ export async function generateAIImage(
                 commonReq.body.parameters.director_reference_descriptions = [
                     {
                         caption: {
-                            base_caption: "character" + (db.NAIImgConfig.style_aware ? "&style" : ""),
+                            base_caption:
+                                "character" + (settings.memoryTranslateMedia.NAIImgConfig.style_aware ? "&style" : ""),
                             char_captions: [],
                         },
-                        legacy_uc: db.NAIImgConfig.legacy_uc,
+                        legacy_uc: settings.memoryTranslateMedia.NAIImgConfig.legacy_uc,
                     },
                 ];
                 commonReq.body.parameters.director_reference_images = [base64img];
@@ -366,11 +379,14 @@ export async function generateAIImage(
             }
         }
 
-        if (db.NAII2I) {
+        if (settings.memoryTranslateMedia.NAII2I) {
             let seed = random(0, 1000000000);
 
             let base64img = "";
-            if (!db.NAIImgConfig.image || db.NAIImgConfig.image === "") {
+            if (
+                !settings.memoryTranslateMedia.NAIImgConfig.image ||
+                settings.memoryTranslateMedia.NAIImgConfig.image === ""
+            ) {
                 const charimg = currentChar.image;
 
                 const img = await readImage(charimg);
@@ -378,15 +394,15 @@ export async function generateAIImage(
                     base64img = Buffer.from(img).toString("base64");
                 }
             } else {
-                base64img = db.NAIImgConfig.base64image;
+                base64img = settings.memoryTranslateMedia.NAIImgConfig.base64image;
             }
 
             if (base64img) {
                 reqlist = commonReq;
                 reqlist.body.action = "img2img";
                 reqlist.body.parameters.image = base64img;
-                reqlist.body.parameters.strength = db.NAIImgConfig.strength || 0.7;
-                reqlist.body.parameters.noise = db.NAIImgConfig.noise || 0;
+                reqlist.body.parameters.strength = settings.memoryTranslateMedia.NAIImgConfig.strength || 0.7;
+                reqlist.body.parameters.noise = settings.memoryTranslateMedia.NAIImgConfig.noise || 0;
             }
 
             console.log({ img2img: reqlist });
@@ -397,7 +413,7 @@ export async function generateAIImage(
             console.log({ nothing: reqlist });
         }
         try {
-            const da = await globalFetch(db.NAIImgUrl, reqlist);
+            const da = await globalFetch(settings.memoryTranslateMedia.NAIImgUrl, reqlist);
 
             if (returnSdData === "inlay") {
                 if (da.ok) {
@@ -424,7 +440,7 @@ export async function generateAIImage(
             return false;
         }
     }
-    if (db.sdProvider === "dalle") {
+    if (settings.memoryTranslateMedia.sdProvider === "dalle") {
         // With the stored OpenAI key, on the server (`auxFetch`, Phase 5 slice 7b).
         const da = await auxFetchJson("openai-dalle", "https://api.openai.com/v1/images/generations", {
             method: "POST",
@@ -433,7 +449,7 @@ export async function generateAIImage(
                 model: "dall-e-3",
                 response_format: "b64_json",
                 style: "natural",
-                quality: db.dallEQuality || "standard",
+                quality: settings.memoryTranslateMedia.dallEQuality || "standard",
             },
         });
 
@@ -463,17 +479,17 @@ export async function generateAIImage(
         }
         return returnSdData;
     }
-    if (db.sdProvider === "stability") {
+    if (settings.memoryTranslateMedia.sdProvider === "stability") {
         const formData = new FormData();
-        const model = db.stabilityModel;
+        const model = settings.memoryTranslateMedia.stabilityModel;
         formData.append("prompt", genPrompt);
         if (model !== "core" && model !== "ultra") {
             formData.append("negative_prompt", neg);
             formData.append("model", model);
         }
         if (model === "core") {
-            if (db.stabllityStyle) {
-                formData.append("style_preset", db.stabllityStyle);
+            if (settings.memoryTranslateMedia.stabllityStyle) {
+                formData.append("style_preset", settings.memoryTranslateMedia.stabllityStyle);
             }
         }
         if (model === "ultra") {
@@ -484,7 +500,7 @@ export async function generateAIImage(
         const da = await fetch("https://api.stability.ai/v2beta/stable-image/generate/" + uri, {
             body: formData,
             headers: {
-                authorization: "Bearer " + db.stabilityKey,
+                authorization: "Bearer " + settings.secrets.stabilityKey,
                 accept: "image/*",
             },
             method: "POST",
@@ -513,14 +529,18 @@ export async function generateAIImage(
         return returnSdData;
     }
 
-    if (db.sdProvider === "comfy" || db.sdProvider === "comfyui") {
-        const legacy = db.sdProvider === "comfy"; // Legacy Comfy mode
-        const { workflow, posNodeID, posInputName, negNodeID, negInputName } = db.comfyConfig;
-        const baseUrl = new URL(db.comfyUiUrl);
+    if (
+        settings.memoryTranslateMedia.sdProvider === "comfy" ||
+        settings.memoryTranslateMedia.sdProvider === "comfyui"
+    ) {
+        const legacy = settings.memoryTranslateMedia.sdProvider === "comfy"; // Legacy Comfy mode
+        const { workflow, posNodeID, posInputName, negNodeID, negInputName } =
+            settings.memoryTranslateMedia.comfyConfig;
+        const baseUrl = new URL(settings.memoryTranslateMedia.comfyUiUrl);
 
         const createUrl = (pathname: string, params: Record<string, string> = {}) => {
-            const url = db.comfyUiUrl.endsWith("/api")
-                ? new URL(`${db.comfyUiUrl}${pathname}`)
+            const url = settings.memoryTranslateMedia.comfyUiUrl.endsWith("/api")
+                ? new URL(`${settings.memoryTranslateMedia.comfyUiUrl}${pathname}`)
                 : new URL(pathname, baseUrl);
             url.search = new URLSearchParams(params).toString();
             return url.toString();
@@ -573,7 +593,7 @@ export async function generateAIImage(
             let item;
 
             const startTime = Date.now();
-            const timeout = db.comfyConfig.timeout * 1000;
+            const timeout = settings.memoryTranslateMedia.comfyConfig.timeout * 1000;
             while (
                 !(item = (
                     await (
@@ -622,22 +642,22 @@ export async function generateAIImage(
             return false;
         }
     }
-    if (db.sdProvider === "fal") {
-        const model = db.falModel;
-        const token = db.falToken;
+    if (settings.memoryTranslateMedia.sdProvider === "fal") {
+        const model = settings.memoryTranslateMedia.falModel;
+        const token = settings.secrets.falToken;
 
         let body: { [key: string]: any } = {
             prompt: genPrompt,
             enable_safety_checker: false,
             sync_mode: true,
             image_size: {
-                width: db.sdConfig.width,
-                height: db.sdConfig.height,
+                width: settings.memoryTranslateMedia.sdConfig.width,
+                height: settings.memoryTranslateMedia.sdConfig.height,
             },
         };
 
-        if (db.falModel === "fal-ai/flux-lora") {
-            let loraPath = db.falLora;
+        if (settings.memoryTranslateMedia.falModel === "fal-ai/flux-lora") {
+            let loraPath = settings.memoryTranslateMedia.falLora;
             if (loraPath.startsWith("urn:") || loraPath.startsWith("civitai:")) {
                 const id = loraPath.split("@").pop();
                 loraPath = `https://civitai.com/api/download/models/${id}?type=Model&format=SafeTensor`;
@@ -645,12 +665,12 @@ export async function generateAIImage(
             body.loras = [
                 {
                     path: loraPath,
-                    scale: db.falLoraScale,
+                    scale: settings.memoryTranslateMedia.falLoraScale,
                 },
             ];
         }
 
-        if (db.falModel === "fal-ai/flux-pro") {
+        if (settings.memoryTranslateMedia.falModel === "fal-ai/flux-pro") {
             delete body.enable_safety_checker;
         }
 
@@ -683,11 +703,11 @@ export async function generateAIImage(
             CharEmotion.set(charemotions);
         }
     }
-    if (db.sdProvider === "Imagen") {
-        const model = db.ImagenModel;
-        const size = db.ImagenImageSize;
-        const aspect = db.ImagenAspectRatio;
-        const person = db.ImagenPersonGeneration;
+    if (settings.memoryTranslateMedia.sdProvider === "Imagen") {
+        const model = settings.memoryTranslateMedia.ImagenModel;
+        const size = settings.memoryTranslateMedia.ImagenImageSize;
+        const aspect = settings.memoryTranslateMedia.ImagenAspectRatio;
+        const person = settings.memoryTranslateMedia.ImagenPersonGeneration;
 
         let body: any = {
             instances: [
@@ -735,8 +755,8 @@ export async function generateAIImage(
         const mimeType = res.data?.predictions?.[0]?.mimeType || "image/png";
         return `data:${mimeType};base64,${img64}`;
     }
-    if (db.sdProvider === "openai-compat") {
-        const config = db.openaiCompatImage;
+    if (settings.memoryTranslateMedia.sdProvider === "openai-compat") {
+        const config = settings.secrets.openaiCompatImage;
         if (!config.url) {
             alertError("OpenAI Compatible API URL is not set");
             return false;
@@ -792,8 +812,8 @@ export async function generateAIImage(
         }
         return returnSdData;
     }
-    if (db.sdProvider === "wavespeed") {
-        const config = db.wavespeedImage;
+    if (settings.memoryTranslateMedia.sdProvider === "wavespeed") {
+        const config = settings.secrets.wavespeedImage;
         if (!config.key) {
             alertError("Please enter wavespeed API key");
             return false;

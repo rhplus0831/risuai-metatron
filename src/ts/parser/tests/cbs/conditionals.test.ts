@@ -2,6 +2,7 @@ import fc from "fast-check";
 import { writable } from "svelte/store";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { risuChatParser } from "../../parser.svelte";
+import { initializeRecords, takeRecordFields } from "../../../storage/records.svelte";
 import { trimVarPrefix, validCBSArgProp } from "./lib";
 
 //#region module mocks
@@ -52,8 +53,6 @@ vi.mock(import("../../../stores.svelte"), () => {
                         defaultVariables: "",
                     },
                 ],
-                globalChatVariables: varStorage,
-                templateDefaultVariables: "",
             },
         },
         selIdState: {
@@ -63,7 +62,27 @@ vi.mock(import("../../../stores.svelte"), () => {
     } as unknown as typeof import("../../../stores.svelte");
 });
 
+// The parser reads the global variables through the settings views (Phase 6 slice 7). The
+// variable storage answers any key, which record data cannot hold, so the view serves it there;
+// every other view is the real one.
+vi.mock(import("../../../storage/settingsViews.svelte"), async (importOriginal) => {
+    const actual = await importOriginal();
+    const settings = new Proxy(actual.settings, {
+        get: (target, key, receiver) =>
+            key === "globalChatVariables" ? varStorage : Reflect.get(target, key, receiver),
+    });
+    return { ...actual, settings };
+});
+
 //#endregion
+
+// The template's default variables live in the selected preset's record (installed as
+// `setDatabaseLite` installs a database); the character stays on `DBState.db`.
+initializeRecords(
+    takeRecordFields({
+        botPresets: [{ id: "preset", name: "Preset", templateDefaultVariables: "" }],
+    }),
+);
 
 const template = (op: string, body: string) => `0 {{${op}}}${body}{{/}} 9`;
 const quickParse = (...args: Parameters<typeof template>) => risuChatParser(template(...args));

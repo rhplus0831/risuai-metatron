@@ -1,3 +1,4 @@
+import { settings } from "./storage/settingsViews.svelte";
 import { sleep } from "./util";
 import { get } from "svelte/store";
 import { setDatabase, getDatabase, type Database } from "./storage/database.svelte";
@@ -60,7 +61,7 @@ export async function loadData() {
             } else {
                 setUsingSw(false);
             }
-            if (getDatabase().didFirstSetup) {
+            if (settings.ui.didFirstSetup) {
                 characterURLImport();
             }
             try {
@@ -78,7 +79,6 @@ export async function loadData() {
             // Each tab selects its own chat (the browser's last choice), and a character without a
             // chat gets one; queued work waits until saving starts below.
             initializeChats();
-            const db = getDatabase();
 
             LoadingStatusState.text = "Updating States...";
             updateColorScheme();
@@ -110,7 +110,7 @@ export async function loadData() {
                 await loadPlugins();
             } catch (error) {}
 
-            if (db.botSettingAtStart) {
+            if (settings.ui.botSettingAtStart) {
                 botMakerMode.set(true);
             }
             loadedStore.set(true);
@@ -243,9 +243,8 @@ function updateErrorHandling() {
  * Updates the height mode of the document based on the value stored in the database.
  */
 function updateHeightMode() {
-    const db = getDatabase();
     const root = document.querySelector(":root") as HTMLElement;
-    switch (db.heightMode) {
+    switch (settings.ui.heightMode) {
         case "auto":
             root.style.setProperty("--risu-height-size", "100%");
             break;

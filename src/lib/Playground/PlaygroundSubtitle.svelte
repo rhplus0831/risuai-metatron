@@ -1,10 +1,10 @@
 <script lang="ts">
+    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { auxFetch } from "src/ts/network/auxFetch";
     import { language } from "src/lang";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
-    import { DBState } from "src/ts/stores.svelte";
     import { getModelInfo, LLMFlags } from "src/ts/model/modellist";
     import { requestChatData } from "src/ts/process/request/request";
     import { asBuffer, selectFileByDom, selectSingleFile, sleep } from "src/ts/util";
@@ -20,9 +20,9 @@
     let WhisperModePrompt =
         "```\n{{slot::data}}\n``` Translate the following WEBVTT to natural {{slot}}, with keeping the timestamp and header, inside a markdown code block. (prefix ``` / postfix ```)";
 
-    let selLang = $state(DBState.db.language);
+    let selLang = $state(settings.ui.language);
     let prompt = $state(LLMModePrompt);
-    let modelInfo = $derived(getModelInfo(DBState.db.aiModel));
+    let modelInfo = $derived(getModelInfo(activePreset.aiModel));
     let outputText = $state("");
     let fileB64 = $state("");
     let vttB64 = $state("");
@@ -472,7 +472,7 @@
 {#if !(modelInfo.flags.includes(LLMFlags.hasAudioInput) && modelInfo.flags.includes(LLMFlags.hasVideoInput)) && mode === "llm"}
     <span class="text-draculared text-lg mt-4">{language.subtitlesWarning1}</span>
 {/if}
-{#if !(modelInfo.flags.includes(LLMFlags.hasStreaming) && DBState.db.useStreaming)}
+{#if !(modelInfo.flags.includes(LLMFlags.hasStreaming) && settings.providers.useStreaming)}
     <span class="text-draculared text-lg mt-4">{language.subtitlesWarning2}</span>
 {/if}
 {#if !("gpu" in navigator) && mode === "whisperLocal"}

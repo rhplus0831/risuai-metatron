@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { getModuleToggles } from "src/ts/process/modules";
     import { DBState, selectedCharID } from "src/ts/stores.svelte";
     import { parseToggleSyntax, type sidebarToggle, type sidebarToggleGroup } from "src/ts/util";
@@ -56,9 +57,9 @@
         });
 
     let hasJailbreakPrompt = $derived.by(() => {
-        const template = DBState.db.promptTemplate;
+        const template = activePreset.promptTemplate;
         if (!template) {
-            return (DBState.db.jailbreak ?? "").trim().length > 0;
+            return (activePreset.jailbreak ?? "").trim().length > 0;
         }
         return templateUsesJailbreakToggle(template);
     });
@@ -79,7 +80,7 @@
 
     let groupedToggles = $derived.by(() => {
         const ungrouped = parseToggleSyntax(
-            DBState.db.customPromptTemplateToggle + "\n" + getModuleToggles() + "\n" + charToggle,
+            activePreset.customPromptTemplateToggle + "\n" + getModuleToggles() + "\n" + charToggle,
         );
 
         let groupOpen = false;
@@ -215,21 +216,21 @@
 
         {#if hasJailbreakPrompt}
             <div class="flex mt-2 items-center w-full">
-                <CheckInput bind:check={DBState.db.jailbreakToggle} name={language.jailbreakToggle} reverse />
+                <CheckInput bind:check={settings.ui.jailbreakToggle} name={language.jailbreakToggle} reverse />
             </div>
         {/if}
 
         {@render toggles(groupedToggles, true)}
-        {#if chara && (DBState.db.supaModelType !== "none" || DBState.db.hanuraiEnable || DBState.db.hypaV3)}
+        {#if chara && (settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypaV3)}
             <div class="flex mt-2 items-center w-full">
                 <CheckInput
                     bind:check={chara.supaMemory}
                     reverse
-                    name={DBState.db.hypaV3
+                    name={settings.memoryTranslateMedia.hypaV3
                         ? language.ToggleHypaMemory
-                        : DBState.db.hanuraiEnable
+                        : settings.memoryTranslateMedia.hanuraiEnable
                           ? language.hanuraiMemory
-                          : DBState.db.hypaMemory
+                          : settings.memoryTranslateMedia.hypaMemory
                             ? language.ToggleHypaMemory
                             : language.ToggleSuperMemory}
                 />
@@ -241,19 +242,19 @@
 
     {#if hasJailbreakPrompt}
         <div class="flex mt-2 items-center">
-            <CheckInput bind:check={DBState.db.jailbreakToggle} name={language.jailbreakToggle} />
+            <CheckInput bind:check={settings.ui.jailbreakToggle} name={language.jailbreakToggle} />
         </div>
     {/if}
     {@render toggles(groupedToggles)}
-    {#if chara && (DBState.db.supaModelType !== "none" || DBState.db.hanuraiEnable || DBState.db.hypaV3)}
+    {#if chara && (settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypaV3)}
         <div class="flex mt-2 items-center">
             <CheckInput
                 bind:check={chara.supaMemory}
-                name={DBState.db.hypaV3
+                name={settings.memoryTranslateMedia.hypaV3
                     ? language.ToggleHypaMemory
-                    : DBState.db.hanuraiEnable
+                    : settings.memoryTranslateMedia.hanuraiEnable
                       ? language.hanuraiMemory
-                      : DBState.db.hypaMemory
+                      : settings.memoryTranslateMedia.hypaMemory
                         ? language.ToggleHypaMemory
                         : language.ToggleSuperMemory}
             />

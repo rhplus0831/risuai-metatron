@@ -15,13 +15,16 @@ vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string)
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 
 import { DBState } from "../stores.svelte";
+import { setDatabaseLite } from "../storage/database.svelte";
 import { SAFE_LOCAL_PLUGIN_STORAGE_KEY, setSafeLocalPluginValue } from "../storage/pluginStorageStore.svelte";
 import { isJsonValue, SafeLocalPluginStorage } from "./pluginSafeClass";
 
 const stored = () => (DBState.db.pluginCustomStorage as any)?.[SAFE_LOCAL_PLUGIN_STORAGE_KEY];
 
 beforeEach(() => {
-    DBState.db = { characters: [] } as any;
+    // Installed the way the app installs a database (its fields moved into the records), since the
+    // plugin storage mutations write the records through the settings views (Phase 6 slice 7).
+    setDatabaseLite({ characters: [] } as any);
 });
 
 describe("isJsonValue", () => {

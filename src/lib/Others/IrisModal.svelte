@@ -1,8 +1,9 @@
 <script lang="ts">
+    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { fade, fly } from "svelte/transition";
     import { onMount } from "svelte";
     import IrisImage from "../../etc/Airisu.webp";
-    import { DBState, irisStore } from "src/ts/stores.svelte";
+    import { irisStore } from "src/ts/stores.svelte";
     import { requestChatData } from "src/ts/process/request/request";
     import { alertError } from "src/ts/alert";
     import { getIrisSystemPrompt } from "src/ts/iris";
@@ -65,7 +66,7 @@
         ],
     };
 
-    let dialogue = $state<DialogueLine[]>(introDialogue[DBState.db.language] ?? introDialogue.en);
+    let dialogue = $state<DialogueLine[]>(introDialogue[settings.ui.language] ?? introDialogue.en);
 
     let currentIndex = $state(0);
     let displayedText = $state("");
@@ -79,7 +80,8 @@
 
     let isUnsupportedModel = $derived.by(() => {
         const currentModel =
-            (DBState.db.seperateModelsForAxModels ? DBState.db.seperateModels.otherAx : "") || DBState.db.subModel;
+            (settings.providers.seperateModelsForAxModels ? settings.providers.seperateModels.otherAx : "") ||
+            activePreset.subModel;
         const modelInfo = getModelInfo(currentModel);
         return !(
             modelInfo.format === LLMFormat.Anthropic ||
@@ -170,7 +172,7 @@
 
     function saveDialogue() {
         // Saved with the root settings on the server.
-        DBState.db.irisDialogue = safeStructuredClone($state.snapshot(dialogue));
+        settings.ui.irisDialogue = safeStructuredClone($state.snapshot(dialogue));
     }
 
     async function submitUserInput() {
@@ -253,12 +255,12 @@
 
     onMount(() => {
         //get the saved dialogue if one exists
-        const saved = DBState.db.irisDialogue;
+        const saved = settings.ui.irisDialogue;
         if (saved && saved.length > 0) {
             dialogue = safeStructuredClone($state.snapshot(saved));
             currentIndex = dialogue.length - 1;
         } else {
-            dialogue = introDialogue[DBState.db.language] ?? introDialogue.en;
+            dialogue = introDialogue[settings.ui.language] ?? introDialogue.en;
             currentIndex = 0;
         }
         startTyping(dialogue[currentIndex].text);
@@ -283,7 +285,7 @@
     });
 
     function resetDialogue() {
-        dialogue = introDialogue[DBState.db.language] ?? introDialogue.en;
+        dialogue = introDialogue[settings.ui.language] ?? introDialogue.en;
         currentIndex = 0;
         saveDialogue();
         startTyping(dialogue[0].text);
@@ -432,7 +434,8 @@
                 {/if}
                 {#if isUnsupportedModel}
                     <div class="mt-2 rounded-md bg-red-600/80 px-3 py-2 text-sm text-white">
-                        {unsupportedModelDialogue[DBState.db.language]?.[0].text ?? unsupportedModelDialogue.en[0].text}
+                        {unsupportedModelDialogue[settings.ui.language]?.[0].text ??
+                            unsupportedModelDialogue.en[0].text}
                     </div>
                 {/if}
             </div>

@@ -1,9 +1,9 @@
+import { settings } from "../storage/settingsViews.svelte";
 import { language } from "../../lang";
-import { getDatabase } from "../storage/database.svelte";
 import { upsertPlugin } from "../storage/collectionStore.svelte";
 import { alertConfirm, alertError } from "../alert";
 import { selectSingleFile } from "../util";
-import { DBState, hotReloading } from "../stores.svelte";
+import { hotReloading } from "../stores.svelte";
 import { loadV3Plugins } from "./apiV3/v3.svelte";
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
 import { clearPluginHooks } from "./pluginHooks";
@@ -113,7 +113,6 @@ export async function importPlugin(
 ) {
     try {
         let jsFile = "";
-        let db = getDatabase();
         let isUpdate = argu.isUpdate || false;
         let originalPluginName = argu.originalPluginName || "";
         let isTypescript = argu.isTypescript || false;
@@ -339,7 +338,7 @@ export async function importPlugin(
             enabled: true,
         };
 
-        const oldPluginIndex = (db.plugins ?? []).findIndex((p: RisuPlugin) => p.name === pluginData.name);
+        const oldPluginIndex = (settings.plugins ?? []).findIndex((p: RisuPlugin) => p.name === pluginData.name);
 
         if (originalPluginName && originalPluginName !== pluginData.name) {
             showError(
@@ -375,9 +374,10 @@ export async function importPlugin(
 
 export async function loadPlugins() {
     console.log("Loading plugins...");
-    let db = getDatabase();
 
-    const enabledPlugins = safeStructuredClone(db.plugins).filter((p: RisuPlugin) => p.enabled && p.version === "3.0");
+    const enabledPlugins = safeStructuredClone(settings.plugins).filter(
+        (p: RisuPlugin) => p.enabled && p.version === "3.0",
+    );
 
     clearPluginHooks();
     await loadV3Plugins(enabledPlugins);
@@ -412,7 +412,7 @@ export const allowedDbKeys = [
 export async function handlePluginInstallViaPlugin(plugins: RisuPlugin[]) {
     const trimmedPlugins: RisuPlugin[] = [];
     for (const plugin of plugins) {
-        if (!DBState.db.plugins.find((p: RisuPlugin) => p.name === plugin.name && p.script === plugin.script)) {
+        if (!settings.plugins.find((p: RisuPlugin) => p.name === plugin.name && p.script === plugin.script)) {
             if (plugin.version !== "3.0") {
                 console.warn(
                     `Plugin "${plugin.name}" has version "${plugin.version}", which is not supported for installation via plugin. Only API version 3.0 plugins can be installed via plugin. Skipping installation of this plugin.`,

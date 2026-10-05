@@ -38,7 +38,7 @@
 - `model/modellist.ts`: the tab's registry.
   - `LLMModels`: this tab's copy of `BASE_LLM_MODELS`, which `registerModelDynamic` appends to (`isDynamicModel(id)` says which ids it added).
   - `registerModelDynamic`: when `dynamicModelRegistry` is on, fetches model lists from Google, Anthropic, and OpenAI.
-  - `getModelInfo(id)`: `resolveModelInfo` with `DBState.db`, this tab's list, and `customV3ProviderMetaStore`.
+  - `getModelInfo(id)`: `resolveModelInfo` with the selected preset's custom flags and `settings.customModels` (the record views), this tab's list, and `customV3ProviderMetaStore`.
   - `getModelList`: grouped models for the UI.
 - `model/{openrouter,nanogpt,ollama}.ts`: dynamic catalogue fetch, normalized to `ModelGridItem`.
 - `model/ooba.ts`: re-exports `OobaChatCompletionRequestParams` from `shared/settings.ts`.
@@ -104,7 +104,7 @@
 ## Coupling
 
 - Depends on `database.svelte.ts`, `globalApi.svelte.ts` (`globalFetch`/`fetchNative`), `stringlize.ts`, `templates/chatTemplate.ts`, `tokenizer.ts`, `mcp.ts`, plugin stores (`pluginHooks.ts` `pluginHooks`/`customProviderStore`, `customV3ProviderMetaStore`), inlays, and `platform.ts`.
-- UI model pickers mutate `DBState.db` directly.
+- UI model pickers bind the selected preset's model fields through `activePreset` (`settingsViews.svelte.ts`).
 
 ## Invariants
 

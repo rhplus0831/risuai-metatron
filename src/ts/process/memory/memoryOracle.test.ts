@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+import { installFlatDatabase } from "../../storage/tests/installFlatDatabase";
 import {
     countTokens,
     createWorld,
@@ -98,9 +99,19 @@ function settingsOf(scenario: Scenario): Record<string, unknown> {
     return { hypaV3Presets: [...before, selected], hypaV3PresetId: selected.id };
 }
 
+/**
+ * The world's settings installed as `setDatabaseLite` installs a database, since the memory
+ * algorithms read the settings through the record views (Phase 6 slice 7). They are the flat shape
+ * the server ports read: the root preset fields become the one preset's.
+ */
+function installWorld(world: World) {
+    installFlatDatabase(world.db, "oracle-preset");
+}
+
 async function runClient(scenario: Scenario): Promise<Outcome> {
     const world = createWorld(scenario);
     Object.assign(world.db, settingsOf(scenario));
+    installWorld(world);
     current = world;
     vi.spyOn(Math, "random").mockImplementation(() => world.random());
     const { hypaMemoryV3 } = await import("./hypav3");
@@ -153,6 +164,7 @@ describe("P10: the summary requests carry the send's or the action's context", (
     async function runV3(scenario: Scenario, ctx?: unknown) {
         const world = createWorld(scenario);
         Object.assign(world.db, settingsOf(scenario));
+        installWorld(world);
         current = world;
         vi.spyOn(Math, "random").mockImplementation(() => world.random());
         const { hypaMemoryV3 } = await import("./hypav3");

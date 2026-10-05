@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { activePreset } from "src/ts/storage/settingsViews.svelte";
     import { selectedCharID } from "src/ts/stores.svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import NumberInput from "../UI/GUI/NumberInput.svelte";
@@ -176,8 +177,8 @@
             <span>Current Chat</span>
             <div class="p-2 text-center">{token} Tokens</div>
         {/await}
-        {#if DBState.db.promptTemplate}
-            {#await tokenizePreset(DBState.db.promptTemplate)}
+        {#if activePreset.promptTemplate}
+            {#await tokenizePreset(activePreset.promptTemplate)}
                 <span>Prompt Template</span>
                 <div class="p-2 text-center">Loading...</div>
             {:then token}

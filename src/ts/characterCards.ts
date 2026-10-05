@@ -1,3 +1,4 @@
+import { settings } from "./storage/settingsViews.svelte";
 import { writable, type Writable } from "svelte/store";
 import { alertCardExport, alertConfirm, alertError, alertInput, alertNormal, alertStore, alertWait } from "./alert";
 import {
@@ -1701,7 +1702,7 @@ export async function downloadRisuHub(
             }
             checkCharOrder();
             db = getDatabase();
-            if (db.characters[db.characters.length - 1] && (db.goCharacterOnImport || arg.forceRedirect)) {
+            if (db.characters[db.characters.length - 1] && (settings.ui.goCharacterOnImport || arg.forceRedirect)) {
                 const index = db.characters.length - 1;
                 changeChar(index);
             }
@@ -1717,7 +1718,7 @@ export async function downloadRisuHub(
         await importCharacterCardSpec(data, await getHubResources(img), "hub");
         checkCharOrder();
         let db = getDatabase();
-        if (db.characters[db.characters.length - 1] && (db.goCharacterOnImport || arg.forceRedirect)) {
+        if (db.characters[db.characters.length - 1] && (settings.ui.goCharacterOnImport || arg.forceRedirect)) {
             const index = db.characters.length - 1;
             changeChar(index);
             alertStore.set({

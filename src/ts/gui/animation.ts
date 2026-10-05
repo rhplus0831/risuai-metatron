@@ -1,6 +1,5 @@
-import { getDatabase } from "../storage/database.svelte";
+import { settings } from "../storage/settingsViews.svelte";
 
 export function updateAnimationSpeed() {
-    const db = getDatabase();
-    document.documentElement.style.setProperty("--risu-animation-speed", db.animationSpeed + "s");
+    document.documentElement.style.setProperty("--risu-animation-speed", settings.ui.animationSpeed + "s");
 }

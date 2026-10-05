@@ -1,3 +1,4 @@
+import { settings } from "../../storage/settingsViews.svelte";
 import { auxFetchJson } from "../../network/auxFetch";
 import localforage from "localforage";
 import { type HypaModel, localModels } from "./hypamemory";
@@ -5,7 +6,6 @@ import { isContextModel, getContextProvider } from "./contextualEmbedding";
 import { TaskRateLimiter, TaskCanceledError } from "./taskRateLimiter";
 import { runEmbedding } from "../transformers";
 import { globalFetch } from "src/ts/globalApi.svelte";
-import { getDatabase } from "src/ts/storage/database.svelte";
 import { appendLastPath } from "src/ts/util";
 import { isMobile } from "src/ts/platform";
 
@@ -38,11 +38,9 @@ export class HypaProcessorV2<TMetadata> {
     });
 
     public constructor(options?: HypaProcessorV2Options) {
-        const db = getDatabase();
-
         this.options = {
-            model: db.hypaModel || "MiniLM",
-            customEmbeddingUrl: db.hypaCustomSettings?.url?.trim() || "",
+            model: settings.memoryTranslateMedia.hypaModel || "MiniLM",
+            customEmbeddingUrl: settings.secrets.hypaCustomSettings?.url?.trim() || "",
             // No key of its own: the stored memory key is used on the server (`auxFetch`).
             oaiKey: "",
             rateLimiter: new TaskRateLimiter(),
@@ -350,10 +348,9 @@ export class HypaProcessorV2<TMetadata> {
     }
 
     private getCacheKey(content: string, contextTexts?: string[]): string {
-        const db = getDatabase();
         const suffix =
-            this.options.model === "custom" && db.hypaCustomSettings?.model?.trim()
-                ? `-${db.hypaCustomSettings.model.trim()}`
+            this.options.model === "custom" && settings.secrets.hypaCustomSettings?.model?.trim()
+                ? `-${settings.secrets.hypaCustomSettings.model.trim()}`
                 : "";
 
         const ctxProvider = isContextModel(this.options.model) ? getContextProvider(this.options.model) : null;
@@ -405,7 +402,6 @@ export class HypaProcessorV2<TMetadata> {
     }
 
     private async getAPIEmbeds(contents: string[]): Promise<EmbeddingVector[]> {
-        const db = getDatabase();
         let response = null;
 
         if (this.options.model === "custom") {
@@ -419,13 +415,15 @@ export class HypaProcessorV2<TMetadata> {
 
             const fetchArgs = {
                 headers: {
-                    ...(db.hypaCustomSettings?.key?.trim()
-                        ? { Authorization: "Bearer " + db.hypaCustomSettings.key.trim() }
+                    ...(settings.secrets.hypaCustomSettings?.key?.trim()
+                        ? { Authorization: "Bearer " + settings.secrets.hypaCustomSettings.key.trim() }
                         : {}),
                 },
                 body: {
                     input: contents,
-                    ...(db.hypaCustomSettings?.model?.trim() ? { model: db.hypaCustomSettings.model.trim() } : {}),
+                    ...(settings.secrets.hypaCustomSettings?.model?.trim()
+                        ? { model: settings.secrets.hypaCustomSettings.model.trim() }
+                        : {}),
                 },
             };
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { activePersona, currentPersonaRecord } from "src/ts/storage/settingsViews.svelte";
     import { onDestroy, onMount } from "svelte";
     import { v4 } from "uuid";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
@@ -395,15 +396,10 @@
                                                                     setChatMeta(
                                                                         { chaId: chara.chaId, chatId: chat.id },
                                                                         {
-                                                                            bindedPersona:
-                                                                                DBState.db.personas[
-                                                                                    DBState.db.selectedPersona
-                                                                                ].id,
+                                                                            bindedPersona: activePersona.id,
                                                                         },
                                                                     );
-                                                                    console.log(
-                                                                        DBState.db.personas[DBState.db.selectedPersona],
-                                                                    );
+                                                                    console.log(currentPersonaRecord());
                                                                     alertNormal(language.personaBindedSuccess);
                                                                 }
                                                             }
@@ -563,11 +559,10 @@
                                                         setChatMeta(
                                                             { chaId: chara.chaId, chatId: chat.id },
                                                             {
-                                                                bindedPersona:
-                                                                    DBState.db.personas[DBState.db.selectedPersona].id,
+                                                                bindedPersona: activePersona.id,
                                                             },
                                                         );
-                                                        console.log(DBState.db.personas[DBState.db.selectedPersona]);
+                                                        console.log(currentPersonaRecord());
                                                         alertNormal(language.personaBindedSuccess);
                                                     }
                                                 }

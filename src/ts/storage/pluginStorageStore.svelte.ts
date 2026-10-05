@@ -1,4 +1,4 @@
-import { DBState } from "../stores.svelte";
+import { settings } from "./settingsViews.svelte";
 import { detach, requireJsonData, requireObject, writeEntries } from "./mutationValidation";
 import { batchRecordWrites } from "./records.svelte";
 
@@ -21,8 +21,8 @@ export const SAFE_LOCAL_PLUGIN_STORAGE_KEY = "_safeLocalPluginStorage";
 type Dictionary = Record<string, unknown>;
 
 function storage(): Dictionary {
-    DBState.db.pluginCustomStorage ??= {};
-    return DBState.db.pluginCustomStorage;
+    settings.pluginStorage ??= {};
+    return settings.pluginStorage;
 }
 
 /**
@@ -43,7 +43,7 @@ function dictionary(name: string, create: boolean): Dictionary | undefined {
             root[name] = {};
         }
     }
-    const value = DBState.db.pluginCustomStorage?.[name];
+    const value = settings.pluginStorage?.[name];
     if (Array.isArray(value)) {
         // Only the create path installs a dictionary; a read sees the list's entries, not its `length`.
         return Object.fromEntries(Object.entries(value));
@@ -140,7 +140,7 @@ export function clearSafeLocalPluginStorage() {
 export function setPluginCustomValue(key: string, value: unknown) {
     requireJsonData(key, value, true);
     if (value === undefined) {
-        const current = DBState.db.pluginCustomStorage;
+        const current = settings.pluginStorage;
         if (current && Object.hasOwn(current, key)) {
             delete current[key];
         }
@@ -149,7 +149,7 @@ export function setPluginCustomValue(key: string, value: unknown) {
     batchRecordWrites(() => {
         const next = writeEntries(storage(), [[key, detach(value)]]);
         if (next) {
-            DBState.db.pluginCustomStorage = next;
+            settings.pluginStorage = next;
         }
     });
 }
@@ -158,5 +158,5 @@ export function setPluginCustomValue(key: string, value: unknown) {
 export function replacePluginCustomStorage(value: unknown) {
     requireObject("pluginCustomStorage", value);
     requireJsonData("pluginCustomStorage", value);
-    DBState.db.pluginCustomStorage = detach(value);
+    settings.pluginStorage = detach(value);
 }

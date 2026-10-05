@@ -1,3 +1,4 @@
+import { activePreset, activePersona } from "../storage/settingsViews.svelte";
 import { untrack } from "svelte";
 import { get } from "svelte/store";
 import { v4 as uuidv4 } from "uuid";
@@ -21,8 +22,7 @@ import { generationClientId } from "../network/generationJobs";
 import { capturePluginContext, invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../plugins/pluginHooks";
 import { type ChatRef, currentChatRef, findChat, heldChatRevision, isMessageLocked } from "../storage/chatStore.svelte";
-import { CharEmotion, DBState } from "../stores.svelte";
-import { selectedPersona, selectedPreset } from "../storage/forwarding.svelte";
+import { CharEmotion } from "../stores.svelte";
 import { authFetch } from "../storage/nodeStorage";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 import { checkPersonaBinded } from "../util";
@@ -128,9 +128,8 @@ function readTransformContext(
     if (!chat || heldChatRevision(chatRef) === null) {
         return null;
     }
-    const db = DBState.db;
-    const presetId = options.pluginContext?.presetId || selectedPreset(db)?.id;
-    const selectedPersonaId = selectedPersona(db)?.id;
+    const presetId = options.pluginContext?.presetId || activePreset.id;
+    const selectedPersonaId = activePersona.id;
     const personaId = options.pluginContext?.personaId || checkPersonaBinded(chatRef)?.id || selectedPersonaId;
     if (!presetId || !personaId || !selectedPersonaId) {
         return null;

@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
         DynamicGUI,
         settingsOpen,
@@ -17,7 +18,6 @@
         customSideBarConfigDialogStore,
     } from "./ts/stores.svelte";
     import Sidebar from "./lib/SideBars/Sidebar.svelte";
-    import { DBState } from "./ts/stores.svelte";
     import { addModule } from "./ts/storage/collectionStore.svelte";
     import ChatScreen from "./lib/ChatScreens/ChatScreen.svelte";
     import AlertComp from "./lib/Others/AlertComp.svelte";
@@ -28,7 +28,7 @@
     import BookmarkList from "./lib/Others/BookmarkList.svelte";
     import Settings from "./lib/Setting/Settings.svelte";
     import { showRealmInfoStore, importCharacterProcess } from "./ts/characterCards";
-    import { importPreset, getDatabase, setDatabase } from "./ts/storage/database.svelte";
+    import { importPreset, setDatabase } from "./ts/storage/database.svelte";
     import { prepareModuleImport, readModule } from "./ts/process/modules";
     import { alertNormal } from "./ts/alert";
     import { language } from "./lang";
@@ -49,7 +49,7 @@
     import CustomSidebarConfig from "./lib/Others/CustomSidebarConfig.svelte";
     import { RISU_APP_INTERNAL_DRAG_TYPE, RISU_SIDEBAR_DRAG_TYPE } from "./ts/dragTypes";
 
-    let didFirstSetup: boolean = $derived(DBState.db?.didFirstSetup);
+    let didFirstSetup: boolean = $derived(settings.ui.didFirstSetup);
     let gridOpen = $state(false);
     let aprilFools = $state(new Date().getMonth() === 3 && new Date().getDate() === 1);
     let aprilFoolsPage = $state(0);
@@ -119,7 +119,7 @@
             return;
         }
 
-        const aliveMode = DBState?.db?.keepSessionAlive;
+        const aliveMode = settings.ui.keepSessionAlive;
         switch (aliveMode) {
             case "pip": {
                 break;

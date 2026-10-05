@@ -1,9 +1,10 @@
+import { settings } from "../storage/settingsViews.svelte";
 import { get, writable } from "svelte/store";
-import { getDatabase, setDatabase } from "../storage/database.svelte";
+import { setDatabase } from "../storage/database.svelte";
 import { downloadFile } from "../globalApi.svelte";
 import { BufferToText, selectSingleFile } from "../util";
 import { alertError } from "../alert";
-import { CustomCSSStore, DBState, SafeModeStore } from "../stores.svelte";
+import { CustomCSSStore, SafeModeStore } from "../stores.svelte";
 import type { ColorScheme } from "../../../shared/settings.ts";
 import { defaultColorScheme } from "../../../shared/colorScheme.ts";
 import { updateSettings } from "../storage/collectionStore.svelte";
@@ -217,7 +218,7 @@ export const colorSchemeList = Object.keys(colorShemes) as (keyof typeof colorSh
 export function changeColorScheme(colorScheme: string) {
     try {
         const scheme =
-            colorScheme === "custom" ? (DBState.db.customColorScheme ?? defaultColorScheme) : colorShemes[colorScheme];
+            colorScheme === "custom" ? (settings.ui.customColorScheme ?? defaultColorScheme) : colorShemes[colorScheme];
         updateSettings({ colorScheme: scheme, colorSchemeName: colorScheme });
         updateColorScheme();
     } catch (error) {}
@@ -225,16 +226,14 @@ export function changeColorScheme(colorScheme: string) {
 
 export function updateCustomColorScheme() {
     try {
-        updateSettings({ colorScheme: DBState.db.customColorScheme ?? defaultColorScheme, colorSchemeName: "custom" });
+        updateSettings({ colorScheme: settings.ui.customColorScheme ?? defaultColorScheme, colorSchemeName: "custom" });
         updateColorScheme();
     } catch (error) {}
 }
 
 export function updateColorScheme() {
     try {
-        let db = getDatabase();
-
-        let colorScheme = db.colorScheme;
+        let colorScheme = settings.ui.colorScheme;
 
         if (colorScheme == null) {
             colorScheme = safeStructuredClone(defaultColorScheme);
@@ -256,14 +255,14 @@ export function updateColorScheme() {
 
 export function changeColorSchemeType(type: "light" | "dark") {
     try {
-        DBState.db.customColorScheme.type = type;
+        settings.ui.customColorScheme.type = type;
         updateCustomColorScheme();
         updateTextThemeAndCSS();
     } catch (error) {}
 }
 
 export function exportColorScheme() {
-    let json = JSON.stringify(DBState.db.customColorScheme);
+    let json = JSON.stringify(settings.ui.customColorScheme);
     downloadFile("colorScheme.json", json);
 }
 
@@ -291,7 +290,7 @@ export async function importColorScheme() {
             alertError("Invalid color scheme");
             return;
         }
-        DBState.db.customColorScheme = colorScheme;
+        settings.ui.customColorScheme = colorScheme;
         updateCustomColorScheme();
     } catch (e) {
         alertError("Invalid color scheme");
@@ -300,13 +299,12 @@ export async function importColorScheme() {
 }
 
 export function updateTextThemeAndCSS() {
-    let db = DBState.db;
     const root = document.querySelector(":root") as HTMLElement;
     if (!root) {
         return;
     }
-    let textTheme = db.textTheme;
-    let colorScheme = db.colorScheme.type;
+    let textTheme = settings.ui.textTheme;
+    let colorScheme = settings.ui.colorScheme.type;
     switch (textTheme) {
         case "standard": {
             if (colorScheme === "dark") {
@@ -345,17 +343,17 @@ export function updateTextThemeAndCSS() {
             break;
         }
         case "custom": {
-            root.style.setProperty("--FontColorStandard", db.customTextTheme.FontColorStandard);
-            root.style.setProperty("--FontColorItalic", db.customTextTheme.FontColorItalic);
-            root.style.setProperty("--FontColorBold", db.customTextTheme.FontColorBold);
-            root.style.setProperty("--FontColorItalicBold", db.customTextTheme.FontColorItalicBold);
-            root.style.setProperty("--FontColorQuote1", db.customTextTheme.FontColorQuote1 ?? "#8BE9FD");
-            root.style.setProperty("--FontColorQuote2", db.customTextTheme.FontColorQuote2 ?? "#FFB86C");
+            root.style.setProperty("--FontColorStandard", settings.ui.customTextTheme.FontColorStandard);
+            root.style.setProperty("--FontColorItalic", settings.ui.customTextTheme.FontColorItalic);
+            root.style.setProperty("--FontColorBold", settings.ui.customTextTheme.FontColorBold);
+            root.style.setProperty("--FontColorItalicBold", settings.ui.customTextTheme.FontColorItalicBold);
+            root.style.setProperty("--FontColorQuote1", settings.ui.customTextTheme.FontColorQuote1 ?? "#8BE9FD");
+            root.style.setProperty("--FontColorQuote2", settings.ui.customTextTheme.FontColorQuote2 ?? "#FFB86C");
             break;
         }
     }
 
-    switch (db.font) {
+    switch (settings.ui.font) {
         case "default": {
             root.style.setProperty("--risu-font-family", "Arial, sans-serif");
             break;
@@ -365,13 +363,13 @@ export function updateTextThemeAndCSS() {
             break;
         }
         case "custom": {
-            root.style.setProperty("--risu-font-family", db.customFont);
+            root.style.setProperty("--risu-font-family", settings.ui.customFont);
             break;
         }
     }
 
     if (!get(SafeModeStore)) {
-        CustomCSSStore.set(db.customCSS ?? "");
+        CustomCSSStore.set(settings.ui.customCSS ?? "");
     } else {
         CustomCSSStore.set("");
     }

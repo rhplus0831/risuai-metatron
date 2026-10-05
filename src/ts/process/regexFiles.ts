@@ -1,15 +1,15 @@
+import { settings } from "../storage/settingsViews.svelte";
 import { language } from "src/lang";
 import { alertError, alertNormal } from "../alert";
 import { downloadFile } from "../globalApi.svelte";
-import { type customscript, getDatabase } from "../storage/database.svelte";
+import { type customscript } from "../storage/database.svelte";
 import { selectSingleFile } from "../util";
 
 // The regex script file export and import of the editors (character, module, global regex). The
 // regex scripts themselves run on the server (`/api/transform` and the generation job, Phase 5).
 
 export function exportRegex(s?: customscript[]) {
-    let db = getDatabase();
-    const script = s ?? db.globalscript;
+    const script = s ?? settings.globalscript;
     const data = Buffer.from(
         JSON.stringify({
             type: "regex",
@@ -27,7 +27,6 @@ export async function importRegex(o?: customscript[]): Promise<customscript[]> {
     if (!filedata) {
         return o;
     }
-    let db = getDatabase();
     try {
         const imported = JSON.parse(Buffer.from(filedata).toString("utf-8"));
         if (imported.type === "regex" && imported.data) {

@@ -1,15 +1,9 @@
+import { settings } from "./storage/settingsViews.svelte";
 import { checkNullish, sleep } from "./util";
 import { v4 as uuidv4, v4 } from "uuid";
 import { get } from "svelte/store";
 import streamSaver from "streamsaver";
-import {
-    setDatabase,
-    defaultSdDataFunc,
-    getDatabase,
-    appVer,
-    getCurrentCharacter,
-    appSubVer,
-} from "./storage/database.svelte";
+import { setDatabase, defaultSdDataFunc, appVer, getCurrentCharacter, appSubVer } from "./storage/database.svelte";
 import {
     botMakerMode,
     selectedCharID,
@@ -369,7 +363,6 @@ export function appendFetchLog(entry: fetchLog) {
  */
 export async function globalFetch(url: string, arg: GlobalFetchArgs = {}): Promise<GlobalFetchResult> {
     try {
-        const db = getDatabase();
         if (arg.abortSignal?.aborted) {
             return { ok: false, data: "aborted", headers: {}, status: 400 };
         }
@@ -377,7 +370,7 @@ export async function globalFetch(url: string, arg: GlobalFetchArgs = {}): Promi
         const urlHost = new URL(url).hostname;
         const useLocalNetworkRoute = arg.networkRoute === "local_network" && isLocalNetworkUrl(url);
         const forcePlainFetch =
-            (knownHostes.includes(urlHost) || db.usePlainFetch || arg.plainFetchForce) &&
+            (knownHostes.includes(urlHost) || settings.providers.usePlainFetch || arg.plainFetchForce) &&
             !arg.plainFetchDeforce &&
             !useLocalNetworkRoute;
 
@@ -1135,7 +1128,7 @@ export function getLanguageCodes() {
         .map((v) => {
             return {
                 code: v.code.toLocaleLowerCase(),
-                name: new Intl.DisplayNames([DBState.db.language === "cn" ? "zh" : DBState.db.language], {
+                name: new Intl.DisplayNames([settings.ui.language === "cn" ? "zh" : settings.ui.language], {
                     type: "language",
                     fallback: "none",
                 }).of(v.code),

@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings, selectedLoreBookPage } from "src/ts/storage/settingsViews.svelte";
     import { type loreBook } from "src/ts/storage/database.svelte";
     import { DBState } from "src/ts/stores.svelte";
     import LoreBookData from "./LoreBookData.svelte";
@@ -63,7 +64,7 @@
                 (item) => (!showFolder && !item.folder) || showFolder === item.folder,
             ).length;
         } else if (globalMode) {
-            expectedElements = DBState.db.loreBook[DBState.db.loreBookPage].data.filter(
+            expectedElements = settings.loreBook[selectedLoreBookPage()].data.filter(
                 (item) => (!showFolder && !item.folder) || showFolder === item.folder,
             ).length;
         } else {
@@ -189,7 +190,7 @@
                     currentArray = localLore.value;
                 } else if (globalMode) {
                     // Use global lorebook
-                    currentArray = DBState.db.loreBook[DBState.db.loreBookPage].data;
+                    currentArray = settings.loreBook[selectedLoreBookPage()].data;
                 } else {
                     // Use character global lorebook (default)
                     currentArray = DBState.db.characters[$selectedCharID].globalLore;
@@ -293,7 +294,7 @@
                 } else if (submenu === 1) {
                     localLore.value = newArray;
                 } else if (globalMode) {
-                    DBState.db.loreBook[DBState.db.loreBookPage].data = newArray;
+                    settings.loreBook[selectedLoreBookPage()].data = newArray;
                 } else {
                     DBState.db.characters[$selectedCharID].globalLore = newArray;
                 }

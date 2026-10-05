@@ -1,10 +1,11 @@
 <script lang="ts">
+    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import ClaudeThinkingSeparateParams from "src/lib/Setting/Pages/ClaudeThinkingSeparateParams.svelte";
     import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
     import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
     import ModelList from "src/lib/UI/ModelList.svelte";
-    import { DBState, easyPanelStore } from "src/ts/stores.svelte";
+    import { easyPanelStore } from "src/ts/stores.svelte";
     import Help from "../Help.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import CheckInput from "src/lib/UI/GUI/CheckInput.svelte";
@@ -20,11 +21,11 @@
 
     let hasEPRequirements = $derived.by(() => {
         return (
-            DBState.db.seperateParametersEnabled &&
-            DBState.db.doNotChangeSeperateModels &&
-            DBState.db.seperateModels &&
-            DBState.db.epEnabled &&
-            DBState.db.disableSeperateParameterChangeOnPresetChange
+            activePreset.seperateParametersEnabled &&
+            settings.providers.doNotChangeSeperateModels &&
+            settings.providers.seperateModels &&
+            settings.ui.epEnabled &&
+            settings.providers.disableSeperateParameterChangeOnPresetChange
         );
     });
 
@@ -68,16 +69,16 @@
             <Button
                 className="mt-4"
                 onclick={() => {
-                    DBState.db.seperateParametersEnabled = true;
-                    DBState.db.doNotChangeSeperateModels = true;
-                    DBState.db.seperateModels = {
+                    activePreset.seperateParametersEnabled = true;
+                    settings.providers.doNotChangeSeperateModels = true;
+                    settings.providers.seperateModels = {
                         memory: "",
                         translate: "",
                         emotion: "",
                         otherAx: "",
                     };
-                    DBState.db.epEnabled = true;
-                    DBState.db.disableSeperateParameterChangeOnPresetChange = true;
+                    settings.ui.epEnabled = true;
+                    settings.providers.disableSeperateParameterChangeOnPresetChange = true;
                 }}
             >
                 {language.run}
@@ -86,46 +87,62 @@
             <div class="w-full grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 justify-center items-center">
                 <div class="col-span-1">
                     <span class="text-textcolor">{language.mainModel}</span>
-                    <ModelList bind:value={DBState.db.aiModel} blankable excludesPrefix="plugin" />
+                    <ModelList bind:value={activePreset.aiModel} blankable excludesPrefix="plugin" />
                 </div>
                 <div class="col-span-1">
                     <span class="text-textcolor">{language.submodel}</span>
-                    <ModelList bind:value={DBState.db.subModel} blankable excludesPrefix="plugin" />
+                    <ModelList bind:value={activePreset.subModel} blankable excludesPrefix="plugin" />
                 </div>
                 <div class="col-span-1">
                     <span class="text-textcolor">{language.longTermMemory}</span>
-                    <ModelList bind:value={DBState.db.seperateModels.memory} blankable excludesPrefix="plugin" />
+                    <ModelList
+                        bind:value={settings.providers.seperateModels.memory}
+                        blankable
+                        excludesPrefix="plugin"
+                    />
                 </div>
                 <div class="col-span-1">
                     <span class="text-textcolor">{language.translator}</span>
-                    <ModelList bind:value={DBState.db.seperateModels.translate} blankable excludesPrefix="plugin" />
+                    <ModelList
+                        bind:value={settings.providers.seperateModels.translate}
+                        blankable
+                        excludesPrefix="plugin"
+                    />
                 </div>
                 <div class="col-span-1">
                     <span class="text-textcolor">{language.emotionImage}</span>
-                    <ModelList bind:value={DBState.db.seperateModels.emotion} blankable excludesPrefix="plugin" />
+                    <ModelList
+                        bind:value={settings.providers.seperateModels.emotion}
+                        blankable
+                        excludesPrefix="plugin"
+                    />
                 </div>
 
                 <div class="col-span-1">
                     <span class="text-textcolor">{language.others}</span>
-                    <ModelList bind:value={DBState.db.seperateModels.otherAx} blankable excludesPrefix="plugin" />
+                    <ModelList
+                        bind:value={settings.providers.seperateModels.otherAx}
+                        blankable
+                        excludesPrefix="plugin"
+                    />
                 </div>
             </div>
         {/if}
         {#if selectedOption === "parameters"}
-            {#if DBState.db.seperateParametersByModel}
+            {#if settings.providers.seperateParametersByModel}
                 <ModelList
                     bind:value={parameterModelSelection}
                     blankable
                     excludesPrefix="plugin"
                     onChange={(v) => {
-                        DBState.db.seperateParameters.overrides ??= {};
-                        DBState.db.seperateParameters.overrides[v] ??= {};
+                        settings.providers.seperateParameters.overrides ??= {};
+                        settings.providers.seperateParameters.overrides[v] ??= {};
                     }}
                 />
 
                 {#if parameterModelSelection !== ""}
                     <AllSeperateParameters
-                        bind:value={DBState.db.seperateParameters.overrides[parameterModelSelection]}
+                        bind:value={settings.providers.seperateParameters.overrides[parameterModelSelection]}
                         withImportExport
                         paramKey={parameterModelSelection}
                     />
@@ -144,25 +161,25 @@
                 <div class="w-full mt-4 flex flex-col">
                     {#if selectedParameterOption === "memory"}
                         <AllSeperateParameters
-                            bind:value={DBState.db.seperateParameters.memory}
+                            bind:value={settings.providers.seperateParameters.memory}
                             withImportExport
                             paramKey="memory"
                         />
                     {:else if selectedParameterOption === "translate"}
                         <AllSeperateParameters
-                            bind:value={DBState.db.seperateParameters.translate}
+                            bind:value={settings.providers.seperateParameters.translate}
                             withImportExport
                             paramKey="translate"
                         />
                     {:else if selectedParameterOption === "emotion"}
                         <AllSeperateParameters
-                            bind:value={DBState.db.seperateParameters.emotion}
+                            bind:value={settings.providers.seperateParameters.emotion}
                             withImportExport
                             paramKey="emotion"
                         />
                     {:else if selectedParameterOption === "otherAx"}
                         <AllSeperateParameters
-                            bind:value={DBState.db.seperateParameters.otherAx}
+                            bind:value={settings.providers.seperateParameters.otherAx}
                             withImportExport
                             paramKey="otherAx"
                         />
@@ -172,7 +189,10 @@
         {:else if selectedOption === "customModels"}
             <CustomModelsSettings noAccordion />
         {:else if selectedOption === "settings"}
-            <CheckInput name={language.seperateParametersByModel} bind:check={DBState.db.seperateParametersByModel} />
+            <CheckInput
+                name={language.seperateParametersByModel}
+                bind:check={settings.providers.seperateParametersByModel}
+            />
         {/if}
     </div>
 </div>

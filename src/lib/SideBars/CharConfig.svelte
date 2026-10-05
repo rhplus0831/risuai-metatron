@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "../../lang";
     import { tokenizeAccurate } from "../../ts/tokenizer";
     import {
@@ -132,7 +133,7 @@
     });
 
     $effect.pre(() => {
-        if (DBState.db.characters[$selectedCharID].type === "character" && DBState.db.useAdditionalAssetsPreview) {
+        if (DBState.db.characters[$selectedCharID].type === "character" && settings.ui.useAdditionalAssetsPreview) {
             if ((DBState.db.characters[$selectedCharID] as character).additionalAssets) {
                 for (
                     let i = 0;
@@ -256,7 +257,7 @@
         try {
             const res = await fetch(`https://api.fish.audio/model?self=true`, {
                 headers: {
-                    Authorization: `Bearer ${DBState.db.fishSpeechKey}`,
+                    Authorization: `Bearer ${settings.secrets.fishSpeechKey}`,
                 },
             });
             const data = await res.json();
@@ -797,7 +798,7 @@
             />
         {/if}
     {:else if viewSubMenu === 2}
-        {#if DBState.db.newImageHandlingBeta}
+        {#if settings.memoryTranslateMedia.newImageHandlingBeta}
             <CheckInput
                 bind:check={DBState.db.characters[$selectedCharID].prebuiltAssetCommand}
                 name={language.insertAssetPrompt}
@@ -869,7 +870,7 @@
                         {#each DBState.db.characters[$selectedCharID].additionalAssets as assets, i}
                             <tr>
                                 <td class="font-medium truncate">
-                                    {#if assetFilePath[i] && DBState.db.useAdditionalAssetsPreview}
+                                    {#if assetFilePath[i] && settings.ui.useAdditionalAssetsPreview}
                                         {#if assetFileExtensions[i] === "mp4"}
                                             <!-- svelte-ignore a11y_media_has_caption -->
                                             <video controls class="mt-2 px-2 w-full m-1 rounded-md"
@@ -911,7 +912,7 @@
                                     >
                                         <TrashIcon />
                                     </button>
-                                    {#if DBState.db.useAdditionalAssetsPreview}
+                                    {#if settings.ui.useAdditionalAssetsPreview}
                                         <button
                                             class="hover:text-blue-500"
                                             class:text-textcolor2={DBState.db.characters[
@@ -1211,7 +1212,7 @@
                 <span class="text-textcolor">API Key (overrides global)</span>
                 <TextInput
                     className="mb-4 mt-2"
-                    hideText={DBState.db.hideApiKey}
+                    hideText={settings.ui.hideApiKey}
                     bind:value={DBState.db.characters[$selectedCharID].oaiTTSConfig.apiKey}
                     placeholder="Leave empty to use global OpenAI API key"
                 />
@@ -1552,7 +1553,7 @@
             bind:value={DBState.db.characters[$selectedCharID].additionalText}
         ></TextAreaInput>
 
-        {#if DBState.db.showUnrecommended || DBState.db.characters[$selectedCharID].personality.length > 3}
+        {#if settings.ui.showUnrecommended || DBState.db.characters[$selectedCharID].personality.length > 3}
             <span class="text-textcolor">{language.personality} <Help key="personality" unrecommended /></span>
             <TextAreaInput
                 highlight
@@ -1561,7 +1562,7 @@
                 bind:value={DBState.db.characters[$selectedCharID].personality}
             ></TextAreaInput>
         {/if}
-        {#if DBState.db.showUnrecommended || DBState.db.characters[$selectedCharID].scenario.length > 3}
+        {#if settings.ui.showUnrecommended || DBState.db.characters[$selectedCharID].scenario.length > 3}
             <span class="text-textcolor">{language.scenario} <Help key="scenario" unrecommended /></span>
             <TextAreaInput
                 highlight
@@ -1716,7 +1717,7 @@
             <Check bind:check={DBState.db.characters[$selectedCharID].escapeOutput} name={language.escapeOutput} />
         </div>
 
-        {#if DBState.db.supaModelType !== "none" && DBState.db.hypav2}
+        {#if settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2}
             <Button
                 onclick={() => {
                     if (!getCurrentChat()?.hypaV2Data) {
@@ -1728,7 +1729,7 @@
             >
                 {language.hypaMemoryV2Modal}
             </Button>
-        {:else if DBState.db.hypaV3}
+        {:else if settings.memoryTranslateMedia.hypaV3}
             <Button
                 onclick={() => {
                     $hypaV3ModalOpen = true;
@@ -1762,7 +1763,7 @@
                     return;
                 }
                 const m = convertCharacterToModule(char);
-                DBState.db.modules.push(m);
+                settings.modules.push(m);
                 alertNormal(language.successfullyConverted);
             }}
             className="mt-4"

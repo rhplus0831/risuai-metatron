@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import SecretInput from "../UI/GUI/SecretInput.svelte";
@@ -6,7 +7,6 @@
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
     import { HypaProcesser } from "src/ts/process/memory/hypamemory";
-    import { DBState } from "src/ts/stores.svelte";
 
     let query = $state("");
     let model = $state("MiniLM");
@@ -57,11 +57,11 @@
 
 {#if model === "custom"}
     <span class="text-textcolor text-lg">URL</span>
-    <TextInput size="sm" marginBottom bind:value={DBState.db.hypaCustomSettings.url} />
+    <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.url} />
     <span class="text-textcolor text-lg">Key/Password</span>
-    <TextInput size="sm" marginBottom bind:value={DBState.db.hypaCustomSettings.key} />
+    <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.key} />
     <span class="text-textcolor text-lg">Request Model</span>
-    <TextInput size="sm" marginBottom bind:value={DBState.db.hypaCustomSettings.model} />
+    <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.model} />
 {/if}
 
 <div class="mb-4"></div>

@@ -26,6 +26,7 @@ import {
     replaceCharacterRecordAt,
 } from "./records.svelte";
 import { onCharacterSelected, selectCharacter, selection } from "./selection.svelte";
+import { settings } from "./settingsViews.svelte";
 
 export { selectCharacter };
 
@@ -318,10 +319,12 @@ export function selectedCharacter(): AnyCharacter | undefined {
 // The HypaV3 preset that turns memory on for every chat does so when a character is selected.
 onCharacterSelected((chaId) => {
     untrack(() => {
-        const db = DBState.db;
         if (
-            db?.hypaV3 &&
-            selectedHypaV3Preset(db)?.settings?.alwaysToggleOn &&
+            settings.memoryTranslateMedia.hypaV3 &&
+            selectedHypaV3Preset({
+                hypaV3Presets: settings.hypaV3Presets.items,
+                hypaV3PresetId: settings.hypaV3Presets.selectedId,
+            })?.settings?.alwaysToggleOn &&
             findCharacter(chaId)?.supaMemory !== true
         ) {
             updateCharacter(chaId, { supaMemory: true });

@@ -1,3 +1,4 @@
+import { settings, activePreset } from "./storage/settingsViews.svelte";
 import type { Tiktoken } from "@dqbd/tiktoken";
 import type { Tokenizer } from "@mlc-ai/web-tokenizers";
 import {
@@ -6,7 +7,6 @@ import {
     type Chat,
     type DeepReadonly,
     getCurrentCharacter,
-    getDatabase,
 } from "./storage/database.svelte";
 import type { MultiModal, OpenAIChat } from "./process/index.svelte";
 import { supportsInlayImage } from "./process/files/inlays";
@@ -89,18 +89,17 @@ export async function encodeWithTokenizer(
 }
 
 export async function encode(data: string): Promise<number[] | Uint32Array | Int32Array> {
-    const db = getDatabase();
-    const modelInfo = getModelInfo(db.aiModel);
-    const pluginTokenizer = pluginHooks.providerOptions.get(db.currentPluginProvider)?.tokenizer ?? "none";
+    const modelInfo = getModelInfo(activePreset.aiModel);
+    const pluginTokenizer = pluginHooks.providerOptions.get(activePreset.currentPluginProvider)?.tokenizer ?? "none";
 
     let cacheKey = "";
-    if (db.useTokenizerCaching) {
+    if (settings.providers.useTokenizerCaching) {
         cacheKey = getHash(
             data,
-            db.aiModel,
-            db.customTokenizer,
-            db.currentPluginProvider,
-            db.googleClaudeTokenizing,
+            activePreset.aiModel,
+            settings.providers.customTokenizer,
+            activePreset.currentPluginProvider,
+            settings.providers.googleClaudeTokenizing,
             modelInfo,
             pluginTokenizer,
         );
@@ -114,24 +113,26 @@ export async function encode(data: string): Promise<number[] | Uint32Array | Int
 
     // The routing is shared with the server counter (`shared/tokenizerChoice.ts`).
     const choice = selectTokenizer({
-        aiModel: db.aiModel,
-        customTokenizer: db.customTokenizer,
+        aiModel: activePreset.aiModel,
+        customTokenizer: settings.providers.customTokenizer,
         pluginTokenizer,
         modelTokenizer: modelInfo.tokenizer,
-        googleClaudeTokenizing: db.googleClaudeTokenizing,
+        googleClaudeTokenizing: settings.providers.googleClaudeTokenizing,
     });
     switch (choice.kind) {
         case "googleCloud":
             result = await tokenizeGoogleCloud(data);
             break;
         case "pluginFunction":
-            result = (await pluginHooks.providerOptions.get(db.currentPluginProvider)?.tokenizerFunc?.(data)) ?? [0];
+            result = (await pluginHooks.providerOptions
+                .get(activePreset.currentPluginProvider)
+                ?.tokenizerFunc?.(data)) ?? [0];
             break;
         case "family":
             result = await encodeFamily(data, choice.family);
             break;
     }
-    if (db.useTokenizerCaching) {
+    if (settings.providers.useTokenizerCaching) {
         encodeCache.set(cacheKey, result);
     }
 
@@ -175,8 +176,7 @@ let lastTikModel = "cl100k_base";
 let googleCloudTokenizedCache = new Map<string, number>();
 
 async function tokenizeGoogleCloud(text: string) {
-    const db = getDatabase();
-    const model = getModelInfo(db.aiModel);
+    const model = getModelInfo(activePreset.aiModel);
     const cacheKey = text + model.internalID;
 
     if (googleCloudTokenizedCache.has(cacheKey)) {
@@ -345,7 +345,7 @@ export class ChatTokenizer extends ChatTokenCounter {
         super(chatAdditionalTokens, useName, {
             encode,
             supportsInlayImage,
-            gptVisionQuality: () => getDatabase().gptVisionQuality,
+            gptVisionQuality: () => settings.providers.gptVisionQuality,
         });
     }
 }

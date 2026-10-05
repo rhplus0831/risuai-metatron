@@ -2,6 +2,8 @@ import fc from "fast-check";
 import { writable } from "svelte/store";
 import { beforeEach, expect, test, vi } from "vitest";
 import { DBState } from "../../stores.svelte";
+import { initializeRecords, takeRecordFields } from "../../storage/records.svelte";
+import { activePreset, settings } from "../../storage/settingsViews.svelte";
 import { getChatVar, getGlobalChatVar, setChatVar } from "../chatVar.svelte";
 import { resetChatVariables } from "./cbs/lib";
 
@@ -40,8 +42,6 @@ vi.mock(import("../../stores.svelte"), () => {
                         defaultVariables: "",
                     },
                 ],
-                globalChatVariables: {},
-                templateDefaultVariables: "",
             },
         },
         selIdState: {
@@ -52,6 +52,16 @@ vi.mock(import("../../stores.svelte"), () => {
 });
 
 //#endregion
+
+// The settings live in the records (installed as `setDatabaseLite` installs a database), which
+// `chatVar.svelte` reads through the settings views (Phase 6 slice 7): the global variables, and
+// the template's default variables in the selected preset. The character stays on `DBState.db`.
+initializeRecords(
+    takeRecordFields({
+        globalChatVariables: {},
+        botPresets: [{ id: "preset", name: "Preset", templateDefaultVariables: "" }],
+    }),
+);
 
 const anyValidDefaultVarKey = fc.string({ minLength: 1, unit: "grapheme" }).filter((s) => !/[=\n]/.test(s));
 const anyValidDefaultVarValue = fc
@@ -76,7 +86,7 @@ test("can get a character default variable", () => {
 test("can get a template default variable", () => {
     fc.assert(
         fc.property(anyValidDefaultVarKey, anyValidDefaultVarValue, (key, value) => {
-            DBState.db.templateDefaultVariables = `${key}=${value}`;
+            activePreset.templateDefaultVariables = `${key}=${value}`;
             expect(getChatVar(key)).toBe(value);
         }),
     );
@@ -100,7 +110,7 @@ test("can set and get a chat variable", () => {
 
 test("can set a chat variable over its default value", () => {
     DBState.db.characters[0].defaultVariables = "char=default";
-    DBState.db.templateDefaultVariables = "template=default";
+    activePreset.templateDefaultVariables = "template=default";
 
     setChatVar("char", "overridden");
     setChatVar("template", "overridden");
@@ -118,7 +128,7 @@ test("can get a global chat variable", () => {
                 .filter((v) => v !== undefined)
                 .map(JSON.stringify),
             (key, value) => {
-                DBState.db.globalChatVariables[`toggle_${key}`] = value;
+                settings.globalChatVariables[`toggle_${key}`] = value;
 
                 expect(getGlobalChatVar(`toggle_${key}`)).toBe(value);
             },

@@ -1,3 +1,4 @@
+import { settings } from "./storage/settingsViews.svelte";
 import { get, writable } from "svelte/store";
 import { saveImage, type character, type Chat, defaultSdDataFunc, getDatabase } from "./storage/database.svelte";
 import { alertAddCharacter, alertConfirm, alertError, alertNormal, alertSelect, alertStore, alertWait } from "./alert";
@@ -63,10 +64,8 @@ export function createNewGroup() {
 }
 
 export async function getCharImage(loc: string, type: "plain" | "css" | "contain" | "lgcss") {
-    const db = DBState.db;
-
     // Return placeholder when hideAllImages is enabled
-    if (db.hideAllImages) {
+    if (settings.ui.hideAllImages) {
         if (type === "plain") {
             return "/none.webp";
         }
@@ -584,7 +583,6 @@ export async function exportAllChats() {
 }
 
 function formatTavernChat(chat: string, charName: string) {
-    const db = getDatabase();
     return chat
         .replace(/<([Uu]ser)>|\{\{([Uu]ser)\}\}/g, getUserName())
         .replace(/((\{\{)|<)([Cc]har)(=.+)?((\}\})|>)/g, charName);

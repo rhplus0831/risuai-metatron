@@ -98,7 +98,7 @@ Theme and GUI helpers:
 
 ## State
 
-- Components mutate `DBState.db` directly and rely on autosave. See `persistence.md` D4 for the selected-character-only save tracking.
+- Components mutate the settings through the record views (`settings.ui.*`, `settingsViews.svelte.ts`) and the characters through `DBState.db.characters`, and rely on the records' write-through saves: each write queues the record it changed (`persistence.md`).
 - Invalidation signals:
   - `ReloadGUIPointer`: structural changes.
   - `ReloadChatPointer`: message re-render.
@@ -133,7 +133,8 @@ Theme and GUI helpers:
 ## Tests
 
 - `src/lib/UI/GUI/guiRendering.test.ts` (happy-dom, Svelte `mount`): the primitives only. `src/lib/UI/GUI/SecretInput.test.ts` (with `src/lib/UI/tests/reactiveProps.svelte.ts`): the credential input (Phase 5 slice 7b): the status without the value, a draft submitted once on Enter or the button and never on blur, nothing submitted empty, the draft dropped when the path changes, a clear queued without the draft.
-- Not tested: chat screens, sidebar, mobile, colorscheme, sizing.
+- `src/ts/gui/guiRecords.test.ts`: `colorscheme`, `guisize`, and `animation` over the records (with `DBState.db` a plain object), the plugin theme getters following the `ui` record and returning detached copies. `e2e/welcomeAndChatSettings.spec.ts` (sorted last: it changes the shared stack's settings): the first-run wizard on a fresh server (every answer in its section, preset, or persona; no key in the tab or a settings record), send with Enter, auto translate, icon size, the `waifu` theme, a module hiding icons, the playground pages, and the Iris modal.
+- Not tested: sidebar, mobile.
 
 ## Known Hazards
 

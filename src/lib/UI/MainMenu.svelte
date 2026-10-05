@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { DBState } from "src/ts/stores.svelte";
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import Hub from "./Realm/RealmMain.svelte";
     import { OpenRealmStore, RealmInitialOpenChar } from "src/ts/stores.svelte";
     import { ArrowLeft, ArrowRight, FolderCodeIcon, GlobeIcon, MailIcon, Send } from "@lucide/svelte";
@@ -63,7 +63,7 @@
                     }}>Get More</button
                 >
             </h1>
-            {#if !DBState.db.hideRealm}
+            {#if !settings.ui.hideRealm}
                 {#await getRisuHub({ search: "", page: 0, nsfw: false, sort: "recommended" }) then charas}
                     {#if charas.length > 0}
                         {@html hubAdditionalHTML}
@@ -72,7 +72,7 @@
                                 <RisuHubIcon
                                     onClick={() => {
                                         $OpenRealmStore = true;
-                                        if (DBState.db.realmDirectOpen) {
+                                        if (settings.ui.realmDirectOpen) {
                                             $RealmInitialOpenChar = chara;
                                         }
                                     }}

@@ -1,5 +1,5 @@
+import { activePreset } from "../../storage/settingsViews.svelte";
 import { risuChatParser } from "src/ts/parser/parser.svelte";
-import { getDatabase } from "src/ts/storage/database.svelte";
 import { jsonOutputTrimmer } from "src/ts/util";
 
 export function convertInterfaceToSchema(int: string) {
@@ -121,17 +121,14 @@ export function convertInterfaceToSchema(int: string) {
 }
 
 export function getOpenAIJSONSchema(schema?: string) {
-    const db = getDatabase();
     return {
         name: "format",
-        strict: db.strictJsonSchema,
-        schema: convertInterfaceToSchema(schema ?? db.jsonSchema),
+        strict: activePreset.strictJsonSchema,
+        schema: convertInterfaceToSchema(schema ?? activePreset.jsonSchema),
     };
 }
 
 export function getGeneralJSONSchema(schema?: string, excludes: string[] = []) {
-    const db = getDatabase();
-
     function process(data: any) {
         const keys = Object.keys(data);
         for (const key of keys) {
@@ -145,7 +142,7 @@ export function getGeneralJSONSchema(schema?: string, excludes: string[] = []) {
         return data;
     }
 
-    const d = convertInterfaceToSchema(schema ?? db.jsonSchema);
+    const d = convertInterfaceToSchema(schema ?? activePreset.jsonSchema);
     return process(d);
 }
 

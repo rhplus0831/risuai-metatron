@@ -1,7 +1,8 @@
+import { settings } from "../storage/settingsViews.svelte";
 import { auxFetch } from "../network/auxFetch";
 import { isSecretSet } from "../storage/llmSecrets.svelte";
 import { alertError } from "../alert";
-import { getCurrentCharacter, getDatabase, type character } from "../storage/database.svelte";
+import { getCurrentCharacter, type character } from "../storage/database.svelte";
 import { runTranslator, translateVox } from "../translator/translator";
 import { globalFetch, loadAsset } from "../globalApi.svelte";
 import { language } from "src/lang";
@@ -97,7 +98,6 @@ export async function sayTTS(character: character, text: string) {
             return;
         }
 
-        let db = getDatabase();
         text = text.replace(/\*/g, "");
 
         if (character.ttsReadOnlyQuoted) {
@@ -144,7 +144,7 @@ export async function sayTTS(character: character, text: string) {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
-                        "xi-api-key": db.elevenLabKey || undefined,
+                        "xi-api-key": settings.secrets.elevenLabKey || undefined,
                     },
                 });
                 if (da.status >= 200 && da.status < 300) {
@@ -162,7 +162,7 @@ export async function sayTTS(character: character, text: string) {
             case "VOICEVOX": {
                 const jpText = await translateVox(text);
                 const query = await fetch(
-                    `${db.voicevoxUrl}/audio_query?text=${jpText}&speaker=${character.ttsSpeech}`,
+                    `${settings.memoryTranslateMedia.voicevoxUrl}/audio_query?text=${jpText}&speaker=${character.ttsSpeech}`,
                     {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
@@ -182,11 +182,14 @@ export async function sayTTS(character: character, text: string) {
                         outputStereo: queryJson.outputStereo,
                         kana: queryJson.kana,
                     };
-                    const getVoice = await fetch(`${db.voicevoxUrl}/synthesis?speaker=${character.ttsSpeech}`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(bodyData),
-                    });
+                    const getVoice = await fetch(
+                        `${settings.memoryTranslateMedia.voicevoxUrl}/synthesis?speaker=${character.ttsSpeech}`,
+                        {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(bodyData),
+                        },
+                    );
                     if (getVoice.status == 200 && getVoice.headers.get("content-type") === "audio/wav") {
                         await playAudio(await getVoice.arrayBuffer(), "audio/wav", {
                             ttsMode: character.ttsMode ?? "",
@@ -269,7 +272,7 @@ export async function sayTTS(character: character, text: string) {
                 const response = await globalFetch(url, {
                     method: "GET",
                     headers: {
-                        Authorization: "Bearer " + db.NAIApiKey,
+                        Authorization: "Bearer " + settings.secrets.NAIApiKey,
                     },
                     rawResponse: true,
                 });
@@ -294,7 +297,7 @@ export async function sayTTS(character: character, text: string) {
                         {
                             method: "POST",
                             headers: {
-                                Authorization: "Bearer " + db.huggingfaceKey,
+                                Authorization: "Bearer " + settings.secrets.huggingfaceKey,
                                 "Content-Type": "application/json",
                             },
                             body: JSON.stringify({
@@ -443,7 +446,7 @@ export async function sayTTS(character: character, text: string) {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
-                        Authorization: `Bearer ${db.fishSpeechKey}`,
+                        Authorization: `Bearer ${settings.secrets.fishSpeechKey}`,
                     },
                     body: body,
                     rawResponse: true,
@@ -486,11 +489,9 @@ export function getWebSpeechTTSVoices() {
 }
 
 export async function getElevenTTSVoices() {
-    let db = getDatabase();
-
     const data = await fetch("https://api.elevenlabs.io/v1/voices", {
         headers: {
-            "xi-api-key": db.elevenLabKey || undefined,
+            "xi-api-key": settings.secrets.elevenLabKey || undefined,
         },
     });
     const res = await data.json();
@@ -500,8 +501,7 @@ export async function getElevenTTSVoices() {
 }
 
 export async function getVOICEVOXVoices() {
-    const db = getDatabase();
-    const speakerData = await fetch(`${db.voicevoxUrl}/speakers`);
+    const speakerData = await fetch(`${settings.memoryTranslateMedia.voicevoxUrl}/speakers`);
     const speakerList = await speakerData.json();
     const speakersInfo = speakerList.map((speaker) => {
         const styles = speaker.styles.map((style) => {

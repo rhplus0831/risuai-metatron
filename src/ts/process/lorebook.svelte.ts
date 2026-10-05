@@ -1,3 +1,4 @@
+import { settings } from "../storage/settingsViews.svelte";
 import { get } from "svelte/store";
 import { getChatVar, getChatVarOf, setChatVar, setChatVarOf } from "../parser/chatVar.svelte";
 import { selectedCharID } from "../stores.svelte";
@@ -101,8 +102,8 @@ export async function loadLoreBookV3Prompt(chatRef?: ChatRef | null) {
             character: char,
             chat: lorechat,
             moduleLorebooks: getModuleLorebooks(ref),
-            loreBookDepth: DBState.db.loreBookDepth,
-            loreBookToken: DBState.db.loreBookToken,
+            loreBookDepth: settings.memoryTranslateMedia.loreBookDepth,
+            loreBookToken: settings.providers.loreBookToken,
             userName: getUserName(ref),
         },
         {

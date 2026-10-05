@@ -1,3 +1,4 @@
+import { settings } from "./settingsViews.svelte";
 import { untrack } from "svelte";
 import { v4 } from "uuid";
 import type { Database, RisuPersona } from "../../../shared/database.ts";
@@ -126,9 +127,9 @@ export function updateSettings(patch: Record<string, unknown>, options: { preset
 
 /** Raises a usage counter (`statics.imports` or `statics.messages`) by one. A whole-record write, not an atomic counter. */
 export function incrementStatic(name: "imports" | "messages") {
-    const statics = (DBState.db.statics ?? {}) as Record<string, unknown>;
+    const statics = (settings.statics ?? {}) as Record<string, unknown>;
     const current = statics[name];
-    DBState.db.statics = {
+    settings.statics = {
         ...(detach(statics) as Database["statics"]),
         [name]: (typeof current === "number" && Number.isFinite(current) ? current : 0) + 1,
     };
@@ -142,7 +143,7 @@ export function incrementStatic(name: "imports" | "messages") {
 export function setPersonas(list: unknown) {
     requireArray("personas", list);
     requireJsonData("personas", list);
-    DBState.db.personas = normalizePersonas(detach(list));
+    settings.personas = normalizePersonas(detach(list));
     reconcileSelection(DBState.db);
 }
 
@@ -151,10 +152,10 @@ export function addPersona(persona: unknown): string {
     requireObject("persona", persona);
     requireJsonData("persona", persona);
     const [entry] = normalizePersonas([detach(persona)]);
-    if ((DBState.db.personas ?? []).some((other) => other?.id === entry.id)) {
+    if ((settings.personas ?? []).some((other) => other?.id === entry.id)) {
         entry.id = newPersonaId();
     }
-    DBState.db.personas.push(entry);
+    settings.personas.push(entry);
     return entry.id;
 }
 
@@ -168,14 +169,14 @@ export function updatePersona(id: string, patch: Record<string, unknown>) {
             throw new MutationValidationError(field, "expected a string");
         }
     });
-    const index = (DBState.db.personas ?? []).findIndex((entry) => entry?.id === id);
+    const index = (settings.personas ?? []).findIndex((entry) => entry?.id === id);
     if (index === -1) {
         throw new MutationTargetGoneError(`persona ${id}`);
     }
     batchRecordWrites(() => {
-        const next = writeEntries(DBState.db.personas[index] as unknown as Record<string, unknown>, prepared);
+        const next = writeEntries(settings.personas[index] as unknown as Record<string, unknown>, prepared);
         if (next) {
-            DBState.db.personas[index] = next as unknown as RisuPersona;
+            settings.personas[index] = next as unknown as RisuPersona;
         }
     });
 }
@@ -201,20 +202,20 @@ function checkedModule(key: string, module: unknown): RisuModule {
 
 /** The mirror record of a module, typed read-only: change it through `updateModule`. */
 export function findModule(id: string): DeepReadonly<RisuModule> | undefined {
-    return (DBState.db.modules ?? []).find((module) => module?.id === id);
+    return (settings.modules ?? []).find((module) => module?.id === id);
 }
 
 /** Replaces the module list (each entry an object; a missing id is assigned). */
 export function setModules(list: unknown) {
     requireArray("modules", list);
-    DBState.db.modules = Array.from(list, (module, index) => checkedModule(`modules[${index}]`, module));
+    settings.modules = Array.from(list, (module, index) => checkedModule(`modules[${index}]`, module));
 }
 
 /** Adds a module (a missing id is assigned). Returns the id. */
 export function addModule(module: unknown): string {
     const entry = checkedModule("module", module);
-    DBState.db.modules ??= [];
-    DBState.db.modules.push(entry);
+    settings.modules ??= [];
+    settings.modules.push(entry);
     return entry.id;
 }
 
@@ -228,18 +229,18 @@ export function updateModule(id: string, patch: Record<string, unknown>): boolea
             throw new MutationValidationError(field, "a module's id cannot be changed");
         }
     });
-    const index = (DBState.db.modules ?? []).findIndex((entry) => entry?.id === id);
+    const index = (settings.modules ?? []).findIndex((entry) => entry?.id === id);
     if (index === -1) {
         return false;
     }
     // The patched module is checked on a copy (the shape an added module gets), then the patch goes
     // into the live module in place, so a retained reference to it stays current.
-    const copy = detach(DBState.db.modules[index]) as unknown as Record<string, unknown>;
+    const copy = detach(settings.modules[index]) as unknown as Record<string, unknown>;
     canonicalModule(`modules[${index}]`, writeEntries(copy, prepared) ?? copy);
     batchRecordWrites(() => {
-        const next = writeEntries(DBState.db.modules[index] as unknown as Record<string, unknown>, prepared);
+        const next = writeEntries(settings.modules[index] as unknown as Record<string, unknown>, prepared);
         if (next) {
-            DBState.db.modules[index] = next as unknown as RisuModule;
+            settings.modules[index] = next as unknown as RisuModule;
         }
     });
     return true;
@@ -247,11 +248,11 @@ export function updateModule(id: string, patch: Record<string, unknown>): boolea
 
 /** Deletes the module with `id`. Returns `false` when there is none. */
 export function removeModule(id: string): boolean {
-    const index = (DBState.db.modules ?? []).findIndex((module) => module?.id === id);
+    const index = (settings.modules ?? []).findIndex((module) => module?.id === id);
     if (index === -1) {
         return false;
     }
-    DBState.db.modules.splice(index, 1);
+    settings.modules.splice(index, 1);
     return true;
 }
 
@@ -261,18 +262,18 @@ export function setEnabledModules(ids: unknown) {
     if (!Array.from(ids).every((id) => typeof id === "string")) {
         throw new MutationValidationError("enabledModules", "expected a list of module ids");
     }
-    DBState.db.enabledModules = [...new Set(ids as string[])];
+    settings.enabledModules = [...new Set(ids as string[])];
 }
 
 /** Enables or disables a module globally. */
 export function setModuleEnabled(id: string, on: boolean) {
-    const ids = new Set(DBState.db.enabledModules ?? []);
+    const ids = new Set(settings.enabledModules ?? []);
     if (on) {
         ids.add(id);
     } else {
         ids.delete(id);
     }
-    DBState.db.enabledModules = [...ids];
+    settings.enabledModules = [...ids];
 }
 
 /** Replaces the character order (character ids and folders). */
@@ -293,7 +294,7 @@ export function setCharacterOrder(order: unknown) {
     if (!valid) {
         throw new MutationValidationError("characterOrder", "expected character ids and folders with member lists");
     }
-    DBState.db.characterOrder = detach(order) as Database["characterOrder"];
+    settings.characterOrder = detach(order) as Database["characterOrder"];
 }
 
 /** Checks a plugin a contract hands in, without changing it: an object of JSON data with a name. For a caller's preflight of a list. */
@@ -313,18 +314,18 @@ function checkedPlugin(key: string, plugin: unknown): RisuPlugin {
 /** Replaces the installed plugin list (each entry an object with a name). */
 export function setPlugins(list: unknown) {
     requireArray("plugins", list);
-    DBState.db.plugins = Array.from(list, (plugin, index) => checkedPlugin(`plugins[${index}]`, plugin));
+    settings.plugins = Array.from(list, (plugin, index) => checkedPlugin(`plugins[${index}]`, plugin));
 }
 
 /** Installs a plugin, replacing the installed one with the same name. */
 export function upsertPlugin(plugin: unknown) {
     const entry = checkedPlugin("plugin", plugin);
-    DBState.db.plugins ??= [];
-    const index = DBState.db.plugins.findIndex((other) => other?.name === entry.name);
+    settings.plugins ??= [];
+    const index = settings.plugins.findIndex((other) => other?.name === entry.name);
     if (index === -1) {
-        DBState.db.plugins.push(entry);
+        settings.plugins.push(entry);
     } else {
-        DBState.db.plugins[index] = entry;
+        settings.plugins[index] = entry;
     }
 }
 
@@ -335,7 +336,7 @@ export function setPluginArgument(pluginName: string, key: string, value: unknow
     }
     let found = false;
     batchRecordWrites(() => {
-        for (const plugin of DBState.db.plugins ?? []) {
+        for (const plugin of settings.plugins ?? []) {
             if (plugin?.name === pluginName) {
                 plugin.realArg ??= {};
                 const next = writeEntries(plugin.realArg, [[key, value]]);
@@ -361,7 +362,7 @@ export function addAuthRefresh(entry: unknown) {
     const next = detach(entry) as unknown as Database["authRefreshes"][number];
     // One entry per server: a new login replaces the server's entry (every one with its URL). Built
     // on a copy and installed once.
-    const list = detach(DBState.db.authRefreshes ?? []) as Database["authRefreshes"];
+    const list = detach(settings.authRefreshes ?? []) as Database["authRefreshes"];
     const first = list.findIndex((refresh) => refresh?.url === next.url);
     if (typeof next.url !== "string" || first === -1) {
         list.push(next);
@@ -373,7 +374,7 @@ export function addAuthRefresh(entry: unknown) {
             }
         }
     }
-    DBState.db.authRefreshes = list;
+    settings.authRefreshes = list;
 }
 
 /** Adds a preset: the canonical fields (`normalizePreset`) under a fresh id. Returns the id. */
@@ -381,6 +382,6 @@ export function addPreset(preset: unknown): string {
     requireObject("preset", preset);
     requireJsonData("preset", preset);
     const id = newPresetId();
-    DBState.db.botPresets.push(normalizePreset(detach(preset), { id }));
+    settings.presets.push(normalizePreset(detach(preset), { id }));
     return id;
 }

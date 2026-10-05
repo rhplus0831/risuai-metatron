@@ -1,8 +1,8 @@
 <script lang="ts">
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { BookIcon, ImageIcon, SmileIcon } from "@lucide/svelte";
     import { alertNormal } from "src/ts/alert";
     import { hubURL, type hubType } from "src/ts/characterCards";
-    import { DBState } from "src/ts/stores.svelte";
     import { parseMultilangString } from "src/ts/util";
 
     interface Props {
@@ -18,7 +18,7 @@
     onclick={onClick}
 >
     <div class="flex gap-2 w-full">
-        {#if DBState.db.hideAllImages}
+        {#if settings.ui.hideAllImages}
             <div
                 class="w-20 min-w-20 h-20 sm:h-28 sm:w-28 rounded-md bg-darkbutton flex items-center justify-center text-textcolor2"
             >
@@ -38,7 +38,7 @@
             >
             <span
                 class="text-textcolor2 text-xs min-w-0 max-w-full text-ellipsis wrap-break-word max-h-8 whitespace-nowrap overflow-hidden text-start"
-                >{parseMultilangString(chara.desc)[DBState.db.language] ??
+                >{parseMultilangString(chara.desc)[settings.ui.language] ??
                     parseMultilangString(chara.desc).en ??
                     parseMultilangString(chara.desc).xx}</span
             >
