@@ -47,12 +47,11 @@ Sidebar:
 - `SideChatList.svelte`: chat list with SortableJS, folders, new/duplicate/delete/import/export, persona binding, and `Toggles`.
 - `DevTool.svelte`: prompt preview via `sendChat(-1, {preview})`, token counts, and variables.
 - `Toggles.svelte`: global, module, and character toggles (`getModuleToggles`, `parseToggleSyntax`).
-- `CustomSidebar.svelte`: renders `db.customSidebarItems`.
 - Also: `SidebarAvatar.svelte`, `SidebarIndicator.svelte`, `BarIcon.svelte` (legacy), `DropList.svelte`.
 
 Others:
 
-- `BookmarkList.svelte`, `ChatList.svelte`, `CustomSidebarConfig.svelte`, `GithubStars.svelte`, `Help.svelte`, `SavePopupIcon.svelte`.
+- `BookmarkList.svelte`, `ChatList.svelte`, `GithubStars.svelte`, `Help.svelte`, `SavePopupIcon.svelte`.
 - `PopupEditor.svelte`: Monaco popup.
 - `WelcomeRisu.svelte`: first-run wizard.
 - `QuickSettingsGUI.svelte`, `AllSeperateParameters.svelte`: see `settings-i18n.md`.
@@ -106,7 +105,7 @@ Theme and GUI helpers:
   - `ReloadGUIPointer`: structural changes.
   - `ReloadChatPointer`: message re-render.
   - Reassigning an array after an in-place mutation, e.g. `chat.bookmarks = [...]`.
-- Theme DB fields: `theme`, `colorScheme`, `colorSchemeName`, `customColorScheme`, `textTheme`, `customCSS`, `textAreaSize`, `sideBarSize`, `textAreaTextSize`, `customSidebarItems`.
+- Theme DB fields: `theme`, `colorScheme`, `colorSchemeName`, `customColorScheme`, `textTheme`, `customCSS`, `textAreaSize`, `sideBarSize`, `textAreaTextSize`.
 
 ## Coupling
 

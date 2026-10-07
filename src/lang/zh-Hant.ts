@@ -1561,7 +1561,6 @@ export const languageChineseTraditional = {
     nanoGPTSelectFromList: "從清單中選擇",
     nanoGPTManualInput: "手動輸入",
     nanoGPTManualModelSelect: "手動選擇模型",
-    customSidebarConfig: "自訂側邊欄設定",
     moveInsteadOfCopyOnCMPConvert: "CMP 轉換時以移動取代複製",
     successfullyConverted: "轉換成功",
     convertToModule: "轉換為模組",

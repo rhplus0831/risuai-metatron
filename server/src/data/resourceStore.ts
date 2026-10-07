@@ -38,6 +38,12 @@ import type { ResourceKind, ResourceKindRegistry } from "./kinds.ts";
  * a `root` record.
  */
 const SCHEMA_VERSION = 3;
+/**
+ * Kinds an earlier server stored and this one no longer registers: the normalization pass deletes
+ * their records, and a snapshot's rows of them are skipped, so a database or backup written before
+ * a kind was removed still opens and restores.
+ */
+const RETIRED_KINDS: ReadonlySet<string> = new Set(["customSidebarItems"]);
 const BUSY_TIMEOUT_MS = 5000;
 /** Deepest array/object nesting a stored value may have. */
 const MAX_JSON_DEPTH = 256;
@@ -244,6 +250,7 @@ export function createResourceStore(options: {
     const selectKindForPass = db.prepare(
         "SELECT id, seq, revision, schemaVersion, data FROM resources WHERE kind = ? ORDER BY seq",
     );
+    const deleteKind = db.prepare("DELETE FROM resources WHERE kind = ?");
 
     /**
      * The normalization pass, inside the caller's transaction: every stored record of every
@@ -256,6 +263,9 @@ export function createResourceStore(options: {
      */
     function normalizeStoredRecords(): number {
         let written = 0;
+        for (const name of RETIRED_KINDS) {
+            written += Number(deleteKind.run(name).changes);
+        }
         for (const kind of kinds.values()) {
             const rows = selectKindForPass.all(kind.name) as {
                 id: string;
@@ -943,7 +953,7 @@ export function createResourceStore(options: {
          * Reads and checks a snapshot file (read-only; nothing in it is executed beyond reading):
          * `integrity_check`, the schema version, the layout (`resources` and `meta` are real tables
          * with this store's columns, and `meta` holds an epoch), and every row (a registered kind at
-         * its current schema version, a valid id, singleton rules, unique kind and id, positive
+         * its current schema version (rows of a `RETIRED_KINDS` kind are skipped), a valid id, singleton rules, unique kind and id, positive
          * safe-integer `seq` and revision, and data the kind's normalizer and `serialize` accept), and
          * the chat tables (`readChatSnapshotRows`: chats of existing characters, messages of existing
          * chats, one exact order per character). Throws `ResourceValidationError` for anything else.
@@ -979,7 +989,10 @@ export function createResourceStore(options: {
                     throw new ResourceValidationError("Not a resource database");
                 }
                 const seen = new Set<string>();
-                const rows = rawRows.map((row, index) => {
+                const rows = rawRows.flatMap((row, index) => {
+                    if (typeof row.kind === "string" && RETIRED_KINDS.has(row.kind)) {
+                        return [];
+                    }
                     const where = `row ${index + 1}`;
                     const kind = typeof row.kind === "string" ? kinds.get(row.kind) : undefined;
                     if (!kind) {
@@ -1017,13 +1030,15 @@ export function createResourceStore(options: {
                         }
                         throw error;
                     }
-                    return {
-                        kind: kind.name,
-                        id: row.id,
-                        revision: row.revision,
-                        schemaVersion: kind.schemaVersion,
-                        text,
-                    };
+                    return [
+                        {
+                            kind: kind.name,
+                            id: row.id,
+                            revision: row.revision,
+                            schemaVersion: kind.schemaVersion,
+                            text,
+                        },
+                    ];
                 });
                 const characterIds = new Set(
                     rows.filter((row) => row.kind === RESOURCE_KIND.characters).map((row) => row.id),

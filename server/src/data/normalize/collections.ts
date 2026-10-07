@@ -24,8 +24,6 @@ export const normalizeLoreBook = objectList<Database["loreBook"][number]>("loreB
 
 export const normalizeGlobalscript = objectList<Database["globalscript"][number]>("globalscript");
 
-export const normalizeCustomSidebarItems = objectList<Database["customSidebarItems"][number]>("customSidebarItems");
-
 /** `hotkeys`: the stored list, then each built-in hotkey whose `action` it lacks (as `setDatabase` merged them). */
 export function normalizeHotkeys(input: unknown): Database["hotkeys"] {
     if (input === undefined) {

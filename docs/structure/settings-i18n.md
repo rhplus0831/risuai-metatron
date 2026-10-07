@@ -30,7 +30,7 @@ Declarative settings (`src/ts/setting/`):
   - `SettingType`.
   - `SettingCategory`: unused.
 - `settingRegistry.ts` `settingRegistry`: maps each `SettingType` to a wrapper component (`check`, `text`, `number`, `textarea`, `slider`, `select`, `segmented`, `color`, `header`, `button`, `accordion`, `custom`).
-- `utils.ts`: `getSettingValue`, `setSettingValue` (a `bindKey`, or `bindPath`'s first segment, read and written through `readSettingsRoot`/`writeSettingsRoot`), `checkCondition`, `getLabel`, `getFullSettingsData` (search and custom sidebar), `updateSettingValue` (the wrappers' write: skips an unchanged value, so `onChange` fires once per edit).
+- `utils.ts`: `getSettingValue`, `setSettingValue` (a `bindKey`, or `bindPath`'s first segment, read and written through `readSettingsRoot`/`writeSettingsRoot`), `checkCondition`, `getLabel`, `getFullSettingsData` (settings search), `updateSettingValue` (the wrappers' write: skips an unchanged value, so `onChange` fires once per edit).
 - `customComponents.ts` `customComponents`: maps component IDs to components for `type:'custom'`.
 - Data arrays:
   - `accessibilitySettingsData.ts`
@@ -96,12 +96,11 @@ Languages (`src/lang/`):
 ## Coupling
 
 - Depends on `database.svelte.ts` (types, presets), `getModelInfo`/`LLMFlags`, platform flags, GUI helpers, the translator, and prompt tokenization.
-- `CustomSidebar.svelte` renders arbitrary `SettingItem`s via `getFullSettingsData`, so item `id`s and conditions are part of user data. A pinned id that no longer exists is skipped.
 
 ## Invariants
 
 - A new setting needs: a `Database` field, its place and default (`persistence.md`, "Add a persisted setting"), a `SettingItem` in the right data array (or handwritten UI), and an `en.ts` key.
-- Keep `item.id` values unique and stable. User custom sidebars reference them.
+- Keep `item.id` values unique and stable.
 - Value precedence: `getValue`, then `bindPath`, then `bindKey`. `setSettingValue` creates missing path objects.
 - `SettingSelect`/`SettingSegmented` reset a value whose option becomes hidden. `SettingSegmented` takes the same value sources as the other wrappers.
 - A preset-owned field must be added to `botPreset` and `PRESET_DEFAULTS` in `shared/presets.ts` (the canonical list `normalizePreset` uses), and never be a secret: credentials belong in the `llmSecrets` section (`proxyKey` per preset in its `presets` map, a custom model's `key` in its `customModels` map), and `downloadPreset` blanks the endpoint fields. A credential field is edited with `src/lib/UI/GUI/SecretInput.svelte` (`path` a `shared/llmSecrets.ts` `SecretPath`): it shows the stored key's status (set with its last four characters, not set, saving), replaces it on Enter or the button (once; the field empties), and clears it; the draft is dropped when the path changes. Never `bind:` an LLM credential field (an `llmSecrets` credential, a preset's `proxyKey`, a custom model's `key`): it reads `""`. The forwarding layer serves `proxyKey` as a flat field of the selected preset; `activePreset` does not serve it. The auxiliary credentials of the `secrets` section are ordinary readable fields, bound like any other (`settings.secrets.<field>`).

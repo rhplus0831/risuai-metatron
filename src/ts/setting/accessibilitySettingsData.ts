@@ -210,5 +210,4 @@ export const accessibilitySettingsItems: SettingItem[] = [
         bindKey: "applyAdditionalParamsToAll",
         keywords: ["apply", "additional", "parameters", "to", "all", "models"],
     },
-    { type: "custom", id: "acc.customSidebarConfig", componentId: "CustomSidebarConfig" },
 ];

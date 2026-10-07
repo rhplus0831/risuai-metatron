@@ -9,7 +9,6 @@ import {
     normalizeAuthRefreshes,
     normalizeCharacterOrder,
     normalizeCustomModels,
-    normalizeCustomSidebarItems,
     normalizeEnabledModules,
     normalizeGlobalChatVariables,
     normalizeGlobalscript,
@@ -82,7 +81,6 @@ describe("plain list and map collections", () => {
         expect(normalizeLoreBook(undefined)).toEqual([{ name: "My First LoreBook", data: [] }]);
         expect(normalizeLoreBook([])).toEqual([]);
         expect(normalizeGlobalscript(undefined)).toEqual([]);
-        expect(normalizeCustomSidebarItems(undefined)).toEqual([]);
         expect(normalizeCharacterOrder(undefined)).toEqual([]);
         expect(normalizeAuthRefreshes(undefined)).toEqual([]);
         expect(normalizeGlobalChatVariables(undefined)).toEqual({});
@@ -109,7 +107,6 @@ describe("plain list and map collections", () => {
         for (const [name, normalize] of [
             ["loreBook", normalizeLoreBook],
             ["globalscript", normalizeGlobalscript],
-            ["customSidebarItems", normalizeCustomSidebarItems],
             ["authRefreshes", normalizeAuthRefreshes],
             ["customModels", normalizeCustomModels],
         ] as const) {

@@ -38,7 +38,6 @@ export const RESOURCE_KIND = {
     loreBook: "loreBook",
     globalscript: "globalscript",
     hotkeys: "hotkeys",
-    customSidebarItems: "customSidebarItems",
     characterOrder: "characterOrder",
     authRefreshes: "authRefreshes",
     globalChatVariables: "globalChatVariables",

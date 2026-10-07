@@ -80,7 +80,7 @@ describe("a fresh store", () => {
     it("holds every materialize singleton at revision 1 as its normalizer's fixed point, and nothing else", () => {
         const store = open(path.join(tempDir(), "resources.sqlite"));
         expect(store.writeCount()).toBe(materialized.length);
-        expect(materialized.length).toBe(19);
+        expect(materialized.length).toBe(18);
         const state = observe(store);
         for (const kind of allDefaults) {
             const records = state.kinds[kind.name];

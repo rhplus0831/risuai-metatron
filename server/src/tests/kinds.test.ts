@@ -19,7 +19,6 @@ const phase3Kinds = [
     "loreBook",
     "globalscript",
     "hotkeys",
-    "customSidebarItems",
     "characterOrder",
     "authRefreshes",
     "globalChatVariables",

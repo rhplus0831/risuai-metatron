@@ -570,7 +570,6 @@
   "saveSignatures": false,
   "keepSessionAlive": "off",
   "longPressToPopupEditor": false,
-  "customSidebarItems": [],
   "moveInsteadOfCopyOnCMPConvert": false,
   "formatversion": 5,
   "characterOrder": []

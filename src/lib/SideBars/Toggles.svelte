@@ -14,7 +14,6 @@
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
-    import CustomSideBar from "./CustomSidebar.svelte";
     import {
         getGlobalChatVar,
         isLocallyHandledGlobalChatVar,
@@ -209,8 +208,6 @@
 
 {#if !noContainer && groupedToggles.length > 4}
     <div class="h-48 border-darkborderc p-2 border rounded-sm flex flex-col items-start mt-2 overflow-y-auto">
-        <CustomSideBar />
-
         {#if hasJailbreakPrompt}
             <div class="flex mt-2 items-center w-full">
                 <CheckInput bind:check={settings.ui.jailbreakToggle} name={language.jailbreakToggle} reverse />
@@ -235,8 +232,6 @@
         {/if}
     </div>
 {:else}
-    <CustomSideBar />
-
     {#if hasJailbreakPrompt}
         <div class="flex mt-2 items-center">
             <CheckInput bind:check={settings.ui.jailbreakToggle} name={language.jailbreakToggle} />

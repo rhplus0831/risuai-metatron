@@ -1659,7 +1659,6 @@ export const languageEnglish = {
     nanoGPTSelectFromList: "Select from List",
     nanoGPTManualInput: "Manual Input",
     nanoGPTManualModelSelect: "Manual Model Select",
-    customSidebarConfig: "Custom Sidebar Configuration",
     moveInsteadOfCopyOnCMPConvert: "Move Instead of Copy on CMP Convert",
     successfullyConverted: "Successfully converted.",
     convertToModule: "Convert to Module",

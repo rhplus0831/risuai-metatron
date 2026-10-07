@@ -11,7 +11,7 @@ import { materialize, serverNormalizer } from "./serverKinds";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // Phase 3, slice 4 (`docs/plan/phases/slices/phase-3-settings-sections/client-section-mirrors.md`):
-// the client mirrors of the five sections and the thirteen settings collections (the residual `root`
+// the client mirrors of the five sections and the twelve settings collections (the residual `root`
 // went in slice 6). Every boot here runs the real `loadData` sequence for the data: `readKinds`, `seedResources`,
 // the real `installBootRecords` (Phase 6 slice 10: the records and the selection, no whole-database
 // aggregate), then the adapter's boot compare pass. The convergence
@@ -188,7 +188,6 @@ const customRecords: Record<string, unknown> = {
     ],
     globalscript: [{ comment: "s", type: "editinput", in: "a", out: "b", flag: "" }],
     hotkeys: [{ action: "scrollToActiveChar", key: "z", ctrl: true }],
-    customSidebarItems: [{ name: "item" }],
     characterOrder: ["a", { name: "folder", data: ["b"], id: "f" }],
     authRefreshes: [{ url: "u", tokenUrl: "t", refreshToken: "r", clientId: "c" }],
     globalChatVariables: json('{"__proto__":"p","x":"1"}'),
@@ -391,7 +390,6 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             settings.enabledModules.push("mod2");
             settings.statics.messages += 1;
             settings.globalscript.push({ comment: "s2", type: "editoutput", in: "c", out: "d", flag: "" });
-            settings.customSidebarItems.push({ name: "item 2" } as any);
             // Forwarded fields (slices 5 and 6): the edits go to the selected (first) persona and
             // preset records; nothing is written under a root.
             activePersona.name = "u2";
@@ -616,7 +614,6 @@ describe("watchers", () => {
             ["loreBook", () => s.loreBook[0].data.push({ key: "k", content: "c", comment: "", mode: "normal" })],
             ["globalscript", () => s.globalscript.push({ comment: "s", type: "editinput", in: "a", out: "b" })],
             ["hotkeys", () => (s.hotkeys[0].key = "z")],
-            ["customSidebarItems", () => s.customSidebarItems.push({ name: "item" })],
             ["characterOrder", () => s.characterOrder.push("x")],
             ["authRefreshes", () => s.authRefreshes.push({ url: "u" })],
             ["globalChatVariables", () => (s.globalChatVariables.x = "1")],

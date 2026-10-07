@@ -14,7 +14,6 @@
         popupStore,
         popUpEditorStore,
         irisStore,
-        customSideBarConfigDialogStore,
     } from "./ts/stores.svelte";
     import Sidebar from "./lib/SideBars/Sidebar.svelte";
     import { addModule } from "./ts/storage/collectionStore.svelte";
@@ -45,7 +44,6 @@
     import sendSound from "./etc/send.mp3";
     import PopupEditor from "./lib/Others/PopupEditor.svelte";
     import IrisModal from "./lib/Others/IrisModal.svelte";
-    import CustomSidebarConfig from "./lib/Others/CustomSidebarConfig.svelte";
     import { RISU_APP_INTERNAL_DRAG_TYPE, RISU_SIDEBAR_DRAG_TYPE } from "./ts/dragTypes";
 
     let didFirstSetup: boolean = $derived(settings.ui.didFirstSetup);
@@ -307,8 +305,5 @@
     {/if}
     {#if irisStore.open}
         <IrisModal />
-    {/if}
-    {#if customSideBarConfigDialogStore.open}
-        <CustomSidebarConfig />
     {/if}
 </main>

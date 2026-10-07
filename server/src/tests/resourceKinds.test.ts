@@ -278,16 +278,6 @@ const CASES: KindCase[] = [
         refused: "hotkeys must be an array of objects",
     },
     {
-        kind: "customSidebarItems",
-        fresh: [],
-        write: [{ name: "s", url: "https://s.test" }],
-        stored: [{ name: "s", url: "https://s.test" }],
-        update: [],
-        updated: [],
-        invalid: [null],
-        refused: "customSidebarItems must be an array of objects",
-    },
-    {
         kind: "characterOrder",
         fresh: [],
         write: ["c1", { name: "f", data: ["c2"] }],

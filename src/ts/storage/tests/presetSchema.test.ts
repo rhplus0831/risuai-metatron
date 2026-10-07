@@ -381,7 +381,7 @@ describe("ids", () => {
 });
 
 // The partition (slice 2 "Proposed decisions", plan amendments A2 and A3; slices 5 and 6 forwarded
-// the whole root): the five sections, the thirteen collections with their two selection fields, the
+// the whole root): the five sections, the twelve collections with their two selection fields, the
 // forwarded root keys (served by the client forwarding layer, never stored), the dropped fields, and
 // the Phase 1 fields cover `keyof Database` exactly once. The type-level half below is checked by
 // `pnpm check`; the runtime half checks the counts derived from the lists and the keys the
@@ -510,10 +510,10 @@ describe("field-to-resource partition", () => {
         expect(COLLECTION_FIELDS.statics).toBe("statics");
     });
 
-    it("lists five sections and thirteen collections, two of them with a selection field", () => {
+    it("lists five sections and twelve collections, two of them with a selection field", () => {
         expect(Object.keys(SECTION_KIND)).toHaveLength(5);
         expect(Object.keys(SECTION_FIELDS).sort()).toEqual(Object.keys(SECTION_KIND).sort());
-        expect(Object.keys(COLLECTION_KIND)).toHaveLength(13);
+        expect(Object.keys(COLLECTION_KIND)).toHaveLength(12);
         expect(Object.keys(COLLECTION_FIELDS).sort()).toEqual(Object.keys(COLLECTION_KIND).sort());
         expect(COLLECTION_SELECTION_FIELDS).toEqual({
             translatorPresets: "translatorPresetId",

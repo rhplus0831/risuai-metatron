@@ -509,15 +509,7 @@ export interface Database {
     keepSessionAlive: "off" | "pip" | "sound";
     longPressToPopupEditor?: boolean;
     disableAprilFools?: boolean;
-    customSidebarItems: CustomSideBarItem[];
     moveInsteadOfCopyOnCMPConvert?: boolean;
-}
-
-export interface CustomSideBarItem {
-    id: string;
-    type: "model" | "databaseKey" | "persona" | "preset" | "setting";
-    subType: string;
-    label: string;
 }
 
 export interface SeparateParameters {

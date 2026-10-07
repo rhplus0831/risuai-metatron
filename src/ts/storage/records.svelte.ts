@@ -22,7 +22,7 @@ import { writeEntries } from "./mutationValidation";
 
 /**
  * The settings records (Phase 6 slice 4, `settings-ownership`): the source of truth of the five
- * sections, the thirteen settings collections, and `presets`, `modules`, `plugins`, `pluginStorage`
+ * sections, the twelve settings collections, and `presets`, `modules`, `plugins`, `pluginStorage`
  * (all singletons). Each record is a deep write-through record, the pattern the Phase 6 spike chose
  * and the owner confirmed at Stop A (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/
  * spike-projection-bindings.md`, "Verdict"): `trackedRecord(kind)` is a JS `Proxy` over the record's

@@ -304,6 +304,27 @@ describe("snapshots", () => {
         expect(reopened.readKinds([root]).kinds.root.map((record) => record.revision)).toEqual([token]);
     });
 
+    it("deletes the records of a retired kind when it opens", () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        store.put(root, "main", { a: 1 }, null);
+        store.close();
+        // A database written while `customSidebarItems` was still a kind.
+        const db = new DatabaseSync(path.join(dir, "live.sqlite"));
+        db.exec(
+            "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES ('customSidebarItems', 'main', 1, 1, '[]')",
+        );
+        db.close();
+        const reopened = fileStore(dir);
+        // The deletion counts as a write, so the snapshot scheduler sees the change.
+        expect(reopened.writeCount()).toBe(1);
+        expect(reopened.listRevisions().resources.map((row) => row.kind)).toEqual(["root"]);
+        reopened.close();
+        const check = new DatabaseSync(path.join(dir, "live.sqlite"));
+        expect(check.prepare("SELECT kind FROM resources").all()).toEqual([{ kind: "root" }]);
+        check.close();
+    });
+
     /** Runs SQL against a new file and returns its path. */
     function craft(dir: string, name: string, sql: string) {
         const file = path.join(dir, name);
@@ -455,10 +476,14 @@ describe("snapshots", () => {
                 new ResourceValidationError(message),
             );
         }
-        // Rows come back in seq order, normalized and re-serialized.
+        // Rows come back in seq order, normalized and re-serialized; a retired kind's rows are skipped
+        // unchecked.
         expect(
             store.readSnapshot(
-                withRows("ok.sqlite", "(7, 'root', 'b', 2, 1, '{\"b\": 1}'), (3, 'presets', 'p', 1, 2, '[]')"),
+                withRows(
+                    "ok.sqlite",
+                    "(7, 'root', 'b', 2, 1, '{\"b\": 1}'), (3, 'presets', 'p', 1, 2, '[]'), (5, 'customSidebarItems', 'main', 1, 9, '{')",
+                ),
             ).rows,
         ).toEqual([
             { kind: "presets", id: "p", revision: 1, schemaVersion: 2, text: "[]" },
