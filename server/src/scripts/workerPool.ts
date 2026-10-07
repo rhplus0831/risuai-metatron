@@ -4,7 +4,15 @@ import { performance } from "node:perf_hooks";
 import { MessageChannel, type MessagePort, type ResourceLimits, Worker } from "node:worker_threads";
 import { createRequestLimiter, type EgressDeps, serverLuaRequest } from "../lua/egress.ts";
 import type { RegexScriptEffect } from "../../../shared/scripts/regex.ts";
-import { DEFAULT_LUA_CPU_MS, type HostAccess, type LuaRunInput, type LuaRunOutput } from "../lua/runtime.ts";
+import {
+    DEFAULT_LUA_CPU_MS,
+    type HostAccess,
+    type LuaRunInput,
+    type LuaRunOutput,
+    MAX_SLEEP_MS,
+    MAX_TOTAL_SLEEP_MS,
+    type SleepCaps,
+} from "../lua/runtime.ts";
 import {
     ABORTED_TASK,
     type FromWorker,
@@ -210,11 +218,6 @@ function hostValue(value: unknown): unknown {
     return value ?? undefined;
 }
 
-/** The time the worker spent blocked on a synchronous call: never past the worker's own timeout. */
-function blockedMs(since: number, until: number): number {
-    return Math.min(Math.max(0, until - since), SYNC_HOST_TIMEOUT_MS);
-}
-
 export function createScriptWorkerPool(options: {
     rootDir: string;
     size?: number;
@@ -223,11 +226,16 @@ export function createScriptWorkerPool(options: {
     resourceLimits?: ResourceLimits;
     egress?: EgressDeps;
     wallMs?: number;
+    /** Tests shorten these; the defaults are `SYNC_HOST_TIMEOUT_MS` and the runtime's sleep caps. */
+    syncHostTimeoutMs?: number;
+    sleepCaps?: SleepCaps;
 }) {
     const size = options.size ?? 2;
     const maxSize = Math.max(size, options.maxSize ?? 6);
     const idleMs = options.idleMs ?? 30_000;
     const wallMs = options.wallMs ?? DEFAULT_LUA_WALL_MS;
+    const syncHostTimeoutMs = options.syncHostTimeoutMs ?? SYNC_HOST_TIMEOUT_MS;
+    const sleepCaps = options.sleepCaps ?? { perCallMs: MAX_SLEEP_MS, perRunMs: MAX_TOTAL_SLEEP_MS };
     const limiter = createRequestLimiter();
     const slots = new Set<Slot>();
     const queue: TopTask[] = [];
@@ -239,6 +247,11 @@ export function createScriptWorkerPool(options: {
     let disposed = false;
     let warmed = false;
     const stats = { spawned: 0, terminated: 0 };
+
+    /** The time the worker spent blocked on a synchronous call: never past the worker's own timeout. */
+    function blockedMs(since: number, until: number): number {
+        return Math.min(Math.max(0, until - since), syncHostTimeoutMs);
+    }
 
     const builtins: Record<string, (args: unknown[], ctx: HostContext) => Promise<unknown>> = {
         sleep: ([ms], ctx) =>
@@ -266,7 +279,13 @@ export function createScriptWorkerPool(options: {
         const { port1, port2 } = new MessageChannel();
         const syncFlag = new Int32Array(new SharedArrayBuffer(8));
         const worker = new Worker(new URL("./worker.ts", import.meta.url), {
-            workerData: { jsonLuaPath, syncPort: port2, syncFlag } satisfies ScriptWorkerData,
+            workerData: {
+                jsonLuaPath,
+                syncPort: port2,
+                syncFlag,
+                syncHostTimeoutMs,
+                sleepCaps,
+            } satisfies ScriptWorkerData,
             transferList: [port2],
             resourceLimits: options.resourceLimits ?? DEFAULT_RESOURCE_LIMITS,
         });

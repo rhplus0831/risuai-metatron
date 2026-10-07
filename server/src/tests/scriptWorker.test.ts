@@ -869,6 +869,24 @@ describe("the shared pool", () => {
             expect(ms).toBeGreaterThanOrEqual(6000);
             expect(ms).toBeLessThan(9000);
         }, 20_000);
+
+        it("caps sleep per call and per run at the pool's sleepCaps", async () => {
+            const capped = makePool({ size: 1, maxSize: 1, sleepCaps: { perCallMs: 200, perRunMs: 600 } });
+            const [r, ms] = await timed(() =>
+                capped.runLua(
+                    task(`probe = async(function(id)
+                        local a = sleep(id, 500):await()
+                        local b = sleep(id, 500):await()
+                        local c = sleep(id, 500):await()
+                        local d = sleep(id, 500)
+                        return tostring(a) .. tostring(b) .. tostring(c) .. tostring(d)
+                    end)`),
+                ),
+            );
+            expect(r.res).toBe("truetruetruefalse");
+            expect(ms).toBeGreaterThanOrEqual(600);
+            expect(ms).toBeLessThan(1500);
+        });
     });
 });
 
@@ -885,6 +903,19 @@ describe("the watchdog after a synchronous call timed out in the worker", () => 
         expect(ms).toBeGreaterThanOrEqual(10_000);
         expect(ms).toBeLessThan(16_000);
     }, 40_000);
+
+    it("charges a C-level runaway that follows a shortened give-up (syncHostTimeoutMs)", async () => {
+        const one = makePool({ size: 1, maxSize: 1, wallMs: 30_000, syncHostTimeoutMs: 1000 });
+        const [r, ms] = await timed(() =>
+            one.runLua(task(`function probe(id) pcall(never, id) return ${C_RUNAWAY} end`, "probe", { cpuMs: 100 }), {
+                host: { sync: { never: () => new Promise(() => {}) } },
+            }),
+        );
+        expect(r.error).toBe("Lua execution limit exceeded (worker terminated)");
+        expect(r.timedOut).toBe(true);
+        expect(ms).toBeGreaterThanOrEqual(1000);
+        expect(ms).toBeLessThan(7000);
+    }, 20_000);
 });
 
 describe("pool lifecycle", () => {

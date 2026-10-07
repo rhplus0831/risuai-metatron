@@ -10,6 +10,7 @@ import {
     type LuaRunOutput,
     MAX_HOST_ARG_CHARS,
     MAX_RESULT_JSON_CHARS,
+    type SleepCaps,
 } from "../lua/runtime.ts";
 
 /**
@@ -17,7 +18,14 @@ import {
  * it one top-level task at a time, plus the regex tasks that task's own host calls spawn; those
  * run while the Lua thread awaits, since the worker's event loop is free then.
  */
-export type ScriptWorkerData = { jsonLuaPath: string; syncPort: MessagePort; syncFlag: Int32Array };
+export type ScriptWorkerData = {
+    jsonLuaPath: string;
+    syncPort: MessagePort;
+    syncFlag: Int32Array;
+    /** How long a synchronous host call waits for the main thread (`SYNC_HOST_TIMEOUT_MS` by default). */
+    syncHostTimeoutMs: number;
+    sleepCaps: SleepCaps;
+};
 
 /**
  * `syncFlag[0]` counts the main thread's synchronous replies (and abort wake-ups); `syncFlag[1]`
@@ -145,8 +153,8 @@ export function runRegexOp(op: RegexOp): RegexOpResult {
 
 if (parentPort) {
     const port = parentPort;
-    const { jsonLuaPath, syncPort, syncFlag } = workerData as ScriptWorkerData;
-    const runtime = createLuaRuntime({ jsonLua: readFileSync(jsonLuaPath, "utf8") });
+    const { jsonLuaPath, syncPort, syncFlag, syncHostTimeoutMs, sleepCaps } = workerData as ScriptWorkerData;
+    const runtime = createLuaRuntime({ jsonLua: readFileSync(jsonLuaPath, "utf8"), sleepCaps });
     const runs = new Map<number, { controller: AbortController; callIds: Set<number> }>();
     const hostCalls = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
     let nextCallId = 1;
@@ -166,7 +174,7 @@ if (parentPort) {
     // call that timed out is skipped; an abort of the task wakes the wait and fails the call.
     const callSync = (taskId: number, name: string, args: unknown[], access: HostAccess): unknown => {
         const seq = ++syncSeq;
-        const deadline = Date.now() + SYNC_HOST_TIMEOUT_MS;
+        const deadline = Date.now() + syncHostTimeoutMs;
         let seen = Atomics.load(syncFlag, SYNC_REPLIES);
         syncPort.postMessage({ seq, taskId, name, args, access } satisfies SyncHostRequest);
         let reply: SyncHostReply | undefined;

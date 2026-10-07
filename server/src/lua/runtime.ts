@@ -21,6 +21,8 @@ export const DEFAULT_LUA_CPU_MS = 3000;
 export const LUA_MEMORY_MAX_BYTES = 64 * 1024 * 1024;
 export const MAX_SLEEP_MS = 2000;
 export const MAX_TOTAL_SLEEP_MS = 6000;
+/** `sleep`'s caps per call and per run (`MAX_SLEEP_MS`, `MAX_TOTAL_SLEEP_MS` unless a test sets them). */
+export type SleepCaps = { perCallMs: number; perRunMs: number };
 export const MAX_HOST_ARG_CHARS = 16 * 1024 * 1024;
 export const MAX_OUTSTANDING_HOST_CALLS = 64;
 export const MAX_LOG_MESSAGE_CHARS = 64 * 1024;
@@ -477,7 +479,8 @@ function primitiveIn(name: string, value: unknown): unknown {
 }
 
 /** One worker's runtime: a factory with `json.lua` mounted and a pool of prepared one-use engines. */
-export function createLuaRuntime(options: { jsonLua: string }) {
+export function createLuaRuntime(options: { jsonLua: string; sleepCaps?: SleepCaps }) {
+    const sleepCaps = options.sleepCaps ?? { perCallMs: MAX_SLEEP_MS, perRunMs: MAX_TOTAL_SLEEP_MS };
     let factoryPromise: Promise<LuaFactory> | null = null;
     const prepared: PreparedEngine[] = [];
     // Pending while an engine boots; a run does not start while it is held, and no boot overlaps a run.
@@ -540,7 +543,7 @@ export function createLuaRuntime(options: { jsonLua: string }) {
             engine.global.setMemoryMax(LUA_MEMORY_MAX_BYTES);
             installValueGuard(engine);
             installHook(engine);
-            const bind = declareBuiltins(engine);
+            const bind = declareBuiltins(engine, sleepCaps);
             await runChunk(engine, LUA_HARDENING);
             await runChunk(engine, LUA_PRELUDE);
             return { engine, bind };
@@ -822,7 +825,7 @@ function accessOf(state: RunState, id: unknown): HostAccess {
  * its code runs. `sleep` and `request` are served on the main thread (the request window is the
  * server's), with the client's id checks.
  */
-function declareBuiltins(engine: LuaEngine): (state: RunState) => void {
+function declareBuiltins(engine: LuaEngine, sleepCaps: SleepCaps): (state: RunState) => void {
     let state: RunState | null = null;
     const bound = (): RunState => {
         if (!state) {
@@ -854,10 +857,10 @@ function declareBuiltins(engine: LuaEngine): (state: RunState) => void {
         if (!current.safeIds.has(id)) {
             return undefined;
         }
-        if (current.sleptMs >= MAX_TOTAL_SLEEP_MS) {
+        if (current.sleptMs >= sleepCaps.perRunMs) {
             return false;
         }
-        const ms = Math.min(Math.max(0, Number(time) || 0), MAX_SLEEP_MS, MAX_TOTAL_SLEEP_MS - current.sleptMs);
+        const ms = Math.min(Math.max(0, Number(time) || 0), sleepCaps.perCallMs, sleepCaps.perRunMs - current.sleptMs);
         current.sleptMs += ms;
         return callAsync(current, "sleep", [ms], "safe").then(() => true);
     });
