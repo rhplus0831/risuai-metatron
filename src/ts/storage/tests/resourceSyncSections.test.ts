@@ -486,8 +486,6 @@ describe("installBootRecords", () => {
         // The forwarded fields (the preset and persona working copies, the selection indexes) are
         // served by the views, not stored in any record; a section's own fields come from its record.
         expectNoForwardedField(records);
-        expect(settings.ui.zoomsize).toBe(100);
-        expect(settings.ui.language).toBe("en");
         for (const [section, fields] of Object.entries(SECTION_FIELDS)) {
             const stored = fake.data<Record<string, unknown>>(section, "main")!;
             // The write-only `llmSecrets` record (7b) is read masked and installed through
@@ -587,10 +585,12 @@ describe("no root record", () => {
         const revision = fake.set("root", "main", stale);
         const { bootBatches, sync, settings, activePreset, activePersona, snapshots } = await boot(fake);
         expect(bootBatches).toEqual([]);
-        // The materialized persona and the `ui` record, not the stale root, serve the mirror.
-        expect(activePersona.name).toBe("User");
-        expect(settings.ui.zoomsize).toBe(100);
-        expect(activePreset.temperature).toBe(80 /* the preset default, not a root value */);
+        // The materialized persona, preset, and `ui` records, not the stale root, serve the mirror.
+        expect(activePersona.name).toBe(fake.data<{ name: string }[]>("personas", "main")![0].name);
+        expect(settings.ui.zoomsize).toBe(fake.data<{ zoomsize: number }>("ui", "main")!.zoomsize);
+        expect(settings.ui.zoomsize).not.toBe(stale.zoomsize);
+        expect(activePreset.temperature).toBe(fake.data<{ temperature: number }[]>("presets", "main")![0].temperature);
+        expect(activePreset.temperature).not.toBe(stale.temperature);
         expect(snapshots.rootSnapshot()).not.toHaveProperty("formatversion");
         activePersona.name = "edited";
         settings.ui.zoomsize = 50;

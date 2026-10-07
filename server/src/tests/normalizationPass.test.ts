@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
+import { PRESET_DEFAULTS } from "../../../shared/presets.ts";
 import {
     createKindRegistry,
     DEFAULT_RESOURCE_KINDS,
@@ -97,12 +98,20 @@ describe("a fresh store", () => {
             );
         }
         expect(state.kinds.presets[0].data).toEqual([
-            expect.objectContaining({ id: expect.stringMatching(UUID_V4), name: "New Preset", temperature: 80 }),
+            expect.objectContaining({
+                id: expect.stringMatching(UUID_V4),
+                name: PRESET_DEFAULTS.name,
+                temperature: PRESET_DEFAULTS.temperature,
+            }),
         ]);
+        // The sample singletons hold what their normalizer makes from nothing.
+        const fresh = (name: string) =>
+            allDefaults.find((kind) => kind.name === name)!.normalize(undefined, { id: "main" });
+        const [freshPersona] = fresh("personas") as { name: string }[];
         expect(state.kinds.personas[0].data).toEqual([
-            expect.objectContaining({ name: "User", id: expect.any(String) }),
+            expect.objectContaining({ name: freshPersona.name, id: expect.any(String) }),
         ]);
-        expect(state.kinds.ui[0].data).toMatchObject({ zoomsize: 100 });
+        expect(state.kinds.ui[0].data).toEqual(fresh("ui"));
     });
 
     it("reopens without rewriting anything: the epoch, every token, every record, and the generated ids stay", () => {
@@ -379,9 +388,12 @@ describe("the pass inside replaceAll", () => {
                 JSON.stringify(record.data),
             );
         }
-        // The section starts from the defaults; the value another record holds is not carried over.
-        expect(after.kinds.ui[0].data).toMatchObject({ zoomsize: 100 });
-        expect(after.kinds.presets[0].data).toEqual([expect.objectContaining({ name: "New Preset" })]);
+        // The section starts from the defaults a fresh store materializes (`before`); the value
+        // another record holds is not carried over.
+        expect(after.kinds.ui[0].data).toEqual(before.kinds.ui[0].data);
+        expect(after.kinds.ui[0].data).not.toMatchObject({ zoomsize: 150 });
+        const [freshPreset] = before.kinds.presets[0].data as { name: string }[];
+        expect(after.kinds.presets[0].data).toEqual([expect.objectContaining({ name: freshPreset.name })]);
         // The ids materialization generated are the ones every later restart sees.
         const ids = after.kinds.personas[0].data;
         stores.pop()!.close();

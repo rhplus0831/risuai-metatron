@@ -128,6 +128,7 @@ describe("POST /api/resources/batch", () => {
 
     it("refuses duplicate kind and id pairs, malformed operations, and singleton rule violations with the operation index", async () => {
         const s = await defaultServer();
+        const freshPresets = ((await (await s.readKinds("presets")).json()) as ReadKinds).kinds.presets;
         const cases: [string, unknown[], string][] = [
             [
                 "duplicate",
@@ -208,9 +209,8 @@ describe("POST /api/resources/batch", () => {
         expect(state.epoch).toBe(s.epoch);
         expect(state.kinds.pluginStorage).toEqual([]);
         expect(state.kinds.characters).toEqual([]);
-        expect(state.kinds.presets).toMatchObject([
-            { id: "main", revision: expect.stringMatching(/:1$/), data: [{ name: "New Preset" }] },
-        ]);
+        expect(state.kinds.presets).toEqual(freshPresets);
+        expect(state.kinds.presets).toMatchObject([{ id: "main", revision: expect.stringMatching(/:1$/) }]);
     });
 
     it("takes 5,000 operations in one batch", async () => {

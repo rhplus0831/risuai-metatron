@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
+import { PRESET_DEFAULTS } from "../../../shared/presets.ts";
 import type { botPreset } from "../../../shared/database.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import { ResourceValidationError } from "../data/resourceStore.ts";
@@ -81,13 +82,14 @@ describe("default normalizers", () => {
         // `presets` (slice 3) returns `normalizePresets`' copy: every preset gets an id and the
         // canonical fields, and an empty list becomes one default preset.
         const presets = kind("presets").normalize([{ name: "p" }, {}], { id: "main" }) as botPreset[];
-        expect(presets.map((p) => p.name)).toEqual(["p", "New Preset"]);
+        const { name, temperature, maxContext } = PRESET_DEFAULTS;
+        expect(presets.map((p) => p.name)).toEqual(["p", name]);
         for (const preset of presets) {
             expect(preset.id).toMatch(UUID);
-            expect(preset).toMatchObject({ temperature: 80, maxContext: 4000, formatingOrder: expect.any(Array) });
+            expect(preset).toMatchObject({ temperature, maxContext, formatingOrder: expect.any(Array) });
         }
         expect(kind("presets").normalize([], { id: "main" })).toMatchObject([
-            { id: expect.stringMatching(UUID), name: "New Preset", temperature: 80 },
+            { id: expect.stringMatching(UUID), name, temperature },
         ]);
         accepts("modules", "main", [{ id: "m" }]);
         accepts("plugins", "main", [{ name: "p" }]);
