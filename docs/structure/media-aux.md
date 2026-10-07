@@ -120,7 +120,7 @@ Settings:
 - TTS hooks apply only on paths through `playAudio`. The GPT-SoVITS gain path must still call `runPostprocessorPipeline`.
 - `generateAIImage(..., 'inlay')` does not persist its result. The caller must persist it.
 - Keep the `.risutl` format constants and legacy-field syncing stable.
-- `translateHTML` must preserve markup boundaries and the `translate=no`/`script`/`style` skips. It applies `edittrans` after translating (`applyEdittransRegex`: the one regex the tab still runs since the Phase 5 cutover, plain `RegExp` replacement with no Lua or trigger). Its `editdisplay` call runs on the server (`serverProcessScript`, target kind `translation`), with the context captured when `translateHTML` starts; without a context (a chat not saved on the server yet) the translated text stays as it is.
+- `translateHTML` must preserve markup boundaries and the `translate=no`/`script`/`style` skips. It applies `edittrans` after translating (`applyEdittransRegex`: the one regex the tab still runs, a plain `RegExp` replacement with no Lua or trigger). Its `editdisplay` call runs on the server (`serverProcessScript`, target kind `translation`), with the context captured when `translateHTML` starts; without a context (a chat not saved on the server yet) the translated text stays as it is.
 - Aux-model keys use the persisted misspelling `seperate*`. `submodel` is not a `seperateModels` key.
 
 ## Recipes
@@ -133,7 +133,7 @@ Settings:
 
 ## Tests
 
-- `src/ts/process/ttsHooks.test.ts`. `src/ts/process/ttsOpenAI.test.ts`: the OpenAI TTS routing of `sayTTS` (Phase 5 slice 7b): the stored key through the server's `openai-tts` operation for the official endpoint only, a character's own key with the character's request to any base URL, a custom base URL with the stored key and no key of its own refused with `ttsCustomUrlNeedsKey`, a keyless endpoint called without a key.
+- `src/ts/process/ttsHooks.test.ts`. `src/ts/process/ttsOpenAI.test.ts`: the OpenAI TTS routing of `sayTTS`: the stored key through the server's `openai-tts` operation for the official endpoint only, a character's own key with the character's request to any base URL, a custom base URL with the stored key and no key of its own refused with `ttsCustomUrlNeedsKey`, a keyless endpoint called without a key.
 - `src/ts/translator/presets.test.ts`, `src/ts/translator/edittransRegex.test.ts`. `src/ts/translator/presetsCodec.test.ts`: the `.risutl` round trip through the real codecs (WebCrypto, the RPack map from disk, `fflate`, msgpack): the container shape, a payload of exactly `name`, `prompt`, and `maxResponse` with no id, a fresh id on decode, a second cycle, and a corrupt file rejected.
 - `src/lib/Setting/Pages/Language/TranslatorPresetSettings.test.ts` (mounted under happy-dom): selection by id with the first-preset fallback, and the rename and delete dialogs while a conflict reload replaces the list meanwhile (the survivor is edited, a vanished target is left alone, the selection moves only when it pointed at the deleted preset, a list reduced to one preset is kept).
 - `src/ts/media/tests/imageType.test.ts`, `src/ts/media/compressImage/tests/compressImage.test.ts`.

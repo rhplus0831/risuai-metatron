@@ -345,61 +345,6 @@ export class ChatTokenizer extends ChatTokenCounter {
     }
 }
 
-export async function tokenizeNum(data: string) {
-    const encoded = await encode(data);
-    return encoded;
-}
-
-export async function strongBan(data: string, bias: { [key: number]: number }) {
-    if (localStorage.getItem("strongBan_" + data)) {
-        return JSON.parse(localStorage.getItem("strongBan_" + data));
-    }
-    const performace = performance.now();
-    const length = Object.keys(bias).length;
-    let charAlt = [
-        data,
-        data.trim(),
-        data.toLocaleUpperCase(),
-        data.toLocaleLowerCase(),
-        data[0].toLocaleUpperCase() + data.slice(1),
-        data[0].toLocaleLowerCase() + data.slice(1),
-    ];
-
-    let banChars = " !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~“”‘’«»「」…–―※";
-    let unbanChars: number[] = [];
-
-    for (const char of banChars) {
-        unbanChars.push((await tokenizeNum(char))[0]);
-    }
-
-    for (const char of banChars) {
-        const encoded = await tokenizeNum(char);
-        if (encoded.length > 0) {
-            if (!unbanChars.includes(encoded[0])) {
-                bias[encoded[0]] = -100;
-            }
-        }
-        for (const alt of charAlt) {
-            let fchar = char;
-
-            const encoded = await tokenizeNum(alt + fchar);
-            if (encoded.length > 0) {
-                if (!unbanChars.includes(encoded[0])) {
-                    bias[encoded[0]] = -100;
-                }
-            }
-            const encoded2 = await tokenizeNum(fchar + alt);
-            if (encoded2.length > 0) {
-                if (!unbanChars.includes(encoded2[0])) {
-                    bias[encoded2[0]] = -100;
-                }
-            }
-        }
-    }
-    localStorage.setItem("strongBan_" + data, JSON.stringify(bias));
-    return bias;
-}
-
 export async function getCharToken(char?: AnyClientCharacter | null) {
     let persistant = 0;
     let dynamic = 0;

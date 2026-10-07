@@ -1,153 +1,94 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer } from "../../../shared/llm.ts";
+import type { RequestContext } from "../llm/context.ts";
+import { __testResponsesAPI, requestOpenAIResponseAPI } from "../llm/openAI/responses.ts";
+import type { RequestDataArgumentExtended } from "../llm/request.ts";
+import type { RequestDb } from "../llm/settings.ts";
 
-import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer } from "src/ts/model/types";
-import { fetchNative } from "src/ts/globalApi.svelte";
-import { callTool } from "../../mcp/mcp";
-import { __testResponsesAPI, requestOpenAIResponseAPI } from "../tests/oracle/openAI/requests";
-import { isSettingsRootKey, readSettingsRoot, writeSettingsRoot } from "src/ts/storage/settingsViews.svelte";
-import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { setOracleDatabase } from "../tests/oracle/database";
+// The OpenAI Responses adapter (`server/src/llm/openAI/responses.ts`) at the helper level, through
+// its `__testResponsesAPI` seam and `requestOpenAIResponseAPI` over a fake request context: the body
+// builder (roles, multimodals, tools, the parameters and the reasoning effort mapping), the endpoint,
+// auth and header wiring per model kind, the additional parameters, the text extraction, the
+// failure shapes, the continuation sanitization for `store: false`, the tool continuations
+// (buffered and streaming) and the SSE parser. Phase 6 slice 11: these are the cases of the deleted
+// browser test of the Responses helpers (`src/ts/process/request/openAI/`, the pre-cutover client
+// code's), retargeted at the server port; its browser module mocks are the context's dependencies
+// here (`ctx.transport` for `globalFetch`/`fetchNative`, `ctx.tools.call` for `callTool`). The
+// streaming `response.failed` case lives in `llmRequests.test.ts` ("redacts a provider error the
+// adapter put into the answer text").
 
-// The oracle (the pre-cutover client code) reads the flat object the test keeps (`mocks.db`).
-setOracleDatabase(() => mocks.db as any);
+/** The settings the adapter reads (`ctx.db`): the deleted test's flat database object. */
+const settings = () => ({
+    OaiCompAPIKeys: {} as Record<string, string>,
+    additionalParams: [] as [string, string][],
+    applyAdditionalParamsToAll: false,
+    autofillRequestUrl: false,
+    customModels: [] as { id: string; params: string; key: string }[],
+    gptVisionQuality: "high",
+    jsonSchema:
+        '{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}',
+    jsonSchemaEnabled: false,
+    localNetworkMode: false,
+    modelTools: [] as string[],
+    newOAIHandle: true,
+    nanogptKey: "nanogpt-key",
+    nanogptProvider: "",
+    nanogptRequestModel: "nanogpt-model",
+    nanogptUseSubscriptionEndpoint: false,
+    openAIKey: "openai-key",
+    proxyKey: "proxy-key",
+    requestRetrys: 0,
+    reasoningEffort: 2,
+    seperateParametersEnabled: false,
+    simplifiedToolUse: false,
+    strictJsonSchema: true,
+    temperature: 70,
+    top_p: 0.9,
+    verbosity: 0,
+});
 
-const mocks = vi.hoisted(() => ({
-    db: {
-        OaiCompAPIKeys: {},
-        additionalParams: [],
-        autofillRequestUrl: false,
-        customModels: [],
-        gptVisionQuality: "high",
-        jsonSchema:
-            '{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}',
-        jsonSchemaEnabled: false,
-        localNetworkMode: false,
-        modelTools: [] as string[],
-        newOAIHandle: true,
-        nanogptKey: "nanogpt-key",
-        nanogptProvider: "",
-        nanogptRequestModel: "nanogpt-model",
-        nanogptUseSubscriptionEndpoint: false,
-        openAIKey: "openai-key",
-        proxyKey: "proxy-key",
-        requestRetrys: 0,
-        reasoningEffort: 2,
-        seperateParametersEnabled: false,
-        simplifiedToolUse: false,
-        strictJsonSchema: true,
-        temperature: 70,
-        top_p: 0.9,
-        verbosity: 0,
-    },
-    fetchNative: vi.fn(),
-    globalFetch: vi.fn(),
-}));
-
-vi.mock("src/ts/storage/database.svelte", () => ({
-    getDatabase: () => mocks.db,
-}));
-
-vi.mock("src/ts/globalApi.svelte", () => ({
-    addFetchLog: vi.fn(),
-    fetchNative: mocks.fetchNative,
-    globalFetch: mocks.globalFetch,
-    textifyReadableStream: vi.fn(),
-}));
-
-vi.mock("src/lang", () => ({
-    language: { errors: { httpError: "HTTP " } },
-}));
-
-vi.mock("src/ts/alert", () => ({
+const db = settings();
+const transport = {
+    fetchBuffered: vi.fn(),
+    fetchStream: vi.fn(),
+    addLog: vi.fn(() => 0),
+};
+const tools = {
+    call: vi.fn(),
+    encode: vi.fn(),
+    decode: vi.fn(),
+};
+const ctx: RequestContext = {
+    db: db as unknown as RequestDb,
+    selectedCharacterName: null,
+    speakerName: null,
+    userName: "User",
+    signal: new AbortController().signal,
+    transport,
     alertError: vi.fn(),
-}));
-
-vi.mock("src/ts/platform", () => ({
-    isNodeServer: true,
-    isTauri: false,
-}));
-
-vi.mock("src/ts/network/localNetwork", () => ({
-    isLocalNetworkUrl: () => false,
-}));
-
-vi.mock("../../templates/jsonSchema", () => ({
-    extractJSON: (data: string) => data,
-    getOpenAIJSONSchema: () => ({
-        name: "format",
-        strict: true,
-        schema: {
-            type: "object",
-            properties: { answer: { type: "string" } },
-            required: ["answer"],
-            additionalProperties: false,
-        },
-    }),
-}));
-
-vi.mock("src/ts/process/templates/jsonSchema", () => ({
-    extractJSON: (data: string) => data,
-    getOpenAIJSONSchema: () => ({
-        name: "format",
-        strict: true,
-        schema: {
-            type: "object",
-            properties: { answer: { type: "string" } },
-            required: ["answer"],
-            additionalProperties: false,
-        },
-    }),
-}));
-
-vi.mock("../../templates/chatTemplate", () => ({
-    applyChatTemplate: vi.fn(),
-}));
-
-vi.mock("src/ts/process/templates/chatTemplate", () => ({
-    applyChatTemplate: vi.fn(),
-}));
-
-vi.mock("src/ts/model/modellist", () => ({
-    LLMFlags: {
-        DeveloperRole: 14,
-        OAICompletionTokens: 13,
-        deepSeekPrefix: 17,
-        deepSeekThinkingInput: 18,
-        deepSeekThinkingOutput: 19,
-        deepSeekThinkingToggle: 24,
+    redactText: (text) => text,
+    tokenizeNum: async () => [],
+    strongBan: async (_text, bias) => bias,
+    parseCbs: async (text) => text,
+    tools,
+    inlays: {
+        saveSignature: async (id) => id,
+        writeImage: async (image) => image.id,
+        setAsset: async () => {},
     },
-    LLMFormat: {
-        Mistral: 4,
-        OpenAIResponseAPI: 18,
-    },
-    getFreeOpenRouterModels: vi.fn(),
-}));
-
-vi.mock("src/ts/tokenizer", () => ({
-    strongBan: vi.fn(),
-    tokenizeNum: vi.fn(),
-}));
-
-vi.mock("src/ts/model/openrouter", () => ({
-    getFreeOpenRouterModels: vi.fn(),
-}));
-
-vi.mock("src/ts/util", () => ({
-    simplifySchema: (schema: unknown) => schema,
-}));
-
-vi.mock("../../files/inlays", () => ({
+    intercept: async (body) => body,
     supportsInlayImage: () => false,
-}));
+    getModelInfo: () => {
+        throw new Error("not resolved here");
+    },
+    vertexAccessToken: async () => "",
+    registerClaudeObserver: () => {},
+};
 
-vi.mock("../../mcp/mcp", () => ({
-    callTool: vi.fn(),
-    decodeToolCall: vi.fn(),
-    encodeToolCall: vi.fn(),
-}));
-
-const baseArg = (overrides: Record<string, any> = {}) =>
+const baseArg = (overrides: Record<string, unknown> = {}): RequestDataArgumentExtended =>
     ({
+        ctx,
         aiModel: "gpt-5-response-api",
         bias: {},
         biasString: [],
@@ -177,8 +118,9 @@ const baseArg = (overrides: Record<string, any> = {}) =>
             provider: LLMProvider.OpenAI,
             tokenizer: LLMTokenizer.Unknown,
         },
+        tools: [],
         ...overrides,
-    }) as any;
+    }) as unknown as RequestDataArgumentExtended;
 
 async function collectStream(stream: ReadableStream<Record<string, string>>) {
     const reader = stream.getReader();
@@ -204,77 +146,27 @@ function sseStream(events: string[]) {
     });
 }
 
-/**
- * The credentials the oracle (the pre-cutover client code) reads from `getDatabase()`. The records
- * never serve them (`llmSecrets` is write-only: a credential reads `""`), so they stay plain, on
- * an overlay of the installed database.
- */
-const ORACLE_CREDENTIALS = new Set(["OaiCompAPIKeys", "openAIKey", "nanogptKey", "proxyKey"]);
-
-/**
- * `mocks.db` installed in the records (as the removed `setDatabaseLite` installed a database; there
- * is no whole-database object since Phase 6 slice 10): its fields moved into the records and the
- * selection resolved, since the request helpers (`shared.ts`) read the settings through the record
- * views (Phase 6 slice 7), while the oracle (the pre-cutover client code) reads `getDatabase()`,
- * mocked here to the oracle's own flat object: a proxy that serves every settings root name from
- * the views (`readSettingsRoot`/`writeSettingsRoot`, as the removed forwarding accessors did), so a
- * case's write to `mocks.db` reaches the records both sides read, and the plain credentials. The
- * fixture is the flat shape, with the preset fields on its root: they become the one preset's.
- */
-function installDatabase() {
-    const raw = mocks.db as Record<string, unknown>;
-    const credentials: Record<string, unknown> = {};
-    for (const key of ORACLE_CREDENTIALS) {
-        if (Object.hasOwn(raw, key)) {
-            credentials[key] = raw[key];
-            delete raw[key];
-        }
-    }
-    installFlatDatabase(raw, "responses-preset");
-    const isCredential = (key: string | symbol): key is string =>
-        typeof key === "string" && ORACLE_CREDENTIALS.has(key);
-    const isRecordField = (key: string | symbol): key is string => typeof key === "string" && isSettingsRootKey(key);
-    mocks.db = new Proxy(raw, {
-        get: (target, key) => {
-            if (isCredential(key)) {
-                return credentials[key];
-            }
-            return isRecordField(key) ? readSettingsRoot(key) : Reflect.get(target, key);
-        },
-        set: (target, key, value) => {
-            if (isCredential(key)) {
-                credentials[key] = value;
-                return true;
-            }
-            if (isRecordField(key)) {
-                writeSettingsRoot(key, value);
-                return true;
-            }
-            return Reflect.set(target, key, value);
-        },
-    }) as typeof mocks.db;
-}
-installDatabase();
+/** A `fetchStream` answer: the `Response` the adapter reads (`status`, the content type, `body`). */
+const streamResponse = (events: string[]) =>
+    ({
+        status: 200,
+        headers: { get: () => "text/event-stream" },
+        body: sseStream(events),
+    }) as unknown as Response;
 
 describe("OpenAI Responses API helpers", () => {
     beforeEach(() => {
-        mocks.fetchNative.mockReset();
-        mocks.globalFetch.mockReset();
-        mocks.db.OaiCompAPIKeys = {};
-        mocks.db.additionalParams = [];
-        mocks.db.jsonSchemaEnabled = false;
-        mocks.db.modelTools = [];
-        mocks.db.customModels = [];
-        mocks.db.nanogptProvider = "";
-        mocks.db.nanogptRequestModel = "nanogpt-model";
-        mocks.db.nanogptUseSubscriptionEndpoint = false;
-        mocks.db.reasoningEffort = 2;
-        mocks.db.simplifiedToolUse = false;
-        mocks.db.autofillRequestUrl = false;
+        transport.fetchBuffered.mockReset();
+        transport.fetchStream.mockReset();
+        transport.addLog.mockReset();
+        tools.call.mockReset();
+        tools.encode.mockReset();
+        tools.decode.mockReset();
+        Object.assign(db, settings());
     });
 
     it("builds a Responses request body for text, developer role, multimodal input, tools, and model parameters", async () => {
-        mocks.db.modelTools = ["search"];
+        db.modelTools = ["search"];
         const sourceMessages = baseArg().formated;
 
         const body = await __testResponsesAPI.buildResponsesBody(
@@ -324,6 +216,8 @@ describe("OpenAI Responses API helpers", () => {
             { type: "input_text", text: "Also read file." },
             { type: "input_file", file_data: "data:application/pdf;base64,def" },
         ]);
+        // The tool's schema passes through the server's real `simplifySchema` (the browser test
+        // mocked it as the identity): a plain object schema comes out as it went in.
         expect(body.tools).toEqual([
             {
                 type: "function",
@@ -347,7 +241,7 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("maps Responses reasoning effort none when the model supports it", async () => {
-        mocks.db.reasoningEffort = -1;
+        db.reasoningEffort = -1;
 
         const body = await __testResponsesAPI.buildResponsesBody(
             baseArg({
@@ -362,7 +256,7 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("maps Responses reasoning low to medium for min-medium models", async () => {
-        mocks.db.reasoningEffort = 0;
+        db.reasoningEffort = 0;
 
         const body = await __testResponsesAPI.buildResponsesBody(
             baseArg({
@@ -377,7 +271,7 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("maps Responses reasoning effort xhigh when the model supports it", async () => {
-        mocks.db.reasoningEffort = 3;
+        db.reasoningEffort = 3;
 
         const body = await __testResponsesAPI.buildResponsesBody(
             baseArg({
@@ -405,7 +299,7 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("lets reverse proxy additional params override Responses reasoning summaries", async () => {
-        mocks.db.additionalParams = [["reasoning.summary", "detailed"]];
+        db.additionalParams = [["reasoning.summary", "detailed"]];
 
         const result = await requestOpenAIResponseAPI(
             baseArg({
@@ -421,7 +315,7 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("uses OpenAI defaults and an externally clean non-streaming body", async () => {
-        mocks.globalFetch.mockResolvedValueOnce({
+        transport.fetchBuffered.mockResolvedValueOnce({
             ok: true,
             data: { output_text: "ok" },
         });
@@ -429,7 +323,7 @@ describe("OpenAI Responses API helpers", () => {
         const result = await requestOpenAIResponseAPI(baseArg());
 
         expect(result).toEqual({ type: "success", result: "ok" });
-        expect(mocks.globalFetch).toHaveBeenCalledWith(
+        expect(transport.fetchBuffered).toHaveBeenCalledWith(
             "https://api.openai.com/v1/responses",
             expect.objectContaining({
                 body: expect.objectContaining({
@@ -439,7 +333,7 @@ describe("OpenAI Responses API helpers", () => {
                 headers: expect.objectContaining({ Authorization: "Bearer openai-key" }),
             }),
         );
-        expect(mocks.globalFetch.mock.calls[0][1].body).not.toHaveProperty("__lastOutput");
+        expect(transport.fetchBuffered.mock.calls[0][1].body).not.toHaveProperty("__lastOutput");
     });
 
     it("leaves system messages as system without the developer-role flag", async () => {
@@ -459,11 +353,12 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("applies custom model Responses endpoint, key, and additional params", async () => {
-        mocks.db.OaiCompAPIKeys = { customKey: "custom-key" };
-        mocks.db.customModels = [
+        db.OaiCompAPIKeys = { customKey: "custom-key" };
+        db.customModels = [
             {
                 id: "xcustom:::responses",
                 params: 'header::X-Custom=yes\nmetadata.tier=gold\nextra=json::{"enabled":true}',
+                key: "",
             },
         ];
 
@@ -488,8 +383,10 @@ describe("OpenAI Responses API helpers", () => {
         expect(preview.body.extra).toEqual({ enabled: true });
     });
 
-    it("does not duplicate top-level output_text when message output blocks are also present", () => {
-        const text = __testResponsesAPI.extractResponsesText(
+    // The server's `extractResponsesText` is async (its JSON extraction may ask the tab to parse
+    // CBS); the browser oracle's was synchronous. The results are the same.
+    it("does not duplicate top-level output_text when message output blocks are also present", async () => {
+        const text = await __testResponsesAPI.extractResponsesText(
             {
                 output_text: "final text",
                 output: [{ type: "message", content: [{ type: "output_text", text: "final text" }] }],
@@ -500,9 +397,9 @@ describe("OpenAI Responses API helpers", () => {
         expect(text).toBe("final text");
     });
 
-    it("preserves reasoning summaries and refusal-only responses", () => {
+    it("preserves reasoning summaries and refusal-only responses", async () => {
         expect(
-            __testResponsesAPI.extractResponsesText(
+            await __testResponsesAPI.extractResponsesText(
                 {
                     output: [
                         { type: "reasoning", summary: [{ text: "reasoned" }] },
@@ -514,7 +411,7 @@ describe("OpenAI Responses API helpers", () => {
         ).toBe("<Thoughts>\n\nreasoned\n\n</Thoughts>\nanswer");
 
         expect(
-            __testResponsesAPI.extractResponsesText(
+            await __testResponsesAPI.extractResponsesText(
                 {
                     output: [{ type: "message", content: [{ type: "refusal", refusal: "Cannot comply." }] }],
                 },
@@ -523,8 +420,8 @@ describe("OpenAI Responses API helpers", () => {
         ).toBe("Cannot comply.");
     });
 
-    it("extracts OpenRouter-style reasoning content reasoning_text with final output_text", () => {
-        const text = __testResponsesAPI.extractResponsesText(
+    it("extracts OpenRouter-style reasoning content reasoning_text with final output_text", async () => {
+        const text = await __testResponsesAPI.extractResponsesText(
             {
                 output: [
                     {
@@ -544,8 +441,8 @@ describe("OpenAI Responses API helpers", () => {
         expect(text).toBe("<Thoughts>\n\nHmm, the user just greeted me...\n\n</Thoughts>\nHello there!");
     });
 
-    it("does not add an empty thoughts block for OpenAI-style empty reasoning summaries", () => {
-        const text = __testResponsesAPI.extractResponsesText(
+    it("does not add an empty thoughts block for OpenAI-style empty reasoning summaries", async () => {
+        const text = await __testResponsesAPI.extractResponsesText(
             {
                 output: [
                     { id: "rs_0d1786ac1d609512016a07343fdca8819ca2d651a07a09a86d", type: "reasoning", summary: [] },
@@ -559,7 +456,7 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("treats incomplete non-streaming Responses results as failures even when partial text exists", async () => {
-        mocks.globalFetch.mockResolvedValueOnce({
+        transport.fetchBuffered.mockResolvedValueOnce({
             ok: true,
             data: {
                 status: "incomplete",
@@ -574,7 +471,7 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("treats failed non-streaming Responses results as useful failures", async () => {
-        mocks.globalFetch.mockResolvedValueOnce({
+        transport.fetchBuffered.mockResolvedValueOnce({
             ok: true,
             data: {
                 status: "failed",
@@ -606,7 +503,7 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("wires NanoGPT Responses endpoint, model, auth, and provider header", async () => {
-        mocks.db.nanogptProvider = "provider-a";
+        db.nanogptProvider = "provider-a";
 
         const result = await requestOpenAIResponseAPI(
             baseArg({
@@ -629,8 +526,8 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("applies reverse proxy Responses endpoint autofill and additional params", async () => {
-        mocks.db.autofillRequestUrl = true;
-        mocks.db.additionalParams = [
+        db.autofillRequestUrl = true;
+        db.additionalParams = [
             ["header::X-Test", "ok"],
             ["metadata.source", "risu"],
         ];
@@ -688,8 +585,8 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("sanitizes non-streaming Responses tool continuation input with reasoning before a function call for store false", async () => {
-        vi.mocked(callTool).mockResolvedValueOnce([{ type: "text", text: "tool result" }] as any);
-        mocks.globalFetch
+        tools.call.mockResolvedValueOnce([{ type: "text", text: "tool result" }]);
+        transport.fetchBuffered
             .mockResolvedValueOnce({
                 ok: true,
                 data: {
@@ -731,8 +628,8 @@ describe("OpenAI Responses API helpers", () => {
         );
 
         expect(result).toEqual({ type: "success", result: "final answer" });
-        expect(mocks.globalFetch).toHaveBeenCalledTimes(2);
-        const followupBody = mocks.globalFetch.mock.calls[1][1].body;
+        expect(transport.fetchBuffered).toHaveBeenCalledTimes(2);
+        const followupBody = transport.fetchBuffered.mock.calls[1][1].body;
         const followupInputJSON = JSON.stringify(followupBody.input);
         expect(followupInputJSON).not.toContain("rs_reasoning_bad");
         expect(followupInputJSON).not.toContain("fc_allowed_server_id");
@@ -755,22 +652,18 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("sanitizes streaming Responses tool continuation input for store false", async () => {
-        vi.mocked(callTool).mockResolvedValueOnce([{ type: "text", text: "stream tool result" }] as any);
-        vi.mocked(fetchNative)
-            .mockResolvedValueOnce({
-                status: 200,
-                headers: { get: () => "text/event-stream" },
-                body: sseStream([
+        tools.call.mockResolvedValueOnce([{ type: "text", text: "stream tool result" }]);
+        transport.fetchStream
+            .mockResolvedValueOnce(
+                streamResponse([
                     'data: {"type":"response.completed","response":{"output_text":"Need a lookup","output":[{"id":"rs_stream_ignored","type":"function_call","call_id":"call_stream_1","name":"lookup","arguments":"{\\"query\\":\\"x\\"}","status":"completed"}]}}\n\n',
                 ]),
-            } as any)
-            .mockResolvedValueOnce({
-                status: 200,
-                headers: { get: () => "text/event-stream" },
-                body: sseStream([
+            )
+            .mockResolvedValueOnce(
+                streamResponse([
                     'data: {"type":"response.completed","response":{"output_text":"stream final","output":[{"type":"message","content":[{"type":"output_text","text":"stream final"}]}]}}\n\n',
                 ]),
-            } as any);
+            );
 
         const result = await requestOpenAIResponseAPI(
             baseArg({
@@ -787,8 +680,8 @@ describe("OpenAI Responses API helpers", () => {
 
         expect(result.type).toBe("streaming");
         await collectStream(result.result as ReadableStream<Record<string, string>>);
-        expect(vi.mocked(fetchNative)).toHaveBeenCalledTimes(2);
-        const followupBody = JSON.parse(vi.mocked(fetchNative).mock.calls[1][1].body as string);
+        expect(transport.fetchStream).toHaveBeenCalledTimes(2);
+        const followupBody = JSON.parse(transport.fetchStream.mock.calls[1][1].body as string);
         expect(JSON.stringify(followupBody.input)).not.toContain("rs_stream_ignored");
         expect(followupBody.input).toEqual(
             expect.arrayContaining([
@@ -892,18 +785,5 @@ describe("OpenAI Responses API helpers", () => {
 
         const chunks = await chunksPromise;
         expect(chunks.at(-1)?.["0"]).toBe("<Thoughts>\n\nReasoned once\n\n</Thoughts>\nHello");
-    });
-
-    it("emits useful text for streaming error events", async () => {
-        const stream = __testResponsesAPI.getResponsesTranStream(baseArg());
-        const chunksPromise = collectStream(stream.readable);
-        const writer = stream.writable.getWriter();
-        const encoder = new TextEncoder();
-
-        await writer.write(encoder.encode('data: {"type":"response.failed","error":{"message":"stream failed"}}\n\n'));
-        await writer.close();
-
-        const chunks = await chunksPromise;
-        expect(chunks.at(-1)?.["0"]).toContain("stream failed");
     });
 });

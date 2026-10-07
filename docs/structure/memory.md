@@ -12,7 +12,7 @@
 
 Algorithms:
 
-- SupaMemory, HypaV2, and Hanurai run only in the server job since the Phase 5 cutover (`server/src/prompt/memory/`, below); their browser copies were removed with the browser generation path. Their data shapes stay in `shared/memory.ts` (`HypaV2Data`, `SerializableHypaV2Data`, `convertOldToNewHypaV2Data`); `Chat.supaMemoryData` is `lastId + '\n' + text`, or `hypa:\n` followed by JSON `HypaData[]` (`asHyper`).
+- SupaMemory, HypaV2, and Hanurai run only in the server job (`server/src/prompt/memory/`, below); their browser copies were removed with the browser generation path. Their data shapes stay in `shared/memory.ts` (`HypaV2Data`, `SerializableHypaV2Data`, `convertOldToNewHypaV2Data`); `Chat.supaMemoryData` is `lastId + '\n' + text`, or `hypa:\n` followed by JSON `HypaData[]` (`asHyper`).
 - `memory/hypav3.ts`: the V3 implementation the tab keeps for the modal (resummarize, reroll); a send's V3 step is the server's port.
   - Entry: `hypaMemoryV3`. Dispatches to `hypaMemoryV3Main`, or to `hypaMemoryV3MainExp` when the active preset has `useExperimentalImpl`.
   - Exports: `summarize(oaiMessages, isResummarize?, context?)` (`context`: the `SummarizeContext` of the send or the modal action, its chat and plugin call context, passed to `requestChatData`), `getCurrentHypaV3Preset`, `createHypaV3Preset` (re-exported from `shared/hypaV3Presets.ts`; keeps a valid `id` or assigns one), `HypaV3Settings`, `SerializableHypaV3Data`, `SerializableSummary`.
@@ -65,7 +65,7 @@ Embedding routing:
 - `HypaProcesser.getEmbeds` tries, in order: contextual Voyage, then `localModels` (Transformers.js), then custom or OpenAI APIs through `globalFetch`.
 - Vector records are cached in LocalForage `hypaVector`.
 
-## Server (Phase 5 slice 10)
+## Server
 
 A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate and priority of the former browser `sendChat`). The browser code above serves the HypaV3 modal and the playground.
 
@@ -117,17 +117,19 @@ A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate 
 
 - `src/ts/process/memory/hypaV3Presets.test.ts`: `selectedHypaV3Preset` (by id, the first-preset fallback, no state write, undefined for an empty list).
 - `src/lib/Setting/Pages/OtherBotSettings.hypaV3Export.test.ts` (mounted under happy-dom): the HypaV3 preset export button writes exactly `{ type: "risu", ver: 1, data: { name, settings } }` without the id, and the import button gives that file a fresh id and selects it.
-- `src/ts/process/memory/memoryOracle.test.ts` (Phase 5 slice 10; narrowed at the cutover to the client copy that stays): the tab's HypaV3 (standard and experimental) runs the V3 scenarios of `server/src/tests/fixtures/memory/scenarios.ts` over fake dependencies, and each outcome must equal `server/src/tests/fixtures/memory/algorithms.json` (recorded from the browser path before the cutover; the server ports of all four algorithms are held to the whole fixture by `server/src/tests/memoryAlgorithms.test.ts`, and nothing recaptures it from the server). It also pins the summary requests' `chatRef` and `pluginContext`.
+- `src/ts/process/memory/memoryOracle.test.ts` (narrowed at the cutover to the client copy that stays): the tab's HypaV3 (standard and experimental) runs the V3 scenarios of `server/src/tests/fixtures/memory/scenarios.ts` over fake dependencies, and each outcome must equal `server/src/tests/fixtures/memory/algorithms.json` (recorded from the browser path before the cutover; the server ports of all four algorithms are held to the whole fixture by `server/src/tests/memoryAlgorithms.test.ts`, and nothing recaptures it from the server). It also pins the summary requests' `chatRef` and `pluginContext`.
 - `server/src/tests/embeddings.test.ts`, `vectorCache.test.ts`, `transformers.test.ts`, `memoryJobs.test.ts` (`self-host-server.md`): the server processors and cache, the model process, and memory on a real server job.
 - Not covered: the modal, the rate limiter on its own, the browser Transformers wrappers.
+- Not tested end to end: the runner's `MemoryHost` completion-key check, and its `captionImage` and local-generation wiring (the algorithms run on fixtures; the transformers service alone).
 
 ## Known Hazards
 
 - `memoryAlgorithmType` can disagree with the actual boolean flags on old saves.
-- `voyageApiKey` and `hypaCustomSettings.key` are in the client-readable `secrets` section (Phase 3): the tab reads them, and the job's settings projection holds them. Only `supaMemoryKey` is write-only.
+- `voyageApiKey` and `hypaCustomSettings.key` are in the client-readable `secrets` section: the tab reads them, and the job's settings projection holds them. Only `supaMemoryKey` is write-only.
 - The embedding cache key names the model, not the endpoint: a custom server changed under the same model name reuses the old vectors. The Voyage group hash is a 32-bit hash of the group's texts. Both are the client's rules, kept on the server, where the cache is shared by every client.
 - The server and the tab do not share vectors or model files, and their local models can differ in weights revision and kernels: a ranking near a tie can differ between the two paths.
 - In the tab, `parseChatML` evaluates a summary prompt's CBS without a chat context (the selection as it is when the summary runs), while the summary request carries the send's or the modal action's context. The server evaluates both for the job's chat.
 - On the server, HypaV3's `summaryChunkSeparator` regular expression, the dot products, and the sorts run on the main thread, outside the CBS limits.
 - The catalogue's Transformers.js generation models publish no 8-bit `model_quantized.onnx`: they do not load in the browser. The server loads their `fp32` weights, so a job can use `opt-350m` and `tiny-random-mistral`; `gpt2-large-conversational` has no usable file in either place.
 - The Transformers `EmbeddingModel` union names only MiniLM and nomic, while `localModels` lists more models.
+- Unconfirmed: `HypaProcesser` keeps the original comparator `a.similarity > b.similarity ? -1 : 0` (not a total order); the representative rankings tested come out right, but whether a pathological input orders wrongly is not established.

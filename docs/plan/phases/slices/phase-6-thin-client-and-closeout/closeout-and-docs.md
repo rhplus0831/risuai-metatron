@@ -1,6 +1,6 @@
 # Slice: Closeout And Docs
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented 2026-10-07 (the record is in the phase file, "Implementation Record (closeout, 2026-10-07)").
 
 Phase: [Phase 6](../../phase-6-thin-client-and-closeout.md), "Docs" (the four guides
 rewritten, D1 to D4 replaced, the tables updated, the plan archived), the exit criteria (the

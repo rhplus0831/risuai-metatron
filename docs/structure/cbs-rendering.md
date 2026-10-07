@@ -40,7 +40,7 @@
   - `ParseMarkdown`, `renderMarkdown`/`renderHighlightableMarkdown` (markdown-it + KaTeX + highlight.js), `trimMarkdown` (DOMPurify plus scoped-style restore), `parseMarkdownSafe`.
   - Assets: `parseAdditionalAssets`, `assetRegex`, `resetAssetsCache`.
   - Also `postTranslationParse`, `applyMarkdownToNode`, `addMetadataToElement`, `hasher`, and the re-exported `risuEscape`/`risuUnescape` and `CbsConditions`.
-- `parser/transformClient.ts` (Phase 5 slice 13b): the client of the server script transform (`POST /api/transform`, `self-host-server.md`); since the Phase 5 cutover the only script stage of a render (there is no browser Lua or trigger runtime, and no browser regex stage of a render; the translator's `edittrans` regex is the one regex the tab still runs, `media-aux.md`). `captureTransform(chatID, { chatRef?, pluginContext? })` reads the call's context before its first await (the chat, the message id at `chatID`, the preset, the effective and the selected persona, the plugin call context, the message's lock, its Re-render generation; the first transform sent at a Re-render's generation takes its cache bypass, for every later stage too); `ChatBody.svelte` `markParsing` captures once and passes it to `ParseMarkdown`, `translateHTML`, and its retries (their last argument: a capture, `null` for none, or none to capture there); it answers null without a chat, for a chat the server has not stored yet (no held revision), or without a preset or persona, and the caller then skips the script stage (the text as the CBS pre-pass and the assets leave it; owner decision at the cutover). `Chat.svelte` renders a row again once its chat's first save lands (`chatStore.svelte.ts` `chatSaveVersion`), so a new chat's rows get their transform. `serverProcessScript(char, data, mode, chatID, cbsConditions, captured, kind)` runs `editdisplay` and `editprocess` on the server (`{ data, emoChanged }`). `rerenderMessage(chatRef, messageId)` makes the message's next render skip the server cache and an older answer apply no effects. `resetTransformEffects` (on the `ReloadGUIPointer` bump) forgets which results' emotions were applied.
+- `parser/transformClient.ts`: the client of the server script transform (`POST /api/transform`, `self-host-server.md`); the only script stage of a render (there is no browser Lua or trigger runtime, and no browser regex stage of a render; the translator's `edittrans` regex is the one regex the tab still runs, `media-aux.md`). `captureTransform(chatID, { chatRef?, pluginContext? })` reads the call's context before its first await (the chat, the message id at `chatID`, the preset, the effective and the selected persona, the plugin call context, the message's lock, its Re-render generation; the first transform sent at a Re-render's generation takes its cache bypass, for every later stage too); `ChatBody.svelte` `markParsing` captures once and passes it to `ParseMarkdown`, `translateHTML`, and its retries (their last argument: a capture, `null` for none, or none to capture there); it answers null without a chat, for a chat the server has not stored yet (no held revision), or without a preset or persona, and the caller then skips the script stage (the text as the CBS pre-pass and the assets leave it; owner decision at the cutover). `Chat.svelte` renders a row again once its chat's first save lands (`chatStore.svelte.ts` `chatSaveVersion`), so a new chat's rows get their transform. `serverProcessScript(char, data, mode, chatID, cbsConditions, captured, kind)` runs `editdisplay` and `editprocess` on the server (`{ data, emoChanged }`). `rerenderMessage(chatRef, messageId)` makes the message's next render skip the server cache and an older answer apply no effects. `resetTransformEffects` (on the `ReloadGUIPointer` bump) forgets which results' emotions were applied.
 - `parser/chatVar.svelte.ts`: variable accessors.
   - Chat variables: `getChatVar`/`setChatVar`, stored in `Chat.scriptstate` as `$name`. A parse given `chatRef` (`risuChatParser(text, { chatRef })`, set by the send pipeline, triggers, and Lua) reads and writes that chat's variables and messages (`getChatVarOf`/`setChatVarOf`, `contextChar`/`contextChat` in `shared/cbs/registry.ts`); without it, the selected character's selected chat.
   - Globals: `getGlobalChatVar`/`setGlobalChatVar` (`db.globalChatVariables`, or chat-local overrides when `useLocallySetGlobalVariables`), plus `getGLChatVar`/`setGLChatVar` and `isLocallyHandledGlobalChatVar`.
@@ -74,7 +74,7 @@ Display:
 1. `Chat.svelte:displaya` evaluates the message with `risuChatParser(..., {rmVar:true, visualize:true})`.
 2. `ChatBody.svelte:markParsing` calls `ParseMarkdown`, which runs in order:
    1. `parseAdditionalAssets`.
-   2. `serverProcessScript(...,'editdisplay')` (slice 13b; skipped without a context, above): the context is captured before the first asset pass, the context is the render's (`markParsing`'s capture), the call joins the frame's batch (or a 16 ms timer's) for its chat, mode, and plugin handler set, and the server runs Lua `editDisplay`, the `display` trigger, CBS, and the regex scripts (the tab's `editdisplay` plugin handlers run between the two calls); the target is `background` for `mode:'back'`, else `message`. A message locked by a generation (it streams) skips this step and renders again when the lock ends. A failed request or target leaves the text as it came in (one toast per batch, on its first failure). The CBS of step 1 and every other step stay in the browser.
+   2. `serverProcessScript(...,'editdisplay')` (skipped without a context, above): the context is captured before the first asset pass, the context is the render's (`markParsing`'s capture), the call joins the frame's batch (or a 16 ms timer's) for its chat, mode, and plugin handler set, and the server runs Lua `editDisplay`, the `display` trigger, CBS, and the regex scripts (the tab's `editdisplay` plugin handlers run between the two calls); the target is `background` for `mode:'back'`, else `message`. A message locked by a generation (it streams) skips this step and renders again when the lock ends. A failed request or target leaves the text as it came in (one toast per batch, on its first failure). The CBS of step 1 and every other step stay in the browser.
    3. Assets again, then inlays.
    4. Thoughts and tools.
    5. Style encoding.
@@ -93,13 +93,14 @@ Display:
   | Temp vars           | per `risuChatParser` call                                                                                                     | no        |
   | `#func` definitions | per call                                                                                                                      | no        |
 
-- Caches: `matcherMap`, the asset caches (reset by `resetAssetsCache` and by an `$effect.root` on character/module changes), and global `CSS.highlights`.
+- Caches: the parser's file-source, blob-URL, and encoded-metadata maps, the scoped evaluators (`scopedEvaluators`), the asset caches (reset by `resetAssetsCache` and by an `$effect.root` on character/module changes), and global `CSS.highlights`.
 
 ## Coupling
 
 - `stores.svelte.ts` imports `resetTransformEffects` from `transformClient.ts`, which imports the stores back. Keep the module-level reads lazy (the subscriber runs at once).
 - `chatVar.svelte.ts` is used by scripts, triggers, the lorebook, `infunctions.ts`, `mcp/graphmem.ts`, and `Toggles.svelte`.
 - `registerCBS` consumers: the evaluator (`shared/cbs/evaluator.ts`), and through `cbs.ts` `PlaygroundDocs.svelte` (live docs from `description`) and `cbsMonaco.ts`.
+- `stores.svelte.ts` and `parser/transformClient.ts` import each other; the `ReloadGUIPointer` subscriber in `stores.svelte.ts` skips its first, synchronous call so that loading either module first never calls into the other before its bindings exist (`stores.importOrder.test.ts`).
 
 ## Invariants
 
@@ -112,6 +113,7 @@ Display:
 - Mutating functions must respect `rmVar`/`runVar`. Display evaluation uses `rmVar:true`. `setvar` is a no-op unless `runVar` is set.
 - Keep aliases and name normalization compatible. Shared cards use historical spellings.
 - `partialEdit` offsets refer to the original markdown, not the rendered HTML. It special-cases `{{ruby::...}}`.
+- CBS date and time functions on the server use the server's time zone and default locale; the tab's language reaches CBS only as `metadata::browserlang`.
 
 ## Recipes
 
@@ -136,6 +138,7 @@ Display:
 - `e2e/transformGolden.spec.ts`: the script-transform golden. All of `fixtures/baseline/markdown.json` (`direct`, `prePass`, `back`, `editprocess`, with and without hooks) on the server path against the fixture recorded from the browser path before the cutover; the server-evaluated random and clock messages (`m-m3`, `m-m4`) are compared by format. Independent cases against their expected output recorded from the browser path at `219dfb51` (`server/src/tests/fixtures/transform/display-trigger-assets.json`, with its provenance): a v2 `display` trigger and both asset passes. On a page's first load (no controlling worker) the same render holds object URLs, a large image included, and otherwise matches the recording.
 - A new chat's first-save re-render: the `chatSaveVersion` count it keys on is pinned in `src/ts/storage/tests/resourceSyncChats.test.ts` ("a chat's first save", `persistence.md`); the `Chat.svelte` effect itself runs only in the component.
 - Not tested: most of `shared/cbs/registry.ts`, inlay and dynamic-asset rendering, `partialEdit`, `highlight.ts`.
+- Not tested: the transform cache key's dependency on `GLGlobalVariables`, the preset and persona ids, the greeting, and the background targets (the chat's variables, note, local lore, source character, and language are).
 
 ## Known Hazards
 
@@ -143,3 +146,7 @@ Display:
 - Without limits (the browser), a non-progressing loop such as `{{range::[0,1,0]}}` never ends, and the evaluator has quadratic paths: `{{` nesting (`unshift`), the `#each` splice, `filter` with `unique`/`all`. `arg.callStack` is incremented on the caller's object and never decremented, so the limit of 20 also counts sequential `call::` and nested `history` parses.
 - `removeHighlight` deletes the stored ID but leaves the global `CSS.highlights` ranges in place.
 - `chatML.ts` references `OpenAIChat` without importing it and relies on an ambient declaration.
+- The no-argument date and time functions do not pad: `YYYY-M-D` and `H:m:s`.
+- The legacy `lastmessage` returns the last message's stored `data` without parsing its CBS, and `""` with no character selected.
+- Unconfirmed: a transform's tab-side plugin handlers run with a captured plugin context whose API still has the persistent setters; the server transform itself writes nothing, but no test pins a setter called from a handler, so the text-only contract is not enforced.
+- Unconfirmed follow-ups, deferred and not reproduced since: a hang in the additional-asset passes and a duplicate render after "Re-render" (`rerenderMessage` bypasses the transform cache). Both code paths remain.

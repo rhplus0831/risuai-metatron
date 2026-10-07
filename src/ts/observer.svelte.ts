@@ -1,5 +1,3 @@
-import { globalFetch } from "./globalApi.svelte";
-
 // Grace period before stopping BGM whose marker left the DOM. Re-rendering a message can
 // briefly remove its markers (remount, async re-parse) without meaning "stop the music".
 const BGM_STOP_GRACE_MS = 1000;
@@ -240,57 +238,4 @@ export function startObserveDom() {
         attributeFilter: ["risu-ctrl"],
     });
     syncBgm();
-}
-
-let claudeObserverRunning = false;
-let lastClaudeObserverLoad = 0;
-let lastClaudeRequestTimes = 0;
-let lastClaudeObserverPayload: any = null;
-let lastClaudeObserverHeaders: any = null;
-let lastClaudeObserverURL: any = null;
-
-export function registerClaudeObserver(arg: { url: string; body: any; headers: any }) {
-    lastClaudeRequestTimes = 0;
-    lastClaudeObserverLoad = Date.now();
-    lastClaudeObserverPayload = safeStructuredClone(arg.body);
-    lastClaudeObserverHeaders = arg.headers;
-    lastClaudeObserverURL = arg.url;
-    lastClaudeObserverPayload.max_tokens = 10;
-    claudeObserver();
-}
-
-function claudeObserver() {
-    if (claudeObserverRunning) {
-        return;
-    }
-    claudeObserverRunning = true;
-
-    const fetchIt = async (tries = 0) => {
-        const res = await globalFetch(lastClaudeObserverURL, {
-            body: lastClaudeObserverPayload,
-            headers: lastClaudeObserverHeaders,
-            method: "POST",
-        });
-        if (res.status >= 400) {
-            if (tries < 3) {
-                fetchIt(tries + 1);
-            }
-        }
-    };
-
-    const func = () => {
-        //request every 4 minutes and 30 seconds
-        if (lastClaudeObserverLoad > Date.now() - 1000 * 60 * 4.5) {
-            return;
-        }
-
-        if (lastClaudeRequestTimes > 4) {
-            return;
-        }
-        fetchIt();
-        lastClaudeObserverLoad = Date.now();
-        lastClaudeRequestTimes += 1;
-    };
-
-    setInterval(func, 20000);
 }

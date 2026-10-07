@@ -27,7 +27,7 @@ Declarative settings (`src/ts/setting/`):
 
 - `types.ts`:
   - `SettingItem`: `id`, `type`, `bindKey` | `bindPath` (dotted) | `getValue(ctx)`/`setValue(value, ctx)`, `condition(ctx)`, `onChange`, `options`, `labelKey`/`fallbackLabel`, `componentId`/`componentProps`. `bindKey` is a `SettingsRootKey` (a root name the settings views serve; `pnpm check` refuses any other), and so is `bindPath`'s first segment.
-  - `SettingContext`: `{settings, preset, persona, modelInfo, subModelInfo}` (Phase 6 slice 6): the settings views, the selected preset (`activePreset`, by its own field names), and the selected persona (`activePersona`), from `src/ts/storage/settingsViews.svelte.ts`.
+  - `SettingContext`: `{settings, preset, persona, modelInfo, subModelInfo}`: the settings views, the selected preset (`activePreset`, by its own field names), and the selected persona (`activePersona`), from `src/ts/storage/settingsViews.svelte.ts`.
   - `SettingType`.
   - `SettingCategory`: unused.
 - `settingRegistry.ts` `settingRegistry`: maps each `SettingType` to a wrapper component (`check`, `text`, `number`, `textarea`, `slider`, `select`, `segmented`, `color`, `header`, `button`, `accordion`, `custom`).
@@ -44,7 +44,7 @@ Declarative settings (`src/ts/setting/`):
 Components (`src/lib/Setting/`):
 
 - `SettingRenderer.svelte`: derives the context (the views and the selected preset's `aiModel`/`subModel` model info), filters by `checkCondition`, and renders `settingRegistry[item.type]` keyed by `item.id`.
-- `Wrappers/Setting*.svelte`: a function binding (`bind:value={() => getSettingValue(...), (v) => updateSettingValue(...)}`), so an edit is written synchronously, into the preset selected at that moment. No local copy and no write-back effect. `SettingSegmented` binds the same way (since slice 6; it bound its `bindKey` directly before).
+- `Wrappers/Setting*.svelte`: a function binding (`bind:value={() => getSettingValue(...), (v) => updateSettingValue(...)}`), so an edit is written synchronously, into the preset selected at that moment. No local copy and no write-back effect. `SettingSegmented` binds the same way.
 - `Settings.svelte`: navigation. `SettingsMenuIndex` selects the page.
 
 Pages, by kind:
@@ -80,14 +80,16 @@ Languages (`src/lang/`):
   2. `changeLanguage`.
   3. Set `settings.ui.language` (the item's `ctx.settings`).
   4. Set `langState.changed`, which shows a restart warning.
+- Bot Settings' preset image: the preset id is captured before the image dialog opens; a cancel changes nothing, and the image is applied only if that preset still exists.
+- An imported SillyTavern preset computes `PresensePenalty` from `presence_penalty`; a missing value gives `NaN`, which `normalizePreset` replaces with its `PRESET_DEFAULTS` value before `addPreset`.
 
 ## State
 
-- The settings records hold every setting (`persistence.md`). The pages and the registry read and write them through the views of `src/ts/storage/settingsViews.svelte.ts` (Phase 6 slice 6); the whole-database object they replaced is gone (slice 10):
+- The settings records hold every setting (`persistence.md`). The pages and the registry read and write them through the views of `src/ts/storage/settingsViews.svelte.ts`; the whole-database object they replaced is gone:
   - `settings.<section>.<field>` (a section record's field), `settings.<collection>` (a collection's wrapper; an assignment replaces the record; the two selectable collections are `{ items, selectedId }`), `settings.presets`/`modules`/`plugins`/`pluginStorage`;
   - `activePreset.<field>`: the selected preset under its own field names (`NAISettings`, `reasonEffort`, `regex`; the keep-on-switch group is `settings.providers`), with the selection rules of `persistence.md` ("The selected preset and persona"): a read resolves the selection (the first preset when it names none) and a missing value reads as a fresh copy of its default, so a change inside that copy saves nothing; a write goes to the preset selected now or is dropped. `activePersona.<field>` likewise (`name`, `icon`, `note`, `personaPrompt`, `largePortrait`). Both follow the selection: a handler that awaits captures `activePreset.id` first, and `currentPresetRecord()`/`currentPersonaRecord()` return the record itself (or `undefined`);
   - `selectedLoreBookPage()` with `selectLoreBookPage` (the page this client shows), `readSettingsRoot`/`writeSettingsRoot` for a root name (the registry, `NullableTextColorToggle`'s dynamic field).
-- Every other settings reader and writer in the tab (the chat screens, sidebars, first-run wizard, playground, the client process helpers, the plugin host's setting getters, `characterStore`'s HypaV3 toggle, and the mutation modules `collectionStore`/`pluginStorageStore`) uses the same views (Phase 6 slice 7). A reader that falls back to the selection (`activePreset.id`, `activePersona.id`) keeps a captured context's ids first. Since slice 10 the parser's CBS hosts, the plugin host's database API, `collectionStore`'s `updateSettings`, the snapshot consumers (`snapshots.svelte.ts`), the boot installation, the preset functions (`presets.svelte.ts`), and resource sync read the records too.
+- Every other settings reader and writer in the tab (the chat screens, sidebars, first-run wizard, playground, the client process helpers, the plugin host's setting getters, `characterStore`'s HypaV3 toggle, and the mutation modules `collectionStore`/`pluginStorageStore`) uses the same views. A reader that falls back to the selection (`activePreset.id`, `activePersona.id`) keeps a captured context's ids first. The parser's CBS hosts, the plugin host's database API, `collectionStore`'s `updateSettings`, the snapshot consumers (`snapshots.svelte.ts`), the boot installation, the preset functions (`presets.svelte.ts`), and resource sync read the records too.
 - `botPreset` captures model/provider, prompts, `promptTemplate`, `promptSettings`, sampling parameters, templates, separate models and parameters (unless `doNotChangeSeperateModels`), tools, and fallbacks.
 - `language` is replaced on switch, so components that read it at module initialization keep stale strings.
 - UI stores: `settingsOpen`, `SettingsMenuIndex`, `QuickSettings`, `CustomGUISettingMenuStore`, `easyPanelStore`.
@@ -103,10 +105,15 @@ Languages (`src/lang/`):
 - Keep `item.id` values unique and stable. User custom sidebars reference them.
 - Value precedence: `getValue`, then `bindPath`, then `bindKey`. `setSettingValue` creates missing path objects.
 - `SettingSelect`/`SettingSegmented` reset a value whose option becomes hidden. `SettingSegmented` takes the same value sources as the other wrappers.
-- A preset-owned field must be added to `botPreset` and `PRESET_DEFAULTS` in `shared/presets.ts` (the canonical list `normalizePreset` uses), and never be a secret: credentials belong in the `llmSecrets` section (`proxyKey` per preset in its `presets` map, a custom model's `key` in its `customModels` map), and `downloadPreset` blanks the endpoint fields. A credential field is edited with `src/lib/UI/GUI/SecretInput.svelte` (Phase 5 slice 7b; `path` a `shared/llmSecrets.ts` `SecretPath`): it shows the stored key's status (set with its last four characters, not set, saving), replaces it on Enter or the button (once; the field empties), and clears it; the draft is dropped when the path changes. Never `bind:` an LLM credential field (an `llmSecrets` credential, a preset's `proxyKey`, a custom model's `key`): it reads `""`. The forwarding layer serves `proxyKey` as a flat field of the selected preset; `activePreset` does not serve it. The auxiliary credentials of the `secrets` section are ordinary readable fields, bound like any other (`settings.secrets.<field>`).
+- A preset-owned field must be added to `botPreset` and `PRESET_DEFAULTS` in `shared/presets.ts` (the canonical list `normalizePreset` uses), and never be a secret: credentials belong in the `llmSecrets` section (`proxyKey` per preset in its `presets` map, a custom model's `key` in its `customModels` map), and `downloadPreset` blanks the endpoint fields. A credential field is edited with `src/lib/UI/GUI/SecretInput.svelte` (`path` a `shared/llmSecrets.ts` `SecretPath`): it shows the stored key's status (set with its last four characters, not set, saving), replaces it on Enter or the button (once; the field empties), and clears it; the draft is dropped when the path changes. Never `bind:` an LLM credential field (an `llmSecrets` credential, a preset's `proxyKey`, a custom model's `key`): it reads `""`. The forwarding layer serves `proxyKey` as a flat field of the selected preset; `activePreset` does not serve it. The auxiliary credentials of the `secrets` section are ordinary readable fields, bound like any other (`settings.secrets.<field>`).
 - Preserve misspelled keys: `PresensePenalty`, `seperateParameters`, `seperateModels`, `JinjaTemplate`.
 - Prompt edits must keep the `PromptItem` discriminated shape and reassign arrays after splicing. `normalizePromptTemplate` (`shared/presets.ts`) handles imports.
 - `select` option `labelKey` has no fallback label. Missing locale keys fall back to English only because `changeLanguage` merges.
+- `changeToPreset(id)` with an id that is not in `settings.presets` does nothing: no selection change, no preset written.
+- `selectedLoreBookPage()` answers the selected global lorebook page while it is inside the list; past the end it answers 0 and stores page 0 at once (`selectLoreBookPage`).
+- `forceReplaceUrl2` has no reader: it is not in `PRESET_FIELDS`, so `normalizePreset` drops it, and the preset export (`downloadPreset`, the JSON and `.risup` formats alike) still writes it blank for older readers.
+- The registry has four item-level `getValue`/`setValue` pairs, the custom quotes (leading and trailing, double and single); every other item binds through `bindPath`.
+- `PromptSettings.svelte` reads a missing `activePreset.promptTemplate` as an empty list for display, checks, and token counts, and its mount writes nothing.
 
 ## Recipes
 
@@ -133,3 +140,9 @@ Languages (`src/lang/`):
 
 - `changeLanguage` supports `es`, but the language selector does not offer it.
 - Some accessibility labels are computed from `language` at module load and do not update after a language switch.
+- The five keep-on-switch fields (`PRESET_KEEP_ON_SWITCH_FIELDS`) live in the shared `providers` section, not in a preset: a preset switch in one tab or client copies the new preset's values into `providers`, which every other client then uses, and two clients switching at once conflict or replace each other's copy.
+- A conflict reload or live update of a settings record replaces its fields and resolves the selection, but runs no presentation update: the language (`changeLanguage`), the theme and custom CSS, the animation, and the sizes stay as they were until the next local change of that setting or a reload.
+- Some settings pages fill missing values with control defaults when they first mount (`bindPath` creating missing containers), so the first visit can save; a second visit writes nothing (`e2e/settingsPages.spec.ts`). Which pages write on a first visit is not pinned (Bot Settings, Display, Accessibility, and Advanced were seen).
+- The preset list (`botpreset.svelte`) reads every row through its record wrapper, so a 50-preset reorder re-renders through the wrappers: 17.9 ms against a 15.9–16.0 ms baseline (`measureRecords.mjs`, commit `5b47b2b3` against `35678fd4`), about 2% outside the 10% target; at commit `2f658598` it measures 17.9–18.2 ms (17.5–17.8 ms at `6fa405d1`). Keyed rows were slower (18.4–20.1 ms at `5b47b2b3`, not re-measured); a plain-row projection (each row's id, name, and image read once) was not tried.
+- `SettingSegmented` reads its value tracked (unlike `SettingSelect`), so switching to a preset whose segmented value is a hidden option writes the fallback into the newly selected preset.
+- `pluginDevelopMode` and `forceProxyAsOpenAI` are persisted `ui` toggles with a settings item (`advancedSettingsData.ts`) and no reader.

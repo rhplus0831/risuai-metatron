@@ -14,8 +14,8 @@
 - `src/App.svelte`: the "router" (ordered `{#if}` chain), plus drag/drop import, overlays (alerts, popups, modals), and keep-alive audio.
 - `src/ts/bootstrap.ts`:
   - `loadData`: the server resources are read and installed into the records, then maintenance, theme, `startResourceSync` (the save adapter), the browser-local import, plugins, `loadedStore = true`, then services.
-  - `installBootRecords`: installs the resource records into the settings and character records and the chat module (see `persistence.md`, Load); no whole-database object is built (Phase 6 slice 10).
-  - `maintainCharacters`: the boot's maintenance (the trash pruning, the character order); no character default (Phase 6 slice 5b).
+  - `installBootRecords`: installs the resource records into the settings and character records and the chat module (see `persistence.md`, Load); no whole-database object is built.
+  - `maintainCharacters`: the boot's maintenance (the trash pruning, the character order); no character default.
   - `registerSw`: service worker.
 - `src/ts/stores.svelte.ts`: all global UI stores (see State).
 - `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `isMobile`, `isIOS()`, `getRisuEnvironmentLabel` (`node` or `node(dev)`), `getDetailedOSLabel`, `isInStandaloneMode` (unused).
@@ -31,7 +31,6 @@
   - `startObserveDom`: idempotent. Adds one `document` `contextmenu` delegate (Copy/Download menu for `x-hl-lang` code blocks) and a `MutationObserver` on `document.body` that syncs BGM from `risu-ctrl="bgm___<volume|auto>___<src>"` markers.
   - BGM: one track at a time. When nothing is playing, it starts the first marker in document order (the newest message, since the chat body is column-reversed). A playing track keeps playing while its marker stays in the DOM, even if a newer marker appears, and replays on `ended`. It stops `BGM_STOP_GRACE_MS` (1 s) after its marker is gone.
   - BGM failures: an autoplay block (`NotAllowedError`) pauses all BGM until the next activating `pointerup`/`keydown` (touch grants activation only on release). A source or media error skips only that marker, so another marker can still play; it is not retried on gestures, only after the marker has been missing from the DOM for more than 1 s and appears again.
-  - `registerClaudeObserver`: Claude cache keep-alive pings. Since the Phase 5 cutover no production code calls it: the server's Claude adapter keeps its own observer (`server/src/llm/claudeObserver.ts`), and the browser function stays for the parity tests (`process/request/tests/serverParity.test.ts`).
 - `src/ts/mutex.ts` `Mutex`: FIFO lock. Its users were the browser scripting engines, removed at the Phase 5 cutover, so nothing in production imports it now. `runExclusive` must keep its `finally` release.
 - `src/lib/UI/MainMenu.svelte`: home screen. Switches to `RealmMain` via `OpenRealmStore`. Renders `hubAdditionalHTML` with `{@html}`.
 - `src/lib/UI/Title.svelte`: seasonal logo and mini-game. Only used by MainMenu.
@@ -94,7 +93,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 ## Invariants
 
 - Do not flip `loadedStore` to true before `installBootRecords`, `maintainCharacters`, and theme setup finish. `App` assumes the records are installed after that point. When `loadData` fails it only calls `alertError`, and the loading screen stays up.
-- No selected character is home. Components read the selected character as `const currentCharacter = $derived(selectedCharacter())` (Phase 6 slice 8) and the list as `characterList()`, never by an index; a handler that awaits captures the `chaId` first and finds the character again after the await.
+- No selected character is home. Components read the selected character as `const currentCharacter = $derived(selectedCharacter())` and the list as `characterList()`, never by an index; a handler that awaits captures the `chaId` first and finds the character again after the await.
 - Call `startResourceSync()` only once, from `loadData`; it ignores a second call.
 - `isNodeServer` depends on `server/src/app.ts` (`GET /` and `/index.html`) or the Vite dev plugin `risu-node-flag` injecting `globalThis.__NODE__ = true` into `index.html`. Keep everything the app needs behind the dynamic `boot.ts` import so the notice path initializes nothing.
 - New hotkey actions need:
@@ -123,11 +122,13 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 ## Tests
 
-- None cover boot, screen precedence, platform detection, hotkeys, `registerClaudeObserver`, or `Mutex`.
+- None cover boot, screen precedence, platform detection, hotkeys, or `Mutex`.
 - `src/ts/observer.test.ts` covers `startObserveDom` under happy-dom with an `Audio` stub and fake timers: BGM marker parsing, selection, grace stop, failure and autoplay retry policy, and the delegated code-block menu. Mutation records are delivered with `takeRecords()` because happy-dom's own timer is not faked.
-- Some tests mock `stores.svelte` and `platform` (parser tests, `requests.responses.test.ts`). They exercise consumers, not these modules.
+- Some tests mock `stores.svelte` and `platform` (the parser tests). They exercise consumers, not these modules.
 
 ## Known Hazards
 
 - BGM stop detection is marker-based. If a message re-render keeps its BGM marker out of the DOM for more than 1 s (for example a slow re-parse), the track stops and restarts from the beginning.
 - `isInStandaloneMode` has no consumers. `bootstrap.ts` recomputes standalone mode locally before calling `navigator.storage.persist`.
+- A user-defined `send` hotkey clicks `.button-icon-send` without the popup-editor guard of the preset hotkeys, so it can send (and run `presetChain`) while a popup editor is open.
+- The `ReloadGUIPointer` subscriber in `stores.svelte.ts` skips its first call: `subscribe` calls back at once while the module is still evaluating, and `stores.svelte.ts` and `parser/transformClient.ts` import each other, so that call could reach `resetTransformEffects` before `transformClient`'s bindings exist. Keep the skip while the cycle remains (`stores.importOrder.test.ts`).

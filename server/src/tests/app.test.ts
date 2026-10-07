@@ -335,7 +335,7 @@ describe("storage routes", () => {
         expect(missing.status).toBe(200);
         expect((await missing.arrayBuffer()).byteLength).toBe(0);
 
-        // Zero-length writes are valid (NodeStorage.setItem may send an empty Uint8Array).
+        // Zero-length writes are valid (`assetClient.ts`'s `writeAsset` may send an empty Uint8Array).
         expect(await (await write(s, "assets/empty", new Uint8Array(0))).json()).toEqual({ success: true });
         const readEmpty = await read(s, "assets/empty");
         expect(readEmpty.headers.get("content-type")).toBe("application/octet-stream");

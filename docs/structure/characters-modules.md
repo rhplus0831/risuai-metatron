@@ -34,7 +34,7 @@
   - Export: `exportChar` (dialog), `exportCharacterCard` (writer), `createBaseV2`/`createBaseV3`.
   - Hub and links: `characterURLImport` (deep links and shares), `hubURL`, `getRisuHub`/`downloadRisuHub`/`getRealmInfo`. `hubURL` is the self-host server's same-origin `/hub-proxy`.
 - `characters.ts`: character lifecycle.
-  - Create and select: `addCharacter`, `createNewCharacter`, `createBlankChar`, `createNewGroup`, `changeChar` (makes sure the character has a chat and shows its chat, `ensureChat` and `syncChatPage`, then selects it; since Phase 6 slice 5b it applies no defaults and stamps no `lastInteraction`).
+  - Create and select: `addCharacter`, `createNewCharacter`, `createBlankChar`, `createNewGroup`, `changeChar` (refused while a send runs; makes sure the character has a chat (`ensureChat`), then selects it; it applies no defaults and stamps no `lastInteraction`).
   - Delete: `removeChar` (soft delete via `trashTime`, or permanent).
   - Image, emotion, and chat import/export helpers.
 - `pngChunk.ts` `PngChunk`: `read`, `readGenerator` (streaming), `trim`, `write`, `streamWriter`. Other chunks are preserved.
@@ -101,6 +101,10 @@ Module activation (`getModules`): the union of:
 
 The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `ChatBody`.
 
+- `importUserPersona` stores and re-encodes the PNG icon first, then adds the persona (`addPersona`, a fresh id) to the live list, so a collection another client replaced during the icon's save keeps both the new list and the icon.
+- A CharX import whose module is refused alerts `noData` and adds no module (no success alert); the character's data is unchanged.
+- Character imports count `statics.imports` for PNG, JPG, and CharX files before parsing (a card refused later still counts); a JSON card does not count.
+
 ## State
 
 - `character`: identity and content fields plus `emotionImages`, `additionalAssets` (`[name, path, ext][]`), `ccAssets`, `customscript`, `triggerscript`, `globalLore`, `loreSettings`, `modules`, `lowLevelAccess`, the TTS fields, and `trashTime`.
@@ -122,13 +126,14 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - PNG text size is capped at 5 MiB. CRC is checked only in non-stream reads.
 - `createBaseV2` intentionally omits emotions and additional assets. V3 is the full-fidelity path.
 - Cards and modules with low-level access require confirmation on import.
-- The `getModules` cache is keyed by joined IDs. After editing module contents in place, call `refreshModules` or `moduleUpdate`.
+- The `getModules` cache (`lastModules`) is keyed by the joined enabled IDs, and only `refreshModules` clears it (`moduleUpdate` reads through it). After editing module contents in place, call `refreshModules`.
 - `getModuleTriggers` mutates the triggers' `lowLevelAccess`. Aggregate order follows the DB module order.
 - Keep `character.modules`, `chat.modules`, `enabledModules`, and `moduleIntergration` (which matches namespaces) distinct.
 - `LoreBookList` must rebuild its Svelte arrays after SortableJS DOM moves. Old lorebook entries (below `bookVersion` 2) are converted only as they enter: a character's creation (`prepareNewCharacter`), a lorebook file imported into a character (`importLoreBook`), and the module import paths (`upgradeLorebook`, `shared/modules.ts`); later updates keep their content.
 - `chaId` and chat IDs must be unique. The installation (`initializeRecords`) gives a character without a valid or unique id a new one, and a character's id never changes afterwards; chat and message ids are assigned by the chat module (`createChat`, `appendMessage`) and kept unique by the server.
-- An import path adds a character only through `addCharacter` (and modules, personas, and presets through the collection module). The core-app creators (`createNewCharacter`, `createNewGroup`, the editors) still push into the mirror until Phase 6.
-- A character's chats are created through the chat module once it is in the mirror: `importChat` calls `createChat` (a copy gets a fresh chat id and keeps its message ids), and `changeChar` calls `ensureChat` for a character without one. A character that is not yet added (a new card, an import) carries its initial chats in its input; its creation (`prepareNewCharacter`, Phase 6 slice 5b) gives it a first chat when it has none, each chat its `fmIndex` (the character's `firstMsgIndex`) and `localLore` (`prepareChatInput`), and moves `postHistoryInstructions` into the note of the chat at `chatPage`; `addCharacter`/`replaceCharacterAt` then hand the chats to the chat module (`installCharacterChats`, Phase 6 slice 9a: the record holds none) and the save loop creates them with the character.
+- An import path adds a character only through `addCharacter` (and modules, personas, and presets through the collection module). The core-app creators (`createNewCharacter`, `createNewGroup`) add through it too.
+- A character's chats are created through the chat module once it is in the mirror: `importChat` calls `createChat` (a copy gets a fresh chat id and keeps its message ids), and `changeChar` calls `ensureChat` for a character without one. A character that is not yet added (a new card, an import) carries its initial chats in its input; its creation (`prepareNewCharacter`) gives it a first chat when it has none, each chat its `fmIndex` (the character's `firstMsgIndex`) and `localLore` (`prepareChatInput`), and moves `postHistoryInstructions` into the note of the chat at `chatPage`; `addCharacter`/`replaceCharacterAt` then hand the chats to the chat module (`installCharacterChats`: the record holds none) and the save loop creates them with the character.
+- `changeUserPersona(id)` with an id that is not in `settings.personas` does nothing.
 
 ## Recipes
 
@@ -147,8 +152,15 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - `src/ts/personaImport.test.ts` and `src/ts/process/lorebookImport.test.ts`: the persona import's id and icon order, the persona export keeping the persona selected at its start while the selection and the name change during its awaits, and the global lore import by the captured id.
 - Not tested: the editors, card export round trips.
 - Adjacent: `mcp/risuaccess/tests/modules.test.ts`.
+- Not tested: the character lorebook drag's cost (the list rebuilds and Sortable is recreated after the write); measured by hand (`measureCharacters.mjs`): 104–112 ms against 100.5–105.5 ms before the character records (commit `139fc73b`), within about 7%.
 
 ## Known Hazards
 
 - There is no dedicated "duplicate character" API. Copies come from module→character conversion or re-import.
 - An off-spec card with only `char_name` imports as "unknown name": the check accepts `char_name`, but `convertOffSpecCards` reads `name` (pre-existing).
+- A bound persona's embedded module joins the effective modules only when a module with its id exists in `settings.modules`: the tab's `getModules` and the server's `jobModules` add the persona's `embeddedModule.id`, then resolve ids against the stored list only (`getModuleByIds`, `modulesByIds`), so an embedded module never stored contributes nothing.
+- `importLoreBook("sglobal")` reads and parses the file but writes nothing: only `global` (the captured character) and `local` (the captured chat) have a write.
+- `addModule` does not refuse a duplicate module id, so two modules can share one; `removeModule` removes the module but leaves its id in `enabledModules` until that list changes.
+- Nothing calls `refreshModules` after a wholesale replacement of `settings.modules` (a server copy, a conflict reload) that keeps the enabled IDs; only the module settings page does (`ModuleSettings.svelte`). `getModules` then keeps serving the previous wrappers: a read of one can throw `DetachedWrapperError`, or a stale module is served.
+- A lorebook prompt that still has focus when a hotkey (Ctrl+]) or code switches the character: its pending change lands on the new character's missing entry, throws (`TypeError` setting `content`, then `state_unsafe_mutation`), and the character editor stops following its submenu. A mouse click blurs the field first, so clicking does not trigger it. (Observed with a browser script in Phase 6 slice 8 and not re-verified since; the code does not show the write path plainly: `TextAreaInput` has no unmount write.)
+- `characterStore.svelte.ts` imports `./selection.svelte` before anything that loads `../stores.svelte`; the other order makes the `stores` and parser module effects read state that is not initialized yet under Vitest (TDZ errors). A comment marks it; an editor's "optimize imports" undoes it, which `pnpm test` catches.

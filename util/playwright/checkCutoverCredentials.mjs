@@ -464,6 +464,9 @@ try {
     check("every credential leaf was set", writes === Object.keys(SECRETS).length, writes);
 
     // From here on, every browser request and response is recorded (the reload reads the masked record).
+    // The app is unloaded first, so no request of the earlier document is still in flight when the
+    // capture starts (its answer would arrive after the navigation, with its body already discarded).
+    await page.goto("about:blank");
     watching = true;
     await openApp(page, stack.baseURL);
     await page.waitForTimeout(1500);

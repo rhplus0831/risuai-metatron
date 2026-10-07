@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The tab's server authentication (`serverAuth.ts`, Phase 6 slice 10: the auth half of the removed
-// `NodeStorage`, one module-level state for every caller) against a fake of the server's auth
+// storage client, one module-level state for every caller) against a fake of the server's auth
 // routes: the first run sets the password and registers this browser's key with the same digest (so
 // the very next request is authorized), a wrong-key browser logs in once, parallel requests share
 // one check, a failed check is tried again, and `authFetch` signs every request. The state is the
@@ -132,7 +132,7 @@ describe("existing server", () => {
         expect(prompts.asked).toEqual(["input password"]);
         expect(paths()).toEqual(["/api/test_auth", "/api/crypto", "/api/login"]);
         expect(await checkedState()).toBe(true);
-        // A fresh module state (a new tab: the old second `NodeStorage` instance) checks once more,
+        // A fresh module state (a new tab: the removed storage client's second instance) checks once more,
         // finds the key known, and asks for nothing.
         vi.resetModules();
         const fresh: ServerAuth = await import("../serverAuth");

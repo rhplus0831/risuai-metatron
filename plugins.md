@@ -758,6 +758,8 @@ await Risuai.setDatabaseLite(db);
 
 `getDatabase()` returns `null` if the user has not granted database access consent.
 
+`getDatabase()` builds a fresh copy each time you call it. When you ask for `characters` (or ask for every key), it first loads every chat of every character from the server and copies them all, so it can take a while and use a lot of memory with many or long chats. Ask only for the keys you need, and prefer `getCharacter()` for the current character. `getCharacter()` and `getChar()` copy one character with all its chats, loading them first. A copy is a snapshot: changing it changes nothing until you hand it back with a setter.
+
 How `setDatabase`/`setDatabaseLite` apply what you hand back:
 
 - Each key is applied on its own. A key whose value is not valid is refused with a console warning (`[Plugin] Refused ...; the previous value was kept`) and keeps its old value; the other keys still apply. Invalid means, for example, data that is not plain JSON, a value of the wrong kind for a preset setting (a string for `temperature`), or `null` for a setting that cannot be cleared.

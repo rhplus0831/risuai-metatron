@@ -7,7 +7,7 @@ no standalone browser build (the client without the server shows only a notice),
 they drift. Grep the identifier instead.
 
 Last full audited: 2026-09-27.
-Last scoped updated: 2026-10-03 (Phase 5 cutover: generation, scripts, and provider calls on the server).
+Last scoped updated: 2026-10-07 (Phase 6 closeout: the thin client, live updates, lazy chats, no whole-database object; the plan archived).
 
 ## Agent Read Protocol
 
@@ -55,7 +55,7 @@ Verification
 
 Data and persistence (details: `docs/structure/persistence.md`)
 
-- D1. The client holds no whole-database object (Phase 6 slice 10). Its mirror of the server
+- D1. The client holds no whole-database object. Its mirror of the server
   resources (`shared/resources.ts`; installed in `bootstrap.ts:loadData`) is the settings records
   (`src/ts/storage/records.svelte.ts`, read and written through the views of
   `src/ts/storage/settingsViews.svelte.ts`), the character records (`characterStore.svelte.ts`),
@@ -65,7 +65,7 @@ Data and persistence (details: `docs/structure/persistence.md`)
   `shared/database.ts` and are re-exported by `src/ts/storage/database.svelte.ts`. `shared/` is
   compiled by both the client and the strict server project: no DOM types, runes, or enums, and
   only relative `.ts` imports between `shared/` files (`persistence.md`). The chats are not part of
-  the character records (Phase 6 slice 9a): the chat module (`src/ts/storage/chatStore.svelte.ts`)
+  the character records: the chat module (`src/ts/storage/chatStore.svelte.ts`)
   holds them, the client reads them through `chatList`, `selectedChat`, and `findChat` (the client's
   character type, `ClientCharacter`, has no `chats` or `chatPage`; a character wrapper's
   `chats`/`chatPage` is a read-only view for the shared CBS host, which reads that legacy shape),
@@ -73,7 +73,7 @@ Data and persistence (details: `docs/structure/persistence.md`)
   chat id and message id (`Message.chatId`), never by index after an await. Svelte `bind:` on a
   chat field bypasses the type check: bind a getter/setter pair or a synced editing copy. Beside
   it, the mutation modules own the other records for the external contracts (plugins, MCP,
-  imports; since the Phase 5 cutover Lua and triggers run on the server and write through their job): `characterStore.svelte.ts` (characters by `chaId`), `collectionStore.svelte.ts`
+  imports; Lua and triggers run on the server and write through their job): `characterStore.svelte.ts` (characters by `chaId`), `collectionStore.svelte.ts`
   (settings sections, collections, presets, modules, plugins), and `pluginStorageStore.svelte.ts`.
   The core-app UI writes the settings through the views and the characters through their records.
 - D2. A new persisted field needs a type entry and a place in `shared/sections.ts`. A section or
@@ -118,7 +118,7 @@ Platform and network (details: `docs/structure/global-api.md`)
   once: when false it mounts `NodeServerRequired.svelte` and never imports the app (`src/boot.ts`).
   Do not add browser-only storage or network branches; everything past `main.ts` may assume the
   server is present. `isMobile` is user-agent based.
-- P2. LLM provider calls run on the server (Phase 5): a send is a server job, and the tab's own
+- P2. LLM provider calls run on the server: a send is a server job, and the tab's own
   requests (`requestChatData`) go to `POST /api/llm/request`, except a plugin provider model and a
   browser WebLLM model, which run in the tab by design; a call that needs a stored credential
   goes through `auxFetch` (`/proxy2` auxiliary operations). The tab never holds an LLM credential
@@ -166,7 +166,7 @@ Release
 | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- |
 | Startup order, top-level screen selection, global stores, platform flags, hotkeys                                                    | `docs/structure/app-shell.md`            |
 | `globalFetch`/`fetchNative`, proxy routing, assets (`saveAsset`/`loadAsset`), alerts, `util.ts` helpers                              | `docs/structure/global-api.md`           |
-| Add or migrate a DB field, save format, storage backends, autosave                                                                   | `docs/structure/persistence.md`          |
+| Add or migrate a persisted field, server resources, the save adapter, live updates, device caches                                    | `docs/structure/persistence.md`          |
 | Sending a message (the tab's job client), prompt template items, lorebook activation, slash commands, inlays, group chat, reroll     | `docs/structure/chat-pipeline.md`        |
 | Long-term memory (SupaMemory, HypaV2/V3, Hanurai), embeddings, HypaV3 modal                                                          | `docs/structure/memory.md`               |
 | Add a model or provider, request/stream parsing, tool calls, parameters, tokenizers, aux-model routing                               | `docs/structure/llm-requests.md`         |
@@ -236,6 +236,21 @@ targeted path to read them.
 | Iris                                   | Built-in assistant modal using the RisuAccess MCP tools                                                           | global-api         |
 | Playground                             | Tool screens selected by `PlaygroundStore` (tokenizer, Jinja, subtitles, ...)                                     | media-aux          |
 
+## Migration History
+
+The guides name these steps where a version boundary matters (old saves, archives, fixtures). The
+plan that drove them is archived; its last version is in git (`docs/plan/README.md`).
+
+| Step    | What changed                                                                                                                              | Last commit                                         |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| Phase 0 | The shared schema (`shared/`) and the server's resource store                                                                             | `a82359f7`                                          |
+| Phase 1 | The database split into per-collection server resources; the block save format and remote saving removed (no migration)                   | `46d63674`                                          |
+| Phase 2 | Chats as their own server records with an explicit mutation API; the generation fence of server-held messages                             | `577c43ae`                                          |
+| Phase 3 | The settings sections and collections (store version 3, no `root` record), ids on presets and personas, credentials out of preset records | `e9e608ad`                                          |
+| Phase 4 | The external contracts (plugins, MCP, Lua, triggers, imports) writing through the mutation modules                                        | `ce43f2b9`                                          |
+| Phase 5 | Generation, prompt assembly, scripts, and provider calls on the server; the cutover (`12ed3bae`) removed the browser generation path      | `ee57e2e9`                                          |
+| Phase 6 | The thin client: write-through records, live updates, chats loaded on demand, no whole-database object; the closeout                      | the closeout commit, named in `docs/plan/README.md` |
+
 ## Dead, Placeholder, or Unwired Code
 
 Do not extend these without first confirming intent.
@@ -258,3 +273,6 @@ Do not extend these without first confirming intent.
   `Recipes`, `Tests`, `Known Hazards`. Keep that order so agents can jump by heading.
 - `Known Hazards` lists observed but unfixed defects. When you fix one, remove its entry.
 - Name identifiers, not line numbers.
+- `db.<field>` names a persisted `Database` field (`shared/database.ts`) by its flat name: the tab reads
+  it through the settings views (`readSettingsRoot`, `settings.<section>.<field>`, `activePreset`),
+  the server through its job's database projection.

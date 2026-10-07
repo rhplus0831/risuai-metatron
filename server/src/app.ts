@@ -34,7 +34,6 @@ import { createTransformService } from "./prompt/transform.ts";
 import { registerLlmRoutes } from "./routes/llm.ts";
 import { registerLlmSecretRoutes } from "./routes/llmSecrets.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
-import { createProxyStreamJobs } from "./routes/proxyStreamJobs.ts";
 import { createEventSockets } from "./routes/events.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
 import { registerStorageRoutes } from "./routes/storage.ts";
@@ -97,7 +96,6 @@ export function createServerContext(options: {
         intervalMs: options.snapshotIntervalMs,
     });
     const maxImportBytes = options.maxImportBytes ?? parseMaxImportBytes(process.env.RISU_MAX_IMPORT_BYTES);
-    const proxyStreamJobs = createProxyStreamJobs({ auth });
     const generationJobs = createGenerationJobs({
         store: resources,
         kinds: resourceKinds,
@@ -146,7 +144,7 @@ export function createServerContext(options: {
     snapshots.onMaintenance(async () => () => mcpRegistry.sync(resources.epoch()));
     const llmSecretsKind = resourceKinds.get(RESOURCE_KIND.llmSecrets);
 
-    /** The one `upgrade` listener per HTTP server (proxy stream jobs, generation jobs, live updates). */
+    /** The one `upgrade` listener per HTTP server (generation jobs, live updates). */
     const upgradeListeners = new Map<http.Server, (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void>();
     // Workers start on the first task: Lua buttons and manual triggers (`command` jobs) run there.
     const scriptWorkers = createScriptWorkerPool({ rootDir: options.rootDir });
@@ -207,7 +205,6 @@ export function createServerContext(options: {
         upgradeListeners.clear();
         // Before the snapshot manager stops: the clients see the server going away (1001) and reconnect.
         eventSockets.close();
-        proxyStreamJobs.dispose();
         authenticatedRouteLimiter.dispose();
         authRouteLimiter.dispose();
         loginRouteLimiter.dispose();
@@ -294,7 +291,6 @@ export function createServerContext(options: {
                       Record<string, unknown> | undefined) ?? null)
                 : null,
     });
-    proxyStreamJobs.registerRoutes(app, { limiter: authenticatedRouteLimiter.middleware, clientIp });
     registerGenerationRoutes(app, { jobs: generationJobs, auth, limiter: authenticatedRouteLimiter.middleware });
     registerTransformRoutes(app, {
         transforms,
@@ -347,8 +343,8 @@ export function createServerContext(options: {
         llmRequests,
         eventSockets,
         /**
-         * Installs the one `upgrade` dispatcher: proxy stream jobs, generation jobs, the live-update
-         * socket, else the socket is destroyed.
+         * Installs the one `upgrade` dispatcher: generation jobs, the live-update socket, else the
+         * socket is destroyed.
          */
         attachWebSocket: (server: http.Server) => {
             if (shuttingDown || upgradeListeners.has(server)) {
@@ -356,7 +352,6 @@ export function createServerContext(options: {
             }
             const listener = (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
                 if (
-                    !proxyStreamJobs.handleUpgrade(req, socket, head) &&
                     !generationJobs.handleUpgrade(req, socket, head) &&
                     !eventSockets.handleUpgrade(req, socket, head)
                 ) {
@@ -367,7 +362,6 @@ export function createServerContext(options: {
             upgradeListeners.set(server, listener);
         },
         startBackgroundTasks: () => {
-            proxyStreamJobs.startGc();
             generationJobs.startGc();
             snapshots.start();
         },

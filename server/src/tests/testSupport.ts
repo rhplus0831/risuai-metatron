@@ -170,7 +170,7 @@ export const json = (body: unknown, headers: Record<string, string> = {}) => ({
     body: JSON.stringify(body),
 });
 
-/** An ES256 key pair with a JWT signer matching `NodeStorage.createAuth`. */
+/** An ES256 key pair with a JWT signer matching the client's `serverAuth.ts` token signer. */
 export async function createSigner() {
     const keyPair = await webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
         "sign",

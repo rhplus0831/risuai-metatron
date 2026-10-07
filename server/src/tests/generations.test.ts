@@ -5,11 +5,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { GenerationEvent } from "../../../shared/jobs.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
-import { createSigner, createTestServer, json, sleep, startUpstream, waitFor } from "./testSupport.ts";
+import { createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
 // The generation job routes and the owner socket (`server/src/routes/generations.ts`,
 // `generationJobs.handleUpgrade`) on a real listening server, with a fake runner driven by the test,
-// beside the proxy stream jobs on the same upgrade dispatcher. The registry's in-process contracts
+// beside the live-update socket on the same upgrade dispatcher. The registry's in-process contracts
 // are in `generationJobs.test.ts`; the client transport in `src/ts/network/generationJobs.test.ts`.
 
 type Step = (job: RunningJob) => void | Promise<void>;
@@ -561,80 +561,52 @@ describe("generation jobs over HTTP and WebSocket", () => {
         expect(owner.events[4]).not.toHaveProperty("messageId");
     });
 
-    it("dispatches upgrades by path: proxy stream jobs keep working beside the generation socket, an unknown path is destroyed, and shutdown removes the listener", async () => {
-        const upstream = await startUpstream();
-        try {
-            await listen();
-            const created = await fetch(
-                `${base}/proxy-stream-jobs`,
-                json({ url: `${upstream.url}/echo`, method: "GET" }, { "risu-auth": "pw" }),
-            );
-            expect(created.status).toBe(200);
-            const { jobId } = (await created.json()) as { jobId: string };
-            const proxyEvents = await new Promise<string[]>((resolve) => {
-                const ws = new WebSocket(`${base.replace("http", "ws")}/proxy-stream-jobs/${jobId}/ws?risu-auth=pw`);
-                const seen: string[] = [];
-                const timer = setTimeout(() => ws.close(), 3000);
-                ws.onmessage = (message) => {
-                    const event = JSON.parse(String(message.data)) as { type: string };
-                    seen.push(event.type);
-                    if (event.type === "done" || event.type === "error") {
-                        clearTimeout(timer);
-                        setTimeout(() => ws.close(), 20);
-                    }
-                };
-                ws.onerror = () => {};
-                ws.onclose = () => resolve(seen);
-            });
-            expect(proxyEvents[0]).toBe("job_accepted");
-            expect(proxyEvents).toContain("done");
-            const unknown = await new Promise<string>((resolve) => {
-                const ws = new WebSocket(`${base.replace("http", "ws")}/nowhere/ws`);
-                ws.onopen = () => resolve("open");
-                ws.onerror = () => {};
-                ws.onclose = () => resolve("closed");
-            });
-            expect(unknown).toBe("closed");
-            // The live-update socket on the same dispatcher (Phase 6): a JWT is admitted and gets `hello`.
-            const feedFrames: { type: string; epoch?: string }[] = [];
-            let feedOpened = false;
-            const feedJwt = await signer.jwt();
-            const feedClosed = new Promise<number>((resolve) => {
-                const ws = new WebSocket(`${base.replace("http", "ws")}/api/events/ws?risu-auth=${feedJwt}`);
-                ws.onopen = () => {
-                    feedOpened = true;
-                };
-                ws.onmessage = (message) => feedFrames.push(JSON.parse(String(message.data)));
-                ws.onerror = () => {};
-                ws.onclose = (event) => resolve(event.code);
-            });
-            await waitFor(() => feedFrames.length > 0);
-            expect(feedOpened).toBe(true);
-            expect(feedFrames[0]).toEqual({ type: "hello", epoch });
-            const generation = await createOk();
-            const owner = await follow(generation);
-            await until(owner, 1);
-            // A job's write (the runner's in-process `applyChanges` with its token) is a commit: the
-            // feed socket sees the chat change with the revision the write returned.
-            let written = "";
-            step((job) => {
-                written = job.write(() => ({
-                    chats: [group(job.context.chatRevision, [{ op: "begin", id: "r", generationId: "g1" }])],
-                })).chats[0].revision!;
-            });
-            await waitFor(() => feedFrames.some((frame) => frame.type === "change"));
-            expect(feedFrames.find((frame) => frame.type === "change")).toMatchObject({
-                epoch,
-                changes: { resources: [], chats: [{ characterId: "c", id: "k", revision: written }], chatOrders: [] },
-            });
-            server.context.beginShutdown();
-            expect(await feedClosed).toBe(1001);
-            // Jobs were aborted at time zero; the socket got the terminal event.
-            await owner.closed;
-            expect(owner.events.at(-1)).toMatchObject({ type: "error", reason: "shutdown", status: 503 });
-            expect(await (await follow(generation)).closed).not.toBe(1000);
-        } finally {
-            upstream.close();
-        }
+    it("dispatches upgrades by path: an unknown path is destroyed, the live-update socket works beside the generation socket, and shutdown removes the listener", async () => {
+        await listen();
+        const unknown = await new Promise<string>((resolve) => {
+            const ws = new WebSocket(`${base.replace("http", "ws")}/nowhere/ws`);
+            ws.onopen = () => resolve("open");
+            ws.onerror = () => {};
+            ws.onclose = () => resolve("closed");
+        });
+        expect(unknown).toBe("closed");
+        // The live-update socket on the same dispatcher (Phase 6): a JWT is admitted and gets `hello`.
+        const feedFrames: { type: string; epoch?: string }[] = [];
+        let feedOpened = false;
+        const feedJwt = await signer.jwt();
+        const feedClosed = new Promise<number>((resolve) => {
+            const ws = new WebSocket(`${base.replace("http", "ws")}/api/events/ws?risu-auth=${feedJwt}`);
+            ws.onopen = () => {
+                feedOpened = true;
+            };
+            ws.onmessage = (message) => feedFrames.push(JSON.parse(String(message.data)));
+            ws.onerror = () => {};
+            ws.onclose = (event) => resolve(event.code);
+        });
+        await waitFor(() => feedFrames.length > 0);
+        expect(feedOpened).toBe(true);
+        expect(feedFrames[0]).toEqual({ type: "hello", epoch });
+        const generation = await createOk();
+        const owner = await follow(generation);
+        await until(owner, 1);
+        // A job's write (the runner's in-process `applyChanges` with its token) is a commit: the
+        // feed socket sees the chat change with the revision the write returned.
+        let written = "";
+        step((job) => {
+            written = job.write(() => ({
+                chats: [group(job.context.chatRevision, [{ op: "begin", id: "r", generationId: "g1" }])],
+            })).chats[0].revision!;
+        });
+        await waitFor(() => feedFrames.some((frame) => frame.type === "change"));
+        expect(feedFrames.find((frame) => frame.type === "change")).toMatchObject({
+            epoch,
+            changes: { resources: [], chats: [{ characterId: "c", id: "k", revision: written }], chatOrders: [] },
+        });
+        server.context.beginShutdown();
+        expect(await feedClosed).toBe(1001);
+        // Jobs were aborted at time zero; the socket got the terminal event.
+        await owner.closed;
+        expect(owner.events.at(-1)).toMatchObject({ type: "error", reason: "shutdown", status: 503 });
+        expect(await (await follow(generation)).closed).not.toBe(1000);
     });
 });

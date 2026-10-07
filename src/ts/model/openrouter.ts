@@ -125,16 +125,3 @@ export function toModelGridItem(m: OpenRouterModelInfo): ModelGridItem {
         prices,
     };
 }
-
-export async function getFreeOpenRouterModels() {
-    const models = await getOpenRouterModels();
-    return (
-        models
-            .filter((model: any) => {
-                return model.name.endsWith("Free");
-            })
-            .sort((a: any, b: any) => {
-                return b.context_length - a.context_length;
-            })[0].id ?? ""
-    );
-}

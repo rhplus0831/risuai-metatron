@@ -42,7 +42,6 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     getFetchLogs: vi.fn(() => [{ url: "https://example.com/path?q=1", body: "", response: "", success: true }]),
     globalFetch: vi.fn(),
     fetchNative: vi.fn(),
-    forageStorage: { getItem: vi.fn(), setItem: vi.fn(), keys: vi.fn(async () => []) },
     saveAsset: vi.fn(),
     readImage: vi.fn(),
     getFileSrc: vi.fn(),

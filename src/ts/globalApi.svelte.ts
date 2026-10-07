@@ -214,7 +214,6 @@ export function getFetchData(id: string) {
 }
 
 const knownHostes = ["localhost", "127.0.0.1", "0.0.0.0"];
-const defaultProxyJobHeartbeatSec = 15;
 
 function buildTimeoutSignal(originalSignal?: AbortSignal, timeoutMs?: number) {
     if (!timeoutMs || timeoutMs <= 0) {
@@ -917,16 +916,6 @@ export async function fetchNative(
     } finally {
         timeoutSignal.cleanup();
     }
-}
-
-/**
- * Converts a ReadableStream of Uint8Array to a text string.
- *
- * @param {ReadableStream<Uint8Array>} stream - The readable stream to convert.
- * @returns {Promise<string>} A promise that resolves to the text content of the stream.
- */
-export function textifyReadableStream(stream: ReadableStream<Uint8Array>) {
-    return new Response(stream).text();
 }
 
 /**
