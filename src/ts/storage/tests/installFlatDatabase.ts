@@ -1,16 +1,18 @@
-import { FORWARDED_PRESET_KEYS } from "../../../../shared/sections.ts";
+import { normalizeModelPreset } from "../../../../shared/presets.ts";
+import { FORWARDED_MODEL_PRESET_KEYS, FORWARDED_PRESET_KEYS } from "../../../../shared/sections.ts";
 import { assembleChats } from "../chatStore.svelte";
 import { initializeRecords, takeRecordFields } from "../records.svelte";
 import { forwardedPresetField, reconcileSelection } from "../settingsViews.svelte";
 
 /**
- * Takes the preset fields a flat fixture carries on its root (`FORWARDED_PRESET_KEYS`, by their
- * root names: `reasoningEffort`, `presetRegex`, ...) out of `raw`, and returns them under the
- * preset's own field names.
+ * Takes the preset fields a flat fixture carries on its root (`FORWARDED_PRESET_KEYS` and
+ * `FORWARDED_MODEL_PRESET_KEYS`, by their root names: `reasoningEffort`, `presetRegex`, `aiModel`,
+ * ...) out of `raw`, and returns them under the preset's own field names, both owners together (the
+ * installation splits them by owner below).
  */
 export function takeRootPresetFields(raw: Record<string, unknown>): Record<string, unknown> {
     const preset: Record<string, unknown> = {};
-    for (const rootKey of FORWARDED_PRESET_KEYS) {
+    for (const rootKey of [...FORWARDED_PRESET_KEYS, ...FORWARDED_MODEL_PRESET_KEYS]) {
         if (Object.hasOwn(raw, rootKey)) {
             preset[forwardedPresetField(rootKey)!] = raw[rootKey];
             delete raw[rootKey];
@@ -20,13 +22,26 @@ export function takeRootPresetFields(raw: Record<string, unknown>): Record<strin
 }
 
 /**
+ * The model preset a legacy preset implies (`docs/plan/split-preset.md`): the same id and name, its
+ * model fields (`normalizeModelPreset` keeps those and drops the prompt fields), the defaults for
+ * the rest.
+ */
+export function modelPresetOf(preset: Record<string, unknown>): Record<string, unknown> {
+    return normalizeModelPreset(preset, { id: preset.id as string }) as unknown as Record<string, unknown>;
+}
+
+/**
  * Installs a flat database fixture (the legacy whole-database shape the pre-slice-10 tests read:
  * the selected preset's fields on the root) into the records, as the removed `setDatabaseLite`
  * installed one: the root preset fields, if any, become the one preset's (`presetId`; a fixture
  * with `botPresets` has none on its root), every record field moves into the records
  * (`initializeRecords(takeRecordFields(raw))`: the fields are removed from `raw`), and the
- * selection is resolved (`reconcileSelection`). Nothing is normalized: a fixture gives valid data.
- * The test then reads the views (`settings`, `activePreset`, `activePersona`, `characterList()`,
+ * selection is resolved (`reconcileSelection`). Nothing is normalized: a fixture gives valid data,
+ * except the model presets of a fixture without `modelPresets`: one per `botPresets` entry under the
+ * same id (`modelPresetOf`, the entry's model fields split off), so a legacy fixture whose preset
+ * `a` carries `maxContext` reads it through `activeModelPreset` once model preset `a` is selected;
+ * a fixture without presets gets one default model preset. The test then reads the views
+ * (`settings`, `activePreset`, `activeModelPreset`, `activePersona`, `characterList()`,
  * `rootSnapshot()`), never `raw`. Returns the installed preset's id.
  */
 export function installFlatDatabase(raw: object, presetId = "fixture-preset"): string {
@@ -37,6 +52,11 @@ export function installFlatDatabase(raw: object, presetId = "fixture-preset"): s
             throw new Error("a fixture with presets carries its preset fields in them, not on its root");
         }
         fields.botPresets = [{ ...preset, id: presetId, name: presetId }];
+    }
+    if (fields.modelPresets === undefined) {
+        const presets = Array.isArray(fields.botPresets) ? (fields.botPresets as Record<string, unknown>[]) : [];
+        fields.modelPresets =
+            presets.length > 0 ? presets.map(modelPresetOf) : [modelPresetOf({ id: presetId, name: presetId })];
     }
     initializeRecords(takeRecordFields(fields));
     reconcileSelection();

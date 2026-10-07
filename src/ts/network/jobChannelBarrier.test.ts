@@ -51,7 +51,7 @@ type Transport = typeof import("./generationJobs");
 type Hooks = typeof import("../plugins/pluginHooks");
 
 const serverRef = { characterId: "c", chatId: "k" };
-const targets = { chatRef: refK, presetId: "", personaId: "" };
+const targets = { chatRef: refK, presetId: "", modelPresetId: "", personaId: "" };
 
 async function boot() {
     vi.resetModules();

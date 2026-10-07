@@ -509,6 +509,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                 characterId: request.context.characterId,
                 chatId: request.context.chatId,
                 presetId: request.context.presetId,
+                modelPresetId: request.context.modelPresetId,
                 personaId: request.context.personaId,
                 selectedPersonaId: request.context.selectedPersonaId,
                 mode: "transform",

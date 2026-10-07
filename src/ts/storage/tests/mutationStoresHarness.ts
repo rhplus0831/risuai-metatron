@@ -6,7 +6,7 @@ import { StoreBackedServer } from "./storeBackedServer";
 /**
  * The boot shared by the Phase 4 slice 1 tests (`characterStore.test.ts`, `collectionStore.test.ts`,
  * `pluginStorageStore.test.ts`, `mutationScope.test.ts`): the real server store in memory with two
- * presets, one plugin, and a character `c` with chats `k` (messages a, b, c) and `j` (empty), read,
+ * prompt presets, two model presets, one plugin, and a character `c` with chats `k` (messages a, b, c) and `j` (empty), read,
  * seeded, installed into the records through the real boot (`installBootRecords`: the records and
  * the selection, at home), the chat module initialized, and the adapter started with its boot pass done. The
  * test file declares the module mocks (`vi.mock` is per file), calls `vi.resetModules()` first, and
@@ -26,6 +26,7 @@ export async function bootMutations(install: (server: StoreBackedServer) => void
     // The test file's `authFetch` mock reads the server from its hoisted holder: install it first.
     install(fake);
     fake.set("presets", "main", [{ name: "p1" }, { name: "p2" }]);
+    fake.set("modelPresets", "main", [{ name: "m1" }, { name: "m2" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", [{ name: "plug", realArg: { a: "1" } }]);
     fake.set("pluginStorage", "main", {});
@@ -84,7 +85,7 @@ export async function bootMutations(install: (server: StoreBackedServer) => void
     await sync.flushResources();
     fake.requests.length = 0;
 
-    const { settings, activePreset, activePersona } = settingsViews;
+    const { settings, activePreset, activeModelPreset, activePersona } = settingsViews;
     /** The character list's wrapper, loosely typed as the facade's `characters` was (the chat view, `desc`, ...). */
     const characterList = () => characterStore.characterList() as any[];
     /** Everything the server holds, as text: the records of every kind and the chats. */
@@ -118,6 +119,7 @@ export async function bootMutations(install: (server: StoreBackedServer) => void
         settingsViews,
         settings,
         activePreset,
+        activeModelPreset,
         activePersona,
         snapshots,
         characterStore,

@@ -91,6 +91,7 @@ async function sendPinned(
                 ? {
                       identity: {
                           presetId: arg.pluginContext.presetId || null,
+                          modelPresetId: arg.pluginContext.modelPresetId || null,
                           personaId: arg.pluginContext.personaId || null,
                       },
                   }

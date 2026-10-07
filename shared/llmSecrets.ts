@@ -28,8 +28,11 @@ export const NESTED_SECRET_FIELDS = {
 /** The maps whose every entry is a credential: `OaiCompAPIKeys.<id>` is the value itself. */
 export const SECRET_MAP_FIELDS = ["OaiCompAPIKeys"] as const;
 
-/** The per-record maps: `presets.<presetId>.proxyKey`, `customModels.<modelId>.key`. */
-export const SECRET_ENTRY_MAPS = { presets: "proxyKey", customModels: "key" } as const;
+/**
+ * The per-record maps, each named after the settings collection whose records own its entries:
+ * `modelPresets.<modelPresetId>.proxyKey`, `customModels.<modelId>.key`.
+ */
+export const SECRET_ENTRY_MAPS = { modelPresets: "proxyKey", customModels: "key" } as const;
 
 export type FlatSecretField = (typeof FLAT_SECRET_FIELDS)[number];
 export type NestedSecretField = keyof typeof NESTED_SECRET_FIELDS;
@@ -269,7 +272,7 @@ export function withStoredSecrets(data: Record<string, unknown>, stored: Record<
 
 export type MaskedLlmSecrets = Record<string, unknown> & {
     OaiCompAPIKeys: Record<string, MaskedLeaf>;
-    presets: Record<string, { proxyKey: MaskedLeaf }>;
+    modelPresets: Record<string, { proxyKey: MaskedLeaf }>;
     customModels: Record<string, { key: MaskedLeaf }>;
 };
 

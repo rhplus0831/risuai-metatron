@@ -220,7 +220,7 @@ export const advancedSettingsItems: SettingItem[] = [
         type: "number",
         fallbackLabel: "Local Network Timeout (sec)",
         bindKey: "localNetworkTimeoutSec",
-        condition: (ctx) => ctx.preset.localNetworkMode,
+        condition: (ctx) => ctx.modelPreset.localNetworkMode,
         classes: "block mb-1",
         containerClasses: "pl-7",
         options: { min: 30, max: 3600, inputClassName: "w-full", marginBottom: false },
@@ -284,13 +284,6 @@ export const advancedSettingsItems: SettingItem[] = [
         type: "check",
         labelKey: "dynamicModelRegistry",
         bindKey: "dynamicModelRegistry",
-        classes: "mt-4",
-    },
-    {
-        id: "adv.disableSeperateParameterChangeOnPresetChange",
-        type: "check",
-        labelKey: "disableSeperateParameterChangeOnPresetChange",
-        bindKey: "disableSeperateParameterChangeOnPresetChange",
         classes: "mt-4",
     },
 

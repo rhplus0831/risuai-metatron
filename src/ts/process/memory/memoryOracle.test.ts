@@ -165,7 +165,7 @@ describe("P10: the summary requests carry the send's or the action's context", (
     const byName = (name: string) => scenarios.find((scenario) => scenario.name === name)!;
     const context = {
         chatRef: { chaId: "c-1", chatId: "k-1" },
-        pluginContext: { presetId: "p-1", personaId: "u-1" },
+        pluginContext: { presetId: "p-1", modelPresetId: "m-1", personaId: "u-1" },
     } as never;
 
     async function runV3(scenario: Scenario, ctx?: unknown) {
@@ -201,7 +201,7 @@ describe("P10: the summary requests carry the send's or the action's context", (
                     useStreaming: false,
                     noMultiGen: true,
                     chatRef: { chaId: "c-1", chatId: "k-1" },
-                    pluginContext: { presetId: "p-1", personaId: "u-1" },
+                    pluginContext: { presetId: "p-1", modelPresetId: "m-1", personaId: "u-1" },
                 });
             }
         });

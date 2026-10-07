@@ -110,7 +110,8 @@ function setup(options: { attached?: boolean; embeddings?: EmbeddingsService } =
             ops: [{ kind: kind(name), id: SINGLETON_RESOURCE_ID, baseRevision: row?.revision ?? null, data }],
         });
     };
-    singleton(RESOURCE_KIND.presets, [{ id: "p", name: "p", aiModel: "gpt-4o" }]);
+    singleton(RESOURCE_KIND.presets, [{ id: "p", name: "p" }]);
+    singleton(RESOURCE_KIND.modelPresets, [{ id: "m", name: "m", aiModel: "gpt-4o" }]);
     singleton(RESOURCE_KIND.personas, [{ id: "u", name: "Uma" }]);
     singleton(RESOURCE_KIND.modules, [
         { id: "m", name: "Module", description: "a module", lorebook: [lore("A", "original")] },
@@ -182,6 +183,7 @@ function setup(options: { attached?: boolean; embeddings?: EmbeddingsService } =
         characterId: "c",
         chatId: "k",
         presetId: "p",
+        modelPresetId: "m",
         personaId: "u",
         mode: "button",
         input: "",

@@ -7,7 +7,13 @@ import {
     ensureChatLoaded,
     pinChat,
 } from "../../storage/chatStore.svelte";
-import { settings, activePreset, activePersona } from "../../storage/settingsViews.svelte";
+import {
+    settings,
+    activeModelPreset,
+    activePreset,
+    activePersona,
+    scopedPresetRoot,
+} from "../../storage/settingsViews.svelte";
 import {
     REQUEST_ARG_KEYS,
     type BufferedResponse,
@@ -122,11 +128,16 @@ export async function requestServer(
     const parseChatRef = chatRef ?? selectedChatRef();
     const pluginContext = arg.pluginContext ?? capturePluginContext(parseChatRef);
     const presetId = pluginContext?.presetId || activePreset.id || "";
+    const modelPresetId = pluginContext?.modelPresetId || activeModelPreset.id || "";
+    const presetScope = { presetId, modelPresetId };
     const selectedPersonaId = activePersona.id ?? "";
     // `getUserName()` (no chat): the selected chat's bound persona, else the selected persona.
     const personaId = checkPersonaBinded()?.id ?? selectedPersonaId;
-    const scope = { presetId, personaId: pluginContext?.personaId || personaId };
-    const mainModel = getModelInfo(activePreset.aiModel);
+    const scope = { presetId, modelPresetId, personaId: pluginContext?.personaId || personaId };
+    // The main model and tokenizer of the model preset whose id the request carries.
+    const aiModel = (scopedPresetRoot(presetScope, "aiModel") as string | undefined) ?? "";
+    const currentPluginProvider = (scopedPresetRoot(presetScope, "currentPluginProvider") as string | undefined) ?? "";
+    const mainModel = getModelInfo(aiModel);
     const args: Record<string, unknown> = {};
     for (const key of REQUEST_ARG_KEYS) {
         if (arg[key] !== undefined) {
@@ -139,6 +150,7 @@ export async function requestServer(
         mode: model,
         context: {
             presetId,
+            modelPresetId,
             personaId,
             selectedPersonaId,
             selectedCharacterId: selectedCharacter()?.chaId ?? null,
@@ -147,12 +159,11 @@ export async function requestServer(
             // `encode`'s scope (`src/ts/tokenizer.ts`), as the tab would tokenize now.
             // A field a fresh store has not set yet is sent as the value `encode` treats it as.
             tokenizer: {
-                aiModel: activePreset.aiModel ?? "",
-                currentPluginProvider: activePreset.currentPluginProvider ?? "",
+                aiModel,
+                currentPluginProvider,
                 modelTokenizer: mainModel.tokenizer,
                 ...(mainModel.internalID !== undefined ? { modelInternalID: mainModel.internalID } : {}),
-                pluginTokenizer:
-                    pluginHooks.providerOptions.get(activePreset.currentPluginProvider)?.tokenizer ?? "none",
+                pluginTokenizer: pluginHooks.providerOptions.get(currentPluginProvider)?.tokenizer ?? "none",
                 customTokenizer: settings.providers.customTokenizer ?? "",
                 googleClaudeTokenizing: !!settings.providers.googleClaudeTokenizing,
                 useTokenizerCaching: !!settings.providers.useTokenizerCaching,
@@ -294,7 +305,7 @@ export async function requestServer(
 async function parseInLoadedChat(
     text: string,
     target: ChatRef | null,
-    scope: { presetId: string; personaId: string },
+    scope: { presetId: string; modelPresetId: string; personaId: string },
 ): Promise<string> {
     if (!target) {
         return risuChatParserScoped(text, {}, scope);
@@ -319,7 +330,7 @@ type ReadOptions = {
     toolChatRef: { chaId: string; chatId: string } | null;
     /** The chat a parse without its own target runs on (the request's, else the one selected at its start). */
     parseChatRef: { chaId: string; chatId: string } | null;
-    scope: { presetId: string; personaId: string };
+    scope: { presetId: string; modelPresetId: string; personaId: string };
     /** Whether the request's chats are still the ones it began with (a callback or record for a replaced chat is refused). */
     targetsHeld: () => boolean;
 };

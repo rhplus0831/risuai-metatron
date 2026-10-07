@@ -1,11 +1,11 @@
 import { type ClientCharacter, selectedCharacter } from "../../storage/characterStore.svelte";
-import { settings, activePreset } from "../../storage/settingsViews.svelte";
+import { settings, activeModelPreset, activePreset, scopedPresetRoot } from "../../storage/settingsViews.svelte";
 import { language } from "../../../lang";
 import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/modellist";
 import { risuEscape, risuUnescape } from "../../parser/parser.svelte";
 import { capturePluginContext, invokeHook, type PluginCallContext } from "../../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../../plugins/pluginHooks";
-import { type character } from "../../storage/database.svelte";
+import { type character, type Database } from "../../storage/database.svelte";
 import { type ChatRef, chatEntry, chatOwnerToken, ensureChatLoaded, pinChat } from "../../storage/chatStore.svelte";
 import { sleep } from "../../util";
 import type { OpenAIChat } from "../index.svelte";
@@ -236,7 +236,12 @@ async function requestPinnedChatData(
     abortSignal: AbortSignal,
 ): Promise<requestDataResponse> {
     const pluginContext = arg.pluginContext;
-    const fallBackModels: string[] = safeStructuredClone(settings.providers.fallbackModels?.[model] ?? []);
+    // The request's captured model preset (its plugin context's), else the selected one.
+    const fallBackModels: string[] = safeStructuredClone(
+        (scopedPresetRoot(pluginContext, "fallbackModels") as Database["fallbackModels"] | undefined)?.[
+            model as keyof Database["fallbackModels"]
+        ] ?? [],
+    );
     // The request's chat chooses the module MCP servers, not the selection now. After every await
     // below, the chat must still be the one the request began with.
     const target = arg.chatRef ?? pluginContext?.chatRef;
@@ -347,7 +352,7 @@ async function requestPinnedChatData(
             if (
                 da.type === "success" &&
                 fallbackIndex !== fallBackModels.length - 1 &&
-                settings.providers.fallbackWhenBlankResponse
+                scopedPresetRoot(pluginContext, "fallbackWhenBlankResponse")
             ) {
                 if (da.result.trim() === "") {
                     break;
@@ -409,10 +414,10 @@ export function reformater(formated: OpenAIChat[], modelInfo: LLMModel | LLMFlag
 
         for (let i = 0; i < formated.length; i++) {
             if (formated[i].role === "system") {
-                formated[i].content = activePreset.systemContentReplacement
-                    ? activePreset.systemContentReplacement.replace("{{slot}}", formated[i].content)
+                formated[i].content = activeModelPreset.systemContentReplacement
+                    ? activeModelPreset.systemContentReplacement.replace("{{slot}}", formated[i].content)
                     : `system: ${formated[i].content}`;
-                formated[i].role = activePreset.systemRoleReplacement || "user";
+                formated[i].role = activeModelPreset.systemRoleReplacement || "user";
             }
         }
     }
@@ -482,11 +487,17 @@ export async function requestChatDataMain(
     const original = { ...arg };
     const targ: RequestDataArgumentExtended = arg;
 
-    targ.aiModel = arg.staticModel ? arg.staticModel : model === "model" ? activePreset.aiModel : activePreset.subModel;
+    // Model decisions follow the request's captured presets (its plugin context), else the selection,
+    // so the tab routes and tokenizes with the model preset whose id the server receives.
+    const scope = arg.pluginContext;
+    targ.aiModel = arg.staticModel
+        ? arg.staticModel
+        : (scopedPresetRoot(scope, model === "model" ? "aiModel" : "subModel") as string);
     targ.modelInfo = getModelInfo(targ.aiModel);
-    if (settings.providers.seperateModelsForAxModels && !arg.staticModel) {
-        if (settings.providers.seperateModels[model]) {
-            targ.aiModel = settings.providers.seperateModels[model];
+    if (scopedPresetRoot(scope, "seperateModelsForAxModels") && !arg.staticModel) {
+        const seperateModels = scopedPresetRoot(scope, "seperateModels") as Database["seperateModels"];
+        if (seperateModels?.[model as keyof Database["seperateModels"]]) {
+            targ.aiModel = seperateModels[model as keyof Database["seperateModels"]];
             targ.modelInfo = getModelInfo(targ.aiModel);
         }
     }
@@ -505,8 +516,8 @@ export async function requestChatDataMain(
     }
 
     targ.formated = safeStructuredClone(arg.formated);
-    targ.maxTokens = arg.maxTokens ?? activePreset.maxResponse;
-    targ.temperature = arg.temperature ?? activePreset.temperature / 100;
+    targ.maxTokens = arg.maxTokens ?? (scopedPresetRoot(scope, "maxResponse") as number);
+    targ.temperature = arg.temperature ?? (scopedPresetRoot(scope, "temperature") as number) / 100;
     targ.bias = arg.bias;
     targ.currentChar = arg.currentChar;
     targ.useStreaming = arg.forceStreaming ? true : settings.providers.useStreaming && arg.useStreaming;
@@ -516,7 +527,7 @@ export async function requestChatDataMain(
         settings.providers.genTime > 1 && targ.aiModel.startsWith("gpt") && !arg.continue && !arg.noMultiGen;
     targ.abortSignal = abortSignal;
     targ.mode = model;
-    targ.extractJson = arg.extractJson ?? activePreset.extractJson;
+    targ.extractJson = arg.extractJson ?? (scopedPresetRoot(scope, "extractJson") as string);
     if (targ.aiModel.startsWith("xcustom:::")) {
         // (Not reached: an `xcustom:::` model goes to the server, which holds its key.)
         const found = settings.customModels.find((m) => m.id === targ.aiModel);
@@ -546,7 +557,9 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
     try {
         const formated = arg.formated;
         const maxTokens = arg.maxTokens;
-        const model = isV3Model ? arg.aiModel.replace("pluginmodel:::", "") : activePreset.currentPluginProvider;
+        const model = isV3Model
+            ? arg.aiModel.replace("pluginmodel:::", "")
+            : (scopedPresetRoot(arg.pluginContext, "currentPluginProvider") as string);
         const providerFunction = pluginHooks.providers.get(model);
 
         if (arg.previewBody) {
@@ -630,7 +643,7 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
         console.error(error);
         return {
             type: "fail",
-            result: `Plugin Error from ${activePreset.currentPluginProvider}: ` + JSON.stringify(error),
+            result: `Plugin Error from ${activeModelPreset.currentPluginProvider}: ` + JSON.stringify(error),
             model: responseModel,
         };
     }

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePreset, activePersona } from "src/ts/storage/settingsViews.svelte";
+    import { activeModelPreset, settings, activePreset, activePersona } from "src/ts/storage/settingsViews.svelte";
     import { setSecret } from "src/ts/storage/llmSecrets.svelte";
     import { Send } from "@lucide/svelte";
     import { changeLanguage, language } from "src/lang";
@@ -81,45 +81,45 @@
 
                 switch (chatMemorySelection) {
                     case 0: {
-                        activePreset.maxContext = 16000;
+                        activeModelPreset.maxContext = 16000;
                         activePreset.maxResponse = 1000;
                         break;
                     }
                     case 1: {
-                        activePreset.maxContext = 8000;
+                        activeModelPreset.maxContext = 8000;
                         activePreset.maxResponse = 500;
                         break;
                     }
                     case 2: {
-                        activePreset.maxContext = 12000;
+                        activeModelPreset.maxContext = 12000;
                         activePreset.maxResponse = 800;
                         break;
                     }
                     case 3: {
-                        activePreset.maxContext = 100000;
+                        activeModelPreset.maxContext = 100000;
                         activePreset.maxResponse = 1000;
                         break;
                     }
                 }
 
                 if (provider === "claude") {
-                    activePreset.aiModel = "claude-sonnet-4-6";
-                    activePreset.subModel = "claude-sonnet-4-6";
+                    activeModelPreset.aiModel = "claude-sonnet-4-6";
+                    activeModelPreset.subModel = "claude-sonnet-4-6";
                 }
 
                 if (provider === "openai") {
-                    activePreset.aiModel = "gpt4o-chatgpt";
-                    activePreset.subModel = "gpt4o-chatgpt";
+                    activeModelPreset.aiModel = "gpt4o-chatgpt";
+                    activeModelPreset.subModel = "gpt4o-chatgpt";
                 }
 
                 if (provider === "openrouter") {
-                    activePreset.aiModel = "openrouter";
-                    activePreset.subModel = "openrouter";
-                    activePreset.openrouterRequestModel = "risu/free";
+                    activeModelPreset.aiModel = "openrouter";
+                    activeModelPreset.subModel = "openrouter";
+                    activeModelPreset.openrouterRequestModel = "risu/free";
                 }
                 if (provider === "horde") {
-                    activePreset.aiModel = "horde:::auto";
-                    activePreset.subModel = "horde:::auto";
+                    activeModelPreset.aiModel = "horde:::auto";
+                    activeModelPreset.subModel = "horde:::auto";
                 }
                 if (chatLang !== 0) {
                     switch (settings.ui.language) {

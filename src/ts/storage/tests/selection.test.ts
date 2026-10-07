@@ -7,14 +7,21 @@ import { beforeEach, describe, expect, it } from "vitest";
 // `localStorage` the browser's last choice (the start of a new tab). Storage that is missing,
 // throws, or holds junk must never break the app: the selection then starts empty and the forwarding
 // layer resolves it against the collections (Astra challenge point 6 and its testing advice). Slice 6
-// added `personaId` to the stored shape.
+// added `personaId` to the stored shape; the preset split (`docs/plan/split-preset.md`) `modelPresetId`.
 
-import { loadSelection, selection, selectLoreBookPage, selectPersona, selectPreset } from "../selection.svelte";
+import {
+    loadSelection,
+    selection,
+    selectLoreBookPage,
+    selectModelPreset,
+    selectPersona,
+    selectPreset,
+} from "../selection.svelte";
 
 const KEY = "risu-selection";
 const stored = (storage: Storage) => JSON.parse(storage.getItem(KEY) ?? "null");
 // The in-memory selection also holds the tab's character (Phase 6 slice 5), which is never stored.
-const empty = { presetId: "", personaId: "", loreBookPage: 0, characterId: null };
+const empty = { presetId: "", modelPresetId: "", personaId: "", loreBookPage: 0, characterId: null };
 
 /** Runs `run` while both storages throw on every call (a quota error, a denied private mode). */
 function withThrowingStorages(run: () => void) {
@@ -47,6 +54,7 @@ beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
     selectPreset("");
+    selectModelPreset("");
     selectPersona("");
     selectLoreBookPage(0);
     sessionStorage.clear();
@@ -60,13 +68,42 @@ describe("loadSelection", () => {
     });
 
     it("reads this tab's sessionStorage first and the browser's localStorage otherwise", () => {
-        localStorage.setItem(KEY, JSON.stringify({ presetId: "last", personaId: "last-p", loreBookPage: 2 }));
+        localStorage.setItem(
+            KEY,
+            JSON.stringify({ presetId: "last", modelPresetId: "last-m", personaId: "last-p", loreBookPage: 2 }),
+        );
         loadSelection();
-        expect(selection).toEqual({ presetId: "last", personaId: "last-p", loreBookPage: 2, characterId: null });
+        expect(selection).toEqual({
+            presetId: "last",
+            modelPresetId: "last-m",
+            personaId: "last-p",
+            loreBookPage: 2,
+            characterId: null,
+        });
 
-        sessionStorage.setItem(KEY, JSON.stringify({ presetId: "mine", personaId: "mine-p", loreBookPage: 1 }));
+        sessionStorage.setItem(
+            KEY,
+            JSON.stringify({ presetId: "mine", modelPresetId: "mine-m", personaId: "mine-p", loreBookPage: 1 }),
+        );
         loadSelection();
-        expect(selection).toEqual({ presetId: "mine", personaId: "mine-p", loreBookPage: 1, characterId: null });
+        expect(selection).toEqual({
+            presetId: "mine",
+            modelPresetId: "mine-m",
+            personaId: "mine-p",
+            loreBookPage: 1,
+            characterId: null,
+        });
+        // A selection stored before the preset split names no model preset: it starts empty and the
+        // views resolve it against the collection.
+        sessionStorage.setItem(KEY, JSON.stringify({ presetId: "old", personaId: "old-p", loreBookPage: 0 }));
+        loadSelection();
+        expect(selection).toEqual({
+            presetId: "old",
+            modelPresetId: "",
+            personaId: "old-p",
+            loreBookPage: 0,
+            characterId: null,
+        });
     });
 
     it("falls back field by field on junk: not JSON, not an object, or wrong types", () => {
@@ -75,20 +112,38 @@ describe("loadSelection", () => {
             loadSelection();
             expect(selection, junk).toEqual(empty);
         }
-        localStorage.setItem(KEY, JSON.stringify({ presetId: 5, personaId: 6, loreBookPage: "1" }));
+        localStorage.setItem(KEY, JSON.stringify({ presetId: 5, modelPresetId: 7, personaId: 6, loreBookPage: "1" }));
         loadSelection();
         expect(selection).toEqual(empty);
         localStorage.setItem(KEY, JSON.stringify({ presetId: "ok", loreBookPage: -1 }));
         loadSelection();
-        expect(selection).toEqual({ presetId: "ok", personaId: "", loreBookPage: 0, characterId: null });
+        expect(selection).toEqual({
+            presetId: "ok",
+            modelPresetId: "",
+            personaId: "",
+            loreBookPage: 0,
+            characterId: null,
+        });
         localStorage.setItem(KEY, JSON.stringify({ presetId: "ok", personaId: "ok-p", loreBookPage: 1.5 }));
         loadSelection();
-        expect(selection).toEqual({ presetId: "ok", personaId: "ok-p", loreBookPage: 0, characterId: null });
+        expect(selection).toEqual({
+            presetId: "ok",
+            modelPresetId: "",
+            personaId: "ok-p",
+            loreBookPage: 0,
+            characterId: null,
+        });
         // A junk sessionStorage entry does not hide a good localStorage one.
         sessionStorage.setItem(KEY, "[]");
         localStorage.setItem(KEY, JSON.stringify({ presetId: "good", personaId: "good-p", loreBookPage: 3 }));
         loadSelection();
-        expect(selection).toEqual({ presetId: "good", personaId: "good-p", loreBookPage: 3, characterId: null });
+        expect(selection).toEqual({
+            presetId: "good",
+            modelPresetId: "",
+            personaId: "good-p",
+            loreBookPage: 3,
+            characterId: null,
+        });
     });
 
     it("starts empty when storage throws on access", () => {
@@ -99,19 +154,34 @@ describe("loadSelection", () => {
     });
 });
 
-describe("selectPreset, selectPersona, and selectLoreBookPage", () => {
+describe("selectPreset, selectModelPreset, selectPersona, and selectLoreBookPage", () => {
     it("write the whole selection to both storages on every change, and nothing for an unchanged value", () => {
         selectPreset("p1");
-        expect(stored(sessionStorage)).toEqual({ presetId: "p1", personaId: "", loreBookPage: 0 });
-        expect(stored(localStorage)).toEqual({ presetId: "p1", personaId: "", loreBookPage: 0 });
+        expect(stored(sessionStorage)).toEqual({ presetId: "p1", modelPresetId: "", personaId: "", loreBookPage: 0 });
+        expect(stored(localStorage)).toEqual({ presetId: "p1", modelPresetId: "", personaId: "", loreBookPage: 0 });
+
+        // The model preset is selected independently of the prompt preset (`docs/plan/split-preset.md`).
+        selectModelPreset("m1");
+        expect(stored(sessionStorage)).toEqual({ presetId: "p1", modelPresetId: "m1", personaId: "", loreBookPage: 0 });
+        expect(selection.presetId).toBe("p1");
 
         selectPersona("u1");
-        expect(stored(sessionStorage)).toEqual({ presetId: "p1", personaId: "u1", loreBookPage: 0 });
-        expect(stored(localStorage)).toEqual({ presetId: "p1", personaId: "u1", loreBookPage: 0 });
+        expect(stored(sessionStorage)).toEqual({
+            presetId: "p1",
+            modelPresetId: "m1",
+            personaId: "u1",
+            loreBookPage: 0,
+        });
+        expect(stored(localStorage)).toEqual({ presetId: "p1", modelPresetId: "m1", personaId: "u1", loreBookPage: 0 });
 
         selectLoreBookPage(2);
-        expect(stored(sessionStorage)).toEqual({ presetId: "p1", personaId: "u1", loreBookPage: 2 });
-        expect(stored(localStorage)).toEqual({ presetId: "p1", personaId: "u1", loreBookPage: 2 });
+        expect(stored(sessionStorage)).toEqual({
+            presetId: "p1",
+            modelPresetId: "m1",
+            personaId: "u1",
+            loreBookPage: 2,
+        });
+        expect(stored(localStorage)).toEqual({ presetId: "p1", modelPresetId: "m1", personaId: "u1", loreBookPage: 2 });
 
         // The same choice again writes nothing.
         sessionStorage.clear();
@@ -126,9 +196,16 @@ describe("selectPreset, selectPersona, and selectLoreBookPage", () => {
     it("keep the in-memory selection when storage throws on write", () => {
         withThrowingStorages(() => {
             expect(() => selectPreset("p2")).not.toThrow();
+            expect(() => selectModelPreset("m2")).not.toThrow();
             expect(() => selectPersona("u2")).not.toThrow();
             expect(() => selectLoreBookPage(1)).not.toThrow();
-            expect(selection).toEqual({ presetId: "p2", personaId: "u2", loreBookPage: 1, characterId: null });
+            expect(selection).toEqual({
+                presetId: "p2",
+                modelPresetId: "m2",
+                personaId: "u2",
+                loreBookPage: 1,
+                characterId: null,
+            });
         });
     });
 
@@ -144,7 +221,7 @@ describe("selectPreset, selectPersona, and selectLoreBookPage", () => {
             expect(() => selectPreset("p3")).not.toThrow();
             expect(selection.presetId).toBe("p3");
             // The other storage still got the value.
-            expect(stored(localStorage)).toEqual({ presetId: "p3", personaId: "", loreBookPage: 0 });
+            expect(stored(localStorage)).toEqual({ presetId: "p3", modelPresetId: "", personaId: "", loreBookPage: 0 });
             expect(() => loadSelection()).not.toThrow();
             expect(selection.presetId).toBe("p3");
         } finally {

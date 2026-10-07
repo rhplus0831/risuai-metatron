@@ -93,16 +93,18 @@ import {
     selectCharacterAt,
     selectedIndex,
     selection,
+    selectModelPreset,
     selectPersona,
     selectPreset,
 } from "src/ts/storage/selection.svelte";
 import { readSettingsRoot, selectedPersonaIndex, settings } from "src/ts/storage/settingsViews.svelte";
 import { rootSnapshot } from "src/ts/storage/snapshots.svelte";
-import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { installFlatDatabaseWithChats, modelPresetOf } from "src/ts/storage/tests/installFlatDatabase";
 import { executePluginV3 } from "./v3.svelte";
 
 const ui = () => settings.ui as any;
 const preset = (id: string) => settings.presets.find((entry: { id: string }) => entry.id === id) as any;
+const modelPreset = (id: string) => settings.modelPresets.find((entry: { id: string }) => entry.id === id) as any;
 /** A plain copy (a Svelte proxy compares differently, and an own `__proto__` key survives JSON). */
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const ids = () => characterList().map((character: any) => character.chaId);
@@ -149,11 +151,18 @@ const incoming = (chaId: string, name: string) => ({ chaId, name, chats: [] });
  */
 function liveDatabase(fields: Record<string, unknown> = {}) {
     selectPreset("a");
+    selectModelPreset("a");
     selectPersona("p");
     const raw: Record<string, unknown> = {
         botPresets: [
             { id: "a", name: "A" },
             { id: "b", name: "B" },
+        ],
+        // The model presets of the same ids (`docs/plan/split-preset.md`), with the model fields the
+        // routed keys write.
+        modelPresets: [
+            modelPresetOf({ id: "a", name: "A", seperateModels: { memory: "" }, seperateModelsForAxModels: false }),
+            modelPresetOf({ id: "b", name: "B", seperateModels: { memory: "" }, seperateModelsForAxModels: false }),
         ],
         personas: plain(personas),
         characters: [],
@@ -172,8 +181,6 @@ function liveDatabase(fields: Record<string, unknown> = {}) {
         colorScheme: plain(lightScheme),
         customColorScheme: undefined,
         customTextTheme: undefined,
-        seperateModels: { memory: "" },
-        seperateModelsForAxModels: false,
         ...fields,
     };
     installFlatDatabaseWithChats(raw);
@@ -204,11 +211,10 @@ describe("the routing table: settings keys", () => {
     it.each([
         ["moduleIntergration", "m1", "m2"],
         ["temperature", 11, 12],
-        ["maxContext", 1001, 1002],
         ["maxResponse", 301, 302],
         ["frequencyPenalty", 1, 2],
         ["PresensePenalty", 3, 4],
-    ] as const)("%s lands in the selected preset by id, through both setters", async (key, lite, full) => {
+    ] as const)("%s lands in the selected prompt preset by id, through both setters", async (key, lite, full) => {
         const api = await makeApi();
         await api.setDatabaseLite({ [key]: lite });
         expect(preset("a")[key]).toBe(lite);
@@ -226,6 +232,33 @@ describe("the routing table: settings keys", () => {
     });
 
     it.each([
+        ["maxContext", 1001, 1002],
+        ["seperateModels", { memory: "m1" }, { memory: "m2" }],
+        ["seperateModelsForAxModels", true, false],
+    ] as const)(
+        "%s lands in the selected model preset by id, through both setters (docs/plan/split-preset.md)",
+        async (key, lite, full) => {
+            const api = await makeApi();
+            await api.setDatabaseLite({ [key]: lite });
+            expect(plain(modelPreset("a")[key])).toEqual(lite);
+            expect(plain(modelPreset("b")[key])).not.toEqual(lite);
+            expect(plain(readSettingsRoot(key))).toEqual(lite);
+            expect(settings.presets.every((entry: object) => !(key in entry))).toBe(true);
+            expect(settings.pluginStorage).toBeUndefined();
+
+            // The full setter writes the model preset selected then: `b` after a model switch (a prompt
+            // switch alone changes nothing), and `a` keeps its value.
+            selectPreset("b");
+            selectModelPreset("b");
+            await api.setDatabase({ [key]: full });
+            expect(plain(modelPreset("b")[key])).toEqual(full);
+            expect(plain(modelPreset("a")[key])).toEqual(lite);
+            expect(plain(readSettingsRoot(key))).toEqual(full);
+            expect(console.warn).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each([
         ["askRemoval", false, true],
         ["theme", "t1", "t2"],
         ["textTheme", "highcontrast", "standard"],
@@ -233,8 +266,6 @@ describe("the routing table: settings keys", () => {
         ["customCSS", ".a {}", ".b {}"],
         ["guiHTML", "<a></a>", "<b></b>"],
         ["colorSchemeName", "light", "dark"],
-        ["seperateModels", { memory: "m1" }, { memory: "m2" }],
-        ["seperateModelsForAxModels", true, false],
     ] as const)(
         "%s lands in its section at the root and in no preset, through both setters",
         async (key, lite, full) => {

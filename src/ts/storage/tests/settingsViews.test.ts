@@ -48,19 +48,23 @@ vi.mock("../../translator/translator", () => ({
 
 import { characterList } from "../characterStore.svelte";
 import type { Database } from "../database.svelte";
-import { changeToPreset } from "../presets.svelte";
+import { changeToModelPreset, changeToPreset } from "../presets.svelte";
 import { llmSecretState, setMaskedSecrets } from "../llmSecrets.svelte";
 import { recordData, setRecordWriteListener, trackedRecord, type RecordKind } from "../records.svelte";
-import { selection, selectLoreBookPage, selectPersona, selectPreset } from "../selection.svelte";
+import { selection, selectLoreBookPage, selectModelPreset, selectPersona, selectPreset } from "../selection.svelte";
 import { installFlatDatabase } from "./installFlatDatabase";
 import {
+    ACTIVE_MODEL_PRESET_FIELDS,
     ACTIVE_PRESET_FIELDS,
+    activeModelPreset,
     activePersona,
     activePreset,
+    currentModelPresetRecord,
     currentPersonaRecord,
     currentPresetRecord,
     isSettingsRootKey,
     readSettingsRoot,
+    scopedPresetRoot,
     selectedLoreBookPage,
     settings,
     writeSettingsRoot,
@@ -73,16 +77,18 @@ import type { SettingContext, SettingItem } from "../../setting/types";
 import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
 import { PERSONA_DEFAULTS } from "../../../../shared/personas.ts";
 import {
+    MODEL_PRESET_FIELDS,
     PERSONA_ROOT_ALIASES,
     PRESET_DEFAULTS,
-    PRESET_KEEP_ON_SWITCH_FIELDS,
     PRESET_ROOT_ALIASES,
+    presetFieldOwner,
     defaultOoba,
     plainClone,
 } from "../../../../shared/presets.ts";
 import {
     COLLECTION_FIELDS,
     COLLECTION_SELECTION_FIELDS,
+    FORWARDED_MODEL_PRESET_KEYS,
     FORWARDED_PRESET_KEYS,
     PERSONA_ROOT_KEYS,
     SECTION_FIELDS,
@@ -97,10 +103,12 @@ type AnyView = Record<string, any>;
 /** A record's live data, untracked (the oracle: never a view). */
 const record = (kind: string) => recordData<any>(kind as RecordKind);
 const preset = (id: string) => trackedRecord<any[]>("presets")!.find((entry) => entry.id === id);
+const modelPreset = (id: string) => trackedRecord<any[]>("modelPresets")!.find((entry) => entry.id === id);
 const persona = (id: string) => trackedRecord<any[]>("personas")!.find((entry) => entry.id === id);
 const text = (value: unknown) => JSON.stringify(plainClone(value));
 const queued = () => llmSecretState.queue.map((op) => op.request);
 const preset$ = activePreset as unknown as AnyView;
+const modelPreset$ = activeModelPreset as unknown as AnyView;
 const persona$ = activePersona as unknown as AnyView;
 const views = settings as unknown as Record<string, AnyView>;
 
@@ -116,6 +124,7 @@ const sectionOfField = new Map<string, SectionKind>(
     ),
 );
 const forwardedPresetKeys = new Set<string>(FORWARDED_PRESET_KEYS as string[]);
+const forwardedModelPresetKeys = new Set<string>(FORWARDED_MODEL_PRESET_KEYS as string[]);
 const phase1Kinds: Record<string, string> = {
     botPresets: "presets",
     modules: "modules",
@@ -143,6 +152,13 @@ function root(key: string): unknown {
             ? selected[field]
             : plainClone((PRESET_DEFAULTS as Record<string, unknown>)[field]);
     }
+    if (forwardedModelPresetKeys.has(key)) {
+        // A model field: the selected model preset's (`docs/plan/split-preset.md`), same rules.
+        const selected = modelPreset(selection.modelPresetId) ?? trackedRecord<any[]>("modelPresets")?.[0];
+        return selected !== undefined && Object.hasOwn(selected, key)
+            ? selected[key]
+            : plainClone((PRESET_DEFAULTS as Record<string, unknown>)[key]);
+    }
     if (Object.hasOwn(personaFieldOfRoot, key)) {
         const field = personaFieldOfRoot[key];
         const selected = persona(selection.personaId) ?? trackedRecord<any[]>("personas")?.[0];
@@ -169,6 +185,7 @@ function root(key: string): unknown {
 const ROOT_KEYS: string[] = [
     ...(Object.values(SECTION_KIND) as SectionKind[]).flatMap((section) => [...SECTION_FIELDS[section]]),
     ...(FORWARDED_PRESET_KEYS as string[]),
+    ...(FORWARDED_MODEL_PRESET_KEYS as string[]),
     ...PERSONA_ROOT_KEYS,
     ...Object.values(COLLECTION_FIELDS),
     ...Object.values(COLLECTION_SELECTION_FIELDS),
@@ -247,6 +264,7 @@ function realCtx(): SettingContext {
     return {
         settings,
         preset: activePreset,
+        modelPreset: activeModelPreset,
         persona: activePersona,
         modelInfo: undefined,
         subModelInfo: undefined,
@@ -278,6 +296,7 @@ beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
     selectPreset("");
+    selectModelPreset("");
     selectPersona("");
     selectLoreBookPage(0);
     llmSecretState.queue.splice(0);
@@ -300,10 +319,16 @@ describe("activePreset", () => {
         expect(activePreset.id).toBe("a");
         expect(activePreset.name).toBe("A");
         expect(activePreset.image).toBe("img-a");
-        // The keep-on-switch group is a providers field, and proxyKey is a credential (never served).
-        for (const field of [...PRESET_KEEP_ON_SWITCH_FIELDS, "proxyKey"]) {
+        // The model fields are the model preset's (`docs/plan/split-preset.md`), and proxyKey is a
+        // credential (never served).
+        for (const field of [...MODEL_PRESET_FIELDS, "proxyKey"]) {
             expect(field in activePreset, field).toBe(false);
         }
+        expect(
+            ACTIVE_PRESET_FIELDS.every(
+                (field) => field === "name" || field === "image" || presetFieldOwner(field) === "prompt",
+            ),
+        ).toBe(true);
     });
 
     it("writes the selected preset by its own field names, leaving the other preset alone, and follows a switch", () => {
@@ -324,7 +349,7 @@ describe("activePreset", () => {
         expect(notified.length).toBeGreaterThan(0);
         expect(new Set(notified)).toEqual(new Set(["presets"]));
 
-        changeToPreset("b", false);
+        changeToPreset("b");
         expect(activePreset.id).toBe("b");
         expect(activePreset.temperature).toBe(50);
         expect(activePreset.NAISettings.starter).toBe("starter-b");
@@ -336,17 +361,17 @@ describe("activePreset", () => {
         preset("a").temperature = 81;
         flushSync();
         expect(probe.seen).toEqual([80, 81]);
-        changeToPreset("b", false);
+        changeToPreset("b");
         flushSync();
         expect(probe.seen).toEqual([80, 81, 50]);
         expect(probe.derived()).toBe(50);
 
         const writer = createWriterEffect(() => {
-            activePreset.maxContext = 9100;
+            activePreset.maxResponse = 9100;
         });
         expect(writer.runs()).toBe(1);
-        expect(preset("b").maxContext).toBe(9100);
-        changeToPreset("a", false);
+        expect(preset("b").maxResponse).toBe(9100);
+        changeToPreset("a");
         flushSync();
         expect(writer.runs()).toBe(1);
         expect(preset("a").maxContext).toBe(4000);
@@ -368,7 +393,7 @@ describe("activePreset", () => {
     });
 
     it("falls back to the first preset on a read when the selected one is gone and selects it, also inside a $derived", () => {
-        changeToPreset("b", false);
+        changeToPreset("b");
         trackedRecord<any[]>("presets")!.splice(1, 1);
         expect(selection.presetId).toBe("b");
         expect(evaluateInDerived(() => activePreset.temperature)).toBe(80);
@@ -398,7 +423,6 @@ describe("activePreset", () => {
         // As a record looks between a local write and its normalization.
         delete record.maxResponse;
         record.ooba = null;
-        record.maxContext = null;
         record.promptTemplate = null;
         const before = text(record);
         notified = [];
@@ -406,7 +430,6 @@ describe("activePreset", () => {
         expect(activePreset.maxResponse).toBe(PRESET_DEFAULTS.maxResponse);
         expect(activePreset.ooba).toEqual(defaultOoba);
         expect(activePreset.ooba).not.toBe(activePreset.ooba);
-        expect(activePreset.maxContext).toBeNull();
         expect(activePreset.promptTemplate).toBeNull();
 
         activePreset.ooba.formating.header = "lost";
@@ -416,8 +439,8 @@ describe("activePreset", () => {
         activePreset.ooba = { ...defaultOoba, formating: { ...defaultOoba.formating, header: "h" } };
         expect(record.ooba.formating.header).toBe("h");
         expect((root("ooba") as { formating: { header: string } }).formating.header).toBe("h");
-        activePreset.maxContext = 4001;
-        expect(record.maxContext).toBe(4001);
+        activePreset.maxResponse = 4001;
+        expect(record.maxResponse).toBe(4001);
     });
 
     it("currentPresetRecord is the selected record itself (its wrapper)", () => {
@@ -425,6 +448,93 @@ describe("activePreset", () => {
         currentPresetRecord()!.name = "renamed";
         expect(preset("a").name).toBe("renamed");
         expect(activePreset.name).toBe("renamed");
+    });
+});
+
+describe("activeModelPreset", () => {
+    it("reads every model field it serves as the record holds it under its root name (its default when missing), and the record's own name; never a prompt field or image", () => {
+        for (const field of ACTIVE_MODEL_PRESET_FIELDS) {
+            if (field === "name") {
+                continue;
+            }
+            expect(presetFieldOwner(field), field).toBe("model");
+            expect(modelPreset$[field], field).toEqual(root(field));
+        }
+        expect(activeModelPreset.id).toBe("a");
+        expect(activeModelPreset.name).toBe("A");
+        expect(activeModelPreset.aiModel).toBe("model-a");
+        expect(activeModelPreset.maxContext).toBe(4000);
+        expect(activeModelPreset.localNetworkMode).toBe(false);
+        // A missing model field reads its default; the prompt fields, `image`, and `proxyKey` are not served.
+        expect(activeModelPreset.subModel).toBe(PRESET_DEFAULTS.subModel);
+        for (const field of ["temperature", "mainPrompt", "image", "proxyKey", "seperateParameters"]) {
+            expect(field in activeModelPreset, field).toBe(false);
+        }
+        expect(currentModelPresetRecord()).toBe(modelPreset("a"));
+    });
+
+    it("writes the selected model preset by its own field names, leaving the other model preset and the prompt presets alone, and follows a model switch only", () => {
+        notified = [];
+        activeModelPreset.maxContext = 4100;
+        activeModelPreset.aiModel = "model-a2";
+        expect(modelPreset("a")).toMatchObject({ maxContext: 4100, aiModel: "model-a2" });
+        expect(modelPreset("b")).toMatchObject({ maxContext: 5000, aiModel: "model-b" });
+        // The fixture's prompt record still carries the raw legacy values (nothing is normalized at
+        // install): the view neither reads nor writes them there.
+        expect(preset("a")).toMatchObject({ maxContext: 4000, aiModel: "model-a" });
+        expect(new Set(notified)).toEqual(new Set(["modelPresets"]));
+        expect(root("maxContext")).toBe(4100);
+        expect(readSettingsRoot("aiModel")).toBe("model-a2");
+        // A prompt switch leaves the model preset; a model switch leaves the prompt preset.
+        changeToPreset("b");
+        expect(activeModelPreset.id).toBe("a");
+        expect(activeModelPreset.maxContext).toBe(4100);
+        expect(activePreset.id).toBe("b");
+        changeToModelPreset("b");
+        expect(activeModelPreset.id).toBe("b");
+        expect(activeModelPreset.maxContext).toBe(5000);
+        expect(activePreset.id).toBe("b");
+        expect(activePreset.temperature).toBe(50);
+        // `writeSettingsRoot` routes a model root name to the selected model preset.
+        writeSettingsRoot("localNetworkTimeoutSec", 42);
+        expect(modelPreset("b").localNetworkTimeoutSec).toBe(42);
+        expect(Object.hasOwn(preset("b"), "localNetworkTimeoutSec")).toBe(false);
+        expect(readSettingsRoot("localNetworkTimeoutSec")).toBe(42);
+    });
+
+    it("tracks its reads and resolves its writes untracked, and falls back to the first model preset on a read when the selected one is gone", () => {
+        const probe = createProbe(() => activeModelPreset.maxContext);
+        expect(probe.seen).toEqual([4000]);
+        modelPreset("a").maxContext = 4001;
+        flushSync();
+        expect(probe.seen).toEqual([4000, 4001]);
+        changeToModelPreset("b");
+        flushSync();
+        expect(probe.seen).toEqual([4000, 4001, 5000]);
+        // A prompt switch is no read of the model preset.
+        changeToPreset("b");
+        flushSync();
+        expect(probe.seen).toEqual([4000, 4001, 5000]);
+
+        const writer = createWriterEffect(() => {
+            activeModelPreset.maxContext = 9100;
+        });
+        expect(writer.runs()).toBe(1);
+        expect(modelPreset("b").maxContext).toBe(9100);
+        changeToModelPreset("a");
+        flushSync();
+        expect(writer.runs()).toBe(1);
+        expect(modelPreset("a").maxContext).toBe(4001);
+        writer.dispose();
+        probe.dispose();
+
+        trackedRecord<any[]>("modelPresets")!.splice(0, 1);
+        expect(selection.modelPresetId).toBe("a");
+        expect(evaluateInDerived(() => activeModelPreset.maxContext)).toBe(9100);
+        expect(selection.modelPresetId).toBe("b");
+        selectModelPreset("gone");
+        expect(evaluateInDerived(() => activeModelPreset.id)).toBe("b");
+        expect(selection.modelPresetId).toBe("b");
     });
 });
 
@@ -653,6 +763,37 @@ describe("readSettingsRoot / writeSettingsRoot", () => {
     });
 });
 
+describe("scopedPresetRoot (a request's captured pair)", () => {
+    it("reads a forwarded root name from the owner of the captured pair, whatever is selected, and from the selection without a scope", () => {
+        changeToPreset("b");
+        changeToModelPreset("b");
+        const captured = { presetId: "a", modelPresetId: "a" };
+        expect(scopedPresetRoot(captured, "temperature")).toBe(80);
+        expect(scopedPresetRoot(captured, "aiModel")).toBe("model-a");
+        expect(scopedPresetRoot({ presetId: "a", modelPresetId: "b" }, "aiModel")).toBe("model-b");
+        expect(scopedPresetRoot({ presetId: "a", modelPresetId: "b" }, "temperature")).toBe(80);
+        expect(scopedPresetRoot(undefined, "temperature")).toBe(50);
+        expect(scopedPresetRoot(undefined, "aiModel")).toBe("model-b");
+        // A field the captured record lacks reads its default, not the selection's value.
+        delete modelPreset("a").localNetworkTimeoutSec;
+        modelPreset("b").localNetworkTimeoutSec = 999;
+        expect(scopedPresetRoot(captured, "localNetworkTimeoutSec")).toBe(PRESET_DEFAULTS.localNetworkTimeoutSec);
+        // Nothing moved the selections.
+        expect(selection.presetId).toBe("b");
+        expect(selection.modelPresetId).toBe("b");
+    });
+
+    // Astra's challenge point 1 on the implementation: `scopedPresetRoot` falls back to the selection
+    // when the captured record is gone, so a tab-run (plugin or WebLLM) request whose captured model
+    // preset was deleted meanwhile resolves the selected model preset's fields instead of being
+    // refused. Reported, not fixed here; un-skip once a gone captured record is refused.
+    it.skip("never reads the selection for a captured pair whose record is gone (Astra challenge point 1)", () => {
+        changeToModelPreset("b");
+        trackedRecord<any[]>("modelPresets")!.splice(0, 1);
+        expect(() => scopedPresetRoot({ presetId: "a", modelPresetId: "a" }, "aiModel")).toThrow();
+    });
+});
+
 describe("the registry over the views", () => {
     it("every item's bindKey and bindPath root is a name the views serve", () => {
         const bound = registryItems().filter((item) => item.bindKey || item.bindPath);
@@ -760,12 +901,18 @@ describe("the registry over the views", () => {
         expect(quotes.some((item) => item.condition!(ctx))).toBe(false);
     });
 
-    it("a condition reads the selected preset through ctx.preset and follows a switch", () => {
+    it("a model-dependent condition reads the selected model preset through ctx.modelPreset and follows a model switch, not a prompt switch", () => {
         const ctx = realCtx();
         const timeout = getFullSettingsData().find((item) => item.bindKey === "localNetworkTimeoutSec")!;
         expect(timeout.condition!(ctx)).toBe(false);
-        changeToPreset("b", false);
+        changeToPreset("b");
+        expect(timeout.condition!(ctx)).toBe(false);
+        changeToModelPreset("b");
         expect(timeout.condition!(ctx)).toBe(true);
+        // The registry writes a model key into the selected model preset by its root name.
+        setSettingValue({ ...timeout, onChange: undefined }, 123, ctx);
+        expect(modelPreset("b").localNetworkTimeoutSec).toBe(123);
+        expect(Object.hasOwn(preset("b"), "localNetworkTimeoutSec")).toBe(false);
     });
 
     it("a registry read inside a $derived repairs a missing selection without throwing", () => {

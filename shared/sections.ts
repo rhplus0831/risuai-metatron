@@ -1,5 +1,12 @@
 import type { Database } from "./database.ts";
-import { PRESET_FIELDS, PRESET_KEEP_ON_SWITCH_FIELDS, PRESET_ROOT_ALIASES, PERSONA_ROOT_ALIASES } from "./presets.ts";
+import {
+    MODEL_PRESET_FIELDS,
+    PERSONA_ROOT_ALIASES,
+    PRESET_ROOT_ALIASES,
+    presetFieldValue,
+    PROMPT_PRESET_FIELDS,
+    type PresetField,
+} from "./presets.ts";
 
 /**
  * The field-to-resource map of Phase 3 (`docs/plan/phases/phase-3-settings-sections.md`): which
@@ -12,10 +19,11 @@ import { PRESET_FIELDS, PRESET_KEEP_ON_SWITCH_FIELDS, PRESET_ROOT_ALIASES, PERSO
  *   collections that carry their selection).
  * - `FORWARDED_ROOT_KEYS`: the fields of the removed `root` resource (the working copies before
  *   Phase 3), not stored under their own names. The client's views serve them under those names
- *   (`src/ts/storage/settingsViews.svelte.ts`: the preset fields from the selected preset, the
- *   persona fields from the selected persona); `proxyKey` is that preset's `llmSecrets.presets`
- *   entry, and the three selection indexes come from the per-client selection store. The keep-on-switch preset fields are
- *   `providers` fields and the two auto-suggest fields are `ui` fields; neither is forwarded.
+ *   (`src/ts/storage/settingsViews.svelte.ts`: the prompt fields from the selected prompt preset,
+ *   the model fields from the selected model preset, the persona fields from the selected persona);
+ *   `proxyKey` is the selected model preset's `llmSecrets.modelPresets` entry, and the three
+ *   selection indexes come from the per-client selection store. The two auto-suggest fields are `ui`
+ *   fields, not forwarded.
  * - `DROPPED_FIELDS`: no longer persisted (no reader, write-only, migrated, or legacy mirrors).
  */
 
@@ -30,7 +38,7 @@ export const SECTION_KIND = {
 export type SectionKind = (typeof SECTION_KIND)[keyof typeof SECTION_KIND];
 
 export const SECTION_FIELDS = {
-    /** Provider and request settings, including the keep-on-switch group and its three toggles. */
+    /** Provider and request settings outside the presets. */
     providers: [
         "loreBookToken",
         "additionalPrompt",
@@ -88,16 +96,8 @@ export const SECTION_FIELDS = {
         "dynamicModelRegistry",
         "saveSignatures",
         "presetChain",
-        "seperateModels",
-        "seperateModelsForAxModels",
-        "fallbackModels",
-        "fallbackWhenBlankResponse",
-        "seperateParameters",
-        "doNotChangeSeperateModels",
-        "doNotChangeFallbackModels",
-        "disableSeperateParameterChangeOnPresetChange",
     ],
-    /** LLM provider credentials (Decision 6). Client-readable until Phase 5 makes the section write-only; it also holds each preset's `proxyKey` by preset id (`presets`). */
+    /** LLM provider credentials (Decision 6). Client-readable until Phase 5 makes the section write-only; it also holds each model preset's `proxyKey` by model preset id (`modelPresets`). */
     llmSecrets: [
         "openAIKey",
         "claudeAPIKey",
@@ -315,6 +315,7 @@ export const COLLECTION_KIND = {
     customModels: "customModels",
     enabledModules: "enabledModules",
     statics: "statics",
+    modelPresets: "modelPresets",
 } as const;
 
 export type CollectionKind = (typeof COLLECTION_KIND)[keyof typeof COLLECTION_KIND];
@@ -333,6 +334,7 @@ export const COLLECTION_FIELDS = {
     customModels: "customModels",
     enabledModules: "enabledModules",
     statics: "statics",
+    modelPresets: "modelPresets",
 } as const satisfies Record<CollectionKind, keyof Database>;
 
 /**
@@ -347,16 +349,43 @@ export const COLLECTION_SELECTION_FIELDS = {
 const presetRootNames: Record<string, string> = Object.fromEntries(
     Object.entries(PRESET_ROOT_ALIASES).map(([root, preset]) => [preset, root]),
 );
-const notForwarded = new Set<string>(["name", "image", ...PRESET_KEEP_ON_SWITCH_FIELDS]);
+const presetFieldOfRoot: Record<string, string> = PRESET_ROOT_ALIASES;
 
 /**
- * Root fields that mirror the selected preset one to one (by their root name): every preset field
- * except `name`, `image`, and the keep-on-switch group. `proxyKey` is forwarded too, to the
- * selected preset's `llmSecrets.presets` entry (`FORWARDED_ROOT_KEYS`).
+ * Root fields that mirror the selected prompt preset one to one (by their root name): every
+ * `PROMPT_PRESET_FIELDS` field (`name` and `image` are the record's own).
  */
-export const FORWARDED_PRESET_KEYS = PRESET_FIELDS.filter((field) => !notForwarded.has(field)).map(
+export const FORWARDED_PRESET_KEYS = PROMPT_PRESET_FIELDS.map(
     (field) => (presetRootNames[field] ?? field) as keyof Database,
 );
+
+/**
+ * Root fields that mirror the selected model preset one to one: every `MODEL_PRESET_FIELDS` field
+ * (none has a root alias). `proxyKey` is forwarded too, to that model preset's
+ * `llmSecrets.modelPresets` entry (`FORWARDED_ROOT_KEYS`).
+ */
+export const FORWARDED_MODEL_PRESET_KEYS = MODEL_PRESET_FIELDS.map(
+    (field) => (presetRootNames[field] ?? field) as keyof Database,
+);
+
+/**
+ * Writes every forwarded preset field into `target` under its root name, as the client's views serve
+ * them: the prompt fields from `promptPreset`, the model fields from `modelPreset`
+ * (`presetFieldValue`'s defaults). The server's job projection and request settings both build their
+ * preset roots with it, so the two cannot drift.
+ */
+export function forwardPresetRoots(
+    target: Record<string, unknown>,
+    promptPreset: Record<string, unknown>,
+    modelPreset: Record<string, unknown>,
+) {
+    for (const rootKey of FORWARDED_PRESET_KEYS) {
+        target[rootKey] = presetFieldValue(promptPreset, (presetFieldOfRoot[rootKey] ?? rootKey) as PresetField);
+    }
+    for (const rootKey of FORWARDED_MODEL_PRESET_KEYS) {
+        target[rootKey] = presetFieldValue(modelPreset, (presetFieldOfRoot[rootKey] ?? rootKey) as PresetField);
+    }
+}
 
 /** Root fields that mirror the selected persona (`PERSONA_ROOT_ALIASES`). */
 export const PERSONA_ROOT_KEYS = Object.keys(PERSONA_ROOT_ALIASES) as (keyof typeof PERSONA_ROOT_ALIASES)[];
@@ -374,6 +403,7 @@ export const SELECTION_KEYS = [
 /** The fields the client forwarding layer serves (the old `root` working copies and selections). */
 export const FORWARDED_ROOT_KEYS: readonly (keyof Database)[] = [
     ...FORWARDED_PRESET_KEYS,
+    ...FORWARDED_MODEL_PRESET_KEYS,
     "proxyKey",
     ...PERSONA_ROOT_KEYS,
     ...SELECTION_KEYS,

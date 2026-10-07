@@ -45,6 +45,7 @@ let base = "";
 let epoch = "";
 let signer: Awaited<ReturnType<typeof createSigner>>;
 let presetId = "";
+let modelPresetId = "";
 let personaId = "";
 
 async function api(url: string, init: RequestInit = {}) {
@@ -211,6 +212,7 @@ async function job(
                 characterId: chaId,
                 chatId: "k",
                 presetId,
+                modelPresetId,
                 personaId,
                 selectedPersonaId: personaId,
                 mode: kind === "command" ? "button" : kind,
@@ -291,16 +293,24 @@ beforeAll(async () => {
     const presets = await single("presets");
     const personas = await single("personas");
     presetId = presets.data[0].id;
+    modelPresetId = (await single("modelPresets")).data[0].id;
     personaId = personas.data[0].id;
-    await patchSingleton("presets", (data: any[]) => [
+    // The model preset: a reverse proxy to the fake provider (`docs/plan/split-preset.md`).
+    await patchSingleton("modelPresets", (data: any[]) => [
         {
             ...data[0],
             aiModel: "reverse_proxy",
             subModel: "reverse_proxy",
             maxContext: 4000,
-            maxResponse: 100,
             forceReplaceUrl: providerUrl,
             customProxyRequestModel: "m",
+        },
+        ...data.slice(1),
+    ]);
+    await patchSingleton("presets", (data: any[]) => [
+        {
+            ...data[0],
+            maxResponse: 100,
             jailbreakToggle: false,
             mainPrompt: "Main {{char}}",
             formatingOrder: ["main", "description", "lorebook", "chats", "lastChat"],

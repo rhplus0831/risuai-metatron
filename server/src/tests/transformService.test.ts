@@ -56,6 +56,7 @@ function harness() {
         ],
     });
     const presetId = (store.get(kinds.get("presets")!, "main")!.data as { id: string }[])[0].id;
+    const modelPresetId = (store.get(kinds.get("modelPresets")!, "main")!.data as { id: string }[])[0].id;
     const personaId = (store.get(kinds.get("personas")!, "main")!.data as { id: string }[])[0].id;
     /** The regex runs the test holds (released by the test), and how many began. */
     const held: Held[] = [];
@@ -88,7 +89,7 @@ function harness() {
         llm: {},
         scriptWorkers,
     } as unknown as GenerationRunnerDeps;
-    const context = { characterId: "a", chatId: "k", presetId, personaId, selectedPersonaId: personaId };
+    const context = { characterId: "a", chatId: "k", presetId, modelPresetId, personaId, selectedPersonaId: personaId };
     const request = (id: string, extra: Partial<TransformRequest> = {}, source = `X${id}`): TransformRequest => ({
         clientId: "tab",
         mode: "editprocess",

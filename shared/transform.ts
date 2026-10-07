@@ -24,7 +24,10 @@ export const TRANSFORM_TARGET_KINDS: readonly TransformTargetKind[] = ["message"
 export type TransformContext = {
     characterId: string;
     chatId: string;
+    /** The prompt preset. */
     presetId: string;
+    /** The model preset. */
+    modelPresetId: string;
     /** The effective persona (the chat's bound persona wins). */
     personaId: string;
     /** The tab's selected persona. */

@@ -23,7 +23,7 @@ vi.mock("src/lang", () => ({
 
 import SecretInput from "./SecretInput.svelte";
 
-const presetPath = (id: string): SecretPath => ({ kind: "entry", field: "presets", id });
+const presetPath = (id: string): SecretPath => ({ kind: "entry", field: "modelPresets", id });
 const queued = () => llmSecretState.queue.map((op) => op.request);
 
 let target: HTMLElement;
@@ -51,7 +51,9 @@ function render(props: { path: SecretPath; onchange?: () => void }) {
 
 beforeEach(() => {
     llmSecretState.queue.splice(0);
-    setMaskedSecrets(maskLlmSecrets({ openAIKey: "sk-stored-SENTINEL-AAAA", presets: { a: { proxyKey: "pk-a" } } }));
+    setMaskedSecrets(
+        maskLlmSecrets({ openAIKey: "sk-stored-SENTINEL-AAAA", modelPresets: { a: { proxyKey: "pk-a" } } }),
+    );
     target = document.createElement("div");
     document.body.appendChild(target);
 });
@@ -126,7 +128,7 @@ describe("SecretInput", () => {
         expect(status()).toBe("Not set · saving");
         // Acknowledged by the server (the queue emptied, the masked record replaced): not set, no button.
         llmSecretState.queue.splice(0);
-        setMaskedSecrets(maskLlmSecrets({ openAIKey: "sk-stored-SENTINEL-AAAA", presets: {} }));
+        setMaskedSecrets(maskLlmSecrets({ openAIKey: "sk-stored-SENTINEL-AAAA", modelPresets: {} }));
         flushSync();
         expect(status()).toBe("Not set");
         expect(button("Clear")).toBeNull();

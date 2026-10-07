@@ -107,7 +107,7 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
     if (!isValidResourceId(context.characterId) || !isValidResourceId(context.chatId)) {
         return "context must name a valid characterId and chatId";
     }
-    for (const field of ["presetId", "personaId"] as const) {
+    for (const field of ["presetId", "modelPresetId", "personaId"] as const) {
         if (context[field] !== null && !isValidResourceId(context[field])) {
             return `context.${field} must be an id or null`;
         }
@@ -155,6 +155,7 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
         characterId: context.characterId,
         chatId: context.chatId,
         presetId: context.presetId as string | null,
+        modelPresetId: context.modelPresetId as string | null,
         personaId: context.personaId as string | null,
         mode: context.mode,
         input: context.input,

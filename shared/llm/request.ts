@@ -107,7 +107,10 @@ export type LlmRequestBody = {
     mode: ModelModeExtended;
     /** The ids the request reads its settings by; the client resolved its selection fallback. */
     context: {
+        /** The prompt preset. */
         presetId: string;
+        /** The model preset. */
+        modelPresetId: string;
         /** The effective persona (bound to the chat, else selected), whose name is `getUserName()`. */
         personaId: string;
         /** The tab's selected persona. */

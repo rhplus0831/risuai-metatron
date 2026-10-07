@@ -32,7 +32,7 @@ let notified: RecordKind[] = [];
 
 const text = (kind: RecordKind) => JSON.stringify(recordData(kind));
 const queued = () => llmSecretState.queue.map((op) => op.request);
-const entry = (field: "presets" | "customModels", id: string, value: string) => ({
+const entry = (field: "modelPresets" | "customModels", id: string, value: string) => ({
     kind: "put",
     path: { kind: "entry", field, id },
     value,
@@ -226,19 +226,25 @@ describe("entry credentials (challenge point 2, re-check 1 points 1 and 2)", () 
         refused("customModels", () => replaceRecord("customModels", [{ key: "k" }]));
     });
 
-    it("applies the same rules to a preset's proxyKey", () => {
-        initializeRecords({ presets: [{ id: "p1", name: "P1" }] });
-        const presets = trackedRecord<any[]>("presets")!;
-        presets[0].proxyKey = "k1";
-        presets.push({ id: "p2", name: "P2", proxyKey: "k2" });
-        replaceRecordList(presets, [presets[0], presets[1], { id: "p3", name: "P3", proxyKey: "k3" }]);
-        expect(text("presets")).not.toContain("proxyKey");
+    it("applies the same rules to a model preset's proxyKey, and treats a prompt preset's as plain data", () => {
+        initializeRecords({ modelPresets: [{ id: "m1", name: "M1" }], presets: [{ id: "p1", name: "P1" }] });
+        const modelPresets = trackedRecord<any[]>("modelPresets")!;
+        modelPresets[0].proxyKey = "k1";
+        modelPresets.push({ id: "m2", name: "M2", proxyKey: "k2" });
+        replaceRecordList(modelPresets, [modelPresets[0], modelPresets[1], { id: "m3", name: "M3", proxyKey: "k3" }]);
+        expect(text("modelPresets")).not.toContain("proxyKey");
         expect(queued()).toEqual([
-            entry("presets", "p1", "k1"),
-            entry("presets", "p2", "k2"),
-            entry("presets", "p3", "k3"),
+            entry("modelPresets", "m1", "k1"),
+            entry("modelPresets", "m2", "k2"),
+            entry("modelPresets", "m3", "k3"),
         ]);
-        refused("presets", () => delete presets[0].proxyKey, CredentialRefusedError);
+        refused("modelPresets", () => delete modelPresets[0].proxyKey, CredentialRefusedError);
+        // The prompt preset owns no credential since the split (`docs/plan/split-preset.md`): a
+        // `proxyKey` written there is an ordinary field the server normalizer drops, not a routed secret.
+        const presets = trackedRecord<any[]>("presets")!;
+        presets[0].proxyKey = "plain";
+        expect(JSON.parse(text("presets"))[0].proxyKey).toBe("plain");
+        expect(queued()).toHaveLength(3);
     });
 });
 
@@ -301,7 +307,7 @@ describe("the llmSecrets record (challenge point 4, re-check 1 point 4)", () => 
         ]);
         refused("llmSecrets", () => (secrets.openAIKey = 5), CredentialRefusedError);
         refused("llmSecrets", () => (secrets.google = "tok"), CredentialRefusedError);
-        refused("llmSecrets", () => (secrets.presets = {}), CredentialRefusedError);
+        refused("llmSecrets", () => (secrets.modelPresets = {}), CredentialRefusedError);
         refused("llmSecrets", () => delete secrets.openAIKey, CredentialRefusedError);
         refused("llmSecrets", () => delete secrets.google.accessToken, CredentialRefusedError);
     });
@@ -314,7 +320,7 @@ describe("the llmSecrets record (challenge point 4, re-check 1 point 4)", () => 
             { ...mirror(), google: "secret" },
             { ...mirror(), OaiCompAPIKeys: "secret" },
             { ...mirror(), OaiCompAPIKeys: { m: "secret" } },
-            { ...mirror(), presets: {} },
+            { ...mirror(), modelPresets: {} },
             [],
         ]) {
             refused("llmSecrets", () => replaceRecord("llmSecrets", value), CredentialRefusedError);

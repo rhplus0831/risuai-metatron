@@ -16,7 +16,7 @@ import {
 import { normalizeLlmSecrets } from "./normalize/llmSecrets.ts";
 import { normalizeMemoryTranslateMedia } from "./normalize/memoryTranslateMedia.ts";
 import { normalizePersonas } from "./normalize/personas.ts";
-import { normalizePresetCollection } from "./normalize/presets.ts";
+import { normalizeModelPresetCollection, normalizePresetCollection } from "./normalize/presets.ts";
 import { normalizeProviders } from "./normalize/providers.ts";
 import { normalizeSecrets } from "./normalize/secrets.ts";
 import { requireArrayOfObjects, requireObject } from "./normalize/shared.ts";
@@ -219,4 +219,5 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
     settingsKind(RESOURCE_KIND.customModels, normalizeCustomModels),
     settingsKind(RESOURCE_KIND.enabledModules, normalizeEnabledModules),
     settingsKind(RESOURCE_KIND.statics, normalizeStatics),
+    settingsKind(RESOURCE_KIND.modelPresets, normalizeModelPresetCollection),
 ];

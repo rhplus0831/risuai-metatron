@@ -4,9 +4,10 @@ import { ResourceValidationError } from "../resourceStore.ts";
 import { isPlainObject, normalizeSection, requireObject, type SectionSpec } from "./shared.ts";
 
 /**
- * The `llmSecrets` section: the LLM credentials under their `Database` names, plus `presets`, each
- * preset's `proxyKey` keyed by preset id, and `customModels`, each custom model's `key` keyed by
- * model id (an entry of a deleted preset or model is harmless and is removed with it). Write-only
+ * The `llmSecrets` section: the LLM credentials under their `Database` names, plus `modelPresets`,
+ * each model preset's `proxyKey` keyed by model preset id, and `customModels`, each custom model's
+ * `key` keyed by model id (an entry of a deleted preset or model is harmless and is removed with it).
+ * The former per-prompt-preset `presets` map is not read, so the normalizer drops it. Write-only
  * for clients (Phase 5 slice 7b): `shared/llmSecrets.ts`.
  */
 const spec: SectionSpec<"llmSecrets"> = {
@@ -37,13 +38,15 @@ export function normalizeLlmSecrets(input: unknown): LlmSecretsResource {
         record.google.projectId ??= "";
     }
     const source = input === undefined ? {} : requireObject(input, "llmSecrets");
-    const presets: [string, { proxyKey: string }][] = [];
-    if (source.presets !== undefined) {
-        for (const [id, entry] of Object.entries(requireObject(source.presets, "llmSecrets.presets"))) {
+    const modelPresets: [string, { proxyKey: string }][] = [];
+    if (source.modelPresets !== undefined) {
+        for (const [id, entry] of Object.entries(requireObject(source.modelPresets, "llmSecrets.modelPresets"))) {
             if (!isRecordId(id) || !isPlainObject(entry) || typeof entry.proxyKey !== "string") {
-                throw new ResourceValidationError("llmSecrets.presets must map preset ids to { proxyKey: string }");
+                throw new ResourceValidationError(
+                    "llmSecrets.modelPresets must map model preset ids to { proxyKey: string }",
+                );
             }
-            presets.push([id, { proxyKey: entry.proxyKey }]);
+            modelPresets.push([id, { proxyKey: entry.proxyKey }]);
         }
     }
     const customModels: [string, { key: string }][] = [];
@@ -58,7 +61,7 @@ export function normalizeLlmSecrets(input: unknown): LlmSecretsResource {
     // `fromEntries` defines own properties, so an id such as `__proto__` stays an ordinary key.
     return {
         ...record,
-        presets: Object.fromEntries(presets),
+        modelPresets: Object.fromEntries(modelPresets),
         customModels: Object.fromEntries(customModels),
     } as LlmSecretsResource;
 }

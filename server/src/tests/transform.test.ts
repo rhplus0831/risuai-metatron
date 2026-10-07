@@ -47,6 +47,7 @@ let server: ReturnType<typeof createTestServer>;
 let signer: Awaited<ReturnType<typeof createSigner>>;
 let epoch = "";
 let presetId = "";
+let modelPresetId = "";
 let personaId = "";
 
 async function api(url: string, body?: unknown, init: RequestInit = {}) {
@@ -153,6 +154,7 @@ const context = (characterId: string, chatId: string) => ({
     characterId,
     chatId,
     presetId,
+    modelPresetId,
     personaId,
     selectedPersonaId: personaId,
 });
@@ -206,6 +208,7 @@ beforeAll(async () => {
     await server.app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
     epoch = (await api("/api/resources/ui")).body.epoch;
     presetId = (await single("presets")).data[0].id;
+    modelPresetId = (await single("modelPresets")).data[0].id;
     personaId = (await single("personas")).data[0].id;
     await patchSection("memoryTranslateMedia", { hypaModel: "custom" });
     await patchSection("secrets", { hypaCustomSettings: { url: embedderUrl, key: EMBED_KEY, model: "emb" } });
@@ -739,6 +742,16 @@ describe("the transform's admission", () => {
                         clientId: "tab1",
                         mode: "editdisplay",
                         context: { ...context("tp", "k"), presetId: "nope" },
+                        targets: t,
+                    })
+                ).status,
+            ).toBe(404);
+            expect(
+                (
+                    await api("/api/transform", {
+                        clientId: "tab1",
+                        mode: "editdisplay",
+                        context: { ...context("tp", "k"), modelPresetId: "nope" },
                         targets: t,
                     })
                 ).status,

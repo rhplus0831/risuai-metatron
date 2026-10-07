@@ -67,25 +67,25 @@ export function clearSecret(path: SecretPath): number {
     return setSecret(path, "");
 }
 
-/** Gives preset `to` a copy of preset `from`'s `proxyKey` (on the server; the tab never reads it). */
-export function copyPresetSecret(from: string, to: string): number {
+/** Gives model preset `to` a copy of model preset `from`'s `proxyKey` (on the server; the tab never reads it). */
+export function copyModelPresetSecret(from: string, to: string): number {
     return enqueue({ kind: "copy", from, to });
 }
 
-/** The entry of a preset or custom model the tab just deleted (not a clear of a live one). */
+/** The entry of a model preset or custom model the tab just deleted (not a clear of a live one). */
 export function deleteEntrySecret(field: SecretEntryMap, id: string): number {
     return enqueue({ kind: "cleanup", path: { kind: "entry", field, id } });
 }
 
-export function deletePresetSecret(id: string): number {
-    return deleteEntrySecret("presets", id);
+export function deleteModelPresetSecret(id: string): number {
+    return deleteEntrySecret("modelPresets", id);
 }
 
-const presetPath = (id: string): SecretPath => ({ kind: "entry", field: "presets", id });
+const modelPresetPath = (id: string): SecretPath => ({ kind: "entry", field: "modelPresets", id });
 
 /** The paths a queued write changes. */
 export function secretOpTarget(request: SecretRequest): SecretPath {
-    return request.kind === "copy" ? presetPath(request.to) : request.path;
+    return request.kind === "copy" ? modelPresetPath(request.to) : request.path;
 }
 
 /**
@@ -104,8 +104,12 @@ export function secretStatus(path: SecretPath): SecretStatus {
         } else if (request.kind === "cleanup") {
             overlay.set(secretPathKey(request.path), { set: false, hint: "", pending: true });
         } else {
-            const source = current(presetPath(request.from));
-            overlay.set(secretPathKey(presetPath(request.to)), { set: source.set, hint: source.hint, pending: true });
+            const source = current(modelPresetPath(request.from));
+            overlay.set(secretPathKey(modelPresetPath(request.to)), {
+                set: source.set,
+                hint: source.hint,
+                pending: true,
+            });
         }
     }
     return overlay.get(wanted) ?? current(path);

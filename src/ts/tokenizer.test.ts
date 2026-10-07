@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { activePreset } from "./storage/settingsViews.svelte";
+import { activeModelPreset } from "./storage/settingsViews.svelte";
 import { installFlatDatabase } from "./storage/tests/installFlatDatabase";
 import { encode } from "./tokenizer";
 
@@ -55,14 +55,15 @@ vi.mock("src/etc/o200k_base.json", () => ({
 }));
 
 // The fixture installed into the records, since the tokenizer reads the settings through the record
-// views (Phase 6 slice 7): its root preset fields (`aiModel`, `currentPluginProvider`) become the one
-// preset's, the others the `providers` section's. A case changes them through the views.
+// views (Phase 6 slice 7): its root model fields (`aiModel`, `currentPluginProvider`) become the one
+// model preset's (`docs/plan/split-preset.md`), the others the `providers` section's. A case changes
+// them through the views.
 installFlatDatabase({ ...mocks.fixture }, "tokenizer-preset");
 
 describe("encode", () => {
     it("tokenizes WebLLM models (LLMTokenizer.Local) with the default tiktoken encoder", async () => {
-        // The installed preset is what the tokenizer reads (not a default of an absent field).
-        expect(activePreset.aiModel).toBe(mocks.fixture.aiModel);
+        // The installed model preset is what the tokenizer reads (not a default of an absent field).
+        expect(activeModelPreset.aiModel).toBe(mocks.fixture.aiModel);
         const result = await encode("hi");
 
         expect(Array.from(result)).toEqual([104, 105]);
@@ -73,19 +74,19 @@ describe("encode", () => {
 describe("the routing shared with the server (Phase 5 slice 4)", () => {
     const base = { ...mocks.fixture };
     const restore = () => {
-        activePreset.aiModel = base.aiModel;
-        activePreset.currentPluginProvider = base.currentPluginProvider;
+        activeModelPreset.aiModel = base.aiModel;
+        activeModelPreset.currentPluginProvider = base.currentPluginProvider;
     };
 
     it("a legacy plugin provider without options counts with o200k_base; a `custom` tokenizer without its function answers [0]", async () => {
         const { pluginHooks } = await import("./plugins/pluginHooks");
         try {
-            activePreset.aiModel = "custom";
-            activePreset.currentPluginProvider = "absent";
+            activeModelPreset.aiModel = "custom";
+            activeModelPreset.currentPluginProvider = "absent";
             expect(Array.from(await encode("hi"))).toEqual([104, 105]);
             expect(mocks.constructedWith.at(-1)).toBe("o200k_base");
             pluginHooks.providerOptions.set("p", { tokenizer: "custom" } as any);
-            activePreset.currentPluginProvider = "p";
+            activeModelPreset.currentPluginProvider = "p";
             expect(Array.from(await encode("hi"))).toEqual([0]);
             pluginHooks.providerOptions.set("p", { tokenizer: "custom", tokenizerFunc: async () => [7, 8, 9] } as any);
             expect(Array.from(await encode("hi"))).toEqual([7, 8, 9]);

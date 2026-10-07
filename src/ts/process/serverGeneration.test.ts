@@ -159,11 +159,11 @@ describe("sendChatOnServer", () => {
         await send({
             target: ref,
             signal: controller.signal,
-            pluginContext: { chatRef: ref, presetId: "plug", personaId: "" } as never,
+            pluginContext: { chatRef: ref, presetId: "plug", modelPresetId: "plug-model", personaId: "" } as never,
         });
         expect(lastOptions()).toEqual({
             signal: controller.signal,
-            identity: { presetId: "plug", personaId: null },
+            identity: { presetId: "plug", modelPresetId: "plug-model", personaId: null },
         });
     });
 

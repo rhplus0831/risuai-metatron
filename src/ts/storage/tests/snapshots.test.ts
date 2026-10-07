@@ -49,7 +49,9 @@ import { findChat } from "../chatStore.svelte";
 import { resetRecords, setRecordWriteListener } from "../records.svelte";
 import { selection, selectLoreBookPage, selectPersona, selectPreset } from "../selection.svelte";
 import {
+    activeModelPreset,
     activePreset,
+    hasModelPreset,
     hasPreset,
     readSettingsRoot,
     SETTINGS_ROOT_KEYS,
@@ -104,6 +106,8 @@ const COMPONENT_REMOVED_KEYS = [
     "modules",
     "enabledModules",
     "botPresets",
+    // The model presets go with the prompt presets (`docs/plan/split-preset.md`).
+    "modelPresets",
     "characterOrder",
     "webUiUrl",
     "characterOrder",
@@ -312,18 +316,40 @@ describe("buildDatabaseSubset (the plugin getDatabase)", () => {
         expect(JSON.parse(JSON.stringify(storage))).toEqual(JSON.parse('{"__proto__": {"evil": 1}, "plain": 2}'));
     });
 
-    it("reads a hook's preset for the preset keys, whatever is selected, and never redirects a gone one", () => {
+    it("reads a hook's presets for the preset keys, each from its owner, whatever is selected, and never redirects a gone one", () => {
         boot();
         expect(selection.presetId).toBe("a");
-        const hooked = buildDatabaseSubset(["temperature", "maxContext", "theme", "selectedPersona"], "b") as AnyRecord;
+        expect(selection.modelPresetId).toBe("a");
+        const keys = ["temperature", "maxContext", "theme", "selectedPersona"];
+        const hooked = buildDatabaseSubset(keys, { presetId: "b", modelPresetId: "b" }) as AnyRecord;
         expect(hooked).toEqual({ temperature: 60, maxContext: 5678, theme: "dark", selectedPersona: 0 });
+        // The pair is independent: the prompt preset `b` with the model preset `a`.
+        expect(buildDatabaseSubset(keys, { presetId: "b", modelPresetId: "a" })).toMatchObject({
+            temperature: 60,
+            maxContext: 1234,
+        });
         expect(selection.presetId).toBe("a");
+        expect(selection.modelPresetId).toBe("a");
         expect(activePreset.temperature).toBe(40);
-        // A preset that is gone (the caller refuses it first, `hasPreset`): no fallback to another preset.
+        expect(activeModelPreset.maxContext).toBe(1234);
+        // A preset that is gone (the caller refuses it first, `hasPreset`/`hasModelPreset`): no
+        // fallback to another preset of either kind.
         expect(hasPreset("gone")).toBe(false);
-        const gone = buildDatabaseSubset(["temperature"], "gone") as AnyRecord;
+        expect(hasModelPreset("gone")).toBe(false);
+        const gone = buildDatabaseSubset(["temperature", "maxContext"], {
+            presetId: "gone",
+            modelPresetId: "a",
+        }) as AnyRecord;
         expect(Object.hasOwn(gone, "temperature")).toBe(true);
         expect(gone.temperature).toBeUndefined();
+        expect(gone.maxContext).toBe(1234);
+        const modelGone = buildDatabaseSubset(["temperature", "maxContext"], {
+            presetId: "a",
+            modelPresetId: "gone",
+        }) as AnyRecord;
+        expect(modelGone.temperature).toBe(40);
+        expect(Object.hasOwn(modelGone, "maxContext")).toBe(true);
+        expect(modelGone.maxContext).toBeUndefined();
     });
 
     it("is detached: a write into the subset changes no record, no chat, and queues nothing", () => {

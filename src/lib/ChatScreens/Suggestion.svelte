@@ -4,7 +4,7 @@
         type AnyClientCharacter,
         type ClientCharacter,
     } from "src/ts/storage/characterStore.svelte";
-    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { requestChatData } from "src/ts/process/request/request";
     import { doingChat, type OpenAIChat } from "../../ts/process/index.svelte";
     import { type character, type DeepReadonly, type Message, type groupChat } from "../../ts/storage/database.svelte";
@@ -97,9 +97,9 @@
         ];
 
         if (
-            activePreset.subModel === "textgen_webui" ||
-            activePreset.subModel === "mancer" ||
-            activePreset.subModel.startsWith("local_")
+            activeModelPreset.subModel === "textgen_webui" ||
+            activeModelPreset.subModel === "mancer" ||
+            activeModelPreset.subModel.startsWith("local_")
         ) {
             promptbody = [
                 {

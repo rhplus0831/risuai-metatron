@@ -693,6 +693,7 @@ export function createGenerationJobs(options: {
             targets: {
                 chatRef: { chaId: characterId, chatId },
                 presetId: body.context.presetId ?? "",
+                modelPresetId: body.context.modelPresetId ?? "",
                 personaId: body.context.personaId ?? "",
             },
             refs: new Map(),

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { ArrowLeft, PlusIcon, TrashIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import PromptDataItem from "src/lib/UI/PromptDataItem.svelte";
@@ -289,7 +289,7 @@
     />
     <Check bind:check={activePreset.promptSettings.utilOverride} name={language.utilOverride} className="mt-4" />
     <Check bind:check={activePreset.jsonSchemaEnabled} name={language.enableJsonSchema} className="mt-4" />
-    <Check bind:check={activePreset.outputImageModal} name={language.outputImageModal} className="mt-4" />
+    <Check bind:check={activeModelPreset.outputImageModal} name={language.outputImageModal} className="mt-4" />
 
     <Check bind:check={activePreset.strictJsonSchema} name={language.strictJsonSchema} className="mt-4" />
 
@@ -326,9 +326,9 @@
         bind:value={activePreset.groupTemplate}
     />
     <span class="text-textcolor mt-4">{language.systemContentReplacement} <Help key="systemContentReplacement" /></span>
-    <TextAreaInput bind:value={activePreset.systemContentReplacement} />
+    <TextAreaInput bind:value={activeModelPreset.systemContentReplacement} />
     <span class="text-textcolor mt-4">{language.systemRoleReplacement} <Help key="systemRoleReplacement" /></span>
-    <SelectInput bind:value={activePreset.systemRoleReplacement}>
+    <SelectInput bind:value={activeModelPreset.systemRoleReplacement}>
         <OptionInput value="user">User</OptionInput>
         <OptionInput value="assistant">assistant</OptionInput>
     </SelectInput>
@@ -344,28 +344,28 @@
     {/if}
 
     {#snippet fallbackModelList(arg: "model" | "memory" | "translate" | "emotion" | "otherAx")}
-        {#each settings.providers.fallbackModels[arg] as model, i}
+        {#each activeModelPreset.fallbackModels[arg] as model, i}
             <span class="text-textcolor mt-4">
                 {language.model}
                 {i + 1}
             </span>
-            <ModelList bind:value={settings.providers.fallbackModels[arg][i]} blankable />
+            <ModelList bind:value={activeModelPreset.fallbackModels[arg][i]} blankable />
         {/each}
         <div class="flex gap-2">
             <button
                 class="bg-selected text-textcolor p-2 rounded-md"
                 onclick={() => {
-                    let value = settings.providers.fallbackModels[arg] ?? [];
+                    let value = activeModelPreset.fallbackModels[arg] ?? [];
                     value.push("");
-                    settings.providers.fallbackModels[arg] = value;
+                    activeModelPreset.fallbackModels[arg] = value;
                 }}><PlusIcon /></button
             >
             <button
                 class="bg-red-500 text-white p-2 rounded-md"
                 onclick={() => {
-                    let value = settings.providers.fallbackModels[arg] ?? [];
+                    let value = activeModelPreset.fallbackModels[arg] ?? [];
                     value.pop();
-                    settings.providers.fallbackModels[arg] = value;
+                    activeModelPreset.fallbackModels[arg] = value;
                 }}><TrashIcon /></button
             >
         </div>
@@ -373,13 +373,8 @@
 
     <Accordion name={language.fallbackModel} styled>
         <Check
-            bind:check={settings.providers.fallbackWhenBlankResponse}
+            bind:check={activeModelPreset.fallbackWhenBlankResponse}
             name={language.fallbackWhenBlankResponse}
-            className="mt-4"
-        />
-        <Check
-            bind:check={settings.providers.doNotChangeFallbackModels}
-            name={language.doNotChangeFallbackModels}
             className="mt-4"
         />
 

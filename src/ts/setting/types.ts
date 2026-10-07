@@ -5,7 +5,13 @@
  * Settings are defined as data and rendered automatically by SettingRenderer.
  */
 
-import type { ActivePersona, ActivePreset, SettingsRootKey, SettingsViews } from "../storage/settingsViews.svelte";
+import type {
+    ActiveModelPreset,
+    ActivePersona,
+    ActivePreset,
+    SettingsRootKey,
+    SettingsViews,
+} from "../storage/settingsViews.svelte";
 import type { CustomComponentId, CustomComponentProps } from "./customComponents";
 import type { LLMModel } from "../model/types";
 
@@ -15,8 +21,10 @@ import type { LLMModel } from "../model/types";
 export interface SettingContext {
     /** The settings record views (`settings.<section>.<field>`, the collections). */
     settings: SettingsViews;
-    /** The selected preset, by its own field names. */
+    /** The selected prompt preset, by its own field names. */
     preset: ActivePreset;
+    /** The selected model preset (`docs/plan/split-preset.md`), by its own field names. */
+    modelPreset: ActiveModelPreset;
     /** The selected persona. */
     persona: ActivePersona;
     modelInfo: LLMModel;

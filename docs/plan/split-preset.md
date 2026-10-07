@@ -1,6 +1,6 @@
 # Split Preset Plan
 
-Status: accepted, not started. Split the single bot preset (`botPreset`, the
+Status: slices 1–3 implemented; slices 4–6 open. Split the single bot preset (`botPreset`, the
 `presets` collection) into a **model preset** and a **prompt preset** that are
 selected independently. A later step lets each chat pick its own pair.
 
@@ -37,9 +37,15 @@ stays a plain preset list.
     files.
 - **Model preset** = a new singleton collection, `modelPresets`
   (`RESOURCE_KIND.modelPresets`), materialized by the server with one default
-  record, normalized in `shared/modelPresets.ts` (`MODEL_PRESET_DEFAULTS`,
-  `normalizeModelPreset(s)`), same rules as presets: an `id` on every record,
-  never empty, credentials never stored.
+  record, normalized by `normalizeModelPreset(s)` in `shared/presets.ts`, same
+  rules as presets: an `id` on every record, never empty, credentials never
+  stored. It holds `name` and the model fields; it has no `image` (the icon
+  stays the prompt preset's).
+- **One schema table**: `PRESET_DEFAULTS` stays the single table of defaults,
+  kinds, and null rules for every field of both records (each field has one
+  owner, so the table cannot conflict); `MODEL_PRESET_FIELDS`,
+  `PROMPT_PRESET_FIELDS`, and `PRESET_RECORD_FIELDS` partition it. A separate
+  model defaults table would drift.
 - **Secrets**: the new `llmSecrets.modelPresets.<id>.proxyKey` map replaces
   `llmSecrets.presets`. The old map is dropped by the normalizer.
 - **Selection**: `selection.modelPresetId` next to `selection.presetId`
@@ -86,6 +92,12 @@ Decided placements (confirmed 2026-10-08):
 - The request contracts keep `presetId` as the prompt preset id and add
   `modelPresetId` (fewer call sites change than a rename to
   `promptPresetId`).
+
+Known mixed containers (recorded exceptions, not reopened): `ooba` (prompt)
+also holds `ooba.formating`, the role prefixes of the Ooba text format, and
+`reverseProxyOobaArgs` (prompt) is copied into the reverse-proxy request body
+without an allowlist, so it can carry more than sampling. Switching the prompt
+preset can therefore change those formatting details for Ooba-style models.
 
 ### Keep-on-switch retires
 
@@ -171,7 +183,7 @@ change.
 
 ## Slices
 
-1. Shared schema: field partition + test, `shared/modelPresets.ts`, the
+1. Shared schema: field partition + test, the model preset normalizer, the
    `modelPresets` resource kind, the `llmSecrets.modelPresets` map, retire
    the keep-on-switch fields from `providers`.
 2. Server: two-id contracts, the shared merge helper, `jobScope`/
@@ -180,6 +192,10 @@ change.
    routing, model preset actions, both ids on every request.
 4. UI: the two settings pages and the preset lists.
 5. Import/export: prompt-only `.risup`.
+   Landed early with slice 3 (forced by the schema split): the prompt-only
+   `downloadPreset` allowlist, imports ignoring `proxyKey`, and the
+   SillyTavern instruct conversion saving its chat format as a separate,
+   unselected model preset.
 6. Docs: `docs/structure/persistence.md`, `settings-i18n.md`,
    `llm-requests.md`, `chat-pipeline.md`, and `STRUCTURE.md` anchors.
 

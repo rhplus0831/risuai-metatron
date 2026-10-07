@@ -2,7 +2,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, vi } from "vitest";
-import { PRESET_KEEP_ON_SWITCH_FIELDS, PRESET_FIELDS, PRESET_ROOT_ALIASES } from "../../../../shared/presets.ts";
+import {
+    MODEL_PRESET_FIELDS,
+    PRESET_FIELDS,
+    PRESET_ROOT_ALIASES,
+    presetFieldOwner,
+} from "../../../../shared/presets.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import {
     COLLECTION_FIELDS,
@@ -23,12 +28,12 @@ import { StoreBackedServer } from "./storeBackedServer";
 // indexes, plus the characters; Phase 6 slice 10) is compared by the rule:
 //
 // 1. every root field of the fixture outside `DROPPED_FIELDS` and the selection keys equals the
-//    post-phase value, a forwarded field read through the layer; the keep-on-switch fields are
-//    `providers` fields and are compared here;
-// 2. the selected preset equals the fixture's effective root (the root working copy, not the dormant
-//    `botPresets[0]` template payload) through `PRESET_ROOT_ALIASES`, apart from `name`,
-//    `image`, and the keep-on-switch group;
-// 3. `personas[0]` ignoring `id`;
+//    post-phase value, a forwarded field read through the layer (the model fields through the
+//    selected model preset since the preset split, `docs/plan/split-preset.md`);
+// 2. the selected prompt preset equals the fixture's effective root (the root working copy, not
+//    the dormant `botPresets[0]` template payload) through `PRESET_ROOT_ALIASES` for the prompt
+//    fields, and the selected model preset for the model fields, apart from `name` and `image`;
+// 3. `personas[0]` and `modelPresets[0]` ignoring `id`;
 // 4. the translator and HypaV3 preset lists ignoring ids, with the first item selected;
 // 5. every other collection deep-equal.
 //
@@ -70,7 +75,8 @@ const fixture: Record<string, any> = JSON.parse(
 const EMPTY_CREDENTIALS = ["claudeAPIKey", "mistralKey", "cohereAPIKey", "novellistAPI"];
 
 const PHASE1_LISTS = ["botPresets", "characters", "modules", "plugins", "pluginCustomStorage"];
-const SELECTABLE = ["personas", "translatorPresets", "hypaV3Presets"];
+/** The collections compared without their ids (random in the capture, or never captured). */
+const SELECTABLE = ["personas", "modelPresets", "translatorPresets", "hypaV3Presets"];
 
 const withoutId = (value: unknown) => {
     const { id, ...rest } = (value ?? {}) as Record<string, unknown>;
@@ -90,6 +96,7 @@ async function bootFresh() {
     const selection = await import("../selection.svelte");
     const records = await import("../records.svelte");
     selection.selectPreset("");
+    selection.selectModelPreset("");
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
     bootstrap.installBootRecords(snapshot);
@@ -99,7 +106,9 @@ async function bootFresh() {
     return {
         snapshot: root as Record<string, any>,
         selected: JSON.parse(JSON.stringify(views.currentPresetRecord())) as Record<string, unknown>,
+        selectedModel: JSON.parse(JSON.stringify(views.currentModelPresetRecord())) as Record<string, unknown>,
         presetCount: views.settings.presets.length as number,
+        modelPresetCount: views.settings.modelPresets.length as number,
         records,
         close: () => server.current.close(),
     };
@@ -109,8 +118,9 @@ describe("the boot snapshot of a fresh store against the fresh-boot fixture", ()
     it("differs only in ids and the id selections", async () => {
         const booted = await bootFresh();
         try {
-            const { snapshot, selected } = booted;
+            const { snapshot, selected, selectedModel } = booted;
             expect(booted.presetCount).toBe(1);
+            expect(booted.modelPresetCount).toBe(1);
 
             const skip = new Set<string>([
                 ...DROPPED_FIELDS,
@@ -140,34 +150,40 @@ describe("the boot snapshot of a fresh store against the fresh-boot fixture", ()
                     unexpected.push({ rule: 1, key, before: "(absent)", after: snapshot[key] });
                 }
             }
-            // The keep-on-switch fields are `providers` fields: compared as root fields, never through
-            // the selected preset. A fresh boot leaves three of them `undefined` in the root, and the
-            // `providers` normalizer never fills the group, so they are unset in both.
-            for (const field of PRESET_KEEP_ON_SWITCH_FIELDS) {
-                expect(isDeepStrictEqual(snapshot[field], fixture[field]), field).toBe(true);
+            // The former keep-on-switch fields are forwarded preset fields now: compared in (1) as
+            // root fields, and present in the fresh boot with their owner's defaults.
+            for (const field of ["seperateModels", "seperateModelsForAxModels", "fallbackWhenBlankResponse"]) {
+                expect(Object.hasOwn(fixture, field), field).toBe(true);
+                expect(snapshot[field], field).not.toBeUndefined();
             }
-            expect(PRESET_KEEP_ON_SWITCH_FIELDS.filter((field) => Object.hasOwn(fixture, field))).toEqual([
-                "fallbackModels",
-                "seperateParameters",
-            ]);
             expect(snapshot.fallbackModels).not.toBeUndefined();
             expect(snapshot.seperateParameters).not.toBeUndefined();
 
-            // (2) The selected preset against the fixture's effective root, through the aliases.
+            // (2) The selected prompt and model presets against the fixture's effective root, through
+            // the aliases, each field read from its owner.
             const rootOf: Record<string, string> = Object.fromEntries(
                 Object.entries(PRESET_ROOT_ALIASES).map(([root, preset]) => [preset, root]),
             );
-            const keepOnSwitch = new Set<string>(PRESET_KEEP_ON_SWITCH_FIELDS);
             for (const field of PRESET_FIELDS) {
-                if (field === "name" || field === "image" || keepOnSwitch.has(field)) continue;
+                if (field === "name" || field === "image") continue;
                 const rootKey = rootOf[field] ?? field;
-                if (isDeepStrictEqual(fixture[rootKey], selected[field])) continue;
-                unexpected.push({ rule: 2, field, rootBefore: fixture[rootKey], presetAfter: selected[field] });
+                const record = presetFieldOwner(field) === "model" ? selectedModel : selected;
+                if (isDeepStrictEqual(fixture[rootKey], record[field])) continue;
+                unexpected.push({ rule: 2, field, rootBefore: fixture[rootKey], presetAfter: record[field] });
             }
+            // The stored shapes are disjoint: the model preset holds no prompt field or image, the
+            // prompt preset no model field.
+            for (const field of MODEL_PRESET_FIELDS) {
+                expect(Object.hasOwn(selected, field), field).toBe(false);
+            }
+            expect(Object.hasOwn(selectedModel, "image")).toBe(false);
+            expect(Object.hasOwn(selectedModel, "temperature")).toBe(false);
 
-            // (3) personas[0] ignoring id.
+            // (3) personas[0] and modelPresets[0] ignoring id.
             expect(snapshot.personas).toHaveLength(fixture.personas.length);
             expect(withoutId(snapshot.personas[0])).toEqual(withoutId(fixture.personas[0]));
+            expect(snapshot.modelPresets).toHaveLength(1);
+            expect(withoutId(snapshot.modelPresets[0])).toEqual(withoutId(fixture.modelPresets[0]));
 
             // (4) The translator and HypaV3 presets ignoring ids; the selection is the first item.
             for (const [list, selectionKey] of Object.entries(COLLECTION_SELECTION_FIELDS)) {

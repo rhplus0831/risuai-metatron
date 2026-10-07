@@ -279,7 +279,7 @@ export async function sendSecretRequest(
                   body: JSON.stringify({ from: request.from, to: request.to, baseRevision }),
                   mutation: true,
               };
-    const path = request.kind === "put" ? `/api/llm-secrets/${request.path}` : "/api/llm-secrets/presets/copy";
+    const path = request.kind === "put" ? `/api/llm-secrets/${request.path}` : "/api/llm-secrets/modelPresets/copy";
     try {
         return checkedEpoch(await sendJson<{ epoch?: string; revision: string; data: unknown }>(path, init));
     } catch (error) {

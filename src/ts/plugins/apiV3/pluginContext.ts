@@ -1,10 +1,10 @@
-import { settings, activePreset, activePersona } from "../../storage/settingsViews.svelte";
+import { settings, activePreset, activeModelPreset, activePersona } from "../../storage/settingsViews.svelte";
 import { untrack } from "svelte";
 import { chatEntry, chatOwnerToken, type ChatRef } from "../../storage/chatStore.svelte";
 
 /**
  * The call context of a plugin hook (Phase 4, `PLAN.md` Decision 5 for client hooks): the chat a hook
- * runs for, the preset selected when its runner started, and the effective persona (the chat's bound
+ * runs for, the prompt and model presets selected when its runner started, and the effective persona (the chat's bound
  * persona, else the selected one; carried for Phase 5, no Phase 4 host function reads it). A runner
  * captures it before its first await and hands it to each hook it calls (`invokeHook`); the hook's
  * wrapper (`v3.svelte.ts`) takes it synchronously and keeps it on its plugin instance's stack until
@@ -20,7 +20,10 @@ import { chatEntry, chatOwnerToken, type ChatRef } from "../../storage/chatStore
  */
 export interface PluginCallContext {
     readonly chatRef: ChatRef;
+    /** The prompt preset. */
     readonly presetId: string;
+    /** The model preset (`docs/plan/split-preset.md`). */
+    readonly modelPresetId: string;
     readonly personaId: string;
     /**
      * The chat's owner lifetime when the context was captured (`chatOwnerToken`): a host function
@@ -49,6 +52,7 @@ export function capturePluginContext(chatRef: ChatRef | null | undefined): Plugi
         return {
             chatRef: { chaId: chatRef.chaId, chatId: chatRef.chatId },
             presetId: activePreset.id ?? "",
+            modelPresetId: activeModelPreset.id ?? "",
             personaId: boundPersona?.id ?? activePersona.id ?? "",
             owner: chatOwnerToken(chatRef.chaId),
         };

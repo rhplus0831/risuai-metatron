@@ -945,15 +945,12 @@ const SECRET_CONFLICT_RETRIES = 2;
 function entryOwnerState(field: SecretEntryMap, id: string): "live" | "unsaved" | "gone" {
     const holds = (list: unknown) =>
         Array.isArray(list) && list.some((entry) => (entry as { id?: unknown } | null)?.id === id);
-    const mirror = recordData(field === "presets" ? RESOURCE_KIND.presets : COLLECTION_KIND.customModels);
+    // Each entry map is named after the settings collection that owns its entries.
+    const mirror = recordData(COLLECTION_KIND[field]);
     if (holds(mirror)) {
         return "live";
     }
-    const saved = persisted.get(
-        field === "presets"
-            ? recordKey(RESOURCE_KIND.presets, SINGLETON_RESOURCE_ID)
-            : collectionKey(COLLECTION_KIND.customModels),
-    )?.text;
+    const saved = persisted.get(collectionKey(COLLECTION_KIND[field]))?.text;
     let savedList: unknown = null;
     try {
         savedList = saved === undefined ? null : JSON.parse(saved);
@@ -1674,13 +1671,13 @@ function applySettingsRecord(
 
 /**
  * Puts a server record into the mirror (data null: the record is gone): a settings record through
- * `applyRaw` (nothing is marked), a character in place. After `presets` or `personas`, the preset and
- * persona selections (this tab's) are resolved against the new list.
+ * `applyRaw` (nothing is marked), a character in place. After `presets`, `modelPresets`, or
+ * `personas`, this tab's selections are resolved against the new list.
  */
 function applyToMirror(kind: string, id: string, data: unknown) {
     if (isSection(kind) || isSettingsCollection(kind)) {
         applySettingsRecord(kind, data);
-        if (kind === COLLECTION_KIND.personas) {
+        if (kind === COLLECTION_KIND.personas || kind === COLLECTION_KIND.modelPresets) {
             reconcileSelection();
         }
         return;

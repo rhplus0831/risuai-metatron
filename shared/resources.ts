@@ -47,6 +47,7 @@ export const RESOURCE_KIND = {
     customModels: "customModels",
     enabledModules: "enabledModules",
     statics: "statics",
+    modelPresets: "modelPresets",
 } as const satisfies { readonly [K in SectionKind | CollectionKind]: K } & Record<string, string>;
 
 export type ResourceKindName = (typeof RESOURCE_KIND)[keyof typeof RESOURCE_KIND];
@@ -216,14 +217,15 @@ export type BackupArchiveManifest = {
 
 /**
  * Phase 3 payloads. A section record holds its
- * `SECTION_FIELDS` under their `Database` names; `llmSecrets` also holds the per-preset `proxyKey`
- * map, keyed by preset id.
+ * `SECTION_FIELDS` under their `Database` names; `llmSecrets` also holds the per-model-preset
+ * `proxyKey` map, keyed by model preset id.
  */
 export type SectionResource<K extends SectionKind> = Pick<Database, (typeof SECTION_FIELDS)[K][number]>;
 
 /** The stored record (the server's view); a client reads `MaskedLlmSecrets` (`shared/llmSecrets.ts`). */
 export type LlmSecretsResource = SectionResource<"llmSecrets"> & {
-    presets: Record<string, { proxyKey: string }>;
+    /** Each model preset's reverse-proxy key, by model preset id (`docs/plan/split-preset.md`). */
+    modelPresets: Record<string, { proxyKey: string }>;
     /** Each custom model's key, by model id (moved from `customModels[].key`, Phase 5 slice 7b). */
     customModels: Record<string, { key: string }>;
 };

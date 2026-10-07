@@ -104,6 +104,7 @@ function setup() {
         characterId: "c",
         chatId: "k",
         presetId: null,
+        modelPresetId: null,
         personaId: null,
         mode: "normal",
         input,

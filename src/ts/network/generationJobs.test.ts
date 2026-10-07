@@ -143,6 +143,7 @@ describe("the requests", () => {
             characterId: "c",
             chatId: "k",
             presetId: null,
+            modelPresetId: null,
             personaId: null,
             mode: "normal",
             input: "",
@@ -405,7 +406,7 @@ describe("the event dispatcher and the resume", () => {
         expect(transport.savedGenerationJobs()).toEqual({});
     });
 
-    it("applies a job's `preset` event with changeToPreset(id, true) once per job, whatever an attach re-sends (slice 9)", async () => {
+    it("applies a job's `preset` event with changeToPreset(id) once per job, whatever an attach re-sends (slice 9)", async () => {
         // An earlier test's preset event may still settle its import: start from a clean count.
         await flush();
         stubs.changeToPreset.mockClear();
@@ -414,13 +415,10 @@ describe("the event dispatcher and the resume", () => {
         transport.applyGenerationEvent("jp1", ref, preset);
         transport.applyGenerationEvent("jp1", ref, { ...preset, presetId: "pb" });
         await flush();
-        expect(stubs.changeToPreset.mock.calls).toEqual([["pa", true]]);
+        expect(stubs.changeToPreset.mock.calls).toEqual([["pa"]]);
         transport.applyGenerationEvent("jp2", ref, { ...preset, presetId: "pb" });
         await flush();
-        expect(stubs.changeToPreset.mock.calls).toEqual([
-            ["pa", true],
-            ["pb", true],
-        ]);
+        expect(stubs.changeToPreset.mock.calls).toEqual([["pa"], ["pb"]]);
         expect(stubs.endServerJob).not.toHaveBeenCalled();
     });
 
@@ -452,7 +450,7 @@ describe("the event dispatcher and the resume", () => {
             id: "cb",
             jobId: "j1",
             name: "editoutput" as const,
-            targets: { chatRef: ref, presetId: "", personaId: "" },
+            targets: { chatRef: ref, presetId: "", modelPresetId: "", personaId: "" },
             revisions: [],
             payload: { text: "t" },
             deadline: 1,

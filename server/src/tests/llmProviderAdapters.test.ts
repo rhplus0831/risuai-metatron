@@ -4,7 +4,7 @@ import { LLMFlags, LLMFormat } from "../../../shared/llm.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import type { RequestArgs, ToolCallRecord, ToolDescriptor } from "../../../shared/llm/request.ts";
 import { normalizePersonas } from "../../../shared/personas.ts";
-import { normalizePresets } from "../../../shared/presets.ts";
+import { normalizeModelPresets, normalizePresets } from "../../../shared/presets.ts";
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeProviders } from "../data/normalize/providers.ts";
 import type { RequestContext } from "../llm/context.ts";
@@ -83,22 +83,23 @@ function settings(overrides: Settings = {}) {
             claudeAPIKey: SECRETS.claudeAPIKey,
             mistralKey: SECRETS.mistralKey,
             google: { accessToken: SECRETS.google, projectId: "proj-1" },
-            presets: { p: { proxyKey: SECRETS.proxyKey } },
+            modelPresets: { m: { proxyKey: SECRETS.proxyKey } },
             ...overrides.secrets,
         }),
         ui: { autoSuggestPrefix: "" },
         customModels: overrides.customModels ?? [],
-        presets: normalizePresets([
+        // `overrides.preset` may mix both owners' fields: each normalizer keeps its own
+        // (`docs/plan/split-preset.md`), so the prompt preset `p` and the model preset `m` split it.
+        presets: normalizePresets([{ id: "p", name: "p", maxResponse: 300, temperature: 70, ...overrides.preset }]),
+        modelPresets: normalizeModelPresets([
             {
-                id: "p",
-                name: "p",
+                id: "m",
+                name: "m",
                 aiModel: "reverse_proxy",
                 subModel: "reverse_proxy",
                 forceReplaceUrl: PROVIDER,
                 customProxyRequestModel: "mock-model",
                 customAPIFormat: LLMFormat.OpenAICompatible,
-                maxResponse: 300,
-                temperature: 70,
                 ...overrides.preset,
             },
         ]),
@@ -118,6 +119,7 @@ function settings(overrides: Settings = {}) {
     const kinds = { get: (name: string) => ({ name }) } as never;
     return loadRequestDb(store, kinds, {
         presetId: "p",
+        modelPresetId: "m",
         personaId: "u",
         selectedPersonaId: "u",
         selectedCharacterId: overrides.selectedCharacterName === null ? null : "c",
@@ -815,8 +817,9 @@ describe("the server provider adapters", () => {
 
     it("the auxiliary model of a translate call (`seperateModels`) and the sub model", async () => {
         const aux = await run({
+            // The auxiliary models are model preset fields (`docs/plan/split-preset.md`).
             settings: {
-                providers: { seperateModelsForAxModels: true, seperateModels: { translate: "mistral-small-latest" } },
+                preset: { seperateModelsForAxModels: true, seperateModels: { translate: "mistral-small-latest" } },
             },
             arg: prompt(),
             mode: "translate",

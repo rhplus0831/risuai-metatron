@@ -68,6 +68,7 @@ vi.mock("src/ts/plugins/apiV3/pluginContext", async () => {
                 ? {
                       chatRef,
                       presetId: selection.presetId,
+                      modelPresetId: selection.modelPresetId,
                       personaId: stubs.selected.bound?.id ?? selection.personaId,
                   }
                 : undefined,
@@ -99,9 +100,9 @@ vi.mock("../../mcp/mcp", () => ({
 }));
 
 import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
-import { selectCharacter, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
-import { activePreset } from "src/ts/storage/settingsViews.svelte";
-import { takeRootPresetFields } from "src/ts/storage/tests/installFlatDatabase";
+import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
+import { activeModelPreset } from "src/ts/storage/settingsViews.svelte";
+import { modelPresetOf, takeRootPresetFields } from "src/ts/storage/tests/installFlatDatabase";
 import { requestServer } from "../transport";
 import {
     assembleChats,
@@ -144,9 +145,10 @@ function assembleFixture(unloaded: readonly string[]) {
  * The settings installed in the records (as the removed `setDatabaseLite` installed a database;
  * there is no whole-database object since Phase 6 slice 10), since the transport reads them
  * through the record views (Phase 6 slice 7): `stubs.db`'s preset fields in
- * each of the two presets, its section fields in their sections, two personas, two characters
- * (the transport reads the selected one, Phase 6 slice 8); preset-1, persona-1, and char-1
- * selected.
+ * each of the two presets (`installFlatDatabase` would split them; here the model fields go to the
+ * model presets of the same ids, `docs/plan/split-preset.md`), its section fields in their sections,
+ * two personas, two characters (the transport reads the selected one, Phase 6 slice 8); preset-1 (both
+ * kinds), persona-1, and char-1 selected.
  */
 function installSettings() {
     const raw = { ...stubs.db };
@@ -155,6 +157,7 @@ function installSettings() {
         { ...preset, id: "preset-1", name: "Preset 1" },
         { ...preset, id: "preset-2", name: "Preset 2" },
     ];
+    raw.modelPresets = (raw.botPresets as Record<string, unknown>[]).map(modelPresetOf);
     raw.personas = [
         { id: "persona-1", name: "Persona 1" },
         { id: "persona-2", name: "Persona 2" },
@@ -167,6 +170,7 @@ function installSettings() {
     initializeRecords(takeRecordFields(raw));
     assembleFixture([]);
     selectPreset("preset-1");
+    selectModelPreset("preset-1");
     selectPersona("persona-1");
     selectCharacter("char-1");
 }
@@ -276,6 +280,7 @@ describe("the request body", () => {
             pluginContext: {
                 chatRef: { chaId: "char-9", chatId: "chat-9" },
                 presetId: "preset-ctx",
+                modelPresetId: "model-ctx",
                 personaId: "persona-ctx",
             },
             tools,
@@ -285,9 +290,10 @@ describe("the request body", () => {
         expect(stubs.fetch).not.toHaveBeenCalled();
         // The selection moves and the caller mutates its inputs while the save flushes.
         selectPreset("preset-2");
+        selectModelPreset("preset-2");
         selectPersona("persona-2");
         selectCharacter("char-2");
-        activePreset.aiModel = "with-images";
+        activeModelPreset.aiModel = "with-images";
         (tools[0].inputSchema as { type: string }).type = "mutated";
         arg.formated[0].content = "mutated";
         release();
@@ -298,6 +304,7 @@ describe("the request body", () => {
             mode: "submodel",
             context: {
                 presetId: "preset-ctx",
+                modelPresetId: "model-ctx",
                 personaId: "bound-1",
                 selectedPersonaId: "persona-1",
                 selectedCharacterId: "char-1",
@@ -332,8 +339,8 @@ describe("the request body", () => {
     it("falls back to the selection for a request without a chat, sends a dynamic model's descriptor, the active job callback, and the prompt's tool records", async () => {
         stubs.dynamicIds.add("dynamic_google_x");
         stubs.channelCall = { jobId: "job-1", callbackId: "cb-1" };
-        activePreset.aiModel = "with-images";
-        activePreset.currentPluginProvider = "legacy";
+        activeModelPreset.aiModel = "with-images";
+        activeModelPreset.currentPluginProvider = "legacy";
         stubs.decodeToolCall.mockImplementation(async (inner) =>
             inner === "id-1name" ? { call: { id: "id-1", name: "name", arg: {} }, response: [] } : undefined,
         );
@@ -356,6 +363,7 @@ describe("the request body", () => {
         const body = postedBody();
         expect(body.context).toMatchObject({
             presetId: "preset-1",
+            modelPresetId: "preset-1",
             personaId: "persona-1",
             selectedCharacterId: "char-1",
             speakerId: null,
@@ -374,7 +382,39 @@ describe("the request body", () => {
         expect(body.toolRecords).toEqual({
             "id-1name": { call: { id: "id-1", name: "name", arg: {} }, response: [] },
         });
-        activePreset.currentPluginProvider = "";
+        activeModelPreset.currentPluginProvider = "";
+    });
+
+    it("tokenizes and names the main model of the request's captured model preset, not the selected one", async () => {
+        // A hook captured model preset `preset-2` while `preset-1` is selected (the pair the server
+        // receives is the pair the tab decided with, `docs/plan/split-preset.md`).
+        activeModelPreset.aiModel = "reverse_proxy";
+        selectModelPreset("preset-2");
+        activeModelPreset.aiModel = "with-images";
+        activeModelPreset.currentPluginProvider = "legacy";
+        selectModelPreset("preset-1");
+        await requestServer(
+            {
+                ...baseArg(),
+                chatRef: { chaId: "char-9", chatId: "chat-9" },
+                pluginContext: {
+                    chatRef: { chaId: "char-9", chatId: "chat-9" },
+                    presetId: "preset-1",
+                    modelPresetId: "preset-2",
+                    personaId: "persona-1",
+                },
+            } as never,
+            "model",
+            null,
+            modelInfo,
+        );
+        const body = postedBody();
+        expect(body.context).toMatchObject({
+            presetId: "preset-1",
+            modelPresetId: "preset-2",
+            mainModel: { imageInput: true },
+            tokenizer: { aiModel: "with-images", currentPluginProvider: "legacy", pluginTokenizer: "llama" },
+        });
     });
 
     it("sends nothing when the flush is refused, or the caller aborted before, during the flush, or during the tool-record read", async () => {
@@ -642,7 +682,7 @@ describe("the callbacks", () => {
         );
         await flushTick();
         await flushTick();
-        const scope = { presetId: "preset-1", personaId: "bound-1" };
+        const scope = { presetId: "preset-1", modelPresetId: "preset-1", personaId: "bound-1" };
         expect(stubs.parserScoped.mock.calls).toEqual([
             ["{{user}}", { chatRef: { chaId: "char-9", chatId: "chat-9" } }, scope],
             ["{{char}}", { chatRef: { chaId: "other", chatId: "k" } }, scope],
@@ -680,7 +720,7 @@ describe("the callbacks", () => {
         expect(stubs.parserScoped.mock.calls[0]).toEqual([
             "x",
             { chatRef: { chaId: "char-1", chatId: "chat-1" } },
-            { presetId: "preset-1", personaId: "persona-1" },
+            { presetId: "preset-1", modelPresetId: "preset-1", personaId: "persona-1" },
         ]);
         selectCharacter(null);
         stubs.fetch.mockResolvedValueOnce(
@@ -692,7 +732,11 @@ describe("the callbacks", () => {
         );
         await requestServer(baseArg() as never, "model", null, modelInfo);
         await flushTick();
-        expect(stubs.parserScoped.mock.calls[1]).toEqual(["y", {}, { presetId: "preset-1", personaId: "persona-1" }]);
+        expect(stubs.parserScoped.mock.calls[1]).toEqual([
+            "y",
+            {},
+            { presetId: "preset-1", modelPresetId: "preset-1", personaId: "persona-1" },
+        ]);
     });
 
     it("keeps the stream flowing while a tool runs, and starts no queued tool after the consumer cancelled", async () => {
@@ -780,7 +824,7 @@ describe("the request's chats (Phase 6 slice 9b)", () => {
             [
                 "{{char}}",
                 { chatRef: { chaId: "other", chatId: "k" } },
-                { presetId: "preset-1", personaId: "persona-1" },
+                { presetId: "preset-1", modelPresetId: "preset-1", personaId: "persona-1" },
             ],
         ]);
         // Answered as each finishes (the gone chat's callback fails before the load's parse answers).

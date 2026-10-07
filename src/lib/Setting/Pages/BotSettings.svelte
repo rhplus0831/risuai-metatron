@@ -1,5 +1,10 @@
 <script lang="ts">
-    import { settings, activePreset, currentPresetRecord } from "src/ts/storage/settingsViews.svelte";
+    import {
+        activeModelPreset,
+        settings,
+        activePreset,
+        currentPresetRecord,
+    } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { language } from "src/lang";
     import Help from "src/lib/Others/Help.svelte";
@@ -112,14 +117,14 @@
     }
 
     $effect.pre(() => {
-        if (activePreset.aiModel === "textgen_webui" || activePreset.subModel === "mancer") {
-            settings.providers.useStreaming = activePreset.textgenWebUIStreamURL.startsWith("wss://");
+        if (activeModelPreset.aiModel === "textgen_webui" || activeModelPreset.subModel === "mancer") {
+            settings.providers.useStreaming = activeModelPreset.textgenWebUIStreamURL.startsWith("wss://");
         }
     });
 
     let submenu = $state(settings.ui.useLegacyGUI ? -1 : 0);
-    let modelInfo = $derived(getModelInfo(activePreset.aiModel));
-    let subModelInfo = $derived(getModelInfo(activePreset.subModel));
+    let modelInfo = $derived(getModelInfo(activeModelPreset.aiModel));
+    let subModelInfo = $derived(getModelInfo(activeModelPreset.subModel));
     let nanogptInputMode = $state<"list" | "manual">(
         settings.providers.nanogptRequestModel && !settings.providers.nanogptRequestModelName ? "manual" : "list",
     );
@@ -134,9 +139,11 @@
     });
 
     let usesOllamaLocal = $derived(
-        activePreset.aiModel === "ollama-hosted" || activePreset.subModel === "ollama-hosted",
+        activeModelPreset.aiModel === "ollama-hosted" || activeModelPreset.subModel === "ollama-hosted",
     );
-    let usesOllamaCloud = $derived(activePreset.aiModel === "ollama-cloud" || activePreset.subModel === "ollama-cloud");
+    let usesOllamaCloud = $derived(
+        activeModelPreset.aiModel === "ollama-cloud" || activeModelPreset.subModel === "ollama-cloud",
+    );
 </script>
 
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.chatBot}</h2>
@@ -184,10 +191,10 @@
 
 {#if submenu === 0 || submenu === -1}
     <span class="text-textcolor mt-4">{language.model} <Help key="model" /></span>
-    <ModelList bind:value={activePreset.aiModel} />
+    <ModelList bind:value={activeModelPreset.aiModel} />
 
     <span class="text-textcolor mt-2">{language.submodel} <Help key="submodel" /></span>
-    <ModelList bind:value={activePreset.subModel} />
+    <ModelList bind:value={activeModelPreset.subModel} />
 
     {#if modelInfo.provider === LLMProvider.GoogleCloud || subModelInfo.provider === LLMProvider.GoogleCloud}
         <span class="text-textcolor">GoogleAI API Key</span>
@@ -226,7 +233,7 @@
         <span class="text-textcolor">NovelList {language.apiKey}</span>
         <SecretInput path={{ kind: "flat", field: "novellistAPI" }} marginBottom />
     {/if}
-    {#if activePreset.aiModel.startsWith("mancer") || activePreset.subModel.startsWith("mancer")}
+    {#if activeModelPreset.aiModel.startsWith("mancer") || activeModelPreset.subModel.startsWith("mancer")}
         <span class="text-textcolor">Mancer {language.apiKey}</span>
         <SecretInput path={{ kind: "flat", field: "mancerHeader" }} marginBottom />
     {/if}
@@ -242,17 +249,17 @@
         <span class="text-textcolor">NovelAI Bearer Token</span>
         <SecretInput path={{ kind: "nested", field: "novelai" }} />
     {/if}
-    {#if activePreset.aiModel === "reverse_proxy" || activePreset.subModel === "reverse_proxy"}
+    {#if activeModelPreset.aiModel === "reverse_proxy" || activeModelPreset.subModel === "reverse_proxy"}
         <span class="text-textcolor mt-2">URL <Help key="forceUrl" /></span>
         <TextInput
             marginBottom={false}
             size={"sm"}
-            bind:value={activePreset.forceReplaceUrl}
+            bind:value={activeModelPreset.forceReplaceUrl}
             placeholder="https//..."
         />
         <span class="text-textcolor mt-4"> {language.proxyAPIKey}</span>
         <SecretInput
-            path={{ kind: "entry", field: "presets", id: activePreset.id ?? "" }}
+            path={{ kind: "entry", field: "modelPresets", id: activeModelPreset.id ?? "" }}
             marginBottom
             placeholder="leave it blank if it hasn't password"
         />
@@ -260,14 +267,14 @@
         <TextInput
             marginBottom={false}
             size={"sm"}
-            bind:value={activePreset.customProxyRequestModel}
+            bind:value={activeModelPreset.customProxyRequestModel}
             placeholder="Name"
         />
         <span class="text-textcolor mt-4"> {language.format}</span>
         <SelectInput
-            value={activePreset.customAPIFormat.toString()}
+            value={activeModelPreset.customAPIFormat.toString()}
             onchange={(e) => {
-                activePreset.customAPIFormat = parseInt(e.currentTarget.value) as LLMFormat;
+                activeModelPreset.customAPIFormat = parseInt(e.currentTarget.value) as LLMFormat;
             }}
         >
             <OptionInput value={LLMFormat.OpenAICompatible.toString()}>OpenAI Compatible</OptionInput>
@@ -372,7 +379,7 @@
             </SelectInput>
         {/if}
     {/if}
-    {#if activePreset.aiModel === "nanogpt" || activePreset.subModel === "nanogpt"}
+    {#if activeModelPreset.aiModel === "nanogpt" || activeModelPreset.subModel === "nanogpt"}
         <span class="text-textcolor mt-4">NanoGPT {language.apiKey}</span>
         <SecretInput path={{ kind: "flat", field: "nanogptKey" }} marginBottom />
 
@@ -434,26 +441,26 @@
             {/await}
         {/if}
     {/if}
-    {#if activePreset.aiModel === "openrouter" || activePreset.subModel === "openrouter"}
+    {#if activeModelPreset.aiModel === "openrouter" || activeModelPreset.subModel === "openrouter"}
         <span class="text-textcolor mt-4">OpenRouter {language.apiKey}</span>
         <SecretInput path={{ kind: "flat", field: "openrouterKey" }} marginBottom />
 
         <span class="text-textcolor mt-4">OpenRouter {language.model}</span>
         {#await getOpenRouterModels()}
             <ModelGrid
-                bind:value={activePreset.openrouterRequestModel}
+                bind:value={activeModelPreset.openrouterRequestModel}
                 pinnedItems={openrouterPinnedItems}
                 loading={true}
             />
         {:then m}
             <ModelGrid
-                bind:value={activePreset.openrouterRequestModel}
+                bind:value={activeModelPreset.openrouterRequestModel}
                 items={(m ?? []).map(orToGridItem)}
                 pinnedItems={openrouterPinnedItems}
             />
         {/await}
     {/if}
-    {#if activePreset.aiModel === "openrouter" || activePreset.aiModel === "reverse_proxy"}
+    {#if activeModelPreset.aiModel === "openrouter" || activeModelPreset.aiModel === "reverse_proxy"}
         <span class="text-textcolor">{language.tokenizer}</span>
         <SelectInput bind:value={settings.providers.customTokenizer}>
             {#each tokenizerList as entry}
@@ -485,7 +492,7 @@
             {/if}
         {/if}
 
-        {#if activePreset.aiModel === "reverse_proxy" || activePreset.subModel === "reverse_proxy"}
+        {#if activeModelPreset.aiModel === "reverse_proxy" || activeModelPreset.subModel === "reverse_proxy"}
             <Check bind:check={settings.providers.reverseProxyOobaMode} name={`${language.reverseProxyOobaMode}`} />
         {/if}
         {#if modelInfo.provider === LLMProvider.NovelAI || subModelInfo.provider === LLMProvider.NovelAI}
@@ -495,9 +502,9 @@
         {/if}
     </div>
 
-    {#if activePreset.aiModel === "custom" || activePreset.subModel === "custom"}
+    {#if activeModelPreset.aiModel === "custom" || activeModelPreset.subModel === "custom"}
         <span class="text-textcolor mt-2">{language.plugin}</span>
-        <SelectInput className="mt-2 mb-4" bind:value={activePreset.currentPluginProvider}>
+        <SelectInput className="mt-2 mb-4" bind:value={activeModelPreset.currentPluginProvider}>
             <OptionInput value="">None</OptionInput>
             {#each $customProviderStore as plugin}
                 <OptionInput value={plugin}>{plugin}</OptionInput>
@@ -505,12 +512,12 @@
         </SelectInput>
     {/if}
 
-    {#if activePreset.aiModel === "kobold" || activePreset.subModel === "kobold"}
+    {#if activeModelPreset.aiModel === "kobold" || activeModelPreset.subModel === "kobold"}
         <span class="text-textcolor">Kobold URL</span>
-        <TextInput marginBottom={true} bind:value={activePreset.koboldURL} />
+        <TextInput marginBottom={true} bind:value={activeModelPreset.koboldURL} />
     {/if}
 
-    {#if activePreset.aiModel === "echo_model" || activePreset.subModel === "echo_model"}
+    {#if activeModelPreset.aiModel === "echo_model" || activeModelPreset.subModel === "echo_model"}
         <span class="text-textcolor mt-2">Echo Message</span>
         <TextAreaInput
             margin="bottom"
@@ -521,26 +528,34 @@
         <NumberInput marginBottom={true} bind:value={settings.providers.echoDelay} min={0} />
     {/if}
 
-    {#if activePreset.aiModel.startsWith("horde") || activePreset.subModel.startsWith("horde")}
+    {#if activeModelPreset.aiModel.startsWith("horde") || activeModelPreset.subModel.startsWith("horde")}
         <span class="text-textcolor">Horde {language.apiKey}</span>
         <SecretInput path={{ kind: "nested", field: "hordeConfig" }} marginBottom />
     {/if}
-    {#if activePreset.aiModel === "textgen_webui" || activePreset.subModel === "textgen_webui" || activePreset.aiModel === "mancer" || activePreset.subModel === "mancer"}
+    {#if activeModelPreset.aiModel === "textgen_webui" || activeModelPreset.subModel === "textgen_webui" || activeModelPreset.aiModel === "mancer" || activeModelPreset.subModel === "mancer"}
         <span class="text-textcolor mt-2">Blocking {language.providerURL}</span>
-        <TextInput marginBottom={true} bind:value={activePreset.textgenWebUIBlockingURL} placeholder="https://..." />
+        <TextInput
+            marginBottom={true}
+            bind:value={activeModelPreset.textgenWebUIBlockingURL}
+            placeholder="https://..."
+        />
         <span class="text-draculared text-xs mb-2">You must use textgen webui with --public-api</span>
         <span class="text-textcolor mt-2">Stream {language.providerURL}</span>
-        <TextInput marginBottom={true} bind:value={activePreset.textgenWebUIStreamURL} placeholder="wss://..." />
+        <TextInput marginBottom={true} bind:value={activeModelPreset.textgenWebUIStreamURL} placeholder="wss://..." />
         <span class="text-draculared text-xs mb-2"
             >Warning: For Ooba version over 1.7, use "Ooba" as model, and use url like
             http://127.0.0.1:5000/v1/chat/completions</span
         >
     {/if}
-    {#if activePreset.aiModel === "ooba" || activePreset.subModel === "ooba"}
+    {#if activeModelPreset.aiModel === "ooba" || activeModelPreset.subModel === "ooba"}
         <span class="text-textcolor mt-2">Ooba {language.providerURL}</span>
-        <TextInput marginBottom={true} bind:value={activePreset.textgenWebUIBlockingURL} placeholder="https://..." />
+        <TextInput
+            marginBottom={true}
+            bind:value={activeModelPreset.textgenWebUIBlockingURL}
+            placeholder="https://..."
+        />
     {/if}
-    {#if activePreset.aiModel.startsWith("horde") || activePreset.aiModel === "kobold"}
+    {#if activeModelPreset.aiModel.startsWith("horde") || activeModelPreset.aiModel === "kobold"}
         <ChatFormatSettings />
     {/if}
 
@@ -552,7 +567,7 @@
 {#if submenu === 1 || submenu === -1}
     <!-- Data-driven basic parameters -->
     <SettingRenderer items={allBasicParameterItems} {modelInfo} {subModelInfo} />
-    {#if activePreset.aiModel === "textgen_webui" || activePreset.aiModel === "mancer" || activePreset.aiModel.startsWith("local_") || activePreset.aiModel.startsWith("hf:::")}
+    {#if activeModelPreset.aiModel === "textgen_webui" || activeModelPreset.aiModel === "mancer" || activeModelPreset.aiModel.startsWith("local_") || activeModelPreset.aiModel.startsWith("hf:::")}
         <span class="text-textcolor">Repetition Penalty</span>
         <SliderInput
             min={1}
@@ -777,11 +792,11 @@
         <!-- Standard parameters now handled by SettingRenderer above -->
     {/if}
 
-    {#if (settings.providers.reverseProxyOobaMode && activePreset.aiModel === "reverse_proxy") || activePreset.aiModel === "ooba"}
-        <OobaSettings instructionMode={activePreset.aiModel === "ooba"} />
+    {#if (settings.providers.reverseProxyOobaMode && activeModelPreset.aiModel === "reverse_proxy") || activeModelPreset.aiModel === "ooba"}
+        <OobaSettings instructionMode={activeModelPreset.aiModel === "ooba"} />
     {/if}
 
-    {#if activePreset.aiModel.startsWith("openrouter")}
+    {#if activeModelPreset.aiModel.startsWith("openrouter")}
         <OpenrouterSettings />
     {/if}
 
@@ -925,22 +940,22 @@
         <Button
             className="mt-2"
             onclick={(e) => {
-                if (activePreset.customFlags.includes(flag as LLMFlags)) {
-                    activePreset.customFlags = activePreset.customFlags.filter((f) => f !== flag);
+                if (activeModelPreset.customFlags.includes(flag as LLMFlags)) {
+                    activeModelPreset.customFlags = activeModelPreset.customFlags.filter((f) => f !== flag);
                 } else {
-                    activePreset.customFlags.push(flag as LLMFlags);
+                    activeModelPreset.customFlags.push(flag as LLMFlags);
                 }
             }}
-            styled={activePreset.customFlags.includes(flag as LLMFlags) ? "primary" : "outlined"}
+            styled={activeModelPreset.customFlags.includes(flag as LLMFlags) ? "primary" : "outlined"}
         >
             {name}
         </Button>
     {/snippet}
 
     <Accordion styled name={language.customFlags}>
-        <Check bind:check={activePreset.enableCustomFlags} name={language.enableCustomFlags} />
+        <Check bind:check={activeModelPreset.enableCustomFlags} name={language.enableCustomFlags} />
 
-        {#if activePreset.enableCustomFlags}
+        {#if activeModelPreset.enableCustomFlags}
             {@render CustomFlagButton("hasImageInput", 0)}
             {@render CustomFlagButton("hasImageOutput", 1)}
             {@render CustomFlagButton("hasAudioInput", 2)}
@@ -975,12 +990,12 @@
     <Accordion styled name={language.tools}>
         <Check
             name={language.search}
-            check={activePreset.modelTools.includes("search")}
+            check={activeModelPreset.modelTools.includes("search")}
             onChange={() => {
-                if (activePreset.modelTools.includes("search")) {
-                    activePreset.modelTools = activePreset.modelTools.filter((tool) => tool !== "search");
+                if (activeModelPreset.modelTools.includes("search")) {
+                    activeModelPreset.modelTools = activeModelPreset.modelTools.filter((tool) => tool !== "search");
                 } else {
-                    activePreset.modelTools.push("search");
+                    activeModelPreset.modelTools.push("search");
                 }
             }}
         />

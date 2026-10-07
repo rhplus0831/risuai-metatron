@@ -41,7 +41,7 @@ function bootDefaults(section: SectionKind): Record<string, unknown> {
         }
     }
     if (section === "llmSecrets") {
-        record.presets = {};
+        record.modelPresets = {};
         // Phase 5 slice 7b: each custom model's key, by model id.
         record.customModels = {};
     }
@@ -163,24 +163,13 @@ describe("every section normalizer", () => {
 
 /**
  * The section-specific migrations rewrite a few kept containers, so the "kept as sent" expectation
- * tolerates them: the hypaCustomSettings rebuild, the keep-on-switch containers, the NAI v4 fields,
- * the quote colors, and the chat load pages.
+ * tolerates them: the hypaCustomSettings rebuild, the NAI v4 fields, the quote colors, and the
+ * chat load pages.
  */
 function mutationTolerant(section: SectionKind, kept: Record<string, unknown>): Record<string, unknown> {
     const out = { ...kept };
     if (section === "secrets") {
         out.hypaCustomSettings = { url: "", key: "", model: "" };
-    }
-    if (section === "providers") {
-        out.seperateParameters = { marker: "seperateParameters", overrides: {} };
-        out.fallbackModels = {
-            marker: "fallbackModels",
-            model: [],
-            memory: [],
-            emotion: [],
-            translate: [],
-            otherAx: [],
-        };
     }
     if (section === "memoryTranslateMedia") {
         out.NAIImgConfig = expect.objectContaining({ marker: "NAIImgConfig", autoSmea: false });
@@ -192,30 +181,31 @@ function mutationTolerant(section: SectionKind, kept: Record<string, unknown>): 
 }
 
 describe("providers", () => {
-    it("applies the keep-on-switch migrations: `overrides` on seperateParameters and clean fallbackModels lists", () => {
+    it("drops the former keep-on-switch copies and their three toggles: they are preset fields now (docs/plan/split-preset.md)", () => {
         const out = normalizeProviders({
+            seperateModels: { memory: "m", emotion: "", translate: "", otherAx: "" },
+            seperateModelsForAxModels: true,
+            fallbackModels: { model: ["a", "", "b"], memory: [], emotion: [], translate: [], otherAx: [] },
+            fallbackWhenBlankResponse: true,
             seperateParameters: { memory: { temperature: 1 }, emotion: {}, translate: {}, otherAx: {} },
-            fallbackModels: { model: ["a", "", "b"], memory: "not a list", extra: 1 },
+            doNotChangeSeperateModels: true,
+            doNotChangeFallbackModels: true,
+            disableSeperateParameterChangeOnPresetChange: true,
         });
-        expect(out.seperateParameters).toEqual({
-            memory: { temperature: 1 },
-            emotion: {},
-            translate: {},
-            otherAx: {},
-            overrides: {},
-        });
-        expect(out.fallbackModels).toEqual({
-            model: ["a", "b"],
-            memory: [],
-            emotion: [],
-            translate: [],
-            otherAx: [],
-            extra: 1,
-        });
-        expectIdempotent(normalizeProviders, {
-            seperateParameters: { memory: {}, emotion: {}, translate: {}, otherAx: {} },
-            fallbackModels: { model: ["a", ""] },
-        });
+        for (const field of [
+            "seperateModels",
+            "seperateModelsForAxModels",
+            "fallbackModels",
+            "fallbackWhenBlankResponse",
+            "seperateParameters",
+            "doNotChangeSeperateModels",
+            "doNotChangeFallbackModels",
+            "disableSeperateParameterChangeOnPresetChange",
+        ]) {
+            expect(Object.hasOwn(out, field), field).toBe(false);
+            expect(SECTION_FIELDS.providers as readonly string[], field).not.toContain(field);
+        }
+        expectIdempotent(normalizeProviders, { seperateParameters: { memory: {} }, fallbackModels: { model: ["a"] } });
     });
 
     it("keeps the fresh-boot constants that setDatabase derived from other fields", () => {
@@ -247,32 +237,35 @@ describe("llmSecrets", () => {
         expect(normalizeLlmSecrets({ vertexAccessTokenExpires: 42 }).vertexAccessTokenExpires).toBe(42);
     });
 
-    it("keeps the per-preset proxyKey map with only `proxyKey` per entry, as own keys, and `{}` when absent", () => {
-        expect(normalizeLlmSecrets(undefined).presets).toEqual({});
-        expect(normalizeLlmSecrets({}).presets).toEqual({});
+    it("keeps the per-model-preset proxyKey map with only `proxyKey` per entry, as own keys, `{}` when absent, and drops the former `presets` map", () => {
+        expect(normalizeLlmSecrets(undefined).modelPresets).toEqual({});
+        expect(normalizeLlmSecrets({}).modelPresets).toEqual({});
         const input = JSON.parse(
-            '{"presets":{"a":{"proxyKey":"k","extra":1},"__proto__":{"proxyKey":"p"},"constructor":{"proxyKey":"c"}}}',
+            '{"modelPresets":{"a":{"proxyKey":"k","extra":1},"__proto__":{"proxyKey":"p"},"constructor":{"proxyKey":"c"}},"presets":{"old":{"proxyKey":"gone"}}}',
         );
         const out = normalizeLlmSecrets(input);
-        expect(Object.getPrototypeOf(out.presets)).toBe(Object.prototype);
-        expect(Object.keys(out.presets)).toEqual(["a", "__proto__", "constructor"]);
-        expect(out.presets.a).toEqual({ proxyKey: "k" });
-        expect(Object.getOwnPropertyDescriptor(out.presets, "__proto__")?.value).toEqual({ proxyKey: "p" });
-        expect(Object.getOwnPropertyDescriptor(out.presets, "constructor")?.value).toEqual({ proxyKey: "c" });
+        expect(Object.getPrototypeOf(out.modelPresets)).toBe(Object.prototype);
+        expect(Object.keys(out.modelPresets)).toEqual(["a", "__proto__", "constructor"]);
+        expect(out.modelPresets.a).toEqual({ proxyKey: "k" });
+        expect(Object.getOwnPropertyDescriptor(out.modelPresets, "__proto__")?.value).toEqual({ proxyKey: "p" });
+        expect(Object.getOwnPropertyDescriptor(out.modelPresets, "constructor")?.value).toEqual({ proxyKey: "c" });
+        // The pre-split per-prompt-preset map is not read: the credential is gone, not carried over.
+        expect(Object.hasOwn(out, "presets")).toBe(false);
+        expect(serialize(out).text).not.toContain("gone");
         // The stored text carries the entries, and the second normalization is the same text.
         expect(serialize(out).text).toContain('"__proto__":{"proxyKey":"p"}');
         expectIdempotent(normalizeLlmSecrets as Normalizer, input);
     });
 
-    it("rejects a presets map that is not an object of `{ proxyKey: string }` by non-empty ids", () => {
-        const rejects = (presets: unknown, message: string) =>
-            expect(() => normalizeLlmSecrets({ presets }), JSON.stringify(presets)).toThrow(
+    it("rejects a modelPresets map that is not an object of `{ proxyKey: string }` by non-empty ids", () => {
+        const rejects = (modelPresets: unknown, message: string) =>
+            expect(() => normalizeLlmSecrets({ modelPresets }), JSON.stringify(modelPresets)).toThrow(
                 new ResourceValidationError(message),
             );
-        rejects([], "llmSecrets.presets must be an object");
-        rejects(null, "llmSecrets.presets must be an object");
-        rejects("k", "llmSecrets.presets must be an object");
-        const entries = "llmSecrets.presets must map preset ids to { proxyKey: string }";
+        rejects([], "llmSecrets.modelPresets must be an object");
+        rejects(null, "llmSecrets.modelPresets must be an object");
+        rejects("k", "llmSecrets.modelPresets must be an object");
+        const entries = "llmSecrets.modelPresets must map model preset ids to { proxyKey: string }";
         rejects({ "": { proxyKey: "k" } }, entries);
         rejects({ a: { proxyKey: 1 } }, entries);
         rejects({ a: {} }, entries);

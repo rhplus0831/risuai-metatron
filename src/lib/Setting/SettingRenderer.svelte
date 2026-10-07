@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { activePreset, settings, activePersona } from "src/ts/storage/settingsViews.svelte";
+    import { activeModelPreset, activePreset, settings, activePersona } from "src/ts/storage/settingsViews.svelte";
     import type { SettingItem, SettingContext } from "src/ts/setting/types";
     import type { LLMModel } from "src/ts/model/types";
     import { getModelInfo } from "src/ts/model/modellist";
@@ -17,13 +17,14 @@
     let { items, modelInfo, subModelInfo }: Props = $props();
 
     // Derive modelInfo if not provided
-    let effectiveModelInfo = $derived(modelInfo ?? getModelInfo(activePreset.aiModel));
-    let effectiveSubModelInfo = $derived(subModelInfo ?? getModelInfo(activePreset.subModel));
+    let effectiveModelInfo = $derived(modelInfo ?? getModelInfo(activeModelPreset.aiModel));
+    let effectiveSubModelInfo = $derived(subModelInfo ?? getModelInfo(activeModelPreset.subModel));
 
     // Build context for condition checks
     let ctx: SettingContext = $derived({
         settings,
         preset: activePreset,
+        modelPreset: activeModelPreset,
         persona: activePersona,
         modelInfo: effectiveModelInfo,
         subModelInfo: effectiveSubModelInfo,

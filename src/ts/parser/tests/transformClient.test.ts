@@ -20,6 +20,7 @@ const state = vi.hoisted(() => ({
     held: new Set<string>(),
     locked: new Set<string>(),
     preset: "preset-1" as string | undefined,
+    modelPreset: "model-1" as string | undefined,
     persona: "persona-1" as string | undefined,
     bound: undefined as string | undefined,
     handler: null as unknown as (path: string, body: any) => unknown,
@@ -37,7 +38,14 @@ vi.mock("../../alert", () => ({ alertToast: (text: string) => state.toasts.push(
 vi.mock("../../network/generationJobs", () => ({ generationClientId: () => "client-1" }));
 vi.mock("../../plugins/apiV3/pluginContext", () => ({
     capturePluginContext: (ref: { chaId: string; chatId: string } | null) =>
-        ref ? { chatRef: ref, presetId: state.preset ?? "", personaId: state.bound ?? state.persona ?? "" } : undefined,
+        ref
+            ? {
+                  chatRef: ref,
+                  presetId: state.preset ?? "",
+                  modelPresetId: state.modelPreset ?? "",
+                  personaId: state.bound ?? state.persona ?? "",
+              }
+            : undefined,
     invokeHook: (hook: (text: string) => unknown, context: unknown, text: string) => {
         state.hookContexts.push(context);
         return hook(text);
@@ -60,11 +68,17 @@ vi.mock("../../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
     return { CharEmotion: writable({}) };
 });
-// The selected preset's and persona's ids, as the views serve them (`undefined` when there is none).
+// The selected prompt preset's, model preset's, and persona's ids, as the views serve them
+// (`undefined` when there is none).
 vi.mock("../../storage/settingsViews.svelte", () => ({
     activePreset: {
         get id() {
             return state.preset;
+        },
+    },
+    activeModelPreset: {
+        get id() {
+            return state.modelPreset;
         },
     },
     activePersona: {
@@ -188,7 +202,7 @@ afterEach(() => {
 });
 
 describe("captureTransform", () => {
-    it("answers null for a chat the server has not stored, and without a preset or persona", () => {
+    it("answers null for a chat the server has not stored, and without a preset, model preset, or persona", () => {
         const ref = newChat();
         state.held.delete(key(ref));
         expect(captureTransform(0)).toBeNull();
@@ -196,6 +210,9 @@ describe("captureTransform", () => {
         state.preset = undefined;
         expect(captureTransform(0)).toBeNull();
         state.preset = "preset-1";
+        state.modelPreset = undefined;
+        expect(captureTransform(0)).toBeNull();
+        state.modelPreset = "model-1";
         state.persona = undefined;
         expect(captureTransform(0)).toBeNull();
         state.current = null;
@@ -203,7 +220,7 @@ describe("captureTransform", () => {
         expect(captureTransform(0)).toBeNull();
     });
 
-    it("captures the chat, the message id at the index, the preset, the effective and selected persona, and the lock", () => {
+    it("captures the chat, the message id at the index, both presets, the effective and selected persona, and the lock", () => {
         const ref = newChat();
         state.bound = "persona-bound";
         state.locked.add(`${key(ref)}/m1`);
@@ -212,29 +229,41 @@ describe("captureTransform", () => {
             characterId: ref.chaId,
             chatId: ref.chatId,
             presetId: "preset-1",
+            modelPresetId: "model-1",
             personaId: "persona-bound",
             selectedPersonaId: "persona-1",
         });
         expect(captured.messageId).toBe("m1");
         expect(captured.locked).toBe(true);
         expect(captured.noCache).toBe(false);
-        expect(captured.pluginContext).toEqual({ chatRef: ref, presetId: "preset-1", personaId: "persona-bound" });
+        expect(captured.pluginContext).toEqual({
+            chatRef: ref,
+            presetId: "preset-1",
+            modelPresetId: "model-1",
+            personaId: "persona-bound",
+        });
         const greeting = captureTransform(-1)!;
         expect(greeting.messageId).toBeUndefined();
         expect(greeting.locked).toBe(false);
     });
 
-    it("prefers a given plugin context's chat, preset, and persona over the selection", () => {
+    it("prefers a given plugin context's chat, presets, and persona over the selection", () => {
         const selected = newChat();
         const other = newChat();
         state.current = selected;
-        const pluginContext = { chatRef: other, presetId: "preset-hook", personaId: "persona-hook" };
+        const pluginContext = {
+            chatRef: other,
+            presetId: "preset-hook",
+            modelPresetId: "model-hook",
+            personaId: "persona-hook",
+        };
         const captured = captureTransform(0, { pluginContext })!;
         expect(captured.chatRef).toEqual(other);
         expect(captured.context).toMatchObject({
             characterId: other.chaId,
             chatId: other.chatId,
             presetId: "preset-hook",
+            modelPresetId: "model-hook",
             personaId: "persona-hook",
             selectedPersonaId: "persona-1",
         });

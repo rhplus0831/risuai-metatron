@@ -19,7 +19,7 @@ import {
     normalizeTranslatorPresets,
 } from "../data/normalize/collections.ts";
 import { normalizePersonas } from "../data/normalize/personas.ts";
-import { normalizePresetCollection } from "../data/normalize/presets.ts";
+import { normalizeModelPresetCollection, normalizePresetCollection } from "../data/normalize/presets.ts";
 import { ResourceValidationError, serialize } from "../data/resourceStore.ts";
 
 // Phase 3, slice 3 (`docs/plan/phases/slices/phase-3-settings-sections/server-section-normalizers.md`,
@@ -327,14 +327,53 @@ describe("presets", () => {
             expect(out).toHaveLength(1);
             expect(out[0]).toMatchObject({ id: expect.stringMatching(UUID_V4), name: "New Preset", temperature: 80 });
         }
-        const out = normalizePresetCollection([{ name: "p", temperature: 1 }, { id: "keep" }, { id: "keep" }]);
+        const out = normalizePresetCollection([
+            { name: "p", temperature: 1, aiModel: "gpt-4o" },
+            { id: "keep" },
+            { id: "keep" },
+        ]);
         expect(out.map((preset) => preset.name)).toEqual(["p", "New Preset", "New Preset"]);
-        expect(out[0]).toMatchObject({ temperature: 1, maxContext: 4000 });
+        expect(out[0]).toMatchObject({ temperature: 1 });
+        // A prompt preset holds no model field (`docs/plan/split-preset.md`).
+        expect(Object.hasOwn(out[0], "aiModel")).toBe(false);
+        expect(Object.hasOwn(out[0], "maxContext")).toBe(false);
         expect(out[1].id).toBe("keep");
         expect(out[2].id).toMatch(UUID_V4);
         expectIdempotent(normalizePresetCollection, [{ name: "p" }, { openrouterProvider: "legacy" }]);
         for (const input of [{}, null, "x", [1], [null]]) {
             rejects(normalizePresetCollection, input, "presets must be an array of objects");
+        }
+    });
+});
+
+describe("modelPresets", () => {
+    it("materializes one default model preset, gives every element the model fields and an id, and rejects a non-list", () => {
+        for (const input of [undefined, []]) {
+            const out = normalizeModelPresetCollection(input);
+            expect(out).toHaveLength(1);
+            expect(out[0]).toMatchObject({
+                id: expect.stringMatching(UUID_V4),
+                name: "New Model Preset",
+                maxContext: 4000,
+                aiModel: expect.any(String),
+            });
+        }
+        const out = normalizeModelPresetCollection([
+            { name: "m", maxContext: 1, temperature: 5, proxyKey: "leak" },
+            { id: "keep" },
+            { id: "keep" },
+        ]);
+        expect(out.map((preset) => preset.name)).toEqual(["m", "New Model Preset", "New Model Preset"]);
+        expect(out[0]).toMatchObject({ maxContext: 1 });
+        // A model preset holds no prompt field, credential, or image.
+        for (const field of ["temperature", "proxyKey", "image", "mainPrompt"]) {
+            expect(Object.hasOwn(out[0], field), field).toBe(false);
+        }
+        expect(out[1].id).toBe("keep");
+        expect(out[2].id).toMatch(UUID_V4);
+        expectIdempotent(normalizeModelPresetCollection, [{ name: "m" }, { openrouterProvider: "legacy" }]);
+        for (const input of [{}, null, "x", [1], [null]]) {
+            rejects(normalizeModelPresetCollection, input, "modelPresets must be an array of objects");
         }
     });
 });

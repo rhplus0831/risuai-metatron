@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LlmRequestBody, LlmRequestEvent } from "../../../shared/llm/request.ts";
 import { normalizePersonas } from "../../../shared/personas.ts";
-import { normalizePresets } from "../../../shared/presets.ts";
+import { normalizeModelPresets, normalizePresets } from "../../../shared/presets.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeProviders } from "../data/normalize/providers.ts";
@@ -39,7 +39,9 @@ function harness(
         }),
         ui: { autoSuggestPrefix: "" },
         customModels: [],
+        // `preset` mixes both owners' fields; each normalizer keeps its own (`docs/plan/split-preset.md`).
         presets: normalizePresets([{ id: "p", name: "p", maxResponse: 250, temperature: 60, ...preset }]),
+        modelPresets: normalizeModelPresets([{ id: "m", name: "m", ...preset }]),
         personas: normalizePersonas([{ id: "u", name: "Uma" }]),
     };
     const characters: Record<string, unknown> = { c: { chaId: "c", name: "Cara" } };
@@ -90,6 +92,7 @@ function body(arg: Record<string, unknown> = {}): LlmRequestBody {
         mode: "model",
         context: {
             presetId: "p",
+            modelPresetId: "m",
             personaId: "u",
             selectedPersonaId: "u",
             selectedCharacterId: "c",

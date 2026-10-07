@@ -1866,7 +1866,7 @@ describe("a question with a withdrawing signal (the channel hub)", () => {
             jobId: "j",
             clientId: "tab",
             epoch: "e",
-            targets: { chatRef: { chaId: "c", chatId: "k" }, presetId: "p", personaId: "u" },
+            targets: { chatRef: { chaId: "c", chatId: "k" }, presetId: "p", modelPresetId: "m", personaId: "u" },
             hooks: NO_GENERATION_HOOKS,
             send: (event) => {
                 sent.push(event as unknown as Record<string, unknown>);
@@ -1934,7 +1934,8 @@ describe("the bindings' ask with a withdrawing signal", () => {
                 ops: [{ kind: kind(name), id: SINGLETON_RESOURCE_ID, baseRevision: row?.revision ?? null, data }],
             });
         };
-        singleton(RESOURCE_KIND.presets, [{ id: "p", name: "p", aiModel: "gpt-4o" }]);
+        singleton(RESOURCE_KIND.presets, [{ id: "p", name: "p" }]);
+        singleton(RESOURCE_KIND.modelPresets, [{ id: "m", name: "m", aiModel: "gpt-4o" }]);
         singleton(RESOURCE_KIND.personas, [{ id: "u", name: "Uma" }]);
         store.applyChanges({
             ops: [
@@ -1963,6 +1964,7 @@ describe("the bindings' ask with a withdrawing signal", () => {
             characterId: "c",
             chatId: "k",
             presetId: "p",
+            modelPresetId: "m",
             personaId: "u",
             mode: "button",
             input: "",

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
@@ -18,7 +18,7 @@
         <Check bind:check={settings.providers.openrouterMiddleOut} name={language.openRouterMiddleOut} />
     </div>
     <div class="flex items-center mb-4">
-        <Check bind:check={activePreset.useInstructPrompt} name={language.useInstructPrompt} />
+        <Check bind:check={activeModelPreset.useInstructPrompt} name={language.useInstructPrompt} />
     </div>
     {#await getOpenRouterProviders()}
         <Accordion name={language.openRouterProviderOrder} help="openRouterProviderOrder" styled>
@@ -32,13 +32,13 @@
         </Accordion>
     {:then openRouterProviders}
         <Accordion name={language.openRouterProviderOrder} help="openRouterProviderOrder" styled>
-            {#each activePreset.openrouterProvider.order as _, i}
+            {#each activeModelPreset.openrouterProvider.order as _, i}
                 <span class="text-textcolor mt-4">
                     {language.provider}
                     {i + 1}
                 </span>
                 <OpenrouterProviderList
-                    bind:value={activePreset.openrouterProvider.order[i]}
+                    bind:value={activeModelPreset.openrouterProvider.order[i]}
                     options={openRouterProviders}
                 />
             {/each}
@@ -46,30 +46,30 @@
                 <button
                     class="bg-selected text-textcolor p-2 rounded-md"
                     onclick={() => {
-                        let value = activePreset.openrouterProvider.order ?? [];
+                        let value = activeModelPreset.openrouterProvider.order ?? [];
                         value.push("");
-                        activePreset.openrouterProvider.order = value;
+                        activeModelPreset.openrouterProvider.order = value;
                     }}><PlusIcon /></button
                 >
                 <button
                     class="bg-red-500 text-white p-2 rounded-md"
                     onclick={() => {
-                        let value = activePreset.openrouterProvider.order ?? [];
+                        let value = activeModelPreset.openrouterProvider.order ?? [];
                         value.pop();
-                        activePreset.openrouterProvider.order = value;
+                        activeModelPreset.openrouterProvider.order = value;
                     }}><TrashIcon /></button
                 >
             </div>
         </Accordion>
 
         <Accordion name={language.openRouterProviderOnly} help="openRouterProviderOnly" styled>
-            {#each activePreset.openrouterProvider.only as model, i}
+            {#each activeModelPreset.openrouterProvider.only as model, i}
                 <span class="text-textcolor mt-4">
                     {language.provider}
                     {i + 1}
                 </span>
                 <OpenrouterProviderList
-                    bind:value={activePreset.openrouterProvider.only[i]}
+                    bind:value={activeModelPreset.openrouterProvider.only[i]}
                     options={openRouterProviders}
                 />
             {/each}
@@ -77,30 +77,30 @@
                 <button
                     class="bg-selected text-textcolor p-2 rounded-md"
                     onclick={() => {
-                        let value = activePreset.openrouterProvider.only ?? [];
+                        let value = activeModelPreset.openrouterProvider.only ?? [];
                         value.push("");
-                        activePreset.openrouterProvider.only = value;
+                        activeModelPreset.openrouterProvider.only = value;
                     }}><PlusIcon /></button
                 >
                 <button
                     class="bg-red-500 text-white p-2 rounded-md"
                     onclick={() => {
-                        let value = activePreset.openrouterProvider.only ?? [];
+                        let value = activeModelPreset.openrouterProvider.only ?? [];
                         value.pop();
-                        activePreset.openrouterProvider.only = value;
+                        activeModelPreset.openrouterProvider.only = value;
                     }}><TrashIcon /></button
                 >
             </div>
         </Accordion>
 
         <Accordion name={language.openRouterProviderIgnore} help="openRouterProviderIgnore" styled>
-            {#each activePreset.openrouterProvider.ignore as model, i}
+            {#each activeModelPreset.openrouterProvider.ignore as model, i}
                 <span class="text-textcolor mt-4">
                     {language.provider}
                     {i + 1}
                 </span>
                 <OpenrouterProviderList
-                    bind:value={activePreset.openrouterProvider.ignore[i]}
+                    bind:value={activeModelPreset.openrouterProvider.ignore[i]}
                     options={openRouterProviders}
                 />
             {/each}
@@ -108,24 +108,24 @@
                 <button
                     class="bg-selected text-textcolor p-2 rounded-md"
                     onclick={() => {
-                        let value = activePreset.openrouterProvider.ignore ?? [];
+                        let value = activeModelPreset.openrouterProvider.ignore ?? [];
                         value.push("");
-                        activePreset.openrouterProvider.ignore = value;
+                        activeModelPreset.openrouterProvider.ignore = value;
                     }}><PlusIcon /></button
                 >
                 <button
                     class="bg-red-500 text-white p-2 rounded-md"
                     onclick={() => {
-                        let value = activePreset.openrouterProvider.ignore ?? [];
+                        let value = activeModelPreset.openrouterProvider.ignore ?? [];
                         value.pop();
-                        activePreset.openrouterProvider.ignore = value;
+                        activeModelPreset.openrouterProvider.ignore = value;
                     }}><TrashIcon /></button
                 >
             </div>
         </Accordion>
     {/await}
 
-    {#if activePreset.useInstructPrompt}
+    {#if activeModelPreset.useInstructPrompt}
         <ChatFormatSettings />
     {/if}
 </Accordion>

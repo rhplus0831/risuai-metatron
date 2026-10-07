@@ -23,7 +23,10 @@ export const GENERATION_KINDS: readonly GenerationKind[] = [
 export type GenerationContext = {
     characterId: string;
     chatId: string;
+    /** The prompt preset (`presets`). */
     presetId: string | null;
+    /** The model preset (`modelPresets`, `docs/plan/split-preset.md`). */
+    modelPresetId: string | null;
     /** The effective persona (a bound persona wins). */
     personaId: string | null;
     mode: string;
@@ -312,8 +315,13 @@ export type CallbackPayloads = {
     imggen: { characterId: string; text: string };
 };
 
-/** The chat, preset, and persona a callback acts on (the Phase 4 hook context). */
-export type CallbackTargets = { chatRef: { chaId: string; chatId: string }; presetId: string; personaId: string };
+/** The chat, prompt and model presets, and persona a callback acts on (the Phase 4 hook context). */
+export type CallbackTargets = {
+    chatRef: { chaId: string; chatId: string };
+    presetId: string;
+    modelPresetId: string;
+    personaId: string;
+};
 
 /** A record the job hydrated before a callback, at the revision sent: the client must hold it at least that new. */
 export type HydrationReceipt = { kind: string; id: string; characterId?: string; revision: string };

@@ -116,7 +116,7 @@ async function runButton(job: RunningJob, deps: GenerationRunnerDeps, data: stri
                 identity: {
                     characterId,
                     chatId,
-                    presetId: scope.preset.id,
+                    presetId: scope.promptPreset.id,
                     personaId: scope.effectivePersona.id,
                 },
             },

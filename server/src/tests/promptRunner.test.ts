@@ -75,6 +75,7 @@ let base = "";
 let epoch = "";
 let signer: Awaited<ReturnType<typeof createSigner>>;
 let presetId = "";
+let modelPresetId = "";
 let personaId = "";
 
 async function api(url: string, init: RequestInit = {}) {
@@ -103,13 +104,13 @@ async function patchProviders(patch: Record<string, unknown>) {
     });
     expect(res.status).toBe(200);
 }
-/** Patches one preset by id. */
-async function patchPreset(id: string, patch: Record<string, unknown>) {
-    const current = await single("presets");
+/** Patches one prompt preset (`presets`) or model preset (`modelPresets`) by id. */
+async function patchPreset(kind: "presets" | "modelPresets", id: string, patch: Record<string, unknown>) {
+    const current = await single(kind);
     const res = await batch({
         ops: [
             {
-                kind: "presets",
+                kind,
                 id: "main",
                 baseRevision: current.revision,
                 data: current.data.map((preset: any) => (preset.id === id ? { ...preset, ...patch } : preset)),
@@ -247,6 +248,7 @@ async function job(
                 characterId: chaId,
                 chatId: "k",
                 presetId: options.presetId ?? presetId,
+                modelPresetId,
                 personaId,
                 selectedPersonaId: personaId,
                 mode: kind,
@@ -335,21 +337,34 @@ beforeAll(async () => {
         ).json()) as any
     ).epoch;
     const presets = await single("presets");
+    const modelPresets = await single("modelPresets");
     const personas = await single("personas");
     presetId = presets.data[0].id;
+    modelPresetId = modelPresets.data[0].id;
     personaId = personas.data[0].id;
-    // The selected preset: a reverse proxy to the fake provider; `Alpha` the presetChain pick.
+    // The selected model preset: a reverse proxy to the fake provider. The prompt presets: the
+    // selected one and `Alpha`, the presetChain pick (`docs/plan/split-preset.md`).
     const common = {
-        aiModel: "reverse_proxy",
-        subModel: "reverse_proxy",
-        maxContext: 4000,
         maxResponse: 100,
-        forceReplaceUrl: providerUrl,
-        customProxyRequestModel: "m",
         jailbreakToggle: false,
     };
     const seededPresets = await batch({
         ops: [
+            {
+                kind: "modelPresets",
+                id: "main",
+                baseRevision: modelPresets.revision,
+                data: [
+                    {
+                        ...modelPresets.data[0],
+                        aiModel: "reverse_proxy",
+                        subModel: "reverse_proxy",
+                        maxContext: 4000,
+                        forceReplaceUrl: providerUrl,
+                        customProxyRequestModel: "m",
+                    },
+                ],
+            },
             {
                 kind: "presets",
                 id: "main",
@@ -569,7 +584,7 @@ describe("a send", () => {
             // While the first speaker's request runs, the stored preset changes its model.
             onRequest = async () => {
                 onRequest = null;
-                await patchPreset(presetId, { customProxyRequestModel: "changed-during-job" });
+                await patchPreset("modelPresets", modelPresetId, { customProxyRequestModel: "changed-during-job" });
             };
             try {
                 const { events, terminal } = await job("group", grp);
@@ -583,7 +598,7 @@ describe("a send", () => {
                 expect(JSON.stringify(bodies.at(-1).messages)).toContain("[Write the next reply only as Cid]");
             } finally {
                 onRequest = null;
-                await patchPreset(presetId, { customProxyRequestModel: "m" });
+                await patchPreset("modelPresets", modelPresetId, { customProxyRequestModel: "m" });
             }
         },
         SLOW,

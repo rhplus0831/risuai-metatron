@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { fade, fly } from "svelte/transition";
     import { onMount } from "svelte";
     import IrisImage from "../../etc/Airisu.webp";
@@ -80,8 +80,8 @@
 
     let isUnsupportedModel = $derived.by(() => {
         const currentModel =
-            (settings.providers.seperateModelsForAxModels ? settings.providers.seperateModels.otherAx : "") ||
-            activePreset.subModel;
+            (activeModelPreset.seperateModelsForAxModels ? activeModelPreset.seperateModels.otherAx : "") ||
+            activeModelPreset.subModel;
         const modelInfo = getModelInfo(currentModel);
         return !(
             modelInfo.format === LLMFormat.Anthropic ||

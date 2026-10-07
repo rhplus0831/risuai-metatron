@@ -1,13 +1,21 @@
-import type { botPreset } from "../../../../shared/database.ts";
-import { normalizePresets } from "../../../../shared/presets.ts";
+import type { botPreset, ModelPreset } from "../../../../shared/database.ts";
+import { normalizeModelPresets, normalizePresets } from "../../../../shared/presets.ts";
 import { requireArrayOfObjects } from "./shared.ts";
 
 /**
- * The `presets` collection (`botPresets`): `normalizePresets`, the same function the client runs
- * in `setDatabase`, so what the client sends is already its fixed point. Every preset gets the
- * canonical fields and an id (a duplicate is re-keyed); an empty list, or a missing record being
- * materialized, becomes one default preset.
+ * The `presets` collection (`botPresets`, the prompt presets): `normalizePresets`, the same function
+ * the client runs, so what the client sends is already its fixed point. Every preset gets the
+ * canonical prompt fields and an id (a duplicate is re-keyed; model fields are dropped); an empty
+ * list, or a missing record being materialized, becomes one default preset.
  */
 export function normalizePresetCollection(input: unknown): botPreset[] {
     return normalizePresets(input === undefined ? [] : requireArrayOfObjects(input, "presets"));
+}
+
+/**
+ * The `modelPresets` collection (`docs/plan/split-preset.md`): `normalizeModelPresets`, with the
+ * same rules as the prompt presets over the model fields; never empty.
+ */
+export function normalizeModelPresetCollection(input: unknown): ModelPreset[] {
+    return normalizeModelPresets(input === undefined ? [] : requireArrayOfObjects(input, "modelPresets"));
 }

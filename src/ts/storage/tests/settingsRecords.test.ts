@@ -216,7 +216,7 @@ describe("writes through the views and the records", () => {
 });
 
 describe("entry credentials over the save loop", () => {
-    it("never put a custom model's key or a preset's proxyKey in a batch: they go to the credential routes after it", async () => {
+    it("never put a custom model's key or a model preset's proxyKey in a batch: they go to the credential routes after it", async () => {
         const { fake, sync, settings, record, mirrorText } = await boot();
         const SECRET = "sk-entry-SENTINEL";
         settings.customModels.push({ id: "m1", internalId: "i1", name: "M1", key: `${SECRET}-push` } as any);
@@ -225,7 +225,7 @@ describe("entry credentials over the save loop", () => {
             ...settings.customModels,
             { id: "m2", internalId: "i2", name: "M2", key: `${SECRET}-list` } as any,
         ];
-        settings.presets[0].proxyKey = `${SECRET}-proxy`;
+        (settings.modelPresets[0] as Record<string, unknown>).proxyKey = `${SECRET}-proxy`;
         await sync.flushResources();
         const sent = JSON.stringify(fake.batchBodies());
         expect(sent).not.toContain(SECRET);
@@ -237,11 +237,11 @@ describe("entry credentials over the save loop", () => {
             "/api/llm-secrets/customModels/~m1/key",
             "/api/llm-secrets/customModels/~m1/key",
             "/api/llm-secrets/customModels/~m2/key",
-            `/api/llm-secrets/presets/~${settings.presets[0].id}/proxyKey`,
+            `/api/llm-secrets/modelPresets/~${settings.modelPresets[0].id}/proxyKey`,
         ]);
         const stored = fake.record("llmSecrets", "main")!.data as any;
         expect(stored.customModels).toEqual({ m1: { key: `${SECRET}-element` }, m2: { key: `${SECRET}-list` } });
-        expect(stored.presets[settings.presets[0].id]).toEqual({ proxyKey: `${SECRET}-proxy` });
+        expect(stored.modelPresets[settings.modelPresets[0].id]).toEqual({ proxyKey: `${SECRET}-proxy` });
         // The tab holds none of them (the root snapshot and the character list).
         expect(mirrorText()).not.toContain(SECRET);
     });
@@ -338,10 +338,12 @@ describe("server copies of presets and personas", () => {
 });
 
 describe("bulk writers notify once per record they change", () => {
-    it("updateSettings, the preset switch, and saveCurrentPreset", async () => {
+    it("updateSettings; a preset switch of either kind writes no record", async () => {
         const { collectionStore, presets, settings, countNotifications } = await boot();
         const [, p2] = settings.presets.map((preset: any) => preset.id);
+        const [, m2] = settings.modelPresets.map((preset: any) => preset.id);
         const notified = countNotifications();
+        // `maxContext` and `fallbackWhenBlankResponse` are the model preset's (`docs/plan/split-preset.md`).
         collectionStore.updateSettings({
             temperature: 5,
             maxContext: 1234,
@@ -350,14 +352,11 @@ describe("bulk writers notify once per record they change", () => {
             fallbackWhenBlankResponse: true,
             hypaModel: "m",
         });
-        expect(notified.sort()).toEqual(["memoryTranslateMedia", "presets", "providers", "ui"]);
+        expect(notified.sort()).toEqual(["memoryTranslateMedia", "modelPresets", "presets", "ui"]);
         notified.length = 0;
         presets.changeToPreset(p2);
-        expect(notified.filter((kind) => kind === "presets")).toHaveLength(1);
-        expect(new Set(notified).size).toBe(notified.length);
-        notified.length = 0;
-        presets.saveCurrentPreset();
-        expect(new Set(notified).size).toBe(notified.length);
+        presets.changeToModelPreset(m2);
+        expect(notified).toEqual([]);
     });
 
     it("updatePersona and updateModule commit a multi-field patch once; updateModule patches the live module in place", async () => {

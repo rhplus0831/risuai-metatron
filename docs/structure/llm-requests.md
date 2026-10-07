@@ -93,7 +93,7 @@
 ## State
 
 - `db` fields:
-  - Model choice: `aiModel`, `subModel`, `seperateModels`, `seperateModelsForAxModels`, `doNotChangeSeperateModels`, `fallbackModels`.
+  - Model choice (the model preset's): `aiModel`, `subModel`, `seperateModels`, `seperateModelsForAxModels`, `fallbackModels`.
   - Custom models and parameters: `customModels`, `customFlags`, `additionalParams`, `seperateParameters`.
   - Keys and URLs per provider.
   - Provider settings: OpenRouter, NanoGPT, and Ollama fields.

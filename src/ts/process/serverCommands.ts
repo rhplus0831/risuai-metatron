@@ -1,5 +1,5 @@
 import type { AnyClientCharacter } from "../storage/characterStore.svelte";
-import { activePreset, activePersona } from "../storage/settingsViews.svelte";
+import { activeModelPreset, activePreset, activePersona } from "../storage/settingsViews.svelte";
 import type {
     GenerationCommand,
     GenerationContext,
@@ -262,7 +262,7 @@ export async function runServerJob(
 type ServerJobOptions = {
     onStart?: () => void;
     signal?: AbortSignal;
-    identity?: { presetId: string | null; personaId: string | null };
+    identity?: { presetId: string | null; modelPresetId: string | null; personaId: string | null };
 };
 
 async function runPinnedServerJob(
@@ -273,6 +273,7 @@ async function runPinnedServerJob(
 ): Promise<{ outcome: ServerCommandOutcome; terminal: GenerationTerminalEvent | "lost" | null }> {
     const refused = { outcome: "refused" as const, terminal: null };
     const presetId = options.identity ? options.identity.presetId : (activePreset.id ?? null);
+    const modelPresetId = options.identity ? options.identity.modelPresetId : (activeModelPreset.id ?? null);
     const selectedPersonaId = activePersona.id ?? null;
     // `getUserName(ref)`: the chat's bound persona, else the selected one.
     const personaId = options.identity
@@ -325,6 +326,7 @@ async function runPinnedServerJob(
                 characterId: ref.chaId,
                 chatId: ref.chatId,
                 presetId,
+                modelPresetId,
                 personaId,
                 selectedPersonaId,
                 mode: request.kind,

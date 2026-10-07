@@ -1,4 +1,4 @@
-import { activePreset, activePersona } from "../storage/settingsViews.svelte";
+import { activeModelPreset, activePreset, activePersona } from "../storage/settingsViews.svelte";
 import { untrack } from "svelte";
 import { get } from "svelte/store";
 import { v4 as uuidv4 } from "uuid";
@@ -129,16 +129,24 @@ function readTransformContext(
         return null;
     }
     const presetId = options.pluginContext?.presetId || activePreset.id;
+    const modelPresetId = options.pluginContext?.modelPresetId || activeModelPreset.id;
     const selectedPersonaId = activePersona.id;
     const personaId = options.pluginContext?.personaId || checkPersonaBinded(chatRef)?.id || selectedPersonaId;
-    if (!presetId || !personaId || !selectedPersonaId) {
+    if (!presetId || !modelPresetId || !personaId || !selectedPersonaId) {
         return null;
     }
     const messageId = chatID >= 0 ? chat.message[chatID]?.chatId : undefined;
     const generation = messageId ? (generations.get(messageKey(chatRef, messageId)) ?? 0) : 0;
     return {
         chatRef: { chaId: chatRef.chaId, chatId: chatRef.chatId },
-        context: { characterId: chatRef.chaId, chatId: chatRef.chatId, presetId, personaId, selectedPersonaId },
+        context: {
+            characterId: chatRef.chaId,
+            chatId: chatRef.chatId,
+            presetId,
+            modelPresetId,
+            personaId,
+            selectedPersonaId,
+        },
         ...(messageId ? { messageId } : {}),
         pluginContext: options.pluginContext ?? capturePluginContext(chatRef),
         generation,

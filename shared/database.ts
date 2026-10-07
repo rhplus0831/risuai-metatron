@@ -111,8 +111,11 @@ export interface Database {
     formatversion: number;
     waifuWidth: number;
     waifuWidth2: number;
+    /** The prompt presets (`presets` resource); the selected one per client is `botPresetsId`. */
     botPresets: botPreset[];
     botPresetsId: number;
+    /** The model presets (`modelPresets` collection, `docs/plan/split-preset.md`), selected per client. */
+    modelPresets: ModelPreset[];
     sdProvider: string;
     webUiUrl: string;
     sdSteps: number;
@@ -425,7 +428,6 @@ export interface Database {
         translate: string;
         otherAx: string;
     };
-    doNotChangeSeperateModels: boolean;
     modelTools: string[];
     hotkeys: Hotkey[];
     fallbackModels: {
@@ -435,7 +437,6 @@ export interface Database {
         otherAx: string[];
         model: string[];
     };
-    doNotChangeFallbackModels: boolean;
     fallbackWhenBlankResponse: boolean;
     /** The custom models; each one's key is in `llmSecrets.customModels.<id>.key` (Phase 5 slice 7b). */
     customModels: CustomModel[];
@@ -504,7 +505,6 @@ export interface Database {
     googleSearchCredentials?: { apiKey: string; searchEngineId: string };
     blockquoteStyling?: boolean;
     dynamicModelRegistry?: boolean;
-    disableSeperateParameterChangeOnPresetChange?: boolean;
     saveSignatures?: boolean;
     keepSessionAlive: "off" | "pip" | "sound";
     longPressToPopupEditor?: boolean;
@@ -801,6 +801,11 @@ export interface groupChat {
     modules?: string[];
 }
 
+/**
+ * A prompt preset (the `presets` resource; `docs/plan/split-preset.md`). It stores only the
+ * prompt-owned fields (`PROMPT_PRESET_FIELDS`) and `name`/`image`; the model fields below
+ * (`MODEL_PRESET_FIELDS`) are read only from old files and imports, and `normalizePreset` drops them.
+ */
 export interface botPreset {
     /** Assigned at creation (`normalizePreset`, `shared/presets.ts`); stripped from `.risup` exports. */
     id: string;
@@ -813,7 +818,7 @@ export interface botPreset {
     jailbreak: string;
     globalNote: string;
     temperature: number;
-    maxContext: number;
+    maxContext?: number;
     maxResponse: number;
     frequencyPenalty: number;
     PresensePenalty: number;
@@ -906,6 +911,45 @@ export interface botPreset {
     verbosity?: number;
     dynamicOutput?: DynamicOutput;
 }
+
+/**
+ * A model preset (the `modelPresets` collection; `docs/plan/split-preset.md`): what selects and
+ * reaches the model (`MODEL_PRESET_FIELDS`), with the `botPreset` field types. Its `proxyKey` is the
+ * write-only `llmSecrets.modelPresets.<id>.proxyKey` entry, never stored here.
+ */
+export type ModelPreset = { id: string; name: string } & Required<
+    Pick<
+        botPreset,
+        | "aiModel"
+        | "subModel"
+        | "apiType"
+        | "currentPluginProvider"
+        | "forceReplaceUrl"
+        | "customProxyRequestModel"
+        | "customAPIFormat"
+        | "textgenWebUIStreamURL"
+        | "textgenWebUIBlockingURL"
+        | "localNetworkMode"
+        | "localNetworkTimeoutSec"
+        | "openrouterRequestModel"
+        | "openrouterProvider"
+        | "useInstructPrompt"
+        | "enableCustomFlags"
+        | "customFlags"
+        | "systemContentReplacement"
+        | "systemRoleReplacement"
+        | "instructChatTemplate"
+        | "JinjaTemplate"
+        | "outputImageModal"
+        | "modelTools"
+        | "maxContext"
+        | "seperateModelsForAxModels"
+        | "seperateModels"
+        | "fallbackModels"
+        | "fallbackWhenBlankResponse"
+    >
+> &
+    Pick<botPreset, "koboldURL" | "proxyRequestModel">;
 
 interface hordeConfig {
     apiKey: string;

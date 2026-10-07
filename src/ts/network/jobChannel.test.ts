@@ -120,7 +120,12 @@ type Records = typeof import("../storage/records.svelte");
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 /** A revision token of the loaded epoch (`<epoch>:<seq>:<revision>`). */
 const rev = (seq: number, revision: number, epoch = EPOCH) => `${epoch}:${seq}:${revision}`;
-const targets: CallbackTargets = { chatRef: { chaId: "c", chatId: "k" }, presetId: "p", personaId: "u" };
+const targets: CallbackTargets = {
+    chatRef: { chaId: "c", chatId: "k" },
+    presetId: "p",
+    modelPresetId: "m",
+    personaId: "u",
+};
 const question = (
     id: string,
     kind: GenerationQuestionEvent["kind"] = "alertConfirm",

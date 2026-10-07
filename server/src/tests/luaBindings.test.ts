@@ -50,6 +50,7 @@ let base = "";
 let epoch = "";
 let signer: Awaited<ReturnType<typeof createSigner>>;
 let presetId = "";
+let modelPresetId = "";
 let defaultPersonaId = "";
 let defaultPersonaName = "";
 
@@ -129,10 +130,12 @@ beforeAll(async () => {
     // The preset on the mock provider for both the main and the aux model; a second persona the
     // chats can bind, with a prompt CBS parses; the embeddings on the mock embedding server.
     const presets = await single("presets");
+    const modelPresets = await single("modelPresets");
     const personas = await single("personas");
     const memorySettings = await single("memoryTranslateMedia");
     const secrets = await single("secrets");
     presetId = presets.data[0].id;
+    modelPresetId = modelPresets.data[0].id;
     defaultPersonaId = personas.data[0].id;
     defaultPersonaName = personas.data[0].name;
     const seeded = await api("/api/resources/batch", {
@@ -141,10 +144,10 @@ beforeAll(async () => {
         body: JSON.stringify({
             ops: [
                 {
-                    kind: "presets",
+                    kind: "modelPresets",
                     id: "main",
-                    baseRevision: presets.revision,
-                    data: presets.data.map((preset: any, index: number) =>
+                    baseRevision: modelPresets.revision,
+                    data: modelPresets.data.map((preset: any, index: number) =>
                         index === 0
                             ? {
                                   ...preset,
@@ -152,7 +155,6 @@ beforeAll(async () => {
                                   subModel: "reverse_proxy",
                                   forceReplaceUrl: providerUrl,
                                   customProxyRequestModel: "mock",
-                                  useStreaming: false,
                               }
                             : preset,
                     ),
@@ -287,6 +289,7 @@ const context = async (chaId: string, bound = false) => ({
     characterId: chaId,
     chatId: "k",
     presetId,
+    modelPresetId,
     personaId: bound ? "bound" : defaultPersonaId,
     selectedPersonaId: defaultPersonaId,
     mode: "button",

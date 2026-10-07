@@ -1,20 +1,23 @@
-import type { Chat, Database, RisuPersona, botPreset, character, groupChat } from "../../../shared/database.ts";
+import type {
+    Chat,
+    Database,
+    ModelPreset,
+    RisuPersona,
+    botPreset,
+    character,
+    groupChat,
+} from "../../../shared/database.ts";
 import type { GenerationContext } from "../../../shared/jobs.ts";
 import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import { FLAT_SECRET_FIELDS, llmSecretSiblings, NESTED_SECRET_FIELDS } from "../../../shared/llmSecrets.ts";
 import { PERSONA_DEFAULTS } from "../../../shared/personas.ts";
-import {
-    PERSONA_ROOT_ALIASES,
-    PRESET_ROOT_ALIASES,
-    presetFieldValue,
-    type PresetField,
-} from "../../../shared/presets.ts";
+import { PERSONA_ROOT_ALIASES } from "../../../shared/presets.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import {
     COLLECTION_FIELDS,
     COLLECTION_KIND,
     COLLECTION_SELECTION_FIELDS,
-    FORWARDED_PRESET_KEYS,
+    forwardPresetRoots,
     SECTION_FIELDS,
     SECTION_KIND,
 } from "../../../shared/sections.ts";
@@ -23,16 +26,14 @@ import type { ResourceStore } from "../data/resourceStore.ts";
 import { loadRequestDb, type LoadedRequestDb } from "../llm/settings.ts";
 import { GenerationRunnerError } from "./generationJobs.ts";
 
-const presetFieldOf: Record<string, string> = PRESET_ROOT_ALIASES;
-
 /**
  * What a job reads (Phase 5 slice 8a; the slice 9 `PromptScope` builds on it), loaded at the job's
  * start and kept apart in two parts:
  *
  * - frozen identity and configuration: `db` (the database projection the CBS evaluator and lore
  *   activation read, assembled as the client's `assembleDatabase` and forwarding layer serve it for
- *   the job's preset and personas, with every credential field `""` as in the client's mirror), the
- *   preset and personas, and `request` (the request layer's own settings, credentials included).
+ *   the job's prompt and model presets and personas, with every credential field `""` as in the
+ *   client's mirror), the two presets and the personas, and `request` (the request layer's own settings, credentials included).
  *   Settings changed while the job runs do not reach it;
  * - the live overlay: the job's chat and the characters, which `refreshChat` and `refreshCharacter`
  *   read again after the job's own writes and after a callback that may have written.
@@ -45,7 +46,10 @@ export type JobScope = {
     chatId: string;
     /** The chat's revision as last read. */
     chatRevision: string;
-    preset: botPreset;
+    /** The job's prompt preset (`context.presetId`). */
+    promptPreset: botPreset;
+    /** The job's model preset (`context.modelPresetId`). */
+    modelPreset: ModelPreset;
     /** The chat's bound persona, else the selected one (`getUserName()`). */
     effectivePersona: RisuPersona;
     /** The tab's selected persona (the forwarded `db.username`). */
@@ -84,8 +88,8 @@ function mirrorSecrets(record: Record<string, unknown>): Record<string, unknown>
 
 /**
  * Reads the job's scope in consecutive synchronous store reads (no await between them, so one
- * committed state). The ids are the ones the client sent: a missing character, chat, preset, or
- * persona fails the job (`GenerationRunnerError` 404), never a redirect to another record.
+ * committed state). The ids are the ones the client sent: a missing character, chat, prompt or
+ * model preset, or persona fails the job (`GenerationRunnerError` 404), never a redirect to another record.
  */
 export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, context: GenerationContext): JobScope {
     const kind = (name: string) => kindOf(kinds, name);
@@ -134,6 +138,12 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
     if (!preset) {
         throw new GenerationRunnerError(404, "The job's preset no longer exists");
     }
+    const modelPreset = ((db.modelPresets ?? []) as ModelPreset[]).find(
+        (record) => record?.id === context.modelPresetId,
+    );
+    if (!modelPreset) {
+        throw new GenerationRunnerError(404, "The job's model preset no longer exists");
+    }
     const personas = (db.personas ?? []) as RisuPersona[];
     const personaById = (id: string | null | undefined) => {
         const found = personas.find((record) => record?.id === id);
@@ -145,14 +155,13 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
     const effectivePersona = personaById(context.personaId);
     const selectedPersona = personaById(context.selectedPersonaId ?? context.personaId);
 
-    // The forwarding layer's view for this job: the preset's fields under their root names, the
+    // The forwarding layer's view for this job: the two presets' fields under their root names, the
     // selected persona's fields, and the selection indexes.
-    for (const rootKey of FORWARDED_PRESET_KEYS) {
-        db[rootKey] = presetFieldValue(
-            preset as unknown as Record<string, unknown>,
-            (presetFieldOf[rootKey] ?? rootKey) as PresetField,
-        );
-    }
+    forwardPresetRoots(
+        db,
+        preset as unknown as Record<string, unknown>,
+        modelPreset as unknown as Record<string, unknown>,
+    );
     db.proxyKey = "";
     db.botPresetsId = Math.max(
         0,
@@ -180,6 +189,7 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
 
     const request = loadRequestDb(store, kinds, {
         presetId: preset.id,
+        modelPresetId: modelPreset.id,
         personaId: effectivePersona.id,
         selectedPersonaId: selectedPersona.id,
         selectedCharacterId: context.characterId,
@@ -199,7 +209,8 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
         chatId: context.chatId,
         chatRevision: chatRecord.revision,
         revisions,
-        preset,
+        promptPreset: preset,
+        modelPreset,
         effectivePersona,
         selectedPersona,
         request,

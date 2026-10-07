@@ -389,7 +389,7 @@ const appliedPresets = new Set<string>();
 
 /**
  * A send's `presetChain` pick (Phase 5 slice 9): the tab switches its selection as the browser path's
- * `changeToPreset(id, true)` does, once per job. After a reload an attach applies it again (the set
+ * `changeToPreset(id)` does, once per job. After a reload an attach applies it again (the set
  * is this page's): with the selection unchanged that only re-saves its working values into it, but
  * a selection changed since is switched back (recorded).
  */
@@ -399,7 +399,7 @@ function applyJobPreset(jobId: string, presetId: string) {
     }
     appliedPresets.add(jobId);
     void import("../storage/presets.svelte")
-        .then(({ changeToPreset }) => changeToPreset(presetId, true))
+        .then(({ changeToPreset }) => changeToPreset(presetId))
         .catch((error) => console.error("[Generation]", error));
 }
 

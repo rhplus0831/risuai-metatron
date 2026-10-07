@@ -32,7 +32,7 @@ import { createSigner, createTestServer, json, sleep, waitFor } from "./testSupp
 // pending question, answers only from the current socket, the hydration before a callback, and
 // the abort or end of a job with a request pending.
 
-const targets = { chatRef: { chaId: "c", chatId: "k" }, presetId: "p", personaId: "u" };
+const targets = { chatRef: { chaId: "c", chatId: "k" }, presetId: "p", modelPresetId: "m", personaId: "u" };
 const receipt: HydrationReceipt = { kind: "chats", id: "k", characterId: "c", revision: "e:1:1" };
 const validHooks: GenerationHooks = {
     replacers: { beforeRequest: true, afterRequest: false },
@@ -738,6 +738,7 @@ describe("the registry over a real socket", () => {
                     characterId: "c",
                     chatId: "k",
                     presetId: null,
+                    modelPresetId: null,
                     personaId: null,
                     mode: "normal",
                     input: "",

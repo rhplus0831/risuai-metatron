@@ -110,7 +110,7 @@ export function parseLlmRequestBody(body: unknown): LlmRequestBody | string {
     if (!isPlainObject(context)) {
         return "context must be an object";
     }
-    for (const field of ["presetId", "personaId", "selectedPersonaId"] as const) {
+    for (const field of ["presetId", "modelPresetId", "personaId", "selectedPersonaId"] as const) {
         if (!isValidResourceId(context[field])) {
             return `context.${field} must be an id`;
         }
@@ -181,6 +181,7 @@ export function parseLlmRequestBody(body: unknown): LlmRequestBody | string {
         mode: body.mode as ModelModeExtended,
         context: {
             presetId: context.presetId as string,
+            modelPresetId: context.modelPresetId as string,
             personaId: context.personaId as string,
             selectedPersonaId: context.selectedPersonaId as string,
             selectedCharacterId: context.selectedCharacterId as string | null,

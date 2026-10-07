@@ -71,7 +71,14 @@ export function parseTransformRequest(body: Record<string, unknown>): TransformR
     if (!isPlainObject(context)) {
         return "context must be an object";
     }
-    for (const key of ["characterId", "chatId", "presetId", "personaId", "selectedPersonaId"] as const) {
+    for (const key of [
+        "characterId",
+        "chatId",
+        "presetId",
+        "modelPresetId",
+        "personaId",
+        "selectedPersonaId",
+    ] as const) {
         if (!isValidResourceId(context[key])) {
             return `context.${key} must be a resource id`;
         }
@@ -154,6 +161,7 @@ export function parseTransformRequest(body: Record<string, unknown>): TransformR
             characterId: context.characterId as string,
             chatId: context.chatId as string,
             presetId: context.presetId as string,
+            modelPresetId: context.modelPresetId as string,
             personaId: context.personaId as string,
             selectedPersonaId: context.selectedPersonaId as string,
         },

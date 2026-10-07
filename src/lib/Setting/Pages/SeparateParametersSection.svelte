@@ -16,9 +16,9 @@
 <Accordion name={language.seperateParameters} styled>
     <CheckInput bind:check={activePreset.seperateParametersEnabled} name={language.seperateParametersEnabled} />
     {#if activePreset.seperateParametersEnabled}
-        {#each Object.keys(settings.providers.seperateParameters) as param}
+        {#each Object.keys(activePreset.seperateParameters) as param}
             <Accordion name={language[paramLabels[param]] ?? param} styled>
-                <AllSeperateParameters bind:value={settings.providers.seperateParameters[param]} paramKey={param} />
+                <AllSeperateParameters bind:value={activePreset.seperateParameters[param]} paramKey={param} />
             </Accordion>
         {/each}
     {/if}

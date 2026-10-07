@@ -197,53 +197,6 @@ function findCharacter(scope: JobScope, id: string | undefined): character {
 /** The kinds that run the input stage (a send's `userMessageId`). */
 const INPUT_KINDS = new Set(["send", "continue", "reroll", "group"]);
 
-/** The fields `setPreset` keeps on a preset change unless its toggle says otherwise, with the default each gets. */
-const KEEP_RULES = [
-    { flag: "doNotChangeSeperateModels", field: "seperateModelsForAxModels", fallback: () => false },
-    {
-        flag: "doNotChangeSeperateModels",
-        field: "seperateModels",
-        fallback: () => ({ memory: "", emotion: "", translate: "", otherAx: "" }),
-    },
-    {
-        flag: "doNotChangeFallbackModels",
-        field: "fallbackModels",
-        fallback: () => ({ memory: [], emotion: [], translate: [], otherAx: [], model: [] }),
-    },
-    { flag: "doNotChangeFallbackModels", field: "fallbackWhenBlankResponse", fallback: () => false },
-    {
-        flag: "disableSeperateParameterChangeOnPresetChange",
-        field: "seperateParameters",
-        fallback: () => ({ memory: {}, emotion: {}, translate: {}, otherAx: {}, overrides: {} }),
-    },
-] as const;
-
-/**
- * The job's preset after a `presetChain` pick (`changeToPreset(id, true)`): the scope of that preset,
- * whose five "keep on preset change" root fields take the new preset's values unless their toggle
- * keeps them. Picking the selected preset changes nothing (its working values were just saved into
- * it). Nothing is written: the tab applies the switch to its own selection (`preset` event).
- */
-function applyPresetKeepRules(scope: JobScope, previousPresetId: string) {
-    if (scope.preset.id === previousPresetId) {
-        return;
-    }
-    const preset = scope.preset as unknown as Record<string, unknown>;
-    for (const target of [
-        scope.db as unknown as Record<string, unknown>,
-        scope.request.db as Record<string, unknown>,
-    ]) {
-        for (const rule of KEEP_RULES) {
-            if (!scope.db[rule.flag]) {
-                target[rule.field] =
-                    preset[rule.field] !== undefined && preset[rule.field] !== null
-                        ? structuredClone(preset[rule.field])
-                        : rule.fallback();
-            }
-        }
-    }
-}
-
 /** The error a send's `throwError` shows when `inlayErrorResponse` is off. */
 class SendError extends GenerationRunnerError {
     constructor(message: string) {
@@ -322,8 +275,9 @@ async function runSend(
     }
     const preview = job.kind === "preview" || job.kind === "previewPrompt";
 
-    // `presetChain` (the tab's top-level send picks one preset for the whole send): picked and read
-    // with the admitted configuration, applied after the input stage, where the tab's `sendChat` picks it.
+    // `presetChain` (the tab's top-level send picks one prompt preset for the whole send): picked and
+    // read with the admitted configuration, applied after the input stage, where the tab's `sendChat`
+    // picks it. The model preset stays the job's (`docs/plan/split-preset.md`).
     let chain: { scope: JobScope; presetId: string } | { missing: string } | null = null;
     if (scope.db.presetChain) {
         const names = scope.db.presetChain.split(",").map((v) => v.trim());
@@ -334,7 +288,6 @@ async function runSend(
         } else {
             const picked = loadJobScope(store, kinds, { ...job.context, presetId: found.id });
             admitProviderModels(picked, job.hooks.providers);
-            applyPresetKeepRules(picked, scope.preset.id);
             chain = { scope: picked, presetId: found.id };
         }
     }

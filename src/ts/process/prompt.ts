@@ -2,6 +2,7 @@ import { settings } from "../storage/settingsViews.svelte";
 import { tokenizeAccurate } from "../tokenizer";
 import { presetTemplate } from "../storage/database.svelte";
 import { newPresetId, normalizePreset } from "../../../shared/presets.ts";
+import { addModelPreset } from "../storage/collectionStore.svelte";
 import { alertError, alertNormal } from "../alert";
 import type { OobaChatCompletionRequestParams } from "../model/ooba";
 import type { PromptItem, PromptRole } from "../../../shared/prompt.ts";
@@ -352,8 +353,7 @@ export function promptConvertion(files: { name: string; content: string; type: s
     }
 
     if (type === "STCHAT") {
-        preset.aiModel = "openrouter";
-        preset.subModel = "openrouter";
+        // A prompt preset only (`docs/plan/split-preset.md`): the model is the model preset's choice.
         settings.presets.push(normalizePreset(preset, { id: newPresetId() }));
 
         alertNormal("Preset converted successfully. You can find it in bot setting presets");
@@ -427,15 +427,21 @@ export function promptConvertion(files: { name: string; content: string; type: s
     jinja += `{% endfor %}`;
     jinja += instData.output_sequence;
 
-    preset.instructChatTemplate = "jinja";
-    preset.JinjaTemplate = jinja;
-    preset.aiModel = "openrouter";
-    preset.subModel = "openrouter";
-    preset.useInstructPrompt = true;
-
     preset.name ||= "Converted from JSON";
 
     settings.presets.push(normalizePreset(preset, { id: newPresetId() }));
+    // The instruct chat format belongs to the model preset (`docs/plan/split-preset.md`): it is kept
+    // as a model preset of its own, which is not selected.
+    addModelPreset({
+        name: preset.name,
+        aiModel: "openrouter",
+        subModel: "openrouter",
+        instructChatTemplate: "jinja",
+        JinjaTemplate: jinja,
+        useInstructPrompt: true,
+    });
 
-    alertNormal("Preset converted successfully. You can find it in bot setting presets");
+    alertNormal(
+        `Preset converted successfully. You can find it in bot setting presets; its instruct chat format is saved as the model preset "${preset.name}"`,
+    );
 }

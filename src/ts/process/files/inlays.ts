@@ -1,4 +1,4 @@
-import { activePreset } from "../../storage/settingsViews.svelte";
+import { activeModelPreset, activePreset } from "../../storage/settingsViews.svelte";
 import { v4 } from "uuid";
 import { getImageType } from "src/ts/media";
 import { getModelInfo, LLMFlags, LLMFormat } from "src/ts/model/modellist";
@@ -649,7 +649,7 @@ export async function getInlayMetadata(id: string): Promise<InlayResource | null
 }
 
 export function supportsInlayImage() {
-    return getModelInfo(activePreset.aiModel).flags.includes(LLMFlags.hasImageInput);
+    return getModelInfo(activeModelPreset.aiModel).flags.includes(LLMFlags.hasImageInput);
 }
 
 export async function reencodeImage(img: Uint8Array) {

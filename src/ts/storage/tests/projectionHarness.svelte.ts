@@ -1522,8 +1522,10 @@ export function mountFacade(candidate: Candidate, characterIds: readonly string[
         );
     }
     // `proxyKey` (`forwarding.svelte.ts:156`): reads `""` (the tab never holds the key; the read
-    // still resolves the selection), a write goes to the selected preset's `llmSecrets.presets`
-    // entry through `setSecret` (a blank or non-string value clears it), resolved untracked.
+    // still resolves the selection), a write goes to the selected preset's `llmSecrets` entry
+    // through `setSecret` (a blank or non-string value clears it), resolved untracked. The spike
+    // predates the preset split: its one presets record stands in for the model preset that owns the
+    // entry (`docs/plan/split-preset.md`), so the path names the `modelPresets` map.
     defineAccessor(
         raw,
         "proxyKey",
@@ -1539,7 +1541,10 @@ export function mountFacade(candidate: Candidate, characterIds: readonly string[
                 if (preset === undefined) {
                     return;
                 }
-                routeSecret({ kind: "entry", field: "presets", id: preset.id }, typeof value === "string" ? value : "");
+                routeSecret(
+                    { kind: "entry", field: "modelPresets", id: preset.id },
+                    typeof value === "string" ? value : "",
+                );
             });
         },
     );

@@ -67,7 +67,7 @@ vi.mock("src/ts/util", async (importOriginal) => ({
 
 import { recordData, setRecordWriteListener } from "src/ts/storage/records.svelte";
 import { selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
-import { activePreset, settings } from "src/ts/storage/settingsViews.svelte";
+import { activeModelPreset, activePreset, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { executePluginV3 } from "./v3.svelte";
 
@@ -124,11 +124,12 @@ describe("the plugin database setters over the settings records", () => {
                 otherKey: 2,
                 personas: [personaA, { id: "b", name: "B", icon: "", personaPrompt: "", note: "" }],
             });
-            expect(notified.sort()).toEqual(["personas", "pluginStorage", "presets", "ui"]);
+            // `maxContext` is the model preset's (`docs/plan/split-preset.md`): one more record, once.
+            expect(notified.sort()).toEqual(["modelPresets", "personas", "pluginStorage", "presets", "ui"]);
             expect(settings.ui.theme).toBe("waifu");
             expect(settings.ui.lineHeight).toBe(2);
             expect(activePreset.temperature).toBe(7);
-            expect(activePreset.maxContext).toBe(4096);
+            expect(activeModelPreset.maxContext).toBe(4096);
             expect(plain(settings.pluginStorage)).toEqual({ customKey: { a: 1 }, otherKey: 2 });
             expect(settings.personas).toHaveLength(2);
             expect(plain(recordData("modules"))).toEqual(modulesBefore);

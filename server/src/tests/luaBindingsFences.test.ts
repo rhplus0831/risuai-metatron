@@ -70,7 +70,8 @@ function setup(options: { lore?: Record<string, unknown>[]; image?: string; inla
         const row = store.get(kind(name), "main");
         store.applyChanges({ ops: [{ kind: kind(name), id: "main", baseRevision: row?.revision ?? null, data }] });
     };
-    singleton(RESOURCE_KIND.presets, [{ id: "p", name: "p", aiModel: "gpt-4o" }]);
+    singleton(RESOURCE_KIND.presets, [{ id: "p", name: "p" }]);
+    singleton(RESOURCE_KIND.modelPresets, [{ id: "m", name: "m", aiModel: "gpt-4o" }]);
     singleton("personas", [{ id: "u", name: "Uma" }]);
     const ops: Record<string, unknown>[] = [
         {
@@ -115,6 +116,7 @@ function setup(options: { lore?: Record<string, unknown>[]; image?: string; inla
         characterId: "c",
         chatId: "k",
         presetId: "p",
+        modelPresetId: "m",
         personaId: "u",
         mode: "button",
         input: "",

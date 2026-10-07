@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import { getModelInfo } from "src/ts/model/modellist";
     import { LLMFlags } from "src/ts/model/types";
@@ -8,7 +8,7 @@
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import type { SeparateParameters } from "src/ts/storage/database.svelte";
 
-    type AuxModelKey = keyof typeof settings.providers.seperateModels;
+    type AuxModelKey = keyof typeof activeModelPreset.seperateModels;
 
     let {
         value = $bindable(),
@@ -21,12 +21,12 @@
     const auxModelKeys: AuxModelKey[] = ["memory", "emotion", "translate", "otherAx"];
 
     let effectiveModel = $derived.by(() => {
-        if (!paramKey) return activePreset.subModel;
+        if (!paramKey) return activeModelPreset.subModel;
         if (auxModelKeys.includes(paramKey as AuxModelKey)) {
-            if (settings.providers.seperateModelsForAxModels) {
-                return settings.providers.seperateModels[paramKey as AuxModelKey] || activePreset.subModel;
+            if (activeModelPreset.seperateModelsForAxModels) {
+                return activeModelPreset.seperateModels[paramKey as AuxModelKey] || activeModelPreset.subModel;
             }
-            return activePreset.subModel;
+            return activeModelPreset.subModel;
         }
         return paramKey;
     });

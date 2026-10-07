@@ -222,7 +222,7 @@ export function createRunSetup(
         ...(options.frozen ? { frozen: true } : {}),
     });
     const { services } = bindings;
-    const identity = { characterId, chatId, presetId: scope.preset.id, personaId: scope.effectivePersona.id };
+    const identity = { characterId, chatId, presetId: scope.promptPreset.id, personaId: scope.effectivePersona.id };
     const nativeCtx: HostContext = {
         identity,
         access: "lowLevel",

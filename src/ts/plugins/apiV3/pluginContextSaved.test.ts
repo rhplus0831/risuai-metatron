@@ -151,28 +151,33 @@ describe("a hook's writes reach the records its context names", () => {
         expect(fake.batchBodies().every((body: any) => (body.chats ?? []).length === 0)).toBe(true);
     });
 
-    it("setDatabase({ temperature }) after a preset switch lands in the hook's preset of the presets record", async () => {
+    it("setDatabase({ temperature, maxContext }) after a switch of both presets lands in the hook's presets of each owner's record", async () => {
         const { capture, runWith, sync, record, selection, selectionModule } = await boot(async (api) => {
             await api.setDatabase({ temperature: 77 });
             await api.setDatabaseLite({ maxContext: 4321 });
         });
         const hookPreset = selection.presetId;
+        const hookModelPreset = selection.modelPresetId;
         const other = record("presets").find((preset: any) => preset.id !== hookPreset).id;
-        // The send captured its context; the user switches presets before the listener runs.
+        const otherModel = record("modelPresets").find((preset: any) => preset.id !== hookModelPreset).id;
+        // The send captured its context; the user switches both presets before the listener runs.
         const context = capture(refK);
+        expect(context).toMatchObject({ presetId: hookPreset, modelPresetId: hookModelPreset });
         selectionModule.selectPreset(other);
+        selectionModule.selectModelPreset(otherModel);
 
         await runWith(context);
         await sync.flushResources();
 
         const presets = record("presets");
-        expect(presets.find((preset: any) => preset.id === hookPreset)).toMatchObject({
-            temperature: 77,
-            maxContext: 4321,
-        });
+        expect(presets.find((preset: any) => preset.id === hookPreset)).toMatchObject({ temperature: 77 });
         expect(presets.find((preset: any) => preset.id === other).temperature).not.toBe(77);
-        expect(presets.find((preset: any) => preset.id === other).maxContext).not.toBe(4321);
+        const modelPresets = record("modelPresets");
+        expect(modelPresets.find((preset: any) => preset.id === hookModelPreset)).toMatchObject({ maxContext: 4321 });
+        expect(modelPresets.find((preset: any) => preset.id === otherModel).maxContext).not.toBe(4321);
+        expect(presets.every((preset: any) => !("maxContext" in preset))).toBe(true);
         expect(selection.presetId).toBe(other);
+        expect(selection.modelPresetId).toBe(otherModel);
     });
 });
 

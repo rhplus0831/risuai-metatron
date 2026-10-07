@@ -1016,6 +1016,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             try {
                 loaded = loadRequestDb(options.store, options.kinds, {
                     presetId: body.context.presetId,
+                    modelPresetId: body.context.modelPresetId,
                     personaId: body.context.personaId,
                     selectedPersonaId: body.context.selectedPersonaId,
                     selectedCharacterId: body.context.selectedCharacterId,

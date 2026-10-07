@@ -32,6 +32,7 @@ let base = "";
 let epoch = "";
 let signer: Awaited<ReturnType<typeof createSigner>>;
 let presetId = "";
+let modelPresetId = "";
 let defaultPersonaId = "";
 let defaultPersonaPrompt = "";
 
@@ -79,6 +80,7 @@ beforeAll(async () => {
     const presets = await single("presets");
     const personas = await single("personas");
     presetId = presets.data[0].id;
+    modelPresetId = (await single("modelPresets")).data[0].id;
     defaultPersonaId = personas.data[0].id;
     defaultPersonaPrompt = personas.data[0].personaPrompt ?? "";
     const seeded = await api("/api/resources/batch", {
@@ -201,6 +203,7 @@ const context = async (chaId: string, extra: Record<string, unknown> = {}) => ({
     characterId: chaId,
     chatId: "k",
     presetId,
+    modelPresetId,
     personaId: defaultPersonaId,
     selectedPersonaId: defaultPersonaId,
     mode: "manual",

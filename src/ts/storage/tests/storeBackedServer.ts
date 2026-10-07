@@ -402,12 +402,12 @@ export class StoreBackedServer {
             if (headers.get(RESOURCE_EPOCH_HEADER) !== this.store.epoch()) {
                 return Response.json({ error: "EpochMismatch", epoch: this.store.epoch() }, { status: 412 });
             }
-            if (url.pathname === "/api/llm-secrets/presets/copy" && method === "POST") {
+            if (url.pathname === "/api/llm-secrets/modelPresets/copy" && method === "POST") {
                 if (typeof body?.from !== "string" || typeof body?.to !== "string" || !body.from || !body.to) {
                     return Response.json({ error: "Body must be { from, to, baseRevision }" }, { status: 400 });
                 }
-                const from: SecretPath = { kind: "entry", field: "presets", id: body.from };
-                const to: SecretPath = { kind: "entry", field: "presets", id: body.to };
+                const from: SecretPath = { kind: "entry", field: "modelPresets", id: body.from };
+                const to: SecretPath = { kind: "entry", field: "modelPresets", id: body.to };
                 return this.writeSecretRoute(body.baseRevision, (record) =>
                     writeSecret(record, to, readSecret(record, from)),
                 );

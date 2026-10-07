@@ -1,4 +1,4 @@
-import type { AINsettings, botPreset, OobaSettings } from "./database.ts";
+import type { AINsettings, botPreset, ModelPreset, OobaSettings } from "./database.ts";
 import { isRecordId, newId } from "./ids.ts";
 import { LLMFormat } from "./llm.ts";
 import {
@@ -11,18 +11,21 @@ import type { PromptItem } from "./prompt.ts";
 import { isPlainObject, type ValueKind, valueKindOf } from "./valueKinds.ts";
 
 /**
- * The canonical bot preset schema (Phase 3, Decision 3 of `docs/plan/PLAN.md`), used by the client
- * (importers, the forwarding layer from slice 5) and the server `presets` normalizer (slice 3).
+ * The canonical preset schema (Phase 3, Decision 3 of `docs/plan/PLAN.md`; split into the prompt
+ * and the model preset by `docs/plan/split-preset.md`), used by the client (importers, the views)
+ * and the server normalizers.
  *
- * `PRESET_DEFAULTS` lists every field a preset owns, keyed by its preset name, with its fresh-boot
- * default as recorded in `src/ts/storage/tests/fixtures/phase3/boot-snapshot.json`. A deliberate
- * preset default change updates this object and that maintained fixture together. The values
- * originated from the `setDatabase` root defaults, not `presetTemplate` (they differ for
- * `maxResponse` and the two textgen URLs). A field a fresh boot leaves unset takes the fallback
- * `setPreset` (or else `saveCurrentPreset`) applies; `undefined` means neither has one and the field
- * stays absent. `name` and `image` are preset-only. Not preset fields: `openAIKey` (one global
- * secret), `forceReplaceUrl2` (no reader), `autoSuggestPrefix` and `autoSuggestClean`
- * (`saveCurrentPreset` never wrote them, so they were global; they are `ui` fields).
+ * `PRESET_DEFAULTS` is the one table of every preset-schema field, keyed by its preset name, with
+ * its fresh-boot default as recorded in `src/ts/storage/tests/fixtures/phase3/boot-snapshot.json`.
+ * Each field has one owner: the model preset (`MODEL_PRESET_FIELDS`, the `modelPresets` collection)
+ * or the prompt preset (`PROMPT_PRESET_FIELDS`, the `presets` record); `name` is both records' own
+ * (`PRESET_RECORD_FIELDS`), and `image` the prompt preset's. The defaults, kinds, and null rules are
+ * shared, so `presetFieldValue` serves either record. A deliberate default change updates this
+ * object and that maintained fixture together. The values originated from the `setDatabase` root
+ * defaults, not `presetTemplate` (they differ for `maxResponse` and the two textgen URLs).
+ * `undefined` means the field has no default and stays absent. Not preset fields: `openAIKey` (one
+ * global secret), `proxyKey` (the model preset's `llmSecrets.modelPresets` entry),
+ * `forceReplaceUrl2` (no reader), `autoSuggestPrefix` and `autoSuggestClean` (`ui` fields).
  */
 
 export const defaultAIN: AINsettings = {
@@ -91,7 +94,8 @@ export function plainClone<T>(value: T): T {
 type PresetDefaults = { [K in Exclude<keyof botPreset, PresetOnlyExcluded>]-?: botPreset[K] | null | undefined };
 /**
  * Not preset fields: the id, the two LLM credentials (`openAIKey` is a global `llmSecrets` field;
- * `proxyKey` lives in `llmSecrets.presets` by preset id), and fields that were never saved per preset.
+ * `proxyKey` lives in `llmSecrets.modelPresets` by model preset id), and fields that were never saved
+ * per preset.
  */
 type PresetOnlyExcluded =
     "id" | "openAIKey" | "proxyKey" | "forceReplaceUrl2" | "autoSuggestPrefix" | "autoSuggestClean";
@@ -185,8 +189,67 @@ export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
 
 export type PresetField = keyof PresetDefaults;
 
-/** Every field a preset owns, by its preset name. */
+/** Every preset-schema field (both owners), by its preset name. */
 export const PRESET_FIELDS = Object.keys(PRESET_DEFAULTS) as readonly PresetField[];
+
+/**
+ * The fields the model preset owns (`docs/plan/split-preset.md`, "Field partition"): what selects
+ * and reaches the model. Stored in the `modelPresets` collection, never in a prompt preset.
+ */
+export const MODEL_PRESET_FIELDS = [
+    "aiModel",
+    "subModel",
+    "apiType",
+    "currentPluginProvider",
+    "forceReplaceUrl",
+    "customProxyRequestModel",
+    "proxyRequestModel",
+    "customAPIFormat",
+    "textgenWebUIStreamURL",
+    "textgenWebUIBlockingURL",
+    "koboldURL",
+    "localNetworkMode",
+    "localNetworkTimeoutSec",
+    "openrouterRequestModel",
+    "openrouterProvider",
+    "useInstructPrompt",
+    "enableCustomFlags",
+    "customFlags",
+    "systemContentReplacement",
+    "systemRoleReplacement",
+    "instructChatTemplate",
+    "JinjaTemplate",
+    "outputImageModal",
+    "modelTools",
+    "maxContext",
+    "seperateModelsForAxModels",
+    "seperateModels",
+    "fallbackModels",
+    "fallbackWhenBlankResponse",
+] as const satisfies readonly PresetField[];
+
+export type ModelPresetField = (typeof MODEL_PRESET_FIELDS)[number];
+
+/** The fields both preset records hold for themselves (never forwarded to a root name). */
+export const PRESET_RECORD_FIELDS = ["name", "image"] as const satisfies readonly PresetField[];
+
+/** The fields the prompt preset owns: every other schema field (the prompt, sampling, reasoning). */
+export type PromptPresetField = Exclude<PresetField, ModelPresetField | (typeof PRESET_RECORD_FIELDS)[number]>;
+
+const modelFieldSet = new Set<string>(MODEL_PRESET_FIELDS);
+const recordFieldSet = new Set<string>(PRESET_RECORD_FIELDS);
+
+function isPromptPresetField(field: PresetField): field is PromptPresetField {
+    return !modelFieldSet.has(field) && !recordFieldSet.has(field);
+}
+
+/** The prompt preset's fields, in `PRESET_DEFAULTS` order. */
+export const PROMPT_PRESET_FIELDS: readonly PromptPresetField[] = PRESET_FIELDS.filter(isPromptPresetField);
+
+/** Which record owns a preset-schema field (`undefined` for `name`/`image`, which each record has). */
+export function presetFieldOwner(field: PresetField): "model" | "prompt" | undefined {
+    return modelFieldSet.has(field) ? "model" : recordFieldSet.has(field) ? undefined : "prompt";
+}
 
 /** Kinds of the fields whose default does not show one (no default, or a `null` default). */
 const kindsWithoutDefault: Partial<Record<PresetField, ValueKind>> = {
@@ -224,19 +287,6 @@ export const PERSONA_ROOT_ALIASES = {
     userNote: "note",
     personaPrompt: "personaPrompt",
 } as const;
-
-/**
- * Preset fields that the three "keep on preset change" toggles keep across a switch. They stay root
- * (`providers`) fields that `changeToPreset` copies, outside the forwarding layer, until the
- * follow-up after `docs/plan/PLAN.md` decides their owner (Decision 3, deferred).
- */
-export const PRESET_KEEP_ON_SWITCH_FIELDS = [
-    "seperateModels",
-    "seperateModelsForAxModels",
-    "fallbackModels",
-    "fallbackWhenBlankResponse",
-    "seperateParameters",
-] as const satisfies readonly PresetField[];
 
 /**
  * Preset fields whose explicit `null` is a value the readers handle (`promptTemplate` null means no
@@ -356,7 +406,6 @@ export function normalizePromptTemplate(template: PromptItem[] | null | undefine
     return normalized as PromptItem[];
 }
 
-const keepOnSwitchFields = new Set<string>(PRESET_KEEP_ON_SWITCH_FIELDS);
 const nullableFields = new Set<string>(PRESET_NULLABLE_FIELDS);
 
 /** The provider object that replaced the old single-provider string; runs before the kind check. */
@@ -365,11 +414,11 @@ function migrateOpenrouterProvider(value: unknown): unknown {
 }
 
 /**
- * The `setDatabase` migrations of two keep-on-switch containers, in place: `seperateParameters`
- * gets its `overrides` map and every `fallbackModels` list becomes an array without empty entries.
- * Shared by `normalizePreset` and the server `providers` normalizer, which holds the root copies.
+ * The `setDatabase` migrations of two preset containers, in place, on whichever record holds them:
+ * `seperateParameters` (prompt) gets its `overrides` map and every `fallbackModels` (model) list
+ * becomes an array without empty entries.
  */
-export function migrateKeepOnSwitchFields(record: Record<string, unknown>): void {
+function migratePresetContainers(record: Record<string, unknown>): void {
     if (isPlainObject(record.seperateParameters)) {
         record.seperateParameters.overrides ??= {};
     }
@@ -382,68 +431,88 @@ export function migrateKeepOnSwitchFields(record: Record<string, unknown>): void
 }
 
 /**
- * A normalized copy of a preset: only the canonical fields, each missing one (absent or `undefined`)
- * or one of the wrong JSON kind (`PRESET_FIELD_KINDS`; a number where an object belongs) filled
- * with its default, and the migrations `setDatabase` and `setPreset` applied to the root working
- * copy before Phase 3. Nested values are not checked beyond those migrations. The server `presets`
- * normalizer runs this, so a stored preset always has the containers the client reads through
- * (`NAISettings.cfg_scale`, `ooba.formating`). An explicit `null` is kept only where it is a
- * value (`PRESET_NULLABLE_FIELDS`: `setPreset` passed it through as it was, such as `min_p`) and in
- * the keep-on-switch fields (`saveCurrentPreset` writes `seperateModels: null` on purpose while
- * `doNotChangeSeperateModels` is on); any other `null` gets the default, as `setPreset` gave the
- * root copy (a number field cleared in the UI comes back as its default after a reload, as the
- * working copy's did before Phase 3). The keep-on-switch fields are never filled:
- * they stay on the pre-Phase 3 path, where `setPreset` applies their fallback. The input is never
- * mutated and must be plain data (pass `plainClone` of a proxy: `$state.snapshot` drops an own
- * `__proto__` key). The id is `options.id` when
- * given (a copy or an import passes a fresh one), else the input's valid id, else a new one.
+ * A normalized copy of `source`'s `fields`: each missing one (absent or `undefined`) or one of the
+ * wrong JSON kind (`PRESET_FIELD_KINDS`; a number where an object belongs) filled with its default,
+ * and the migrations `setDatabase` and `setPreset` applied to the root working copy before Phase 3,
+ * each only where the record owns its field. An explicit `null` is kept only where it is a value
+ * (`PRESET_NULLABLE_FIELDS`: `setPreset` passed it through as it was, such as `min_p`); any other
+ * `null` gets the default, as `setPreset` gave the root copy (a number field cleared in the UI comes
+ * back as its default after a reload). Fields outside `fields` are dropped. Nested values are not
+ * checked beyond those migrations.
  */
-export function normalizePreset(input: unknown, options: { id?: string } = {}): botPreset {
-    const source = isPlainObject(input) ? input : {};
-    const preset: Record<string, unknown> = {
-        id: options.id ?? (isRecordId(source.id) ? source.id : newPresetId()),
-    };
-    for (const field of PRESET_FIELDS) {
+function normalizeFields(source: Record<string, unknown>, fields: readonly PresetField[], id: string) {
+    const record: Record<string, unknown> = { id };
+    for (const field of fields) {
         const value = field === "openrouterProvider" ? migrateOpenrouterProvider(source[field]) : source[field];
-        const keepsNull = nullableFields.has(field) || keepOnSwitchFields.has(field);
-        if ((value === null && keepsNull) || (value != null && valueKindOf(value) === PRESET_FIELD_KINDS[field])) {
-            preset[field] = plainClone(value);
+        if (
+            (value === null && nullableFields.has(field)) ||
+            (value != null && valueKindOf(value) === PRESET_FIELD_KINDS[field])
+        ) {
+            record[field] = plainClone(value);
             continue;
         }
         const fallback = PRESET_DEFAULTS[field];
-        if (fallback !== undefined && !keepOnSwitchFields.has(field)) {
-            preset[field] = plainClone(fallback);
+        if (fallback !== undefined) {
+            record[field] = plainClone(fallback);
         }
     }
-
-    if (isPlainObject(preset.NAISettings)) {
-        const nai = preset.NAISettings;
+    const owns = (field: PresetField) => fields.includes(field);
+    if (owns("NAISettings") && isPlainObject(record.NAISettings)) {
+        const nai = record.NAISettings;
         nai.starter ??= "";
         nai.cfg_scale ??= 1;
         nai.mirostat_tau ??= 0;
         nai.mirostat_lr ??= 1;
     }
-    if (isPlainObject(preset.promptSettings)) {
-        preset.promptSettings.maxThoughtTagDepth ??= -1;
+    if (owns("promptSettings") && isPlainObject(record.promptSettings)) {
+        record.promptSettings.maxThoughtTagDepth ??= -1;
     }
-    if (Array.isArray(preset.formatingOrder) && !preset.formatingOrder.includes("personaPrompt")) {
-        const main = preset.formatingOrder.indexOf("main");
-        preset.formatingOrder.splice(main === -1 ? 0 : main, 0, "personaPrompt");
+    if (
+        owns("formatingOrder") &&
+        Array.isArray(record.formatingOrder) &&
+        !record.formatingOrder.includes("personaPrompt")
+    ) {
+        const main = record.formatingOrder.indexOf("main");
+        record.formatingOrder.splice(main === -1 ? 0 : main, 0, "personaPrompt");
     }
-    if (typeof preset.top_p !== "number") {
-        preset.top_p = 1;
+    if (owns("top_p") && typeof record.top_p !== "number") {
+        record.top_p = 1;
     }
-    if (typeof preset.localNetworkMode !== "boolean") {
-        preset.localNetworkMode = false;
+    if (owns("localNetworkMode") && typeof record.localNetworkMode !== "boolean") {
+        record.localNetworkMode = false;
     }
-    if (typeof preset.localNetworkTimeoutSec !== "number" || Number.isNaN(preset.localNetworkTimeoutSec)) {
-        preset.localNetworkTimeoutSec = 600;
+    if (
+        owns("localNetworkTimeoutSec") &&
+        (typeof record.localNetworkTimeoutSec !== "number" || Number.isNaN(record.localNetworkTimeoutSec))
+    ) {
+        record.localNetworkTimeoutSec = 600;
     }
-    migrateKeepOnSwitchFields(preset);
-    if (preset.promptTemplate !== undefined && preset.promptTemplate !== null) {
-        preset.promptTemplate = normalizePromptTemplate(preset.promptTemplate as PromptItem[]);
+    migratePresetContainers(record);
+    if (owns("promptTemplate") && record.promptTemplate !== undefined && record.promptTemplate !== null) {
+        record.promptTemplate = normalizePromptTemplate(record.promptTemplate as PromptItem[]);
     }
-    return preset as unknown as botPreset;
+    return record;
+}
+
+const promptRecordFields: readonly PresetField[] = [...PRESET_RECORD_FIELDS, ...PROMPT_PRESET_FIELDS];
+const modelRecordFields: readonly PresetField[] = ["name", ...MODEL_PRESET_FIELDS];
+
+/** A new model preset's name (the shared `name` default is the prompt preset's). */
+export const MODEL_PRESET_DEFAULT_NAME = "New Model Preset";
+
+/**
+ * A normalized copy of a prompt preset (`normalizeFields` over `name`, `image`, and
+ * `PROMPT_PRESET_FIELDS`): the model fields an old file or record carries are dropped. The server
+ * `presets` normalizer runs this, so a stored preset always has the containers the client reads
+ * through (`NAISettings.cfg_scale`, `ooba.formating`). The input is never mutated and must be plain
+ * data (pass `plainClone` of a proxy: `$state.snapshot` drops an own `__proto__` key). The id is
+ * `options.id` when given (a copy or an import passes a fresh one), else the input's valid id, else
+ * a new one.
+ */
+export function normalizePreset(input: unknown, options: { id?: string } = {}): botPreset {
+    const source = isPlainObject(input) ? input : {};
+    const id = options.id ?? (isRecordId(source.id) ? source.id : newPresetId());
+    return normalizeFields(source, promptRecordFields, id) as unknown as botPreset;
 }
 
 /**
@@ -451,17 +520,42 @@ export function normalizePreset(input: unknown, options: { id?: string } = {}): 
  * non-array or empty input replaced by one default preset (so a selection always has a record).
  */
 export function normalizePresets(input: unknown): botPreset[] {
+    return normalizeList(input, normalizePreset, { name: "New Preset" });
+}
+
+/**
+ * A normalized copy of a model preset (`normalizeFields` over `name` and `MODEL_PRESET_FIELDS`;
+ * `name` defaults to `MODEL_PRESET_DEFAULT_NAME`): every other field is dropped, and a credential is
+ * never stored (`proxyKey` is the `llmSecrets.modelPresets` entry). Same input and id rules as
+ * `normalizePreset`.
+ */
+export function normalizeModelPreset(input: unknown, options: { id?: string } = {}): ModelPreset {
+    const source = isPlainObject(input) ? input : {};
+    const id = options.id ?? (isRecordId(source.id) ? source.id : newPresetId());
+    const record = normalizeFields(source, modelRecordFields, id);
+    if (typeof source.name !== "string") {
+        record.name = MODEL_PRESET_DEFAULT_NAME;
+    }
+    return record as unknown as ModelPreset;
+}
+
+/** The normalized model preset collection, with the same rules as `normalizePresets`. */
+export function normalizeModelPresets(input: unknown): ModelPreset[] {
+    return normalizeList(input, normalizeModelPreset, {});
+}
+
+function normalizeList<T extends { id: string }>(input: unknown, normalize: (entry: unknown) => T, empty: object): T[] {
     const source = Array.isArray(input) ? input : [];
     const seen = new Set<string>();
-    const presets = source.map((entry) => {
-        const preset = normalizePreset(entry);
-        if (seen.has(preset.id)) {
-            preset.id = newPresetId();
+    const list = source.map((entry) => {
+        const record = normalize(entry);
+        if (seen.has(record.id)) {
+            record.id = newPresetId();
         }
-        seen.add(preset.id);
-        return preset;
+        seen.add(record.id);
+        return record;
     });
-    return presets.length > 0 ? presets : [normalizePreset({ name: "New Preset" })];
+    return list.length > 0 ? list : [normalize(empty)];
 }
 
 const nullablePresetFields = new Set<string>(PRESET_NULLABLE_FIELDS);

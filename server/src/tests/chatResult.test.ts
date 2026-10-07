@@ -49,7 +49,8 @@ function setup() {
         const row = store.get(kind(name), "main");
         store.applyChanges({ ops: [{ kind: kind(name), id: "main", baseRevision: row?.revision ?? null, data }] });
     };
-    singleton(RESOURCE_KIND.presets, [{ id: "p", name: "p", aiModel: "gpt-4o" }]);
+    singleton(RESOURCE_KIND.presets, [{ id: "p", name: "p" }]);
+    singleton(RESOURCE_KIND.modelPresets, [{ id: "m", name: "m", aiModel: "gpt-4o" }]);
     singleton("personas", [{ id: "u", name: "Uma" }]);
     store.applyChanges({
         ops: [
@@ -84,6 +85,7 @@ function setup() {
         characterId: "c",
         chatId: "k",
         presetId: "p",
+        modelPresetId: "m",
         personaId: "u",
         mode: "manual",
         input: "",

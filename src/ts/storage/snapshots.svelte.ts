@@ -9,6 +9,7 @@ import {
     isSettingsRootKey,
     readPresetFieldOf,
     readSettingsRoot,
+    type PresetScope,
     SETTINGS_ROOT_KEYS,
     selectedLoreBookPage,
     selectedPersonaIndex,
@@ -47,10 +48,10 @@ export function rootSnapshot(): Record<string, unknown> {
  * The plugin `getDatabase` subset (`allowedDbKeys`, filtered by the caller): `characters` in the
  * legacy shape with their chats (`withChatsCopy`: the caller loads and pins them first, and calls
  * this in the same synchronous pass), `selectedPersona` as the selected persona's index, and every
- * other key as its view reads it. With `presetId` (a hook's captured preset, checked by the caller),
- * a preset field is that preset's. `pluginCustomStorage`, a user-keyed map, is copied through JSON.
+ * other key as its view reads it. With `scope` (a hook's captured presets, checked by the caller), a
+ * preset field is its owning preset's of that pair. `pluginCustomStorage`, a user-keyed map, is copied through JSON.
  */
-export function buildDatabaseSubset(keys: readonly string[], presetId: string | null): Record<string, unknown> {
+export function buildDatabaseSubset(keys: readonly string[], scope: PresetScope | null): Record<string, unknown> {
     return untrack(() => {
         const subset: Record<string, unknown> = {};
         for (const key of keys) {
@@ -63,8 +64,8 @@ export function buildDatabaseSubset(keys: readonly string[], presetId: string | 
                 continue;
             }
             const value =
-                presetId !== null && forwardedPresetField(key) !== undefined
-                    ? readPresetFieldOf(presetId, key)
+                scope !== null && forwardedPresetField(key) !== undefined
+                    ? readPresetFieldOf(scope, key)
                     : isSettingsRootKey(key)
                       ? readSettingsRoot(key)
                       : undefined;
@@ -89,6 +90,7 @@ const REPORT_REMOVED_KEYS: ReadonlySet<string> = new Set([
     "modules",
     "enabledModules",
     "botPresets",
+    "modelPresets",
     "characterOrder",
     "webUiUrl",
     "hordeConfig",

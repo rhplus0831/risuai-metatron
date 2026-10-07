@@ -12,5 +12,5 @@
 </script>
 
 {#each list as item (item.id)}
-    <SpikeRecordRow id={item.id} bind:name={item.name} bind:flag={item.useInstructPrompt} />
+    <SpikeRecordRow id={item.id} bind:name={item.name} bind:flag={item.seperateParametersEnabled} />
 {/each}

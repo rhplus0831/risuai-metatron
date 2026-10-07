@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { auxFetch } from "src/ts/network/auxFetch";
     import { language } from "src/lang";
     import TextInput from "../UI/GUI/TextInput.svelte";
@@ -22,7 +22,7 @@
 
     let selLang = $state(settings.ui.language);
     let prompt = $state(LLMModePrompt);
-    let modelInfo = $derived(getModelInfo(activePreset.aiModel));
+    let modelInfo = $derived(getModelInfo(activeModelPreset.aiModel));
     let outputText = $state("");
     let fileB64 = $state("");
     let vttB64 = $state("");

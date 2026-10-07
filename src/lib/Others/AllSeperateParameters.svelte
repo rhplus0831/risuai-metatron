@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import Help from "./Help.svelte";
     import { language } from "src/lang";
     import SliderInput from "../UI/GUI/SliderInput.svelte";
@@ -25,12 +25,12 @@
     } = $props();
 
     let effectiveModel = $derived.by(() => {
-        if (!paramKey) return activePreset.subModel;
+        if (!paramKey) return activeModelPreset.subModel;
         if (auxModelKeys.includes(paramKey as AuxModelKey)) {
-            if (settings.providers.seperateModelsForAxModels) {
-                return settings.providers.seperateModels[paramKey as AuxModelKey] || activePreset.subModel;
+            if (activeModelPreset.seperateModelsForAxModels) {
+                return activeModelPreset.seperateModels[paramKey as AuxModelKey] || activeModelPreset.subModel;
             }
-            return activePreset.subModel;
+            return activeModelPreset.subModel;
         }
         return paramKey;
     });

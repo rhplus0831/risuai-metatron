@@ -201,10 +201,11 @@ import {
     selectCharacterAt,
     selectedIndex,
     selection,
+    selectModelPreset,
     selectPersona,
     selectPreset,
 } from "src/ts/storage/selection.svelte";
-import { activePreset, settings } from "src/ts/storage/settingsViews.svelte";
+import { activeModelPreset, activePreset, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { doingChat } from "src/ts/process/index.svelte";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
@@ -222,6 +223,8 @@ vi.stubGlobal("safeStructuredClone", (value: unknown) =>
 );
 
 const preset = (id: string) => settings.presets.find((entry: { id: string }) => entry.id === id) as any;
+/** The model preset of the same id (`installFlatDatabase` splits the fixture's model fields off). */
+const modelPreset = (id: string) => settings.modelPresets.find((entry: { id: string }) => entry.id === id) as any;
 const characterOf = (chaId: string) => characterList().find((entry: any) => entry?.chaId === chaId) as any;
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const texts = (ref: chatStore.ChatRef) => chatStore.findChat(ref)!.message.map((message) => message.data);
@@ -251,6 +254,7 @@ const chat = (id: string, fields: Record<string, unknown> = {}) => ({
  */
 function liveDatabase() {
     selectPreset("a");
+    selectModelPreset("a");
     selectPersona("p");
     const raw: Record<string, unknown> = {
         botPresets: [
@@ -295,7 +299,6 @@ function liveDatabase() {
         useStreaming: false,
         genTime: 1,
         requestRetrys: 0,
-        fallbackModels: {},
         banCharacterset: [],
     };
     installFlatDatabaseWithChats(raw);
@@ -366,27 +369,58 @@ const ownerB = () => chatStore.chatOwnerToken("b");
 
 describe("capturePluginContext", () => {
     it("captures the chat ref, the selected preset, and the chat's bound persona, else the selected persona", () => {
-        expect(capturePluginContext(refB1)).toEqual({ chatRef: refB1, presetId: "a", personaId: "q", owner: ownerB() });
-        expect(capturePluginContext(refA1)).toEqual({ chatRef: refA1, presetId: "a", personaId: "p", owner: ownerA() });
+        expect(capturePluginContext(refB1)).toEqual({
+            chatRef: refB1,
+            presetId: "a",
+            modelPresetId: "a",
+            personaId: "q",
+            owner: ownerB(),
+        });
+        expect(capturePluginContext(refA1)).toEqual({
+            chatRef: refA1,
+            presetId: "a",
+            modelPresetId: "a",
+            personaId: "p",
+            owner: ownerA(),
+        });
         selectPreset("b");
         expect(capturePluginContext(refA1)!.presetId).toBe("b");
+        // The model preset is captured independently (`docs/plan/split-preset.md`).
+        expect(capturePluginContext(refA1)!.modelPresetId).toBe("a");
+        selectModelPreset("b");
+        expect(capturePluginContext(refA1)).toMatchObject({ presetId: "b", modelPresetId: "b" });
         expect(capturePluginContext(null)).toBeUndefined();
         expect(capturePluginContext(undefined)).toBeUndefined();
     });
 
     it("resolves through the settings views (Phase 6 slice 7): a bound persona that is gone, and a selection naming no record, fall back as before", () => {
-        expect(capturePluginContext(refB1)).toEqual({ chatRef: refB1, presetId: "a", personaId: "q", owner: ownerB() });
+        expect(capturePluginContext(refB1)).toEqual({
+            chatRef: refB1,
+            presetId: "a",
+            modelPresetId: "a",
+            personaId: "q",
+            owner: ownerB(),
+        });
         selectPersona("q");
         expect(capturePluginContext(refA1)!.personaId).toBe("q");
         // The bound persona `q` deleted: the chat's binding names no record, so the selected persona
         // is captured (the selection, which named `q`, falls back to the first persona and selects it).
         settings.personas.splice(1, 1);
-        expect(capturePluginContext(refB1)).toEqual({ chatRef: refB1, presetId: "a", personaId: "p", owner: ownerB() });
+        expect(capturePluginContext(refB1)).toEqual({
+            chatRef: refB1,
+            presetId: "a",
+            modelPresetId: "a",
+            personaId: "p",
+            owner: ownerB(),
+        });
         expect(selection.personaId).toBe("p");
         // A preset selection naming no record: the first preset, which becomes the selection.
         selectPreset("gone");
         expect(capturePluginContext(refA1)!.presetId).toBe("a");
         expect(selection.presetId).toBe("a");
+        selectModelPreset("gone");
+        expect(capturePluginContext(refA1)!.modelPresetId).toBe("a");
+        expect(selection.modelPresetId).toBe("a");
     });
 
     it("is a copy: the runner's ref object is not shared", () => {
@@ -561,7 +595,7 @@ describe("attribution", () => {
 });
 
 describe("settings inside a hook", () => {
-    it("setDatabase and setDatabaseLite land in the hook's preset after a preset switch, and getDatabase reads it", async () => {
+    it("setDatabase and setDatabaseLite land in the hook's presets of each owner after a switch of both, and getDatabase reads them", async () => {
         const api = await makeApi();
         const listener = await listenerOf(api, async () => {
             expect((await api.getDatabase(["temperature", "theme"])).temperature).toBe(10);
@@ -571,15 +605,21 @@ describe("settings inside a hook", () => {
         });
         const context = capturePluginContext(refB1);
         selectPreset("b");
+        selectModelPreset("b");
 
         await invokeHook(listener, context, listenerArg);
 
-        expect(preset("a")).toMatchObject({ temperature: 33, maxContext: 3333 });
-        expect(preset("b")).toMatchObject({ temperature: 20, maxContext: 2000 });
-        // The views still serve the selected preset; the section key landed in its record.
+        // `temperature` is the prompt preset's, `maxContext` the model preset's (`docs/plan/split-preset.md`).
+        expect(preset("a")).toMatchObject({ temperature: 33 });
+        expect(preset("b")).toMatchObject({ temperature: 20 });
+        expect(modelPreset("a")).toMatchObject({ maxContext: 3333 });
+        expect(modelPreset("b")).toMatchObject({ maxContext: 2000 });
+        // The views still serve the selected presets; the section key landed in its record.
         expect(activePreset.temperature).toBe(20);
+        expect(activeModelPreset.maxContext).toBe(2000);
         expect(settings.ui.theme).toBe("hooked");
         expect(selection.presetId).toBe("b");
+        expect(selection.modelPresetId).toBe("b");
         // After the hook, the same calls act on the selection.
         expect((await api.getDatabase(["temperature"])).temperature).toBe(20);
         await api.setDatabaseLite({ temperature: 44 });
@@ -703,7 +743,7 @@ describe("gone targets", () => {
         expect(texts({ chaId: "a", chatId: "a0" })).toEqual(["hello from a0"]);
     });
 
-    it("a gone preset refuses only the calls that need it, before anything is applied", async () => {
+    it("a gone preset refuses only the calls that need it, before anything is applied; a gone model preset likewise for the model keys", async () => {
         const api = await makeApi();
         const listener = await listenerOf(api, async () => {
             expect(await api.getDatabase(["theme"])).toEqual({ theme: "" });
@@ -711,23 +751,34 @@ describe("gone targets", () => {
             await expect(api.setDatabaseLite({ theme: "first", temperature: 1 })).rejects.toBeInstanceOf(
                 PluginTargetGoneError,
             );
-            await expect(api.setDatabase({ maxContext: 5 })).rejects.toBeInstanceOf(PluginTargetGoneError);
+            // The hook's model preset `a` still exists: a model key alone lands there.
+            expect(await api.getDatabase(["maxContext"])).toEqual({ maxContext: 1000 });
+            await api.setDatabase({ maxContext: 5 });
             // A UI key alone, and a custom key that shares a forwarded root name, still land.
             await api.setDatabaseLite({ theme: "ok", aiModel: "custom value" });
+            // Then the model preset goes too: the model keys are refused, the prompt key as before.
+            settings.modelPresets = settings.modelPresets.filter((entry: { id: string }) => entry.id !== "a");
+            await expect(api.getDatabase(["maxContext"])).rejects.toBeInstanceOf(PluginTargetGoneError);
+            await expect(api.setDatabase({ theme: "second", maxContext: 6 })).rejects.toBeInstanceOf(
+                PluginTargetGoneError,
+            );
+            expect(await api.getDatabase(["theme"])).toEqual({ theme: "ok" });
         });
         const context = capturePluginContext(refB1);
         settings.presets = settings.presets.filter((entry: { id: string }) => entry.id !== "a");
         selectPreset("b");
-        const model = activePreset.aiModel;
+        selectModelPreset("b");
+        const model = activeModelPreset.aiModel;
 
         await invokeHook(listener, context, listenerArg);
 
         expect(settings.ui.theme).toBe("ok");
         expect(plain(settings.pluginStorage)).toEqual({ aiModel: "custom value" });
-        // The forwarded `aiModel` of the selected preset is not what the plugin wrote.
-        expect(activePreset.aiModel).toBe(model);
-        expect("aiModel" in preset("b")).toBe(false);
-        expect(preset("b")).toMatchObject({ temperature: 20, maxContext: 2000 });
+        // The forwarded `aiModel` of the selected model preset is not what the plugin wrote.
+        expect(activeModelPreset.aiModel).toBe(model);
+        expect(modelPreset("b")).toMatchObject({ aiModel: model, maxContext: 2000 });
+        expect(preset("b")).toMatchObject({ temperature: 20 });
+        expect(settings.modelPresets.map((entry: { id: string }) => entry.id)).toEqual(["b"]);
         expect(console.warn).not.toHaveBeenCalled();
     });
 });
@@ -779,9 +830,10 @@ describe("the runners", () => {
         grants.value = false;
         const prompts: ((value: boolean) => void)[] = [];
         alerts.confirm.mockImplementation(() => new Promise<boolean>((resolve) => prompts.push(resolve)));
-        // `aiModel` is a preset field: the request reads it from the preset selected when it dispatches.
-        preset("a").aiModel = "pluginmodel:::ctx";
-        preset("b").aiModel = "pluginmodel:::ctx";
+        // `aiModel` is a model preset field (`docs/plan/split-preset.md`): the request reads it from
+        // the model preset of its captured context, else the selected one.
+        modelPreset("a").aiModel = "pluginmodel:::ctx";
+        modelPreset("b").aiModel = "pluginmodel:::ctx";
         const context = capturePluginContext(refB1);
         selectPreset("b");
 
@@ -842,7 +894,11 @@ describe("the host functions that forward the hook's target", () => {
         expect(seen).toEqual(["process 1/1 10 scripted"]);
         // Inside a hook the direct parses are scoped to the hook's frozen preset and persona (Phase 5
         // slice 7a), not the tab's selection (`b` was selected after the context was captured).
-        const scope = { presetId: context!.presetId, personaId: context!.personaId };
+        const scope = {
+            presetId: context!.presetId,
+            modelPresetId: context!.modelPresetId,
+            personaId: context!.personaId,
+        };
         const scoped = vi.mocked(risuChatParserScoped).mock.calls;
         expect(scoped).toHaveLength(2);
         // The plain parse: the hook's character and chat, the message index and role as given.
@@ -865,7 +921,14 @@ describe("the host functions that forward the hook's target", () => {
         expect(transforms.map((call) => call.path)).toEqual(["/api/transform", "/api/transform/continue"]);
         expect(transforms[0].body).toMatchObject({
             mode: "editprocess",
-            context: { characterId: "b", chatId: "b1", presetId: "a", personaId: "q", selectedPersonaId: "p" },
+            context: {
+                characterId: "b",
+                chatId: "b1",
+                presetId: "a",
+                modelPresetId: "a",
+                personaId: "q",
+                selectedPersonaId: "p",
+            },
             targets: [{ kind: "text", sourceId: "b", chatIndex: -1, source: "scripted" }],
         });
         expect(transforms[0].body.handlers).toEqual(expect.any(String));
@@ -903,8 +966,8 @@ describe("the host functions that forward the hook's target", () => {
             seen.push(`provider ${where(provider).join("/")} ${temperature} ${arg.prompt_chat[0].content}`);
             return { success: true, content: "reply" };
         });
-        preset("a").aiModel = "pluginmodel:::target";
-        preset("b").aiModel = "pluginmodel:::target";
+        modelPreset("a").aiModel = "pluginmodel:::target";
+        modelPreset("b").aiModel = "pluginmodel:::target";
         const results: unknown[] = [];
         const listener = await listenerOf(api, async () => {
             results.push(await api.runLLMModel({ mode: "model", messages: [{ role: "user", content: "blocked" }] }));
@@ -1002,7 +1065,7 @@ describe("sendChat inside a hook", () => {
         expect(texts(refB1)).toEqual(["hello from b1", "from the hook"]);
         expect(texts({ chaId: "a", chatId: "a0" })).toEqual(["hello from a0"]);
         expect(sends).toEqual([{ index: -1, arg: { target: refB1, pluginContext: context } }]);
-        expect(sends[0].arg.pluginContext.presetId).toBe("a");
+        expect(sends[0].arg.pluginContext).toMatchObject({ presetId: "a", modelPresetId: "a" });
         expect(get(doingChat)).toBe(false);
 
         expect(await api.sendChat("from outside")).toBe(true);

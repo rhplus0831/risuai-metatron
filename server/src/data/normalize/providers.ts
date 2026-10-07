@@ -1,11 +1,11 @@
 import { LLMFormat } from "../../../../shared/llm.ts";
-import { migrateKeepOnSwitchFields } from "../../../../shared/presets.ts";
 import type { SectionResource } from "../../../../shared/resources.ts";
 import { normalizeSection, type SectionSpec } from "./shared.ts";
 
 /**
- * The `providers` section: request and model options outside the preset, plus the keep-on-switch
- * root copies (`PRESET_KEEP_ON_SWITCH_FIELDS`) and their toggles. `ollamaModelSource` and
+ * The `providers` section: request and model options outside the presets. The former copies of
+ * the auxiliary, fallback, and separate-parameter settings are preset fields now and their three
+ * toggles are gone (`docs/plan/split-preset.md`), so a stored copy is dropped. `ollamaModelSource` and
  * `ollamaCloudModel` were derived from `aiModel` and `subModel` in `setDatabase`; they are the
  * fresh-boot constants now (a fresh store shows the same values).
  */
@@ -66,18 +66,9 @@ const spec: SectionSpec<"providers"> = {
     dynamicModelRegistry: ["boolean", true],
     saveSignatures: ["boolean", false],
     presetChain: ["string"],
-    seperateModels: ["object"],
-    seperateModelsForAxModels: ["boolean"],
-    fallbackModels: ["object", { model: [], memory: [], emotion: [], translate: [], otherAx: [] }],
-    fallbackWhenBlankResponse: ["boolean"],
-    seperateParameters: ["object", { memory: {}, emotion: {}, translate: {}, otherAx: {}, overrides: {} }],
-    doNotChangeSeperateModels: ["boolean", false],
-    doNotChangeFallbackModels: ["boolean"],
-    disableSeperateParameterChangeOnPresetChange: ["boolean"],
 };
 
 export function normalizeProviders(input: unknown): SectionResource<"providers"> {
     const record = normalizeSection("providers", spec, input);
-    migrateKeepOnSwitchFields(record);
     return record as SectionResource<"providers">;
 }

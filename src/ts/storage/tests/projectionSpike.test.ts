@@ -141,7 +141,7 @@ function seed(server: StoreBackedServer) {
             id: "a",
             name: "Preset A",
             temperature: 80,
-            maxContext: 4000,
+            maxResponse: 4000,
             promptSettings: {
                 assistantPrefill: "",
                 postEndInnerFormat: "a-format",
@@ -164,10 +164,11 @@ function seed(server: StoreBackedServer) {
             id: "b",
             name: "Preset B",
             temperature: 50,
-            maxContext: 8000,
+            maxResponse: 8000,
             reverseProxyOobaArgs: { mode: "chat", name1_instruct: "b-user" },
-            // A `null` container the normalizer keeps (`PRESET_NULLABLE_FIELDS`).
-            openrouterProvider: null,
+            // A `null` container the normalizer keeps (`PRESET_NULLABLE_FIELDS`); a prompt field, since
+            // the spike's `presets` record stores prompt fields only (`docs/plan/split-preset.md`).
+            dynamicOutput: null,
         },
     ]);
     server.set(CHARACTERS_KIND, CHA, {
@@ -717,16 +718,16 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
 
         it("`??=` creating a null container (the bindPath branch of setSettingValue), container and leaf in the record", async () => {
             switchPreset("b");
-            expect(livePreset("b").openrouterProvider).toBeNull();
-            const item: SettingItem = { id: "spike.order", type: "text", bindPath: "openrouterProvider.order" };
+            expect(livePreset("b").dynamicOutput).toBeNull();
+            const item: SettingItem = { id: "spike.order", type: "text", bindPath: "dynamicOutput.order" };
             candidateSetSettingValue(item, ["openai"], ctx());
-            expect(livePreset("b").openrouterProvider).toEqual({ order: ["openai"] });
-            expect(livePreset("a").openrouterProvider).not.toEqual({ order: ["openai"] });
+            expect(livePreset("b").dynamicOutput).toEqual({ order: ["openai"] });
+            expect(livePreset("a").dynamicOutput).not.toEqual({ order: ["openai"] });
             const preset = await capture(PRESETS);
             // Candidate 1 writes the container into the raw preset object (no queue).
             expect(preset.captured).toBe(onlyTracked(candidate));
             if (preset.captured) {
-                expect(preset.report.ops[0].data[1].openrouterProvider).toEqual({ order: ["openai"] });
+                expect(preset.report.ops[0].data[1].dynamicOutput).toEqual({ order: ["openai"] });
             }
 
             // The same branch on a section field (a top-level container of its record).
@@ -1024,7 +1025,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         const flat = (field: string) => ({ kind: "flat", field });
         const nested = (field: string) => ({ kind: "nested", field });
         const mapEntry = (id: string) => ({ kind: "map", field: "OaiCompAPIKeys", id });
-        const presetEntry = (id: string) => ({ kind: "entry", field: "presets", id });
+        const presetEntry = (id: string) => ({ kind: "entry", field: "modelPresets", id });
 
         it("the facade reads blank credentials (the mirror form); the masked status is read-only in llmSecretState", () => {
             expect(db.openAIKey).toBe("");
@@ -1231,16 +1232,16 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             resetCounters();
             if (candidate !== "accessor") {
                 expect(retained.temperature).toBe(1);
-                retained.maxContext = 1234;
-                expect(livePreset("a").maxContext).toBe(1234);
-                expect(livePreset("b").maxContext).toBe(8000);
+                retained.maxResponse = 1234;
+                expect(livePreset("a").maxResponse).toBe(1234);
+                expect(livePreset("b").maxResponse).toBe(8000);
                 const write = await capture(PRESETS);
                 expect(write.captured).toBe(true);
             } else {
                 // Candidate 1: the retained preset is the old, now detached, `$state` object.
                 expect(retained.temperature).toBe(80);
-                retained.maxContext = 1234;
-                expect(livePreset("a").maxContext).toBe(4000);
+                retained.maxResponse = 1234;
+                expect(livePreset("a").maxResponse).toBe(4000);
                 expect(queuedKeys()).toEqual([]);
             }
         });
@@ -1550,9 +1551,9 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             check.dispatchEvent(new Event("change", { bubbles: true }));
             flushSync();
             expect(livePreset("a").name).toBe("edited a");
-            expect(livePreset("a").useInstructPrompt).toBe(true);
+            expect(livePreset("a").seperateParametersEnabled).toBe(true);
             expect(livePreset("b").name).toBe("Preset B");
-            expect(livePreset("b").useInstructPrompt).toBe(false);
+            expect(livePreset("b").seperateParametersEnabled).toBe(false);
             const edit = await capture(PRESETS);
             expect(edit.captured).toBe(onlyTracked(candidate));
         });
@@ -1845,11 +1846,11 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                 const refused: [string, () => void][] = [
                     ["field", () => (a.temperature = 5)],
                     ["nested", () => (a.promptSettings.postEndInnerFormat = "x")],
-                    ["delete", () => delete a.maxContext],
+                    ["delete", () => delete a.maxResponse],
                     [
                         "define",
                         () =>
-                            Object.defineProperty(a, "maxContext", {
+                            Object.defineProperty(a, "maxResponse", {
                                 value: 1,
                                 writable: true,
                                 enumerable: true,

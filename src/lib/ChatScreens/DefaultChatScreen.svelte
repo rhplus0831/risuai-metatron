@@ -1,6 +1,12 @@
 <script lang="ts">
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
-    import { settings, activePreset, activePersona, currentPersonaRecord } from "src/ts/storage/settingsViews.svelte";
+    import {
+        activeModelPreset,
+        settings,
+        activePreset,
+        activePersona,
+        currentPersonaRecord,
+    } from "src/ts/storage/settingsViews.svelte";
     import Suggestion from "./Suggestion.svelte";
     import {
         CameraIcon,
@@ -933,9 +939,9 @@
                 <Suggestion
                     messageInput={(msg) =>
                         (messageInput =
-                            (activePreset.subModel === "textgen_webui" ||
-                                activePreset.subModel === "mancer" ||
-                                activePreset.subModel.startsWith("local_")) &&
+                            (activeModelPreset.subModel === "textgen_webui" ||
+                                activeModelPreset.subModel === "mancer" ||
+                                activeModelPreset.subModel.startsWith("local_")) &&
                             settings.ui.autoSuggestClean
                                 ? msg.replace(/ +\(.+?\) *$| - [^"'*]*?$/, "")
                                 : msg)}

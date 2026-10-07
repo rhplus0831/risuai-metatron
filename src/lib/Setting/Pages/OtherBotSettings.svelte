@@ -1,6 +1,6 @@
 <script lang="ts">
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
-    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { language } from "src/lang";
     import Help from "src/lib/Others/Help.svelte";
@@ -77,7 +77,7 @@
         const maxResponse = activePreset.maxResponse;
         const requiredToken =
             promptTemplateToken + charToken.persistant + Math.min(charToken.dynamic, maxLoreToken) + maxResponse * 3;
-        const maxContext = activePreset.maxContext;
+        const maxContext = activeModelPreset.maxContext;
 
         if (maxContext === 0) {
             return 0;

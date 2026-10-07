@@ -77,7 +77,7 @@ The playground chat uses the special `§playground` character.
 
 Settings:
 
-- `AuxModelSelectors.svelte`: `seperateModelsForAxModels`, `doNotChangeSeperateModels`, and `seperateModels.{memory,translate,emotion,otherAx}`.
+- `AuxModelSelectors.svelte`: the model preset's `seperateModelsForAxModels` and `seperateModels.{memory,translate,emotion,otherAx}`.
 - `TranslatorPresetSettings.svelte`: `translatorPresets`, `translatorPresetId` (the selected preset's id).
 
 ## Flows

@@ -27,7 +27,7 @@ import { selectedIndex } from "../storage/selection.svelte";
 import css, { type CssAtRuleAST } from "@adobe/css-tools";
 import { calcString } from "../process/infunctions";
 import { findCharacterbyId, getPersonaPrompt, getUserIcon, getUserName, pickHashRand, replaceAsync } from "../util";
-import { presetFieldValue } from "../../../shared/presets.ts";
+import { presetFieldOwner, presetFieldValue } from "../../../shared/presets.ts";
 import { PluginTargetGoneError } from "../plugins/apiV3/pluginContext";
 import { getInlayAssetBlob } from "../process/files/inlays";
 import { getModuleAssets, getModuleLorebooks, getModules } from "../process/modules";
@@ -1178,18 +1178,19 @@ const scopedEvaluators = new Map<string, CbsEvaluator>();
 
 /**
  * `risuChatParser` for a frozen plugin call context (Phase 4's hook context; Phase 5 slice 7a): the
- * preset fields read the context's preset, and `{{user}}` and the persona prompt read the context's
+ * preset fields read the context's prompt or model preset (whichever owns the field), and `{{user}}` and the persona prompt read the context's
  * persona (the effective one when the context was taken: the chat's bound persona, else the
  * selected one), instead of the tab's selection at parse time. Everything else is the tab's, as
- * `risuChatParser` reads it. A context preset or persona that no longer exists fails the parse
+ * `risuChatParser` reads it. A context preset, model preset, or persona that no longer exists fails the parse
  * (`PluginTargetGoneError`), as a hook's other target-bound calls do.
  */
 export function risuChatParserScoped(
     da: string,
     arg: ClientCbsParseArg,
-    scope: { presetId: string; personaId: string },
+    scope: { presetId: string; modelPresetId: string; personaId: string },
 ): string {
-    const key = `${scope.presetId}\u0000${scope.personaId}`;
+    // Every captured id is part of the key: the cached evaluator closes over its scope.
+    const key = JSON.stringify([scope.presetId, scope.modelPresetId, scope.personaId]);
     let evaluator = scopedEvaluators.get(key);
     if (!evaluator) {
         const base = clientCbsHost();
@@ -1200,22 +1201,24 @@ export function risuChatParserScoped(
             }
             return persona;
         };
-        const presetOf = () => {
-            const preset = (settings.presets as unknown as Record<string, unknown>[] | undefined)?.find(
-                (entry) => entry?.id === scope.presetId,
-            );
-            if (!preset) {
-                throw new PluginTargetGoneError("preset");
+        const recordOf = (list: unknown, id: string, target: string) => {
+            const record = (list as Record<string, unknown>[] | undefined)?.find((entry) => entry?.id === id);
+            if (!record) {
+                throw new PluginTargetGoneError(target);
             }
-            return preset;
+            return record;
         };
-        // Both targets are checked on every parse, before any text is evaluated (a gone one fails
-        // the parse); the preset fields then read the context's preset as it is now. `{{user}}` and
+        // Every target is checked on every parse, before any text is evaluated (a gone one fails the
+        // parse); the preset fields then read the context's owning preset as it is now. `{{user}}` and
         // the persona prompt come from the host functions below, not from the database.
         const scopedDb = () => {
-            const preset = presetOf();
+            const preset = recordOf(settings.presets, scope.presetId, "preset");
+            const modelPreset = recordOf(settings.modelPresets, scope.modelPresetId, "model preset");
             personaOf();
-            return cbsDatabase((rootKey) => presetFieldValue(preset, forwardedPresetField(rootKey)!));
+            return cbsDatabase((rootKey) => {
+                const field = forwardedPresetField(rootKey)!;
+                return presetFieldValue(presetFieldOwner(field) === "model" ? modelPreset : preset, field);
+            });
         };
         evaluator = createCbsEvaluator({
             ...base,

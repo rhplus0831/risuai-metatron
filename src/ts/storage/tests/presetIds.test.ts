@@ -11,10 +11,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // selected (`selection.svelte.ts`, never persisted; `activePreset` since Phase 6 slice 10, where the
 // whole-database aggregate and its boot normalization backstop went away: the server normalizes, so
 // the fixtures here are normalized by the shared normalizer), `changeToPreset`, `copyPreset`, and
-// `downloadPreset` take ids, and `saveCurrentPreset` writes only the keep-on-switch fields into the
-// selected preset. The actions live in `presets.svelte.ts`. The step-0 fixtures
-// (`fixtures/phase3/*.risup`, captured before any Phase 3 change) pin the `.risup` contract: an
-// import followed by an export decodes to the fixture preset apart from `id` (Astra challenge point 1
+// `downloadPreset` take ids. The actions live in `presets.svelte.ts`. Since the preset split
+// (`docs/plan/split-preset.md`) the stored prompt preset and the `.risup` export carry the prompt
+// fields only, and a fixture's model fields live in the model preset of the same id
+// (`installFlatDatabase`). The step-0 fixtures (`fixtures/phase3/*.risup`, captured before any
+// Phase 3 change) pin the `.risup` reader contract: an import followed by an export decodes to the
+// fixture preset's prompt fields apart from `id` (Astra challenge point 1
 // found `seperateModels` gained a default here before the keep-on-switch rule).
 
 // As in the browser, the `buffer` polyfill is the global `Buffer` before msgpackr loads. msgpackr
@@ -67,18 +69,20 @@ vi.mock("../../rpack/rpack_js", () => {
 import { decodeRPack } from "../../rpack/rpack_js";
 import { decryptBuffer } from "../../util";
 import type { botPreset, Database } from "../database.svelte";
-import { changeToPreset, copyPreset, downloadPreset, importPreset, saveCurrentPreset } from "../presets.svelte";
-import { selection, selectPreset } from "../selection.svelte";
+import { changeToModelPreset, changeToPreset, copyPreset, downloadPreset, importPreset } from "../presets.svelte";
+import { selection, selectModelPreset, selectPreset } from "../selection.svelte";
 import { llmSecretState } from "../llmSecrets.svelte";
-import { activePreset, selectedPresetIndex, settings, writeSettingsRoot } from "../settingsViews.svelte";
+import { activeModelPreset, activePreset, selectedPresetIndex, settings } from "../settingsViews.svelte";
 import { installFlatDatabase } from "./installFlatDatabase";
 import {
+    normalizeModelPresets,
     normalizePresets,
     normalizePromptTemplate,
     plainClone,
     PRESET_DEFAULTS,
-    PRESET_KEEP_ON_SWITCH_FIELDS,
+    PRESET_RECORD_FIELDS,
     presetTemplate,
+    PROMPT_PRESET_FIELDS,
 } from "../../../../shared/presets.ts";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -101,22 +105,34 @@ function ownKeys(value: object): string[] {
 }
 
 /**
- * Installs a legacy save into the records, its presets normalized by the shared normalizer as the
- * server normalizes what it serves (the boot's backstop is gone since slice 10): a save without
- * presets gets the one default preset, and the installation selects the first preset.
+ * Installs a legacy save into the records, its presets normalized by the shared normalizers as the
+ * server normalizes what it serves (the boot's backstop is gone since slice 10): the prompt presets
+ * and the model presets of the same ids from the same fixture entries (each keeps its own fields); a
+ * save without presets gets the one default preset of each kind, and the installation selects the
+ * first of each.
  */
 function bootWith(extra: Record<string, unknown> = {}) {
     installFlatDatabase({
         characters: [],
         ...extra,
         botPresets: normalizePresets(plainClone(extra.botPresets)),
+        modelPresets: normalizeModelPresets(plainClone(extra.botPresets)),
     } as unknown as Database);
+}
+
+/** The keys a `.risup` carries since the split: `name`, `image`, and the prompt fields (D5). */
+const EXPORTED_KEYS = [...PRESET_RECORD_FIELDS, ...PROMPT_PRESET_FIELDS] as readonly string[];
+
+/** `value` restricted to the exported keys, an absent one as an explicit `undefined` key. */
+function promptOnly(value: Record<string, unknown>): Record<string, unknown> {
+    return Object.fromEntries(EXPORTED_KEYS.map((key) => [key, value[key]]));
 }
 
 describe("the selected preset over a normalized list", () => {
     beforeEach(() => {
         // The selection store is module state: an empty id makes the installation select the first preset.
         selectPreset("");
+        selectModelPreset("");
     });
 
     it("fills an omitted sampling field but keeps an explicit null (Astra challenge point 2)", () => {
@@ -137,27 +153,30 @@ describe("the selected preset over a normalized list", () => {
         expect(nulls.min_p).toBeNull();
         expect(nulls.top_a).toBeNull();
         expect(nulls.repetition_penalty).toBeNull();
-        expect(nulls.seperateModels).toBeNull();
         expect(omitted.min_p).toBe(0);
         expect(omitted.top_a).toBe(0);
         expect(omitted.repetition_penalty).toBe(1);
-        for (const field of PRESET_KEEP_ON_SWITCH_FIELDS) {
-            expect(Object.hasOwn(omitted, field), field).toBe(false);
-        }
+        // A model field never lands in a prompt preset; the `null` marker of the old keep-on-switch
+        // copy is the model preset's default now.
+        expect(Object.hasOwn(nulls, "seperateModels")).toBe(false);
+        expect(settings.modelPresets.find((preset) => preset.id === "nulls")!.seperateModels).toEqual(
+            PRESET_DEFAULTS.seperateModels,
+        );
 
         // After a switch the forwarded reads serve the selected preset: an explicit null of a nullable
-        // field stays null (as `setPreset` always passed it through), and `setPreset` copies the
-        // keep-on-switch fallback for the null `seperateModels` into `providers`.
-        changeToPreset("nulls", false);
+        // field stays null (as `setPreset` always passed it through); the auxiliary models are the
+        // selected model preset's.
+        changeToPreset("nulls");
+        changeToModelPreset("nulls");
         expect(activePreset.min_p).toBeNull();
         expect(activePreset.repetition_penalty).toBeNull();
-        expect(settings.providers.seperateModels).toEqual({ memory: "", emotion: "", translate: "", otherAx: "" });
-        changeToPreset("omitted", false);
+        expect(activeModelPreset.seperateModels).toEqual({ memory: "", emotion: "", translate: "", otherAx: "" });
+        changeToPreset("omitted");
         expect(activePreset.min_p).toBe(0);
         expect(activePreset.repetition_penalty).toBe(1);
     });
 
-    it("keeps ids, values, and the selection across an edit, and later save and switch land on the right preset", () => {
+    it("keeps ids, values, and the selections across an edit, and a later switch of either kind lands on the right preset", () => {
         bootWith({
             botPresets: [
                 { id: "first", name: "first", temperature: 10, maxContext: 1000 },
@@ -165,8 +184,10 @@ describe("the selected preset over a normalized list", () => {
                 { id: "third", name: "third", temperature: 30, maxContext: 3000 },
             ],
         });
-        changeToPreset("second", false);
+        changeToPreset("second");
+        changeToModelPreset("second");
         expect(activePreset.temperature).toBe(20);
+        expect(activeModelPreset.maxContext).toBe(2000);
 
         // A section write beside the presets (what a plugin `setDatabase` of an allowed key does
         // through the views now) touches neither the list nor the selection.
@@ -174,93 +195,34 @@ describe("the selected preset over a normalized list", () => {
 
         expect(settings.presets.map((preset) => preset.id)).toEqual(["first", "second", "third"]);
         expect(settings.presets.map((preset) => preset.temperature)).toEqual([10, 20, 30]);
-        expect(settings.presets.map((preset) => preset.maxContext)).toEqual([1000, 2000, 3000]);
+        expect(settings.modelPresets.map((preset) => preset.id)).toEqual(["first", "second", "third"]);
+        expect(settings.modelPresets.map((preset) => preset.maxContext)).toEqual([1000, 2000, 3000]);
+        expect(settings.presets.every((preset) => !Object.hasOwn(preset, "maxContext"))).toBe(true);
         expect(selectedPresetIndex()).toBe(1);
         expect(settings.ui.theme).toBe("plugin-theme");
 
-        // An edit of a forwarded field lands in the selected preset under its id, and
-        // `saveCurrentPreset` leaves it there.
+        // An edit of a forwarded field lands in the selected preset of its owner under its id.
         activePreset.temperature = 25;
-        saveCurrentPreset();
+        activeModelPreset.maxContext = 2500;
         expect(settings.presets[1].id).toBe("second");
         expect(settings.presets[1].temperature).toBe(25);
         expect(settings.presets[0].temperature).toBe(10);
         expect(settings.presets[2].temperature).toBe(30);
+        expect(settings.modelPresets.map((preset) => preset.maxContext)).toEqual([1000, 2500, 3000]);
 
-        // A switch keeps the edit in preset 1 and reads preset 2.
+        // A prompt switch keeps the edit in preset 1 and reads preset 2; the model preset stays.
         activePreset.temperature = 26;
         changeToPreset("third");
         expect(selectedPresetIndex()).toBe(2);
         expect(activePreset.temperature).toBe(30);
-        expect(activePreset.maxContext).toBe(3000);
+        expect(activeModelPreset.maxContext).toBe(2500);
         expect(settings.presets[1].temperature).toBe(26);
+        // A model switch reads the other model preset and leaves the prompt selection.
+        changeToModelPreset("third");
+        expect(activeModelPreset.maxContext).toBe(3000);
+        expect(activePreset.temperature).toBe(30);
+        expect(selection.presetId).toBe("third");
         expect(settings.presets.map((preset) => preset.id)).toEqual(["first", "second", "third"]);
-    });
-});
-
-describe("saveCurrentPreset", () => {
-    beforeEach(() => {
-        // The selection store is module state: an empty id makes the installation select the first preset.
-        selectPreset("");
-    });
-
-    it("writes the canonical form under the current id: no id churn, no credential or global fields", () => {
-        bootWith({ botPresets: [{ id: "current", name: "current" }] });
-        llmSecretState.queue.splice(0);
-        settings.llmSecrets.openAIKey = "sk-live";
-        writeSettingsRoot("autoSuggestPrefix", "prefix");
-        writeSettingsRoot("autoSuggestClean", true);
-        activePreset.temperature = 55;
-        saveCurrentPreset();
-        const saved = settings.presets[0] as unknown as Record<string, unknown>;
-        expect(saved.id).toBe("current");
-        expect(saved.name).toBe("current");
-        expect(saved.temperature).toBe(55);
-        for (const field of ["openAIKey", "autoSuggestPrefix", "autoSuggestClean", "forceReplaceUrl2"]) {
-            expect(Object.hasOwn(saved, field), field).toBe(false);
-        }
-        // A credential written to a root field is routed to the credential queue and never held by
-        // the tab (Phase 6 slice 4, `settings-ownership.md`, "Observable changes"): it reads back
-        // `undefined` here, where the fixture has no `llmSecrets` record (`""` with one).
-        expect(llmSecretState.queue.map((op) => op.request)).toEqual([
-            { kind: "put", path: { kind: "flat", field: "openAIKey" }, value: "sk-live" },
-        ]);
-        expect(settings.llmSecrets.openAIKey).toBeUndefined();
-    });
-
-    it("keeps seperateModels null while doNotChangeSeperateModels is on (Astra challenge point 1)", () => {
-        bootWith({ botPresets: [{ id: "current", name: "current" }] });
-        settings.providers.seperateModels = { memory: "m", emotion: "e", translate: "t", otherAx: "o" };
-        settings.providers.seperateModelsForAxModels = true;
-
-        settings.providers.doNotChangeSeperateModels = true;
-        saveCurrentPreset();
-        const frozen = settings.presets[0];
-        expect(Object.hasOwn(frozen, "seperateModels")).toBe(true);
-        expect(frozen.seperateModels).toBeNull();
-        expect(frozen.seperateModelsForAxModels).toBe(false);
-        expect(frozen.id).toBe("current");
-
-        settings.providers.doNotChangeSeperateModels = false;
-        saveCurrentPreset();
-        const written = settings.presets[0];
-        expect(written.seperateModels).toEqual({ memory: "m", emotion: "e", translate: "t", otherAx: "o" });
-        expect(written.seperateModelsForAxModels).toBe(true);
-    });
-
-    it("never pushes a preset: while the selection names no record it writes nothing (dropped, never redirected)", () => {
-        // Before slice 5 an out-of-bounds `botPresetsId` made `saveCurrentPreset` push a new preset.
-        // The selection is an id now, and `saveCurrentPreset` resolves it like the accessor setters
-        // (`selectedPresetForWrite`): an id naming no record means no target, so the keep-on-switch
-        // fields go nowhere; the first preset is not written instead.
-        bootWith({ botPresets: [{ id: "only", name: "only" }] });
-        selectPreset("missing");
-        settings.providers.fallbackWhenBlankResponse = true;
-        saveCurrentPreset();
-        expect(settings.presets).toHaveLength(1);
-        expect(settings.presets[0].id).toBe("only");
-        expect(Object.hasOwn(settings.presets[0], "fallbackWhenBlankResponse")).toBe(false);
-        expect(selection.presetId).toBe("missing");
     });
 });
 
@@ -272,7 +234,7 @@ describe("copyPreset and importPreset", () => {
 
     it("copyPreset gives the copy a fresh id and the source's values", () => {
         bootWith({ botPresets: [{ id: "source", name: "Source", temperature: 33, min_p: null }] });
-        changeToPreset("source", false);
+        changeToPreset("source");
         copyPreset("source");
         const [source, copy] = settings.presets;
         expect(source.id).toBe("source");
@@ -372,24 +334,25 @@ describe(".risup round trip against the step-0 fixtures", () => {
             const exported = await downloadPreset(imported.id, "return");
             expect(exported.buf).toBeInstanceOf(Uint8Array);
             expect(ownKeys(exported.data)).not.toContain("id");
-            expect((exported.data as botPreset).openAIKey).toBe("");
+            // A prompt preset file (`docs/plan/split-preset.md`): no credential, no model field.
+            for (const key of ["openAIKey", "proxyKey", "forceReplaceUrl", "aiModel", "maxContext"]) {
+                expect(Object.hasOwn(exported.data, key), key).toBe(false);
+            }
 
             const decoded = await decodeRisup(exported.buf as Uint8Array);
             expect(ownKeys(decoded)).not.toContain("id");
-            expect(decoded).toEqual(fixture);
-            // The import itself, apart from the id, is the fixture preset too: the normalizer changed
-            // nothing the pre-phase reader wrote (no default was added, no explicit value replaced),
-            // except that the record carries no credential (`openAIKey`, and `proxyKey` since slice 7)
-            // and no `forceReplaceUrl2`; `downloadPreset` writes the blank credentials back into the export.
+            expect(decoded).toEqual(promptOnly(fixture));
+            // The import itself, apart from the id, is the fixture preset's prompt fields: the
+            // normalizer changed nothing the pre-phase reader wrote (no default was added, no explicit
+            // value replaced), and the record carries no model field and no credential.
             const { id, ...importedWithoutId } = imported as botPreset & Record<string, unknown>;
             expect(id).toMatch(UUID_V4);
             expect(Object.hasOwn(importedWithoutId, "proxyKey")).toBe(false);
-            expect(importedWithoutId).toEqual({
-                ...fixture,
-                openAIKey: undefined,
-                proxyKey: undefined,
-                forceReplaceUrl2: undefined,
-            });
+            expect(Object.hasOwn(importedWithoutId, "aiModel")).toBe(false);
+            expect(importedWithoutId).toEqual(promptOnly(fixture));
+            // The fixture does carry model fields, so the comparison is not vacuous.
+            expect(fixture).toHaveProperty("aiModel");
+            expect(fixture).toHaveProperty("maxContext");
         });
     }
 
@@ -439,27 +402,34 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
             await importPreset({ name, data: readFixture(name) });
             const first = await downloadPreset(settings.presets[1].id, "return");
             const decodedFirst = await decodeRisup(first.buf as Uint8Array);
-            // `toStrictEqual` distinguishes a missing key from an `undefined` one (`toEqual` does not).
-            expect(ownKeys(decodedFirst)).toEqual(ownKeys(fixture));
-            expect(decodedFirst).toStrictEqual(fixture);
-            for (const key of unsetInFixture) {
+            // The export carries exactly the prompt keys (`name`, `image`, `PROMPT_PRESET_FIELDS`),
+            // an unset one as an explicit `undefined`. `toStrictEqual` distinguishes a missing key
+            // from an `undefined` one (`toEqual` does not).
+            expect(ownKeys(decodedFirst)).toEqual([...EXPORTED_KEYS].sort());
+            expect(decodedFirst).toStrictEqual(promptOnly(fixture));
+            for (const key of unsetInFixture.filter((key) => EXPORTED_KEYS.includes(key))) {
                 expect(Object.hasOwn(decodedFirst, key), key).toBe(true);
                 expect(decodedFirst[key], key).toBeUndefined();
             }
-            expect((first.data as botPreset).proxyKey).toBe("");
-            expect((first.data as botPreset).openAIKey).toBe("");
+            expect(Object.hasOwn(first.data, "proxyKey")).toBe(false);
+            expect(Object.hasOwn(first.data, "openAIKey")).toBe(false);
 
             // A second import/export cycle of the new export is a fixed point.
             await importPreset({ name, data: first.buf as Uint8Array });
             expect(settings.presets).toHaveLength(3);
             const second = await downloadPreset(settings.presets[2].id, "return");
-            expect(await decodeRisup(second.buf as Uint8Array)).toStrictEqual(fixture);
+            expect(await decodeRisup(second.buf as Uint8Array)).toStrictEqual(promptOnly(fixture));
 
-            // The pre-phase reader stores the same preset from the new export as from the fixture: in
-            // particular `promptPreprocess` stays `undefined` (its working value kept), not the
-            // template's `false` an absent key would have given it.
+            // The pre-phase reader stores the same prompt fields from the new export as from the
+            // fixture: in particular `promptPreprocess` stays `undefined` (its working value kept),
+            // not the template's `false` an absent key would have given it. The model fields the
+            // export no longer carries come from that reader's template (the upstream contract of
+            // `docs/plan/split-preset.md`, "Import / export").
             const fromExport = legacyImportPreset(decodedFirst);
-            expect(fromExport).toStrictEqual(legacyImportPreset(fixture));
+            expect(promptOnly(fromExport)).toStrictEqual(promptOnly(legacyImportPreset(fixture)));
+            for (const key of ["aiModel", "subModel", "maxContext", "forceReplaceUrl"]) {
+                expect(fromExport[key], key).toStrictEqual((presetTemplate as Record<string, unknown>)[key]);
+            }
             expect(presetTemplate.promptPreprocess).toBe(false);
             expect(Object.hasOwn(fromExport, "promptPreprocess")).toBe(true);
             expect(fromExport.promptPreprocess).toBeUndefined();
@@ -475,6 +445,7 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
         expect(Object.hasOwn(exported.data, "promptPreprocess")).toBe(true);
         expect(JSON.parse(text)).not.toHaveProperty("promptPreprocess");
         expect(JSON.parse(text)).not.toHaveProperty("id");
+        expect(JSON.parse(text)).not.toHaveProperty("aiModel");
     });
 });
 
@@ -483,7 +454,8 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
  * through `addPreset` after `normalizePreset`, so a converted value the file lacks (the ST
  * `presence_penalty` arithmetic gives `NaN`, which `addPreset`'s JSON check would refuse) gets the
  * field's default, the preset lands under the fresh id `addPreset` returns, a `proxyKey` a JSON file
- * carries is stored under that id only, and the selection stays where it was.
+ * carries is ignored (`docs/plan/split-preset.md`: the key belongs to a model preset), and the
+ * selection stays where it was.
  */
 describe("importPreset through addPreset (Phase 4 slice 7)", () => {
     beforeEach(() => {
@@ -522,18 +494,19 @@ describe("importPreset through addPreset (Phase 4 slice 7)", () => {
         expect(imported.NAISettings).toMatchObject({ cfg_scale: 1, mirostat_tau: 0, mirostat_lr: 1, starter: "" });
     });
 
-    it("a JSON preset's proxyKey is queued as the returned id's credential write and not put into the preset", async () => {
+    it("a JSON preset's proxyKey and model fields are ignored: no credential write, nothing on the preset, no model preset added", async () => {
         bootWith();
         llmSecretState.queue.splice(0);
-        const file = { name: "With key", proxyKey: "pk-from-file", temperature: 12 };
+        const file = { name: "With key", proxyKey: "pk-from-file", temperature: 12, aiModel: "file-model" };
         await importPreset({ name: "keyed.json", data: new TextEncoder().encode(JSON.stringify(file)) });
         const imported = settings.presets[1] as unknown as Record<string, unknown>;
         expect(imported.id).toMatch(UUID_V4);
+        expect(imported.temperature).toBe(12);
         expect(Object.hasOwn(imported, "proxyKey")).toBe(false);
-        // Write-only `llmSecrets` (Phase 5 slice 7b): the key goes to the server through the queue.
-        expect(llmSecretState.queue.map((op) => op.request)).toEqual([
-            { kind: "put", path: { kind: "entry", field: "presets", id: imported.id }, value: "pk-from-file" },
-        ]);
+        expect(Object.hasOwn(imported, "aiModel")).toBe(false);
+        expect(llmSecretState.queue).toEqual([]);
+        expect(settings.modelPresets).toHaveLength(1);
+        expect(JSON.stringify(settings.modelPresets)).not.toContain("file-model");
         expect(selectedPresetIndex()).toBe(0);
     });
 });

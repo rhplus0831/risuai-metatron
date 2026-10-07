@@ -32,11 +32,11 @@ vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: stri
 
 import type { SettingContext, SettingItem } from "../../setting/types";
 import type { Database } from "../database.svelte";
-import { changeToPreset } from "../presets.svelte";
+import { changeToModelPreset, changeToPreset } from "../presets.svelte";
 import { llmSecretState, setMaskedSecrets } from "../llmSecrets.svelte";
 import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
 import { recordData } from "../records.svelte";
-import { selectPreset } from "../selection.svelte";
+import { selectModelPreset, selectPreset } from "../selection.svelte";
 import { installFlatDatabase } from "./installFlatDatabase";
 import SettingCheck from "src/lib/Setting/Wrappers/SettingCheck.svelte";
 import SettingColor from "src/lib/Setting/Wrappers/SettingColor.svelte";
@@ -47,7 +47,7 @@ import SettingText from "src/lib/Setting/Wrappers/SettingText.svelte";
 import SettingTextarea from "src/lib/Setting/Wrappers/SettingTextarea.svelte";
 import SettingSegmented from "src/lib/Setting/Wrappers/SettingSegmented.svelte";
 import SettingRenderer from "src/lib/Setting/SettingRenderer.svelte";
-import { activePersona, activePreset, settings } from "../settingsViews.svelte";
+import { activeModelPreset, activePersona, activePreset, settings } from "../settingsViews.svelte";
 import { accessibilitySettingsItems } from "../../setting/accessibilitySettingsData";
 import { chatFormatSettingsItems } from "../../setting/chatFormatSettingsData";
 
@@ -55,12 +55,16 @@ type Mounted = ReturnType<typeof mount>;
 
 const mounted: Mounted[] = [];
 const preset = (id: string) => (settings.presets as unknown as Record<string, any>[]).find((entry) => entry.id === id)!;
+/** The model preset of the same id (`installFlatDatabase` splits the fixture's model fields off). */
+const modelPreset = (id: string) =>
+    (settings.modelPresets as unknown as Record<string, any>[]).find((entry) => entry.id === id)!;
 
 /** The context `SettingRenderer` builds: the settings record views (Phase 6 slice 6). */
 function ctx(): SettingContext {
     return {
         settings,
         preset: activePreset,
+        modelPreset: activeModelPreset,
         persona: activePersona,
         modelInfo: undefined,
         subModelInfo: undefined,
@@ -142,6 +146,7 @@ beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
     selectPreset("");
+    selectModelPreset("");
     // The write-only `llmSecrets` state (7b): an empty masked record and no queued credential write.
     llmSecretState.queue.splice(0);
     setMaskedSecrets(maskLlmSecrets({}));
@@ -171,14 +176,14 @@ describe("SettingNumber", () => {
         flushSync();
         expect(number.onChange).toHaveBeenCalledTimes(1);
 
-        changeToPreset("b", false);
+        changeToPreset("b");
         flushSync();
         expect(input.value).toBe("555");
         expect(number.onChange).toHaveBeenCalledTimes(1);
 
         // An edit and a switch in the same flush: the edit stays with the preset it was made on.
         typeInto(input, "600");
-        changeToPreset("a", false);
+        changeToPreset("a");
         flushSync();
         expect(preset("b").maxResponse).toBe(600);
         expect(preset("a").maxResponse).toBe(777);
@@ -222,7 +227,7 @@ describe("SettingSlider", () => {
         flushSync();
         expect(handle.getAttribute("aria-valuenow")).toBe("81");
 
-        changeToPreset("b", false);
+        changeToPreset("b");
         flushSync();
         expect(handle.getAttribute("aria-valuenow")).toBe("50");
         expect(slider.onChange).toHaveBeenCalledTimes(1);
@@ -230,7 +235,7 @@ describe("SettingSlider", () => {
 });
 
 describe("SettingCheck", () => {
-    it("writes a toggle synchronously into the selected preset and follows a switch", () => {
+    it("writes a toggle synchronously into the selected model preset and follows a switch", () => {
         const check = item({ type: "check", bindKey: "useInstructPrompt" });
         const { query } = render(SettingCheck, { item: check, ctx: ctx() });
         const box = query<HTMLInputElement>("input[type=checkbox]");
@@ -238,8 +243,8 @@ describe("SettingCheck", () => {
 
         box.checked = true;
         box.dispatchEvent(new Event("change", { bubbles: true }));
-        expect(preset("a").useInstructPrompt).toBe(true);
-        expect(preset("b").useInstructPrompt).toBe(true);
+        expect(modelPreset("a").useInstructPrompt).toBe(true);
+        expect(modelPreset("b").useInstructPrompt).toBe(true);
         expect(check.onChange).toHaveBeenCalledTimes(1);
         expect(check.onChange).toHaveBeenCalledWith(true, expect.anything());
 
@@ -248,8 +253,8 @@ describe("SettingCheck", () => {
         box.dispatchEvent(new Event("change", { bubbles: true }));
         expect(check.onChange).toHaveBeenCalledTimes(1);
 
-        preset("b").useInstructPrompt = false;
-        changeToPreset("b", false);
+        modelPreset("b").useInstructPrompt = false;
+        changeToModelPreset("b");
         flushSync();
         expect(box.checked).toBe(false);
         expect(check.onChange).toHaveBeenCalledTimes(1);
@@ -257,21 +262,21 @@ describe("SettingCheck", () => {
 });
 
 describe("SettingText", () => {
-    it("writes each keystroke synchronously into the selected preset and follows a switch", () => {
+    it("writes each keystroke synchronously into the selected model preset and follows a switch", () => {
         const text = item({ type: "text", bindKey: "aiModel" });
         const { query } = render(SettingText, { item: text, ctx: ctx() });
         const input = query<HTMLInputElement>("input");
         expect(input.value).toBe("model-a");
 
         typeInto(input, "model-a2");
-        expect(preset("a").aiModel).toBe("model-a2");
-        expect(preset("b").aiModel).toBe("model-b");
+        expect(modelPreset("a").aiModel).toBe("model-a2");
+        expect(modelPreset("b").aiModel).toBe("model-b");
         expect(text.onChange).toHaveBeenCalledTimes(1);
 
         typeInto(input, "model-a3");
-        changeToPreset("b", false);
+        changeToModelPreset("b");
         flushSync();
-        expect(preset("a").aiModel).toBe("model-a3");
+        expect(modelPreset("a").aiModel).toBe("model-a3");
         expect(input.value).toBe("model-b");
         expect(text.onChange).toHaveBeenCalledTimes(2);
     });
@@ -289,7 +294,7 @@ describe("SettingTextarea", () => {
         expect(preset("b").mainPrompt).toBe("main b");
         expect(area.onChange).toHaveBeenCalledTimes(1);
 
-        changeToPreset("b", false);
+        changeToPreset("b");
         flushSync();
         expect(textarea.value).toBe("main b");
         expect(area.onChange).toHaveBeenCalledTimes(1);
@@ -305,7 +310,7 @@ describe("SettingSelect", () => {
         ],
     };
 
-    it("writes a choice synchronously into the selected preset and follows a switch", () => {
+    it("writes a choice synchronously into the selected model preset and follows a switch", () => {
         const select = item({ type: "select", bindKey: "instructChatTemplate", options });
         const { query } = render(SettingSelect, { item: select, ctx: ctx() });
         const element = query<HTMLSelectElement>("select");
@@ -313,24 +318,24 @@ describe("SettingSelect", () => {
         expect(select.onChange).not.toHaveBeenCalled();
 
         chooseOption(element, "vicuna");
-        expect(preset("a").instructChatTemplate).toBe("vicuna");
-        expect(preset("b").instructChatTemplate).toBe("alpaca");
+        expect(modelPreset("a").instructChatTemplate).toBe("vicuna");
+        expect(modelPreset("b").instructChatTemplate).toBe("alpaca");
         expect(select.onChange).toHaveBeenCalledTimes(1);
         expect(select.onChange).toHaveBeenCalledWith("vicuna", expect.anything());
 
-        changeToPreset("b", false);
+        changeToModelPreset("b");
         flushSync();
         expect(element.value).toBe("alpaca");
         expect(select.onChange).toHaveBeenCalledTimes(1);
     });
 
-    it("writes the hidden-option fallback once into the selected preset", () => {
-        preset("a").instructChatTemplate = "gone";
+    it("writes the hidden-option fallback once into the selected model preset", () => {
+        modelPreset("a").instructChatTemplate = "gone";
         const select = item({ type: "select", bindKey: "instructChatTemplate", options });
         render(SettingSelect, { item: select, ctx: ctx() });
         flushSync();
-        expect(preset("a").instructChatTemplate).toBe("vicuna");
-        expect(preset("b").instructChatTemplate).toBe("alpaca");
+        expect(modelPreset("a").instructChatTemplate).toBe("vicuna");
+        expect(modelPreset("b").instructChatTemplate).toBe("alpaca");
         expect(select.onChange).toHaveBeenCalledTimes(1);
         flushSync();
         expect(select.onChange).toHaveBeenCalledTimes(1);
@@ -352,7 +357,7 @@ describe("SettingColor", () => {
         expect(preset("b").customPromptTemplateToggle).toBe("#445566");
         expect(color.onChange).toHaveBeenCalledTimes(1);
 
-        changeToPreset("b", false);
+        changeToPreset("b");
         flushSync();
         expect(swatch()).toContain("#445566");
         expect(color.onChange).toHaveBeenCalledTimes(1);
@@ -374,15 +379,15 @@ describe("SettingSegmented", () => {
     const active = (target: HTMLElement) =>
         target.querySelector<HTMLButtonElement>(".segmented-btn-active")?.textContent?.trim();
 
-    it("writes a choice synchronously into the selected preset through the registry, fires onChange once, and follows a switch", () => {
+    it("writes a choice synchronously into the selected model preset through the registry, fires onChange once, and follows a switch", () => {
         const segmented = item({ type: "segmented", bindKey: "instructChatTemplate", options });
         const { target } = render(SettingSegmented, { item: segmented, ctx: ctx() });
         expect(active(target)).toBe("ChatML");
         expect(segmented.onChange).not.toHaveBeenCalled();
 
         segment(target, "Vicuna").click();
-        expect(preset("a").instructChatTemplate).toBe("vicuna");
-        expect(preset("b").instructChatTemplate).toBe("alpaca");
+        expect(modelPreset("a").instructChatTemplate).toBe("vicuna");
+        expect(modelPreset("b").instructChatTemplate).toBe("alpaca");
         expect(segmented.onChange).toHaveBeenCalledTimes(1);
         expect(segmented.onChange).toHaveBeenCalledWith("vicuna", expect.anything());
         flushSync();
@@ -392,17 +397,17 @@ describe("SettingSegmented", () => {
         segment(target, "Vicuna").click();
         expect(segmented.onChange).toHaveBeenCalledTimes(1);
 
-        changeToPreset("b", false);
+        changeToModelPreset("b");
         flushSync();
         expect(active(target)).toBe("Alpaca");
         expect(segmented.onChange).toHaveBeenCalledTimes(1);
 
         // An edit and a switch in the same flush: the edit stays with the preset it was made on.
         segment(target, "ChatML").click();
-        changeToPreset("a", false);
+        changeToModelPreset("a");
         flushSync();
-        expect(preset("b").instructChatTemplate).toBe("chatml");
-        expect(preset("a").instructChatTemplate).toBe("vicuna");
+        expect(modelPreset("b").instructChatTemplate).toBe("chatml");
+        expect(modelPreset("a").instructChatTemplate).toBe("vicuna");
         expect(active(target)).toBe("Vicuna");
         expect(segmented.onChange).toHaveBeenCalledTimes(2);
     });
@@ -427,16 +432,16 @@ describe("SettingSegmented", () => {
         expect(stored).toBe("vicuna");
         expect(segmented.onChange).toHaveBeenCalledTimes(1);
         // The preset was not touched: the item has no binding of its own.
-        expect(preset("a").instructChatTemplate).toBe("chatml");
+        expect(modelPreset("a").instructChatTemplate).toBe("chatml");
     });
 
-    it("writes the hidden-option fallback into the selected preset", () => {
-        preset("a").instructChatTemplate = "gone";
+    it("writes the hidden-option fallback into the selected model preset", () => {
+        modelPreset("a").instructChatTemplate = "gone";
         const segmented = item({ type: "segmented", bindKey: "instructChatTemplate", options });
         render(SettingSegmented, { item: segmented, ctx: ctx() });
         flushSync();
-        expect(preset("a").instructChatTemplate).toBe("vicuna");
-        expect(preset("b").instructChatTemplate).toBe("alpaca");
+        expect(modelPreset("a").instructChatTemplate).toBe("vicuna");
+        expect(modelPreset("b").instructChatTemplate).toBe("alpaca");
         expect(segmented.onChange).toHaveBeenCalledTimes(1);
     });
 });
@@ -444,10 +449,10 @@ describe("SettingSegmented", () => {
 describe("SettingRenderer", () => {
     const byId = (items: SettingItem[], id: string) => items.find((entry) => entry.id === id)!;
 
-    it("shows an item by its condition over the section views and the selected preset, and its wrapper writes the record", () => {
+    it("shows an item by its condition over the section views and the selected model preset, and its wrapper writes the record", () => {
         const always = byId(accessibilitySettingsItems, "acc.alwaysScrollToNewMessage");
         const jinja = byId(chatFormatSettingsItems, "chatFormat.jinjaTemplate");
-        preset("b").instructChatTemplate = "jinja";
+        modelPreset("b").instructChatTemplate = "jinja";
         const { target } = render(SettingRenderer, { items: [always, jinja] });
         const checkbox = () => target.querySelector<HTMLInputElement>("input[type=checkbox]");
         const textarea = () => target.querySelector<HTMLTextAreaElement>("textarea");
@@ -462,14 +467,14 @@ describe("SettingRenderer", () => {
         expect(recordData<Record<string, unknown>>("ui")!.alwaysScrollToNewMessage).toBe(true);
         expect(settings.ui.alwaysScrollToNewMessage).toBe(true);
 
-        changeToPreset("b", false);
+        changeToModelPreset("b");
         flushSync();
         expect(textarea()).not.toBeNull();
         typeInto(textarea()!, "{{ messages }}");
-        expect(preset("b").JinjaTemplate).toBe("{{ messages }}");
-        expect(preset("a").JinjaTemplate).not.toBe("{{ messages }}");
+        expect(modelPreset("b").JinjaTemplate).toBe("{{ messages }}");
+        expect(modelPreset("a").JinjaTemplate).not.toBe("{{ messages }}");
 
-        changeToPreset("a", false);
+        changeToModelPreset("a");
         flushSync();
         expect(textarea()).toBeNull();
     });

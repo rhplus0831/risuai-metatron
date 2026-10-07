@@ -1,5 +1,5 @@
 import { type AnyClientCharacter, selectedCharacter } from "./storage/characterStore.svelte";
-import { settings, activePreset } from "./storage/settingsViews.svelte";
+import { activeModelPreset, settings, activePreset } from "./storage/settingsViews.svelte";
 import type { Tiktoken } from "@dqbd/tiktoken";
 import type { Tokenizer } from "@mlc-ai/web-tokenizers";
 import { type groupChat, type character, type Chat, type DeepReadonly } from "./storage/database.svelte";
@@ -84,16 +84,17 @@ export async function encodeWithTokenizer(
 }
 
 export async function encode(data: string): Promise<number[] | Uint32Array | Int32Array> {
-    const modelInfo = getModelInfo(activePreset.aiModel);
-    const pluginTokenizer = pluginHooks.providerOptions.get(activePreset.currentPluginProvider)?.tokenizer ?? "none";
+    const modelInfo = getModelInfo(activeModelPreset.aiModel);
+    const pluginTokenizer =
+        pluginHooks.providerOptions.get(activeModelPreset.currentPluginProvider)?.tokenizer ?? "none";
 
     let cacheKey = "";
     if (settings.providers.useTokenizerCaching) {
         cacheKey = getHash(
             data,
-            activePreset.aiModel,
+            activeModelPreset.aiModel,
             settings.providers.customTokenizer,
-            activePreset.currentPluginProvider,
+            activeModelPreset.currentPluginProvider,
             settings.providers.googleClaudeTokenizing,
             modelInfo,
             pluginTokenizer,
@@ -108,7 +109,7 @@ export async function encode(data: string): Promise<number[] | Uint32Array | Int
 
     // The routing is shared with the server counter (`shared/tokenizerChoice.ts`).
     const choice = selectTokenizer({
-        aiModel: activePreset.aiModel,
+        aiModel: activeModelPreset.aiModel,
         customTokenizer: settings.providers.customTokenizer,
         pluginTokenizer,
         modelTokenizer: modelInfo.tokenizer,
@@ -120,7 +121,7 @@ export async function encode(data: string): Promise<number[] | Uint32Array | Int
             break;
         case "pluginFunction":
             result = (await pluginHooks.providerOptions
-                .get(activePreset.currentPluginProvider)
+                .get(activeModelPreset.currentPluginProvider)
                 ?.tokenizerFunc?.(data)) ?? [0];
             break;
         case "family":
@@ -171,7 +172,7 @@ let lastTikModel = "cl100k_base";
 let googleCloudTokenizedCache = new Map<string, number>();
 
 async function tokenizeGoogleCloud(text: string) {
-    const model = getModelInfo(activePreset.aiModel);
+    const model = getModelInfo(activeModelPreset.aiModel);
     const cacheKey = text + model.internalID;
 
     if (googleCloudTokenizedCache.has(cacheKey)) {

@@ -1,5 +1,5 @@
 import { type AnyClientCharacter, selectedCharacter } from "../storage/characterStore.svelte";
-import { settings, activePreset } from "../storage/settingsViews.svelte";
+import { activeModelPreset, settings, activePreset } from "../storage/settingsViews.svelte";
 import { get } from "svelte/store";
 import { parseChatML } from "../parser/chatML";
 import { type character, type customscript, type groupChat } from "../storage/database.svelte";
@@ -52,7 +52,7 @@ export async function translate(text: string, reverse: boolean) {
         text,
         reverse,
         settings.memoryTranslateMedia.translator,
-        activePreset.aiModel.startsWith("novellist") ? "ja" : "en",
+        activeModelPreset.aiModel.startsWith("novellist") ? "ja" : "en",
     );
 }
 
@@ -307,7 +307,7 @@ export async function translateHTML(
         return applyEdittransRegex(r, charArg, alwaysExistChar, chatID);
     }
     if (settings.memoryTranslateMedia.translatorType == "bergamot" && settings.memoryTranslateMedia.htmlTranslation) {
-        const from = activePreset.aiModel.startsWith("novellist") ? "ja" : "en";
+        const from = activeModelPreset.aiModel.startsWith("novellist") ? "ja" : "en";
         const to = settings.memoryTranslateMedia.translator || "en";
 
         if (!bergamotTranslate) {

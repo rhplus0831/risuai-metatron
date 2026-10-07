@@ -57,7 +57,7 @@ import { writeEntries } from "./mutationValidation";
  * - Writes and replacements run untracked; comparisons use `Object.is` (in dev, Svelte compiles `===`
  *   in a `.svelte.ts` file to a check that reads through the wrapper's traps).
  * - Credentials never enter a record: on `llmSecrets` every credential path is routed to `setSecret`
- *   / `clearSecret` or refused (the record holds the mirror form, `mirrorFields`); a preset's
+ *   / `clearSecret` or refused (the record holds the mirror form, `mirrorFields`); a model preset's
  *   `proxyKey` and a custom model's `key` likewise (`SECRET_ENTRY_MAPS`), on a leaf write and on any
  *   element or list written whole (a non-empty one is routed with the element's id, a blank or absent
  *   one changes nothing, a leaf assignment of `""` clears). Every value is validated before either the
@@ -588,9 +588,9 @@ function assertNoLlmCredential(value: unknown) {
 //     is what the mirror reads, so `{ ...db.google, projectId }` never clears the key), any other
 //     leaf value refuses the whole write;
 //   - `OaiCompAPIKeys.<id>` (and a whole `OaiCompAPIKeys` map, entry by entry): as a flat credential;
-//   - the entry maps (`presets`, `customModels`) are not in this record: a write of them is refused;
+//   - the entry maps (`modelPresets`, `customModels`) are not in this record: a write of them is refused;
 //   - `delete` of any credential path is refused (use `clearSecret`).
-// - `presets[].proxyKey` and `customModels[].key` (`SECRET_ENTRY_MAPS`): see `prepareEntryCredentials`.
+// - `modelPresets[].proxyKey` and `customModels[].key` (`SECRET_ENTRY_MAPS`): see `prepareEntryCredentials`.
 
 class CredentialRefusedError extends TypeError {
     constructor(message: string) {
@@ -726,7 +726,7 @@ function llmSecretDelete(container: string | null, field: string) {
 }
 
 /**
- * The entry credential rule for a value written into `presets` or `customModels`
+ * The entry credential rule for a value written into `modelPresets` or `customModels`
  * (`SECRET_ENTRY_MAPS`; other kinds pass through): `value` is the whole list (`listLevel`) or one
  * whole element (`elementLevel`). An element's non-empty string credential is routed with its string `id` and left
  * out of what is stored; a blank or absent one is left out and changes nothing; a non-string one, or
@@ -1134,12 +1134,14 @@ function createChild(parentNode: TrackedNode, step: Step, value: object): Tracke
  * repeat ids after a re-import), uses object and path identity.
  * - `presets` (the record): `normalizePresets` (`shared/presets.ts`);
  * - `personas` (the record): `normalizePersonas` (`shared/personas.ts`);
+ * - `modelPresets` (the record): `normalizeModelPresets` (`shared/presets.ts`);
  * - `translatorPresets.items`, `hypaV3Presets.items`: `selectableList`
  *   (`server/src/data/normalize/collections.ts`).
  */
 const BY_ID_FIELDS: readonly { kind: TrackedKind; field: string | null; id?: string }[] = [
     { kind: "presets", field: null },
     { kind: COLLECTION_KIND.personas, field: null },
+    { kind: COLLECTION_KIND.modelPresets, field: null },
     { kind: COLLECTION_KIND.translatorPresets, field: "items" },
     { kind: COLLECTION_KIND.hypaV3Presets, field: "items" },
     // The character list: `chaId`, unique by construction (`initializeRecords`, the list operations).
@@ -1325,7 +1327,7 @@ function refuseChaIdChange(target: Record<string, unknown>, value: unknown, what
     }
 }
 
-/** Whether `node` is the list of an entry-credential kind (`presets`, `customModels`). */
+/** Whether `node` is the list of an entry-credential kind (`modelPresets`, `customModels`). */
 const isEntryList = (node: TrackedNode) => node.parent === null && Object.hasOwn(entryLeaf, node.kind);
 /** Whether `node` is an element of that list. */
 const isEntryElement = (node: TrackedNode) => node.parent !== null && isEntryList(node.parent);
@@ -1408,7 +1410,7 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
 /**
  * A mutator call's arguments as the native method gets them: the values it inserts (`push`,
  * `unshift`, `splice`'s items, `fill`'s value) prepared and unwrapped, every other argument as it is.
- * On a credential list (`presets`, `customModels`) the inserted credentials are validated together
+ * On a credential list (`modelPresets`, `customModels`) the inserted credentials are validated together
  * against the list the call leaves (exactly one owner each), `fill` and `copyWithin` refuse a
  * credential (they duplicate elements), and `route` routes them once the method succeeded.
  */

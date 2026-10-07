@@ -11,7 +11,7 @@ import type {
     ToolDescriptor,
 } from "../../../shared/llm/request.ts";
 import { normalizePersonas } from "../../../shared/personas.ts";
-import { normalizePresets } from "../../../shared/presets.ts";
+import { normalizeModelPresets, normalizePresets } from "../../../shared/presets.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeProviders } from "../data/normalize/providers.ts";
@@ -44,13 +44,16 @@ type Records = Record<string, unknown> & { characters?: Record<string, unknown> 
 function makeRecords(overrides: { preset?: Record<string, unknown>; secrets?: Record<string, unknown> } = {}): Records {
     return {
         providers: normalizeProviders({}),
-        llmSecrets: normalizeLlmSecrets({ presets: { p: { proxyKey: SECRET } }, ...overrides.secrets }),
+        llmSecrets: normalizeLlmSecrets({ modelPresets: { m: { proxyKey: SECRET } }, ...overrides.secrets }),
         ui: { autoSuggestPrefix: "" },
         customModels: [],
-        presets: normalizePresets([
+        // `overrides.preset` may mix both owners' fields: each normalizer keeps its own
+        // (`docs/plan/split-preset.md`), so the prompt preset `p` and the model preset `m` split it.
+        presets: normalizePresets([{ id: "p", name: "p", ...overrides.preset }]),
+        modelPresets: normalizeModelPresets([
             {
-                id: "p",
-                name: "p",
+                id: "m",
+                name: "m",
                 aiModel: "reverse_proxy",
                 forceReplaceUrl: PROVIDER,
                 customProxyRequestModel: "mock-model",
@@ -102,6 +105,7 @@ function body(arg: Record<string, unknown> = {}, extra: Partial<LlmRequestBody> 
         mode: "model",
         context: {
             presetId: "p",
+            modelPresetId: "m",
             personaId: "u",
             selectedPersonaId: "u",
             selectedCharacterId: "c",
@@ -656,7 +660,7 @@ describe("the callback leg", () => {
     });
 
     it("keeps the event types, ids, names, and a clean tool record intact with a short stored credential", async () => {
-        const { registry } = harness(makeRecords({ secrets: { presets: { p: { proxyKey: "q7" } } } }), (call) =>
+        const { registry } = harness(makeRecords({ secrets: { modelPresets: { m: { proxyKey: "q7" } } } }), (call) =>
             afterTool(call) ? chat("done") : toolCall("call-1", { value: "input" }),
         );
         const { events } = await run(registry, body({ rememberToolUsage: true }, { tools }), (event, id) => {
@@ -906,7 +910,14 @@ describe("OobaLegacy over a real Node WebSocket", () => {
 });
 
 describe("a job's in-process request (runInJob, slice 8a)", () => {
-    const ids = { presetId: "p", personaId: "u", selectedPersonaId: "u", selectedCharacterId: "c", speakerId: null };
+    const ids = {
+        presetId: "p",
+        modelPresetId: "m",
+        personaId: "u",
+        selectedPersonaId: "u",
+        selectedCharacterId: "c",
+        speakerId: null,
+    };
     /** A spec over `records` with recording sinks; `channel.callback` answers `intercept`. */
     function jobSpec(
         records: Records,
@@ -1051,7 +1062,14 @@ describe("a job's MCP tools (runInJob, slice 12a)", () => {
     // name too), the job's `call` answers the follow-up request, a spent budget or a throwing tool
     // ends the request and the job with no further provider request, and a text failure result is
     // ordinary model input. Buffered and streaming (`wrapToolStream`).
-    const ids = { presetId: "p", personaId: "u", selectedPersonaId: "u", selectedCharacterId: "c", speakerId: null };
+    const ids = {
+        presetId: "p",
+        modelPresetId: "m",
+        personaId: "u",
+        selectedPersonaId: "u",
+        selectedCharacterId: "c",
+        speakerId: null,
+    };
     const echo: ToolDescriptor = {
         name: "echo",
         description: "The echo tool",
@@ -1373,7 +1391,14 @@ describe("the child interceptor of a job callback", () => {
 });
 
 describe("a job's plugin provider model (runInJob, slice 11b)", () => {
-    const ids = { presetId: "p", personaId: "u", selectedPersonaId: "u", selectedCharacterId: "c", speakerId: null };
+    const ids = {
+        presetId: "p",
+        modelPresetId: "m",
+        personaId: "u",
+        selectedPersonaId: "u",
+        selectedCharacterId: "c",
+        speakerId: null,
+    };
     /** A provider descriptor as the tab registers it (`hooks.providers`), admitted for the job. */
     const descriptor = (name: string): LLMModel => ({
         id: `pluginmodel:::${name}`,

@@ -28,6 +28,7 @@ const phase3Kinds = [
     "customModels",
     "enabledModules",
     "statics",
+    "modelPresets",
 ];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const rejects = (name: string, id: string, input: unknown, message: string) => {
@@ -40,7 +41,7 @@ const accepts = (name: string, id: string, input: unknown) => {
 };
 
 describe("createKindRegistry", () => {
-    it("holds the seven Phase 1 kinds (root is gone since slice 6), five of them singletons, and the 18 Phase 3 singletons; presets and Phase 3 materialize", () => {
+    it("holds the seven Phase 1 kinds (root is gone since slice 6), five of them singletons, and the 19 Phase 3 singletons (modelPresets since the preset split); presets and Phase 3 materialize", () => {
         expect([...kinds.keys()]).toEqual([...phase1Kinds, ...phase3Kinds]);
         expect(kinds.has("root")).toBe(false);
         expect([...kinds.values()].filter((k) => k.singleton).map((k) => k.name)).toEqual([
@@ -81,11 +82,23 @@ describe("default normalizers", () => {
         // `presets` (slice 3) returns `normalizePresets`' copy: every preset gets an id and the
         // canonical fields, and an empty list becomes one default preset.
         const presets = kind("presets").normalize([{ name: "p" }, {}], { id: "main" }) as botPreset[];
-        const { name, temperature, maxContext } = PRESET_DEFAULTS;
+        const { name, temperature } = PRESET_DEFAULTS;
         expect(presets.map((p) => p.name)).toEqual(["p", name]);
         for (const preset of presets) {
             expect(preset.id).toMatch(UUID);
-            expect(preset).toMatchObject({ temperature, maxContext, formatingOrder: expect.any(Array) });
+            expect(preset).toMatchObject({ temperature, formatingOrder: expect.any(Array) });
+            // A prompt preset: the model fields live in `modelPresets` (`docs/plan/split-preset.md`).
+            expect(Object.hasOwn(preset, "maxContext")).toBe(false);
+        }
+        const modelPresets = kind("modelPresets").normalize([{ name: "m" }, {}], { id: "main" }) as Record<
+            string,
+            unknown
+        >[];
+        expect(modelPresets.map((p) => p.name)).toEqual(["m", "New Model Preset"]);
+        for (const preset of modelPresets) {
+            expect(preset.id).toMatch(UUID);
+            expect(preset).toMatchObject({ maxContext: PRESET_DEFAULTS.maxContext, aiModel: PRESET_DEFAULTS.aiModel });
+            expect(Object.hasOwn(preset, "temperature")).toBe(false);
         }
         expect(kind("presets").normalize([], { id: "main" })).toMatchObject([
             { id: expect.stringMatching(UUID), name, temperature },

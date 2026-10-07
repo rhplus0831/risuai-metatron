@@ -207,7 +207,7 @@ const CASES: KindCase[] = [
             openAIKey: masked(false),
             google: { accessToken: masked(false), projectId: "" },
             OaiCompAPIKeys: {},
-            presets: {},
+            modelPresets: {},
             customModels: {},
         }),
         write: { google: { projectId: "proj" } },
@@ -242,6 +242,28 @@ const CASES: KindCase[] = [
         refused: "memoryTranslateMedia must be an object",
     },
     // ---- the collections ---------------------------------------------------------------------
+    {
+        kind: "modelPresets",
+        // Materialized with one default model preset (`docs/plan/split-preset.md`).
+        fresh: [expect.objectContaining({ id: anyString(), name: "New Model Preset", aiModel: anyString() })],
+        // The model fields only: a prompt field and a credential are dropped, a wrong kind takes its default.
+        write: [{ id: "m1", name: "One", maxContext: "big", temperature: 5, proxyKey: "leak-proxy" }],
+        stored: [expect.objectContaining({ id: "m1", name: "One", maxContext: expect.any(Number) })],
+        absent: ["temperature", "proxyKey"],
+        forbidden: ["leak-proxy"],
+        // A repeated id is re-keyed; an empty list becomes one default again.
+        update: [
+            { id: "m1", name: "Two" },
+            { id: "m1", name: "Three" },
+        ],
+        updated: [expect.objectContaining({ id: "m1", name: "Two" }), expect.objectContaining({ name: "Three" })],
+        checkUpdated: (data) => {
+            expect(data[1].id).not.toBe("m1");
+            expect(data[1].id).toEqual(expect.any(String));
+        },
+        invalid: {},
+        refused: "modelPresets must be an array of objects",
+    },
     {
         kind: "loreBook",
         fresh: [{ name: "My First LoreBook", data: [] }],
@@ -630,7 +652,7 @@ describe("every registered kind over the resource routes", () => {
                 kind: "llmSecrets",
                 id: "main",
                 baseRevision: batched.revision,
-                data: { presets: { p1: { proxyKey: "pk-leak-batch" } } },
+                data: { modelPresets: { m1: { proxyKey: "pk-leak-batch" } } },
             },
         ]);
         expect(refusedBatch.status).toBe(400);

@@ -12,7 +12,7 @@ import { createResourceTestClient, parseArchive, sleep, type ResourceTestClient 
 // of the credential record. Every read route and the PUT response answer the masked projection
 // (`shared/llmSecrets.ts`); a plain resource write may carry no credential path and keeps every
 // stored credential; the credentials are written only through `/api/llm-secrets/*` (set, clear,
-// delete, the preset copy) on the record's revision, with the same JWT, epoch, and maintenance rules
+// delete, the model preset copy) on the record's revision, with the same JWT, epoch, and maintenance rules
 // as the resource writes; the path codec round-trips any id through a real URL; and a downloaded
 // archive carries neither the record nor any byte of a current or replaced credential, while a
 // server snapshot keeps the record.
@@ -39,7 +39,7 @@ async function server() {
 type Masked = { revision: string; data: Record<string, any> };
 
 const flat = (field: FlatSecretField): SecretPath => ({ kind: "flat", field });
-const preset = (id: string): SecretPath => ({ kind: "entry", field: "presets", id });
+const preset = (id: string): SecretPath => ({ kind: "entry", field: "modelPresets", id });
 const model = (id: string): SecretPath => ({ kind: "entry", field: "customModels", id });
 const oai = (id: string): SecretPath => ({ kind: "map", field: "OaiCompAPIKeys", id });
 
@@ -134,7 +134,7 @@ describe("the masked projection", () => {
             hordeConfig: { model: "horde-model", softPrompt: "sp", apiKey: { set: true, hint: "CCCC" } },
             novelai: { model: "clio", token: { set: true, hint: "DDDD" } },
             OaiCompAPIKeys: { "https://compat.test/v1": { set: true, hint: "EEEE" } },
-            presets: JSON.parse(
+            modelPresets: JSON.parse(
                 '{"p1":{"proxyKey":{"set":true,"hint":"FFFF"}},"__proto__":{"proxyKey":{"set":true,"hint":"GGGG"}}}',
             ),
             customModels: { "xcustom:::m1": { key: { set: true, hint: "HHHH" } } },
@@ -160,7 +160,7 @@ describe("the masked projection", () => {
         expect(kindsBody.kinds.ui[0].data).toMatchObject({ zoomsize: expect.any(Number) });
         expect(refsBody.items[0]).toMatchObject({ kind: "llmSecrets", id: "main", data: expected });
         // An own `__proto__` id is an own key of the masked map too.
-        expect(Object.hasOwn(singleBody.data.presets, "__proto__")).toBe(true);
+        expect(Object.hasOwn(singleBody.data.modelPresets, "__proto__")).toBe(true);
 
         // The PUT response of a plain (sibling) write is masked as well.
         const put = await putRecord(s, { ...siblings, vertexClientEmail: "next@example.test" });
@@ -181,9 +181,9 @@ describe("the masked projection", () => {
             customModels: { "xcustom:::m1": { key: SENTINEL.custom } },
             vertexClientEmail: "next@example.test",
         });
-        expect(stored!.presets.p1).toEqual({ proxyKey: SENTINEL.proxy });
-        expect(Object.hasOwn(stored!.presets, "__proto__")).toBe(true);
-        expect(stored!.presets.__proto__).toEqual({ proxyKey: SENTINEL.proto });
+        expect(stored!.modelPresets.p1).toEqual({ proxyKey: SENTINEL.proxy });
+        expect(Object.hasOwn(stored!.modelPresets, "__proto__")).toBe(true);
+        expect(stored!.modelPresets.__proto__).toEqual({ proxyKey: SENTINEL.proto });
     });
 });
 
@@ -199,7 +199,7 @@ describe("the write rule of a plain resource write", () => {
             ["a nested leaf", { ...siblings, google: { projectId: "proj-1", accessToken: "VALUE-SENTINEL-2" } }],
             ["an empty nested leaf", { ...siblings, novelai: { model: "clio", token: "" } }],
             ["the OaiCompAPIKeys map, even empty", { ...siblings, OaiCompAPIKeys: {} }],
-            ["the presets map", { ...siblings, presets: { p1: { proxyKey: "VALUE-SENTINEL-3" } } }],
+            ["the modelPresets map", { ...siblings, modelPresets: { p1: { proxyKey: "VALUE-SENTINEL-3" } } }],
             ["the customModels map, even empty", { ...siblings, customModels: {} }],
         ];
         for (const [what, data] of carrying) {
@@ -250,11 +250,11 @@ describe("the write rule of a plain resource write", () => {
         expect(next.google.accessToken).toBe(SENTINEL.google);
         expect(next.hordeConfig.apiKey).toBe(SENTINEL.horde);
         expect(next.novelai.token).toBe(SENTINEL.novelai);
-        expect(JSON.stringify(next.presets)).toBe(JSON.stringify(stored.presets));
+        expect(JSON.stringify(next.modelPresets)).toBe(JSON.stringify(stored.modelPresets));
         // An empty record keeps them too.
         expect((await putRecord(s, {})).status).toBe(200);
         expect((await storedRecord(s))!.openAIKey).toBe(SENTINEL.openai);
-        expect((await read(s)).data.presets.p1).toEqual({ proxyKey: { set: true, hint: "FFFF" } });
+        expect((await read(s)).data.modelPresets.p1).toEqual({ proxyKey: { set: true, hint: "FFFF" } });
     });
 
     it("prepares every write-only op of a batch before anything is applied: a carrying op rolls the batch back, a sibling op merges", async () => {
@@ -339,12 +339,12 @@ describe("the secret routes", () => {
         await setSecret(s, oai("https://a.test"), "ok-1");
         await setSecret(s, model("m1"), "mk-1");
         expect((await read(s)).data).toMatchObject({
-            presets: { p1: { proxyKey: { set: true, hint: "" } } },
+            modelPresets: { p1: { proxyKey: { set: true, hint: "" } } },
             OaiCompAPIKeys: { "https://a.test": { set: true, hint: "" } },
             customModels: { m1: { key: { set: true, hint: "" } } },
         });
         await setSecret(s, preset("p1"), "");
-        expect((await read(s)).data.presets).toEqual({});
+        expect((await read(s)).data.modelPresets).toEqual({});
         const { revision } = await read(s);
         const deleted = await s.request(
             `/api/llm-secrets/${encodeSecretPath(oai("https://a.test"))}?baseRevision=${encodeURIComponent(revision)}`,
@@ -356,7 +356,7 @@ describe("the secret routes", () => {
         expect(((await deleted.json()) as Masked).data.OaiCompAPIKeys).toEqual({});
         const stored = (await storedRecord(s))!;
         expect(stored.OaiCompAPIKeys).toEqual({});
-        expect(stored.presets).toEqual({});
+        expect(stored.modelPresets).toEqual({});
         expect(stored.customModels).toEqual({ m1: { key: "mk-1" } });
         // The nested leaves and the vertex token are credentials too.
         await setSecret(s, { kind: "nested", field: "google" }, "g");
@@ -364,36 +364,36 @@ describe("the secret routes", () => {
         expect((await storedRecord(s))!).toMatchObject({ google: { accessToken: "g" }, vertexAccessToken: "vt" });
     });
 
-    it("copies a preset's entry on the server, and removes the target's entry when the source has none", async () => {
+    it("copies a model preset's entry on the server, and removes the target's entry when the source has none", async () => {
         const s = await server();
         await setSecret(s, preset("a"), "pk-a-SENTINEL-ZZZZ");
         const copy = async (from: string, to: string) => {
             const { revision } = await read(s);
-            return s.json("/api/llm-secrets/presets/copy", { from, to, baseRevision: revision });
+            return s.json("/api/llm-secrets/modelPresets/copy", { from, to, baseRevision: revision });
         };
         const copied = await copy("a", "b");
         expect(copied.status).toBe(200);
         const body = (await copied.json()) as Masked;
-        expect(body.data.presets).toEqual({
+        expect(body.data.modelPresets).toEqual({
             a: { proxyKey: { set: true, hint: "ZZZZ" } },
             b: { proxyKey: { set: true, hint: "ZZZZ" } },
         });
         expect(JSON.stringify(body)).not.toContain("pk-a");
-        expect((await storedRecord(s))!.presets).toEqual({
+        expect((await storedRecord(s))!.modelPresets).toEqual({
             a: { proxyKey: "pk-a-SENTINEL-ZZZZ" },
             b: { proxyKey: "pk-a-SENTINEL-ZZZZ" },
         });
         // A copy is a copy: replacing the source leaves the target.
         await setSecret(s, preset("a"), "pk-a2");
-        expect((await storedRecord(s))!.presets.b).toEqual({ proxyKey: "pk-a-SENTINEL-ZZZZ" });
-        // Copying from a preset without an entry removes the target's.
+        expect((await storedRecord(s))!.modelPresets.b).toEqual({ proxyKey: "pk-a-SENTINEL-ZZZZ" });
+        // Copying from a model preset without an entry removes the target's.
         expect((await copy("missing", "b")).status).toBe(200);
-        expect((await storedRecord(s))!.presets).toEqual({ a: { proxyKey: "pk-a2" } });
+        expect((await storedRecord(s))!.modelPresets).toEqual({ a: { proxyKey: "pk-a2" } });
         // Own `__proto__` ids on both sides.
         expect((await copy("a", "__proto__")).status).toBe(200);
         const stored = (await storedRecord(s))!;
-        expect(Object.hasOwn(stored.presets, "__proto__")).toBe(true);
-        expect(stored.presets.__proto__).toEqual({ proxyKey: "pk-a2" });
+        expect(Object.hasOwn(stored.modelPresets, "__proto__")).toBe(true);
+        expect(stored.modelPresets.__proto__).toEqual({ proxyKey: "pk-a2" });
         for (const bad of [
             { from: "", to: "b" },
             { from: "a", to: "" },
@@ -402,7 +402,7 @@ describe("the secret routes", () => {
             { from: 1, to: "b" },
             { from: "a", to: "b", baseRevision: 3 },
         ]) {
-            const res = await s.json("/api/llm-secrets/presets/copy", bad);
+            const res = await s.json("/api/llm-secrets/modelPresets/copy", bad);
             expect(res.status, JSON.stringify(bad)).toBe(400);
         }
     });
@@ -425,7 +425,7 @@ describe("the secret routes", () => {
         const wrong = await s.json(target, body, { method: "PUT" }, "another-epoch");
         expect(wrong.status).toBe(412);
         const copyWrong = await s.json(
-            "/api/llm-secrets/presets/copy",
+            "/api/llm-secrets/modelPresets/copy",
             { from: "a", to: "b", baseRevision: revision },
             {},
             null,
@@ -474,16 +474,16 @@ describe("the secret routes", () => {
             "google",
             "google/projectId",
             "google/accessToken/extra",
-            "presets/~p1",
-            "presets/p1/proxyKey",
-            "presets/~/proxyKey",
-            "presets/~p1/key",
+            "modelPresets/~p1",
+            "modelPresets/p1/proxyKey",
+            "modelPresets/~/proxyKey",
+            "modelPresets/~p1/key",
             "customModels/~m1/proxyKey",
             "OaiCompAPIKeys/~a/extra",
             "OaiCompAPIKeys/a",
             "openAIKey/x",
             "%E0%A4%A",
-            "presets/copy",
+            "modelPresets/copy",
         ];
         for (const raw of badPaths) {
             const put = await s.json(`/api/llm-secrets/${raw}`, { value, baseRevision: revision }, { method: "PUT" });
@@ -535,15 +535,15 @@ describe("the secret routes", () => {
             const put = await putSecret(s, preset(id), `k-${id}`);
             expect(put.status, id).toBe(200);
             const masked = ((await put.json()) as Masked).data;
-            expect(Object.hasOwn(masked.presets, id), id).toBe(true);
-            expect(masked.presets[id], id).toEqual({ proxyKey: { set: true, hint: "" } });
+            expect(Object.hasOwn(masked.modelPresets, id), id).toBe(true);
+            expect(masked.modelPresets[id], id).toEqual({ proxyKey: { set: true, hint: "" } });
         }
         const stored = (await storedRecord(s))!;
-        expect(Object.keys(stored.presets).sort()).toEqual([...ids].sort());
+        expect(Object.keys(stored.modelPresets).sort()).toEqual([...ids].sort());
         for (const id of ids) {
-            expect(stored.presets[id], id).toEqual({ proxyKey: `k-${id}` });
+            expect(stored.modelPresets[id], id).toEqual({ proxyKey: `k-${id}` });
         }
-        expect(Object.getPrototypeOf(stored.presets)).toBe(Object.prototype);
+        expect(Object.getPrototypeOf(stored.modelPresets)).toBe(Object.prototype);
         // A URL-like map id, and the same ids as custom-model ids.
         const url = "https://compat.test/v1/chat?x=1#y";
         await setSecret(s, oai(url), "ok");
@@ -560,10 +560,10 @@ describe("the secret routes", () => {
                 { method: "DELETE" },
             );
             expect(res.status, id).toBe(200);
-            const left = ((await res.json()) as Masked).data.presets;
+            const left = ((await res.json()) as Masked).data.modelPresets;
             expect(Object.hasOwn(left, id), id).toBe(false);
         }
-        expect((await storedRecord(s))!.presets).toEqual({});
+        expect((await storedRecord(s))!.modelPresets).toEqual({});
     });
 });
 
@@ -606,7 +606,7 @@ describe("the downloaded archive and the server snapshot", () => {
         expect((await storedRecord(s))!).toMatchObject({
             openAIKey: SENTINEL.openai,
             google: { accessToken: SENTINEL.google },
-            presets: { p1: { proxyKey: SENTINEL.proxy } },
+            modelPresets: { p1: { proxyKey: SENTINEL.proxy } },
             vertexClientEmail: "vertex@example.test",
         });
         const snapshot = await s.context.snapshots.snapshotNow();
@@ -643,7 +643,7 @@ describe("the downloaded archive and the server snapshot", () => {
         expect(stored.openAIKey).toBe("");
         // An optional credential field has no default: absent in a fresh record, never the target's.
         expect(stored.claudeAPIKey ?? "").toBe("");
-        expect(stored.presets).toEqual({});
+        expect(stored.modelPresets).toEqual({});
         const characters = (await (await target.list("characters")).json()) as { items: { id: string }[] };
         expect(characters.items.map((c) => c.id)).toEqual(["a"]);
         // A credential write based on the old epoch is refused; one on the new epoch lands.

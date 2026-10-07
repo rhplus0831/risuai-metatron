@@ -3,7 +3,6 @@
     import { alertConfirm, alertError } from "../../ts/alert";
     import { language } from "../../lang";
     import { changeToPreset, copyPreset, downloadPreset, importPreset } from "../../ts/storage/presets.svelte";
-    import { deletePresetSecret } from "src/ts/storage/llmSecrets.svelte";
     import {
         CopyIcon,
         Share2Icon,
@@ -287,10 +286,9 @@
                             }
                             if (activePreset.id === id) {
                                 const next = botPresets.find((entry) => entry.id !== id);
-                                changeToPreset(next.id, false);
+                                changeToPreset(next.id);
                             }
                             botPresets.splice(index, 1);
-                            deletePresetSecret(id);
                         }}
                         onkeydown={(e) => {
                             if (e.key === "Enter" && e.currentTarget instanceof HTMLElement) {

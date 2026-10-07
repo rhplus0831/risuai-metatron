@@ -97,6 +97,7 @@ let base = "";
 let epoch = "";
 let signer: Awaited<ReturnType<typeof createSigner>>;
 let presetId = "";
+let modelPresetId = "";
 let personaId = "";
 let embedderUrl = "";
 
@@ -301,6 +302,7 @@ async function job(
                 characterId: chaId,
                 chatId: "k",
                 presetId,
+                modelPresetId,
                 personaId,
                 selectedPersonaId: personaId,
                 mode: kind,
@@ -401,12 +403,30 @@ beforeAll(async () => {
         ).json()) as any
     ).epoch;
     const presets = await single("presets");
+    const modelPresets = await single("modelPresets");
     const personas = await single("personas");
     presetId = presets.data[0].id;
+    modelPresetId = modelPresets.data[0].id;
     personaId = personas.data[0].id;
-    // The selected preset: a reverse proxy to the fake provider for the main and the auxiliary model.
+    // The selected model preset: a reverse proxy to the fake provider for the main and the auxiliary
+    // model; the selected prompt preset holds the prompt (`docs/plan/split-preset.md`).
     const seededPresets = await batch({
         ops: [
+            {
+                kind: "modelPresets",
+                id: "main",
+                baseRevision: modelPresets.revision,
+                data: [
+                    {
+                        ...modelPresets.data[0],
+                        aiModel: "reverse_proxy",
+                        subModel: "reverse_proxy",
+                        maxContext: 4000,
+                        forceReplaceUrl: providerUrl,
+                        customProxyRequestModel: "m",
+                    },
+                ],
+            },
             {
                 kind: "presets",
                 id: "main",
@@ -414,12 +434,7 @@ beforeAll(async () => {
                 data: [
                     {
                         ...presets.data[0],
-                        aiModel: "reverse_proxy",
-                        subModel: "reverse_proxy",
-                        maxContext: 4000,
                         maxResponse: 100,
-                        forceReplaceUrl: providerUrl,
-                        customProxyRequestModel: "m",
                         jailbreakToggle: false,
                         mainPrompt: "Main {{char}}",
                         formatingOrder: ["main", "description", "chats", "lastChat"],

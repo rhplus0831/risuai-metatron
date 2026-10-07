@@ -89,6 +89,10 @@ async function boot(options: { secret?: boolean } = {}) {
         { id: "pa", name: "p1" },
         { id: "pb", name: "p2" },
     ]);
+    fake.set("modelPresets", "main", [
+        { id: "ma", name: "m1" },
+        { id: "mb", name: "m2" },
+    ]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
     fake.set("pluginStorage", "main", {});
@@ -362,6 +366,20 @@ describe("records another writer committed", () => {
         await settle(fake);
         expect(settings.ui.zoomsize).toBe(202);
         expect(sync.heldRecordRevision("ui", "main")).toBe(newest.revision);
+        expect(fake.batchCount()).toBe(0);
+        noNotice();
+    });
+
+    it("resolves this tab's model preset selection after a modelPresets replacement removed the selected one, without a write, leaving the prompt selection", async () => {
+        const { fake, settings, selection } = await boot();
+        selection.selectPreset("pb");
+        selection.selectModelPreset("mb");
+        fake.set("modelPresets", "main", [fake.record("modelPresets", "main")!.data[0]]);
+        await settle(fake);
+        expect(settings.modelPresets.map((preset: any) => preset.id)).toEqual(["ma"]);
+        expect(selection.selection.modelPresetId).toBe("ma");
+        expect(selection.selection.presetId).toBe("pb");
+        expect(settings.presets.map((preset: any) => preset.id)).toEqual(["pa", "pb"]);
         expect(fake.batchCount()).toBe(0);
         noNotice();
     });

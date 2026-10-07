@@ -40,5 +40,14 @@ After that capture, the `theme` default `"metatron"` and the nine preset default
 `groupTemplate`, `thinkingTokens`, `outputImageModal`, and `dynamicOutput` were added to
 `boot-snapshot.json` by hand as deliberate fresh-boot defaults, and so was the `ui` default `chatScreenWidth` 900.
 
+The preset split (`docs/plan/split-preset.md`, 2026-10-08) changed the fresh boot by hand too: the
+`providers` toggle `doNotChangeSeperateModels` is gone, the model fields `seperateModels`,
+`seperateModelsForAxModels`, and `fallbackWhenBlankResponse` read their `PRESET_DEFAULTS` through the
+selected model preset (they were unset `providers` fields), and the new `modelPresets` collection
+holds the one materialized default model preset (its `id` was never captured; the tests compare it
+without ids). The stored `botPresets[0]` still carries the pre-split template payload, model fields
+included, because `default.risup`/`custom.risup` pin the `.risup` reader contract; `normalizePresets`
+drops those fields when a test installs it.
+
 Re-running the script overwrites all three files. Across captures, the snapshot's ids and the
 `.risup` bytes differ while the decoded presets are equal, so compare decoded presets, never bytes.

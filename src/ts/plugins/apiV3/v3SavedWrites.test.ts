@@ -213,17 +213,24 @@ describe("the other setters land in their owners' records", () => {
         expect(record("ui").colorScheme).toMatchObject({ type: "light", bgcolor: "#ffffff" });
     });
 
-    it("a forwarded key reaches the selected preset of the presets record and no other", async () => {
+    it("a forwarded key reaches the selected preset of its owner's record and no other", async () => {
         const { api, sync, record, selection } = await boot();
+        // `temperature` is the prompt preset's, `maxContext` the model preset's (`docs/plan/split-preset.md`).
         await api.setDatabase({ temperature: 77 });
         await api.setDatabaseLite({ maxContext: 4321 });
         await sync.flushResources();
         const presets = record("presets");
         const selected = presets.find((preset: any) => preset.id === selection.presetId);
         const other = presets.find((preset: any) => preset.id !== selection.presetId);
-        expect(selected).toMatchObject({ temperature: 77, maxContext: 4321 });
+        expect(selected).toMatchObject({ temperature: 77 });
+        expect(selected).not.toHaveProperty("maxContext");
         expect(other.temperature).not.toBe(77);
-        expect(other.maxContext).not.toBe(4321);
+        const modelPresets = record("modelPresets");
+        const selectedModel = modelPresets.find((preset: any) => preset.id === selection.modelPresetId);
+        const otherModel = modelPresets.find((preset: any) => preset.id !== selection.modelPresetId);
+        expect(selectedModel).toMatchObject({ maxContext: 4321 });
+        expect(selectedModel).not.toHaveProperty("temperature");
+        expect(otherModel.maxContext).not.toBe(4321);
     });
 
     it("an explicit characterOrder sent before the characters it names is the saved order", async () => {

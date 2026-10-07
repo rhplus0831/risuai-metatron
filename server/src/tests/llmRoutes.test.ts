@@ -119,23 +119,26 @@ async function seed() {
         expect(res.status).toBe(200);
     };
     const presets = await read("presets");
+    const modelPresets = await read("modelPresets");
     const personas = await read("personas");
     const presetId = presets.data[0].id as string;
+    const modelPresetId = modelPresets.data[0].id as string;
     const personaId = personas.data[0].id as string;
-    presets.data[0] = {
-        ...presets.data[0],
+    // The model preset reaches the upstream (`docs/plan/split-preset.md`); the prompt preset stays default.
+    modelPresets.data[0] = {
+        ...modelPresets.data[0],
         aiModel: "reverse_proxy",
         forceReplaceUrl: `${upstream.url}/v1/chat/completions`,
         customProxyRequestModel: "mock-model",
         customAPIFormat: 0,
     };
-    await write("presets", presets.data);
+    await write("modelPresets", modelPresets.data);
     // The credentials go through `/api/llm-secrets/*` (Phase 5 slice 7b): the record is write-only.
     await writeSecret({ kind: "flat", field: "openAIKey" }, SECRET.openai);
     await writeSecret({ kind: "flat", field: "supaMemoryKey" }, SECRET.memory);
     await writeSecret({ kind: "nested", field: "google" }, SECRET.google);
-    await writeSecret({ kind: "entry", field: "presets", id: presetId }, SECRET.proxy);
-    return { presetId, personaId };
+    await writeSecret({ kind: "entry", field: "modelPresets", id: modelPresetId }, SECRET.proxy);
+    return { presetId, modelPresetId, personaId };
 }
 
 /** One credential write on the record's current revision (`PUT /api/llm-secrets/<path>`). */
@@ -150,7 +153,7 @@ async function writeSecret(path: SecretPath, value: string) {
 }
 
 function body(
-    ids: { presetId: string; personaId: string },
+    ids: { presetId: string; modelPresetId: string; personaId: string },
     arg: Record<string, unknown> = {},
     extra: Record<string, unknown> = {},
 ) {
@@ -159,6 +162,7 @@ function body(
         mode: "model",
         context: {
             presetId: ids.presetId,
+            modelPresetId: ids.modelPresetId,
             personaId: ids.personaId,
             selectedPersonaId: ids.personaId,
             selectedCharacterId: null,
@@ -265,6 +269,10 @@ describe("POST /api/llm/request", () => {
         for (const [bad, reason] of [
             [{ ...body(ids), mode: "nope" }, /mode must be one of/],
             [{ ...body(ids), context: { ...body(ids).context, presetId: "" } }, /context.presetId must be an id/],
+            [
+                { ...body(ids), context: { ...body(ids).context, modelPresetId: "" } },
+                /context.modelPresetId must be an id/,
+            ],
             [{ ...body(ids), context: { ...body(ids).context, tokenizer: {} } }, /tokenizer scope/],
             [body(ids, { bias: undefined }), /arg.bias/],
             [body(ids, { extra: 1 }), /arg.extra is not a request field/],

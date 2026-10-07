@@ -131,6 +131,7 @@ let base = "";
 let epoch = "";
 let signer: Awaited<ReturnType<typeof createSigner>>;
 let presetId = "";
+let modelPresetId = "";
 let personaId = "";
 const logged: string[] = [];
 
@@ -185,15 +186,17 @@ async function patchSettings(fields: Record<string, unknown>) {
     const res = await batch({ ops });
     expect(res.status, JSON.stringify(res.body).slice(0, 300)).toBe(200);
 }
-async function patchPreset(patch: Record<string, unknown>) {
-    const current = await single("presets");
+/** Patches the selected prompt preset (`presets`) or model preset (`modelPresets`). */
+async function patchPreset(kind: "presets" | "modelPresets", patch: Record<string, unknown>) {
+    const current = await single(kind);
+    const target = kind === "presets" ? presetId : modelPresetId;
     const res = await batch({
         ops: [
             {
-                kind: "presets",
+                kind,
                 id: "main",
                 baseRevision: current.revision,
-                data: current.data.map((preset: any) => (preset.id === presetId ? { ...preset, ...patch } : preset)),
+                data: current.data.map((preset: any) => (preset.id === target ? { ...preset, ...patch } : preset)),
             },
         ],
     });
@@ -340,6 +343,7 @@ async function job(
                 characterId: chaId,
                 chatId: "k",
                 presetId,
+                modelPresetId,
                 personaId,
                 selectedPersonaId: personaId,
                 mode: kind,
@@ -411,14 +415,17 @@ beforeAll(async () => {
         ).json()) as any
     ).epoch;
     presetId = (await single("presets")).data[0].id;
+    modelPresetId = (await single("modelPresets")).data[0].id;
     personaId = (await single("personas")).data[0].id;
-    await patchPreset({
+    await patchPreset("modelPresets", {
         aiModel: "reverse_proxy",
         subModel: "reverse_proxy",
         maxContext: 900,
-        maxResponse: 100,
         forceReplaceUrl: providerUrl,
         customProxyRequestModel: "m",
+    });
+    await patchPreset("presets", {
+        maxResponse: 100,
         mainPrompt: "Main prompt.",
         formatingOrder: ["main", "description", "chats", "lastChat"],
         jailbreakToggle: false,
@@ -851,7 +858,7 @@ describe("credentials and the other consumers", () => {
     it(
         "answers a WebLLM model's previewPrompt without inference, as the browser does",
         async () => {
-            await patchPreset({ aiModel: "hf:::Xenova/tiny-random-mistral" });
+            await patchPreset("modelPresets", { aiModel: "hf:::Xenova/tiny-random-mistral" });
             try {
                 const chaId = await seedCharacter({ count: 2, extra: { supaMemory: false } });
                 const { terminal } = await job("previewPrompt", chaId);
@@ -861,7 +868,7 @@ describe("credentials and the other consumers", () => {
                 });
                 expect(upstream).toHaveLength(0);
             } finally {
-                await patchPreset({ aiModel: "reverse_proxy" });
+                await patchPreset("modelPresets", { aiModel: "reverse_proxy" });
             }
         },
         SLOW,

@@ -62,47 +62,74 @@ afterEach(() => {
 });
 
 describe("updateSettings", () => {
-    it("writes a forwarded key into the selected preset by id, and with presetId into that preset after a switch", async () => {
-        const { sync, collectionStore, presets, selection, record, settings, activePreset } = await boot();
+    it("writes a forwarded key into the selected preset of its owner by id, and with presetId or modelPresetId into that preset after a switch", async () => {
+        const { sync, collectionStore, presets, selection, record, settings, activePreset, activeModelPreset } =
+            await boot();
         const [p1, p2] = settings.presets.map((preset: any) => preset.id);
+        const [m1, m2] = settings.modelPresets.map((preset: any) => preset.id);
         expect(selection.presetId).toBe(p1);
+        expect(selection.modelPresetId).toBe(m1);
+        // `temperature` is the prompt preset's, `maxContext` the model preset's (`docs/plan/split-preset.md`).
         collectionStore.updateSettings({ temperature: 5, maxContext: 1234 });
         expect(activePreset.temperature).toBe(5);
+        expect(activeModelPreset.maxContext).toBe(1234);
         expect(settings.presets[1].temperature).not.toBe(5);
-        // A caller that captured p1 before an await writes there although p2 is selected now.
+        expect(settings.modelPresets[1].maxContext).not.toBe(1234);
+        expect(settings.presets.every((preset: any) => !("maxContext" in preset))).toBe(true);
+        // A caller that captured p1/m1 before an await writes there although p2/m2 are selected now.
         presets.changeToPreset(p2);
+        presets.changeToModelPreset(m2);
         expect(selection.presetId).toBe(p2);
-        collectionStore.updateSettings({ temperature: 9 }, { presetId: p1 });
+        expect(selection.modelPresetId).toBe(m2);
+        collectionStore.updateSettings({ temperature: 9, maxContext: 1999 }, { presetId: p1, modelPresetId: m1 });
         expect(settings.presets[0].temperature).toBe(9);
+        expect(settings.modelPresets[0].maxContext).toBe(1999);
         expect(activePreset.temperature).not.toBe(9);
-        collectionStore.updateSettings({ temperature: 2 });
-        expect(settings.presets[1].temperature).toBe(2);
+        expect(activeModelPreset.maxContext).not.toBe(1999);
+        // Each id names its own owner: a captured prompt preset with the selected model preset.
+        collectionStore.updateSettings({ temperature: 2, maxContext: 2222 }, { presetId: p1 });
+        expect(settings.presets[0].temperature).toBe(2);
+        expect(settings.modelPresets[1].maxContext).toBe(2222);
+        collectionStore.updateSettings({ temperature: 3 });
+        expect(settings.presets[1].temperature).toBe(3);
         await sync.flushResources();
         const saved = record("presets");
-        expect(saved.map((preset: any) => [preset.id, preset.temperature, preset.maxContext])).toEqual([
-            [p1, 9, 1234],
-            [p2, 2, expect.any(Number)],
+        expect(saved.map((preset: any) => [preset.id, preset.temperature])).toEqual([
+            [p1, 2],
+            [p2, 3],
+        ]);
+        expect(record("modelPresets").map((preset: any) => [preset.id, preset.maxContext])).toEqual([
+            [m1, 1999],
+            [m2, 2222],
         ]);
     });
 
-    it("writes a keep-on-switch key into providers and section keys into their sections, including absent optional fields", async () => {
-        const { sync, collectionStore, record, settings } = await boot();
+    it("writes a former keep-on-switch key into its owning preset and section keys into their sections, including absent optional fields", async () => {
+        const { sync, collectionStore, record, settings, selection } = await boot();
         expect(settings.ui.guiHTML).toBeUndefined();
         expect(settings.secrets.googleSearchCredentials).toBeUndefined();
         collectionStore.updateSettings({
             fallbackWhenBlankResponse: true,
+            seperateParameters: { memory: { temperature: 1 }, emotion: {}, translate: {}, otherAx: {}, overrides: {} },
             theme: "waifu",
             guiHTML: "<div/>",
             googleSearchCredentials: { apiKey: "k", searchEngineId: "e" },
             hypaModel: "m",
         });
         await sync.flushResources();
-        expect(record("providers").fallbackWhenBlankResponse).toBe(true);
+        // The `providers` section holds none of the five any more (`docs/plan/split-preset.md`).
+        expect(record("providers")).not.toHaveProperty("fallbackWhenBlankResponse");
+        expect(record("providers")).not.toHaveProperty("seperateParameters");
+        const modelPreset = record("modelPresets").find((preset: any) => preset.id === selection.modelPresetId);
+        expect(modelPreset.fallbackWhenBlankResponse).toBe(true);
+        const preset = record("presets").find((preset: any) => preset.id === selection.presetId);
+        expect(preset.seperateParameters.memory).toEqual({ temperature: 1 });
         expect(record("ui")).toMatchObject({ theme: "waifu", guiHTML: "<div/>" });
         expect(record("secrets").googleSearchCredentials).toEqual({ apiKey: "k", searchEngineId: "e" });
         expect(record("memoryTranslateMedia").hypaModel).toBe("m");
         expect(record("presets").every((preset: any) => !("theme" in preset))).toBe(true);
         expect(record("presets").every((preset: any) => preset.fallbackWhenBlankResponse === undefined)).toBe(true);
+        expect(record("modelPresets").every((preset: any) => preset.seperateParameters === undefined)).toBe(true);
     });
 
     it("applies the preset aliases and the nullable rule, and detaches the value", async () => {
@@ -122,7 +149,7 @@ describe("updateSettings", () => {
     });
 
     it("validates a mixed patch before any write, and throws MutationTargetGoneError for a stale preset id", async () => {
-        const { sync, collectionStore, refused, validation, record, activePreset } = await boot();
+        const { sync, collectionStore, refused, validation, record, activePreset, activeModelPreset } = await boot();
         await refused(
             () => collectionStore.updateSettings({ maxContext: 999, temperature: "hot" }),
             validation.MutationValidationError,
@@ -135,11 +162,18 @@ describe("updateSettings", () => {
             () => collectionStore.updateSettings({ theme: "t", temperature: 1 }, { presetId: "nope" }),
             validation.MutationTargetGoneError,
         );
+        // A gone model preset refuses a model key the same way, and only a model key.
+        await refused(
+            () => collectionStore.updateSettings({ theme: "t", maxContext: 1 }, { modelPresetId: "nope" }),
+            validation.MutationTargetGoneError,
+        );
+        collectionStore.updateSettings({ temperature: 4 }, { modelPresetId: "nope" });
+        expect(activePreset.temperature).toBe(4);
         // A section-only patch does not need the preset.
         collectionStore.updateSettings({ theme: "only" }, { presetId: "nope" });
         await sync.flushResources();
         expect(record("ui").theme).toBe("only");
-        expect(activePreset.maxContext).not.toBe(999);
+        expect(activeModelPreset.maxContext).not.toBe(999);
     });
 
     it("refuses credentials, persona and selection keys, unknown keys, wrong kinds, and non-data values", async () => {

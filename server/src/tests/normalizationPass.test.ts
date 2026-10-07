@@ -80,7 +80,7 @@ describe("a fresh store", () => {
     it("holds every materialize singleton at revision 1 as its normalizer's fixed point, and nothing else", () => {
         const store = open(path.join(tempDir(), "resources.sqlite"));
         expect(store.writeCount()).toBe(materialized.length);
-        expect(materialized.length).toBe(18);
+        expect(materialized.length).toBe(19);
         const state = observe(store);
         for (const kind of allDefaults) {
             const records = state.kinds[kind.name];
@@ -136,10 +136,12 @@ describe("the pass at startup", () => {
         const seqOf = (kind: string) => rawRows(file).find((row) => row.kind === kind)!.seq;
         const seqs = { ui: seqOf("ui"), presets: seqOf("presets"), hotkeys: seqOf("hotkeys") };
         raw(file, "UPDATE resources SET data = ? WHERE kind = 'ui'", '{"zoomsize":150,"unknownKey":1}');
+        // A legacy prompt field is migrated; a model field stored in a prompt preset is dropped
+        // (`docs/plan/split-preset.md`).
         raw(
             file,
             "UPDATE resources SET data = ? WHERE kind = 'presets'",
-            '[{"name":"old","openrouterProvider":"legacy"}]',
+            '[{"name":"old","formatingOrder":["main","chats"],"openrouterProvider":"legacy"}]',
         );
         raw(file, "UPDATE resources SET data = ? WHERE kind = 'hotkeys'", "[]");
 
@@ -155,10 +157,11 @@ describe("the pass at startup", () => {
             expect.objectContaining({
                 id: expect.stringMatching(UUID_V4),
                 name: "old",
-                openrouterProvider: { order: ["legacy"], only: [], ignore: [] },
+                formatingOrder: ["personaPrompt", "main", "chats"],
                 temperature: 80,
             }),
         ]);
+        expect(Object.hasOwn((presets.data as Record<string, unknown>[])[0], "openrouterProvider")).toBe(false);
         expect(parseToken(presets.revision)).toEqual({ epoch: before.epoch, seq: seqs.presets, revision: 2 });
         expect(after.kinds.hotkeys[0].data).toEqual(before.kinds.hotkeys[0].data);
         expect(parseToken(after.kinds.hotkeys[0].revision)).toEqual({
@@ -298,10 +301,10 @@ describe("the pass at startup", () => {
 });
 
 describe("the pass strips preset credentials (Phase 3, slice 7)", () => {
-    // `proxyKey` and `openAIKey` left the preset schema: `normalizePreset` keeps only `PRESET_FIELDS`,
-    // so a preset stored with either (before slice 7, or by hand) is rewritten without them at the
-    // next start, its id kept. The per-preset `proxyKey` lives in `llmSecrets.presets`, which the
-    // pass leaves as it is.
+    // `proxyKey` and `openAIKey` left the preset schema: `normalizePreset` keeps only the prompt
+    // fields, so a preset stored with either (before slice 7, or by hand) is rewritten without them
+    // at the next start, its id kept. The per-model-preset `proxyKey` lives in
+    // `llmSecrets.modelPresets`, which the pass leaves as it is.
     it("rewrites a presets record that carries proxyKey and openAIKey once, keeping ids and the llmSecrets map untouched", () => {
         const file = path.join(tempDir(), "resources.sqlite");
         const before = observe(open(file));
@@ -321,7 +324,7 @@ describe("the pass strips preset credentials (Phase 3, slice 7)", () => {
         raw(
             file,
             "UPDATE resources SET data = ? WHERE kind = 'llmSecrets'",
-            JSON.stringify({ ...secrets, presets: map }),
+            JSON.stringify({ ...secrets, modelPresets: map }),
         );
 
         const store = open(file);
@@ -335,7 +338,7 @@ describe("the pass strips preset credentials (Phase 3, slice 7)", () => {
         }
         expect(parseToken(presets.revision)).toMatchObject({ epoch: before.epoch, revision: 2 });
         const llmSecrets = after.kinds.llmSecrets[0];
-        expect(llmSecrets.data).toEqual({ ...secrets, presets: map });
+        expect(llmSecrets.data).toEqual({ ...secrets, modelPresets: map });
         expect(parseToken(llmSecrets.revision)).toMatchObject({ epoch: before.epoch, revision: 1 });
         stores.pop()!.close();
 

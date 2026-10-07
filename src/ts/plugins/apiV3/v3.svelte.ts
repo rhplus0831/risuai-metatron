@@ -1,5 +1,5 @@
 import { selectedCharacter, characterList, characterSnapshot } from "../../storage/characterStore.svelte";
-import { settings, activePreset } from "../../storage/settingsViews.svelte";
+import { activeModelPreset, settings, activePreset } from "../../storage/settingsViews.svelte";
 import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
 import {
     customProviderStore,
@@ -42,7 +42,7 @@ import {
 } from "src/ts/storage/pluginStorageStore.svelte";
 import { selectPersona, selectedIndex } from "src/ts/storage/selection.svelte";
 import { batchRecordWrites } from "src/ts/storage/records.svelte";
-import { forwardedPresetField, hasPreset } from "src/ts/storage/settingsViews.svelte";
+import { forwardedPresetField, missingPresetTarget } from "src/ts/storage/settingsViews.svelte";
 import { buildDatabaseSubset } from "src/ts/storage/snapshots.svelte";
 import {
     currentContext,
@@ -1090,7 +1090,7 @@ function applyPluginKey(
             return selectPersonaAt(value);
     }
     if (allowedDbKeys.includes(key)) {
-        updateSettings({ [key]: value }, { presetId: context?.presetId });
+        updateSettings({ [key]: value }, { presetId: context?.presetId, modelPresetId: context?.modelPresetId });
     } else {
         setPluginCustomValue(key, value);
     }
@@ -1109,12 +1109,14 @@ function applyPluginDatabase(
     context: PluginCallContext | undefined,
     vanished: ReadonlySet<string> = new Set(),
 ) {
-    if (
-        context &&
-        Object.keys(newDb).some((key) => allowedDbKeys.includes(key) && forwardedPresetField(key) !== undefined) &&
-        !hasPreset(context.presetId)
-    ) {
-        throw new PluginTargetGoneError("preset");
+    if (context) {
+        const missing = missingPresetTarget(
+            context,
+            Object.keys(newDb).filter((key) => allowedDbKeys.includes(key) && forwardedPresetField(key) !== undefined),
+        );
+        if (missing !== undefined) {
+            throw new PluginTargetGoneError(missing);
+        }
     }
     // One queued write per settings record the call changed (`records.svelte.ts`).
     batchRecordWrites(() => {
@@ -1379,14 +1381,11 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             const liteDB = await withChatsLoaded(characterIds, () => {
                 // Inside a hook, the forwarded preset keys come from the hook's preset (refused when it
                 // is gone), so a read-modify-write through setDatabase stays in one preset.
-                if (
-                    context &&
-                    keys.some((key) => forwardedPresetField(key) !== undefined) &&
-                    !hasPreset(context.presetId)
-                ) {
-                    throw new PluginTargetGoneError("preset");
+                const missing = context ? missingPresetTarget(context, keys) : undefined;
+                if (missing !== undefined) {
+                    throw new PluginTargetGoneError(missing);
                 }
-                return buildDatabaseSubset(keys, context ? context.presetId : null);
+                return buildDatabaseSubset(keys, context ?? null);
             });
             return liteDB;
         },
@@ -1585,6 +1584,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             const parsed = context
                 ? risuChatParserScoped(text ?? "", parseArg, {
                       presetId: context.presetId,
+                      modelPresetId: context.modelPresetId,
                       personaId: context.personaId,
                   })
                 : risuChatParser(text ?? "", parseArg);
@@ -2063,7 +2063,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 throw new Error("A chat is already in progress");
             }
 
-            if (getModelInfo(activePreset.aiModel).id.startsWith("pluginmodel:::")) {
+            if (getModelInfo(activeModelPreset.aiModel).id.startsWith("pluginmodel:::")) {
                 // Executing plugin provider is block because it can be used for loopholes for ipc right now.
                 throw new Error("Sending chat with plugin-based model is currently blocked");
             }

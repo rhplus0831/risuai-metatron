@@ -1,6 +1,6 @@
 import {
     forwardedPresetField,
-    hasPreset,
+    missingPresetTarget,
     reconcileSelection,
     settings,
     writePresetField,
@@ -15,6 +15,7 @@ import { normalizePersonas, PERSONA_DEFAULTS } from "../../../shared/personas.ts
 import {
     newPersonaId,
     newPresetId,
+    normalizeModelPreset,
     normalizePreset,
     PRESET_FIELD_KINDS,
     PRESET_NULLABLE_FIELDS,
@@ -93,32 +94,46 @@ function checkSettingKey(key: string, value: unknown): "preset" | "section" {
         throw new MutationValidationError(key, "a persona field is written through updatePersona");
     }
     if (selectionKeys.has(key)) {
-        throw new MutationValidationError(key, "the selection is changed through selectPreset or selectPersona");
+        throw new MutationValidationError(
+            key,
+            "the selection is changed through selectPreset, selectModelPreset, or selectPersona",
+        );
     }
     throw new MutationValidationError(key, "not a setting");
 }
 
 /**
  * Sets settings fields. A key is a field of the `providers`, `ui`, `memoryTranslateMedia`, or
- * `secrets` section (written there), or a forwarded preset field (`FORWARDED_PRESET_KEYS`, by its
- * root name), written into the preset `options.presetId` names, else the selected one: a caller
- * that captured its preset before an await passes it. Every key is checked first, and the preset
- * must exist when a preset field is set (`MutationTargetGoneError` otherwise); nothing is written
- * unless everything passes. `llmSecrets` fields, `proxyKey`, the persona fields, and the selection
- * indexes are refused.
+ * `secrets` section (written there), or a forwarded preset field (`FORWARDED_PRESET_KEYS` or
+ * `FORWARDED_MODEL_PRESET_KEYS`, by its root name), written into its owning preset: the prompt
+ * preset `options.presetId` names or the model preset `options.modelPresetId` names, else the
+ * selected one. A caller that captured its presets before an await passes them. Every key is checked
+ * first, and the owning preset must exist when a preset field is set (`MutationTargetGoneError`
+ * otherwise); nothing is written unless everything passes. `llmSecrets` fields, `proxyKey`, the
+ * persona fields, and the selection indexes are refused.
  */
-export function updateSettings(patch: Record<string, unknown>, options: { presetId?: string } = {}) {
+export function updateSettings(
+    patch: Record<string, unknown>,
+    options: { presetId?: string; modelPresetId?: string } = {},
+) {
     requireObject("patch", patch);
     const entries = Object.entries(patch).map(([key, value]) => ({ key, value, target: checkSettingKey(key, value) }));
     const prepared = entries.map((entry) => ({ ...entry, value: detach(entry.value) }));
-    const presetId = options.presetId ?? untrack(() => selection.presetId);
-    if (entries.some((entry) => entry.target === "preset") && !hasPreset(presetId)) {
-        throw new MutationTargetGoneError(`preset ${presetId}`);
+    const scope = {
+        presetId: options.presetId ?? untrack(() => selection.presetId),
+        modelPresetId: options.modelPresetId ?? untrack(() => selection.modelPresetId),
+    };
+    const missing = missingPresetTarget(
+        scope,
+        entries.filter((entry) => entry.target === "preset").map((entry) => entry.key),
+    );
+    if (missing !== undefined) {
+        throw new MutationTargetGoneError(`${missing} ${missing === "preset" ? scope.presetId : scope.modelPresetId}`);
     }
     batchRecordWrites(() => {
         for (const { key, value, target } of prepared) {
             if (target === "preset") {
-                writePresetField(presetId, key, value);
+                writePresetField(scope, key, value);
             } else {
                 writeSettingsRoot(key, value);
             }
@@ -378,11 +393,20 @@ export function addAuthRefresh(entry: unknown) {
     settings.authRefreshes = list;
 }
 
-/** Adds a preset: the canonical fields (`normalizePreset`) under a fresh id. Returns the id. */
+/** Adds a prompt preset: the canonical fields (`normalizePreset`) under a fresh id. Returns the id. */
 export function addPreset(preset: unknown): string {
     requireObject("preset", preset);
     requireJsonData("preset", preset);
     const id = newPresetId();
     settings.presets.push(normalizePreset(detach(preset), { id }));
+    return id;
+}
+
+/** Adds a model preset: the canonical fields (`normalizeModelPreset`) under a fresh id. Returns the id. */
+export function addModelPreset(preset: unknown): string {
+    requireObject("modelPreset", preset);
+    requireJsonData("modelPreset", preset);
+    const id = newPresetId();
+    settings.modelPresets.push(normalizeModelPreset(detach(preset), { id }));
     return id;
 }

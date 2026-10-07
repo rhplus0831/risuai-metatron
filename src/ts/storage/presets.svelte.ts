@@ -8,127 +8,91 @@ import { alertNormal } from "../alert";
 import { prebuiltPresets } from "../process/templates/templates";
 import {
     newPresetId,
+    normalizeModelPreset,
     normalizePreset,
     normalizePromptTemplate,
     plainClone,
-    PRESET_FIELDS,
+    PRESET_RECORD_FIELDS,
     presetTemplate,
+    PROMPT_PRESET_FIELDS,
 } from "../../../shared/presets.ts";
 import type { botPreset } from "../../../shared/database.ts";
 import { safeStructuredClone } from "../polyfill";
 import { addPreset } from "./collectionStore.svelte";
-import { copyPresetSecret, setSecret } from "./llmSecrets.svelte";
-import { batchRecordWrites } from "./records.svelte";
-import { selectPreset } from "./selection.svelte";
-import { currentPresetRecord, presetRecordForWrite, settings } from "./settingsViews.svelte";
+import { copyModelPresetSecret, deleteModelPresetSecret } from "./llmSecrets.svelte";
+import { selectModelPreset, selectPreset, selection } from "./selection.svelte";
+import { currentPresetRecord, settings } from "./settingsViews.svelte";
 
 /*
- * The preset actions of the preset list and the welcome screen (Phase 6 slice 10, out of
- * `database.svelte.ts`): save, copy, switch, apply a template, export, and import, over the
- * `presets` record and the `providers` section (`settingsViews.svelte.ts`). Each writes in one
- * `batchRecordWrites` scope, so every record it changes is queued once.
+ * The preset actions of the preset lists and the welcome screen (Phase 6 slice 10, out of
+ * `database.svelte.ts`; split into prompt and model presets by `docs/plan/split-preset.md`): copy,
+ * switch, apply a template, export, and import, over the `presets` record (prompt presets) and the
+ * `modelPresets` collection (`settingsViews.svelte.ts`). Every preset field lives in its own preset
+ * (the views write them there directly), so a switch only changes this tab's selection.
  */
 
-/**
- * Copies the five keep-on-switch fields (`PRESET_KEEP_ON_SWITCH_FIELDS`, `providers` fields) into
- * the selected preset, as the pre-Phase 3 `saveCurrentPreset` did with the whole working copy. The
- * other preset fields need no saving: `activePreset` writes them into the preset directly.
- */
-export function saveCurrentPreset() {
-    batchRecordWrites(saveCurrentPresetFields);
-}
-
-function saveCurrentPresetFields() {
-    const current = presetRecordForWrite();
-    if (!current) {
-        return;
-    }
-    const providers = settings.providers;
-    current.seperateModelsForAxModels = providers.doNotChangeSeperateModels
-        ? false
-        : (providers.seperateModelsForAxModels ?? false);
-    current.seperateModels = providers.doNotChangeSeperateModels ? null : plainClone(providers.seperateModels);
-    current.fallbackModels = plainClone(providers.fallbackModels);
-    current.fallbackWhenBlankResponse = providers.fallbackWhenBlankResponse ?? false;
-    current.seperateParameters = plainClone(providers.seperateParameters);
-}
-
-/** Adds a copy of preset `id` (its `proxyKey` entry too) under a new id. */
+/** Adds a copy of prompt preset `id` under a new id. */
 export function copyPreset(id: string) {
-    saveCurrentPreset();
     const presets = settings.presets;
     const source = presets.find((preset) => preset.id === id);
     if (!source) {
         return;
     }
     const copy = plainClone(source);
-    const copyId = newPresetId();
-    presets.push(normalizePreset({ ...copy, name: `${copy.name} Copy` }, { id: copyId }));
-    copyPresetSecret(id, copyId);
+    presets.push(normalizePreset({ ...copy, name: `${copy.name} Copy` }, { id: newPresetId() }));
 }
 
-/**
- * Selects preset `id` for this client. The keep-on-switch fields travel as before Phase 3: the
- * current values are saved into the old preset (unless `savecurrent` is false) and the new preset's
- * values are copied into `providers`, honoring the three "keep on preset change" toggles.
- */
-export function changeToPreset(id: string, savecurrent = true) {
-    const next = settings.presets.find((preset) => preset.id === id);
-    if (!next) {
-        return;
-    }
-    // One queued write per record it changes (the old preset, `providers`).
-    batchRecordWrites(() => {
-        if (savecurrent) {
-            saveCurrentPreset();
-        }
+/** Selects prompt preset `id` for this client (nothing else changes: the model preset is its own). */
+export function changeToPreset(id: string) {
+    if (settings.presets.some((preset) => preset.id === id)) {
         selectPreset(id);
-        copyKeepOnSwitchFields(next);
-    });
+    }
+}
+
+/** Selects model preset `id` for this client. */
+export function changeToModelPreset(id: string) {
+    if (settings.modelPresets?.some((preset) => preset.id === id)) {
+        selectModelPreset(id);
+    }
+}
+
+/** Adds a copy of model preset `id` (its `proxyKey` entry too) under a new id. Returns the new id. */
+export function copyModelPreset(id: string): string | undefined {
+    const presets = settings.modelPresets;
+    const source = presets?.find((preset) => preset.id === id);
+    if (!presets || !source) {
+        return undefined;
+    }
+    const copy = plainClone(source);
+    const copyId = newPresetId();
+    presets.push(normalizeModelPreset({ ...copy, name: `${copy.name} Copy` }, { id: copyId }));
+    copyModelPresetSecret(id, copyId);
+    return copyId;
 }
 
 /**
- * Copies `newPres`'s keep-on-switch fields into `providers`, as the pre-Phase 3 `setPreset` did,
- * honoring `doNotChangeSeperateModels`, `doNotChangeFallbackModels`, and
- * `disableSeperateParameterChangeOnPresetChange`. The other preset fields are the preset's own.
+ * Removes model preset `id` and its `proxyKey` entry. The last model preset is never removed (a
+ * selection always needs a record; returns `false`). Removing the selected one selects the first
+ * remaining one, as deleting the selected prompt preset does.
  */
-function copyKeepOnSwitchFields(newPres: Omit<botPreset, "id">) {
-    const db = settings.providers;
-    if (!db.doNotChangeSeperateModels) {
-        db.seperateModelsForAxModels = newPres.seperateModelsForAxModels ?? false;
-        db.seperateModels = plainClone(newPres.seperateModels) ?? {
-            memory: "",
-            emotion: "",
-            translate: "",
-            otherAx: "",
-        };
+export function removeModelPreset(id: string): boolean {
+    const presets = settings.modelPresets;
+    const index = presets?.findIndex((preset) => preset.id === id) ?? -1;
+    if (!presets || index === -1 || presets.length <= 1) {
+        return false;
     }
-    if (!db.doNotChangeFallbackModels) {
-        db.fallbackModels = plainClone(newPres.fallbackModels) ?? {
-            memory: [],
-            emotion: [],
-            translate: [],
-            otherAx: [],
-            model: [],
-        };
-        db.fallbackWhenBlankResponse = newPres.fallbackWhenBlankResponse ?? false;
+    presets.splice(index, 1);
+    const next = presets[0];
+    if (next && !presets.some((preset) => preset.id === selection.modelPresetId)) {
+        selectModelPreset(next.id);
     }
-    if (!db.disableSeperateParameterChangeOnPresetChange) {
-        db.seperateParameters = newPres.seperateParameters
-            ? plainClone(newPres.seperateParameters)
-            : {
-                  memory: {},
-                  emotion: {},
-                  translate: {},
-                  otherAx: {},
-                  overrides: {},
-              };
-    }
+    deleteModelPresetSecret(id);
+    return true;
 }
 
 /**
- * Replaces the selected preset's settings with `template` (a prebuilt preset), keeping its id,
- * name, and image, and copies the template's keep-on-switch fields as a switch would.
+ * Replaces the selected prompt preset's settings with `template` (a prebuilt preset), keeping its
+ * id, name, and image. The template's model fields are not applied (`normalizePreset` drops them).
  */
 export function applyPresetTemplate(template: Omit<botPreset, "id">) {
     const current = currentPresetRecord();
@@ -137,42 +101,30 @@ export function applyPresetTemplate(template: Omit<botPreset, "id">) {
     }
     const presets = settings.presets;
     const index = presets.findIndex((preset) => preset.id === current.id);
-    const applied = normalizePreset(
+    presets[index] = normalizePreset(
         { ...plainClone(template), name: current.name, image: current.image },
         { id: current.id },
     );
-    batchRecordWrites(() => {
-        presets[index] = applied;
-        copyKeepOnSwitchFields(applied);
-    });
 }
 
 export async function downloadPreset(id: string, type: "json" | "risupreset" | "return" = "json") {
-    saveCurrentPreset();
     const source = settings.presets.find((preset) => preset.id === id);
     if (!source) {
         return;
     }
-    let pres = plainClone(source);
-    // Every canonical field is written, an unset one as an explicit `undefined`, as the pre-Phase 3
-    // export did (the JSON copy drops them): an importer spreads `presetTemplate` under the file, so
-    // an absent key would take the template's value instead (`promptPreprocess: false`).
-    for (const field of PRESET_FIELDS) {
-        if (!Object.hasOwn(pres, field)) {
-            (pres as unknown as Record<string, unknown>)[field] = undefined;
-        }
+    const stored = plainClone(source) as unknown as Record<string, unknown>;
+    // A prompt preset file (`docs/plan/split-preset.md`): `name`, `image`, and every prompt field,
+    // an unset one as an explicit `undefined`, as the pre-Phase 3 export did (the JSON copy drops
+    // them): an importer spreads `presetTemplate` under the file, so an absent key would take the
+    // template's value instead (`promptPreprocess: false`). No id (D5), no model field, no credential.
+    const pres: Record<string, unknown> = {};
+    for (const field of [...PRESET_RECORD_FIELDS, ...PROMPT_PRESET_FIELDS]) {
+        pres[field] = stored[field];
     }
-    // The `.risup` format carries no id (D5); the credentials are blanked as before.
-    delete pres.id;
-    pres.openAIKey = "";
-    pres.forceReplaceUrl = "";
-    pres.forceReplaceUrl2 = "";
-    pres.proxyKey = "";
-    pres.textgenWebUIStreamURL = "";
-    pres.textgenWebUIBlockingURL = "";
+    const fileName = typeof pres.name === "string" ? pres.name : "";
 
     if (type === "json") {
-        downloadFile(pres.name + "_preset.json", Buffer.from(JSON.stringify(pres, null, 2)));
+        downloadFile(fileName + "_preset.json", Buffer.from(JSON.stringify(pres, null, 2)));
     } else if (type === "risupreset" || type === "return") {
         const buf = fflate.compressSync(
             encodeMsgpack({
@@ -185,7 +137,7 @@ export async function downloadPreset(id: string, type: "json" | "risupreset" | "
         const buf2 = await encodeRPack(buf);
 
         if (type === "risupreset") {
-            downloadFile(pres.name + "_preset.risup", buf2);
+            downloadFile(fileName + "_preset.risup", buf2);
         } else {
             return {
                 data: pres,
@@ -363,13 +315,10 @@ export async function importPreset(
         return;
     }
     pre.name ??= "Imported";
-    // An imported preset always gets a fresh id, even when the file carries one (`addPreset`). A
-    // `proxyKey` the file carries (a hand-written JSON; exports blank it) goes to the per-preset secret map.
-    const proxyKey = typeof pre.proxyKey === "string" ? pre.proxyKey : "";
-    // Normalized first, as before: a converted value the file lacks (a `NaN` from arithmetic on a
-    // missing parameter) becomes the field's default instead of refusing the import.
-    const id = addPreset(normalizePreset(pre));
-    if (proxyKey !== "") {
-        setSecret({ kind: "entry", field: "presets", id }, proxyKey);
-    }
+    // An imported preset always gets a fresh id, even when the file carries one (`addPreset`). It is
+    // a prompt preset: the model fields and a `proxyKey` the file carries are ignored
+    // (`docs/plan/split-preset.md`). Normalized first, as before: a converted value the file lacks (a
+    // `NaN` from arithmetic on a missing parameter) becomes the field's default instead of refusing
+    // the import.
+    addPreset(normalizePreset(pre));
 }

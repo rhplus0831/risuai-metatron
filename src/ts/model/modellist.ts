@@ -1,4 +1,4 @@
-import { settings, activePreset } from "../storage/settingsViews.svelte";
+import { activeModelPreset, settings, activePreset } from "../storage/settingsViews.svelte";
 import {
     LLMFlags,
     LLMProvider,
@@ -204,8 +204,8 @@ globalThis.registerModelDynamic = registerModelDynamic;
 
 export function getModelInfo(id?: string | null): LLMModel {
     return resolveModelInfo(id, {
-        enableCustomFlags: activePreset.enableCustomFlags,
-        customFlags: activePreset.customFlags,
+        enableCustomFlags: activeModelPreset.enableCustomFlags,
+        customFlags: activeModelPreset.customFlags,
         customModels: settings.customModels,
         extraModels: LLMModels,
         pluginModels: customV3ProviderMetaStore,

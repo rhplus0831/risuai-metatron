@@ -166,9 +166,9 @@ export function applyParameters(
     }
 
     if (activePreset.seperateParametersEnabled && modelMode !== "model") {
-        let sepParams = settings.providers.seperateParameters[modelMode];
+        let sepParams = activePreset.seperateParameters[modelMode];
         if (modelMode === "submodel") {
-            sepParams = settings.providers.seperateParameters["otherAx"];
+            sepParams = activePreset.seperateParameters["otherAx"];
         }
 
         for (const parameter of parameters) {

@@ -496,14 +496,18 @@ describe("runServerJob", () => {
         expect(stubs.abort).not.toHaveBeenCalled();
     });
 
-    it("takes a plugin call's preset and effective persona as the identity, keeping the selected persona", async () => {
+    it("takes a plugin call's presets and effective persona as the identity, keeping the selected persona", async () => {
         stubs.bound.mockReturnValue({ id: "bound" });
         stubs.create.mockResolvedValue("j");
-        const run = send({ input: "" }, { identity: { presetId: "plug-preset", personaId: "plug-persona" } });
+        const run = send(
+            { input: "" },
+            { identity: { presetId: "plug-preset", modelPresetId: "plug-model", personaId: "plug-persona" } },
+        );
         await flush();
         const body = stubs.create.mock.calls[0][0] as { context: Record<string, unknown> };
         expect(body.context).toMatchObject({
             presetId: "plug-preset",
+            modelPresetId: "plug-model",
             personaId: "plug-persona",
             selectedPersonaId: "selected",
         });

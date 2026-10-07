@@ -6,8 +6,13 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OpenAIChat } from "../../../shared/openai.ts";
-import { normalizePreset, PERSONA_ROOT_ALIASES, PRESET_ROOT_ALIASES } from "../../../shared/presets.ts";
-import { FORWARDED_PRESET_KEYS, SECTION_FIELDS } from "../../../shared/sections.ts";
+import {
+    normalizePreset,
+    PERSONA_ROOT_ALIASES,
+    PRESET_DEFAULTS,
+    PRESET_ROOT_ALIASES,
+} from "../../../shared/presets.ts";
+import { FORWARDED_MODEL_PRESET_KEYS, FORWARDED_PRESET_KEYS, SECTION_FIELDS } from "../../../shared/sections.ts";
 import { createSigner, createTestServer, json } from "./testSupport.ts";
 
 // Phase 5 slice 9: the prompt golden. The server `preview` job (`server/src/prompt/runner.ts`
@@ -126,17 +131,21 @@ async function startServer(): Promise<Server> {
 /**
  * Seeds the scenario for one fixture the way the capture applied it: `baseSettings` then the
  * fixture's `settings`, each key to its home (a persona root alias onto the selected persona, a
- * forwarded preset key onto the selected `Default` preset under its field name, else the section
- * holding it); the two extra presets through `normalizePreset`; every character with its chats.
+ * forwarded prompt preset key onto the selected `Default` preset under its field name, a forwarded
+ * model preset key onto the materialized model preset (`docs/plan/split-preset.md`), else the
+ * section holding it); the two extra presets through `normalizePreset`; every character with its chats.
  */
 async function seed(s: Server, fixture: Fixture) {
     const settings = { ...scenario.baseSettings, ...fixture.settings };
     const presets = await s.single("presets");
+    const modelPresets = await s.single("modelPresets");
     const defaultPreset: Record<string, unknown> = { ...presets.data[0], name: "Default" };
+    const modelPreset: Record<string, unknown> = { ...modelPresets.data[0], name: "Default" };
     const personas = structuredClone(scenario.personas) as Record<string, any>[];
     const selected = personas[(settings.selectedPersona as number | undefined) ?? 0];
     const sectionPatch: Record<string, Record<string, unknown>> = {};
     const forwarded = new Set<string>(FORWARDED_PRESET_KEYS as readonly string[]);
+    const forwardedModel = new Set<string>(FORWARDED_MODEL_PRESET_KEYS as readonly string[]);
     const presetField = PRESET_ROOT_ALIASES as Record<string, string>;
     const personaField = PERSONA_ROOT_ALIASES as Record<string, string>;
     for (const [key, value] of Object.entries(settings)) {
@@ -151,12 +160,24 @@ async function seed(s: Server, fixture: Fixture) {
             defaultPreset[presetField[key] ?? key] = structuredClone(value);
             continue;
         }
+        if (forwardedModel.has(key)) {
+            modelPreset[presetField[key] ?? key] = structuredClone(value);
+            continue;
+        }
         const section = Object.entries(SECTION_FIELDS).find(([, fields]) =>
             (fields as readonly string[]).includes(key),
         )?.[0];
         // A setting with no home would be silently dropped from the seed: not a parity run.
         expect(section, `the setting ${key} has a home`).toBeDefined();
         (sectionPatch[section!] ??= {})[key] = structuredClone(value);
+    }
+    if (fixture.name === "presetChain") {
+        // The capture's `presetChain` pick switched the whole preset: `Alpha`, a canonical preset,
+        // brought the schema's default model with it. A pick changes the prompt preset only now
+        // (`docs/plan/split-preset.md`), so the model the capture assembled with is seeded as the
+        // job's model preset.
+        modelPreset.aiModel = PRESET_DEFAULTS.aiModel;
+        modelPreset.subModel = PRESET_DEFAULTS.subModel;
     }
     const ops: unknown[] = [
         {
@@ -168,6 +189,7 @@ async function seed(s: Server, fixture: Fixture) {
                 ...scenario.presets.map((preset) => normalizePreset(structuredClone(preset) as never)),
             ],
         },
+        { kind: "modelPresets", id: "main", baseRevision: modelPresets.revision, data: [modelPreset] },
         { kind: "personas", id: "main", baseRevision: (await s.single("personas")).revision, data: personas },
     ];
     for (const [section, patch] of Object.entries(sectionPatch)) {
@@ -191,13 +213,14 @@ async function seed(s: Server, fixture: Fixture) {
     expect(seeded.status, JSON.stringify(seeded.body).slice(0, 500)).toBe(200);
     return {
         presets: (await s.single("presets")).data as { id: string; name: string }[],
+        modelPresetId: modelPreset.id as string,
         selectedPersona: selected,
     };
 }
 
 /** Runs a preview job for the fixture and collects its events to the terminal. */
 async function previewJob(s: Server, fixture: Fixture, kind: "preview" | "previewPrompt") {
-    const { presets, selectedPersona } = await seed(s, fixture);
+    const { presets, modelPresetId, selectedPersona } = await seed(s, fixture);
     const read = await s.api("/api/resources/read", {
         method: "POST",
         body: JSON.stringify({ chats: [{ characterId: fixture.chaId, id: fixture.chatId }] }),
@@ -213,6 +236,7 @@ async function previewJob(s: Server, fixture: Fixture, kind: "preview" | "previe
                 characterId: fixture.chaId,
                 chatId: fixture.chatId,
                 presetId: presets[0].id,
+                modelPresetId,
                 personaId: chat.data.bindedPersona ?? selectedPersona.id,
                 selectedPersonaId: selectedPersona.id,
                 mode: kind,
