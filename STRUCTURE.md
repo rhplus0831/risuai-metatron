@@ -241,15 +241,15 @@ targeted path to read them.
 The guides name these steps where a version boundary matters (old saves, archives, fixtures). The
 plan that drove them is archived; its last version is in git (`docs/plan/README.md`).
 
-| Step    | What changed                                                                                                                              | Last commit                                         |
-| ------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| Phase 0 | The shared schema (`shared/`) and the server's resource store                                                                             | `a82359f7`                                          |
-| Phase 1 | The database split into per-collection server resources; the block save format and remote saving removed (no migration)                   | `46d63674`                                          |
-| Phase 2 | Chats as their own server records with an explicit mutation API; the generation fence of server-held messages                             | `577c43ae`                                          |
-| Phase 3 | The settings sections and collections (store version 3, no `root` record), ids on presets and personas, credentials out of preset records | `e9e608ad`                                          |
-| Phase 4 | The external contracts (plugins, MCP, Lua, triggers, imports) writing through the mutation modules                                        | `ce43f2b9`                                          |
-| Phase 5 | Generation, prompt assembly, scripts, and provider calls on the server; the cutover (`12ed3bae`) removed the browser generation path      | `ee57e2e9`                                          |
-| Phase 6 | The thin client: write-through records, live updates, chats loaded on demand, no whole-database object; the closeout                      | the closeout commit, named in `docs/plan/README.md` |
+| Step    | What changed                                                                                                                              | Last commit               |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| Phase 0 | The shared schema (`shared/`) and the server's resource store                                                                             | `a82359f7`                |
+| Phase 1 | The database split into per-collection server resources; the block save format and remote saving removed (no migration)                   | `46d63674`                |
+| Phase 2 | Chats as their own server records with an explicit mutation API; the generation fence of server-held messages                             | `577c43ae`                |
+| Phase 3 | The settings sections and collections (store version 3, no `root` record), ids on presets and personas, credentials out of preset records | `e9e608ad`                |
+| Phase 4 | The external contracts (plugins, MCP, Lua, triggers, imports) writing through the mutation modules                                        | `ce43f2b9`                |
+| Phase 5 | Generation, prompt assembly, scripts, and provider calls on the server; the cutover (`12ed3bae`) removed the browser generation path      | `ee57e2e9`                |
+| Phase 6 | The thin client: write-through records, live updates, chats loaded on demand, no whole-database object; the closeout                      | `9d09288b` (the closeout) |
 
 ## Dead, Placeholder, or Unwired Code
 
