@@ -249,7 +249,6 @@ export const languageChineseTraditional = {
         settingsCloseButtonSize: "調整設定視窗右上角關閉（X）按鈕大小。預設為 24",
         showTypingEffect: "啟用後，AI 產生回應期間會顯示「正在輸入」指示器",
         dynamicOutputPrompt: "啟用後，請求中會包含 Schema 資訊",
-        realmDirectOpen: "啟用後，在 RisuRealm 預覽中按一下角色會直接開啟角色描述",
         openRouterProviderOrder:
             "設定供應商使用順序。會優先使用清單中的第一個供應商；若不可用則依序改用下一個。詳見 https://openrouter.ai/docs/guides/routing/provider-selection#ordering-specific-providers",
         openRouterProviderOnly:
@@ -1236,7 +1235,6 @@ export const languageChineseTraditional = {
     showSavingIcon: "顯示儲存中圖示",
     imageTranslation: "圖片翻譯",
     banCharacterset: "出現指定字元集時自動重新產生",
-    realmDirectOpen: "直接在 RisuRealm 開啟角色",
     showPromptComparison: "顯示提示詞比較",
     inlayErrorResponse: "內嵌錯誤回應",
     triggerOn: "Trigger 時機",

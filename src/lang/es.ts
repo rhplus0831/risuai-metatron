@@ -232,8 +232,6 @@ export const languageSpanish = {
         showTypingEffect:
             "Cuando está habilitado, mostrará un indicador de escritura mientras el asistente está generando una respuesta.",
         dynamicOutputPrompt: "Cuando está habilitado, la información del esquema se incluirá en la solicitud.",
-        realmDirectOpen:
-            "Si está habilitado, al hacer clic en un personaje en la vista previa de RisuRealm se abrirá directamente la descripción del personaje.",
         openRouterProviderOrder:
             "El orden de los proveedores a usar, el primer proveedor se usará primero, si el proveedor no está disponible, usará el siguiente proveedor. Ver detalles en https://openrouter.ai/docs/guides/routing/provider-selection#ordering-specific-providers",
         openRouterProviderOnly:
@@ -1212,7 +1210,6 @@ export const languageSpanish = {
     showSavingIcon: "Mostrar Icono de Guardado",
     imageTranslation: "Traducción de Imagen",
     banCharacterset: "Regeneración Automática en Conjunto de Caracteres",
-    realmDirectOpen: "Abrir personaje directamente en RisuRealm",
     showPromptComparison: "Mostrar Comparación de Prompt",
     inlayErrorResponse: "Respuesta de Error de Incrustación",
     triggerOn: "Trigger Activado",

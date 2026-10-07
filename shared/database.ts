@@ -390,7 +390,7 @@ export interface Database {
     hypaV3Presets: HypaV3Preset[];
     /** The selected `hypaV3Presets` entry, by id (travels in the `hypaV3Presets` record). */
     hypaV3PresetId: string;
-    realmDirectOpen: boolean;
+    realmDirectOpen: boolean; // legacy
     OaiCompAPIKeys: { [key: string]: string };
     inlayErrorResponse: boolean;
     reasoningEffort: number;

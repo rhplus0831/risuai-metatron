@@ -240,8 +240,6 @@ export const languageGerman = {
         showTypingEffect:
             "Wenn aktiviert, wird während der Generierung einer Antwort durch den Assistenten eine Tippanzeige angezeigt.",
         dynamicOutputPrompt: "Wenn aktiviert, werden die Schema-Informationen in die Anfrage aufgenommen.",
-        realmDirectOpen:
-            "Wenn aktiviert, öffnet ein Klick auf einen Charakter in der RisuRealm-Vorschau direkt die Charakterbeschreibung.",
         openRouterProviderOrder:
             "Die Reihenfolge der zu verwendenden Anbieter. Der erste Anbieter wird zuerst verwendet. Wenn der Anbieter nicht verfügbar ist, wird der nächste Anbieter verwendet. Siehe Details unter https://openrouter.ai/docs/guides/routing/provider-selection#ordering-specific-providers",
         openRouterProviderOnly:
@@ -1228,7 +1226,6 @@ export const languageGerman = {
     showSavingIcon: "Speichersymbol anzeigen",
     imageTranslation: "Bildübersetzung",
     banCharacterset: "Bei Zeichensatz automatisch neu generieren",
-    realmDirectOpen: "Charakter in RisuRealm direkt öffnen",
     showPromptComparison: "Anweisungsvergleich anzeigen",
     inlayErrorResponse: "Fehlerantwort einfügen",
     triggerOn: "Trigger ein",

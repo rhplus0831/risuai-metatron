@@ -6,7 +6,6 @@ import { type simpleCharacterArgument } from "./parser/parser.svelte";
 import type { alertData } from "./alert";
 import { moduleUpdate } from "./process/modules";
 import { resetTransformEffects } from "./parser/transformClient";
-import type { hubType } from "./characterCards";
 
 function updateSize() {
     SizeStore.set({
@@ -29,6 +28,7 @@ export const CurrentTriggerIdStore = writable<string | null>(null);
 export const CharEmotion = writable({} as { [key: string]: [string, string, number][] });
 export const ViewBoxsize = writable({ width: 12 * 16, height: 12 * 16 }); // Default width and height in pixels
 export const settingsOpen = writable(false);
+export const gridOpenStore = writable(false);
 export const botMakerMode = writable(false);
 export const moduleBackgroundEmbedding = writable("");
 export const openPresetList = writable(false);
@@ -39,7 +39,6 @@ export const ReloadGUIPointer = writable(0);
 export const ReloadChatPointer = writable({} as Record<number, number>);
 export const ScrollToMessageStore = $state({ value: -1 });
 export const OpenRealmStore = writable(false);
-export const RealmInitialOpenChar = writable<null | hubType>(null);
 export const PlaygroundStore = writable(0);
 export const HideIconStore = writable(false);
 export const CustomCSSStore = writable("");

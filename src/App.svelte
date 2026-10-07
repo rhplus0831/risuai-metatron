@@ -14,6 +14,7 @@
         popupStore,
         popUpEditorStore,
         irisStore,
+        gridOpenStore,
     } from "./ts/stores.svelte";
     import Sidebar from "./lib/SideBars/Sidebar.svelte";
     import { addModule } from "./ts/storage/collectionStore.svelte";
@@ -47,7 +48,6 @@
     import { RISU_APP_INTERNAL_DRAG_TYPE, RISU_SIDEBAR_DRAG_TYPE } from "./ts/dragTypes";
 
     let didFirstSetup: boolean = $derived(settings.ui.didFirstSetup);
-    let gridOpen = $state(false);
     let aprilFools = $state(new Date().getMonth() === 3 && new Date().getDate() === 1);
     let aprilFoolsPage = $state(0);
     let keepingSessionAlive = $state(false);
@@ -233,17 +233,17 @@
     {:else if $settingsOpen}
         <Settings />
     {:else}
-        {#if gridOpen}
+        {#if $gridOpenStore}
             <GridChars
                 endGrid={() => {
-                    gridOpen = false;
+                    $gridOpenStore = false;
                 }}
             />
         {:else}
             {#if !$DynamicGUI}
                 <Sidebar
                     openGrid={() => {
-                        gridOpen = true;
+                        $gridOpenStore = true;
                     }}
                     hidden={!$sideBarStore}
                 />
@@ -256,7 +256,7 @@
                     <!-- svelte-ignore a11y_click_events_have_key_events -->
                     <Sidebar
                         openGrid={() => {
-                            gridOpen = true;
+                            $gridOpenStore = true;
                         }}
                         hidden={false}
                     />

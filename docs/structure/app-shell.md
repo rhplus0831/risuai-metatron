@@ -32,7 +32,7 @@
   - BGM: one track at a time. When nothing is playing, it starts the first marker in document order (the newest message, since the chat body is column-reversed). A playing track keeps playing while its marker stays in the DOM, even if a newer marker appears, and replays on `ended`. It stops `BGM_STOP_GRACE_MS` (1 s) after its marker is gone.
   - BGM failures: an autoplay block (`NotAllowedError`) pauses all BGM until the next activating `pointerup`/`keydown` (touch grants activation only on release). A source or media error skips only that marker, so another marker can still play; it is not retried on gestures, only after the marker has been missing from the DOM for more than 1 s and appears again.
 - `src/ts/mutex.ts` `Mutex`: FIFO lock. Its users were the browser scripting engines, removed at the Phase 5 cutover, so nothing in production imports it now. `runExclusive` must keep its `finally` release.
-- `src/lib/UI/MainMenu.svelte`: home screen. Switches to `RealmMain` via `OpenRealmStore`. Renders `hubAdditionalHTML` with `{@html}`.
+- `src/lib/UI/MainMenu.svelte`: home screen. Recent characters (`collectHomeRecentCharacters` in `src/lib/UI/mainMenuProjection.ts`: by `lastInteraction`, newest first, without the trash and `§playground`; a card calls `changeChar`, "View all" sets `gridOpenStore`), and an Explore card that switches to `RealmMain` via `OpenRealmStore` (hidden by `settings.ui.hideRealm`). It fetches nothing from Realm itself.
 - `src/lib/UI/Title.svelte`: seasonal logo and mini-game. Only used by MainMenu.
 
 ## Flows
@@ -57,7 +57,8 @@ Screen selection. `App.svelte` checks these in order:
 3. `CustomGUISettingMenuStore`.
 4. `!settings.ui.didFirstSetup` → `WelcomeRisu`.
 5. `$settingsOpen` → `Settings`.
-6. Otherwise `Sidebar` + `ChatScreen`.
+6. `$gridOpenStore` → `GridChars`.
+7. Otherwise `Sidebar` + `ChatScreen`.
 
 Inside `DefaultChatScreen.svelte`:
 
@@ -73,8 +74,9 @@ All of these live in `src/ts/stores.svelte.ts`.
 - Navigation:
   - The selected character is not a store here: it is `selection.characterId` (`storage/selection.svelte.ts`: the selected `chaId` per tab, never stored, `null` at home), set with `selectCharacter(chaId)` and read as `selectedCharacter()`; `selectedIndex()` is its index in the list (a removed selected character selects home).
   - `settingsOpen`, `SettingsMenuIndex`.
+  - `gridOpenStore`: the character grid (`GridChars`) in place of the sidebar and chat screen, opened by the sidebar and the home screen.
   - `sideBarStore`, `DynamicGUI`.
-  - `PlaygroundStore`, `OpenRealmStore`, `RealmInitialOpenChar`.
+  - `PlaygroundStore`, `OpenRealmStore`.
   - `CharConfigSubMenu`, `botMakerMode`.
 - Reload signals:
   - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetTransformEffects` (the script transform's applied emotions, `cbs-rendering.md`).
@@ -124,6 +126,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 - None cover boot, screen precedence, platform detection, hotkeys, or `Mutex`.
 - `src/ts/observer.test.ts` covers `startObserveDom` under happy-dom with an `Audio` stub and fake timers: BGM marker parsing, selection, grace stop, failure and autoplay retry policy, and the delegated code-block menu. Mutation records are delivered with `takeRecords()` because happy-dom's own timer is not faked.
+- `src/lib/UI/mainMenuProjection.test.ts`: the home screen's recent characters (order, tie by name, limit, the trash, `§playground`, and no stamp left out) and the relative-time text.
 - Some tests mock `stores.svelte` and `platform` (the parser tests). They exercise consumers, not these modules.
 
 ## Known Hazards

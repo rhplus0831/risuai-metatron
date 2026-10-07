@@ -266,7 +266,6 @@ export const SECTION_FIELDS = {
         "menuSideBar",
         "showSavingIcon",
         "showPromptComparison",
-        "realmDirectOpen",
         "bulkEnabling",
         "showTranslationLoading",
         "returnCSSError",
@@ -403,6 +402,7 @@ export const DROPPED_FIELDS = [
     "translatorMaxResponse",
     "hypaV3Settings",
     "formatversion",
+    "realmDirectOpen",
 ] as const satisfies readonly (keyof Database)[];
 
 /** The Phase 1 collection fields (`presets`, `modules`, `plugins`, `pluginStorage`, `characters`). */

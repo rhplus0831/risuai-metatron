@@ -278,8 +278,6 @@ export const languageEnglish = {
             "Adjusts the size of the close (X) button in the top right corner of the settings window. Default is 24.",
         showTypingEffect: "When enabled, it will show a typing indicator while the assistant is generating a response.",
         dynamicOutputPrompt: "When enabled, the schema information will be included in the request.",
-        realmDirectOpen:
-            "If enabled, clicking a character in RisuRealm preview will directly open the character description.",
         openRouterProviderOrder:
             "The order of providers to use, the first provider will be used first, if the provider is not available, it will use the next provider. See datail on https://openrouter.ai/docs/guides/routing/provider-selection#ordering-specific-providers",
         openRouterProviderOnly:
@@ -998,6 +996,14 @@ export const languageEnglish = {
     operator: "Operator",
     ifRandom: "If random",
     hideRealm: "Hide RisuRealm",
+    homeRecentCharacters: "Recent characters",
+    homeRecentCharactersEmpty: "Characters you chat with will appear here.",
+    homeViewAllCharacters: "View all",
+    homeOpenCharacter: (name: string) => `Open ${name}`,
+    homeExplore: "Explore",
+    homeExploreRealmDescription: "Discover and download new characters from RisuRealm.",
+    openRisuRealm: "Open RisuRealm",
+    unknownInteractionTime: "Unknown",
     hideAllImages: "Hide All Images",
     popularityLevel: "{} Popularity",
     colorScheme: "Color Scheme",
@@ -1317,7 +1323,6 @@ export const languageEnglish = {
     showSavingIcon: "Show Saving Icon",
     imageTranslation: "Image Translation",
     banCharacterset: "Auto Regenerate On Characterset",
-    realmDirectOpen: "Directly open character in RisuRealm",
     showPromptComparison: "Show Prompt Comparison",
     inlayErrorResponse: "Inlay Error Response",
     triggerOn: "Trigger On",

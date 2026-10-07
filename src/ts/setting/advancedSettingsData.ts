@@ -372,14 +372,6 @@ export const advancedSettingsItems: SettingItem[] = [
         helpKey: "dynamicAssets",
         classes: "mt-4",
     },
-    {
-        id: "adv.realmOpen",
-        type: "check",
-        labelKey: "realmDirectOpen",
-        bindKey: "realmDirectOpen",
-        helpKey: "realmDirectOpen",
-        classes: "mt-4",
-    },
     { id: "adv.cssErr", type: "check", labelKey: "returnCSSError", bindKey: "returnCSSError", classes: "mt-4" },
     {
         id: "adv.antiOverload",

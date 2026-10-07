@@ -4,7 +4,6 @@
     import { alertInput } from "src/ts/alert";
     import { language } from "src/lang";
     import RisuHubIcon from "./RealmHubIcon.svelte";
-    import { RealmInitialOpenChar } from "src/ts/stores.svelte";
     import RealmPopUp from "./RealmPopUp.svelte";
 
     let openedData: null | hubType = $state(null);
@@ -38,13 +37,6 @@
     }
 
     getHub();
-
-    $effect(() => {
-        if ($RealmInitialOpenChar) {
-            openedData = $RealmInitialOpenChar;
-            $RealmInitialOpenChar = null;
-        }
-    });
 </script>
 
 <div class="w-full flex justify-center mt-4 mb-2">

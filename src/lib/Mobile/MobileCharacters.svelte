@@ -5,6 +5,7 @@
     import BarIcon from "../SideBars/BarIcon.svelte";
     import { addCharacter, changeChar, getCharImage } from "src/ts/characters";
     import { MessageSquareIcon, PlusIcon } from "@lucide/svelte";
+    import { makeCharacterAgoText } from "../UI/mainMenuProjection";
 
     interface Props {
         endGrid?: () => void;
@@ -22,32 +23,7 @@
     }
 
     function makeAgoText(time: number) {
-        if (time === 0) {
-            return "Unknown";
-        }
-        const diff = Date.now() - time;
-        if (diff < 3600000) {
-            const min = Math.floor(diff / 60000);
-            return agoFormatter.format(-min, "minute");
-        }
-        if (diff < 86400000) {
-            const hour = Math.floor(diff / 3600000);
-            return agoFormatter.format(-hour, "hour");
-        }
-        if (diff < 604800000) {
-            const day = Math.floor(diff / 86400000);
-            return agoFormatter.format(-day, "day");
-        }
-        if (diff < 2592000000) {
-            const week = Math.floor(diff / 604800000);
-            return agoFormatter.format(-week, "week");
-        }
-        if (diff < 31536000000) {
-            const month = Math.floor(diff / 2592000000);
-            return agoFormatter.format(-month, "month");
-        }
-        const year = Math.floor(diff / 31536000000);
-        return agoFormatter.format(-year, "year");
+        return makeCharacterAgoText(time, { agoFormatter, unknownText: "Unknown" });
     }
 
     function sortChar(char: AnyClientCharacter[]) {

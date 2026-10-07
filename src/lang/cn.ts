@@ -192,7 +192,6 @@ export const languageChinese = {
         settingsCloseButtonSize: "调整设置窗口右上角关闭(X)按钮的大小。默认值为24。",
         showTypingEffect: "启用后，将在助手生成响应时显示打字指示器。",
         dynamicOutputPrompt: "启用后，架构信息将包含在请求中。",
-        realmDirectOpen: "启用后，点击 RisuRealm 预览中的角色将直接打开角色描述。",
         openRouterProviderOrder:
             "使用提供商的顺序，将优先使用第一个提供商，若该提供商不可用，则会使用下一个提供商。详见 https://openrouter.ai/docs/guides/routing/provider-selection#ordering-specific-providers",
         openRouterProviderOnly:
@@ -1139,7 +1138,6 @@ export const languageChinese = {
     showSavingIcon: "显示保存图标",
     imageTranslation: "图片翻译",
     banCharacterset: "字符集自动重新生成",
-    realmDirectOpen: "在 RisuRealm 中直接打开角色",
     showPromptComparison: "显示提示词比较",
     inlayErrorResponse: "嵌入错误响应",
     triggerOn: "触发于",

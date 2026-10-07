@@ -34,12 +34,12 @@
 - Entry points:
   - `UserSettings.svelte`: local backup buttons, internal backup restore, dataset export.
 - PeerJS multiuser chat (rooms, peer sync, and the `peerjs` dependency) was removed.
-- Realm: `MainMenu` → `RealmMain` → `getRisuHub(search, page, nsfw, sort)` → `RealmPopUp` → `downloadRisuHub`. There is no upload path.
+- Realm: `MainMenu` (the Explore card) → `RealmMain` → `getRisuHub(search, page, nsfw, sort)` → `RealmPopUp` → `downloadRisuHub`. There is no upload path.
 
 ## State
 
 - DB: `localNetworkMode`, `localNetworkTimeoutSec`. The removed legacy `account` token is no record field (the boot never installs it); old saves may still carry an unused character `realmId`.
-- Stores: `OpenRealmStore`, `RealmInitialOpenChar`.
+- Stores: `OpenRealmStore`.
 
 ## Coupling
 
@@ -67,4 +67,4 @@
 
 ## Known Hazards
 
-- `MainMenu` and `RealmMain` render `hubAdditionalHTML` via `{@html}`.
+- `RealmMain` renders `hubAdditionalHTML` via `{@html}`.

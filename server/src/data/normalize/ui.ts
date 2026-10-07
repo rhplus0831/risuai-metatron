@@ -91,7 +91,6 @@ const spec: SectionSpec<"ui"> = {
     menuSideBar: ["boolean"],
     showSavingIcon: ["boolean", false],
     showPromptComparison: ["boolean", false],
-    realmDirectOpen: ["boolean", false],
     bulkEnabling: ["boolean"],
     showTranslationLoading: ["boolean"],
     returnCSSError: ["boolean", true],
