@@ -670,3 +670,49 @@ slice's reviewer with this plan's amendments, and the reviewer judges again.
   way, older than Phase 6 (reproduced on `35678fd4`): `hotkeyMatches` writes a hotkey's missing
   modifier flags into the stored list on a key press, which the server's hotkey normalizer undoes, so
   the first key press of a session saves `hotkeys`.
+- **Stop C (2026-10-07, reported; awaiting the owner).** Slices 6 (`5b47b2b3`), 7 (`d6fd621b`), 8
+  (`1ab264df`), 9a (`9cf80cdb`), and 9b (`089adfcb`) are committed. The counts at `089adfcb`
+  (matching lines / files, tests excluded, the `planning-notes.md` commands):
+
+  | Row                                                     | Now (`ee57e2e9`) | Stop C (`089adfcb`) |
+  | ------------------------------------------------------- | ---------------- | ------------------- |
+  | `DBState.db` lines / files (occurrences)                | 1,745 / 123      | 43 / 15 (44)        |
+  | `bind:` onto `DBState.db` in `src/lib`                  | 369 / 25         | 0                   |
+  | Direct assignments, `src/lib` / `src/ts`                | 227 / 40         | 0 / 1               |
+  | `getDatabase(` lines / files                            | 150 / 43         | 52 / 8              |
+  | `selectedCharID` lines / files                          | 544 / 47         | 12 / 7              |
+  | Indexed selected-character sites                        | 417 / 21         | 2 / 1               |
+  | `.chatPage`                                             | 110 / 35         | 6 / 5               |
+  | `src/lib/Setting` + `src/ts/setting` `DBState.db` lines | 777 / 35         | 0                   |
+
+  The allowlist left for slice 10, every remaining site:
+  - **The facade and the save adapter** (removed or reduced by slice 10): `database.svelte.ts` (the
+    one direct assignment, `DBState.db = data`; `getDatabase`, `getCurrentCharacter` by
+    `selectedCharID`), `stores.svelte.ts` (`selectedCharID`, `selIdState`), `selection.svelte.ts`
+    (the index store), `forwarding.svelte.ts`, `records.svelte.ts` (the character list wrapper and
+    its facade `chats`/`chatPage` view), `characterStore.svelte.ts` (the list read through the
+    facade; its input validation of `chatPage`), `collectionStore.svelte.ts` (writes through the
+    facade), `resourceSync.svelte.ts` (the cycle's guard, the credential owner check,
+    `reconcileSelection`).
+  - **The parser's CBS hosts**: `parser.svelte.ts` (`getDatabase` for the host, the selected index,
+    the persona and preset lookups), and the shared evaluator's host fallback (`shared/cbs/registry.ts`
+    38 `getDatabase()` calls through the host, `evaluator.ts` `arg.db ?? host.getDatabase()`, with
+    their `chats[chatPage]` reads).
+  - **The snapshot consumers**: the plugin host (`v3.svelte.ts`: `getDatabase` in one synchronous
+    pass after the loads, `hasPreset`, the `chatPage` compare; `risuai.d.ts` is the API surface),
+    `drive/backuplocal.ts` (the asset inventory), `SettingsExportButtons.svelte` (the settings
+    report), and `bootstrap.ts` `checkNewFormat` (the boot's trash pruning over the list).
+  - **Comments only**: `shared/sections.ts`, `globalApi.svelte.ts`, `permissionStore.ts`,
+    `settingsViews.svelte.ts`, `llmSecrets.svelte.ts`, `chatStore.svelte.ts`.
+  - **Unused imports** (no read): `DBState` and `selectedCharID` in the HypaV3 modal's
+    `category-manager-modal.svelte`, `bulk-edit-actions.svelte`, and `tag-manager-modal.svelte`.
+
+  Docker (`risu-metatron:p6-stopc`, a fresh volume per run, `--dns 127.0.0.254`):
+  `checkServerSend.mjs` 15/15, `checkServerButton.mjs` 8/8, `checkServerTrigger.mjs` 9/9,
+  `checkStopDMatrix.mjs` 35/35, `checkStopBSmoke.mjs` 12/12 (its reload writes nothing), and
+  `checkStopCSmoke.mjs` 16/16 (lazy chats through the UI: the boot asks for summaries and reads no
+  chat at home; opening the character reads its selected chat alone; each chat is read once when
+  first opened; after eleven switches a recent chat opens without a read and the least recently
+  used is read again; a second client converges on another writer's rename of an unloaded chat
+  through the summary list without a chat read; opening, switching, and an idle reload write
+  nothing).
