@@ -19,6 +19,7 @@ export const displayThemeSettingsItems: SettingItem[] = [
         classes: "mt-4",
         options: {
             selectOptions: [
+                { value: "metatron", labelKey: "metatronTheme" },
                 { value: "", label: "Standard Risu" },
                 { value: "waifu", label: "Waifulike" },
                 { value: "mobilechat", label: "Mobile Chat" },

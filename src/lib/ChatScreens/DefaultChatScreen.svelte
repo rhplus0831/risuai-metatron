@@ -692,6 +692,7 @@
     {:else if currentChat}
         <div
             class="h-full w-full flex flex-col-reverse overflow-y-auto relative default-chat-screen"
+            class:metatron-chat-theme={settings.ui.theme === "metatron"}
             onscroll={(e) => {
                 //@ts-expect-error scrollHeight/clientHeight/scrollTop don't exist on EventTarget, but target is HTMLElement here
                 const scrolled = e.target.scrollHeight - e.target.clientHeight + e.target.scrollTop;

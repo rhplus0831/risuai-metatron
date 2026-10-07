@@ -520,6 +520,28 @@ body {
     display: block;
 }
 
+.default-chat-screen.metatron-chat-theme .chat-message-container {
+    border-top: 1px solid #222222;
+}
+
+.default-chat-screen.metatron-chat-theme .risu-chat {
+    margin-top: 10px;
+    margin-bottom: 10px;
+    padding: 1rem;
+    border-radius: 12px;
+    background-color: #121212;
+}
+
+.default-chat-screen.metatron-chat-theme .risu-chat > div:first-child {
+    /* Keep authored percentage heights intrinsic instead of resolving them
+       against the entire message through a column flex layout. */
+    display: block;
+}
+
+.default-chat-screen.metatron-chat-theme .risu-chat > div:first-child > * + * {
+    margin-top: 15px;
+}
+
 .x-risu-tool-call {
     @apply border border-darkborderc bg-darkbg text-textcolor rounded-md shadow-xs focus:outline-hidden transition-colors duration-200 px-4 py-2 min-w-0;
 }

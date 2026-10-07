@@ -825,6 +825,7 @@ export const languageEnglish = {
     selectChar: "Select Character",
     askLoadFirstMsg: "Shall we load the first message?",
     theme: "Theme",
+    metatronTheme: "Metatron",
     editOrder: "Edit Order",
     autoMode: "Auto Mode",
     submodel: "Auxiliary Model",

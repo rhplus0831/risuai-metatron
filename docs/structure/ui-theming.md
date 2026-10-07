@@ -31,6 +31,7 @@ Chat:
 
 - `ChatScreen.svelte`: layout theme switch (`waifu`, classic). Mounts `BackgroundDom`, `TransitionImage`, `ResizeBox`, `ChatList`, and the module menu.
 - `DefaultChatScreen.svelte`: input box, send/reroll (see `chat-pipeline.md`), and menus. Chooses home, playground, or chat.
+  - The `metatron` theme adds `metatron-chat-theme` to the chat scroller; `src/styles.css` styles each message (`.risu-chat`) as a card under it. Any other non-`waifu` theme keeps the classic layout.
 - `Chats.svelte`: mounts `Chat` instances imperatively, keyed by message hash.
   - `updateChatBody` diffs mount, update, and remove, keeping reverse-chronological DOM order.
   - Streaming instances are updated through `Chat.updateStreamingDisplay`.
@@ -78,6 +79,7 @@ Theme and GUI helpers:
   - Root palette variables.
   - Chat typography.
   - Shared classes `x-risu-button-default` and `x-risu-risu-comment`.
+  - The `metatron-chat-theme` message-card rules.
   - CBS `::highlight(...)` colors.
 - `src/ts/gui/colorscheme.ts`:
   - `ColorScheme` (declared in `shared/settings.ts`) has nine colors plus `type`.
