@@ -1,5 +1,11 @@
 import { type ClientCharacter, selectedCharacter } from "../../storage/characterStore.svelte";
-import { settings, activeModelPreset, activePreset, scopedPresetRoot } from "../../storage/settingsViews.svelte";
+import {
+    settings,
+    activeModelPreset,
+    activePreset,
+    missingScopeTarget,
+    scopedPresetRoot,
+} from "../../storage/settingsViews.svelte";
 import { language } from "../../../lang";
 import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/modellist";
 import { risuEscape, risuUnescape } from "../../parser/parser.svelte";
@@ -134,6 +140,12 @@ const requestChatGone = (): requestDataResponse => ({
     result: "The chat this request is for no longer exists",
 });
 
+/** A refusal of a request whose captured `scope` lost a preset, or `undefined` while both exist (or without a scope). */
+function requestPresetGone(scope: PluginCallContext | undefined): requestDataResponse | undefined {
+    const missing = scope ? missingScopeTarget(scope) : undefined;
+    return missing ? { type: "fail", result: `The ${missing} this request runs with no longer exists` } : undefined;
+}
+
 /**
  * Runs a request of `target`'s chat with that chat pinned and loaded from the start until `run`
  * ends: a chat that is gone, could not be loaded, or was replaced meanwhile (even under the same
@@ -236,12 +248,18 @@ async function requestPinnedChatData(
     abortSignal: AbortSignal,
 ): Promise<requestDataResponse> {
     const pluginContext = arg.pluginContext;
-    // The request's captured model preset (its plugin context's), else the selected one.
+    // The request's captured presets (its plugin context's), else the selected ones. A captured preset
+    // that is gone refuses the request, here and before every attempt below.
+    const presetGone = requestPresetGone(pluginContext);
+    if (presetGone) {
+        return presetGone;
+    }
     const fallBackModels: string[] = safeStructuredClone(
         (scopedPresetRoot(pluginContext, "fallbackModels") as Database["fallbackModels"] | undefined)?.[
             model as keyof Database["fallbackModels"]
         ] ?? [],
     );
+    const fallbackWhenBlankResponse = !!scopedPresetRoot(pluginContext, "fallbackWhenBlankResponse");
     // The request's chat chooses the module MCP servers, not the selection now. After every await
     // below, the chat must still be the one the request began with.
     const target = arg.chatRef ?? pluginContext?.chatRef;
@@ -282,6 +300,10 @@ async function requestPinnedChatData(
                 // Each attempt (a retry after a wait too) starts only for the chat the request began with.
                 return requestChatGone();
             }
+            const goneBefore = requestPresetGone(pluginContext);
+            if (goneBefore) {
+                return goneBefore;
+            }
 
             if (pluginHooks.replacerbeforeRequest.size > 0) {
                 for (const replacer of pluginHooks.replacerbeforeRequest) {
@@ -289,6 +311,10 @@ async function requestPinnedChatData(
                     if (!held()) {
                         return requestChatGone();
                     }
+                }
+                const goneAfterHooks = requestPresetGone(pluginContext);
+                if (goneAfterHooks) {
+                    return goneAfterHooks;
                 }
             }
 
@@ -349,11 +375,7 @@ async function requestPinnedChatData(
                 }
             }
 
-            if (
-                da.type === "success" &&
-                fallbackIndex !== fallBackModels.length - 1 &&
-                scopedPresetRoot(pluginContext, "fallbackWhenBlankResponse")
-            ) {
+            if (da.type === "success" && fallbackIndex !== fallBackModels.length - 1 && fallbackWhenBlankResponse) {
                 if (da.result.trim() === "") {
                     break;
                 }
@@ -490,15 +512,19 @@ export async function requestChatDataMain(
     // Model decisions follow the request's captured presets (its plugin context), else the selection,
     // so the tab routes and tokenizes with the model preset whose id the server receives.
     const scope = arg.pluginContext;
+    const presetGone = requestPresetGone(scope);
+    if (presetGone) {
+        return presetGone;
+    }
     targ.aiModel = arg.staticModel
         ? arg.staticModel
         : (scopedPresetRoot(scope, model === "model" ? "aiModel" : "subModel") as string);
-    targ.modelInfo = getModelInfo(targ.aiModel);
+    targ.modelInfo = getModelInfo(targ.aiModel, scope);
     if (scopedPresetRoot(scope, "seperateModelsForAxModels") && !arg.staticModel) {
         const seperateModels = scopedPresetRoot(scope, "seperateModels") as Database["seperateModels"];
         if (seperateModels?.[model as keyof Database["seperateModels"]]) {
             targ.aiModel = seperateModels[model as keyof Database["seperateModels"]];
-            targ.modelInfo = getModelInfo(targ.aiModel);
+            targ.modelInfo = getModelInfo(targ.aiModel, scope);
         }
     }
 

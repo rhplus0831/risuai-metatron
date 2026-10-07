@@ -38,7 +38,7 @@
 - `model/modellist.ts`: the tab's registry.
   - `LLMModels`: this tab's copy of `BASE_LLM_MODELS`, which `registerModelDynamic` appends to (`isDynamicModel(id)` says which ids it added).
   - `registerModelDynamic`: when `dynamicModelRegistry` is on, fetches model lists from Google, Anthropic, and OpenAI.
-  - `getModelInfo(id)`: `resolveModelInfo` with the selected preset's custom flags and `settings.customModels` (the record views), this tab's list, and `customV3ProviderMetaStore`.
+  - `getModelInfo(id, scope?)`: `resolveModelInfo` with the custom flags of `scope`'s model preset (a request's captured pair) or else the selected one, `settings.customModels` (the record views), this tab's list, and `customV3ProviderMetaStore`.
   - `getModelList`: grouped models for the UI.
 - `model/{openrouter,nanogpt,ollama}.ts`: dynamic catalogue fetch, normalized to `ModelGridItem`.
 - `model/ooba.ts`: re-exports `OobaChatCompletionRequestParams` from `shared/settings.ts`.
@@ -144,8 +144,9 @@
 - `server/src/tests/llmProviderAdapters.test.ts` (node): the server adapters end to end over a fake transport, each run's upstream requests, result, stream chunks, tool calls, remembered records, inlays, CBS parses, alerts, observer registrations, and logs asserted whole: OpenAI-compatible buffered and streaming, a JSON schema with its CBS parses, an OpenAI tool round trip, a provider failure and a preview, a custom model, Mistral, the legacy instruct format, the auxiliary and sub models, the Responses API buffered and streaming with a tool call, Anthropic buffered (with the cache warmer's registration) and streaming, Bedrock's SigV4 signature with a frozen clock, Google buffered (inlays), streaming, a preview, and a tool round trip, Vertex, and a request without a selected character. The expected values are the former browser adapters' output on the same inputs.
 - `server/src/tests/llmResponsesApi.test.ts` (node): the Responses API helpers (`__testResponsesAPI`): the request body (reasoning mapping, verbosity, JSON schema, the developer role, multimodal input, tools), endpoints and auth (OpenAI, a custom model, NanoGPT, the reverse proxy with additional parameters), the output extraction (thoughts, refusals, incomplete and failed answers), the `store: false` sanitizing, the buffered and streaming tool continuations, and the SSE parser.
 - `request/tests/additionalParams.test.ts`.
+- `request/tests/requestPresetScope.test.ts` and `model/tests/modelInfoScope.test.ts`: a tab-run request uses its captured model preset (provider, custom flags), and a captured preset deleted before or during the request (a `getTools` await, a `replacerbeforeRequest` hook) refuses it instead of reading the selection.
 - `src/lib/UI/NanoGPTDashboard.test.ts` (happy-dom, Svelte `mount`): one fetch per stored key version; an answer arriving after the key was cleared, replaced, or the dashboard left must not write the subscription state.
-- Not tested: `getModelInfo`, tokenizer selection, and proxy routing in the tab.
+- Not tested: tokenizer selection and proxy routing in the tab.
 - Not tested by the credential capture (`checkCutoverCredentials.mjs`): sends through the provider families other than OpenAI (the script's closing note lists them), the OpenRouter, NanoGPT, and Ollama discovery and account calls, previews, and Whisper through its component.
 
 ## Known Hazards

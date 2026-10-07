@@ -32,6 +32,8 @@ const stubs = vi.hoisted(() => ({
     ),
     channelCall: null as { jobId: string; callbackId: string } | null,
     dynamicIds: new Set<string>(),
+    /** Each `getModelInfo` call's arguments: the id and the request's preset scope (P2). */
+    modelInfoCalls: [] as unknown[][],
     db: {
         aiModel: "reverse_proxy",
         currentPluginProvider: "",
@@ -48,12 +50,15 @@ vi.mock("src/ts/alert", () => ({ alertError: stubs.alertError }));
 vi.mock("src/ts/globalApi.svelte", () => ({ appendFetchLog: stubs.appendFetchLog }));
 vi.mock("src/ts/model/modellist", () => ({
     LLMFlags: { hasImageInput: 3 },
-    getModelInfo: (id: string) => ({
-        id,
-        tokenizer: 1,
-        internalID: id === "reverse_proxy" ? undefined : `internal-${id}`,
-        flags: id === "with-images" ? [3] : [],
-    }),
+    getModelInfo: (id: string, scope?: unknown) => {
+        stubs.modelInfoCalls.push([id, scope]);
+        return {
+            id,
+            tokenizer: 1,
+            internalID: id === "reverse_proxy" ? undefined : `internal-${id}`,
+            flags: id === "with-images" ? [3] : [],
+        };
+    },
     isDynamicModel: (id: string) => stubs.dynamicIds.has(id),
 }));
 vi.mock("src/ts/network/channelCallSource", () => ({ activeChannelCall: () => stubs.channelCall }));
@@ -99,7 +104,7 @@ vi.mock("../../mcp/mcp", () => ({
     encodeToolCall: stubs.encodeToolCall,
 }));
 
-import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
+import { initializeRecords, takeRecordFields, trackedRecord } from "src/ts/storage/records.svelte";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { activeModelPreset } from "src/ts/storage/settingsViews.svelte";
 import { modelPresetOf, takeRootPresetFields } from "src/ts/storage/tests/installFlatDatabase";
@@ -148,7 +153,9 @@ function assembleFixture(unloaded: readonly string[]) {
  * each of the two presets (`installFlatDatabase` would split them; here the model fields go to the
  * model presets of the same ids, `docs/plan/split-preset.md`), its section fields in their sections,
  * two personas, two characters (the transport reads the selected one, Phase 6 slice 8); preset-1 (both
- * kinds), persona-1, and char-1 selected.
+ * kinds), persona-1, and char-1 selected. `preset-ctx` and the model preset `model-ctx` are the pair a
+ * plugin context captures in the cases below: never selected, so a request that carries them proves
+ * the capture (a captured preset that does not exist is refused).
  */
 function installSettings() {
     const raw = { ...stubs.db };
@@ -156,8 +163,12 @@ function installSettings() {
     raw.botPresets = [
         { ...preset, id: "preset-1", name: "Preset 1" },
         { ...preset, id: "preset-2", name: "Preset 2" },
+        { ...preset, id: "preset-ctx", name: "Preset ctx" },
     ];
-    raw.modelPresets = (raw.botPresets as Record<string, unknown>[]).map(modelPresetOf);
+    raw.modelPresets = [
+        ...(raw.botPresets as Record<string, unknown>[]).map(modelPresetOf),
+        modelPresetOf({ ...preset, id: "model-ctx", name: "Model ctx" }),
+    ];
     raw.personas = [
         { id: "persona-1", name: "Persona 1" },
         { id: "persona-2", name: "Persona 2" },
@@ -255,6 +266,7 @@ beforeEach(() => {
     }));
     stubs.channelCall = null;
     stubs.dynamicIds.clear();
+    stubs.modelInfoCalls.length = 0;
     installSettings();
     stubs.selected.bound = null;
     (globalThis as { Image?: unknown }).Image = class {
@@ -334,6 +346,48 @@ describe("the request body", () => {
         const init = posted()[0][1]!;
         expect(init.method).toBe("POST");
         expect(init.headers).toMatchObject({ "content-type": "application/json", "x-resource-epoch": "epoch-1" });
+        // The main model's flags come from the captured model preset, not the selected one (P2).
+        expect(stubs.modelInfoCalls).toEqual([
+            ["reverse_proxy", { presetId: "preset-ctx", modelPresetId: "model-ctx" }],
+        ]);
+    });
+
+    it("refuses, before the flush and the POST, a request whose captured preset or model preset no longer exists", async () => {
+        const gone = (modelPresetId: string, presetId = "preset-1") =>
+            requestServer(
+                {
+                    ...baseArg(),
+                    chatRef: { chaId: "char-9", chatId: "chat-9" },
+                    pluginContext: { chatRef: { chaId: "char-9", chatId: "chat-9" }, presetId, modelPresetId },
+                } as never,
+                "model",
+                null,
+                modelInfo,
+            );
+        // A pair that never existed, and a captured pair deleted after the capture.
+        expect(await gone("model-nope")).toEqual({
+            type: "fail",
+            result: "The model preset this request runs with no longer exists",
+        });
+        expect(await gone("model-ctx", "preset-nope")).toEqual({
+            type: "fail",
+            result: "The preset this request runs with no longer exists",
+        });
+        const modelPresets = trackedRecord<{ id: string }[]>("modelPresets")!;
+        modelPresets.splice(
+            modelPresets.findIndex((entry) => entry.id === "model-ctx"),
+            1,
+        );
+        expect(await gone("model-ctx", "preset-ctx")).toEqual({
+            type: "fail",
+            result: "The model preset this request runs with no longer exists",
+        });
+        expect(stubs.flush).not.toHaveBeenCalled();
+        expect(stubs.fetch).not.toHaveBeenCalled();
+        expect(stubs.modelInfoCalls).toEqual([]);
+        // The selection is not consulted for them: the selected pair still sends.
+        expect(await gone("preset-1")).toEqual({ type: "success", result: "ok" });
+        expect(postedBody().context).toMatchObject({ presetId: "preset-1", modelPresetId: "preset-1" });
     });
 
     it("falls back to the selection for a request without a chat, sends a dynamic model's descriptor, the active job callback, and the prompt's tool records", async () => {
@@ -415,6 +469,7 @@ describe("the request body", () => {
             mainModel: { imageInput: true },
             tokenizer: { aiModel: "with-images", currentPluginProvider: "legacy", pluginTokenizer: "llama" },
         });
+        expect(stubs.modelInfoCalls).toEqual([["with-images", { presetId: "preset-1", modelPresetId: "preset-2" }]]);
     });
 
     it("sends nothing when the flush is refused, or the caller aborted before, during the flush, or during the tool-record read", async () => {

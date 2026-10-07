@@ -1,4 +1,10 @@
-import { activeModelPreset, settings, activePreset } from "../storage/settingsViews.svelte";
+import {
+    activeModelPreset,
+    settings,
+    activePreset,
+    scopedPresetRoot,
+    type PresetScope,
+} from "../storage/settingsViews.svelte";
 import {
     LLMFlags,
     LLMProvider,
@@ -202,10 +208,16 @@ export async function registerModelDynamic() {
 //testing purpose only, not used in production
 globalThis.registerModelDynamic = registerModelDynamic;
 
-export function getModelInfo(id?: string | null): LLMModel {
+/**
+ * The model `id` with the custom flags of `scope`'s model preset (a request's captured pair, so the
+ * flags match the model preset whose id the request carries), else of the selected one.
+ */
+export function getModelInfo(id?: string | null, scope?: PresetScope): LLMModel {
     return resolveModelInfo(id, {
-        enableCustomFlags: activeModelPreset.enableCustomFlags,
-        customFlags: activeModelPreset.customFlags,
+        enableCustomFlags: (scope
+            ? scopedPresetRoot(scope, "enableCustomFlags")
+            : activeModelPreset.enableCustomFlags) as boolean,
+        customFlags: (scope ? scopedPresetRoot(scope, "customFlags") : activeModelPreset.customFlags) as LLMFlags[],
         customModels: settings.customModels,
         extraModels: LLMModels,
         pluginModels: customV3ProviderMetaStore,

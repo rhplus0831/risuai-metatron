@@ -12,6 +12,7 @@ import {
     activeModelPreset,
     activePreset,
     activePersona,
+    missingScopeTarget,
     scopedPresetRoot,
 } from "../../storage/settingsViews.svelte";
 import {
@@ -130,6 +131,11 @@ export async function requestServer(
     const presetId = pluginContext?.presetId || activePreset.id || "";
     const modelPresetId = pluginContext?.modelPresetId || activeModelPreset.id || "";
     const presetScope = { presetId, modelPresetId };
+    // A captured preset that is gone refuses the request here, as the server would by its ids.
+    const missing = missingScopeTarget(presetScope);
+    if (missing) {
+        return fail(`The ${missing} this request runs with no longer exists`);
+    }
     const selectedPersonaId = activePersona.id ?? "";
     // `getUserName()` (no chat): the selected chat's bound persona, else the selected persona.
     const personaId = checkPersonaBinded()?.id ?? selectedPersonaId;
@@ -137,7 +143,7 @@ export async function requestServer(
     // The main model and tokenizer of the model preset whose id the request carries.
     const aiModel = (scopedPresetRoot(presetScope, "aiModel") as string | undefined) ?? "";
     const currentPluginProvider = (scopedPresetRoot(presetScope, "currentPluginProvider") as string | undefined) ?? "";
-    const mainModel = getModelInfo(aiModel);
+    const mainModel = getModelInfo(aiModel, presetScope);
     const args: Record<string, unknown> = {};
     for (const key of REQUEST_ARG_KEYS) {
         if (arg[key] !== undefined) {

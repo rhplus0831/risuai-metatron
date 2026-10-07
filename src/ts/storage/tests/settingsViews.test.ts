@@ -63,6 +63,8 @@ import {
     currentPersonaRecord,
     currentPresetRecord,
     isSettingsRootKey,
+    missingScopeTarget,
+    PresetTargetGoneError,
     readSettingsRoot,
     scopedPresetRoot,
     selectedLoreBookPage,
@@ -783,14 +785,41 @@ describe("scopedPresetRoot (a request's captured pair)", () => {
         expect(selection.modelPresetId).toBe("b");
     });
 
-    // Astra's challenge point 1 on the implementation: `scopedPresetRoot` falls back to the selection
-    // when the captured record is gone, so a tab-run (plugin or WebLLM) request whose captured model
-    // preset was deleted meanwhile resolves the selected model preset's fields instead of being
-    // refused. Reported, not fixed here; un-skip once a gone captured record is refused.
-    it.skip("never reads the selection for a captured pair whose record is gone (Astra challenge point 1)", () => {
+    // Astra's challenge point 1 on the implementation: a tab-run (plugin or WebLLM) request whose
+    // captured record was deleted meanwhile must be refused, never redirected to the selection.
+    it("never reads the selection for a captured pair whose record is gone (Astra challenge point 1)", () => {
+        changeToPreset("b");
         changeToModelPreset("b");
         trackedRecord<any[]>("modelPresets")!.splice(0, 1);
-        expect(() => scopedPresetRoot({ presetId: "a", modelPresetId: "a" }, "aiModel")).toThrow();
+        const captured = { presetId: "a", modelPresetId: "a" };
+        expect(() => scopedPresetRoot(captured, "aiModel")).toThrow(PresetTargetGoneError);
+        expect(() => scopedPresetRoot(captured, "aiModel")).toThrow(
+            "The model preset this request runs with no longer exists",
+        );
+        // The prompt preset still exists: its fields read; a non-preset root name reads the selection.
+        expect(scopedPresetRoot(captured, "temperature")).toBe(80);
+        expect(scopedPresetRoot(captured, "useExperimental")).toBe(readSettingsRoot("useExperimental"));
+        trackedRecord<any[]>("presets")!.splice(0, 1);
+        expect(() => scopedPresetRoot(captured, "temperature")).toThrow(PresetTargetGoneError);
+        expect(() => scopedPresetRoot(captured, "temperature")).toThrow(
+            "The preset this request runs with no longer exists",
+        );
+        // Without a scope, the selection is read as before.
+        expect(scopedPresetRoot(undefined, "aiModel")).toBe("model-b");
+        expect(selection.presetId).toBe("b");
+        expect(selection.modelPresetId).toBe("b");
+    });
+
+    it("missingScopeTarget names the record of a captured pair that is gone, the prompt preset first", () => {
+        expect(missingScopeTarget({ presetId: "a", modelPresetId: "b" })).toBeUndefined();
+        expect(missingScopeTarget({ presetId: "a", modelPresetId: "nope" })).toBe("model preset");
+        expect(missingScopeTarget({ presetId: "nope", modelPresetId: "a" })).toBe("preset");
+        expect(missingScopeTarget({ presetId: "nope", modelPresetId: "nope" })).toBe("preset");
+        trackedRecord<any[]>("modelPresets")!.splice(0, 1);
+        expect(missingScopeTarget({ presetId: "a", modelPresetId: "a" })).toBe("model preset");
+        // Untracked, and it moves no selection.
+        expect(evaluateInDerived(() => missingScopeTarget({ presetId: "b", modelPresetId: "b" }))).toBeUndefined();
+        expect(selection.modelPresetId).toBe("a");
     });
 });
 

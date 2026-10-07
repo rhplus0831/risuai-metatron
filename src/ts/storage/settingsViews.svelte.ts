@@ -276,6 +276,28 @@ export function missingPresetTarget(
 }
 
 /**
+ * Which record of `scope` no longer exists: `"preset"` (the prompt preset) or `"model preset"`, else
+ * `undefined`. For a request that captured its pair and refuses once either is gone, as the server does.
+ */
+export function missingScopeTarget(scope: PresetScope): "preset" | "model preset" | undefined {
+    return untrack(() =>
+        findPreset(scope.presetId) === undefined
+            ? "preset"
+            : findModelPreset(scope.modelPresetId) === undefined
+              ? "model preset"
+              : undefined,
+    );
+}
+
+/** A request's captured preset no longer exists; the request is refused rather than redirected to the selection. */
+export class PresetTargetGoneError extends Error {
+    constructor(target: "preset" | "model preset") {
+        super(`The ${target} this request runs with no longer exists`);
+        this.name = "PresetTargetGoneError";
+    }
+}
+
+/**
  * Reads a preset field (by its root name) from the owning preset of `scope`, as the active views read
  * the selected ones (the same fallbacks): for a caller that captured its presets (a plugin hook).
  * `undefined` when the name is not a preset field or its preset is gone.
@@ -580,17 +602,18 @@ export function readSettingsRoot(key: SettingsRootKey | string): unknown {
 /**
  * A forwarded preset field (by its root name) as a request sees it: from the owning preset of
  * `scope` (a plugin hook's or request's captured pair) when there is one, else from the selection
- * (`readSettingsRoot`). A captured preset that is gone reads the selection's value; the server
- * refuses such a request by its ids, so the value only steers the tab's own decisions.
+ * (`readSettingsRoot`). A captured preset that is gone throws `PresetTargetGoneError`: the request is
+ * refused, never redirected to the selection (the server refuses it by its ids alike).
  */
 export function scopedPresetRoot(scope: PresetScope | undefined, rootKey: SettingsRootKey): unknown {
-    if (scope !== undefined) {
-        const value = readPresetFieldOf(scope, rootKey);
-        if (value !== undefined) {
-            return value;
-        }
+    const found = scope === undefined ? undefined : scopedPresetRecord(scope, rootKey);
+    if (found === undefined) {
+        return readSettingsRoot(rootKey);
     }
-    return readSettingsRoot(rootKey);
+    if (found.record === undefined) {
+        throw new PresetTargetGoneError(presetFieldOwner(found.field) === "model" ? "model preset" : "preset");
+    }
+    return presetFieldValue(found.record, found.field);
 }
 
 /** Writes a root name through its view, with the view's rules (a dropped preset write, a replaced record). */
