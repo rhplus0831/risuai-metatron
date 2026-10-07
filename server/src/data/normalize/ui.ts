@@ -19,7 +19,7 @@ const spec: SectionSpec<"ui"> = {
     customBackground: ["string", ""],
     playMessage: ["boolean", false],
     iconsize: ["number", 100],
-    theme: ["string", ""],
+    theme: ["string", "metatron"],
     waifuWidth: ["number", 100],
     waifuWidth2: ["number", 100],
     swipe: ["boolean", true],

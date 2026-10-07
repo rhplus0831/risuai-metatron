@@ -64,7 +64,7 @@ function deepFreeze<T>(value: T): T {
 }
 
 describe("PRESET_DEFAULTS", () => {
-    it("equals the pre-phase boot snapshot for every preset field the snapshot has (through the root aliases)", () => {
+    it("equals the fresh-boot fixture for every preset field the fixture has (through the root aliases)", () => {
         const compared: string[] = [];
         for (const field of PRESET_FIELDS) {
             if (field === "name" || field === "image") {
@@ -385,7 +385,7 @@ describe("ids", () => {
 // forwarded root keys (served by the client forwarding layer, never stored), the dropped fields, and
 // the Phase 1 fields cover `keyof Database` exactly once. The type-level half below is checked by
 // `pnpm check`; the runtime half checks the counts derived from the lists and the keys the
-// pre-phase boot snapshot actually holds.
+// maintained fresh-boot fixture actually holds.
 
 type KeepOnSwitch = (typeof PRESET_KEEP_ON_SWITCH_FIELDS)[number];
 type PresetRootName<F extends PresetField> = F extends "NAISettings"
@@ -448,7 +448,7 @@ describe("field-to-resource partition", () => {
         }
     });
 
-    it("covers every key of the pre-phase boot snapshot", () => {
+    it("covers every key of the fresh-boot fixture", () => {
         const listed = new Set(union);
         const unlisted = Object.keys(bootSnapshot).filter((key) => !listed.has(key));
         expect(unlisted).toEqual([]);

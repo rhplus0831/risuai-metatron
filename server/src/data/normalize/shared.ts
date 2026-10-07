@@ -23,9 +23,10 @@ export function requireArrayOfObjects(value: unknown, what: string): Record<stri
 type SectionField<K extends SectionKind> = (typeof SECTION_FIELDS)[K][number];
 
 /**
- * One field of a section: the JSON kind its value must have and the value a fresh boot shows for
- * it (`src/ts/storage/tests/fixtures/phase3/boot-snapshot.json`). A field a fresh boot leaves unset
- * has no default and stays absent.
+ * One field of a section: the JSON kind its value must have and its fresh-boot default, recorded in
+ * `src/ts/storage/tests/fixtures/phase3/boot-snapshot.json`. A deliberate default change updates
+ * the spec and that maintained fixture together. A field a fresh boot leaves unset has no default
+ * and stays absent.
  */
 export type FieldSpec<T> = readonly [kind: ValueKind, fallback?: T];
 

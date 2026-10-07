@@ -14,13 +14,14 @@ import { isPlainObject, type ValueKind, valueKindOf } from "./valueKinds.ts";
  * The canonical bot preset schema (Phase 3, Decision 3 of `docs/plan/PLAN.md`), used by the client
  * (importers, the forwarding layer from slice 5) and the server `presets` normalizer (slice 3).
  *
- * `PRESET_DEFAULTS` lists every field a preset owns, keyed by its preset name, with the value a
- * fresh boot shows for it: the `setDatabase` root default as captured in
- * `src/ts/storage/tests/fixtures/phase3/boot-snapshot.json`, not `presetTemplate`'s value (they
- * differ for `maxResponse` and the two textgen URLs). A field a fresh boot leaves unset takes the
- * fallback `setPreset` (or else `saveCurrentPreset`) applies; `undefined` means neither has one and
- * the field stays absent. `name` and `image` are preset-only. Not preset fields: `openAIKey` (one
- * global secret), `forceReplaceUrl2` (no reader), `autoSuggestPrefix` and `autoSuggestClean`
+ * `PRESET_DEFAULTS` lists every field a preset owns, keyed by its preset name, with its fresh-boot
+ * default as recorded in `src/ts/storage/tests/fixtures/phase3/boot-snapshot.json`. A deliberate
+ * preset default change updates this object and that maintained fixture together. The values
+ * originated from the `setDatabase` root defaults, not `presetTemplate` (they differ for
+ * `maxResponse` and the two textgen URLs). A field a fresh boot leaves unset takes the fallback
+ * `setPreset` (or else `saveCurrentPreset`) applies; `undefined` means neither has one and the field
+ * stays absent. `name` and `image` are preset-only. Not preset fields: `openAIKey` (one global
+ * secret), `forceReplaceUrl2` (no reader), `autoSuggestPrefix` and `autoSuggestClean`
  * (`saveCurrentPreset` never wrote them, so they were global; they are `ui` fields).
  */
 
