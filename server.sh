@@ -1,7 +1,6 @@
 #!/usr/bin/env sh
 set -eu
 
-npm install -g pnpm@10.34.1
 pnpm install
 pnpm run build
 
@@ -18,4 +17,4 @@ pnpm run build
 # Nginx, Caddy, Cloudflare Tunnel, or a managed platform that forwards client IPs.
 # export TRUST_PROXY="${TRUST_PROXY:-1}"
 
-pnpm run runserver
+pnpm run server
