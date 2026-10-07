@@ -34,7 +34,7 @@
   - Export: `exportChar` (dialog), `exportCharacterCard` (writer), `createBaseV2`/`createBaseV3`.
   - Hub and links: `characterURLImport` (deep links and shares), `hubURL`, `getRisuHub`/`downloadRisuHub`/`getRealmInfo`. `hubURL` is the self-host server's same-origin `/hub-proxy`.
 - `characters.ts`: character lifecycle.
-  - Create and select: `addCharacter`, `createNewCharacter`, `createBlankChar`, `createNewGroup`, `changeChar` (refused while a send runs; makes sure the character has a chat (`ensureChat`), then selects it; it applies no defaults and stamps no `lastInteraction`).
+  - Create and select: `addCharacter`, `createNewCharacter`, `createBlankChar`, `createNewGroup` (the add dialog no longer offers it; its `createGroup` result is still handled, and existing groups keep working), `changeChar` (refused while a send runs; makes sure the character has a chat (`ensureChat`), then selects it; it applies no defaults and stamps no `lastInteraction`).
   - Delete: `removeChar` (soft delete via `trashTime`, or permanent).
   - Image, emotion, and chat import/export helpers.
 - `pngChunk.ts` `PngChunk`: `read`, `readGenerator` (streaming), `trim`, `write`, `streamWriter`. Other chunks are preserved.
