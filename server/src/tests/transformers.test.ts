@@ -149,6 +149,7 @@ beforeAll(() => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(async () => {
+    vi.useRealTimers();
     // Dispose waits for every kill: the deferred ones of this test's fake processes are settled here.
     const disposing = Promise.all(services.splice(0).map((service) => service.dispose()));
     await tick();
@@ -275,15 +276,18 @@ describe("killing the process", () => {
     });
 
     it("a task over its time limit is rejected and its process killed; the next task gets a new process", async () => {
+        // The clock moves only when the test moves it, so the next task's own limit cannot pass before
+        // its answer however slow the machine is.
+        vi.useFakeTimers();
         const { service, workers, attempts } = harness({ taskTimeoutMs: 20 });
         const slow = track(service.runImageCaption("data:,"));
         const next = track(service.runSummarizer("next"));
-        await tick(40);
+        await vi.advanceTimersByTimeAsync(20);
         expect(slow).toMatchObject({ status: "rejected", value: "The local model took too long" });
         expect(workers[0].kills).toBe(1);
         expect(attempts()).toBe(2);
         workers[1].answer({ ok: true, text: "n" });
-        await tick();
+        await vi.advanceTimersByTimeAsync(0);
         expect(next.value).toBe("n");
     });
 
@@ -384,27 +388,29 @@ describe("killing the process", () => {
     });
 
     it("kills the process after the idle time, and a task after that starts a new one", async () => {
+        // The clock moves only when the test moves it, so a stall cannot pass the idle time early.
+        vi.useFakeTimers();
         const { service, workers, attempts } = harness({ idleMs: 30 });
         const first = track(service.runSummarizer("first"));
-        await tick();
+        await vi.advanceTimersByTimeAsync(0);
         workers[0].answer({ ok: true, text: "1" });
-        await tick();
+        await vi.advanceTimersByTimeAsync(0);
         expect(first.value).toBe("1");
         // A task within the idle time keeps the process.
         const second = track(service.runSummarizer("second"));
-        await tick(15);
+        await vi.advanceTimersByTimeAsync(15);
         workers[0].answer({ ok: true, text: "2" });
-        await tick();
+        await vi.advanceTimersByTimeAsync(0);
         expect(second.value).toBe("2");
         expect(workers[0].kills).toBe(0);
-        await tick(50);
+        await vi.advanceTimersByTimeAsync(50);
         expect(workers[0].kills).toBe(1);
         expect(workers[0].alive).toBe(false);
         const third = track(service.runSummarizer("third"));
-        await tick();
+        await vi.advanceTimersByTimeAsync(0);
         expect(attempts()).toBe(2);
         workers[1].answer({ ok: true, text: "3" });
-        await tick();
+        await vi.advanceTimersByTimeAsync(0);
         expect(third.value).toBe("3");
     });
 });

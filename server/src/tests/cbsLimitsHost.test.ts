@@ -406,8 +406,11 @@ describe("the bindings", () => {
 });
 
 describe("the native effect loop", () => {
-    /** The runtime over fake services whose `parse` holds the thread for `holdMs`. */
-    function runtimeHolding(holdMs: number, effects: number) {
+    /**
+     * The runtime over fake services whose `parse` holds the thread for `holdMs`, with the effect
+     * loop reading `now` (the real clock unless given).
+     */
+    function runtimeHolding(holdMs: number, effects: number, now?: () => number) {
         const controller = new AbortController();
         const parsed: string[] = [];
         let fatal: LuaJobFatalError | null = null;
@@ -502,6 +505,7 @@ describe("the native effect loop", () => {
             effectivePersonaId: null,
             runCommand: async () => undefined,
             runLua: async () => ({ stopSending: false }),
+            now,
         } as unknown as TriggerHost;
         return { runtime: createTriggerRuntime(host), controller, parsed, chat, char, effects: host.effects };
     }
@@ -521,7 +525,8 @@ describe("the native effect loop", () => {
     });
 
     it("does not yield between quick effects: a stop queued during them lands after the run", async () => {
-        const { runtime, controller, parsed, char, chat } = runtimeHolding(0, 4);
+        // A stopped clock: the effects take no time, however long the machine takes to run them.
+        const { runtime, controller, parsed, char, chat } = runtimeHolding(0, 4, () => 0);
         setTimeout(() => controller.abort(), 0);
         const result = await runtime.runTrigger(char, "start", { chat, displayMode: false });
         expect(result).not.toBeNull();

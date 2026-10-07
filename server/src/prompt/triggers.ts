@@ -93,6 +93,8 @@ export type TriggerHost = {
     runCommand(line: string): Promise<unknown>;
     /** Every effect the job ran, across nested runs and `/trigger`. */
     effects: { count: number };
+    /** A monotonic clock in milliseconds for the effect loop's yield (default `performance.now`). */
+    now?: () => number;
 };
 
 /** A run stops with an error past this many effects in one job (the client loops forever). */
@@ -234,7 +236,8 @@ const EFFECT_YIELD_AFTER_MS = 50;
 
 export function createTriggerRuntime(host: TriggerHost) {
     const { services, ctx } = host;
-    let lastEffectYieldAt = performance.now();
+    const now = host.now ?? (() => performance.now());
+    let lastEffectYieldAt = now();
 
     /** A fatal failure or the run's abort is never turned into an effect's fallback value. */
     const rethrowFatal = (error: unknown) => {
@@ -505,9 +508,9 @@ export function createTriggerRuntime(host: TriggerHost) {
                 }
 
                 // Effects evaluate their CBS on this thread: a request to stop the job must get in.
-                if (performance.now() - lastEffectYieldAt > EFFECT_YIELD_AFTER_MS) {
+                if (now() - lastEffectYieldAt > EFFECT_YIELD_AFTER_MS) {
                     await yieldTurn();
-                    lastEffectYieldAt = performance.now();
+                    lastEffectYieldAt = now();
                 }
                 services.fence(ctx);
                 host.effects.count++;
