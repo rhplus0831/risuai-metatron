@@ -1,7 +1,5 @@
 // @vitest-environment node
-import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import os from "node:os";
+import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Tiktoken } from "@dqbd/tiktoken";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,90 +9,21 @@ import {
     type TokenizerFamily,
     type Tokenizers,
 } from "../prompt/tokenizers/index.ts";
-import { loadAll, SMOKE_TEXTS } from "../prompt/tokenizers/loadAll.ts";
+import { SMOKE_TEXTS } from "../prompt/tokenizers/loadAll.ts";
 import { readTokenizerPayload, resolveTokenizerPayload } from "../prompt/tokenizers/payloads.ts";
 import { createTokenCounter, TOKEN_CACHE_SIZE, type TokenCountScope } from "../prompt/tokens.ts";
 import { LLMTokenizer } from "../../../shared/llm.ts";
 import { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
 import { selectTokenizer, type TokenizerChoice } from "../../../shared/tokenizerChoice.ts";
+import { fixture, makeTempRoot, materialize, removeTempRoots, REPO_ROOT, scope, TEXT_NAMES } from "./tokenFixtures.ts";
 
-const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
-const TOKENIZERS_DIR = path.resolve(import.meta.dirname, "../prompt/tokenizers");
-const FIXTURE_PATH = path.join(import.meta.dirname, "fixtures/tokens/browser-ids.json");
-const BASELINE_DIR = path.join(import.meta.dirname, "fixtures/baseline");
-
-/** `fixtures/tokens/browser-ids.json`: the client's ids, captured in the browser (see its README). */
-type FixtureText = string | { unit: string; times: number };
-type FixtureRecord = { ids: number[] } | { error: string } | { count: number; hash: number };
-type Fixture = {
-    provenance: Record<string, string>;
-    texts: Record<string, FixtureText>;
-    families: Record<string, Record<string, FixtureRecord>>;
-};
-const fixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as Fixture;
-const TEXT_NAMES = Object.keys(fixture.texts);
-const SHORT_TEXT_NAMES = TEXT_NAMES.filter((name) => name !== "long");
-
-function materialize(text: FixtureText): string {
-    return typeof text === "string" ? text : text.unit.repeat(text.times);
-}
-
-/** FNV-1a 32-bit over the ids joined by commas, as the capture computed it. */
-function fnv(ids: ArrayLike<number>): number {
-    let hash = 0x811c9dc5;
-    for (const char of Array.from(ids).join(",")) {
-        hash ^= char.charCodeAt(0);
-        hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-    return hash;
-}
-
-/** Compares one encode outcome with the fixture record of that family and text. */
-async function expectBrowserRecord(run: () => Promise<ArrayLike<number>>, record: FixtureRecord): Promise<void> {
-    if ("error" in record) {
-        await expect(run()).rejects.toThrow(record.error);
-        return;
-    }
-    const ids = await run();
-    if ("ids" in record) {
-        expect(Array.from(ids)).toEqual(record.ids);
-    } else {
-        expect({ count: ids.length, hash: fnv(ids) }).toEqual(record);
-    }
-}
-
-const tempDirs: string[] = [];
-function makeTempRoot(): string {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "risu-tokens-"));
-    tempDirs.push(dir);
-    return dir;
-}
-afterAll(() => {
-    for (const dir of tempDirs) {
-        rmSync(dir, { recursive: true, force: true });
-    }
-});
-
-/** A root that holds only `dist/token/` (the image shape), as a link to the repository payloads. */
-function makeDistOnlyRoot(): string {
-    const root = makeTempRoot();
-    mkdirSync(path.join(root, "dist"));
-    symlinkSync(path.join(REPO_ROOT, "public/token"), path.join(root, "dist/token"), "dir");
-    return root;
-}
-
-/** Runs a script with plain `node` (no flags, no `NODE_OPTIONS`) and returns its exit and output. */
-async function runNode(args: string[], cwd: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
-    const env = { ...process.env };
-    delete env.NODE_OPTIONS;
-    const child = spawn(process.execPath, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
-    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
-    const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
-    return { code, stdout, stderr };
-}
+/**
+ * The server tokenizers' contracts that need no family's payload (or one small one): the fixture's
+ * shape, dispose, payload resolution, the shared routing, the counter against a stub, and the shared
+ * token arithmetic. The browser parity is `tokenParity.test.ts`; the fresh-process loads are
+ * `tokenPlainNode.test.ts`.
+ */
+afterAll(removeTempRoots);
 
 describe("the fixture", () => {
     it("covers exactly the server's families and the smoke strings", () => {
@@ -111,162 +40,9 @@ describe("the fixture", () => {
     });
 });
 
-describe("browser parity in process", () => {
-    const tokenizers = createTokenizers({ rootDir: REPO_ROOT });
-    afterAll(() => tokenizers.dispose());
-
-    it.each(TOKENIZER_FAMILIES)(
-        "%s gives the browser's ids for every fixture text",
-        async (family) => {
-            for (const name of TEXT_NAMES) {
-                const text = materialize(fixture.texts[name]);
-                await expectBrowserRecord(() => tokenizers.encode(family, text), fixture.families[family][name]);
-            }
-        },
-        60_000,
-    );
-
-    it("count is the id count, and empty input counts zero everywhere", async () => {
-        for (const family of TOKENIZER_FAMILIES) {
-            expect(await tokenizers.count(family, "")).toBe(0);
-            const record = fixture.families[family].mixed as { ids: number[] };
-            expect(await tokenizers.count(family, materialize(fixture.texts.mixed))).toBe(record.ids.length);
-        }
-    });
-
-    it("the tiktoken families reject special-token text as the client does, and stay usable", async () => {
-        for (const family of ["cl100k_base", "o200k_base"] as const) {
-            await expect(tokenizers.count(family, "a <|endoftext|> b")).rejects.toThrow("special token");
-            expect(await tokenizers.count(family, "hello world")).toBe(2);
-        }
-    });
-});
-
-describe("plain Node", () => {
-    it("loads every family cold and concurrently on two sets from a dist-only root, then encodes as the browser", async () => {
-        // A fresh process: nothing warmed the module or the wasm binding, and Vitest's module
-        // resolution (its `browser` condition) is not in the way.
-        const root = makeDistOnlyRoot();
-        const script = path.join(root, "race.mjs");
-        writeFileSync(
-            script,
-            `
-import { createTokenizers, TOKENIZER_FAMILIES } from ${JSON.stringify(path.join(TOKENIZERS_DIR, "index.ts"))};
-const [rootDir, textsJson] = process.argv.slice(2);
-const texts = JSON.parse(textsJson);
-const sets = [createTokenizers({ rootDir }), createTokenizers({ rootDir })];
-// Every family on both sets at once, plus duplicate requests for the same family on one set.
-await Promise.all([
-    ...sets.flatMap((set) => TOKENIZER_FAMILIES.map((family) => set.load(family))),
-    sets[0].load("claude"),
-    sets[0].load("novelai"),
-    sets[1].load("GLM5"),
-]);
-const out = [];
-for (const set of sets) {
-    const bySet = {};
-    for (const family of TOKENIZER_FAMILIES) {
-        bySet[family] = {};
-        for (const [name, text] of Object.entries(texts)) {
-            try {
-                bySet[family][name] = { ids: Array.from(await set.encode(family, text)) };
-            } catch (error) {
-                bySet[family][name] = { error: error instanceof Error ? error.message : String(error) };
-            }
-        }
-    }
-    out.push(bySet);
-}
-await Promise.all(sets.map((set) => set.dispose()));
-console.log(JSON.stringify(out));
-`,
-        );
-        const texts = Object.fromEntries(SHORT_TEXT_NAMES.map((name) => [name, materialize(fixture.texts[name])]));
-        const result = await runNode([script, root, JSON.stringify(texts)], root);
-        expect(result.code, result.stderr).toBe(0);
-        const lines = result.stdout.trim().split("\n");
-        const sets = JSON.parse(lines[lines.length - 1]) as Record<string, Record<string, FixtureRecord>>[];
-        expect(sets).toHaveLength(2);
-        for (const bySet of sets) {
-            for (const family of TOKENIZER_FAMILIES) {
-                for (const name of SHORT_TEXT_NAMES) {
-                    const expected = fixture.families[family][name];
-                    const actual = bySet[family][name];
-                    if ("error" in expected) {
-                        expect(actual, `${family} ${name}`).toHaveProperty("error");
-                        expect((actual as { error: string }).error).toContain(expected.error);
-                    } else {
-                        expect(actual, `${family} ${name}`).toEqual(expected);
-                    }
-                }
-            }
-        }
-    }, 120_000);
-
-    it("the loadAll entry reports every family with the browser's counts and exits 0 from the repository root", async () => {
-        const result = await runNode([path.join(TOKENIZERS_DIR, "loadAll.ts"), REPO_ROOT], REPO_ROOT);
-        expect(result.code, result.stderr).toBe(0);
-        const report = JSON.parse(result.stdout) as { families: Record<string, unknown>[]; rssMB: number };
-        expect(report.families.map((family) => family.family)).toEqual(TOKENIZER_FAMILIES);
-        for (const entry of report.families) {
-            expect(entry).not.toHaveProperty("error");
-            const family = entry.family as TokenizerFamily;
-            const expected = TEXT_NAMES.slice(0, 3).map(
-                (name) => (fixture.families[family][name] as { ids: number[] }).ids.length,
-            );
-            expect(entry.counts, family).toEqual(expected);
-            expect(entry.loadMs).toBeGreaterThanOrEqual(0);
-        }
-        expect(report.rssMB).toBeGreaterThan(0);
-    }, 120_000);
-
-    it("the loadAll entry reports the families whose payload is missing and exits 1, the others still counted", async () => {
-        const root = makeTempRoot();
-        const result = await runNode([path.join(TOKENIZERS_DIR, "loadAll.ts")], root);
-        expect(result.code, result.stderr).toBe(1);
-        const report = JSON.parse(result.stdout) as { families: Record<string, unknown>[] };
-        const byFamily = new Map(report.families.map((entry) => [entry.family as TokenizerFamily, entry]));
-        expect(byFamily.get("cl100k_base")).toEqual({
-            family: "cl100k_base",
-            loadMs: expect.any(Number),
-            counts: [2, 23, 27],
-        });
-        expect(byFamily.get("o200k_base")).toEqual({
-            family: "o200k_base",
-            loadMs: expect.any(Number),
-            counts: [2, 15, 27],
-        });
-        for (const family of TOKENIZER_FAMILIES) {
-            if (family === "cl100k_base" || family === "o200k_base") {
-                continue;
-            }
-            expect(byFamily.get(family), family).toHaveProperty("error");
-            expect((byFamily.get(family) as { error: string }).error).toMatch(
-                /Tokenizer payload .* not found in .*public\/token.* or .*dist\/token/,
-            );
-        }
-    }, 60_000);
-});
-
-describe("loadAll in process", () => {
-    it("counts the smoke strings for every family as the browser does", async () => {
-        const report = await loadAll(REPO_ROOT);
-        expect(report.families).toHaveLength(TOKENIZER_FAMILIES.length);
-        for (const entry of report.families) {
-            expect(entry).not.toHaveProperty("error");
-            if ("counts" in entry) {
-                const expected = TEXT_NAMES.slice(0, 3).map(
-                    (name) => (fixture.families[entry.family][name] as { ids: number[] }).ids.length,
-                );
-                expect(entry.counts, entry.family).toEqual(expected);
-            }
-        }
-    }, 60_000);
-});
-
 describe("the dispose contract", () => {
     const freeSpy = vi.spyOn(Tiktoken.prototype, "free");
-    // Earlier describes dispose their sets after the spy exists, so the count starts at zero per test.
+    // The count starts at zero per test, whatever an earlier test in this file freed.
     beforeEach(() => {
         freeSpy.mockClear();
     });
@@ -402,46 +178,6 @@ describe("payload resolution", () => {
 // (`createTokenCounter`), and the shared token arithmetic (`ChatTokenCounter`).
 // ---------------------------------------------------------------------------------------------
 
-type BaselineRouting = Record<
-    string,
-    {
-        settings: {
-            aiModel: string;
-            customTokenizer?: string;
-            currentPluginProvider?: string;
-            googleClaudeTokenizing?: boolean;
-            customModels?: { internalId: string; tokenizer: number }[];
-        };
-        resolvedTokenizer: keyof typeof LLMTokenizer;
-        texts: Record<string, FixtureRecord>;
-        providerOptions?: { tokenizer: string; tokenizerFunc?: string };
-    }
->;
-type BaselineTokenCounts = {
-    routing: BaselineRouting;
-    prompts: Record<string, Record<string, { perMessage: number[]; total: number }>>;
-};
-const baselineScenario = JSON.parse(readFileSync(path.join(BASELINE_DIR, "scenario.json"), "utf8")) as {
-    tokens: { texts: Record<string, FixtureText>; promptFamilies: Record<string, unknown> };
-};
-const baselineCounts = JSON.parse(
-    readFileSync(path.join(BASELINE_DIR, "token-counts.json"), "utf8"),
-) as BaselineTokenCounts;
-
-/** A `TokenCountScope` with the fields the client's `encode` read, defaulted as the capture's base settings. */
-function scope(fields: Partial<TokenCountScope> = {}): TokenCountScope {
-    return {
-        aiModel: "gpt-5.5",
-        currentPluginProvider: "",
-        model: { tokenizer: LLMTokenizer.tiktokenO200Base },
-        pluginTokenizer: "none",
-        customTokenizer: "tik",
-        googleClaudeTokenizing: false,
-        useTokenizerCaching: false,
-        ...fields,
-    };
-}
-
 /** A recording stand-in for the server tokenizers: the ids are the family's name length and the text's length. */
 function stubTokenizers() {
     const calls: [string, string][] = [];
@@ -549,7 +285,6 @@ describe("selectTokenizer (the shared routing)", () => {
         }
     });
 });
-
 describe("createTokenCounter", () => {
     it("encodes with the routed family and counts the ids; caching off asks the tokenizers every time", async () => {
         const { tokenizers, calls } = stubTokenizers();
@@ -752,112 +487,6 @@ describe("createTokenCounter", () => {
                 "/v1beta/models/model-B:countTokens",
             ]);
         });
-    });
-
-    describe("against the browser's routing capture (token-counts.json `routing`)", () => {
-        const tokenizers = createTokenizers({ rootDir: REPO_ROOT });
-        afterAll(() => tokenizers.dispose());
-        const counter = createTokenCounter({ tokenizers });
-        const routing = baselineCounts.routing;
-        const texts = baselineScenario.tokens.texts;
-
-        /** The scope the capture's settings resolve to (the client resolved the catalogue family itself). */
-        function scopeOf(name: string): TokenCountScope {
-            const entry = routing[name];
-            return scope({
-                aiModel: entry.settings.aiModel,
-                currentPluginProvider: entry.settings.currentPluginProvider ?? "",
-                model: {
-                    tokenizer: LLMTokenizer[entry.resolvedTokenizer],
-                    internalID: entry.settings.customModels?.[0]?.internalId,
-                },
-                pluginTokenizer: entry.providerOptions?.tokenizer ?? "none",
-                customTokenizer: entry.settings.customTokenizer ?? "tik",
-                googleClaudeTokenizing: entry.settings.googleClaudeTokenizing ?? false,
-            });
-        }
-
-        it("the capture covers the plugin branches and the Google toggle", () => {
-            expect(Object.keys(routing)).toContain("plugin-legacy-custom-func");
-            expect(Object.keys(routing)).toContain("plugin-legacy-no-options");
-            expect(routing["gemini-no-google-count"].settings.googleClaudeTokenizing).toBe(false);
-        });
-
-        it.each(Object.keys(baselineCounts.routing).filter((name) => name !== "plugin-legacy-custom-func"))(
-            "%s gives the browser's ids for every captured text",
-            async (name) => {
-                const entry = routing[name];
-                for (const [textName, record] of Object.entries(entry.texts)) {
-                    await expectBrowserRecord(
-                        () => counter.encode(materialize(texts[textName]), scopeOf(name)),
-                        record,
-                    );
-                }
-            },
-            60_000,
-        );
-
-        it("plugin-legacy-custom-func counts with cl100k_base instead of the plugin's function (the recorded difference)", async () => {
-            const name = "plugin-legacy-custom-func";
-            expect(routing[name].providerOptions?.tokenizer).toBe("custom");
-            // The browser answered the plugin's own `tokenizerFunc` (three ids per text).
-            expect((routing[name].texts.ascii as { ids: number[] }).ids).toHaveLength(3);
-            const expected = routing["plugin-legacy-cl100k"].texts;
-            for (const [textName, record] of Object.entries(expected)) {
-                await expectBrowserRecord(() => counter.encode(materialize(texts[textName]), scopeOf(name)), record);
-            }
-        }, 60_000);
-    });
-
-    describe("the lore prompt's token delta (deltas/lore-regex-fix-token-counts.json)", () => {
-        const tokenizers = createTokenizers({ rootDir: REPO_ROOT });
-        afterAll(() => tokenizers.dispose());
-        const delta = JSON.parse(
-            readFileSync(path.join(BASELINE_DIR, "deltas/lore-regex-fix-token-counts.json"), "utf8"),
-        ) as {
-            prompts: {
-                lore: {
-                    insertAt: number;
-                    inserted: { role: string; content: string }[];
-                    families: Record<string, { inserted: number[]; perMessage: number[]; total: number }>;
-                };
-            };
-        };
-        const promptsDelta = JSON.parse(
-            readFileSync(path.join(BASELINE_DIR, "deltas/lore-regex-fix-prompts.json"), "utf8"),
-        ) as {
-            fixtures: { lore: { insertAt: number; inserted: { role: string; content: string }[] } };
-        };
-        const lore = delta.prompts.lore;
-
-        it("inserts the same two messages at the same index as the prompts delta, for every captured family", () => {
-            expect(lore.inserted).toEqual(promptsDelta.fixtures.lore.inserted);
-            expect(lore.insertAt).toBe(promptsDelta.fixtures.lore.insertAt);
-            expect(Object.keys(lore.families).sort()).toEqual(Object.keys(baselineCounts.prompts.lore).sort());
-            for (const [family, after] of Object.entries(lore.families)) {
-                const before = baselineCounts.prompts.lore[family];
-                expect(after.perMessage, family).toEqual([
-                    ...before.perMessage.slice(0, lore.insertAt),
-                    ...after.inserted,
-                    ...before.perMessage.slice(lore.insertAt),
-                ]);
-                expect(after.total, family).toBe(before.total + after.inserted[0] + after.inserted[1]);
-                expect(
-                    after.perMessage.reduce((a, b) => a + b, 0),
-                    family,
-                ).toBe(after.total);
-            }
-        });
-
-        it("the server's tokenizers count the two inserted messages as the delta records, per family", async () => {
-            for (const [family, after] of Object.entries(lore.families)) {
-                const counts = [];
-                for (const message of lore.inserted) {
-                    counts.push(await tokenizers.count(family as TokenizerFamily, message.content));
-                }
-                expect(counts, family).toEqual(after.inserted);
-            }
-        }, 60_000);
     });
 });
 
