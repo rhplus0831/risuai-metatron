@@ -1512,14 +1512,6 @@ export const languageChineseTraditional = {
     dynamicModelRegistry: "動態模型註冊",
     confirmInstallPluginViaPlugin:
         "您正嘗試透過另一個外掛安裝此外掛。若來源外掛不可信，可能會帶來安全風險。確定要繼續嗎？",
-    risuaiProTools: "Risuai Pro Tools",
-    enableRisuaiProTools: "啟用 Risuai Pro Tools",
-    easyPanel: "Easy Panel",
-    mainModel: "主要模型",
-    epEnabled: "Easy Panel 覆寫",
-    epRequirementsNotMet:
-        "目前設定不符合 Easy Panel 的需求。按下方按鈕即可自動調整相關選項，套用 Easy Panel 的建議設定",
-    seperateParametersByModel: "依模型分別設定參數",
     disableSeperateParameterChangeOnPresetChange: "切換預設集時不要變更獨立參數設定",
     keepSessionAlive: "維持工作階段",
     keepSessionAlivePip: "透過子母畫面（PiP）",

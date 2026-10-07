@@ -7,10 +7,7 @@ import {
 import type { SectionResource } from "../../../../shared/resources.ts";
 import { isPlainObject, normalizeSection, plainClone, type SectionSpec } from "./shared.ts";
 
-/**
- * The `ui` section: display, input, and behavior options of this client. `enableRisuaiProTools`
- * defaulted to "has plugins" in `setDatabase`; it is the fresh-boot constant `false` now.
- */
+/** The `ui` section: display, input, and behavior options of this client. */
 const spec: SectionSpec<"ui"> = {
     askRemoval: ["boolean", true],
     jailbreakToggle: ["boolean", false],
@@ -118,8 +115,6 @@ const spec: SectionSpec<"ui"> = {
     createFolderOnBranch: ["boolean", true],
     hamburgerButtonBottom: ["boolean", false],
     blockquoteStyling: ["boolean"],
-    enableRisuaiProTools: ["boolean", false],
-    epEnabled: ["boolean"],
     keepSessionAlive: ["string", "off"],
     longPressToPopupEditor: ["boolean", false],
     irisDialogue: ["array"],

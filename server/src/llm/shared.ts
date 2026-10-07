@@ -167,17 +167,8 @@ export function applyParameters(
         return ["low", "medium", "high"][verbosity] ?? "medium";
     }
 
-    if (db.seperateParametersEnabled && (modelMode !== "model" || db.seperateParametersByModel)) {
+    if (db.seperateParametersEnabled && modelMode !== "model") {
         let sepParams: any = db.seperateParameters[modelMode as keyof typeof db.seperateParameters];
-        if (db.seperateParametersByModel) {
-            sepParams = db.seperateParameters.overrides[arg.modelId];
-
-            if (!sepParams) {
-                throw new Error(
-                    `No seperate parameters found for model ${arg.modelId} in model mode ${modelMode}. Please set parameters for this model`,
-                );
-            }
-        }
         if (modelMode === "submodel") {
             sepParams = db.seperateParameters["otherAx"];
         }

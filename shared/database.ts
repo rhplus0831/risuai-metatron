@@ -366,6 +366,7 @@ export interface Database {
         emotion: SeparateParameters;
         translate: SeparateParameters;
         otherAx: SeparateParameters;
+        /** The removed per-model parameters: kept for saved data and preset files, never read. */
         overrides: Record<string, SeparateParameters>;
     };
     translateBeforeHTMLFormatting: boolean;
@@ -503,9 +504,6 @@ export interface Database {
     googleSearchCredentials?: { apiKey: string; searchEngineId: string };
     blockquoteStyling?: boolean;
     dynamicModelRegistry?: boolean;
-    enableRisuaiProTools?: boolean;
-    epEnabled?: boolean;
-    seperateParametersByModel?: boolean;
     disableSeperateParameterChangeOnPresetChange?: boolean;
     saveSignatures?: boolean;
     keepSessionAlive: "off" | "pip" | "sound";
@@ -880,6 +878,7 @@ export interface botPreset {
         emotion: SeparateParameters;
         translate: SeparateParameters;
         otherAx: SeparateParameters;
+        /** The removed per-model parameters: kept for saved data and preset files, never read. */
         overrides: Record<string, SeparateParameters>;
     };
     customAPIFormat?: LLMFormat;

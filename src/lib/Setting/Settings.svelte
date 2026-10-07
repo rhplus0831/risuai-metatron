@@ -14,7 +14,6 @@
         UserIcon,
         CircleXIcon,
         KeyboardIcon,
-        SparkleIcon,
     } from "@lucide/svelte";
     import { language } from "src/lang";
     import DisplaySettings from "./Pages/DisplaySettings.svelte";
@@ -23,7 +22,7 @@
     import OtherBotSettings from "./Pages/OtherBotSettings.svelte";
     import PluginSettings from "./Pages/PluginSettings.svelte";
     import AdvancedSettings from "./Pages/AdvancedSettings.svelte";
-    import { additionalSettingsMenu, easyPanelStore, SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
+    import { additionalSettingsMenu, SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
     import Communities from "./Pages/Communities.svelte";
     import GlobalLoreBookSettings from "./Pages/GlobalLoreBookSettings.svelte";
     import Lorepreset from "./lorepreset.svelte";
@@ -194,28 +193,6 @@
                     </button>
                 {/each}
 
-                {#if settings.ui.enableRisuaiProTools}
-                    <button
-                        class="flex gap-2 items-center hover:text-textcolor"
-                        class:text-textcolor={$SettingsMenuIndex === 16}
-                        class:text-textcolor2={$SettingsMenuIndex !== 16}
-                        onclick={() => {
-                            easyPanelStore.open = true;
-                        }}
-                    >
-                        <!-- From Lucide Icons, licensed under MIT/ISC License, modified to fit the design. see license from bundled lucide icons. -->
-                        <svg width={24} height={24}>
-                            <defs>
-                                <linearGradient id={`grad1`} x1="0" y1="0" x2="1" y2="0">
-                                    <stop offset="0%" style="stop-color:#587bff" />
-                                    <stop offset="100%" style="stop-color:#00a1ad" />
-                                </linearGradient>
-                            </defs>
-                            <SparkleIcon color="url(#grad1)" />
-                        </svg>
-                        <span>{language.easyPanel}</span>
-                    </button>
-                {/if}
                 {#if window.innerWidth < 700}
                     <button
                         class="absolute top-2 right-2 hover:text-green-500 text-textcolor"

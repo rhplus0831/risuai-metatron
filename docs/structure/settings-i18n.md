@@ -7,7 +7,7 @@
   - settings navigation and pages,
   - bot preset list, switching, import, and export,
   - the prompt template editor and prompt diff,
-  - separate-parameter editors, quick settings, EasyPanel,
+  - separate-parameter editors, quick settings,
   - language files and switching.
 - Paths:
   - `src/ts/setting/*`
@@ -15,7 +15,6 @@
   - `src/lang/*`
   - `src/lib/UI/PromptDataItem.svelte`
   - `src/lib/Others/{PromptDiffModal,AllSeperateParameters,QuickSettingsGUI}.svelte`
-  - `src/lib/Others/ProTools/EasyPanel.svelte`
 - Not here:
   - DB defaults and migration rules → `persistence.md`.
   - The prompt item runtime → `chat-pipeline.md`.
@@ -92,12 +91,12 @@ Languages (`src/lang/`):
 - Every other settings reader and writer in the tab (the chat screens, sidebars, first-run wizard, playground, the client process helpers, the plugin host's setting getters, `characterStore`'s HypaV3 toggle, and the mutation modules `collectionStore`/`pluginStorageStore`) uses the same views. A reader that falls back to the selection (`activePreset.id`, `activePersona.id`) keeps a captured context's ids first. The parser's CBS hosts, the plugin host's database API, `collectionStore`'s `updateSettings`, the snapshot consumers (`snapshots.svelte.ts`), the boot installation, the preset functions (`presets.svelte.ts`), and resource sync read the records too.
 - `botPreset` captures model/provider, prompts, `promptTemplate`, `promptSettings`, sampling parameters, templates, separate models and parameters (unless `doNotChangeSeperateModels`), tools, and fallbacks.
 - `language` is replaced on switch, so components that read it at module initialization keep stale strings.
-- UI stores: `settingsOpen`, `SettingsMenuIndex`, `QuickSettings`, `CustomGUISettingMenuStore`, `easyPanelStore`.
+- UI stores: `settingsOpen`, `SettingsMenuIndex`, `QuickSettings`, `CustomGUISettingMenuStore`.
 
 ## Coupling
 
 - Depends on `database.svelte.ts` (types, presets), `getModelInfo`/`LLMFlags`, platform flags, GUI helpers, the translator, and prompt tokenization.
-- `CustomSidebar.svelte` renders arbitrary `SettingItem`s via `getFullSettingsData`, so item `id`s and conditions are part of user data.
+- `CustomSidebar.svelte` renders arbitrary `SettingItem`s via `getFullSettingsData`, so item `id`s and conditions are part of user data. A pinned id that no longer exists is skipped.
 
 ## Invariants
 
@@ -107,6 +106,7 @@ Languages (`src/lang/`):
 - `SettingSelect`/`SettingSegmented` reset a value whose option becomes hidden. `SettingSegmented` takes the same value sources as the other wrappers.
 - A preset-owned field must be added to `botPreset` and `PRESET_DEFAULTS` in `shared/presets.ts` (the canonical list `normalizePreset` uses), and never be a secret: credentials belong in the `llmSecrets` section (`proxyKey` per preset in its `presets` map, a custom model's `key` in its `customModels` map), and `downloadPreset` blanks the endpoint fields. A credential field is edited with `src/lib/UI/GUI/SecretInput.svelte` (`path` a `shared/llmSecrets.ts` `SecretPath`): it shows the stored key's status (set with its last four characters, not set, saving), replaces it on Enter or the button (once; the field empties), and clears it; the draft is dropped when the path changes. Never `bind:` an LLM credential field (an `llmSecrets` credential, a preset's `proxyKey`, a custom model's `key`): it reads `""`. The forwarding layer serves `proxyKey` as a flat field of the selected preset; `activePreset` does not serve it. The auxiliary credentials of the `secrets` section are ordinary readable fields, bound like any other (`settings.secrets.<field>`).
 - Preserve misspelled keys: `PresensePenalty`, `seperateParameters`, `seperateModels`, `JinjaTemplate`.
+- `seperateParameters.overrides` (per-model parameters, edited only by the removed Easy Panel) stays in the preset and `providers` shape for saved data and preset files; nothing reads it.
 - Prompt edits must keep the `PromptItem` discriminated shape and reassign arrays after splicing. `normalizePromptTemplate` (`shared/presets.ts`) handles imports.
 - `select` option `labelKey` has no fallback label. Missing locale keys fall back to English only because `changeLanguage` merges.
 - `changeToPreset(id)` with an id that is not in `settings.presets` does nothing: no selection change, no preset written.

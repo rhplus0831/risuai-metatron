@@ -165,20 +165,8 @@ export function applyParameters(
         return ["low", "medium", "high"][verbosity] ?? "medium";
     }
 
-    if (
-        activePreset.seperateParametersEnabled &&
-        (modelMode !== "model" || settings.providers.seperateParametersByModel)
-    ) {
+    if (activePreset.seperateParametersEnabled && modelMode !== "model") {
         let sepParams = settings.providers.seperateParameters[modelMode];
-        if (settings.providers.seperateParametersByModel) {
-            sepParams = settings.providers.seperateParameters.overrides[arg.modelId];
-
-            if (!sepParams) {
-                throw new Error(
-                    `No seperate parameters found for model ${arg.modelId} in model mode ${modelMode}. Please set parameters for this model`,
-                );
-            }
-        }
         if (modelMode === "submodel") {
             sepParams = settings.providers.seperateParameters["otherAx"];
         }

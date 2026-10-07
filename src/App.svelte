@@ -12,7 +12,6 @@
         LoadingStatusState,
         bookmarkListOpen,
         popupStore,
-        easyPanelStore,
         popUpEditorStore,
         irisStore,
         customSideBarConfigDialogStore,
@@ -43,7 +42,6 @@
     import { selectedChat } from "./ts/storage/chatStore.svelte";
     import HypaV3Progress from "./lib/Others/HypaV3Progress.svelte";
     import PopupList from "./lib/UI/PopupList.svelte";
-    import EasyPanel from "./lib/Others/ProTools/EasyPanel.svelte";
     import sendSound from "./etc/send.mp3";
     import PopupEditor from "./lib/Others/PopupEditor.svelte";
     import IrisModal from "./lib/Others/IrisModal.svelte";
@@ -303,9 +301,6 @@
     {/if}
     {#if popupStore.children}
         <PopupList />
-    {/if}
-    {#if easyPanelStore.open}
-        <EasyPanel />
     {/if}
     {#if popUpEditorStore.open}
         <PopupEditor />

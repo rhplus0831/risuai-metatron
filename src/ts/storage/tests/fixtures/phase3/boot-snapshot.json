@@ -568,7 +568,6 @@
   "hamburgerButtonBottom": false,
   "dynamicModelRegistry": true,
   "saveSignatures": false,
-  "enableRisuaiProTools": false,
   "keepSessionAlive": "off",
   "longPressToPopupEditor": false,
   "customSidebarItems": [],

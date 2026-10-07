@@ -64,7 +64,6 @@ const spec: SectionSpec<"providers"> = {
     echoMessage: ["string", "Echo Message"],
     echoDelay: ["number", 0],
     dynamicModelRegistry: ["boolean", true],
-    seperateParametersByModel: ["boolean"],
     saveSignatures: ["boolean", false],
     presetChain: ["string"],
     seperateModels: ["object"],

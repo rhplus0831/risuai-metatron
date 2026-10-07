@@ -1610,14 +1610,6 @@ export const languageEnglish = {
     dynamicModelRegistry: "Dynamic Model Registry",
     confirmInstallPluginViaPlugin:
         "You are trying to install a plugin via another plugin. This can be dangerous if the source plugin is not trustworthy. Do you want to continue?",
-    risuaiProTools: "Risuai Pro Tools",
-    enableRisuaiProTools: "Enable Risuai Pro Tools",
-    easyPanel: "Easy Panel",
-    mainModel: "Main Model",
-    epEnabled: "Easy Panel Override",
-    epRequirementsNotMet:
-        "Easy Panel requirements not met. Click the button below to automatically adjust your settings for optimal Easy Panel settings.",
-    seperateParametersByModel: "Separate Parameters by Model",
     disableSeperateParameterChangeOnPresetChange: "Disable Separate Parameter Change on Preset Change",
     keepSessionAlive: "Keep Session Alive",
     keepSessionAlivePip: "Via PIP",

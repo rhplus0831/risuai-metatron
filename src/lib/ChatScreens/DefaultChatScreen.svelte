@@ -21,7 +21,6 @@
         XIcon,
         BrainIcon,
         ArrowDown,
-        SparkleIcon,
     } from "@lucide/svelte";
     import {
         PlaygroundStore,
@@ -30,7 +29,6 @@
         ScrollToMessageStore,
         additionalChatMenu,
         additionalFloatingActionButtons,
-        easyPanelStore,
         chatPanelStore,
     } from "../../ts/stores.svelte";
     import { tick } from "svelte";
@@ -1104,18 +1102,6 @@
                         >
                             <DatabaseIcon />
                             <span class="ml-2">{language.chatList}</span>
-                        </div>
-                    {/if}
-
-                    {#if settings.ui.enableRisuaiProTools}
-                        <div
-                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                            onclick={() => {
-                                easyPanelStore.open = !easyPanelStore.open;
-                            }}
-                        >
-                            <SparkleIcon />
-                            <span class="ml-2">{language.easyPanel}</span>
                         </div>
                     {/if}
 

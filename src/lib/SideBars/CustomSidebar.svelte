@@ -75,7 +75,11 @@
                 </button>
             </Button>
         {:else if item.type === "setting"}
-            <SettingRenderer items={[getFullSettingsData().find((s) => s.id === item.subType)]} />
+            <!-- A pinned setting that was since removed is skipped. -->
+            {@const setting = getFullSettingsData().find((s) => s.id === item.subType)}
+            {#if setting}
+                <SettingRenderer items={[setting]} />
+            {/if}
         {/if}
     {/each}
 </div>

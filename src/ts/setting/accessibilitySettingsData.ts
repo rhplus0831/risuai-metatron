@@ -210,12 +210,5 @@ export const accessibilitySettingsItems: SettingItem[] = [
         bindKey: "applyAdditionalParamsToAll",
         keywords: ["apply", "additional", "parameters", "to", "all", "models"],
     },
-    {
-        id: "acc.enableRisuaiProTools",
-        type: "check",
-        labelKey: "enableRisuaiProTools",
-        bindKey: "enableRisuaiProTools",
-        keywords: ["pro", "tools", "accessibility"],
-    },
     { type: "custom", id: "acc.customSidebarConfig", componentId: "CustomSidebarConfig" },
 ];
