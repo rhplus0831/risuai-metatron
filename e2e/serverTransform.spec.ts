@@ -283,8 +283,8 @@ for (const mode of ["off", "balanced", "strong"] as const) {
         const chaId = await seed(s, [{ id: chatId, message: messages }]);
         const { page } = s;
         await page.evaluate(async (mode) => {
-            const { DBState } = await import("/src/ts/stores.svelte.ts");
-            DBState.db.streamingDisplayOptimizationMode = mode;
+            const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
+            settings.ui.streamingDisplayOptimizationMode = mode;
         }, mode);
         await page.waitForTimeout(1500);
         await watchRow(page, "m-c2");

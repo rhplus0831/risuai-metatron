@@ -1,4 +1,3 @@
-import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
@@ -26,7 +25,7 @@ const { server, alerts, picker } = vi.hoisted(() => ({
     picker: { answer: async (): Promise<{ name: string; data: Uint8Array } | null> => null },
 }));
 
-vi.mock("./storage/nodeStorage", () => ({
+vi.mock("./storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -106,8 +105,8 @@ async function boot() {
     const booted = await bootMutations((fake) => {
         server.current = fake;
     });
-    const { characterStore, chat, stores, db, sync, fake } = booted;
-    const index = (chaId: string) => db().characters.findIndex((entry: any) => entry?.chaId === chaId);
+    const { characterStore, chat, selectionModule, characterList, sync, fake } = booted;
+    const index = (chaId: string) => characterList().findIndex((entry: any) => entry?.chaId === chaId);
     const alpha = characterStore.addCharacter({
         type: "character",
         name: "Alpha",
@@ -123,17 +122,17 @@ async function boot() {
         ],
     });
     chat.selectChat(beta, "b2");
-    stores.selectedCharID.set(index(alpha));
+    selectionModule.selectCharacter(alpha);
     await sync.flushResources();
     fake.requests.length = 0;
     // `globalApi` and `util` stay real (a `vi.mock` wrapper would outlive `vi.resetModules` and keep
-    // the first graph's `DBState`, so `changeChatTo` would look at a stale selection); the file dialog
+    // the first graph's records, so `changeChatTo` would look at a stale selection); the file dialog
     // is spied on this graph's `util`.
     const util = await import("./util");
     vi.spyOn(util, "sleep").mockResolvedValue(undefined);
     vi.spyOn(util, "selectSingleFile").mockImplementation(() => picker.answer() as any);
     const characters = await import("./characters");
-    const select = (chaId: string) => stores.selectedCharID.set(index(chaId));
+    const select = (chaId: string) => selectionModule.selectCharacter(chaId);
     const chatsOf = (chaId: string) => plain(booted.character(chaId).chats) as any[];
     const texts = (chaId: string, at: number) => chatsOf(chaId)[at].message.map((message: any) => message.data);
     /** Runs `importChat` with `file`, after `during` ran while the dialog was open. */
@@ -182,10 +181,10 @@ afterEach(() => {
 
 describe("importChat writes the character selected when the dialog opened", () => {
     it("a jsonl chat lands at the top of that character, substitutes its name, and selects it while it is still on screen", async () => {
-        const { run, alpha, chatsOf, texts, character, sync, fake, db } = await boot();
+        const { run, alpha, chatsOf, texts, character, sync, fake, activePersona } = await boot();
         await run(jsonl());
         expect(chatsOf(alpha).map((chat: any) => chat.name)).toEqual(["Imported Chat", "A1"]);
-        expect(texts(alpha, 0)).toEqual([`hello Alpha, I am ${db().username ?? "User"}`, "Alpha answers"]);
+        expect(texts(alpha, 0)).toEqual([`hello Alpha, I am ${activePersona.name}`, "Alpha answers"]);
         expect(chatsOf(alpha)[0].id).toMatch(UUID_V4);
         expect(chatsOf(alpha)[0].folderId).toBeNull();
         // Still selected: the imported chat is the current one.
@@ -198,7 +197,8 @@ describe("importChat writes the character selected when the dialog opened", () =
     });
 
     it("after the selection moved to another character, the chat still lands in the captured one and no selection moves", async () => {
-        const { run, alpha, beta, select, chatsOf, texts, character, stores, index, sync, fake } = await boot();
+        const { run, alpha, beta, select, chatsOf, texts, character, selectionModule, index, sync, fake } =
+            await boot();
         await run(jsonl(), () => select(beta));
         expect(chatsOf(alpha).map((chat: any) => chat.name)).toEqual(["Imported Chat", "A1"]);
         expect(texts(alpha, 0)[1]).toBe("Alpha answers");
@@ -206,7 +206,7 @@ describe("importChat writes the character selected when the dialog opened", () =
         // Beta keeps its second chat selected; Alpha (not on screen) keeps its old chat, now at index 1.
         expect(character(beta).chatPage).toBe(1);
         expect(character(alpha).chatPage).toBe(1);
-        expect(get(stores.selectedCharID)).toBe(index(beta));
+        expect(selectionModule.selectedIndex()).toBe(index(beta));
         expect(alerts.normal).toHaveBeenCalledWith(language.successImport);
         await sync.flushResources();
         expect(fake.texts(alpha, chatsOf(alpha)[0].id)).toEqual(texts(alpha, 0));
@@ -240,7 +240,7 @@ describe("importChat writes the character selected when the dialog opened", () =
     });
 
     it("a character list changed around the target (an earlier character removed) does not redirect the write", async () => {
-        const { run, alpha, beta, characterStore, chatsOf, db, index } = await boot();
+        const { run, alpha, beta, characterStore, chatsOf, characterList, index } = await boot();
         const opened = index(alpha);
         await run(jsonl(), () => {
             // The list is in creation order and changes only through the character module (Phase 6
@@ -249,9 +249,9 @@ describe("importChat writes the character selected when the dialog opened", () =
             characterStore.removeCharacter("c");
         });
         expect(index(alpha)).toBe(opened - 1);
-        expect(db().characters[opened].chaId).toBe(beta);
+        expect(characterList()[opened].chaId).toBe(beta);
         expect(chatsOf(alpha).map((chat: any) => chat.name)).toEqual(["Imported Chat", "A1"]);
-        for (const entry of db().characters) {
+        for (const entry of characterList() as any[]) {
             if (entry.chaId !== alpha) {
                 expect(plain(entry.chats).some((chat: any) => chat.name === "Imported Chat")).toBe(false);
             }
@@ -280,7 +280,7 @@ describe("importChat writes the character selected when the dialog opened", () =
     });
 
     it("a target deleted while the dialog was open answers importTargetGone and writes nothing", async () => {
-        const { run, alpha, characterStore, sync, mirrorText, serverText, fake, db } = await boot();
+        const { run, alpha, characterStore, sync, mirrorText, serverText, fake, characterList } = await boot();
         let mirror = "";
         let serverBefore = "";
         let batches = 0;
@@ -297,13 +297,13 @@ describe("importChat writes the character selected when the dialog opened", () =
         await sync.flushResources();
         expect(serverText()).toBe(serverBefore);
         expect(fake.batchCount()).toBe(batches);
-        expect(db().characters.some((entry: any) => entry.chaId === alpha)).toBe(false);
+        expect(characterList().some((entry: any) => entry.chaId === alpha)).toBe(false);
         expect(fake.record("characters", alpha)).toBeNull();
     });
 
     it("with no character selected the dialog does not open", async () => {
-        const { characters, stores } = await boot();
-        stores.selectedCharID.set(-1);
+        const { characters, selectionModule } = await boot();
+        selectionModule.selectCharacter(null);
         const opened = vi.fn(async () => null);
         picker.answer = opened;
         await characters.importChat();

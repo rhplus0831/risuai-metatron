@@ -20,7 +20,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../storage/nodeStorage", () => ({
+vi.mock("../storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -75,10 +75,10 @@ async function boot() {
     const booted = await bootMutations((fake) => {
         server.current = fake;
     });
-    const { characterStore, stores, db } = booted;
-    db().username = "User";
+    const { characterStore, activePersona } = booted;
+    activePersona.name = "User";
     const lorebook = await import("./lorebook.svelte");
-    return { ...booted, characterStore, stores, lorebook };
+    return { ...booted, characterStore, lorebook };
 }
 
 beforeAll(async () => {
@@ -151,12 +151,12 @@ describe("Phase 5 baseline: lore regex keys (fixed in slice 4)", () => {
                 matchLog: captured[name].matchLog,
             });
         }
-        const { characterStore, stores, lorebook, db } = await boot();
+        const { characterStore, selectionModule, lorebook } = await boot();
         const chaId = characterStore.addCharacter({
             ...regexCharacter,
             chats: regexCharacter.chats.map((chat) => ({ ...chat, message: chat.message.map((m) => ({ ...m })) })),
         });
-        stores.selectedCharID.set(db().characters.findIndex((c: any) => c?.chaId === chaId));
+        selectionModule.selectCharacter(chaId);
         for (const scenario of scenarios) {
             characterStore.updateCharacter(chaId, { globalLore: scenario.lore });
             const ref = { chaId, chatId: scenario.chatId };

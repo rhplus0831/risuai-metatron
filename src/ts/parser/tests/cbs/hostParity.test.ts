@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { get } from "svelte/store";
 
 // The client half of the Phase 5 slice 3 host-parity test: the cases of
 // `server/src/tests/fixtures/cbs-parity.json` through the client wrapper (`risuChatParser` with the
@@ -9,37 +8,19 @@ import { get } from "svelte/store";
 // `navigator`, the chat variables). `server/src/tests/cbs.test.ts` answers the same cases from a
 // Node host; the expected values are hand-derived and pin the legacy quirks.
 
-const holder = vi.hoisted(() => ({
-    dbState: { db: {} as any },
-    selectedCharID: null as unknown as import("svelte/store").Writable<number>,
-    triggerId: null as unknown as import("svelte/store").Writable<string | null>,
-}));
-
 vi.mock(import("../../../stores.svelte"), async () => {
     const { writable } = await vi.importActual<typeof import("svelte/store")>("svelte/store");
-    // The real selection's index shim, as `stores.svelte` exports it (Phase 6 slice 8: the readers
-    // resolve the selected character by `selection.characterId`, which `set(index)` selects).
-    holder.selectedCharID = (await import("../../../storage/selection.svelte")).selectedCharacterIndex;
-    holder.triggerId = writable<string | null>(null);
     return {
-        DBState: holder.dbState,
-        selIdState: { selId: 0 },
-        selectedCharID: holder.selectedCharID,
-        CurrentTriggerIdStore: holder.triggerId,
+        CurrentTriggerIdStore: writable<string | null>(null),
         CharEmotion: writable({}),
     } as unknown as typeof import("../../../stores.svelte");
 });
 
-vi.mock(import("../../../storage/database.svelte"), async () => {
-    const { get } = await vi.importActual<typeof import("svelte/store")>("svelte/store");
-    const current = () => holder.dbState.db.characters?.[get(holder.selectedCharID)];
+vi.mock(import("../../../storage/database.svelte"), () => {
     return {
         appVer: "1234.5.67",
         // `findCharacterbyId` builds a blank character for an unknown speaker.
         defaultSdDataFunc: () => [],
-        getDatabase: () => holder.dbState.db,
-        getCurrentCharacter: () => current(),
-        getCurrentChat: () => current()?.chats?.[current().chatPage],
     } as unknown as typeof import("../../../storage/database.svelte");
 });
 
@@ -49,9 +30,11 @@ vi.mock(import("../../../globalApi.svelte"), () => ({
 }));
 
 import { risuChatParser } from "../../parser.svelte";
-import { CurrentTriggerIdStore, DBState, selectedCharID } from "../../../stores.svelte";
-import { installFlatDatabase } from "../../../storage/tests/installFlatDatabase";
-import { assembleChats } from "../../../storage/chatStore.svelte";
+import { CurrentTriggerIdStore } from "../../../stores.svelte";
+import { characterList } from "../../../storage/characterStore.svelte";
+import { initializeChats } from "../../../storage/chatStore.svelte";
+import { selectCharacterAt, selectedIndex } from "../../../storage/selection.svelte";
+import { installFlatDatabaseWithChats } from "../../../storage/tests/installFlatDatabase";
 
 type ParityCase = {
     name: string;
@@ -100,24 +83,17 @@ afterAll(() => {
 beforeEach(() => {
     vi.useFakeTimers({ now: new Date(parity.fixedTime), toFake: ["Date"] });
     vi.spyOn(console, "log").mockImplementation(() => {});
-    // The capture installed as `setDatabaseLite` installs a database (`database.svelte` is mocked
-    // here), since the parser reads the settings through the record views (Phase 6 slice 7). It is
-    // the flat shape the Node host reads: its root preset fields become the one preset's.
+    // The capture installed in the records (as the removed `setDatabaseLite` installed a database;
+    // there is no whole-database object since Phase 6 slice 10), since the parser reads the settings
+    // through the record views (Phase 6 slice 7) and the characters through the character store
+    // (slice 8). It is the flat shape the Node host reads: its root preset fields become the one
+    // preset's. The records hold no chats (slice 9a): the capture's chats are held in the chat
+    // module, as boot assembles them, and each character's chat page selected (every chat page of
+    // the capture is 0, its first chat, which `initializeChats` selects).
     const database = JSON.parse(JSON.stringify(parity.database));
-    // The records hold no chats (Phase 6 slice 9a): the capture's chats are held in the chat module,
-    // as boot assembles them (every chat page of the capture is 0, its first chat).
-    const characters = database.characters as { chaId: string; chats: { id: string }[] }[];
-    const chats = characters.flatMap((char) =>
-        char.chats.map((chat) => ({ characterId: char.chaId, id: chat.id, revision: "r1", data: chat as any })),
-    );
-    const orders = characters.map((char) => ({
-        characterId: char.chaId,
-        revision: "o1",
-        ids: char.chats.map((chat) => chat.id),
-    }));
-    DBState.db = installFlatDatabase(database, "parity-preset");
-    assembleChats(DBState.db.characters, chats, orders);
-    selectedCharID.set(parity.selectedCharID);
+    installFlatDatabaseWithChats(database, "parity-preset");
+    initializeChats();
+    selectCharacterAt(parity.selectedCharID);
     CurrentTriggerIdStore.set(null);
 });
 
@@ -129,7 +105,7 @@ afterEach(() => {
 describe("the client wrapper answers the host-parity cases", () => {
     test("the window and navigator stand in for the capture's viewport and locale", () => {
         expect([window.innerWidth, window.innerHeight, navigator.language]).toEqual([1280, 720, "en-US"]);
-        expect(get(selectedCharID)).toBe(0);
+        expect(selectedIndex()).toBe(0);
     });
 
     for (const entry of parity.cases) {
@@ -138,7 +114,7 @@ describe("the client wrapper answers the host-parity cases", () => {
             const { charaId, ...rest } = entry.arg ?? {};
             const arg: Parameters<typeof risuChatParser>[1] = { ...rest };
             if (charaId) {
-                arg.chara = DBState.db.characters.find((candidate) => candidate.chaId === charaId);
+                arg.chara = characterList().find((candidate) => candidate.chaId === charaId);
             }
             expect(risuChatParser(entry.input, arg)).toBe(entry.expected);
         });

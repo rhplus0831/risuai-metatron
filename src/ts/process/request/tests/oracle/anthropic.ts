@@ -4,7 +4,7 @@ import { SignatureV4 } from "@smithy/signature-v4";
 import { addFetchLog, fetchNative, globalFetch, textifyReadableStream } from "src/ts/globalApi.svelte";
 import { LLMFlags, LLMFormat } from "src/ts/model/modellist";
 import { registerClaudeObserver } from "src/ts/observer.svelte";
-import { getDatabase } from "src/ts/storage/database.svelte";
+import { getDatabase } from "./database";
 import { replaceAsync, simplifySchema, sleep } from "src/ts/util";
 import { v4 } from "uuid";
 import type { MultiModal } from "../../../index.svelte";

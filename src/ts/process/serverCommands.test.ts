@@ -90,11 +90,6 @@ vi.mock("../storage/chatStore.svelte", () => ({
     pinChat: stubs.pin,
 }));
 vi.mock("../storage/resourceClient", () => ({ getResourceEpoch: () => EPOCH, ResourceRequestError: RequestError }));
-vi.mock("../storage/database.svelte", () => ({ getDatabase: () => ({}) }));
-vi.mock("../storage/forwarding.svelte", () => ({
-    selectedPersona: () => ({ id: "selected" }),
-    selectedPreset: () => ({ id: "preset" }),
-}));
 vi.mock("../storage/resourceSync.svelte", () => ({
     flushResources: stubs.flush,
     GenerationBlockedError: BlockedError,
@@ -132,6 +127,13 @@ beforeEach(async () => {
     stubs.restored.mockReset().mockResolvedValue(false);
     stubs.abort.mockReset().mockResolvedValue(undefined);
     vi.spyOn(console, "error").mockImplementation(() => {});
+    // The identity the runner reads through the settings views: one preset and one persona in the
+    // records of this module graph (the only records, so the selection resolves to them).
+    const { installFlatDatabase } = await import("../storage/tests/installFlatDatabase");
+    installFlatDatabase({
+        botPresets: [{ id: "preset", name: "preset" }],
+        personas: [{ id: "selected", name: "Selected", personaPrompt: "", icon: "", note: "" }],
+    });
     commands = await import("./serverCommands");
 });
 

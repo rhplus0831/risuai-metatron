@@ -3,18 +3,18 @@ import { PRESET_FIELDS, PRESET_KEEP_ON_SWITCH_FIELDS, PRESET_ROOT_ALIASES, PERSO
 
 /**
  * The field-to-resource map of Phase 3 (`docs/plan/phases/phase-3-settings-sections.md`): which
- * resource owns each top-level `Database` field. `DBState.db` keeps every field flat under its old
- * name (D3); these lists say where each one is stored. Together with the Phase 1 collections
+ * resource owns each top-level `Database` field (the flat legacy shape the plugin API and the
+ * server's job projection keep, D3); these lists say where each one is stored. Together with the Phase 1 collections
  * (`PHASE1_FIELDS`) they partition `keyof Database`:
  *
  * - `SECTION_FIELDS`: five singleton section resources.
  * - `COLLECTION_FIELDS`: small collection resources, each holding one field (two for the preset
  *   collections that carry their selection).
  * - `FORWARDED_ROOT_KEYS`: the fields of the removed `root` resource (the working copies before
- *   Phase 3), not stored under their own names. The client forwards them
- *   (`src/ts/storage/forwarding.svelte.ts`): the preset fields to the selected preset, `proxyKey`
- *   to that preset's `llmSecrets.presets` entry, the persona fields to the selected persona, and the
- *   three selection indexes to the per-client selection store. The keep-on-switch preset fields are
+ *   Phase 3), not stored under their own names. The client's views serve them under those names
+ *   (`src/ts/storage/settingsViews.svelte.ts`: the preset fields from the selected preset, the
+ *   persona fields from the selected persona); `proxyKey` is that preset's `llmSecrets.presets`
+ *   entry, and the three selection indexes come from the per-client selection store. The keep-on-switch preset fields are
  *   `providers` fields and the two auto-suggest fields are `ui` fields; neither is forwarded.
  * - `DROPPED_FIELDS`: no longer persisted (no reader, write-only, migrated, or legacy mirrors).
  */

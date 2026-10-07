@@ -1,8 +1,6 @@
-import { writable } from "svelte/store";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { DBState } from "../../../stores.svelte";
 import { risuChatParser } from "../../parser.svelte";
-import { holdMockedChats, resetChatVariables } from "./lib";
+import { holdMockedChats, resetChatVariables, type MockedCharacter } from "./lib";
 import { setChatVar } from "../../chatVar.svelte";
 import { selection } from "../../../storage/selection.svelte";
 
@@ -13,9 +11,7 @@ vi.mock(
     () =>
         ({
             appVer: "1234.5.67",
-            getCurrentCharacter: () => ({}),
-            getDatabase: () => ({}),
-        }) as typeof import("../../../storage/database.svelte"),
+        }) as unknown as typeof import("../../../storage/database.svelte"),
 );
 
 vi.mock(import("../../../globalApi.svelte"), () => ({
@@ -23,49 +19,29 @@ vi.mock(import("../../../globalApi.svelte"), () => ({
     getFileSrc: () => Promise.resolve(""),
 }));
 
-vi.mock(import("../../../stores.svelte"), () => {
-    return {
-        DBState: {
-            db: {
-                characters: [
-                    {
-                        chaId: "c",
-                        chatPage: 0,
-                        chats: [
-                            {
-                                id: "k",
-                                scriptstate: {},
-                            },
-                        ],
-                        defaultVariables: "",
-                    },
-                ],
-                globalChatVariables: {},
-                templateDefaultVariables: "",
-            },
-        },
-        selIdState: {
-            selId: 0,
-        },
-        selectedCharID: writable(0),
-    } as unknown as typeof import("../../../stores.svelte");
-});
+// `stores.svelte` runs module effects over the selection and the chat; nothing under test reads it.
+vi.mock(import("../../../stores.svelte"), () => ({}) as unknown as typeof import("../../../stores.svelte"));
 
 //#endregion
 
+// The fixture character in the legacy shape; until Phase 6 slice 10 it sat on the removed
+// aggregate's mocked holder.
+const characters: MockedCharacter[] = [
+    { chaId: "c", chatPage: 0, chats: [{ id: "k", scriptstate: {} } as any], defaultVariables: "" },
+];
+
 // The readers resolve the selected character by `selection.characterId` (Phase 6 slice 8), over
-// the character list (`characterList()`, here the mocked `DBState.db.characters`): the fixture's
-// character is the selected one, as `selectedCharID` 0 selected it.
+// the character list (`characterList()`, the records): the fixture's character is the selected one.
 selection.characterId = "c";
 // The chat module holds the chat (Phase 6 slice 9a): the character in the records, its chat assembled.
-holdMockedChats();
+holdMockedChats(characters);
 
 const template = (op: string, body: string) => `{{${op}}}${body}{{/}}`;
 const quickParse = (...args: Parameters<typeof template>) => risuChatParser(template(...args));
 
 beforeEach(() => {
     vi.resetAllMocks();
-    resetChatVariables();
+    resetChatVariables(characters);
 });
 
 describe("#each", () => {

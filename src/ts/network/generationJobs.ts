@@ -7,7 +7,7 @@ import {
 } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import { applyServerGeneration, type ChatRef, endServerJob } from "../storage/chatStore.svelte";
-import { authFetch, getNodeServerProxyAuth } from "../storage/nodeStorage";
+import { authFetch, getNodeServerProxyAuth } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 import { applyHydration } from "../storage/resourceSync.svelte";
 import type { ChannelTransport } from "./jobChannel";
@@ -398,7 +398,7 @@ function applyJobPreset(jobId: string, presetId: string) {
         return;
     }
     appliedPresets.add(jobId);
-    void import("../storage/database.svelte")
+    void import("../storage/presets.svelte")
         .then(({ changeToPreset }) => changeToPreset(presetId, true))
         .catch((error) => console.error("[Generation]", error));
 }

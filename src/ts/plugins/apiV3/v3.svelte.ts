@@ -11,7 +11,6 @@ import {
     type ReplacerFunction,
 } from "../pluginHooks";
 import { SandboxHost } from "./factory";
-import { getDatabase } from "src/ts/storage/database.svelte";
 import {
     addPreparedCharacter,
     checkCharacterInput,
@@ -43,7 +42,8 @@ import {
 } from "src/ts/storage/pluginStorageStore.svelte";
 import { selectPersona, selectedIndex } from "src/ts/storage/selection.svelte";
 import { batchRecordWrites } from "src/ts/storage/records.svelte";
-import { forwardedPresetField, hasPreset, readPresetFieldOf } from "src/ts/storage/forwarding.svelte";
+import { forwardedPresetField, hasPreset } from "src/ts/storage/settingsViews.svelte";
+import { buildDatabaseSubset } from "src/ts/storage/snapshots.svelte";
 import {
     currentContext,
     enterContext,
@@ -79,7 +79,6 @@ import {
     additionalSettingsMenu,
     bodyIntercepterStore,
     chatPanelStore,
-    DBState,
     type MenuDef,
 } from "src/ts/stores.svelte";
 import { v4 } from "uuid";
@@ -1113,7 +1112,7 @@ function applyPluginDatabase(
     if (
         context &&
         Object.keys(newDb).some((key) => allowedDbKeys.includes(key) && forwardedPresetField(key) !== undefined) &&
-        !hasPreset(DBState.db, context.presetId)
+        !hasPreset(context.presetId)
     ) {
         throw new PluginTargetGoneError("preset");
     }
@@ -1376,30 +1375,18 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             // The characters' chats are loaded (and pinned) first; then every key is read in one
             // synchronous pass, so the snapshot is one state of the tab.
             const characterIds = included("characters") ? characterList().map((character) => character?.chaId) : [];
+            const keys = allowedDbKeys.filter(included);
             const liteDB = await withChatsLoaded(characterIds, () => {
-                const db = DBState.db;
                 // Inside a hook, the forwarded preset keys come from the hook's preset (refused when it
                 // is gone), so a read-modify-write through setDatabase stays in one preset.
-                const snapshot: Record<string, unknown> = {};
-                for (const key of allowedDbKeys) {
-                    if (!included(key)) {
-                        continue;
-                    }
-                    if (key === "characters") {
-                        // The legacy shape: each character with its chats.
-                        snapshot[key] = characterList().map((character) => withChatsCopy($state.snapshot(character)));
-                        continue;
-                    }
-                    let value = (db as any)[key];
-                    if (context && forwardedPresetField(key) !== undefined) {
-                        if (!hasPreset(db, context.presetId)) {
-                            throw new PluginTargetGoneError("preset");
-                        }
-                        value = readPresetFieldOf(db, context.presetId, key);
-                    }
-                    snapshot[key] = $state.snapshot(value);
+                if (
+                    context &&
+                    keys.some((key) => forwardedPresetField(key) !== undefined) &&
+                    !hasPreset(context.presetId)
+                ) {
+                    throw new PluginTargetGoneError("preset");
                 }
-                return snapshot;
+                return buildDatabaseSubset(keys, context ? context.presetId : null);
             });
             return liteDB;
         },

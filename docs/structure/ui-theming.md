@@ -133,7 +133,7 @@ Theme and GUI helpers:
 ## Tests
 
 - `src/lib/UI/GUI/guiRendering.test.ts` (happy-dom, Svelte `mount`): the primitives only. `src/lib/UI/GUI/SecretInput.test.ts` (with `src/lib/UI/tests/reactiveProps.svelte.ts`): the credential input (Phase 5 slice 7b): the status without the value, a draft submitted once on Enter or the button and never on blur, nothing submitted empty, the draft dropped when the path changes, a clear queued without the draft.
-- `src/ts/gui/guiRecords.test.ts`: `colorscheme`, `guisize`, and `animation` over the records (with `DBState.db` a plain object), the plugin theme getters following the `ui` record and returning detached copies. `e2e/welcomeAndChatSettings.spec.ts` (sorted last: it changes the shared stack's settings): the first-run wizard on a fresh server (every answer in its section, preset, or persona; no key in the tab or a settings record), send with Enter, auto translate, icon size, the `waifu` theme, a module hiding icons, the playground pages, and the Iris modal.
+- `src/ts/gui/guiRecords.test.ts`: `colorscheme`, `guisize`, and `animation` over the records, the plugin theme getters following the `ui` record and returning detached copies. `e2e/welcomeAndChatSettings.spec.ts` (sorted last: it changes the shared stack's settings): the first-run wizard on a fresh server (every answer in its section, preset, or persona; no key in the tab or a settings record), send with Enter, auto translate, icon size, the `waifu` theme, a module hiding icons, the playground pages, and the Iris modal.
 - Not tested: sidebar, mobile.
 
 ## Known Hazards

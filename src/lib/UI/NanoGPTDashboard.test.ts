@@ -8,9 +8,8 @@ import { reactiveProps } from "./tests/reactiveProps.svelte";
 // when the key is cleared, replaced, or the dashboard leaves must not write the subscription state
 // (`BotSettings` resets it when the key is cleared; the chat requests pick their endpoint by it).
 
-const { nano, dbRef } = vi.hoisted(() => ({
+const { nano } = vi.hoisted(() => ({
     nano: { balance: vi.fn(), subscription: vi.fn() },
-    dbRef: { db: { nanogptSubscriptionState: "" } as Record<string, unknown> },
 }));
 
 vi.mock("src/ts/model/nanogpt", () => ({
@@ -23,6 +22,7 @@ vi.mock("src/lang", () => ({
     }),
 }));
 
+import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import NanoGPTDashboard from "./NanoGPTDashboard.svelte";
 
@@ -39,10 +39,9 @@ let target: HTMLElement;
 const mounted: ReturnType<typeof mount>[] = [];
 
 beforeEach(() => {
-    // Installed as `setDatabaseLite` installs a database (its fields moved into the records, the
-    // accessors on), since the dashboard writes the state through the settings views (Phase 6
-    // slice 7): `dbRef.db` reads and writes the same record.
-    dbRef.db = installFlatDatabase({ nanogptSubscriptionState: "" });
+    // Installed into the records (the `providers` section), since the dashboard writes the state
+    // through the settings views (Phase 6 slice 7): the test reads and writes the same record.
+    installFlatDatabase({ nanogptSubscriptionState: "" });
     nano.balance.mockResolvedValue(null);
     target = document.createElement("div");
     document.body.appendChild(target);
@@ -67,12 +66,12 @@ describe("NanoGPTDashboard", () => {
         // The key is cleared while the first answer is on its way: `BotSettings` resets the state,
         // and the late answer must not undo that.
         props.keySet = false;
-        dbRef.db.nanogptSubscriptionState = "";
+        settings.providers.nanogptSubscriptionState = "";
         flushSync();
         expect(target.textContent).not.toContain("nanoGPTLoadingAccountInfo");
         first.resolve(subscription("active"));
         await settle();
-        expect(dbRef.db.nanogptSubscriptionState).toBe("");
+        expect(settings.providers.nanogptSubscriptionState).toBe("");
         expect(nano.subscription).toHaveBeenCalledTimes(1);
 
         // A key set again, then replaced before its answer: only the latest answer is applied.
@@ -88,11 +87,11 @@ describe("NanoGPTDashboard", () => {
         expect(nano.subscription).toHaveBeenCalledTimes(3);
         third.resolve(subscription("active"));
         await settle();
-        expect(dbRef.db.nanogptSubscriptionState).toBe("active");
+        expect(settings.providers.nanogptSubscriptionState).toBe("active");
         expect(target.textContent).toContain("ACTIVE");
         second.resolve(subscription("grace"));
         await settle();
-        expect(dbRef.db.nanogptSubscriptionState).toBe("active");
+        expect(settings.providers.nanogptSubscriptionState).toBe("active");
 
         // The dashboard leaves with an answer on its way.
         const fourth = deferred<unknown>();
@@ -103,6 +102,6 @@ describe("NanoGPTDashboard", () => {
         await unmount(mounted.pop()!);
         fourth.resolve(subscription("inactive"));
         await settle();
-        expect(dbRef.db.nanogptSubscriptionState).toBe("active");
+        expect(settings.providers.nanogptSubscriptionState).toBe("active");
     });
 });

@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Phase 3, slice 6 (Astra challenge points 1 and 2): the plugin `setDatabase` and `setDatabaseLite`
-// host setters over the forwarding layer, for `personas` and `selectedPersona`. Both setters apply
+// host setters over the settings records, for `personas` and `selectedPersona`. Both setters apply
 // the personas contract (`shared/personas.ts`) to a plain copy of the plugin's list (never empty,
 // the four fields strings, unique ids; a non-list is refused and the personas kept), and apply
 // `selectedPersona` after `personas` whatever the object's key order, so the index names a persona
@@ -75,24 +75,28 @@ vi.mock("src/ts/util", async (importOriginal) => ({
     ),
 }));
 
-import { DBState } from "src/ts/stores.svelte";
-import { setDatabase, type Database } from "src/ts/storage/database.svelte";
 import { selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
+import { activePersona, selectedPersonaIndex, settings } from "src/ts/storage/settingsViews.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { importUserPersona } from "src/ts/persona";
 import { executePluginV3 } from "./v3.svelte";
 
-type AnyDb = Record<string, any>;
-const db = () => DBState.db as unknown as AnyDb;
-const names = () => db().personas.map((entry: { name: string }) => entry.name);
-const ids = () => db().personas.map((entry: { id: string }) => entry.id);
+const personas = () => settings.personas as any[];
+const names = () => personas().map((entry: { name: string }) => entry.name);
+const ids = () => personas().map((entry: { id: string }) => entry.id);
 /** What `DefaultChatScreen` and `PersonaSettings` read: the persona at the selection index. */
 const directIndexReader = () => {
-    const record = db().personas[db().selectedPersona];
+    const record = personas()[selectedPersonaIndex()];
     return { icon: record.icon, largePortrait: record.largePortrait, name: record.name };
 };
 
 const personaA = { id: "a", name: "A", icon: "ia", personaPrompt: "pa", note: "na" };
 const personaB = { id: "b", name: "B", icon: "ib", personaPrompt: "pb", note: "nb" };
+
+/** The records installed as the app installs them (the aggregate is gone since Phase 6 slice 10). */
+function install() {
+    installFlatDatabase({ characters: [], plugins: [], botPresets: [], personas: [personaA, personaB] });
+}
 
 beforeEach(async () => {
     sessionStorage.clear();
@@ -103,13 +107,7 @@ beforeEach(async () => {
     captured.asset = null;
     captured.chunks = [];
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    DBState.db = {} as Database;
-    setDatabase({
-        characters: [],
-        plugins: [],
-        botPresets: [],
-        personas: [personaA, personaB],
-    } as unknown as Database);
+    install();
     if (!captured.api) {
         await executePluginV3({ name: "host-persona-test", script: "", version: "3.0" } as any);
     }
@@ -119,7 +117,6 @@ beforeEach(async () => {
 
 afterEach(() => {
     vi.restoreAllMocks();
-    DBState.db = {} as Database;
 });
 
 /** Runs `check` for both setters, each from the same starting state. */
@@ -127,8 +124,7 @@ async function withBothSetters(check: (set: (value: unknown) => Promise<void>, l
     await check(async (value) => {
         captured.api!.setDatabaseLite(value);
     }, "setDatabaseLite");
-    DBState.db = {} as Database;
-    setDatabase({ characters: [], plugins: [], botPresets: [], personas: [personaA, personaB] } as unknown as Database);
+    install();
     await check(async (value) => {
         await captured.api!.setDatabase(value);
     }, "setDatabase");
@@ -139,11 +135,11 @@ describe("the plugin setters and personas", () => {
         await withBothSetters(async (set, label) => {
             selectPersona("b");
             await set({ personas: [] });
-            expect(db().personas, label).toHaveLength(1);
-            expect(db().personas[0], label).toMatchObject({ name: "User", icon: "", personaPrompt: "", note: "" });
-            expect(db().username, label).toBe("User");
-            expect(db().selectedPersona, label).toBe(0);
-            expect(selection.personaId, label).toBe(db().personas[0].id);
+            expect(personas(), label).toHaveLength(1);
+            expect(personas()[0], label).toMatchObject({ name: "User", icon: "", personaPrompt: "", note: "" });
+            expect(activePersona.name, label).toBe("User");
+            expect(selectedPersonaIndex(), label).toBe(0);
+            expect(selection.personaId, label).toBe(personas()[0].id);
             expect(() => directIndexReader(), label).not.toThrow();
             expect(directIndexReader().name, label).toBe("User");
         });
@@ -159,20 +155,20 @@ describe("the plugin setters and personas", () => {
                 selectedPersona: 1,
             });
             expect(names(), label).toEqual(["first", "second"]);
-            expect(db().personas[0].id, label).toBe("dup");
-            expect(db().personas[1].id, label).not.toBe("dup");
-            expect(db().personas[1].id.length, label).toBeGreaterThan(0);
-            expect(db().personas[0], label).toEqual({
+            expect(personas()[0].id, label).toBe("dup");
+            expect(personas()[1].id, label).not.toBe("dup");
+            expect(personas()[1].id.length, label).toBeGreaterThan(0);
+            expect(personas()[0], label).toEqual({
                 id: "dup",
                 name: "first",
                 icon: "",
                 personaPrompt: "",
                 note: "",
             });
-            expect(db().personas[1].note, label).toBe("");
-            expect(db().selectedPersona, label).toBe(1);
-            expect(db().username, label).toBe("second");
-            expect(selection.personaId, label).toBe(db().personas[1].id);
+            expect(personas()[1].note, label).toBe("");
+            expect(selectedPersonaIndex(), label).toBe(1);
+            expect(activePersona.name, label).toBe("second");
+            expect(selection.personaId, label).toBe(personas()[1].id);
             expect(directIndexReader().name, label).toBe("second");
         });
     });
@@ -183,15 +179,15 @@ describe("the plugin setters and personas", () => {
             const d = { id: "d", name: "D", icon: "", personaPrompt: "", note: "" };
             await set({ selectedPersona: 1, personas: [c, d] });
             expect(selection.personaId, `${label}: selection first`).toBe("d");
-            expect(db().selectedPersona, label).toBe(1);
-            expect(db().username, label).toBe("D");
+            expect(selectedPersonaIndex(), label).toBe(1);
+            expect(activePersona.name, label).toBe("D");
             expect(directIndexReader().name, label).toBe("D");
 
             const e = { id: "e", name: "E", icon: "ie", personaPrompt: "", note: "" };
             const f = { id: "f", name: "F", icon: "if", personaPrompt: "", note: "", largePortrait: true };
             await set({ personas: [e, f], selectedPersona: 1 });
             expect(selection.personaId, `${label}: personas first`).toBe("f");
-            expect(db().username, label).toBe("F");
+            expect(activePersona.name, label).toBe("F");
             expect(directIndexReader(), label).toEqual({ icon: "if", largePortrait: true, name: "F" });
 
             // Without a list, the index selects in the current one; out of range is ignored.
@@ -208,13 +204,13 @@ describe("the plugin setters and personas", () => {
             selectPersona("b");
             await set({ personas: [{ ...personaB, name: "B2" }, personaA] });
             expect(selection.personaId, label).toBe("b");
-            expect(db().selectedPersona, label).toBe(0);
-            expect(db().username, label).toBe("B2");
+            expect(selectedPersonaIndex(), label).toBe(0);
+            expect(activePersona.name, label).toBe("B2");
             // The selected id is gone from the new list: the lite setter leaves the repair to the
-            // next read (the lazy fallback of the forwarding layer), the full setter's `setDatabase`
+            // next read (the lazy fallback of the settings views), the full setter's `setDatabase`
             // resolves it at once. Either way the first read serves the first persona.
             await set({ personas: [{ ...personaA, name: "A only" }] });
-            expect(db().username, label).toBe("A only");
+            expect(activePersona.name, label).toBe("A only");
             expect(selection.personaId, label).toBe("a");
             expect(directIndexReader().name, label).toBe("A only");
         });
@@ -222,10 +218,10 @@ describe("the plugin setters and personas", () => {
 
     it("refuse a non-list and keep the personas, and do not mutate the plugin's own array", async () => {
         await withBothSetters(async (set, label) => {
-            const before = JSON.stringify(db().personas);
+            const before = JSON.stringify(personas());
             for (const value of ["x", {}, 1, true]) {
                 await set({ personas: value });
-                expect(JSON.stringify(db().personas), `${label} ${JSON.stringify(value)}`).toBe(before);
+                expect(JSON.stringify(personas()), `${label} ${JSON.stringify(value)}`).toBe(before);
             }
             expect(console.warn, label).toHaveBeenCalledTimes(4);
             vi.mocked(console.warn).mockClear();
@@ -255,19 +251,19 @@ describe("a persona import while the full setter replaces the list", () => {
         await vi.waitFor(() => expect(captured.asset).not.toBeNull());
 
         // The image is being saved: a plugin's full setter replaces (and normalizes) the list.
-        const detached = db().personas;
+        const detached = personas();
         await captured.api!.setDatabase({ personas: [{ ...personaA, name: "A from plugin" }, personaB] });
         // A retained wrapper follows its record across replacements (Phase 6 slice 4,
         // `settings-ownership.md`, "Observable changes"): the list held before the setter is the live
         // list's wrapper, and it shows the replaced list.
-        expect(db().personas).toBe(detached);
+        expect(personas()).toBe(detached);
         expect(names()).toEqual(["A from plugin", "B"]);
 
         captured.asset!("assets/imported.png");
         await done;
         expect(names()).toEqual(["A from plugin", "B", "Imported"]);
-        expect(db().personas[2]).toMatchObject({ icon: "assets/imported.png", personaPrompt: "ip", note: "n" });
-        expect(db().personas[2].id.length).toBeGreaterThan(0);
+        expect(personas()[2]).toMatchObject({ icon: "assets/imported.png", personaPrompt: "ip", note: "n" });
+        expect(personas()[2].id.length).toBeGreaterThan(0);
         expect(detached).toHaveLength(3);
     });
 });

@@ -13,11 +13,11 @@
 - `src/lib/Others/NodeServerRequired.svelte`: the notice shown when the client is opened without the self-host server (static hosting, a bare `vite build` output). English only (`language.nodeServerRequiredTitle`/`Desc`), since `changeLanguage` runs only after the DB loads.
 - `src/App.svelte`: the "router" (ordered `{#if}` chain), plus drag/drop import, overlays (alerts, popups, modals), and keep-alive audio.
 - `src/ts/bootstrap.ts`:
-  - `loadData`: the server resources are read and assembled into the DB, then migrations, theme, `saveDb` (the save adapter), the browser-local import, plugins, `loadedStore = true`, then services.
-  - `assembleDatabase`: builds the DB from the resource records (see `persistence.md`, Load).
-  - `checkNewFormat`: the boot's maintenance (the trash pruning, the preset and persona backstops again, the character order); no character default (Phase 6 slice 5b).
+  - `loadData`: the server resources are read and installed into the records, then maintenance, theme, `startResourceSync` (the save adapter), the browser-local import, plugins, `loadedStore = true`, then services.
+  - `installBootRecords`: installs the resource records into the settings and character records and the chat module (see `persistence.md`, Load); no whole-database object is built (Phase 6 slice 10).
+  - `maintainCharacters`: the boot's maintenance (the trash pruning, the character order); no character default (Phase 6 slice 5b).
   - `registerSw`: service worker.
-- `src/ts/stores.svelte.ts`: all global UI stores plus the `DBState` rune (see State).
+- `src/ts/stores.svelte.ts`: all global UI stores (see State).
 - `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `isMobile`, `isIOS()`, `getRisuEnvironmentLabel` (`node` or `node(dev)`), `getDetailedOSLabel`, `isInStandaloneMode` (unused).
 - `src/ts/polyfill.ts`: `safeStructuredClone` (native `structuredClone`, then an `rfdc` fallback), plus `Buffer` and stream polyfills and the mobile drag/drop polyfill.
 - `src/vite-env.d.ts`: ambient declarations for the globals `Buffer`, `safeStructuredClone`, and `userScriptFetch`.
@@ -42,13 +42,13 @@ Boot:
 
 1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`, which stops at the notice unless `__NODE__` was injected, and otherwise loads `boot.ts`.
 2. `boot.ts:boot` mounts `App` before the DB is loaded. `App` shows the loading branch while `$loadedStore` is false.
-3. `bootstrap.ts:loadData` loads the database: `forageStorage.Init()` (`AutoStorage`), one `readKinds` of every resource kind (the first request prompts for the password on a new browser), `seedResources`/`seedInlays`, `setDatabase` on the assembled DB, `registerSw`, then `characterURLImport`. A failed read only alerts; there is no local fallback.
+3. `bootstrap.ts:loadData` loads the data: one `readKinds` of every resource kind with chat summaries (the first request prompts for the password on a new browser), `seedResources`/`seedChats`/`seedInlays`, `loadSelection`, `installBootRecords`, `registerSw`, then `characterURLImport`. A failed read only alerts; there is no local fallback.
 4. Common tail of `loadData`:
-   1. `checkNewFormat` (the trash pruning through `removeCharacters`), which ends in `setDatabase` and `checkCharOrder`.
+   1. `maintainCharacters` (the trash pruning through `removeCharacters`, then `checkCharOrder`), and `initializeChats`.
    2. Theme functions: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`.
-   3. `saveDb()` (exactly once; starts the save adapter) and `watchRemoteRecords`: it drops the inlay caches whenever the adapter brought another tab's records in (`onRemoteRecordApplied` → `invalidateInlayCaches`).
+   3. `startResourceSync()` (exactly once; starts the save adapter) and `watchRemoteRecords`: it drops the inlay caches whenever the adapter brought another tab's records in (`onRemoteRecordApplied` → `invalidateInlayCaches`).
    4. `importBrowserLocalData` (moves old browser-only data to the server), `loadPluginPermissions`, then `loadPlugins`. Plugins load after normalization and ID assignment (before Phase 1 they loaded first).
-   5. `loadedStore.set(true)` and `selectedCharID.set(-1)`.
+   5. `loadedStore.set(true)` and `selectCharacter(null)`.
    6. Observers, `registerModelDynamic`, `moduleUpdate`, `cleanLegacyAccountData`. There is no boot-time asset cleanup: orphaned `assets/*` files (including inlay blobs) are never purged automatically.
 
 Screen selection. `App.svelte` checks these in order:
@@ -70,9 +70,9 @@ Inside `DefaultChatScreen.svelte`:
 
 All of these live in `src/ts/stores.svelte.ts`.
 
-- DB: `DBState` = `$state({db})`, initially an empty cast. `LoadingStatusState`.
+- `LoadingStatusState`.
 - Navigation:
-  - `selectedCharID`: `-1` means home. Since Phase 6 slice 5 an index view of `selection.characterId` (`storage/selection.svelte.ts`: the selected `chaId` per tab, never stored, `null` at home): `set(index)` selects the character there, and the value follows the character when the list changes (a removed selected character selects home); subscribers hear of every change synchronously.
+  - The selected character is not a store here: it is `selection.characterId` (`storage/selection.svelte.ts`: the selected `chaId` per tab, never stored, `null` at home), set with `selectCharacter(chaId)` and read as `selectedCharacter()`; `selectedIndex()` is its index in the list (a removed selected character selects home).
   - `settingsOpen`, `SettingsMenuIndex`.
   - `sideBarStore`, `DynamicGUI`.
   - `PlaygroundStore`, `OpenRealmStore`, `RealmInitialOpenChar`.
@@ -80,7 +80,6 @@ All of these live in `src/ts/stores.svelte.ts`.
 - Reload signals:
   - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetTransformEffects` (the script transform's applied emotions, `cbs-rendering.md`).
   - `ReloadChatPointer`.
-  - `selIdState`: `selectedCharID` as a reactive field (`selIdState.selId`, a getter and setter over the same selection).
 - Overlays: `alertStore`, `terminalNotice` (`TerminalNotice.svelte`, a modal dialog above every other overlay), `popupStore`, `popUpEditorStore`, `easyPanelStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, `customSideBarConfigDialogStore`, `QuickSettings`.
 - Plugin extension arrays (runes): `additionalSettingsMenu`, `additionalFloatingActionButtons`, `additionalHamburgerMenu`, `additionalChatMenu`, `chatPanelStore`, `bodyIntercepterStore`. Types are `MenuDef` and `ChatPanelDef`.
 - Misc: `CustomCSSStore` (its subscriber injects CSS with `innerHTML`), `SafeModeStore`, `CharEmotion`, `ScrollToMessageStore`, `hotReloading`, `disableHighlight`.
@@ -94,14 +93,14 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 ## Invariants
 
-- Do not flip `loadedStore` to true before `setDatabase`, `checkNewFormat`, and theme setup finish. `App` assumes `DBState.db` is normalized after that point. When `loadData` fails it only calls `alertError`, and the loading screen stays up.
-- No selected character is home. Components read the selected character as `const currentCharacter = $derived(selectedCharacter())` (Phase 6 slice 8) and the list as `characterList()`, never by indexing `DBState.db.characters` with `$selectedCharID`; a handler that awaits captures the `chaId` first and finds the character again after the await.
-- Call `saveDb()` only once, from `loadData`. It installs the save adapter's effects; `startResourceSync` ignores a second call.
+- Do not flip `loadedStore` to true before `installBootRecords`, `maintainCharacters`, and theme setup finish. `App` assumes the records are installed after that point. When `loadData` fails it only calls `alertError`, and the loading screen stays up.
+- No selected character is home. Components read the selected character as `const currentCharacter = $derived(selectedCharacter())` (Phase 6 slice 8) and the list as `characterList()`, never by an index; a handler that awaits captures the `chaId` first and finds the character again after the await.
+- Call `startResourceSync()` only once, from `loadData`; it ignores a second call.
 - `isNodeServer` depends on `server/src/app.ts` (`GET /` and `/index.html`) or the Vite dev plugin `risu-node-flag` injecting `globalThis.__NODE__ = true` into `index.html`. Keep everything the app needs behind the dynamic `boot.ts` import so the notice path initializes nothing.
 - New hotkey actions need:
   - an entry in `defaultHotkeys`,
   - a branch in the `initHotkey` dispatch switch,
-  - a check that `setDatabase` merges new default actions into saved hotkeys.
+  - a check that the server's `hotkeys` normalizer merges new default actions into saved hotkeys.
 - `safeStructuredClone` is a global installed by `polyfill.ts`, which must stay the first import in `main.ts` (before the `boot.ts` import).
 
 ## Recipes

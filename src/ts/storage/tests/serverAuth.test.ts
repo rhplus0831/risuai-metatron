@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `NodeStorage` auth against a fake of the server's auth routes: the first run sets the password
-// and registers this browser's key with the same digest (so the very next request is authorized),
-// a wrong-key browser logs in once, parallel requests share one check, and `authFetch` signs every
-// request.
+// The tab's server authentication (`serverAuth.ts`, Phase 6 slice 10: the auth half of the removed
+// `NodeStorage`, one module-level state for every caller) against a fake of the server's auth
+// routes: the first run sets the password and registers this browser's key with the same digest (so
+// the very next request is authorized), a wrong-key browser logs in once, parallel requests share
+// one check, a failed check is tried again, and `authFetch` signs every request. The state is the
+// module's, so every test boots the module afresh (`vi.resetModules()`): what the old per-instance
+// `authChecked` flag showed is observed as whether the next call sends `/api/test_auth` again.
 
 const { prompts, alerts, keypairs } = vi.hoisted(() => ({
     prompts: { answers: [] as string[], asked: [] as string[] },
@@ -28,7 +31,8 @@ vi.mock("../../util", () => ({
     },
 }));
 
-import { authFetch, NodeStorage } from "../nodeStorage";
+type ServerAuth = typeof import("../serverAuth");
+let auth$: ServerAuth;
 
 type FakeAuth = {
     password: string | null;
@@ -44,7 +48,9 @@ function jwtPublicKeyThumb(token: string): string {
 
 let auth: FakeAuth;
 
-beforeEach(() => {
+beforeEach(async () => {
+    vi.resetModules();
+    auth$ = await import("../serverAuth");
     auth = { password: null, registered: new Set(), calls: [], loginStatus: 200 };
     prompts.answers = [];
     prompts.asked = [];
@@ -92,22 +98,27 @@ afterEach(() => {
 });
 
 const paths = () => auth.calls.map((call) => call.path);
+/** Whether the module holds the check as done: a checked module sends no `/api/test_auth` for the next call. */
+async function checkedState(): Promise<boolean> {
+    const before = paths().filter((path) => path === "/api/test_auth").length;
+    await auth$.ensureAuth();
+    return paths().filter((path) => path === "/api/test_auth").length === before;
+}
 
 describe("first run", () => {
     it("sets the password once and logs this browser in with the same digest, so the next request is authorized", async () => {
         prompts.answers = ["hunter2"];
-        const storage = new NodeStorage();
-        await storage.ensureAuth();
+        await auth$.ensureAuth();
         expect(prompts.asked).toEqual(["set password"]);
         expect(paths()).toEqual(["/api/test_auth", "/api/crypto", "/api/set_password", "/api/login"]);
         expect(auth.password).toBe("digest(hunter2)");
         expect(auth.calls[3].body.password).toBe("digest(hunter2)");
         expect(auth.registered.size).toBe(1);
-        expect(storage.authChecked).toBe(true);
+        expect(await checkedState()).toBe(true);
         expect(alerts.alertError).not.toHaveBeenCalled();
         // A later call needs no check and the signed token is accepted.
         const before = auth.calls.length;
-        const token = await storage.getProxyAuth();
+        const token = await auth$.getNodeServerProxyAuth();
         expect(auth.calls.length).toBe(before);
         expect(auth.registered.has(jwtPublicKeyThumb(token))).toBe(true);
     });
@@ -117,12 +128,14 @@ describe("existing server", () => {
     it("asks for the password when this browser's key is unknown and logs in once", async () => {
         auth.password = "digest(pw)";
         prompts.answers = ["pw"];
-        const storage = new NodeStorage();
-        await storage.ensureAuth();
+        await auth$.ensureAuth();
         expect(prompts.asked).toEqual(["input password"]);
         expect(paths()).toEqual(["/api/test_auth", "/api/crypto", "/api/login"]);
-        expect(storage.authChecked).toBe(true);
-        const fresh = new NodeStorage();
+        expect(await checkedState()).toBe(true);
+        // A fresh module state (a new tab: the old second `NodeStorage` instance) checks once more,
+        // finds the key known, and asks for nothing.
+        vi.resetModules();
+        const fresh: ServerAuth = await import("../serverAuth");
         await fresh.ensureAuth();
         expect(prompts.asked).toEqual(["input password"]);
         expect(paths().slice(3)).toEqual(["/api/test_auth"]);
@@ -131,21 +144,28 @@ describe("existing server", () => {
     it("reports a failed login, throws, and stays unchecked", async () => {
         auth.password = "digest(pw)";
         prompts.answers = ["wrong"];
-        const storage = new NodeStorage();
-        await expect(storage.ensureAuth()).rejects.toBe("Wrong password");
+        await expect(auth$.ensureAuth()).rejects.toBe("Wrong password");
         expect(alerts.alertError).toHaveBeenCalledWith("Wrong password");
         expect(alerts.waitAlert).toHaveBeenCalledTimes(1);
-        expect(storage.authChecked).toBe(false);
+        // Unchecked: the next call runs the check (and the prompt) again, and succeeds.
         prompts.answers = ["pw"];
-        await storage.ensureAuth();
-        expect(storage.authChecked).toBe(true);
+        expect(await checkedState()).toBe(false);
+        expect(prompts.asked).toEqual(["input password", "input password"]);
+        expect(paths()).toEqual([
+            "/api/test_auth",
+            "/api/crypto",
+            "/api/login",
+            "/api/test_auth",
+            "/api/crypto",
+            "/api/login",
+        ]);
+        expect(await checkedState()).toBe(true);
     });
 
     it("runs one check and one prompt for parallel requests", async () => {
         auth.password = "digest(pw)";
         prompts.answers = ["pw"];
-        const storage = new NodeStorage();
-        await Promise.all([storage.ensureAuth(), storage.ensureAuth(), storage.getProxyAuth()]);
+        await Promise.all([auth$.ensureAuth(), auth$.ensureAuth(), auth$.getNodeServerProxyAuth()]);
         expect(prompts.asked).toEqual(["input password"]);
         expect(paths().filter((path) => path === "/api/test_auth")).toHaveLength(1);
         expect(paths().filter((path) => path === "/api/login")).toHaveLength(1);
@@ -153,10 +173,10 @@ describe("existing server", () => {
 });
 
 describe("authFetch", () => {
-    it("signs the request with the shared instance and keeps the caller's headers and options", async () => {
+    it("signs the request with the module's auth state and keeps the caller's headers and options", async () => {
         auth.password = "digest(pw)";
         prompts.answers = ["pw"];
-        const response = await authFetch("/api/ping", {
+        const response = await auth$.authFetch("/api/ping", {
             method: "POST",
             headers: { "x-custom": "1" },
             cache: "no-store",
@@ -169,14 +189,13 @@ describe("authFetch", () => {
         expect(init.method).toBe("POST");
         expect(init.cache).toBe("no-store");
         expect(prompts.asked).toEqual(["input password"]);
-        await authFetch("/api/ping");
+        await auth$.authFetch("/api/ping");
         expect(prompts.asked).toEqual(["input password"]);
     });
 
     it("runs beforeDispatch after the authentication and the signing, right before the request, and a throw stops it (7b)", async () => {
-        // A fresh shared instance, so the authentication runs inside this test.
-        vi.resetModules();
-        const { authFetch: freshAuthFetch } = (await import("../nodeStorage")) as typeof import("../nodeStorage");
+        // The module state is fresh (`beforeEach`), so the authentication runs inside this test.
+        const { authFetch: freshAuthFetch } = auth$;
         auth.password = "digest(pw)";
         prompts.answers = ["pw"];
         const order: string[] = [];

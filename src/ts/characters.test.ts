@@ -14,7 +14,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined), confirm: vi.fn() },
 }));
 
-vi.mock("./storage/nodeStorage", () => ({
+vi.mock("./storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
 }));
 vi.mock("./alert", () => ({
@@ -29,6 +29,7 @@ vi.mock("./alert", () => ({
 }));
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", removeConfirm: "?", removeConfirm2: "?" },
+    changeLanguage: vi.fn(),
 }));
 vi.mock("./process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -47,10 +48,10 @@ vi.mock("./characterCards", () => ({ importCharacter: vi.fn() }));
 
 type Sync = typeof import("./storage/resourceSync.svelte");
 type Client = typeof import("./storage/resourceClient");
-type Stores = typeof import("./stores.svelte");
 type Characters = typeof import("./characters");
 type Bootstrap = typeof import("./bootstrap");
-type DatabaseModule = typeof import("./storage/database.svelte");
+type CharacterStore = typeof import("./storage/characterStore.svelte");
+type SelectionModule = typeof import("./storage/selection.svelte");
 
 function character(chaId: string, name: string, extra: Record<string, unknown> = {}) {
     return { chaId, name, type: "character", chats: [], chatPage: 0, ...extra };
@@ -70,23 +71,24 @@ async function boot() {
     await materialize(fake);
     server.current = fake;
 
-    const stores: Stores = await import("./stores.svelte");
     const client: Client = await import("./storage/resourceClient");
     const sync: Sync = await import("./storage/resourceSync.svelte");
     const characters: Characters = await import("./characters");
     const bootstrap: Bootstrap = await import("./bootstrap");
-    const database: DatabaseModule = await import("./storage/database.svelte");
+    const characterStore: CharacterStore = await import("./storage/characterStore.svelte");
+    const selectionModule: SelectionModule = await import("./storage/selection.svelte");
 
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(-1);
+    // The real boot installs the records (Phase 6 slice 10); the tab starts at home.
+    bootstrap.installBootRecords(snapshot);
+    selectionModule.selectCharacter(null);
     fake.requests.length = 0;
     sync.startResourceSync();
     await tick();
     await sync.flushResources();
     fake.requests.length = 0;
-    return { fake, stores, sync, characters, db: () => stores.DBState.db as any };
+    return { fake, sync, characters, characterList: () => characterStore.characterList() as any[] };
 }
 
 beforeEach(() => {
@@ -104,22 +106,22 @@ afterEach(() => {
 
 describe("trash and restore", () => {
     it("saves the trash time of a character that is not selected", async () => {
-        const { fake, sync, characters, db } = await boot();
+        const { fake, sync, characters, characterList } = await boot();
         await characters.removeChar("b", "Bob", "normal");
-        expect(db().characters[1].trashTime).toEqual(expect.any(Number));
+        expect(characterList()[1].trashTime).toEqual(expect.any(Number));
         await sync.flushResources();
         expect(fake.data("characters", "b").trashTime).toEqual(expect.any(Number));
         expect(fake.data("characterOrder", "main")).toEqual(["a"]);
     });
 
     it("saves a restore from the trash, so the character is not deleted by a later boot", async () => {
-        const { fake, sync, characters, db } = await boot();
+        const { fake, sync, characters, characterList } = await boot();
         await characters.removeChar("b", "Bob", "normal");
         await sync.flushResources();
         expect(fake.data("characters", "b").trashTime).toEqual(expect.any(Number));
 
         characters.restoreChar("b");
-        expect(db().characters[1].trashTime).toBeUndefined();
+        expect(characterList()[1].trashTime).toBeUndefined();
         await sync.flushResources();
         expect(fake.data("characters", "b").trashTime).toBeUndefined();
         expect(fake.data("characterOrder", "main")).toEqual(["a", "b"]);

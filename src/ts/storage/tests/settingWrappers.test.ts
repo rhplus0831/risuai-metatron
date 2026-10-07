@@ -10,8 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // other preset's value. `SettingNumber` also keeps a cleared input empty (the record holds `null`;
 // Astra challenge point 3), and `SettingSelect` still writes its hidden-option fallback once.
 // Since Phase 6 slice 6 the wrappers get the real context (the settings record views), and
-// `SettingSegmented` binds through the registry like the others (it bound `DBState.db[bindKey]`);
-// `SettingRenderer` builds that context and shows an item by its condition over the views.
+// `SettingSegmented` binds through the registry like the others (it bound the aggregate's field);
+// `SettingRenderer` builds that context and shows an item by its condition over the views. The
+// fixture is installed into the records (slice 10: no aggregate), and the presets are read back
+// through `settings.presets`.
 
 vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 vi.mock("../../alert", () => ({
@@ -29,11 +31,13 @@ vi.mock("../../process/modules", () => ({
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 
 import type { SettingContext, SettingItem } from "../../setting/types";
-import { DBState } from "../../stores.svelte";
-import { changeToPreset, setDatabase, type Database } from "../database.svelte";
+import type { Database } from "../database.svelte";
+import { changeToPreset } from "../presets.svelte";
 import { llmSecretState, setMaskedSecrets } from "../llmSecrets.svelte";
 import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
+import { recordData } from "../records.svelte";
 import { selectPreset } from "../selection.svelte";
+import { installFlatDatabase } from "./installFlatDatabase";
 import SettingCheck from "src/lib/Setting/Wrappers/SettingCheck.svelte";
 import SettingColor from "src/lib/Setting/Wrappers/SettingColor.svelte";
 import SettingNumber from "src/lib/Setting/Wrappers/SettingNumber.svelte";
@@ -47,12 +51,10 @@ import { activePersona, activePreset, settings } from "../settingsViews.svelte";
 import { accessibilitySettingsItems } from "../../setting/accessibilitySettingsData";
 import { chatFormatSettingsItems } from "../../setting/chatFormatSettingsData";
 
-type AnyDb = Record<string, any>;
 type Mounted = ReturnType<typeof mount>;
 
 const mounted: Mounted[] = [];
-const db = () => DBState.db as unknown as AnyDb;
-const preset = (id: string) => db().botPresets.find((entry: { id: string }) => entry.id === id);
+const preset = (id: string) => (settings.presets as unknown as Record<string, any>[]).find((entry) => entry.id === id)!;
 
 /** The context `SettingRenderer` builds: the settings record views (Phase 6 slice 6). */
 function ctx(): SettingContext {
@@ -107,8 +109,7 @@ function chooseOption(element: HTMLSelectElement, value: string) {
 }
 
 function boot() {
-    DBState.db = {} as Database;
-    setDatabase({
+    installFlatDatabase({
         characters: [],
         botPresets: [
             {
@@ -151,7 +152,6 @@ afterEach(async () => {
     const instances = mounted.splice(0);
     await Promise.all(instances.map((instance) => unmount(instance)));
     document.body.replaceChildren();
-    DBState.db = {} as Database;
 });
 
 describe("SettingNumber", () => {
@@ -194,7 +194,7 @@ describe("SettingNumber", () => {
         typeInto(input, "");
         flushSync();
         expect(preset("a").maxResponse).toBeNull();
-        expect(db().maxResponse).toBeNull();
+        expect(activePreset.maxResponse).toBeNull();
         expect(input.value).toBe("");
         expect(number.onChange).toHaveBeenCalledTimes(1);
         expect(number.onChange).toHaveBeenCalledWith(null, expect.anything());
@@ -459,7 +459,7 @@ describe("SettingRenderer", () => {
         expect(checkbox()).not.toBeNull();
         checkbox()!.checked = true;
         checkbox()!.dispatchEvent(new Event("change", { bubbles: true }));
-        expect(db().alwaysScrollToNewMessage).toBe(true);
+        expect(recordData<Record<string, unknown>>("ui")!.alwaysScrollToNewMessage).toBe(true);
         expect(settings.ui.alwaysScrollToNewMessage).toBe(true);
 
         changeToPreset("b", false);

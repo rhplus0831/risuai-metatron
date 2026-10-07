@@ -76,9 +76,7 @@ vi.mock("src/ts/plugins/apiV3/pluginContext", async () => {
 vi.mock("src/ts/plugins/pluginHooks", () => ({
     pluginHooks: { providerOptions: new Map([["legacy", { tokenizer: "llama" }]]) },
 }));
-// The stores' module effect (`modules.ts`' `getModules`) reads the selected chat; no module is enabled here.
-vi.mock("src/ts/storage/database.svelte", () => ({ getCurrentChat: () => undefined }));
-vi.mock("src/ts/storage/nodeStorage", () => ({
+vi.mock("src/ts/storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => stubs.fetch(path, init),
 }));
 vi.mock("src/ts/storage/resourceClient", () => ({
@@ -100,8 +98,6 @@ vi.mock("../../mcp/mcp", () => ({
     encodeToolCall: stubs.encodeToolCall,
 }));
 
-import { DBState } from "src/ts/stores.svelte";
-import { installForwarding } from "src/ts/storage/forwarding.svelte";
 import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
 import { selectCharacter, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { activePreset } from "src/ts/storage/settingsViews.svelte";
@@ -145,8 +141,9 @@ function assembleFixture(unloaded: readonly string[]) {
 }
 
 /**
- * The settings installed in the records (as `setDatabaseLite` installs a database), since the
- * transport reads them through the record views (Phase 6 slice 7): `stubs.db`'s preset fields in
+ * The settings installed in the records (as the removed `setDatabaseLite` installed a database;
+ * there is no whole-database object since Phase 6 slice 10), since the transport reads them
+ * through the record views (Phase 6 slice 7): `stubs.db`'s preset fields in
  * each of the two presets, its section fields in their sections, two personas, two characters
  * (the transport reads the selected one, Phase 6 slice 8); preset-1, persona-1, and char-1
  * selected.
@@ -168,7 +165,6 @@ function installSettings() {
     const characters = fixtureCharacters();
     raw.characters = characters;
     initializeRecords(takeRecordFields(raw));
-    DBState.db = installForwarding(raw) as never;
     assembleFixture([]);
     selectPreset("preset-1");
     selectPersona("persona-1");

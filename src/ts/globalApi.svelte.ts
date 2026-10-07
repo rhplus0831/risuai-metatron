@@ -4,33 +4,23 @@ import { checkNullish, sleep } from "./util";
 import { v4 as uuidv4, v4 } from "uuid";
 import { get } from "svelte/store";
 import streamSaver from "streamsaver";
-import { setDatabase, defaultSdDataFunc, appVer, appSubVer } from "./storage/database.svelte";
-import {
-    botMakerMode,
-    loadedStore,
-    DBState,
-    LoadingStatusState,
-    ReloadGUIPointer,
-    bodyIntercepterStore,
-} from "./stores.svelte";
+import { defaultSdDataFunc, appVer, appSubVer } from "./storage/database.svelte";
+import { botMakerMode, loadedStore, LoadingStatusState, ReloadGUIPointer, bodyIntercepterStore } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertConfirm, alertError, alertMd, alertNormal, alertNormalWait, alertSelect, waitAlert } from "./alert";
 import { hasher } from "./parser/parser.svelte";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
-import { startResourceSync } from "./storage/resourceSync.svelte";
 import { chatList, currentChatRef, selectChat, selectedChat } from "./storage/chatStore.svelte";
 import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storage/resourceClient";
-import { AutoStorage } from "./storage/autoStorage";
+import { readAsset, writeAsset } from "./storage/assetClient";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
 import { language } from "src/lang";
 import { updateGuisize } from "./gui/guisize";
 import { moduleUpdate } from "./process/modules";
 import { isLocalNetworkUrl } from "./network/localNetwork";
-import { getNodeServerProxyAuth } from "./storage/nodeStorage";
-
-export const forageStorage = new AutoStorage();
+import { getNodeServerProxyAuth } from "./storage/serverAuth";
 
 interface fetchLog {
     body: string;
@@ -111,7 +101,7 @@ async function loadFileSrc(loc: string): Promise<string> {
     // A missing or empty file is never registered or shown: the read resolves `""` and is tried again.
     const read = () =>
         (bytes ??= (async () => {
-            const data = (await forageStorage.getItem(loc)) as unknown as Uint8Array | null;
+            const data = (await readAsset(loc)) as unknown as Uint8Array | null;
             if (!data || data.length === 0) {
                 throw new MissingFileError(loc);
             }
@@ -159,7 +149,7 @@ async function loadFileSrc(loc: string): Promise<string> {
  * @returns {Promise<Uint8Array>} - A promise that resolves to the data of the image file.
  */
 export async function readImage(data: string) {
-    return (await forageStorage.getItem(data)) as unknown as Uint8Array;
+    return (await readAsset(data)) as unknown as Uint8Array;
 }
 
 /**
@@ -186,7 +176,7 @@ export async function saveAsset(data: Uint8Array, customId: string = "", fileNam
         fileExtension = fileName.split(".").pop();
     }
     let form = `assets/${id}.${fileExtension}`;
-    await forageStorage.setItem(form, data);
+    await writeAsset(form, data);
     return form;
 }
 
@@ -197,18 +187,10 @@ export async function saveAsset(data: Uint8Array, customId: string = "", fileNam
  * @returns {Promise<Uint8Array>} - A promise that resolves to the data of the loaded asset file.
  */
 export async function loadAsset(id: string) {
-    return (await forageStorage.getItem(id)) as unknown as Uint8Array;
+    return (await readAsset(id)) as unknown as Uint8Array;
 }
 
 export { saving } from "./storage/resourceSync.svelte";
-
-/**
- * Starts saving `DBState.db` to the server resources, one record per collection and per character
- * (`storage/resourceSync.svelte.ts`). Called once after the database is loaded.
- */
-export function saveDb() {
-    startResourceSync();
-}
 
 let usingSw = false;
 

@@ -1,5 +1,4 @@
 import fc from "fast-check";
-import { writable } from "svelte/store";
 import { describe, expect, test, vi } from "vitest";
 import { risuChatParser, risuUnescape } from "../../parser.svelte";
 import { trimVarPrefix } from "./lib";
@@ -11,9 +10,7 @@ vi.mock(
     () =>
         ({
             appVer: "1234.5.67",
-            getCurrentCharacter: () => ({}),
-            getDatabase: () => ({}),
-        }) as typeof import("../../../storage/database.svelte"),
+        }) as unknown as typeof import("../../../storage/database.svelte"),
 );
 
 vi.mock(import("../../../globalApi.svelte"), () => ({
@@ -34,33 +31,8 @@ const varStorage = vi.hoisted(
         ),
 );
 
-vi.mock(import("../../../stores.svelte"), () => {
-    return {
-        DBState: {
-            db: {
-                characters: [
-                    {
-                        chaId: "c",
-                        chatPage: 0,
-                        chats: [
-                            {
-                                id: "k",
-                                scriptstate: varStorage,
-                            },
-                        ],
-                        defaultVariables: "",
-                    },
-                ],
-                globalChatVariables: varStorage,
-                templateDefaultVariables: "",
-            },
-        },
-        selIdState: {
-            selId: 0,
-        },
-        selectedCharID: writable(0),
-    } as unknown as typeof import("../../../stores.svelte");
-});
+// `stores.svelte` runs module effects over the selection and the chat; nothing under test reads it.
+vi.mock(import("../../../stores.svelte"), () => ({}) as unknown as typeof import("../../../stores.svelte"));
 
 //#endregion
 

@@ -1,7 +1,7 @@
 <script lang="ts">
     // Test-only: the function-binding wrapper pattern over `TextInput` (proof 1: a top-level and a
     // nested `bindPath` key, and the persona fields), through the pre-slice-6 registry copy over
-    // `DBState.db` (`spikeRegistry.ts`), which reaches the prototype.
+    // the spike's root holder (`spikeRegistry.ts`), which reaches the prototype.
     import type { SettingItem, SettingContext } from "src/ts/setting/types";
     import { candidateGetSettingValue, candidateSetSettingValue } from "./spikeRegistry";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";

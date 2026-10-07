@@ -1,4 +1,3 @@
-import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain } from "../storage/tests/mutationStoresHarness";
 
@@ -21,7 +20,7 @@ const { server, alerts, picker } = vi.hoisted(() => ({
     picker: { answer: async (): Promise<{ name: string; data: Uint8Array }> => ({ name: "", data: new Uint8Array() }) },
 }));
 
-vi.mock("../storage/nodeStorage", () => ({
+vi.mock("../storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -73,11 +72,11 @@ async function boot() {
     const booted = await bootMutations((fake) => {
         server.current = fake;
     });
-    const { characterStore, stores, db, sync, fake } = booted;
-    const index = (chaId: string) => db().characters.findIndex((entry: any) => entry?.chaId === chaId);
+    const { characterStore, selectionModule, characterList, sync, fake } = booted;
+    const index = (chaId: string) => characterList().findIndex((entry: any) => entry?.chaId === chaId);
     const alpha = characterStore.addCharacter({ type: "character", name: "Alpha", globalLore: [lore("A", "a")] });
     const beta = characterStore.addCharacter({ type: "character", name: "Beta", globalLore: [lore("B", "b")] });
-    stores.selectedCharID.set(index(alpha));
+    selectionModule.selectCharacter(alpha);
     await sync.flushResources();
     fake.requests.length = 0;
     // `util` stays real (a `vi.mock` wrapper would outlive `vi.resetModules`); the dialog is spied per graph.
@@ -123,11 +122,11 @@ afterEach(() => {
 
 describe("importLoreBook(global) writes the character captured before the dialog", () => {
     it("appends the entries to that character after the selection moved, and the write is saved", async () => {
-        const { run, alpha, beta, index, stores, loreOf, sync, record, fake } = await boot();
-        await run(nativeFile([lore("New", "n")]), () => stores.selectedCharID.set(index(beta)));
+        const { run, alpha, beta, index, selectionModule, loreOf, sync, record, fake } = await boot();
+        await run(nativeFile([lore("New", "n")]), () => selectionModule.selectCharacter(beta));
         expect(loreOf(alpha)).toEqual([upgraded(lore("A", "a")), upgraded(lore("New", "n"))]);
         expect(loreOf(beta)).toEqual([upgraded(lore("B", "b"))]);
-        expect(get(stores.selectedCharID)).toBe(index(beta));
+        expect(selectionModule.selectedIndex()).toBe(index(beta));
         expect(alerts.error).not.toHaveBeenCalled();
         await sync.flushResources();
         expect(record("characters", alpha).globalLore).toEqual([upgraded(lore("A", "a")), upgraded(lore("New", "n"))]);
@@ -148,7 +147,8 @@ describe("importLoreBook(global) writes the character captured before the dialog
     });
 
     it("a character deleted while the dialog was open gets nothing and is not recreated", async () => {
-        const { run, alpha, beta, characterStore, loreOf, sync, mirrorText, serverText, fake, db } = await boot();
+        const { run, alpha, beta, characterStore, loreOf, sync, mirrorText, serverText, fake, characterList } =
+            await boot();
         let mirror = "";
         let serverBefore = "";
         let batches = 0;
@@ -164,7 +164,7 @@ describe("importLoreBook(global) writes the character captured before the dialog
         await sync.flushResources();
         expect(serverText()).toBe(serverBefore);
         expect(fake.batchCount()).toBe(batches);
-        expect(db().characters.some((entry: any) => entry.chaId === alpha)).toBe(false);
+        expect(characterList().some((entry: any) => entry.chaId === alpha)).toBe(false);
         expect(fake.record("characters", alpha)).toBeNull();
         expect(loreOf(beta)).toEqual([upgraded(lore("B", "b"))]);
     });

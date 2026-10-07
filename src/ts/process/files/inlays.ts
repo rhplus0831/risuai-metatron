@@ -9,7 +9,6 @@ import {
     RESOURCE_KIND,
     type ResourceRecord,
 } from "../../../../shared/resources.ts";
-import { forageStorage } from "../../globalApi.svelte";
 import {
     deleteResource,
     getResource,
@@ -17,7 +16,8 @@ import {
     ResourceConflictError,
     readKinds,
 } from "../../storage/resourceClient";
-import { authFetch } from "../../storage/nodeStorage";
+import { authFetch } from "../../storage/serverAuth";
+import { readAsset, writeAsset } from "../../storage/assetClient";
 
 /**
  * Inlays (media and signatures referenced from chat text as `{{inlay::id}}`, `{{inlayed::id}}`, or
@@ -255,7 +255,7 @@ async function getBlob(meta: InlayResource): Promise<Blob | null> {
     if (!pending) {
         pending = (async () => {
             try {
-                const bytes = await forageStorage.getItem(key);
+                const bytes = await readAsset(key);
                 if (!bytes) {
                     return null;
                 }
@@ -331,7 +331,7 @@ async function storeMedia(
     const key = await mediaKey(bytes, ext);
     check?.();
     if (!blobCache.has(key)) {
-        await forageStorage.setItem(key, bytes);
+        await writeAsset(key, bytes);
         cacheBlob(key, new Blob([asBuffer(bytes)], { type: mimeOf({ ...meta, asset: key }) }));
     }
     return key;
@@ -637,7 +637,7 @@ export function repairInlayMedia(id: string, img: InlayAsset): Promise<boolean> 
         if ((await mediaKey(bytes, meta.data.ext)) !== meta.data.asset) {
             return false;
         }
-        await forageStorage.setItem(meta.data.asset, bytes);
+        await writeAsset(meta.data.asset, bytes);
         cacheBlob(meta.data.asset, new Blob([asBuffer(bytes)], { type: mimeOf(meta.data) }));
         return true;
     });

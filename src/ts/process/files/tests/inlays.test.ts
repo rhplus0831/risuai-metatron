@@ -5,15 +5,15 @@ import { FakeResourceServer } from "../../../storage/tests/fakeResourceServer";
 import type { InlayAsset } from "../inlays";
 
 // Inlays over the server: metadata in the `inlays` resource, media bytes as content-addressed
-// assets. The fake resource server stands in for the routes; `forageStorage` is an in-memory asset
-// store; `/api/read` HEAD answers from it for `verifyInlay`.
+// assets. The fake resource server stands in for the routes; the `assetClient` mock is an in-memory
+// asset store; `/api/read` HEAD answers from it for `verifyInlay`.
 
 const { server, assets } = vi.hoisted(() => ({
     server: { current: null as any },
     assets: new Map<string, Uint8Array>(),
 }));
 
-vi.mock("../../../storage/nodeStorage", () => ({
+vi.mock("../../../storage/serverAuth", () => ({
     authFetch: async (path: string, init: RequestInit = {}) => {
         if (path === "/api/read" && init.method === "HEAD") {
             const key = Buffer.from(new Headers(init.headers).get("file-path")!, "hex").toString("utf-8");
@@ -27,19 +27,19 @@ vi.mock("../../../storage/nodeStorage", () => ({
     },
 }));
 
-vi.mock("../../../globalApi.svelte", () => ({
-    forageStorage: {
-        setItem: vi.fn(async (key: string, value: Uint8Array) => {
-            assets.set(key, new Uint8Array(value));
-        }),
-        getItem: vi.fn(async (key: string) => assets.get(key) ?? null),
-    },
+vi.mock("../../../storage/assetClient", () => ({
+    writeAsset: vi.fn(async (key: string, value: Uint8Array) => {
+        assets.set(key, new Uint8Array(value));
+    }),
+    readAsset: vi.fn(async (key: string) => {
+        const bytes = assets.get(key);
+        return bytes ? Buffer.from(bytes) : null;
+    }),
 }));
 
 vi.mock("uuid", () => ({ v4: vi.fn(() => "test-uuid-1234") }));
 vi.mock(import("src/ts/media"), () => ({ getImageType: vi.fn() }));
 vi.mock(import("src/ts/model/modellist"), () => ({ getModelInfo: vi.fn() }));
-vi.mock(import("src/ts/storage/database.svelte"), () => ({ getDatabase: vi.fn() }));
 vi.mock(import("src/ts/util"), () => ({ asBuffer: (arr: Uint8Array) => arr }) as typeof import("src/ts/util"));
 
 // happy-dom canvas getContext returns null
@@ -406,8 +406,8 @@ describe("writeInlayImage", () => {
         // A server job's callback that was cancelled meanwhile (slice 8a): `check` runs at the
         // start, after the image loaded, before the media write (after hashing), and before the
         // metadata write; a throw there leaves nothing newer behind.
-        const { forageStorage } = await import("../../../globalApi.svelte");
-        const setItem = forageStorage.setItem as unknown as { mock: { calls: unknown[][] } };
+        const { writeAsset } = await import("../../../storage/assetClient");
+        const setItem = writeAsset as unknown as { mock: { calls: unknown[][] } };
         const stopAt = (n: number) => {
             let calls = 0;
             return () => {

@@ -466,7 +466,7 @@ export function normalizePresets(input: unknown): botPreset[] {
 const nullablePresetFields = new Set<string>(PRESET_NULLABLE_FIELDS);
 
 /**
- * A preset field as the forwarding layer serves it (`src/ts/storage/forwarding.svelte.ts`) and the
+ * A preset field as the client's views serve it (`src/ts/storage/settingsViews.svelte.ts`) and the
  * server request layer reads it (`server/src/llm/settings.ts`): a missing record or value reads as
  * a fresh copy of its `PRESET_DEFAULTS` value, a `null` in an object or array field outside
  * `PRESET_NULLABLE_FIELDS` as a fresh default, any other value as it is. Never writes.

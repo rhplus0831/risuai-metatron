@@ -19,7 +19,7 @@ vi.mock("src/ts/storage/chatStore.svelte", () => ({
 vi.mock("src/ts/globalApi.svelte", () => ({ fetchNative: vi.fn(), openURL: vi.fn(), globalFetch: vi.fn() }));
 vi.mock("src/ts/alert", () => ({ alertError: vi.fn(), alertInput: vi.fn(async () => ""), alertNormal: vi.fn() }));
 vi.mock("src/ts/storage/collectionStore.svelte", () => ({ addAuthRefresh: vi.fn(), addModule: vi.fn() }));
-vi.mock("src/ts/stores.svelte", () => ({ DBState: { db: { mcpURLs: [], modules: [], enabledModules: [] } } }));
+vi.mock("src/ts/stores.svelte", () => ({}));
 vi.mock("src/ts/process/modules", () => ({ getModuleMcps: vi.fn(() => []) }));
 vi.mock("src/ts/process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: [] }));
 

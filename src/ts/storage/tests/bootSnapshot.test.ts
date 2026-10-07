@@ -23,8 +23,9 @@ import { StoreBackedServer } from "./storeBackedServer";
 // oracle, kept as a test. `fixtures/phase3/boot-snapshot.json` is `getDatabase({ snapshot: true })`
 // of a fresh pre-Phase 3 boot (`4914ccc7`, see the fixture README). Here the client boots the way
 // `loadData` does against the real server store (`storeBackedServer.ts`: the server normalizers
-// materialize every section and collection, so what `assembleDatabase` receives is what a fresh
-// server holds), and the same snapshot is compared by the rule:
+// materialize every section and collection, so what `installBootRecords` receives is what a fresh
+// server holds), and the same shape (`rootSnapshot()`, the legacy flat settings with `proxyKey: ""`
+// and the three selection indexes, plus the characters; Phase 6 slice 10) is compared by the rule:
 //
 // 1. every root field of the fixture outside `DROPPED_FIELDS` and the selection keys equals the
 //    post-phase value, a forwarded field read through the layer; the keep-on-switch fields are
@@ -41,12 +42,12 @@ import { StoreBackedServer } from "./storeBackedServer";
 // the value `saveCurrentPreset` already wrote into every preset before the phase, and (Phase 5 slice
 // 7b, `request-layer-and-llm-secrets.md`) the four `llmSecrets` credential fields the fixture left
 // absent that the write-only mirror now holds as `""` (`mirrorFields`: every credential field of
-// `DBState.db` is `""`). A field the pre-phase boot left `undefined` (dropped by the fixture's JSON)
+// the `llmSecrets` record is `""`). A field the pre-phase boot left `undefined` (dropped by the fixture's JSON)
 // that is still `undefined` is equal. The phase file records the result; anything else is a regression.
 
 const { server } = vi.hoisted(() => ({ server: { current: null as any } }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
 }));
 vi.mock("../../alert", () => ({
@@ -54,7 +55,7 @@ vi.mock("../../alert", () => ({
     alertNormal: vi.fn(),
     alertNormalWait: vi.fn(async () => undefined),
 }));
-// `setDatabase` applies the stored language; the locale tables are not under test.
+// `installBootRecords` applies the stored language; the locale tables are not under test.
 vi.mock("src/lang", () => ({ language: {}, changeLanguage: vi.fn() }));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -96,28 +97,29 @@ const withoutId = (value: unknown) => {
     return rest;
 };
 
-/** Boots the client the way `loadData` does for the data: read, seed, assemble, the real `setDatabase`. */
+/** Boots the client the way `loadData` does for the data: read, seed, the real `installBootRecords`. */
 async function bootFresh() {
     vi.resetModules();
     server.current = await StoreBackedServer.create();
-    const stores = await import("../../stores.svelte");
     const client = await import("../resourceClient");
     const sync = await import("../resourceSync.svelte");
     const bootstrap = await import("../../bootstrap");
-    const database = await import("../database.svelte");
-    const forwarding = await import("../forwarding.svelte");
+    const snapshots = await import("../snapshots.svelte");
+    const views = await import("../settingsViews.svelte");
+    const characterStore = await import("../characterStore.svelte");
     const selection = await import("../selection.svelte");
     const records = await import("../records.svelte");
     selection.selectPreset("");
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    database.setDatabase(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(-1);
-    const db = stores.DBState.db as any;
+    bootstrap.installBootRecords(snapshot);
+    // The compared shape: the legacy flat settings, plus the characters (`rootSnapshot` has none).
+    const root = snapshots.rootSnapshot();
+    root.characters = JSON.parse(JSON.stringify(characterStore.characterList()));
     return {
-        snapshot: database.getDatabase({ snapshot: true }) as Record<string, any>,
-        selected: JSON.parse(JSON.stringify(forwarding.selectedPreset(db))) as Record<string, unknown>,
-        presetCount: db.botPresets.length as number,
+        snapshot: root as Record<string, any>,
+        selected: JSON.parse(JSON.stringify(views.currentPresetRecord())) as Record<string, unknown>,
+        presetCount: views.settings.presets.length as number,
         records,
         close: () => server.current.close(),
     };

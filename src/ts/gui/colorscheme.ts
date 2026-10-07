@@ -1,6 +1,5 @@
 import { settings } from "../storage/settingsViews.svelte";
 import { get, writable } from "svelte/store";
-import { setDatabase } from "../storage/database.svelte";
 import { downloadFile } from "../globalApi.svelte";
 import { BufferToText, selectSingleFile } from "../util";
 import { alertError } from "../alert";

@@ -1,4 +1,4 @@
-import type { Database, character, groupChat } from "../database.ts";
+import type { character, groupChat } from "../database.ts";
 import {
     CbsLimitError,
     checkCbsClock,
@@ -11,7 +11,7 @@ import {
     type CbsLimits,
 } from "./limits.ts";
 import { registerCBS } from "./registry.ts";
-import type { CBSRegisterArg, CbsConditions, RegisterCallback, matcherArg } from "./types.ts";
+import type { CBSRegisterArg, CbsConditions, CbsDatabase, RegisterCallback, matcherArg } from "./types.ts";
 
 /**
  * The CBS evaluator, shared by the client and the server (PLAN.md Decision 2): the `{{...}}`
@@ -36,7 +36,7 @@ export type CbsHost = Omit<
 
 export type CbsParseArg = {
     chatID?: number;
-    db?: Database;
+    db?: CbsDatabase;
     chara?: string | character | groupChat;
     rmVar?: boolean;
     var?: { [key: string]: string };

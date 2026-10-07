@@ -26,7 +26,7 @@ vi.mock("../storage/resourceClient", () => ({
     listRevisions: mocks.listRevisions,
     ResourceEpochMismatchError: mocks.EpochMismatch,
 }));
-vi.mock("../storage/nodeStorage", () => ({
+vi.mock("../storage/serverAuth", () => ({
     getNodeServerProxyAuth: vi.fn(async () => `jwt-${++mocks.tokens.next}-${Date.now()}`),
 }));
 vi.mock("../storage/resourceSync.svelte", () => ({

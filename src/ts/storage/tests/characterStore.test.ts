@@ -1,4 +1,3 @@
-import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, m, plain, refK } from "./mutationStoresHarness";
 
@@ -13,7 +12,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -62,8 +61,8 @@ afterEach(() => {
 
 describe("updateCharacter", () => {
     it("sends a non-selected character's record in the next cycle with only the patched field changed", async () => {
-        const { fake, sync, characterStore, record, stores } = await boot();
-        expect(get(stores.selectedCharID)).toBe(-1);
+        const { fake, sync, characterStore, record, selectionModule } = await boot();
+        expect(selectionModule.selectedIndex()).toBe(-1);
         const before = record("characters", "c");
         expect(characterStore.updateCharacter("c", { desc: "patched" })).toBe(true);
         await sync.flushResources();
@@ -120,7 +119,7 @@ describe("updateCharacter", () => {
     });
 
     it("stores keys named like Object.prototype members as own properties, keeps the chats, and saves them", async () => {
-        const { sync, chat, characterStore, record, character, db, stores } = await boot();
+        const { sync, chat, characterStore, record, character, characterList, selectionModule } = await boot();
         const chatsBefore = character("c").chats;
         expect(characterStore.updateCharacter("c", { toString: "x", constructor: 1, desc: "d" })).toBe(true);
         expect(characterStore.updateCharacter("c", { valueOf: "v", hasOwnProperty: 2 })).toBe(true);
@@ -137,17 +136,17 @@ describe("updateCharacter", () => {
         expect(record("characters", "c")).not.toHaveProperty("chats");
         expect(server.current.texts("c", "k")).toEqual(["A", "B", "C", "D"]);
         // A later ordinary patch, and one on the selected character, still land on the same record.
-        stores.selectedCharID.set(0);
+        selectionModule.selectCharacterAt(0);
         characterStore.updateCharacter("c", { desc: "again", constructor: 3 });
         await sync.flushResources();
         expect(record("characters", "c")).toMatchObject({ desc: "again", constructor: 3, toString: "x" });
-        expect(db().characters).toHaveLength(1);
+        expect(characterList()).toHaveLength(1);
     });
 });
 
 describe("addCharacter", () => {
     it("creates the record, its chats, and the order entry, assigning a missing id", async () => {
-        const { fake, sync, characterStore, record, character, db } = await boot();
+        const { fake, sync, characterStore, record, character, settings } = await boot();
         const id = characterStore.addCharacter({
             name: "New",
             chats: [{ name: "first", message: [{ role: "user", data: "hi" }] }, { name: "second" }],
@@ -156,7 +155,7 @@ describe("addCharacter", () => {
         expect(character(id).chats.map((chat: any) => chat.name)).toEqual(["first", "second"]);
         expect(character(id).chats.every((chat: any) => typeof chat.id === "string")).toBe(true);
         expect(character(id).chats[0].message[0].chatId).toEqual(expect.any(String));
-        expect(db().characterOrder).toContain(id);
+        expect(settings.characterOrder).toContain(id);
         await sync.flushResources();
         expect(record("characters", id)).toMatchObject({ chaId: id, name: "New" });
         expect(record("characters", id)).not.toHaveProperty("chats");
@@ -179,7 +178,7 @@ describe("addCharacter", () => {
     });
 
     it("refuses malformed input, chats, and messages before anything is installed", async () => {
-        const { characterStore, refused, validation, db } = await boot();
+        const { characterStore, refused, validation, characterList } = await boot();
         for (const input of [
             "text",
             null,
@@ -195,7 +194,7 @@ describe("addCharacter", () => {
         ]) {
             await refused(() => characterStore.addCharacter(input), validation.MutationValidationError);
         }
-        expect(db().characters).toHaveLength(1);
+        expect(characterList()).toHaveLength(1);
     });
 });
 
@@ -247,8 +246,8 @@ describe("replaceCharacterFields", () => {
 // anything changes (Astra challenge point 5).
 describe("checkCharacterInput and the render key", () => {
     it("accepts a character whose reloadKeys is a number, NaN, or a list, keeps the mirror's key, and saves none", async () => {
-        const { sync, characterStore, record, character, db } = await boot();
-        (db().characters[0] as any).reloadKeys = 3;
+        const { sync, characterStore, record, character, characterList } = await boot();
+        (characterList()[0] as any).reloadKeys = 3;
         for (const reloadKeys of [7, Number.NaN, ["x"], undefined]) {
             expect(() => characterStore.checkCharacterInput({ chaId: "c", reloadKeys })).not.toThrow();
         }
@@ -318,9 +317,9 @@ describe("replaceCharacterAt", () => {
     });
 
     it("puts a different character at the index, saving it with its chats and deleting the old one", async () => {
-        const { fake, sync, characterStore, characterOrder, record, db } = await boot();
+        const { fake, sync, characterStore, characterOrder, record, settings, characterList } = await boot();
         const id = characterStore.replaceCharacterAt(0, { name: "Swap", chats: [{ message: [m(undefined, "s")] }] });
-        expect(db().characters.map((entry: any) => entry.chaId)).toEqual([id]);
+        expect(characterList().map((entry: any) => entry.chaId)).toEqual([id]);
         await sync.flushResources();
         expect(fake.record("characters", "c")).toBeNull();
         expect(fake.chat("c", "k")).toBeNull();
@@ -328,11 +327,11 @@ describe("replaceCharacterAt", () => {
         expect(fake.texts(id, fake.order(id)!.ids[0])).toEqual(["s"]);
         // Like the plugin branch it replaces, it leaves the order to the next repair (an add, a removal, a boot).
         characterOrder.checkCharOrder();
-        expect(plain(db().characterOrder)).toEqual([id]);
+        expect(plain(settings.characterOrder)).toEqual([id]);
         // The list's length appends.
         const appended = characterStore.replaceCharacterAt(1, { name: "Appended" });
         await sync.flushResources();
-        expect(db().characters.map((entry: any) => entry.chaId)).toEqual([id, appended]);
+        expect(characterList().map((entry: any) => entry.chaId)).toEqual([id, appended]);
         expect(record("characters", appended)).toMatchObject({ name: "Appended" });
     });
 });
@@ -351,18 +350,18 @@ describe("removeCharacter", () => {
     });
 
     it("deletes the character with its chats and order entry, and keeps the selection on its character", async () => {
-        const { fake, sync, characterStore, record, db, stores } = await boot();
+        const { fake, sync, characterStore, record, characterList, selectionModule } = await boot();
         const a = characterStore.addCharacter({ name: "A" });
         const b = characterStore.addCharacter({ name: "B" });
         await sync.flushResources();
-        stores.selectedCharID.set(1); // `a`
+        selectionModule.selectCharacterAt(1); // `a`
         // A removal after the selected index leaves it.
         expect(characterStore.removeCharacter(b)).toBe(true);
-        expect(db().characters[get(stores.selectedCharID)].chaId).toBe(a);
+        expect(characterList()[selectionModule.selectedIndex()].chaId).toBe(a);
         // A removal before it moves it down.
         expect(characterStore.removeCharacter("c")).toBe(true);
-        expect(get(stores.selectedCharID)).toBe(0);
-        expect(db().characters[0].chaId).toBe(a);
+        expect(selectionModule.selectedIndex()).toBe(0);
+        expect(characterList()[0].chaId).toBe(a);
         await sync.flushResources();
         expect(fake.record("characters", "c")).toBeNull();
         expect(fake.record("characters", b)).toBeNull();
@@ -371,7 +370,7 @@ describe("removeCharacter", () => {
         expect(record("characterOrder")).toEqual([a]);
         // Removing the selected character selects none.
         expect(characterStore.removeCharacter(a)).toBe(true);
-        expect(get(stores.selectedCharID)).toBe(-1);
+        expect(selectionModule.selectedIndex()).toBe(-1);
         await sync.flushResources();
         expect(fake.record("characters", a)).toBeNull();
         expect(record("characterOrder")).toEqual([]);
@@ -380,35 +379,39 @@ describe("removeCharacter", () => {
 
 describe("checkCharOrder", () => {
     it("appends missing characters, drops stale ids and empty folders, and skips trashed and playground characters", async () => {
-        const { characterOrder, characterStore, db } = await boot();
+        const { characterOrder, characterStore, settings } = await boot();
         const d = characterStore.addCharacter({ chaId: "d", name: "D" });
         const t = characterStore.addCharacter({ chaId: "t", name: "T" });
         characterStore.updateCharacter(t, { trashTime: 1 });
         characterStore.addCharacter({ chaId: "§playground", name: "P" });
-        db().characterOrder = [
+        settings.characterOrder = [
             "gone",
             { id: "f1", name: "empty", data: [] },
             { id: "f2", name: "f", data: ["c", "gone"] },
             null,
-        ];
+        ] as any;
         characterOrder.checkCharOrder();
-        expect(plain(db().characterOrder)).toEqual([{ id: "f2", name: "f", data: ["c"] }, d]);
+        expect(plain(settings.characterOrder)).toEqual([{ id: "f2", name: "f", data: ["c"] }, d]);
         // Trash removes from the order; restore puts it back.
-        expect(db().characterOrder).not.toContain(t);
+        expect(settings.characterOrder).not.toContain(t);
         characterStore.updateCharacter(t, { trashTime: undefined });
         characterOrder.checkCharOrder();
-        expect(db().characterOrder).toContain(t);
-        expect(db().characterOrder).not.toContain("§playground");
+        expect(settings.characterOrder).toContain(t);
+        expect(settings.characterOrder).not.toContain("§playground");
     });
 
     it("tolerates a folder without a member list (counted as empty) and finishes an emptied folder on the next call", async () => {
-        const { characterOrder, db } = await boot();
-        db().characterOrder = [{ id: "legacy", name: "no data" }, { id: "f", name: "f", data: ["gone"] }, "c"];
+        const { characterOrder, settings } = await boot();
+        settings.characterOrder = [
+            { id: "legacy", name: "no data" },
+            { id: "f", name: "f", data: ["gone"] },
+            "c",
+        ] as any;
         expect(() => characterOrder.checkCharOrder()).not.toThrow();
         // The legacy folder went; the folder emptied by the member filter survives one call.
-        expect(plain(db().characterOrder)).toEqual([{ id: "f", name: "f", data: [] }, "c"]);
+        expect(plain(settings.characterOrder)).toEqual([{ id: "f", name: "f", data: [] }, "c"]);
         characterOrder.checkCharOrder();
-        expect(plain(db().characterOrder)).toEqual(["c"]);
+        expect(plain(settings.characterOrder)).toEqual(["c"]);
     });
 
     it("is the same function the app and the plugin API import from globalApi", async () => {
@@ -468,11 +471,11 @@ describe("the readers' API (selectedCharacter, characterList, characterSnapshot)
     });
 
     it("characterList is the list in creation order, and selectedCharacter follows the id, not the position", async () => {
-        const { characterStore, stores } = await boot();
+        const { characterStore, characterList } = await boot();
         expect(characterStore.selectedCharacter()).toBeUndefined();
         const a = characterStore.addCharacter({ name: "A" });
         expect(characterStore.characterList().map((item) => item.chaId)).toEqual(["c", a]);
-        expect(characterStore.characterList()[1]).toBe(stores.DBState.db.characters[1]);
+        expect(characterStore.characterList()[1]).toBe(characterList()[1]);
         characterStore.selectCharacter(a);
         const selected = characterStore.selectedCharacter();
         characterStore.removeCharacter("c");

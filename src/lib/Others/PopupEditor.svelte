@@ -7,7 +7,6 @@
     import { ParseMarkdown, risuChatParser } from "src/ts/parser/parser.svelte";
     import { tokenize } from "src/ts/tokenizer";
     import Toggles from "../SideBars/Toggles.svelte";
-    import { getCurrentCharacter } from "src/ts/storage/database.svelte";
 
     let languageMode = $state(popUpEditorStore.language || "markdown");
     let previewing = $state(false);

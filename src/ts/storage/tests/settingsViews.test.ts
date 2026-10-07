@@ -5,10 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Phase 6 slice 6 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/readers-settings-pages.md`):
 // the settings record views (`settingsViews.svelte.ts`) that the settings pages and the registry
-// read and write instead of `DBState.db`, over the production layer installed by `setDatabase`.
-// The facade (`DBState.db`'s accessors, pinned by `forwarding.test.ts`) is the independent oracle:
-// every view must read what the facade reads under the root name and write where the facade
-// writes. Covered: `activePreset` (its own field names for the three root aliases, tracked reads
+// read and write, over the records a fixture installs (`installFlatDatabase`). The records
+// themselves (`records.svelte.ts`, read under the root names through the shared partition tables,
+// not through the views module) are the independent oracle: every view must read what the record
+// holds under the root name (the removed facade read the same: slice 10 took the aggregate away)
+// and write into the record. Covered: `activePreset` (its own field names for the three root aliases, tracked reads
 // and untracked writes, the read fallback that repairs the selection also inside a `$derived`, the
 // dropped write, the detached default of a missing field, the nullable `null`), `activePersona`
 // (the four aliases, the string defaults, a raw `largePortrait`), the record resolvers, the section
@@ -45,12 +46,13 @@ vi.mock("../../translator/translator", () => ({
     clearLLMCache: vi.fn(),
 }));
 
-import { DBState } from "../../stores.svelte";
-import { changeToPreset, setDatabase, type Database } from "../database.svelte";
-import { selectedPersona, selectedPreset } from "../forwarding.svelte";
+import { characterList } from "../characterStore.svelte";
+import type { Database } from "../database.svelte";
+import { changeToPreset } from "../presets.svelte";
 import { llmSecretState, setMaskedSecrets } from "../llmSecrets.svelte";
-import { setRecordWriteListener } from "../records.svelte";
+import { recordData, setRecordWriteListener, trackedRecord, type RecordKind } from "../records.svelte";
 import { selection, selectLoreBookPage, selectPersona, selectPreset } from "../selection.svelte";
+import { installFlatDatabase } from "./installFlatDatabase";
 import {
     ACTIVE_PRESET_FIELDS,
     activePersona,
@@ -90,22 +92,78 @@ import {
 import { createProbe, createWriterEffect } from "./reactiveProbe.svelte";
 import { evaluateInDerived } from "./derivedProbe.svelte";
 
-type AnyDb = Record<string, any>;
 type AnyView = Record<string, any>;
 
-const db = () => DBState.db as unknown as AnyDb;
-const preset = (id: string) => db().botPresets.find((entry: { id: string }) => entry.id === id);
-const persona = (id: string) => db().personas.find((entry: { id: string }) => entry.id === id);
+/** A record's live data, untracked (the oracle: never a view). */
+const record = (kind: string) => recordData<any>(kind as RecordKind);
+const preset = (id: string) => trackedRecord<any[]>("presets")!.find((entry) => entry.id === id);
+const persona = (id: string) => trackedRecord<any[]>("personas")!.find((entry) => entry.id === id);
 const text = (value: unknown) => JSON.stringify(plainClone(value));
 const queued = () => llmSecretState.queue.map((op) => op.request);
 const preset$ = activePreset as unknown as AnyView;
 const persona$ = activePersona as unknown as AnyView;
 const views = settings as unknown as Record<string, AnyView>;
 
-/** The root name the facade serves a preset field under (`PRESET_ROOT_ALIASES`, root → preset). */
+/** The root name a preset field is served under (`PRESET_ROOT_ALIASES`, root → preset). */
 const rootOfPresetField: Record<string, string> = Object.fromEntries(
     Object.entries(PRESET_ROOT_ALIASES).map(([root, field]) => [field, root]),
 );
+const presetFieldOfRoot: Record<string, string> = PRESET_ROOT_ALIASES;
+const personaFieldOfRoot: Record<string, string> = PERSONA_ROOT_ALIASES;
+const sectionOfField = new Map<string, SectionKind>(
+    (Object.values(SECTION_KIND) as SectionKind[]).flatMap((section) =>
+        (SECTION_FIELDS[section] as readonly string[]).map((field) => [field, section] as const),
+    ),
+);
+const forwardedPresetKeys = new Set<string>(FORWARDED_PRESET_KEYS as string[]);
+const phase1Kinds: Record<string, string> = {
+    botPresets: "presets",
+    modules: "modules",
+    plugins: "plugins",
+    pluginCustomStorage: "pluginStorage",
+};
+
+/**
+ * What the records hold under a root name, resolved from the shared partition (what the removed
+ * facade read): a section record's field; the selected preset's field (the record
+ * `selection.presetId` names, else the first, as the selection rule reads; its `PRESET_DEFAULTS`
+ * value when the record lacks it); the selected persona's field likewise (its string default when
+ * not a string); a collection's record, or a selectable one's `items`/`selectedId`; a Phase 1
+ * list's record. Throws for a name outside the partition.
+ */
+function root(key: string): unknown {
+    const section = sectionOfField.get(key);
+    if (section !== undefined) {
+        return record(section)?.[key];
+    }
+    if (forwardedPresetKeys.has(key)) {
+        const field = presetFieldOfRoot[key] ?? key;
+        const selected = preset(selection.presetId) ?? trackedRecord<any[]>("presets")?.[0];
+        return selected !== undefined && Object.hasOwn(selected, field)
+            ? selected[field]
+            : plainClone((PRESET_DEFAULTS as Record<string, unknown>)[field]);
+    }
+    if (Object.hasOwn(personaFieldOfRoot, key)) {
+        const field = personaFieldOfRoot[key];
+        const selected = persona(selection.personaId) ?? trackedRecord<any[]>("personas")?.[0];
+        const value = selected?.[field];
+        return typeof value === "string" ? value : (PERSONA_DEFAULTS as Record<string, string>)[field];
+    }
+    for (const [kind, field] of Object.entries(COLLECTION_FIELDS)) {
+        if (field === key) {
+            return Object.hasOwn(COLLECTION_SELECTION_FIELDS, kind) ? record(kind)?.items : record(kind);
+        }
+    }
+    for (const [kind, field] of Object.entries(COLLECTION_SELECTION_FIELDS)) {
+        if (field === key) {
+            return record(kind)?.selectedId;
+        }
+    }
+    if (Object.hasOwn(phase1Kinds, key)) {
+        return record(phase1Kinds[key]);
+    }
+    throw new Error(`${key} is not a root name of the partition`);
+}
 
 /** Every root name the views serve, built from the shared partition (not from the views module). */
 const ROOT_KEYS: string[] = [
@@ -155,8 +213,7 @@ function presetB() {
 }
 
 function boot(extra: Record<string, unknown> = {}) {
-    DBState.db = {} as Database;
-    setDatabase({
+    installFlatDatabase({
         characters: [],
         botPresets: [presetA(), presetB()],
         personas: [
@@ -207,11 +264,11 @@ function registryItems(): SettingItem[] {
     return out;
 }
 
-/** What the facade reads for an item's binding (the walk the registry made before slice 6). */
-function facadeRead(item: SettingItem): unknown {
-    const parts = (item.bindPath ?? item.bindKey!).split(".");
-    let value: any = DBState.db;
-    for (const part of parts) {
+/** What the records hold for an item's binding (the walk the registry made over the facade before slice 6). */
+function recordRead(item: SettingItem): unknown {
+    const [first, ...rest] = (item.bindPath ?? item.bindKey!).split(".");
+    let value: any = root(first);
+    for (const part of rest) {
         value = value?.[part];
     }
     return value;
@@ -230,21 +287,20 @@ beforeEach(() => {
 
 afterEach(() => {
     setRecordWriteListener(null);
-    DBState.db = {} as Database;
 });
 
 describe("activePreset", () => {
-    it("reads every field it serves as the facade reads it under its root name, and the record's own name and image", () => {
+    it("reads every field it serves as the record holds it under its root name (its default when missing), and the record's own name and image", () => {
         for (const field of ACTIVE_PRESET_FIELDS) {
             if (field === "name" || field === "image") {
                 continue;
             }
-            expect(preset$[field], field).toEqual(db()[rootOfPresetField[field] ?? field]);
+            expect(preset$[field], field).toEqual(root(rootOfPresetField[field] ?? field));
         }
         expect(activePreset.id).toBe("a");
         expect(activePreset.name).toBe("A");
         expect(activePreset.image).toBe("img-a");
-        // The keep-on-switch group is a providers field, and proxyKey stays the facade's.
+        // The keep-on-switch group is a providers field, and proxyKey is a credential (never served).
         for (const field of [...PRESET_KEEP_ON_SWITCH_FIELDS, "proxyKey"]) {
             expect(field in activePreset, field).toBe(false);
         }
@@ -254,15 +310,15 @@ describe("activePreset", () => {
         activePreset.temperature = 70;
         activePreset.reasonEffort = 3;
         activePreset.regex = [];
-        // A nested write reads the field first and lands in the record's own object, as through the facade.
+        // A nested write reads the field first and lands in the record's own object.
         activePreset.NAISettings.starter = "typed";
 
         expect(preset("a")).toMatchObject({ temperature: 70, reasonEffort: 3, regex: [] });
         expect(preset("a").NAISettings.starter).toBe("typed");
-        expect(db().temperature).toBe(70);
-        expect(db().reasoningEffort).toBe(3);
-        expect(db().presetRegex).toEqual([]);
-        expect(db().NAIsettings.starter).toBe("typed");
+        expect(root("temperature")).toBe(70);
+        expect(root("reasoningEffort")).toBe(3);
+        expect(root("presetRegex")).toEqual([]);
+        expect((root("NAIsettings") as { starter: string }).starter).toBe("typed");
         expect(preset("b")).toMatchObject({ temperature: 50, reasonEffort: 2 });
         expect(preset("b").NAISettings.starter).toBe("starter-b");
         expect(notified.length).toBeGreaterThan(0);
@@ -313,7 +369,7 @@ describe("activePreset", () => {
 
     it("falls back to the first preset on a read when the selected one is gone and selects it, also inside a $derived", () => {
         changeToPreset("b", false);
-        db().botPresets.splice(1, 1);
+        trackedRecord<any[]>("presets")!.splice(1, 1);
         expect(selection.presetId).toBe("b");
         expect(evaluateInDerived(() => activePreset.temperature)).toBe(80);
         expect(selection.presetId).toBe("a");
@@ -359,13 +415,13 @@ describe("activePreset", () => {
 
         activePreset.ooba = { ...defaultOoba, formating: { ...defaultOoba.formating, header: "h" } };
         expect(record.ooba.formating.header).toBe("h");
-        expect(db().ooba.formating.header).toBe("h");
+        expect((root("ooba") as { formating: { header: string } }).formating.header).toBe("h");
         activePreset.maxContext = 4001;
         expect(record.maxContext).toBe(4001);
     });
 
-    it("currentPresetRecord is the selected record itself, resolved as the facade resolves it", () => {
-        expect(currentPresetRecord()).toBe(selectedPreset(DBState.db));
+    it("currentPresetRecord is the selected record itself (its wrapper)", () => {
+        expect(currentPresetRecord()).toBe(preset("a"));
         currentPresetRecord()!.name = "renamed";
         expect(preset("a").name).toBe("renamed");
         expect(activePreset.name).toBe("renamed");
@@ -373,9 +429,9 @@ describe("activePreset", () => {
 });
 
 describe("activePersona", () => {
-    it("reads and writes the selected persona as the facade's four root aliases do", () => {
-        for (const [root, field] of Object.entries(PERSONA_ROOT_ALIASES)) {
-            expect(persona$[field], field).toBe(db()[root]);
+    it("reads and writes the selected persona as the record holds it under the four root aliases", () => {
+        for (const [rootKey, field] of Object.entries(PERSONA_ROOT_ALIASES)) {
+            expect(persona$[field], field).toBe(root(rootKey));
         }
         expect(activePersona.id).toBe("p1");
         expect(activePersona.largePortrait).toBe(true);
@@ -392,8 +448,8 @@ describe("activePersona", () => {
             icon: "icon-1b",
             largePortrait: false,
         });
-        expect(db().username).toBe("Ann2");
-        expect(db().userIcon).toBe("icon-1b");
+        expect(root("username")).toBe("Ann2");
+        expect(root("userIcon")).toBe("icon-1b");
         expect(persona("p2")).toMatchObject({ name: "Bob", personaPrompt: "pp2" });
         expect(new Set(notified)).toEqual(new Set(["personas"]));
 
@@ -408,7 +464,7 @@ describe("activePersona", () => {
         delete record.note;
         delete record.largePortrait;
         expect(activePersona.name).toBe(PERSONA_DEFAULTS.name);
-        expect(db().username).toBe(PERSONA_DEFAULTS.name);
+        expect(root("username")).toBe(PERSONA_DEFAULTS.name);
         expect(activePersona.note).toBe(PERSONA_DEFAULTS.note);
         expect(activePersona.largePortrait).toBeUndefined();
     });
@@ -424,59 +480,59 @@ describe("activePersona", () => {
 
         expect(evaluateInDerived(() => activePersona.name)).toBe("Ann");
         expect(selection.personaId).toBe("p1");
-        expect(currentPersonaRecord()).toBe(selectedPersona(DBState.db));
+        expect(currentPersonaRecord()).toBe(persona("p1"));
     });
 
     it("with no persona: the id and the record are undefined, the fields read their defaults", () => {
-        db().personas = [];
+        settings.personas = [];
         expect(activePersona.id).toBeUndefined();
         expect(currentPersonaRecord()).toBeUndefined();
         expect(activePersona.name).toBe(PERSONA_DEFAULTS.name);
         activePersona.name = "nobody";
-        expect(db().personas).toEqual([]);
+        expect(root("personas")).toEqual([]);
     });
 });
 
 describe("the section and collection views", () => {
-    it("read every section field as the facade does", () => {
+    it("read every section field as its record holds it", () => {
         for (const section of Object.values(SECTION_KIND) as SectionKind[]) {
             for (const field of SECTION_FIELDS[section]) {
-                expect(views[section][field], `${section}.${field}`).toEqual(db()[field]);
+                expect(views[section][field], `${section}.${field}`).toEqual(record(section)?.[field]);
             }
         }
     });
 
-    it("write a section field into its record, queued once, and read back through the facade", () => {
+    it("write a section field into its record, queued once", () => {
         settings.ui.useExperimental = true;
-        expect(db().useExperimental).toBe(true);
+        expect(record("ui").useExperimental).toBe(true);
         expect(notified).toEqual(["ui"]);
         settings.memoryTranslateMedia.translatorType = "deepl";
-        expect(db().translatorType).toBe("deepl");
+        expect(record("memoryTranslateMedia").translatorType).toBe("deepl");
         expect(notified).toEqual(["ui", "memoryTranslateMedia"]);
     });
 
     it("serve a collection as its record's wrapper, replace it on assignment, and the two selectable ones as items and selectedId", () => {
-        expect(settings.loreBook).toBe(db().loreBook);
-        expect(settings.presets).toBe(db().botPresets);
-        expect(settings.personas).toBe(db().personas);
-        expect(settings.translatorPresets.items).toBe(db().translatorPresets);
+        expect(settings.loreBook).toBe(trackedRecord("loreBook"));
+        expect(settings.presets).toBe(trackedRecord("presets"));
+        expect(settings.personas).toBe(trackedRecord("personas"));
+        expect(settings.translatorPresets.items).toBe(trackedRecord<any>("translatorPresets").items);
 
         settings.hotkeys = [{ key: "b", action: "reroll" }] as any;
-        expect(plainClone(db().hotkeys)).toEqual([{ key: "b", action: "reroll" }]);
+        expect(plainClone(root("hotkeys"))).toEqual([{ key: "b", action: "reroll" }]);
         expect(notified).toEqual(["hotkeys"]);
 
         settings.translatorPresets.selectedId = "t2";
-        expect(db().translatorPresetId).toBe("t2");
+        expect(root("translatorPresetId")).toBe("t2");
         expect(notified).toEqual(["hotkeys", "translatorPresets"]);
 
         settings.loreBook.push({ name: "L2", data: [] } as any);
-        expect(db().loreBook.map((entry: { name: string }) => entry.name)).toEqual(["L0", "L1", "L2"]);
+        expect((root("loreBook") as { name: string }[]).map((entry) => entry.name)).toEqual(["L0", "L1", "L2"]);
     });
 
-    it("selectedLoreBookPage reads the selected page, or 0 past the end, which it then selects, as the facade does", () => {
+    it("selectedLoreBookPage reads the selected page, or 0 past the end, which it then selects", () => {
         selectLoreBookPage(1);
         expect(selectedLoreBookPage()).toBe(1);
-        expect(db().loreBookPage).toBe(1);
+        expect(selection.loreBookPage).toBe(1);
         selectLoreBookPage(5);
         expect(evaluateInDerived(() => selectedLoreBookPage())).toBe(0);
         expect(selection.loreBookPage).toBe(0);
@@ -493,7 +549,7 @@ describe("credentials", () => {
         ]);
         expect(settings.llmSecrets.openAIKey).not.toBe("sk-view");
         expect(readSettingsRoot("claudeAPIKey")).not.toBe("sk-root");
-        expect(settings.llmSecrets.openAIKey).toBe(db().openAIKey);
+        expect(settings.llmSecrets.openAIKey).toBe(root("openAIKey"));
     });
 
     it("serves no proxyKey: neither activePreset nor the root resolver reaches the preset's credential", () => {
@@ -506,11 +562,11 @@ describe("credentials", () => {
 });
 
 describe("readSettingsRoot / writeSettingsRoot", () => {
-    it("serve every root name of the partition, reading what the facade reads", () => {
+    it("serve every root name of the partition, reading what the records hold under it", () => {
         expect(new Set(ROOT_KEYS).size).toBe(ROOT_KEYS.length);
         for (const key of ROOT_KEYS) {
             expect(isSettingsRootKey(key), key).toBe(true);
-            expect(readSettingsRoot(key), key).toEqual(db()[key]);
+            expect(readSettingsRoot(key), key).toEqual(root(key));
         }
     });
 
@@ -529,10 +585,10 @@ describe("readSettingsRoot / writeSettingsRoot", () => {
             expect(() => writeSettingsRoot(key, 1), key).toThrow();
         }
         expect(selection.presetId).toBe("a");
-        expect(db().characters).toEqual([]);
+        expect(characterList()).toEqual([]);
     });
 
-    it("write each kind of root name where the facade reads it: a section field, a preset alias, a persona alias, a collection, a selected id", () => {
+    it("write each kind of root name into its record: a section field, a preset alias, a persona alias, a collection, a selected id", () => {
         writeSettingsRoot("useExperimental", true);
         writeSettingsRoot("reasoningEffort", 9);
         writeSettingsRoot("NAIsettings", { starter: "root" });
@@ -542,14 +598,14 @@ describe("readSettingsRoot / writeSettingsRoot", () => {
         writeSettingsRoot("translatorPresetId", "t2");
         writeSettingsRoot("botPresets", [presetB()]);
 
-        expect(db().useExperimental).toBe(true);
+        expect(root("useExperimental")).toBe(true);
         expect(persona("p1").name).toBe("Root Ann");
-        expect(db().hotkeys).toEqual([]);
-        expect(db().translatorPresetId).toBe("t2");
-        expect(db().botPresets.map((entry: { id: string }) => entry.id)).toEqual(["b"]);
+        expect(root("hotkeys")).toEqual([]);
+        expect(root("translatorPresetId")).toBe("t2");
+        expect((root("botPresets") as { id: string }[]).map((entry) => entry.id)).toEqual(["b"]);
         // The preset writes went to `a` before the list was replaced.
         expect(notified).toContain("presets");
-        expect(db().temperature).toBe(50);
+        expect(root("temperature")).toBe(50);
     });
 
     it("the SettingsRootKey type admits the served names and refuses the others (checked by pnpm check)", () => {
@@ -568,7 +624,7 @@ describe("readSettingsRoot / writeSettingsRoot", () => {
         ];
         // @ts-expect-error the character list is not a settings field
         const characters: SettingsRootKey = "characters";
-        // @ts-expect-error a preset's credential stays the facade's
+        // @ts-expect-error a preset's credential is never a root name
         const proxyKey: SettingsRootKey = "proxyKey";
         // @ts-expect-error a selection index
         const presetIndex: SettingsRootKey = "botPresetsId";
@@ -586,10 +642,10 @@ describe("readSettingsRoot / writeSettingsRoot", () => {
     });
 
     it("drop a preset or persona write while the selection names none, as the views do", () => {
-        const before = text(db().botPresets);
+        const before = text(root("botPresets"));
         selectPreset("missing");
         writeSettingsRoot("temperature", 1);
-        expect(text(db().botPresets)).toBe(before);
+        expect(text(root("botPresets"))).toBe(before);
         selectPersona("missing");
         writeSettingsRoot("username", "lost");
         expect(persona("p1").name).toBe("Ann");
@@ -607,13 +663,13 @@ describe("the registry over the views", () => {
         }
     });
 
-    it("every bound item reads what the facade reads and writes where the facade reads", () => {
+    it("every bound item reads what the records hold and writes into them", () => {
         boot({ deeplOptions: { key: "dk", freeApi: false }, deeplXOptions: { url: "u", token: "t" } });
         const ctx = realCtx();
         const llmSecretFields = new Set<string>(SECTION_FIELDS.llmSecrets);
         const bound = registryItems().filter((item) => !item.getValue && (item.bindKey || item.bindPath));
         for (const item of bound) {
-            expect(getSettingValue(item, ctx), item.id).toEqual(facadeRead(item));
+            expect(getSettingValue(item, ctx), item.id).toEqual(recordRead(item));
         }
         for (const item of bound) {
             const root = (item.bindPath ?? item.bindKey!).split(".")[0];
@@ -631,7 +687,7 @@ describe("the registry over the views", () => {
                         : `value-of-${item.id}`;
             // The registry write without the item's side effect (a language download, a CSS update).
             setSettingValue({ ...item, onChange: undefined }, value, ctx);
-            expect(facadeRead(item), item.id).toEqual(value);
+            expect(recordRead(item), item.id).toEqual(value);
             expect(getSettingValue(item, ctx), item.id).toEqual(value);
         }
         // Every preset-bound write went to the selected preset, none to the other.
@@ -657,27 +713,27 @@ describe("the registry over the views", () => {
             onChange,
         };
         setSettingValue(path, "path-wins", ctx);
-        expect(db().deeplOptions.key).toBe("path-wins");
-        expect(db().theme).toBe("");
+        expect((root("deeplOptions") as { key: string }).key).toBe("path-wins");
+        expect(root("theme")).toBe("");
         expect(onChange).toHaveBeenCalledTimes(1);
         expect(onChange).toHaveBeenCalledWith("path-wins", ctx);
     });
 
     it("a bindPath into a null container creates it in the record and writes through it", () => {
         const ctx = realCtx();
-        expect(db().deeplXOptions).toBeNull();
+        expect(root("deeplXOptions")).toBeNull();
         const item: SettingItem = { id: "t.deeplx", type: "text", bindPath: "deeplXOptions.url" };
         // A reader that follows the value, as the wrapper's input does.
         const probe = createProbe(() => getSettingValue(item, ctx));
         expect(probe.seen).toEqual([undefined]);
         setSettingValue(item, "https://new", ctx);
         flushSync();
-        expect(plainClone(db().deeplXOptions)).toEqual({ url: "https://new" });
+        expect(plainClone(root("deeplXOptions"))).toEqual({ url: "https://new" });
         expect(getSettingValue(item, ctx)).toBe("https://new");
         expect(probe.seen.at(-1)).toBe("https://new");
         probe.dispose();
         setSettingValue({ id: "t.deeplx2", type: "text", bindPath: "deeplXOptions.token" }, "tok", ctx);
-        expect(plainClone(db().deeplXOptions)).toEqual({ url: "https://new", token: "tok" });
+        expect(plainClone(root("deeplXOptions"))).toEqual({ url: "https://new", token: "tok" });
         expect(new Set(notified)).toEqual(new Set(["secrets"]));
     });
 
@@ -694,9 +750,9 @@ describe("the registry over the views", () => {
         expect(quotes.every((item) => item.condition!(ctx))).toBe(true);
 
         setSettingValue(quotes[0], "<", ctx);
-        expect(plainClone(db().customQuotesData)).toEqual(["<", '"', "'", "'"]);
+        expect(plainClone(root("customQuotesData"))).toEqual(["<", '"', "'", "'"]);
         setSettingValue(quotes[3], ")", ctx);
-        expect(plainClone(db().customQuotesData)).toEqual(["<", '"', "'", ")"]);
+        expect(plainClone(root("customQuotesData"))).toEqual(["<", '"', "'", ")"]);
         expect(quotes.map((item) => getSettingValue(item, ctx))).toEqual(["<", '"', "'", ")"]);
         expect(new Set(notified)).toEqual(new Set(["ui"]));
 

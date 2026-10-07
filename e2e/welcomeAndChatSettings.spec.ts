@@ -163,7 +163,9 @@ test("the first-run wizard writes every answer into its section, the selected pr
     await expect(welcome).toBeHidden({ timeout: 20_000 });
     await flush(s.page);
 
-    // The tab: every answer read back through the views, the key not among them.
+    // The tab: every answer read back through the views, the key not among them (the records the tab
+    // holds, serialized: the flat settings snapshot, every section view, the preset and persona
+    // lists, the selected ones, and the characters).
     const after = await views(s.page);
     expect(after.ui).toMatchObject({ didFirstSetup: true, language: "en", textTheme: "highcontrast" });
     expect(after.memory).toMatchObject({
@@ -182,10 +184,27 @@ test("the first-run wizard writes every answer into its section, the selected pr
     expect(after.persona).toEqual({ id: before.persona.id, name: "Wizard Tester" });
     expect(after.selection).toEqual(before.selection);
     const tabText = await s.page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
-        return JSON.stringify(DBState.db) + JSON.stringify(settings);
+        const { settings, activePreset, activePersona } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        const { rootSnapshot } = await import("/src/ts/storage/snapshots.svelte.ts");
+        const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
+        return [
+            rootSnapshot(),
+            settings.llmSecrets,
+            settings.secrets,
+            settings.providers,
+            settings.ui,
+            settings.memoryTranslateMedia,
+            settings.presets,
+            settings.personas,
+            activePreset,
+            activePersona,
+            characterList(),
+        ]
+            .map((value) => JSON.stringify(value))
+            .join("\n");
     });
+    // The serialization is the real records (the wizard's `didFirstSetup` is in it), not a constant.
+    expect(tabText).toContain('"didFirstSetup":true');
     expect(tabText).not.toContain("sk-wizard-test-key");
 
     // The server: each write in its own record.

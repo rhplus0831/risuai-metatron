@@ -41,7 +41,7 @@ vi.mock("src/ts/alert", () => ({
     alertNormal: vi.fn(),
 }));
 vi.mock("src/ts/storage/collectionStore.svelte", () => ({ addAuthRefresh: vi.fn(), addModule: vi.fn() }));
-vi.mock("src/ts/stores.svelte", () => ({ DBState: { db: { mcpURLs: [], modules: [], enabledModules: [] } } }));
+vi.mock("src/ts/stores.svelte", () => ({}));
 vi.mock("src/ts/process/modules", () => ({ getModuleMcps: vi.fn(() => []) }));
 vi.mock("src/ts/process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: [] }));
 

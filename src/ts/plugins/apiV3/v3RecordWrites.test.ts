@@ -65,13 +65,12 @@ vi.mock("src/ts/util", async (importOriginal) => ({
     ),
 }));
 
-import { DBState } from "src/ts/stores.svelte";
-import { setDatabase, type Database } from "src/ts/storage/database.svelte";
 import { recordData, setRecordWriteListener } from "src/ts/storage/records.svelte";
 import { selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
+import { activePreset, settings } from "src/ts/storage/settingsViews.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { executePluginV3 } from "./v3.svelte";
 
-const db = () => DBState.db as unknown as Record<string, any>;
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const personaA = { id: "a", name: "A", icon: "", personaPrompt: "", note: "" };
 
@@ -83,8 +82,8 @@ beforeEach(async () => {
     selectPreset("");
     selectPersona("");
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    DBState.db = {} as Database;
-    setDatabase({
+    // The records installed as the app installs them (the aggregate is gone since Phase 6 slice 10).
+    installFlatDatabase({
         characters: [],
         plugins: [],
         modules: [],
@@ -93,7 +92,7 @@ beforeEach(async () => {
         theme: "",
         lineHeight: 1,
         pluginCustomStorage: {},
-    } as unknown as Database);
+    });
     notified = [];
     setRecordWriteListener((kind) => notified.push(kind));
     if (!captured.api) {
@@ -104,7 +103,6 @@ beforeEach(async () => {
 afterEach(() => {
     setRecordWriteListener(null);
     vi.restoreAllMocks();
-    DBState.db = {} as Database;
 });
 
 // Phase 6 slice 4 (`settings-ownership.md`, "Implementation notes", "Bulk writers"): a plugin's
@@ -127,12 +125,12 @@ describe("the plugin database setters over the settings records", () => {
                 personas: [personaA, { id: "b", name: "B", icon: "", personaPrompt: "", note: "" }],
             });
             expect(notified.sort()).toEqual(["personas", "pluginStorage", "presets", "ui"]);
-            expect(db().theme).toBe("waifu");
-            expect(db().lineHeight).toBe(2);
-            expect(db().temperature).toBe(7);
-            expect(db().maxContext).toBe(4096);
-            expect(plain(db().pluginCustomStorage)).toEqual({ customKey: { a: 1 }, otherKey: 2 });
-            expect(db().personas).toHaveLength(2);
+            expect(settings.ui.theme).toBe("waifu");
+            expect(settings.ui.lineHeight).toBe(2);
+            expect(activePreset.temperature).toBe(7);
+            expect(activePreset.maxContext).toBe(4096);
+            expect(plain(settings.pluginStorage)).toEqual({ customKey: { a: 1 }, otherKey: 2 });
+            expect(settings.personas).toHaveLength(2);
             expect(plain(recordData("modules"))).toEqual(modulesBefore);
             expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("the database key modules"));
         });

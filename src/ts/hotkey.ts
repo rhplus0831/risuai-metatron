@@ -3,7 +3,7 @@ import { characterList, selectedCharacter } from "./storage/characterStore.svelt
 import { settings } from "./storage/settingsViews.svelte";
 import { get } from "svelte/store";
 import { alertMd, alertSelect, alertToast, alertWait, doingAlert, alertRequestLogs, terminalNotice } from "./alert";
-import { changeToPreset as changeToPreset2 } from "./storage/database.svelte";
+import { changeToPreset as changeToPreset2 } from "./storage/presets.svelte";
 import {
     alertStore,
     openPersonaList,

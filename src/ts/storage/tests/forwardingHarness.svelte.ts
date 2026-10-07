@@ -1,5 +1,5 @@
 import { flushSync, untrack } from "svelte";
-import { DBState } from "../../stores.svelte";
+import { spikeRoot } from "./spikeRoot.svelte";
 import type { Database } from "../database.svelte";
 
 // Test-only prototype of the Phase 3 forwarding layer (spike, slice 1). Nothing here is production
@@ -11,7 +11,7 @@ import type { Database } from "../database.svelte";
 // resolves the selected record from the selection id and the current collection on every access
 // (no cached record) and returns `record[aliasOf(rootKey)]`. The setter captures the selected id
 // synchronously, resolves the record by that id, and writes into it through the proxy. Both use
-// `this`, which is the Svelte proxy whenever the accessor is reached through `DBState.db`
+// `this`, which is the Svelte proxy whenever the accessor is reached through `spikeRoot.db`
 // (`Reflect.get(target, prop, receiver)` and `descriptor.set.call(receiver, value)` in
 // `node_modules/svelte/src/internal/client/proxy.js`), so the collection reads are tracked and the
 // record writes notify.
@@ -198,15 +198,15 @@ export function installForwarding<T extends object>(raw: T): T {
     return raw;
 }
 
-/** Installs the layer on a fresh raw object, makes it `DBState.db`, and returns the proxy. */
+/** Installs the layer on a fresh raw object, makes it `spikeRoot.db`, and returns the proxy. */
 export function mountSpikeDb(raw: SpikeRawDb = createRawDb()): SpikeDb {
     installForwarding(raw);
-    DBState.db = raw as unknown as Database;
-    return DBState.db as unknown as SpikeDb;
+    spikeRoot.db = raw as unknown as Database;
+    return spikeRoot.db as unknown as SpikeDb;
 }
 
 export function currentDb(): SpikeDb {
-    return DBState.db as unknown as SpikeDb;
+    return spikeRoot.db as unknown as SpikeDb;
 }
 
 /** Changes only the preset selection. No root copy (Astra P10). */
@@ -227,13 +227,13 @@ export function persona(id: string): SpikePersona | undefined {
     return currentDb().personas.find((p) => p.id === id);
 }
 
-/** Harness copy of `setPluginDatabaseLite` (`src/ts/plugins/apiV3/v3.svelte.ts`): per-key assignment on the proxy, then `DBState.db = db`. */
+/** Harness copy of `setPluginDatabaseLite` (`src/ts/plugins/apiV3/v3.svelte.ts`): per-key assignment on the proxy, then `spikeRoot.db = db`. */
 export function pluginSetDatabaseLite(newDb: Record<string, unknown>): void {
-    const db = DBState.db as unknown as Record<string, unknown>;
+    const db = spikeRoot.db as unknown as Record<string, unknown>;
     for (const key of Object.keys(newDb)) {
         db[key] = newDb[key];
     }
-    DBState.db = db as unknown as Database;
+    spikeRoot.db = db as unknown as Database;
 }
 
 /** Defaults the harness copy of `setDatabase` applies where `checkNullish` finds a nullish value. */
@@ -255,7 +255,7 @@ const checkNullish = (data: unknown) => data === undefined || data === null;
  * value is nullish (what `setDatabase` in `database.svelte.ts` does for every field).
  */
 export function pluginSetDatabase(newDb: Record<string, unknown>): void {
-    const db = DBState.db as unknown as Record<string, unknown>;
+    const db = spikeRoot.db as unknown as Record<string, unknown>;
     for (const key of Object.keys(newDb)) {
         db[key] = newDb[key];
     }
@@ -264,7 +264,7 @@ export function pluginSetDatabase(newDb: Record<string, unknown>): void {
             db[key] = fallback;
         }
     }
-    DBState.db = db as unknown as Database;
+    spikeRoot.db = db as unknown as Database;
 }
 
 /** `$state.snapshot` for the test file, which may not use runes (STRUCTURE.md T3). */

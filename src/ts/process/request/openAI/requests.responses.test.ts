@@ -4,7 +4,12 @@ import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer } from "src/ts/model/typ
 import { fetchNative } from "src/ts/globalApi.svelte";
 import { callTool } from "../../mcp/mcp";
 import { __testResponsesAPI, requestOpenAIResponseAPI } from "../tests/oracle/openAI/requests";
+import { isSettingsRootKey, readSettingsRoot, writeSettingsRoot } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
+import { setOracleDatabase } from "../tests/oracle/database";
+
+// The oracle (the pre-cutover client code) reads the flat object the test keeps (`mocks.db`).
+setOracleDatabase(() => mocks.db as any);
 
 const mocks = vi.hoisted(() => ({
     db: {
@@ -207,10 +212,13 @@ function sseStream(events: string[]) {
 const ORACLE_CREDENTIALS = new Set(["OaiCompAPIKeys", "openAIKey", "nanogptKey", "proxyKey"]);
 
 /**
- * `mocks.db` installed as `setDatabaseLite` installs a database (`database.svelte` is mocked here):
- * its fields moved into the records, the accessors on, the selection resolved, since the request
- * helpers (`shared.ts`) read the settings through the record views (Phase 6 slice 7) while the
- * oracle reads `getDatabase()`, which serves the same records (and the plain credentials). The
+ * `mocks.db` installed in the records (as the removed `setDatabaseLite` installed a database; there
+ * is no whole-database object since Phase 6 slice 10): its fields moved into the records and the
+ * selection resolved, since the request helpers (`shared.ts`) read the settings through the record
+ * views (Phase 6 slice 7), while the oracle (the pre-cutover client code) reads `getDatabase()`,
+ * mocked here to the oracle's own flat object: a proxy that serves every settings root name from
+ * the views (`readSettingsRoot`/`writeSettingsRoot`, as the removed forwarding accessors did), so a
+ * case's write to `mocks.db` reaches the records both sides read, and the plain credentials. The
  * fixture is the flat shape, with the preset fields on its root: they become the one preset's.
  */
 function installDatabase() {
@@ -225,11 +233,21 @@ function installDatabase() {
     installFlatDatabase(raw, "responses-preset");
     const isCredential = (key: string | symbol): key is string =>
         typeof key === "string" && ORACLE_CREDENTIALS.has(key);
+    const isRecordField = (key: string | symbol): key is string => typeof key === "string" && isSettingsRootKey(key);
     mocks.db = new Proxy(raw, {
-        get: (target, key) => (isCredential(key) ? credentials[key] : Reflect.get(target, key)),
+        get: (target, key) => {
+            if (isCredential(key)) {
+                return credentials[key];
+            }
+            return isRecordField(key) ? readSettingsRoot(key) : Reflect.get(target, key);
+        },
         set: (target, key, value) => {
             if (isCredential(key)) {
                 credentials[key] = value;
+                return true;
+            }
+            if (isRecordField(key)) {
+                writeSettingsRoot(key, value);
                 return true;
             }
             return Reflect.set(target, key, value);

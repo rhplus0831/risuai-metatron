@@ -71,8 +71,8 @@ test("character readers by id: folder menu, lorebook editor, group picker, and t
     await openApp(page, baseURL!);
     await settle(page);
     await page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        DBState.db.didFirstSetup = true;
+        const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        settings.ui.didFirstSetup = true;
     });
     await settle(page);
 

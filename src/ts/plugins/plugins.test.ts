@@ -12,18 +12,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 //   keeps a reload from running every handler twice.
 
 const mocks = vi.hoisted(() => ({
-    db: {
-        plugins: [] as any[],
-    },
     alertError: vi.fn(),
     alertConfirm: vi.fn(async () => true),
-    setDatabaseLite: vi.fn(),
     loadV3Plugins: vi.fn(async (_plugins: any[]) => {}),
-}));
-
-vi.mock("src/ts/storage/database.svelte", () => ({
-    getDatabase: () => mocks.db,
-    setDatabaseLite: mocks.setDatabaseLite,
 }));
 
 vi.mock("src/ts/alert", () => ({
@@ -36,7 +27,6 @@ vi.mock("src/ts/util", () => ({
 }));
 
 vi.mock("src/ts/stores.svelte", () => ({
-    DBState: { db: mocks.db },
     hotReloading: [] as string[],
 }));
 
@@ -49,21 +39,20 @@ vi.mock("./apiV3/transpiler", () => ({
 }));
 
 import { language } from "src/lang";
+import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { importPlugin, loadPlugins } from "./plugins.svelte";
 import { pluginHooks } from "./pluginHooks";
 
-// `mocks.db` installed as `setDatabaseLite` installs a database (`database.svelte` is mocked here):
-// its fields moved into the records, the accessors on, since the plugin functions read and write
-// the plugin list through the settings views (Phase 6 slice 7). `mocks.db.plugins` is that record.
-installFlatDatabase(mocks.db);
+// The plugin functions read and write the plugin list through the settings views (Phase 6 slice
+// 7): the records are installed as the app installs them, and `settings.plugins` is that record.
+installFlatDatabase({ characters: [], plugins: [] });
 
 const script = (header: string) => `//@name test_plugin\n${header}\nconsole.log("hi");\n`;
 
 beforeEach(() => {
-    mocks.db.plugins = [];
+    settings.plugins = [];
     mocks.alertError.mockClear();
-    mocks.setDatabaseLite.mockClear();
     mocks.loadV3Plugins.mockClear();
 });
 
@@ -78,8 +67,7 @@ describe("importPlugin API version gate", () => {
 
         expect(mocks.alertError).toHaveBeenCalledTimes(1);
         expect(mocks.alertError).toHaveBeenCalledWith(language.pluginApiVersionUnsupported);
-        expect(mocks.db.plugins).toEqual([]);
-        expect(mocks.setDatabaseLite).not.toHaveBeenCalled();
+        expect(settings.plugins).toEqual([]);
         expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
     });
 
@@ -90,15 +78,13 @@ describe("importPlugin API version gate", () => {
         await importPlugin(script(header));
 
         expect(mocks.alertError).not.toHaveBeenCalled();
-        expect(mocks.db.plugins).toHaveLength(1);
-        expect(mocks.db.plugins[0]).toMatchObject({
+        // The plugin lands in the `plugins` record (`settings.plugins`) through `upsertPlugin`.
+        expect(settings.plugins).toHaveLength(1);
+        expect(settings.plugins[0]).toMatchObject({
             name: "test_plugin",
             version: "3.0",
             enabled: true,
         });
-        // The plugin lands in `DBState.db.plugins` (`mocks.db`) through `upsertPlugin`; the
-        // database is no longer re-installed through `setDatabaseLite`.
-        expect(mocks.setDatabaseLite).not.toHaveBeenCalled();
         expect(mocks.loadV3Plugins).toHaveBeenCalledTimes(1);
     });
 });
@@ -113,12 +99,12 @@ describe("loadPlugins", () => {
         pluginHooks.chatOutput.add(async () => {});
         pluginHooks.providers.set("stale", async () => ({ success: true, content: "" }));
 
-        mocks.db.plugins = [
+        settings.plugins = [
             { name: "v3-enabled", version: "3.0", enabled: true, script: "" },
             { name: "legacy-2.1", version: "2.1", enabled: true, script: "" },
             { name: "legacy-2", version: 2, enabled: true, script: "" },
             { name: "v3-disabled", version: "3.0", enabled: false, script: "" },
-        ];
+        ] as any;
 
         const sizesWhenLoading: number[] = [];
         mocks.loadV3Plugins.mockImplementationOnce(async () => {

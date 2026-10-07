@@ -4,16 +4,14 @@ import { alertCardExport, alertConfirm, alertError, alertInput, alertNormal, ale
 import {
     defaultSdDataFunc,
     type character,
-    setDatabase,
     type customscript,
     type loreSettings,
     type loreBook,
     type triggerscript,
-    importPreset,
     type groupChat,
-    setDatabaseLite,
     appVer,
 } from "./storage/database.svelte";
+import { importPreset } from "./storage/presets.svelte";
 import { checkNullish, decryptBuffer, isKnownUri, selectFileByDom, sleep } from "./util";
 import { language } from "src/lang";
 import { v4 as uuidv4, v4 } from "uuid";
@@ -23,7 +21,6 @@ import {
     BlankWriter,
     checkCharOrder,
     downloadFile,
-    forageStorage,
     loadAsset,
     LocalWriter,
     readImage,

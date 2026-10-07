@@ -23,7 +23,7 @@ import { capturePluginContext, invokeHook, type PluginCallContext } from "../plu
 import { pluginHooks } from "../plugins/pluginHooks";
 import { type ChatRef, currentChatRef, findChat, heldChatRevision, isMessageLocked } from "../storage/chatStore.svelte";
 import { CharEmotion } from "../stores.svelte";
-import { authFetch } from "../storage/nodeStorage";
+import { authFetch } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 import { checkPersonaBinded } from "../util";
 

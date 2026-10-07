@@ -1,5 +1,4 @@
 import { tick } from "svelte";
-import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
@@ -7,7 +6,8 @@ import { materialize } from "./serverKinds";
 
 // The save adapter (`resourceSync.svelte.ts`) against an in-memory stand-in for the resource routes.
 // Each test boots a fresh module graph (the adapter keeps its transport state at module level) and
-// exercises the real Svelte 5 runes: the watchers, `$state.snapshot`, and `DBState.db` as a proxy.
+// exercises the real Svelte 5 runes: the watchers, `$state.snapshot`, and the record wrappers
+// (`settings.*`, `characterList()`) as proxies.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -19,7 +19,7 @@ const { server, alerts } = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
 }));
 
@@ -32,10 +32,11 @@ vi.mock("../../alert", () => ({
 
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored" },
+    changeLanguage: vi.fn(),
 }));
 
-// `stores.svelte.ts` wires module updates into a module-level effect, and `database.svelte.ts`
-// (reached through `process/scripts`) re-exports asset helpers; nothing under test needs them.
+// `characterStore.svelte.ts` reaches the module updates, and `database.svelte.ts` (reached through
+// `process/scripts`) re-exports asset helpers; nothing under test needs them.
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),
@@ -47,9 +48,12 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
-type Stores = typeof import("../../stores.svelte");
 type Bootstrap = typeof import("../../bootstrap");
-type DatabaseModule = typeof import("../database.svelte");
+type SettingsViews = typeof import("../settingsViews.svelte");
+type CharacterStore = typeof import("../characterStore.svelte");
+type Selection = typeof import("../selection.svelte");
+/** The record views a test edits after the boot installed the records. */
+type Views = { settings: SettingsViews["settings"]; characterList: CharacterStore["characterList"] };
 
 /** A character record as the server stores it: its own fields, no chats (they are resources of their own). */
 function character(chaId: string, name: string, extra: Record<string, unknown> = {}) {
@@ -57,15 +61,17 @@ function character(chaId: string, name: string, extra: Record<string, unknown> =
 }
 
 /**
- * Boots the adapter the way `loadData` does: read, seed, assemble, normalize (`normalize` stands in
- * for `setDatabase`), start, and let the boot compare pass run. `bootBatches` is what that pass sent.
- * `assembled` changes the assembled database before it is installed (a fixture the server could not hold).
+ * Boots the adapter the way `loadData` does: read, seed, install the records (`installBootRecords`,
+ * the selection at home), start, and let the boot compare pass run. `bootBatches` is what that pass
+ * sent. `snapshot` changes the read snapshot after it was seeded and before it is installed (a
+ * fixture the server could not hold); `installed` edits the views right after the installation
+ * (what a load-time change of the installed records looks like to the first compare pass).
  */
 async function boot(
     options: {
         prepare?: (server: FakeResourceServer) => void;
-        assembled?: (db: any) => void;
-        normalize?: (db: any) => void;
+        snapshot?: (snapshot: Awaited<ReturnType<Client["readKinds"]>>) => void;
+        installed?: (views: Views) => void;
     } = {},
 ) {
     vi.resetModules();
@@ -82,26 +88,27 @@ async function boot(
     options.prepare?.(fake);
     server.current = fake;
 
-    const stores: Stores = await import("../../stores.svelte");
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
-    const database: DatabaseModule = await import("../database.svelte");
+    const { settings }: SettingsViews = await import("../settingsViews.svelte");
+    const characterStore: CharacterStore = await import("../characterStore.svelte");
+    const selection: Selection = await import("../selection.svelte");
+    const { characterList } = characterStore;
 
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    const assembled = bootstrap.assembleDatabase(snapshot);
-    options.assembled?.(assembled);
-    database.setDatabaseLite(assembled);
-    stores.selectedCharID.set(-1);
-    options.normalize?.(stores.DBState.db);
+    options.snapshot?.(snapshot);
+    bootstrap.installBootRecords(snapshot);
+    selection.selectCharacter(null);
+    options.installed?.({ settings, characterList });
     fake.requests.length = 0;
     sync.startResourceSync();
     await tick();
     await sync.flushResources();
     const bootBatches = fake.batchBodies();
     fake.requests.length = 0;
-    return { fake, stores, client, sync, bootBatches, db: () => stores.DBState.db as any };
+    return { fake, client, sync, bootBatches, settings, characterList, characterStore, selection };
 }
 
 beforeEach(() => {
@@ -128,11 +135,11 @@ describe("seeding and no echo", () => {
 
     it("saves the load-time normalization once (the first compare pass) and then stays quiet", async () => {
         const { fake, sync, bootBatches } = await boot({
-            normalize: (db) => {
+            installed: ({ settings, characterList }) => {
                 // What a load-time normalization changes after seeding: a section field and a
                 // character field (the server normalizes the sections, so this stands in for it).
-                db.theme = "normalized";
-                db.characters[1].bias = [];
+                settings.ui.theme = "normalized";
+                (characterList()[1] as any).bias = [];
             },
         });
         expect(fake.data("ui", "main").theme).toBe("normalized");
@@ -145,25 +152,26 @@ describe("seeding and no echo", () => {
     });
 
     it("neither tracks nor saves the mirror's chats, selection, and render key with the character record", async () => {
-        const { fake, sync, db, stores } = await boot();
-        stores.selectedCharID.set(0);
+        const { fake, sync, characterList, selection } = await boot();
+        selection.selectCharacterAt(0);
         await tick();
         // Phase 6 slice 9a: a wrapper refuses a `chats`/`chatPage` write; the chat module holds them.
         const chat = await import("../chatStore.svelte");
+        const alice = () => characterList()[0] as any;
         chat.installCharacterChats(
             "a",
             [{ id: "a-chat", message: [{ role: "user", data: "hi", chatId: "m1" }] } as any],
-            db().characters[0],
+            alice(),
         );
         chat.selectChat("a", 0);
-        db().characters[0].reloadKeys = { 0: 1 };
+        alice().reloadKeys = { 0: 1 };
         await sync.flushResources();
         // Chats are saved by the chat module; the selection and the render key are client-only.
         expect(fake.batchCount()).toBe(0);
-        db().characters[0].chats[0].message[0].data = "edited outside the chat module";
+        alice().chats[0].message[0].data = "edited outside the chat module";
         await sync.flushResources();
         expect(fake.batchCount()).toBe(0);
-        db().characters[0].name = "Alice 2";
+        alice().name = "Alice 2";
         await sync.flushResources();
         const saved = fake.data("characters", "a");
         expect(saved.name).toBe("Alice 2");
@@ -175,9 +183,9 @@ describe("seeding and no echo", () => {
 
 describe("dirty generations", () => {
     it("saves a section edit with the seeded revision and records the new one", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         const before = fake.get("ui", "main")!.revision;
-        db().theme = "edited";
+        settings.ui.theme = "edited";
         await sync.flushResources();
         const [batch] = fake.batchBodies();
         expect(batch.ops).toHaveLength(1);
@@ -187,20 +195,20 @@ describe("dirty generations", () => {
         expect(fake.data("ui", "main").theme).toBe("edited");
         const afterFirst = fake.get("ui", "main")!.revision;
         expect(afterFirst).not.toBe(before);
-        db().theme = "edited again";
+        settings.ui.theme = "edited again";
         await sync.flushResources();
         expect(fake.batchBodies()[1].ops[0].baseRevision).toBe(afterFirst);
         expect(fake.data("ui", "main").theme).toBe("edited again");
     });
 
     it("saves presets deeply, and every character's writes, selected or not", async () => {
-        const { fake, sync, db, stores } = await boot();
-        db().botPresets[0].name = "renamed preset";
-        stores.selectedCharID.set(1);
+        const { fake, sync, settings, characterList, selection } = await boot();
+        settings.presets[0].name = "renamed preset";
+        selection.selectCharacterAt(1);
         await tick();
-        db().characters[1].name = "Bob 2";
+        characterList()[1].name = "Bob 2";
         // Since Phase 6 slice 5 a write to a character that is not selected is saved too (no watcher, no mark).
-        db().characters[0].name = "Alice saved";
+        characterList()[0].name = "Alice saved";
         await sync.flushResources();
         expect(fake.data("presets", "main")[0].name).toBe("renamed preset");
         expect(fake.data("characters", "b").name).toBe("Bob 2");
@@ -208,12 +216,12 @@ describe("dirty generations", () => {
     });
 
     it("keeps an edit made while its batch is in flight dirty and saves it in the next cycle", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         fake.holdNextBatch = true;
-        db().theme = "first";
+        settings.ui.theme = "first";
         const flushed = sync.flushResources();
         await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
-        db().theme = "second";
+        settings.ui.theme = "second";
         await tick();
         fake.releaseBatch!();
         await flushed;
@@ -224,15 +232,15 @@ describe("dirty generations", () => {
     });
 
     it("flush waits for an edit made before the call even when a later edit replaces its generation", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         fake.holdNextBatch = true;
-        db().theme = "barrier-A";
+        settings.ui.theme = "barrier-A";
         void sync.flushResources().catch(() => {});
         await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
-        db().theme = "barrier-B";
+        settings.ui.theme = "barrier-B";
         await tick();
         const flushed = sync.flushResources();
-        db().theme = "barrier-C";
+        settings.ui.theme = "barrier-C";
         await tick();
         fake.releaseBatch!();
         const result = await flushed;
@@ -243,10 +251,9 @@ describe("dirty generations", () => {
 
 describe("membership", () => {
     it("creates a new character and deletes a removed one", async () => {
-        const { fake, sync } = await boot();
+        const { fake, sync, characterStore } = await boot();
         // The list changes through the character module (Phase 6 slice 5: a push or splice through
-        // the facade is refused).
-        const characterStore = await import("../characterStore.svelte");
+        // the list wrapper is refused).
         characterStore.addCharacter(character("c", "Carol"));
         characterStore.removeCharacter("a");
         await sync.flushResources();
@@ -258,10 +265,9 @@ describe("membership", () => {
     });
 
     it("saves a character added while a batch is in flight without another edit", async () => {
-        const { fake, sync, db } = await boot();
-        const characterStore = await import("../characterStore.svelte");
+        const { fake, sync, settings, characterStore } = await boot();
         fake.holdNextBatch = true;
-        db().theme = "in flight";
+        settings.ui.theme = "in flight";
         void sync.flushResources().catch(() => {});
         await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
         characterStore.addCharacter(character("late", "Late"));
@@ -274,42 +280,45 @@ describe("membership", () => {
         // Since Phase 6 slice 5 the ids are unique by construction: an installed list with a repeated
         // id gets a new id for the later entry (the save loop no longer renames), and an insertion
         // of a taken id is refused.
-        const { fake, sync, db } = await boot({
-            assembled: (assembled) => assembled.characters.push(JSON.parse(JSON.stringify(assembled.characters[0]))),
+        const { fake, sync, characterList, characterStore } = await boot({
+            // A second record of `a` in the boot read (the seed does not know it: a fixture the server could not hold).
+            snapshot: (snapshot) => {
+                const records = snapshot.kinds[RESOURCE_KIND.characters];
+                records.push(JSON.parse(JSON.stringify(records[0])));
+            },
         });
         await sync.flushResources();
-        const ids = db().characters.map((entry: any) => entry.chaId);
+        const ids = characterList().map((entry: any) => entry.chaId);
         expect(new Set(ids).size).toBe(3);
         expect(ids[0]).toBe("a");
         for (const id of ids) {
             expect(fake.get("characters", id)).not.toBeNull();
         }
         expect(fake.data("characters", "a").name).toBe("Alice");
-        const characterStore = await import("../characterStore.svelte");
         const validation = await import("../mutationValidation");
         const batches = fake.batchCount();
-        expect(() => characterStore.addCharacter(JSON.parse(JSON.stringify(db().characters[1])))).toThrow(
+        expect(() => characterStore.addCharacter(JSON.parse(JSON.stringify(characterList()[1])))).toThrow(
             validation.MutationValidationError,
         );
         await sync.flushResources();
-        expect(db().characters.map((entry: any) => entry.chaId)).toEqual(ids);
+        expect(characterList().map((entry: any) => entry.chaId)).toEqual(ids);
         expect(fake.batchCount()).toBe(batches);
     });
 });
 
 describe("conflicts", () => {
     it("reloads a record another tab changed, reports the discard, and shows the notice once", async () => {
-        const { fake, sync, db, stores } = await boot();
+        const { fake, sync, settings, characterList, selection } = await boot();
         fake.set("characters", "a", character("a", "Alice from tab B"));
         fake.set("ui", "main", { ...fake.data<Record<string, unknown>>("ui", "main")!, theme: "remote user" });
-        stores.selectedCharID.set(0);
+        selection.selectCharacterAt(0);
         await tick();
-        db().characters[0].name = "local edit";
-        db().theme = "local user";
+        characterList()[0].name = "local edit";
+        settings.ui.theme = "local user";
         const result = await sync.flushResources();
         expect(result.discarded.sort()).toEqual(["characters/a", "ui/main"]);
-        expect(db().characters[0].name).toBe("Alice from tab B");
-        expect(db().theme).toBe("remote user");
+        expect(characterList()[0].name).toBe("Alice from tab B");
+        expect(settings.ui.theme).toBe("remote user");
         expect(fake.data("characters", "a").name).toBe("Alice from tab B");
         expect(alerts.normal).toHaveBeenCalledTimes(1);
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
@@ -320,14 +329,14 @@ describe("conflicts", () => {
     });
 
     it("does not echo a reloaded section record whose keys the other tab wrote in another order", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         const reversed = Object.fromEntries(Object.entries(fake.data("ui", "main")).reverse());
         reversed.theme = "reordered";
         fake.set("ui", "main", reversed);
-        db().theme = "stale";
+        settings.ui.theme = "stale";
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["ui/main"]);
-        expect(db().theme).toBe("reordered");
+        expect(settings.ui.theme).toBe("reordered");
         const uiBatches = fake.batchBodies().filter((batch) => batch.ops.some((op) => op.kind === "ui"));
         expect(uiBatches).toHaveLength(1);
         await sync.flushResources();
@@ -335,48 +344,48 @@ describe("conflicts", () => {
     });
 
     it("sends the non-conflicting operations of a rejected batch in the next cycle", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         fake.set("ui", "main", { ...fake.data<Record<string, unknown>>("ui", "main")!, theme: "remote" });
-        db().theme = "local";
-        db().modules.push({ name: "new module" });
+        settings.ui.theme = "local";
+        settings.modules.push({ name: "new module" } as any);
         await sync.flushResources();
         expect(fake.data("modules", "main")).toEqual([{ name: "new module" }]);
-        expect(db().theme).toBe("remote");
+        expect(settings.ui.theme).toBe("remote");
     });
 
     it("treats a 409 after a lost response as committed when the server holds what was sent", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         fake.dropNextBatchResponse = true;
-        db().theme = "committed but unacknowledged";
+        settings.ui.theme = "committed but unacknowledged";
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
         expect(fake.data("ui", "main").theme).toBe("committed but unacknowledged");
         const result = await sync.flushResources();
         expect(result.discarded).toEqual([]);
-        expect(db().theme).toBe("committed but unacknowledged");
+        expect(settings.ui.theme).toBe("committed but unacknowledged");
         expect(alerts.normal).not.toHaveBeenCalled();
-        db().theme = "next";
+        settings.ui.theme = "next";
         await sync.flushResources();
         expect(fake.data("ui", "main").theme).toBe("next");
     });
 
     it("removes a character deleted elsewhere and moves the selection home", async () => {
-        const { fake, sync, db, stores } = await boot();
+        const { fake, sync, characterList, selection } = await boot();
         fake.delete("characters", "a");
-        stores.selectedCharID.set(0);
+        selection.selectCharacterAt(0);
         await tick();
-        db().characters[0].name = "edit on a deleted character";
+        characterList()[0].name = "edit on a deleted character";
         await sync.flushResources();
-        expect(db().characters.map((entry: any) => entry.chaId)).toEqual(["b"]);
-        expect(get(stores.selectedCharID)).toBe(-1);
+        expect(characterList().map((entry: any) => entry.chaId)).toEqual(["b"]);
+        expect(selection.selectedIndex()).toBe(-1);
     });
 
     it("notifies remote-change listeners for every reloaded record", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, characterList } = await boot();
         const seen: string[] = [];
         const off = sync.onRemoteRecordApplied((kind, id) => seen.push(`${kind}/${id}`));
         fake.set("characters", "b", character("b", "Bob remote"));
         // The write itself queues the save of `b`, which is not selected (Phase 6 slice 5: no mark).
-        db().characters[1].name = "Bob local";
+        characterList()[1].name = "Bob local";
         await sync.flushResources();
         expect(seen).toEqual(["characters/b"]);
         off();
@@ -389,9 +398,9 @@ describe("a generating character (the generation deferral is gone)", () => {
      * (the mirror's chats are local, so the chat is placed there directly; since Phase 6 slice 9a
      * through the chat module, `installCharacterChats`). Returns the job's end.
      */
-    async function generate(db: () => any, chaId: string) {
+    async function generate(characterList: () => any[], chaId: string) {
         const chat = await import("../chatStore.svelte");
-        const character = db().characters.find((entry: any) => entry.chaId === chaId);
+        const character = characterList().find((entry: any) => entry.chaId === chaId);
         chat.installCharacterChats(
             chaId,
             [
@@ -414,20 +423,20 @@ describe("a generating character (the generation deferral is gone)", () => {
     }
 
     it("reloads the generating character inside the cycle on a conflict, and saves the batch's other edit after it", async () => {
-        const { fake, sync, db, stores } = await boot();
+        const { fake, sync, settings, characterList, selection } = await boot();
         const seen: string[] = [];
         sync.onRemoteRecordApplied((kind, id) => seen.push(`${kind}/${id}`));
-        stores.selectedCharID.set(0);
+        selection.selectCharacterAt(0);
         await tick();
-        const end = await generate(db, "a");
+        const end = await generate(characterList, "a");
         fake.set("characters", "a", character("a", "remote name"));
-        db().characters[0].name = "local name";
-        db().theme = "saved anyway";
+        characterList()[0].name = "local name";
+        settings.ui.theme = "saved anyway";
         // Since Phase 6 slice 5 nothing holds a generating character back: the conflict reloads it
         // at once, with the discard reported and the notice shown.
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["characters/a"]);
-        expect(db().characters[0].name).toBe("remote name");
+        expect(characterList()[0].name).toBe("remote name");
         expect(seen).toEqual(["characters/a"]);
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         // The batch was atomic, so the section edit was rejected with it; the loop saves it on its own.
@@ -437,41 +446,41 @@ describe("a generating character (the generation deferral is gone)", () => {
     });
 
     it("retries a failed conflict reload with the cycle's backoff and keeps the local state meanwhile", async () => {
-        const { fake, sync, db, stores } = await boot();
-        stores.selectedCharID.set(0);
+        const { fake, sync, characterList, selection } = await boot();
+        selection.selectCharacterAt(0);
         await tick();
-        const end = await generate(db, "a");
+        const end = await generate(characterList, "a");
         fake.set("characters", "a", character("a", "remote name"));
-        db().characters[0].name = "local name";
+        characterList()[0].name = "local name";
         fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" };
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
-        expect(db().characters[0].name).toBe("local name");
+        expect(characterList()[0].name).toBe("local name");
         expect(fake.data("characters", "a").name).toBe("remote name");
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["characters/a"]);
-        expect(db().characters[0].name).toBe("remote name");
+        expect(characterList()[0].name).toBe("remote name");
         end();
     });
 
     it("reloads a generating character that is not selected the same way", async () => {
-        const { fake, sync, db, stores } = await boot();
-        stores.selectedCharID.set(0);
+        const { fake, sync, characterList, selection } = await boot();
+        selection.selectCharacterAt(0);
         await tick();
-        const end = await generate(db, "b");
+        const end = await generate(characterList, "b");
         fake.set("characters", "b", character("b", "remote Bob"));
-        db().characters[1].name = "local Bob";
+        characterList()[1].name = "local Bob";
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["characters/b"]);
-        expect(db().characters[1].name).toBe("remote Bob");
+        expect(characterList()[1].name).toBe("remote Bob");
         end();
     });
 });
 
 describe("restore (412) and errors", () => {
     it("halts, alerts, and reloads on a 412 from a batch", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         fake.restore("epoch-2");
-        db().theme = "after restore";
+        settings.ui.theme = "after restore";
         await expect(sync.flushResources()).rejects.toThrow();
         expect(alerts.terminal).toHaveBeenCalledWith("restored");
         await vi.waitFor(() => expect((location as any).reload).toHaveBeenCalled());
@@ -480,23 +489,23 @@ describe("restore (412) and errors", () => {
     });
 
     it("halts when a conflict read answers with another epoch", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         fake.set("ui", "main", { ...fake.data<Record<string, unknown>>("ui", "main")!, theme: "remote" });
         fake.readEpoch = "epoch-from-a-restore";
-        db().theme = "local";
+        settings.ui.theme = "local";
         await expect(sync.flushResources()).rejects.toThrow();
         expect(alerts.terminal).toHaveBeenCalledWith("restored");
-        expect(db().theme).toBe("local");
+        expect(settings.ui.theme).toBe("local");
     });
 
     it("halts when any other resource request hits a 412 (the transport listener)", async () => {
-        const { fake, sync, client, db } = await boot();
+        const { fake, sync, client, settings } = await boot();
         fake.restore("epoch-3");
         await expect(
             client.putResource("inlays", "x", { name: "x", ext: "json", type: "signature" }, null),
         ).rejects.toBeInstanceOf(client.ResourceEpochMismatchError);
         expect(alerts.terminal).toHaveBeenCalledWith("restored");
-        db().theme = "never saved";
+        settings.ui.theme = "never saved";
         await expect(sync.flushResources()).rejects.toThrow(/restored/);
         expect(fake.batchCount()).toBe(0);
     });
@@ -508,10 +517,10 @@ describe("restore (412) and errors", () => {
         alerts.terminal.mockImplementationOnce(
             () => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))),
         );
-        const { fake, sync, client, db } = await boot();
+        const { fake, sync, client, settings } = await boot();
         const reload = (location as any).reload;
         fake.restore("epoch-2");
-        db().theme = "after restore";
+        settings.ui.theme = "after restore";
         await expect(sync.flushResources()).rejects.toThrow();
         await expect(
             client.putResource("inlays", "x", { name: "x", ext: "json", type: "signature" }, null),
@@ -533,9 +542,9 @@ describe("restore (412) and errors", () => {
     });
 
     it("quarantines a record the server refuses as too large, keeps saving the rest, and retries it once it changes", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         fake.maxBodyBytes = 200;
-        db().theme = "x".repeat(300);
+        settings.ui.theme = "x".repeat(300);
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 413 });
         expect(alerts.error).toHaveBeenCalledTimes(1);
         await vi.advanceTimersByTimeAsync(1200);
@@ -545,7 +554,7 @@ describe("restore (412) and errors", () => {
         expect(alerts.error).toHaveBeenCalledTimes(1);
         expect(fake.batchCount()).toBe(1);
         // Other records keep saving around the refused one, on the loop's own schedule.
-        db().botPresets.push({ name: "p2" });
+        settings.presets.push({ name: "p2" } as any);
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 413 });
         await vi.advanceTimersByTimeAsync(1200);
         expect(fake.data("presets", "main")).toEqual([{ name: "p1" }, { name: "p2" }]);
@@ -557,21 +566,21 @@ describe("restore (412) and errors", () => {
         ).toEqual(["presets"]);
         expect(fake.batchCount()).toBe(2);
         fake.maxBodyBytes = Infinity;
-        db().theme = "small again";
+        settings.ui.theme = "small again";
         await sync.flushResources();
         expect(fake.data("ui", "main").theme).toBe("small again");
         expect(alerts.error).toHaveBeenCalledTimes(1);
     });
 
     it("quarantines a record the server refuses as invalid by its content, alerts once, and keeps saving the others", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         fake.failNext = {
             status: 400,
             body: { error: "ops[0]: ui main: theme must be a string" },
             times: 1,
             match: (path) => path === "/api/resources/batch",
         };
-        db().theme = "refused";
+        settings.ui.theme = "refused";
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 400 });
         expect(alerts.error).toHaveBeenCalledTimes(1);
         // Not resent while unchanged, even though the server would now accept it.
@@ -581,7 +590,7 @@ describe("restore (412) and errors", () => {
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 400 });
         expect(alerts.error).toHaveBeenCalledTimes(1);
         // Another record saves on its own, without the refused one.
-        db().botPresets.push({ name: "p2" });
+        settings.presets.push({ name: "p2" } as any);
         await vi.advanceTimersByTimeAsync(1200);
         expect(fake.data("presets", "main")).toEqual([{ name: "p1" }, { name: "p2" }]);
         expect(
@@ -591,16 +600,16 @@ describe("restore (412) and errors", () => {
                 .ops.map((op) => op.kind),
         ).toEqual(["presets"]);
         // A change to the refused record retries it.
-        db().theme = "repaired";
+        settings.ui.theme = "repaired";
         await sync.flushResources();
         expect(fake.data("ui", "main").theme).toBe("repaired");
         expect(alerts.error).toHaveBeenCalledTimes(1);
     });
 
     it("keeps everything dirty through a retryable failure and saves once the server answers", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         fake.failNext = { status: 503, times: 1 };
-        db().theme = "retry me";
+        settings.ui.theme = "retry me";
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 503 });
         expect(alerts.error).not.toHaveBeenCalled();
         await sync.flushResources();
@@ -615,7 +624,7 @@ describe("the restore watch of a job ended by maintenance", () => {
         fake.requests.filter((request) => request.method === "GET" && request.path === "/api/resources/ui/main").length;
 
     it("keeps waiting through old-epoch answers, a 503, and a network failure, then halts with the notice and the reload once the epoch changes", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         let settled: boolean | undefined;
         const watch = sync.watchForRestore().then((replaced) => (settled = replaced));
         const onWatchRead = (path: string) => path === "/api/resources/ui/main";
@@ -634,7 +643,7 @@ describe("the restore watch of a job ended by maintenance", () => {
         expect(settled).toBe(true);
         expect(alerts.terminal).toHaveBeenCalledWith("restored");
         await vi.waitFor(() => expect((location as any).reload).toHaveBeenCalled());
-        db().theme = "never saved";
+        settings.ui.theme = "never saved";
         await expect(sync.flushResources()).rejects.toThrow(/restored/);
         expect(fake.batchCount()).toBe(0);
     });
@@ -721,10 +730,10 @@ describe("batch sizing", () => {
     });
 
     it("sends the character records as UTF-8 within the cap", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, characterList } = await boot();
         // Each character is about 3 bytes per Hangul character; both fit only when measured correctly.
-        db().characters[0].desc = "가".repeat(1000);
-        db().characters[1].desc = "가".repeat(1000);
+        (characterList()[0] as any).desc = "가".repeat(1000);
+        (characterList()[1] as any).desc = "가".repeat(1000);
         // Both writes queue their character's save (Phase 6 slice 5: no mark).
         await sync.flushResources();
         expect(fake.batchCount()).toBe(1);

@@ -21,7 +21,7 @@ const { server, alerts, consent } = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("src/ts/storage/nodeStorage", () => ({
+vi.mock("src/ts/storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -57,7 +57,6 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     getFetchLogs: vi.fn(() => []),
     globalFetch: vi.fn(),
     fetchNative: vi.fn(),
-    forageStorage: { getItem: vi.fn(), setItem: vi.fn(), keys: vi.fn(async () => []) },
     saveAsset: vi.fn(),
     readImage: vi.fn(),
     getFileSrc: vi.fn(),
@@ -167,7 +166,7 @@ afterEach(() => {
 
 describe("write tools", () => {
     it("set-module-info writes the typed fields through updateModule and enabled through the enabled list, skipping unknown keys", async () => {
-        const { call, sync, savedModule, record, db } = await boot();
+        const { call, sync, savedModule, record, settings } = await boot();
         expect(
             await call("risu-set-module-info", {
                 id: "m",
@@ -203,7 +202,7 @@ describe("write tools", () => {
         );
         await sync.flushResources();
         expect(record("enabledModules")).toEqual([]);
-        expect(db().enabledModules).toEqual([]);
+        expect(settings.enabledModules).toEqual([]);
         expect(await call("risu-get-module-info", { id: "m", fields: ["name", "enabled"] })).toBe(
             JSON.stringify({ name: "Renamed", enabled: false }),
         );
@@ -327,7 +326,7 @@ describe("nothing is written", () => {
     });
 
     it("when an info field has the wrong type: neither the module nor the enabled list changes", async () => {
-        const { call, unchanged, record, db } = await boot();
+        const { call, unchanged, record, settings } = await boot();
         const bad: [Record<string, unknown>, string][] = [
             [{ name: "Changed", enabled: "false" }, "Error: Field enabled must be a boolean."],
             [{ enabled: 1 }, "Error: Field enabled must be a boolean."],
@@ -340,7 +339,7 @@ describe("nothing is written", () => {
         for (const [data, answer] of bad) {
             expect(await unchanged(() => call("risu-set-module-info", { id: "m", data }))).toBe(answer);
         }
-        expect(db().enabledModules).toEqual([]);
+        expect(settings.enabledModules).toEqual([]);
         expect(record("enabledModules")).toEqual([]);
     });
 

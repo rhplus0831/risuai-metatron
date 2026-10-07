@@ -1,18 +1,17 @@
-import { get } from "svelte/store";
 import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { KINDS, bootMutations, m, plain, refK } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // Phase 6 slice 5a (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/character-ownership.md`,
-// "Validation", the review-step list): the character records under the real boot (`setDatabase`),
+// "Validation", the review-step list): the character records under the real boot (`installBootRecords`, since slice 10),
 // the real save loop, and the real server store (`storeBackedServer.ts`), with no character watcher
-// and no dirty mark left. Covered here: a facade write (at depth too) and an `updateCharacter` on a
+// and no dirty mark left. Covered here: a wrapper write (at depth too) and an `updateCharacter` on a
 // non-selected character each save one op on the held revision; a conflict reload replaces the
 // record raw with no echo, and a later local write (also through a retained nested wrapper) lands on
 // the server copy; a same-id replacement through the public setter (`replaceCharacterFields`) with an
-// editor's nested wrapper held; the snapshot getters; the selection shims (`selectedCharID`,
-// `selIdState`) both ways; the chat module's work (creation, streaming, hydration, selection, local
+// editor's nested wrapper held; the snapshot getter; the selection by index (`selectCharacterAt`,
+// `selectedIndex`) both ways; the chat module's work (creation, streaming, hydration, selection, local
 // lore) and a plain selection saving no character; the boot's trash pruning through
 // `removeCharacters` writing the deletions once (generating characters kept) and a settled boot
 // writing nothing. Live updates and job hydrations of a character are in `resourceSyncLive.test.ts`
@@ -23,7 +22,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -76,9 +75,9 @@ afterEach(() => {
 });
 
 describe("local writes of a character that is not selected", () => {
-    it("save one op each on the held revision: a facade write, a nested facade write, and updateCharacter", async () => {
-        const { fake, sync, characterStore, character, record, stores } = await boot();
-        expect(get(stores.selectedCharID)).toBe(-1);
+    it("save one op each on the held revision: a wrapper write, a nested wrapper write, and updateCharacter", async () => {
+        const { fake, sync, characterStore, character, record, selectionModule } = await boot();
+        expect(selectionModule.selectedIndex()).toBe(-1);
         for (const write of [
             () => (character("c").desc = "through the facade"),
             () => (character("c").alternateGreetings = ["g1"]),
@@ -166,13 +165,14 @@ describe("server copies of a character", () => {
     });
 });
 
-describe("the snapshot getters (plan review point 6)", () => {
-    it("give a detached copy with the chats; writing into it changes and saves nothing", async () => {
-        const { fake, sync, database, character, stores, chat } = await boot();
-        stores.selectedCharID.set(0);
+describe("the snapshot getter (plan review point 6)", () => {
+    it("gives a detached copy (with the chats through withChatsCopy); writing into it changes and saves nothing", async () => {
+        const { fake, sync, characterStore, character, selectionModule, chat } = await boot();
+        selectionModule.selectCharacterAt(0);
+        // Each call is a fresh copy (Phase 6 slice 10: `characterSnapshot` replaced the facade's snapshot getters).
         for (const copy of [
-            database.getCurrentCharacter({ snapshot: true }) as any,
-            database.getCharacterByIndex(0, { snapshot: true }) as any,
+            characterStore.characterSnapshot("c") as any,
+            characterStore.characterSnapshot(characterStore.selectedCharacter()!.chaId) as any,
         ]) {
             expect(copy.chaId).toBe("c");
             // Phase 6 slice 9a: a snapshot carries no chats; the legacy shape is built with `withChatsCopy`.
@@ -186,49 +186,47 @@ describe("the snapshot getters (plan review point 6)", () => {
         }
         expect(character("c").name).toBe("C");
         expect(character("c").chats[0].message).toHaveLength(3);
-        // Live by default.
-        expect(database.getCurrentCharacter()).toBe(character("c"));
+        // The selected character's record is live.
+        expect(characterStore.selectedCharacter()).toBe(character("c"));
         fake.requests.length = 0;
         await sync.flushResources();
         expect(fake.batchCount()).toBe(0);
     });
 });
 
-describe("the selection shims (selectedCharID, selIdState)", () => {
-    it("map an index to the selected id and back, both ways, immediately and before a tick", async () => {
-        const { stores, characterStore, selection } = await boot();
-        stores.selectedCharID.set(0);
+describe("the selection by index (selectCharacterAt, selectedIndex)", () => {
+    it("maps an index to the selected id and back, both ways, immediately and before a tick", async () => {
+        const { characterStore, characterList, selection, selectionModule } = await boot();
+        const { selectCharacterAt, selectedIndex } = selectionModule;
+        selectCharacterAt(0);
         expect(selection.characterId).toBe("c");
-        expect(stores.selIdState.selId).toBe(0);
+        expect(selectedIndex()).toBe(0);
         const n = characterStore.addCharacter({ chaId: "n", name: "N" });
-        stores.selIdState.selId = 1;
+        selectCharacterAt(1);
         expect(selection.characterId).toBe(n);
-        expect(get(stores.selectedCharID)).toBe(1);
+        expect(selectedIndex()).toBe(1);
         characterStore.selectCharacter("c");
-        expect(get(stores.selectedCharID)).toBe(0);
-        expect(stores.selIdState.selId).toBe(0);
-        stores.selectedCharID.set(1);
+        expect(selectedIndex()).toBe(0);
+        selectCharacterAt(1);
         // The selected character moves with the list: an earlier removal keeps it selected.
         characterStore.removeCharacter("c");
         expect(selection.characterId).toBe("n");
-        expect(get(stores.selectedCharID)).toBe(0);
-        expect(stores.selIdState.selId).toBe(0);
-        expect(characterStore.selectedCharacter()).toBe(stores.DBState.db.characters[0]);
+        expect(selectedIndex()).toBe(0);
+        expect(characterStore.selectedCharacter()).toBe(characterList()[0]);
         // Removing the selected character selects home.
         characterStore.removeCharacter("n");
         expect(selection.characterId).toBeNull();
-        expect(get(stores.selectedCharID)).toBe(-1);
-        expect(stores.selIdState.selId).toBe(-1);
+        expect(selectedIndex()).toBe(-1);
         expect(characterStore.selectedCharacter()).toBeUndefined();
     });
 });
 
 describe("work outside the character record", () => {
     it("saves no character for the chat module's work and a plain selection", async () => {
-        const { fake, sync, chat, stores, characterStore, character } = await boot();
+        const { fake, sync, chat, selectionModule, characterStore, character } = await boot();
         const revision = fake.record("characters", "c")!.revision;
         // Selection (no HypaV3 preset turns memory on here).
-        stores.selectedCharID.set(0);
+        selectionModule.selectCharacterAt(0);
         characterStore.selectCharacter(null);
         characterStore.selectCharacter("c");
         // Chat creation and chat selection.
@@ -278,23 +276,22 @@ describe("work outside the character record", () => {
 describe("the boot's trash pruning (removeCharacters)", () => {
     const DAY = 1000 * 60 * 60 * 24;
 
-    /** The `loadData` data sequence on `fake`, with `beforeStart` where `checkNewFormat` runs (before saving starts). */
+    /** The `loadData` data sequence on `fake`, with `beforeStart` where `maintainCharacters` runs (before saving starts). */
     async function bootOn(fake: StoreBackedServer, beforeStart: (modules: any) => void = () => {}) {
         vi.resetModules();
         server.current = fake;
-        const stores = await import("../../stores.svelte");
         const client = await import("../resourceClient");
         const sync = await import("../resourceSync.svelte");
         const chat = await import("../chatStore.svelte");
         const bootstrap = await import("../../bootstrap");
-        const database = await import("../database.svelte");
         const characterStore = await import("../characterStore.svelte");
+        const selectionModule = await import("../selection.svelte");
         const snapshot = await client.readKinds(KINDS, { chats: true });
         sync.seedResources(snapshot);
         chat.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
-        database.setDatabase(bootstrap.assembleDatabase(snapshot));
-        stores.selectedCharID.set(-1);
-        const modules = { stores, sync, chat, characterStore, db: () => stores.DBState.db as any };
+        bootstrap.installBootRecords(snapshot);
+        selectionModule.selectCharacter(null);
+        const modules = { sync, chat, characterStore, characters: () => characterStore.characterList() as any[] };
         beforeStart(modules);
         chat.initializeChats();
         fake.requests.length = 0;
@@ -341,7 +338,7 @@ describe("the boot's trash pruning (removeCharacters)", () => {
         fake.set("characterOrder", "main", ["x1", "x2", "gen", "recent", "keep"]);
 
         let removed: string[] = [];
-        const first = await bootOn(fake, ({ chat, characterStore, db }) => {
+        const first = await bootOn(fake, ({ chat, characterStore, characters }) => {
             // `gen` is generating a reply: the pruning keeps it.
             expect(
                 chat.applyServerGeneration(
@@ -349,14 +346,14 @@ describe("the boot's trash pruning (removeCharacters)", () => {
                     { jobId: "J", messageId: "a", generationId: "g", text: "so far", seq: 0 },
                 ),
             ).toBe(true);
-            const expired = db()
-                .characters.filter((entry: any) => entry.trashTime && entry.trashTime + 3 * DAY < Date.now())
+            const expired = characters()
+                .filter((entry: any) => entry.trashTime && entry.trashTime + 3 * DAY < Date.now())
                 .map((entry: any) => entry.chaId);
             expect(expired).toEqual(["x1", "x2", "gen"]);
             removed = characterStore.removeCharacters(expired);
         });
         expect(removed).toEqual(["x1", "x2"]);
-        expect(first.db().characters.map((entry: any) => entry.chaId)).toEqual(["gen", "recent", "keep"]);
+        expect(first.characters().map((entry: any) => entry.chaId)).toEqual(["gen", "recent", "keep"]);
         expect(fake.record("characters", "x1")).toBeNull();
         expect(fake.record("characters", "x2")).toBeNull();
         expect(fake.chat("x1", "kx1")).toBeNull();
@@ -372,10 +369,10 @@ describe("the boot's trash pruning (removeCharacters)", () => {
 
         // A settled boot (the same data, nothing new to prune but `gen`, which is no longer generating
         // and is pruned now) and then one with nothing to prune write nothing more.
-        const second = await bootOn(fake, ({ characterStore, db }) => {
+        const second = await bootOn(fake, ({ characterStore, characters }) => {
             characterStore.removeCharacters(
-                db()
-                    .characters.filter((entry: any) => entry.trashTime && entry.trashTime + 3 * DAY < Date.now())
+                characters()
+                    .filter((entry: any) => entry.trashTime && entry.trashTime + 3 * DAY < Date.now())
                     .map((entry: any) => entry.chaId),
             );
         });
@@ -383,11 +380,11 @@ describe("the boot's trash pruning (removeCharacters)", () => {
         fake.requests.length = 0;
         await second.sync.flushResources();
         expect(fake.batchCount()).toBe(0);
-        await bootOn(fake, ({ characterStore, db }) => {
+        await bootOn(fake, ({ characterStore, characters }) => {
             expect(
                 characterStore.removeCharacters(
-                    db()
-                        .characters.filter((entry: any) => entry.trashTime && entry.trashTime + 3 * DAY < Date.now())
+                    characters()
+                        .filter((entry: any) => entry.trashTime && entry.trashTime + 3 * DAY < Date.now())
                         .map((entry: any) => entry.chaId),
                 ),
             ).toEqual([]);

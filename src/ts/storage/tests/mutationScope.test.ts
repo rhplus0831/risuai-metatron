@@ -12,7 +12,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -66,13 +66,13 @@ function remoteThemeEdit(fake: any, theme: string) {
 
 describe("beginMutationScope", () => {
     it("reports a discard raised by a cycle that ran before the flush was called, which a plain flush does not", async () => {
-        const { fake, sync, collectionStore, db } = await boot();
+        const { fake, sync, collectionStore, settings } = await boot();
         const scope = sync.beginMutationScope();
         remoteThemeEdit(fake, "remote");
         collectionStore.updateSettings({ theme: "local" });
         // The debounced cycle runs, conflicts, and reloads the record before anyone flushes.
         await vi.advanceTimersByTimeAsync(600);
-        await vi.waitFor(() => expect(db().theme).toBe("remote"));
+        await vi.waitFor(() => expect(settings.ui.theme).toBe("remote"));
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect((await sync.flushResources({ scope })).discarded).toEqual(["ui/main"]);
         expect(fake.record("ui", "main")!.data.theme).toBe("remote");
@@ -97,7 +97,7 @@ describe("beginMutationScope", () => {
     });
 
     it("covers the chat discard sequence too: a chat conflict before the flush is reported with the scope", async () => {
-        const { fake, sync, chat, db } = await boot();
+        const { fake, sync, chat, characterList } = await boot();
         const scope = sync.beginMutationScope();
         fake.chatBatch([
             {
@@ -110,7 +110,7 @@ describe("beginMutationScope", () => {
         // A bulk removal needs the current revision: it conflicts and is discarded by the reload.
         chat.removeMessages(refK, ["b", "c"]);
         await vi.advanceTimersByTimeAsync(600);
-        await vi.waitFor(() => expect(db().characters[0].chats[0].note).toBe("remote"));
+        await vi.waitFor(() => expect((characterList()[0] as any).chats[0].note).toBe("remote"));
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect((await sync.flushResources({ scope })).discarded).toEqual(["chats/c/k"]);
         expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);

@@ -209,8 +209,12 @@ vi.mock("../../mcp/mcp", () => ({
 import { selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { requestClaude } from "./oracle/anthropic";
+import { setOracleDatabase } from "./oracle/database";
 import { requestGoogleCloudVertex } from "./oracle/google";
 import { requestOpenAI, requestOpenAILegacyInstruct, requestOpenAIResponseAPI } from "./oracle/openAI/requests";
+
+// The oracle adapters read the flat client object the test keeps (`clientState.db`).
+setOracleDatabase(() => clientState.db as any);
 
 const tokenize = (text: string) => Array.from(text).map((char) => char.codePointAt(0) ?? 0);
 

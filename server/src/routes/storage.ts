@@ -240,7 +240,7 @@ export function registerStorageRoutes(
         if (key === null) {
             return c.json({ error: "Invaild Path" }, 400);
         }
-        // A missing file is an empty 200, which NodeStorage reads as null. Keys outside the
+        // A missing file is an empty 200, which the client's asset reader reads as null. Keys outside the
         // storage namespaces (stale paths from an old database) read as missing too.
         const fullPath = resolveStorageKey(savePath, key);
         if (fullPath === null) {

@@ -1,7 +1,6 @@
 <script lang="ts">
     import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
     import { StarIcon } from "@lucide/svelte";
-    import { DBState, selectedCharID } from "src/ts/stores.svelte";
     import type { BulkEditState, Category } from "./types";
     import { language } from "src/lang";
 

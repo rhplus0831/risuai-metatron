@@ -5,13 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Phase 6 slice 7 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/readers-settings-consumers.md`,
 // "Validation": "`colorscheme.ts`, `guisize.ts`, `animation.ts` ... over the records"): the GUI appliers
-// read the `ui` section record through the settings views, not a `getDatabase()` local. Each one
-// applies what the record holds when it runs: a later edit and a database replaced by a conflict
-// reload or a restore (`setDatabaseLite`) are what the next call applies, never a captured object.
-// The color-scheme writers write the `ui` record and queue its write, and nothing else.
-// The readers run with `DBState.db` replaced by a plain object once the records are installed (as
-// slice 10 leaves it): they reach the records only through the views. The writers still go through
-// `updateSettings`, whose dynamic-key path writes the facade until slice 10, so they keep it.
+// read the `ui` section record through the settings views, not a captured database. Each one
+// applies what the record holds when it runs: a later edit and the records replaced by a conflict
+// reload or a restore (installed afresh) are what the next call applies, never a captured object.
+// The color-scheme writers write the `ui` record and queue its write, and nothing else. The records
+// are all there is (slice 10 took the aggregate away): the readers and the writers (`updateSettings`)
+// reach them only through the views.
 
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 vi.mock("../alert", () => ({ alertError: vi.fn(), alertNormal: vi.fn() }));
@@ -37,10 +36,11 @@ import {
     updateTextThemeAndCSS,
 } from "./colorscheme";
 import { sideBarSize, textAreaSize, textAreaTextSize, updateGuisize } from "./guisize";
-import { setDatabase, setDatabaseLite, type Database } from "../storage/database.svelte";
+import type { Database } from "../storage/database.svelte";
 import { setRecordWriteListener, trackedRecord } from "../storage/records.svelte";
 import { settings } from "../storage/settingsViews.svelte";
-import { CustomCSSStore, DBState } from "../stores.svelte";
+import { installFlatDatabase } from "../storage/tests/installFlatDatabase";
+import { CustomCSSStore } from "../stores.svelte";
 
 const scheme = (type: "dark" | "light", bgcolor: string) => ({
     type,
@@ -84,12 +84,6 @@ function database(extra: Record<string, unknown> = {}): Database {
     } as unknown as Database;
 }
 
-/** Installs `data` (its record fields into the records) and takes the facade away. */
-function installWithoutFacade(data: Database) {
-    setDatabaseLite(data);
-    DBState.db = {} as Database;
-}
-
 const css = (name: string) => document.documentElement.style.getPropertyValue(name);
 const ui = () => trackedRecord<Record<string, any>>("ui")!;
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
@@ -100,20 +94,17 @@ beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
     document.documentElement.removeAttribute("style");
-    DBState.db = {} as Database;
-    setDatabase(database());
+    installFlatDatabase(database());
     written = [];
     setRecordWriteListener((kind) => written.push(kind));
 });
 
 afterEach(() => {
     setRecordWriteListener(null);
-    DBState.db = {} as Database;
 });
 
 describe("updateColorScheme", () => {
     it("applies the ui record's color scheme, and the record as it is at the next call", () => {
-        DBState.db = {} as Database;
         updateColorScheme();
         expect(css("--risu-theme-bgcolor")).toBe("#111111");
         expect(css("--risu-theme-darkbutton")).toBe("#000008");
@@ -124,8 +115,8 @@ describe("updateColorScheme", () => {
         expect(css("--risu-theme-bgcolor")).toBe("#333333");
         expect(get(ColorSchemeTypeStore)).toBe("light");
 
-        // A database replaced by a conflict reload or a restore: the next call reads the new record.
-        installWithoutFacade(database({ colorScheme: scheme("dark", "#444444") }));
+        // The records replaced by a conflict reload or a restore: the next call reads the new record.
+        installFlatDatabase(database({ colorScheme: scheme("dark", "#444444") }));
         updateColorScheme();
         expect(css("--risu-theme-bgcolor")).toBe("#444444");
         expect(written).toEqual(["ui"]);
@@ -134,7 +125,6 @@ describe("updateColorScheme", () => {
 
 describe("updateTextThemeAndCSS", () => {
     it("applies the custom text theme, font, and CSS from the ui record, and follows its edits", () => {
-        DBState.db = {} as Database;
         updateTextThemeAndCSS();
         expect(css("--FontColorStandard")).toBe("#aaaaaa");
         expect(css("--FontColorQuote2")).toBe("#100005");
@@ -154,7 +144,7 @@ describe("updateTextThemeAndCSS", () => {
         updateTextThemeAndCSS();
         expect(css("--FontColorStandard")).toBe("#0f172a");
 
-        installWithoutFacade(database({ customTextTheme: textTheme("#bbbbbb"), customCSS: ".b {}" }));
+        installFlatDatabase(database({ customTextTheme: textTheme("#bbbbbb"), customCSS: ".b {}" }));
         updateTextThemeAndCSS();
         expect(css("--FontColorStandard")).toBe("#bbbbbb");
         expect(get(CustomCSSStore)).toBe(".b {}");
@@ -176,7 +166,7 @@ describe("the color-scheme writers", () => {
     });
 
     it("updateCustomColorScheme installs the record's custom scheme as it is now", () => {
-        setDatabaseLite(database({ customColorScheme: scheme("dark", "#666666") }));
+        installFlatDatabase(database({ customColorScheme: scheme("dark", "#666666") }));
         updateCustomColorScheme();
         expect(ui().colorScheme.bgcolor).toBe("#666666");
         expect(css("--risu-theme-bgcolor")).toBe("#666666");
@@ -185,7 +175,6 @@ describe("the color-scheme writers", () => {
 
 describe("updateGuisize and updateAnimationSpeed", () => {
     it("apply the ui record's sizes and speed, and the record as it is at the next call", () => {
-        DBState.db = {} as Database;
         updateGuisize();
         updateAnimationSpeed();
         expect([get(textAreaSize), get(sideBarSize), get(textAreaTextSize)]).toEqual([2, 3, 1]);
@@ -200,7 +189,7 @@ describe("updateGuisize and updateAnimationSpeed", () => {
         expect(css("--sidebar-size")).toBe("28rem");
         expect(css("--risu-animation-speed")).toBe("0.2s");
 
-        installWithoutFacade(database({ textAreaSize: -1, sideBarSize: 0, animationSpeed: 1 }));
+        installFlatDatabase(database({ textAreaSize: -1, sideBarSize: 0, animationSpeed: 1 }));
         updateGuisize();
         updateAnimationSpeed();
         expect(get(textAreaSize)).toBe(-1);

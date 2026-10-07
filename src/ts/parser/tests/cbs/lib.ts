@@ -1,21 +1,21 @@
 import fc from "fast-check";
-import { DBState } from "src/ts/stores.svelte";
 import { activePreset, settings } from "src/ts/storage/settingsViews.svelte";
 import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
 import { assembleChats, chatList, setChatMeta } from "src/ts/storage/chatStore.svelte";
 import type { Chat } from "src/ts/storage/database.svelte";
 
-type MockedCharacter = { chaId: string; chats: Chat[] };
+/** A CBS test's fixture character in the legacy shape: its chats on it (the test keeps the objects). */
+export type MockedCharacter = { chaId: string; chatPage?: number; chats: Chat[]; defaultVariables?: string };
 
 /**
- * Installs the mocked `DBState.db.characters` the way boot does (Phase 6 slice 9a: the chat module
+ * Installs the test's fixture `characters` the way boot does (Phase 6 slice 9a: the chat module
  * checks a character through the records and holds the chats itself): copies of the characters
  * into the records, with the record fields `fields`, and the characters' chats into the chat module
- * (`assembleChats`). The mock keeps its plain data; the readers resolve the selected character over
- * it and its chat in the chat module.
+ * (`assembleChats`). The fixture keeps its plain chat objects (the test's variable storage lives on
+ * them); the readers resolve the selected character over the records and its chat in the chat module.
+ * (Until Phase 6 slice 10 the fixture sat on the removed aggregate's mocked holder.)
  */
-export const holdMockedChats = (fields: Record<string, unknown> = {}): void => {
-    const characters = DBState.db.characters as unknown as MockedCharacter[];
+export const holdMockedChats = (characters: MockedCharacter[], fields: Record<string, unknown> = {}): void => {
     initializeRecords(
         takeRecordFields({
             ...fields,
@@ -40,12 +40,12 @@ export const cbs = (op: string, ...args: string[]): string =>
 
 /**
  * Resets globalChatVariables and its default values,
- * as well as each character's all scriptstates and their default values.
+ * as well as each fixture character's all scriptstates and their default values.
  */
-export const resetChatVariables = (): void => {
-    for (const char of DBState.db.characters) {
+export const resetChatVariables = (characters: MockedCharacter[]): void => {
+    for (const char of characters) {
         for (const chat of char.chats) {
-            // The mocked mirror is plain data here (the module is the only writer in the app).
+            // The fixture chat is plain data here (the module is the only writer in the app).
             (chat as { scriptstate?: Record<string, unknown> }).scriptstate = {};
         }
         // The chats `holdMockedChats` put into the chat module (Phase 6 slice 9a).

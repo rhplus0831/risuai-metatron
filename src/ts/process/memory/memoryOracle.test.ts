@@ -39,7 +39,9 @@ let current: World;
 /** Every `requestChatData` argument, for the P10 context check. */
 const requestArgs: Record<string, unknown>[] = [];
 
-vi.mock("src/ts/storage/database.svelte", () => ({ getDatabase: () => current.db }));
+// `hypav3.ts` keeps a runtime import of `database.svelte` for its types (inline `type` modifiers);
+// nothing is read from it (the settings are the records, installed by `installWorld`).
+vi.mock("src/ts/storage/database.svelte", () => ({}));
 vi.mock("src/ts/process/request/request", () => ({
     requestChatData: (arg: { formated: unknown[] }) => {
         requestArgs.push(arg);
@@ -81,7 +83,12 @@ vi.mock("src/ts/util", () => ({
 }));
 vi.mock("src/ts/platform", () => ({ isMobile: false }));
 vi.mock("src/ts/alert", () => ({ alertError: (text: string) => current.alert(text) }));
-vi.mock("src/lang", () => ({ language: { errors: { toomuchtoken: TOO_MUCH_TOKEN } } }));
+// The fixture helper reaches `src/lang` while the test file's imports still load (`installFlatDatabase`
+// imports the chat module), so the factory loads the constant itself instead of reading the import.
+vi.mock("src/lang", async () => {
+    const { TOO_MUCH_TOKEN } = await import("../../../../server/src/tests/fixtures/memory/scenarios.ts");
+    return { language: { errors: { toomuchtoken: TOO_MUCH_TOKEN } } };
+});
 vi.mock("src/ts/parser/chatML", () => ({ parseChatML: () => null }));
 // `hypav3.ts` imports a type from the send pipeline with an inline `type` modifier, which keeps the
 // module's side-effect import: the pipeline (and the parser's effects) must not load here.
@@ -100,7 +107,7 @@ function settingsOf(scenario: Scenario): Record<string, unknown> {
 }
 
 /**
- * The world's settings installed as `setDatabaseLite` installs a database, since the memory
+ * The world's settings installed into the records (`installFlatDatabase`), since the memory
  * algorithms read the settings through the record views (Phase 6 slice 7). They are the flat shape
  * the server ports read: the root preset fields become the one preset's.
  */

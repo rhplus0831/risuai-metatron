@@ -2,7 +2,7 @@
     // Test-only: the replacement wrapper pattern from the spike (proof 4). No local copy and no
     // effects: a function binding reads through `getSettingValue` on every render and writes
     // synchronously through `setSettingValue`, which calls `item.onChange` once per user edit. Both
-    // are the pre-slice-6 copies over `DBState.db` (`spikeRegistry.ts`), which reach the prototype.
+    // are the pre-slice-6 copies over the spike's root holder (`spikeRegistry.ts`), which reach the prototype.
     import type { SettingItem, SettingContext } from "src/ts/setting/types";
     import { candidateGetSettingValue, candidateSetSettingValue } from "./spikeRegistry";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";

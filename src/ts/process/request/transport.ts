@@ -27,7 +27,7 @@ import { generationClientId } from "src/ts/network/generationJobs";
 import { risuChatParserScoped } from "src/ts/parser/parser.svelte";
 import { capturePluginContext, type PluginCallContext } from "src/ts/plugins/apiV3/pluginContext";
 import { pluginHooks } from "src/ts/plugins/pluginHooks";
-import { authFetch } from "src/ts/storage/nodeStorage";
+import { authFetch } from "src/ts/storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "src/ts/storage/resourceClient";
 import { flushResources } from "src/ts/storage/resourceSync.svelte";
 import { checkPersonaBinded } from "src/ts/util";

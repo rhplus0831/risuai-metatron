@@ -28,7 +28,7 @@
     import BookmarkList from "./lib/Others/BookmarkList.svelte";
     import Settings from "./lib/Setting/Settings.svelte";
     import { showRealmInfoStore, importCharacterProcess } from "./ts/characterCards";
-    import { importPreset, setDatabase } from "./ts/storage/database.svelte";
+    import { importPreset } from "./ts/storage/presets.svelte";
     import { prepareModuleImport, readModule } from "./ts/process/modules";
     import { alertNormal } from "./ts/alert";
     import { language } from "./lang";

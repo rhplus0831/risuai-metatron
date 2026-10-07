@@ -468,8 +468,9 @@ try {
     await openApp(page, stack.baseURL);
     await page.waitForTimeout(1500);
     const masked = await page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        return JSON.stringify({ openAIKey: DBState.db.openAIKey, google: DBState.db.google });
+        const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
+        const { readSettingsRoot, writeSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        return JSON.stringify({ openAIKey: readSettingsRoot("openAIKey"), google: readSettingsRoot("google") });
     });
     check(
         "the tab holds no credential (masked after boot)",
@@ -604,9 +605,10 @@ try {
         "openAIKey",
         () =>
             page.evaluate(async () => {
-                const { DBState } = await import("/src/ts/stores.svelte.ts");
+                const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
+                const { readSettingsRoot, writeSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
                 const translator = await import("/src/ts/translator/translator.ts");
-                DBState.db.translatorType = "llm";
+                writeSettingsRoot("translatorType", "llm");
                 return translator.runTranslator("안녕하세요", false, "ko", "en");
             }),
         isOpenAI("/v1/chat/completions"),
@@ -655,9 +657,10 @@ try {
         "openAIKey",
         () =>
             page.evaluate(async () => {
-                const { DBState } = await import("/src/ts/stores.svelte.ts");
+                const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
+                const { readSettingsRoot, writeSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
                 const models = await import("/src/ts/model/modellist.ts");
-                DBState.db.dynamicModelRegistry = true;
+                writeSettingsRoot("dynamicModelRegistry", true);
                 await models.registerModelDynamic();
                 // The catalogue holds the model each mock list named.
                 return [
@@ -684,10 +687,11 @@ try {
     }
     const image = (provider) => () =>
         page.evaluate(async (sdProvider) => {
-            const { DBState } = await import("/src/ts/stores.svelte.ts");
+            const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
+            const { readSettingsRoot, writeSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
             const { generateAIImage } = await import("/src/ts/process/stableDiff.ts");
-            DBState.db.sdProvider = sdProvider;
-            const char = DBState.db.characters.find((c) => c?.name === "Credential Char");
+            writeSettingsRoot("sdProvider", sdProvider);
+            const char = characterList().find((c) => c?.name === "Credential Char");
             return generateAIImage("a cat", char, "", "inlay");
         }, provider);
     await scenario(
@@ -703,11 +707,10 @@ try {
         "openAIKey",
         () =>
             page.evaluate(async () => {
-                const { DBState } = await import("/src/ts/stores.svelte.ts");
+                const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
+                const { readSettingsRoot, writeSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
                 const { sayTTS } = await import("/src/ts/process/tts.ts");
-                const char = JSON.parse(
-                    JSON.stringify(DBState.db.characters.find((c) => c?.name === "Credential Char")),
-                );
+                const char = JSON.parse(JSON.stringify(characterList().find((c) => c?.name === "Credential Char")));
                 const decodedBefore = window.__decodedAudio ?? 0;
                 await sayTTS({ ...char, ttsMode: "openai", oaiVoice: "alloy" }, "hello");
                 return { decoded: (window.__decodedAudio ?? 0) - decodedBefore, text: document.body.innerText };
@@ -750,16 +753,17 @@ try {
         "google/accessToken",
         () =>
             page.evaluate(async () => {
-                const { DBState } = await import("/src/ts/stores.svelte.ts");
+                const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
+                const { readSettingsRoot, writeSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
                 const tokenizer = await import("/src/ts/tokenizer.ts");
-                const previous = DBState.db.aiModel;
-                DBState.db.aiModel = "gemini-1.5-pro-latest";
-                DBState.db.googleClaudeTokenizing = true;
+                const previous = readSettingsRoot("aiModel");
+                writeSettingsRoot("aiModel", "gemini-1.5-pro-latest");
+                writeSettingsRoot("googleClaudeTokenizing", true);
                 try {
                     return (await tokenizer.encode("hello world, counted remotely")).length;
                 } finally {
-                    DBState.db.aiModel = previous;
-                    DBState.db.googleClaudeTokenizing = false;
+                    writeSettingsRoot("aiModel", previous);
+                    writeSettingsRoot("googleClaudeTokenizing", false);
                 }
             }),
         isGoogle(":countTokens"),

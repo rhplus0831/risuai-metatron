@@ -16,7 +16,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
 }));
 vi.mock("../../alert", () => ({
@@ -26,6 +26,7 @@ vi.mock("../../alert", () => ({
 }));
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
+    changeLanguage: vi.fn(),
 }));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -38,9 +39,10 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
-type Stores = typeof import("../../stores.svelte");
 type Bootstrap = typeof import("../../bootstrap");
-type DatabaseModule = typeof import("../database.svelte");
+type SettingsViews = typeof import("../settingsViews.svelte");
+type CharacterStore = typeof import("../characterStore.svelte");
+type Selection = typeof import("../selection.svelte");
 
 /** A character as the server stores it: the shared defaults filled in (Phase 6 slice 5b). */
 function character(chaId: string, name: string, extra: Record<string, unknown> = {}) {
@@ -78,23 +80,25 @@ async function boot(options: { prepare?: (server: FakeResourceServer) => void } 
     options.prepare?.(fake);
     server.current = fake;
 
-    const stores: Stores = await import("../../stores.svelte");
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
-    const database: DatabaseModule = await import("../database.svelte");
+    const { settings }: SettingsViews = await import("../settingsViews.svelte");
+    const { characterList }: CharacterStore = await import("../characterStore.svelte");
+    const selection: Selection = await import("../selection.svelte");
 
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(0);
+    bootstrap.installBootRecords(snapshot);
+    selection.selectCharacterAt(0);
     sync.startResourceSync();
     await tick();
     await sync.flushResources();
     expect(fake.batchCount()).toBe(0);
     fake.requests.length = 0;
-    const db = () => stores.DBState.db as any;
-    const mirror = (id: string) => db().characters.find((entry: any) => entry.chaId === id);
+    /** The character wrappers, with the chat module's compatibility view (`chats`, `chatPage`). */
+    const characters = () => characterList() as any[];
+    const mirror = (id: string) => characters().find((entry: any) => entry.chaId === id);
     /** A write "another tab" makes on the server's current copy of a record. */
     const remote = (kind: string, id: string, change: (data: any) => void) => {
         const data = JSON.parse(JSON.stringify(fake.data(kind, id)));
@@ -103,7 +107,7 @@ async function boot(options: { prepare?: (server: FakeResourceServer) => void } 
     };
     const changed: string[] = [];
     sync.onRemoteRecordApplied((kind, id) => changed.push(`${kind}/${id}`));
-    return { fake, stores, sync, db, mirror, remote, changed };
+    return { fake, sync, settings, characters, mirror, remote, changed };
 }
 
 beforeEach(() => {
@@ -369,17 +373,17 @@ describe("which remote changes are merged", () => {
     );
 
     it("conflicts for a remote inherited-name addition to `statics`, and the server keeps it", async () => {
-        const { fake, sync, db, remote } = await boot();
+        const { fake, sync, settings, remote } = await boot();
         remote("statics", "main", (data) => {
             data.messages = 6;
             data.toString = 1;
         });
-        db().statics.messages = 5;
+        settings.statics.messages = 5;
         expect((await sync.flushResources()).discarded).toEqual(["statics/main"]);
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         expect(fake.data("statics", "main")).toMatchObject({ messages: 6, toString: 1 });
-        expect(Object.hasOwn(db().statics, "toString")).toBe(true);
-        db().statics.messages = 7;
+        expect(Object.hasOwn(settings.statics, "toString")).toBe(true);
+        settings.statics.messages = 7;
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(fake.data("statics", "main")).toMatchObject({ messages: 7, toString: 1 });
     });
@@ -402,15 +406,15 @@ describe("which remote changes are merged", () => {
     });
 
     it("does not merge a create: a local new character whose id another tab created conflicts as before", async () => {
-        const { fake, sync, db } = await boot();
-        // The list changes through the character module (Phase 6 slice 5: a push through the facade is refused).
+        const { fake, sync, mirror } = await boot();
+        // The list changes through the character module (Phase 6 slice 5: a push through the list wrapper is refused).
         const characterStore = await import("../characterStore.svelte");
         characterStore.addCharacter(character("n", "Local new", { lastInteraction: 1 }));
         await tick();
         fake.set("characters", "n", character("n", "Local new", { lastInteraction: 2 }));
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["characters/n"]);
-        expect(db().characters.find((entry: any) => entry.chaId === "n").lastInteraction).toBe(2);
+        expect(mirror("n").lastInteraction).toBe(2);
     });
 });
 
@@ -422,12 +426,12 @@ describe("a running generation's character (the generation deferral is gone)", (
      * holds a generating character back: the merge takes what it takes while idle, and any other
      * change conflicts at once.
      */
-    async function generate(db: () => any) {
+    async function generate(mirror: (id: string) => any) {
         const chat = await import("../chatStore.svelte");
         chat.installCharacterChats(
             "a",
             [{ id: "ka", name: "K", note: "", localLore: [], message: [{ role: "char", data: "", chatId: "r" }] }],
-            db().characters.find((entry: any) => entry.chaId === "a"),
+            mirror("a"),
         );
         chat.applyServerGeneration(
             { chaId: "a", chatId: "ka" },
@@ -438,8 +442,8 @@ describe("a running generation's character (the generation deferral is gone)", (
     }
 
     it("rebases a stamp-only and an exact `supaMemory: false` change while generating, with no discard", async () => {
-        const { fake, sync, db, mirror, remote } = await boot();
-        const end = await generate(db);
+        const { fake, sync, mirror, remote } = await boot();
+        const end = await generate(mirror);
         remote("characters", "a", (data) => {
             data.lastInteraction = 200;
             data.supaMemory = false;
@@ -462,8 +466,8 @@ describe("a running generation's character (the generation deferral is gone)", (
     ])(
         "takes %s while generating as while idle (a field neither the base nor the local copy has): merged into the live character, no discard",
         async (_label, added) => {
-            const { fake, sync, db, mirror, remote, changed } = await boot();
-            const end = await generate(db);
+            const { fake, sync, mirror, remote, changed } = await boot();
+            const end = await generate(mirror);
             const live = mirror("a");
             remote("characters", "a", (data) => {
                 Object.assign(data, added);
@@ -485,8 +489,8 @@ describe("a running generation's character (the generation deferral is gone)", (
     );
 
     it("conflicts at once for a substantive change while generating; a later stamp-only change then merges", async () => {
-        const { fake, sync, db, mirror, remote } = await boot();
-        const end = await generate(db);
+        const { fake, sync, mirror, remote } = await boot();
+        const end = await generate(mirror);
         remote("characters", "a", (data) => (data.name = "Remote name"));
         mirror("a").desc = "local";
         expect((await sync.flushResources()).discarded).toEqual(["characters/a"]);
@@ -594,10 +598,10 @@ describe("the flush barrier around a merge", () => {
     });
 
     it("resends the rest of the rejected batch with the merge (a section edit in the same batch)", async () => {
-        const { fake, sync, db, mirror, remote } = await boot();
+        const { fake, sync, settings, mirror, remote } = await boot();
         remote("characters", "a", (data) => (data.lastInteraction = 200));
         mirror("a").desc = "local";
-        db().theme = "local theme";
+        settings.ui.theme = "local theme";
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(fake.data("ui", "main").theme).toBe("local theme");
         expect(fake.data("characters", "a").desc).toBe("local");
@@ -611,41 +615,41 @@ describe("statics counts (best effort)", () => {
     };
 
     it("adds this client's increments to the server's count, for both counts", async () => {
-        const { fake, sync, db, remote } = await boot();
+        const { fake, sync, settings, remote } = await boot();
         remote("statics", "main", (data) => {
             data.messages = 6;
             data.imports = 1;
         });
-        db().statics.messages = 5;
-        db().statics.imports = 2;
+        settings.statics.messages = 5;
+        settings.statics.imports = 2;
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(counts(fake)).toEqual({ messages: 7, imports: 3 });
-        expect(db().statics).toMatchObject({ messages: 7, imports: 3 });
+        expect(settings.statics).toMatchObject({ messages: 7, imports: 3 });
         expect(alerts.normal).not.toHaveBeenCalled();
     });
 
     it("counts equal values in otherwise different records as independent increments", async () => {
-        const { fake, sync, db, remote } = await boot();
+        const { fake, sync, settings, remote } = await boot();
         remote("statics", "main", (data) => {
             data.messages = 5;
             data.imports = 1;
         });
-        db().statics.messages = 5;
+        settings.statics.messages = 5;
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(counts(fake)).toEqual({ messages: 6, imports: 1 });
     });
 
     it("accepts the documented limits: identical records keep one increment, a lost answer followed by another writer counts it twice", async () => {
-        const { fake, sync, db, remote } = await boot();
+        const { fake, sync, settings, remote } = await boot();
         // Both tabs raised messages 4 → 5: the server holds what was sent, nothing to merge.
         remote("statics", "main", (data) => (data.messages = 5));
-        db().statics.messages = 5;
+        settings.statics.messages = 5;
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(counts(fake).messages).toBe(5);
 
         // This tab writes 5 → 6 and loses the answer; another tab writes 7; the retry adds again.
         fake.dropNextBatchResponse = true;
-        db().statics.messages = 6;
+        settings.statics.messages = 6;
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
         remote("statics", "main", (data) => (data.messages = 7));
         await vi.advanceTimersByTimeAsync(5000);
@@ -664,20 +668,20 @@ describe("statics counts (best effort)", () => {
         ],
         ["the larger count when the sum is negative", { messages: 10 }, { messages: 0 }, 5, { messages: 5 }],
     ])("takes %s", async (_label, base, remoteChange, localMessages, expected) => {
-        const { fake, sync, db, remote } = await boot({ prepare: (fake) => fake.set("statics", "main", base) });
+        const { fake, sync, settings, remote } = await boot({ prepare: (fake) => fake.set("statics", "main", base) });
         remote("statics", "main", (data) => Object.assign(data, remoteChange));
-        db().statics.messages = localMessages;
+        settings.statics.messages = localMessages;
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(fake.data("statics", "main")).toEqual(expected);
-        expect(db().statics).toMatchObject(expected);
+        expect(settings.statics).toMatchObject(expected);
     });
 
     it("conflicts as before for a count that is not a number", async () => {
-        const { sync, db, remote } = await boot();
+        const { sync, settings, remote } = await boot();
         remote("statics", "main", (data) => (data.messages = "many"));
-        db().statics.messages = 5;
+        settings.statics.messages = 5;
         expect((await sync.flushResources()).discarded).toEqual(["statics/main"]);
-        expect(db().statics.messages).toBe("many");
+        expect(settings.statics.messages).toBe("many");
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
     });
 });

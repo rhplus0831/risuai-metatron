@@ -18,8 +18,8 @@ vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: stri
 vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 
 import * as chat from "../chatStore.svelte";
-import { DBState } from "../../stores.svelte";
-import { setDatabaseLite } from "../database.svelte";
+import { characterList } from "../characterStore.svelte";
+import { initializeRecords, takeRecordFields } from "../records.svelte";
 
 const m = (id: string, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
 const ref = { chaId: "c", chatId: "k" };
@@ -70,9 +70,9 @@ beforeAll(async () => {
     const read = server.store.readKinds([characters], { chats: true });
     // The chat module checks a character through the records (Phase 6 slice 9a): installed as
     // `loadData` installs them.
-    setDatabaseLite({ characters: read.kinds.characters.map((record) => record.data) } as any);
+    initializeRecords(takeRecordFields({ characters: read.kinds.characters.map((record) => record.data) }));
     chat.seedChats(read.chats!, read.chatOrders!);
-    chat.assembleChats(DBState.db.characters as any, read.chats!, read.chatOrders!);
+    chat.assembleChats(characterList() as any, read.chats!, read.chatOrders!);
     chat.initializeChats();
 });
 

@@ -17,7 +17,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -28,6 +28,7 @@ vi.mock("../../alert", () => ({
 }));
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
+    changeLanguage: vi.fn(),
 }));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -40,10 +41,11 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
-type Stores = typeof import("../../stores.svelte");
 type ChatModule = typeof import("../chatStore.svelte");
 type Bootstrap = typeof import("../../bootstrap");
-type DatabaseModule = typeof import("../database.svelte");
+type SettingsViews = typeof import("../settingsViews.svelte");
+type CharacterStore = typeof import("../characterStore.svelte");
+type Selection = typeof import("../selection.svelte");
 type Transport = typeof import("../../network/generationJobs");
 
 const KINDS = Object.values(RESOURCE_KIND);
@@ -63,7 +65,8 @@ const earlierIncarnation = (token: string) => {
 /**
  * Boots the adapter, the chat module, and the transport the way `loadData` does: the server holds
  * the collections and a character `c` with chats `k` (messages a, b, c) and `j` (empty), guarded by
- * the generation lock; read with chats, seed, assemble, select, start, and let the boot pass run.
+ * the generation lock; read with chats, seed, install the records (`installBootRecords`), select
+ * `c`, start, and let the boot pass run.
  */
 async function boot() {
     vi.resetModules();
@@ -102,19 +105,20 @@ async function boot() {
     });
     server.current = fake;
 
-    const stores: Stores = await import("../../stores.svelte");
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const chat: ChatModule = await import("../chatStore.svelte");
     const transport: Transport = await import("../../network/generationJobs");
     const bootstrap: Bootstrap = await import("../../bootstrap");
-    const database: DatabaseModule = await import("../database.svelte");
+    const { settings }: SettingsViews = await import("../settingsViews.svelte");
+    const { characterList }: CharacterStore = await import("../characterStore.svelte");
+    const selection: Selection = await import("../selection.svelte");
 
     const snapshot = await client.readKinds(KINDS, { chats: true });
     sync.seedResources(snapshot);
     chat.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(0);
+    bootstrap.installBootRecords(snapshot);
+    selection.selectCharacterAt(0);
     chat.initializeChats();
     fake.requests.length = 0;
     // Each boot's graph registers its own window and document listeners on the shared ones; the
@@ -143,8 +147,9 @@ async function boot() {
     await sync.flushResources();
     expect(fake.batchCount()).toBe(0);
     fake.requests.length = 0;
-    const db = () => stores.DBState.db as any;
-    const character = () => db().characters.find((entry: any) => entry.chaId === "c");
+    /** The character wrappers, with the chat module's compatibility view (`chats`, `chatPage`). */
+    const characters = () => characterList() as any[];
+    const character = () => characters().find((entry: any) => entry.chaId === "c");
     const mirrorChat = (id = "k") => character().chats.find((entry: any) => entry.id === id) as Chat | undefined;
     const text = (id: string) => mirrorChat()!.message.find((entry) => entry.chatId === id)?.data;
     const locked = (id: string) => chat.isMessageLocked(refK, id);
@@ -194,11 +199,11 @@ async function boot() {
     });
     return {
         fake,
-        stores,
         sync,
         chat,
         transport,
-        db,
+        settings,
+        characters,
         character,
         mirrorChat,
         text,
@@ -715,8 +720,8 @@ describe("the streaming state follows a job's stream", () => {
     const none = { chaId: null, chatId: null, messageId: null, mode: undefined };
 
     it("is set by a generation's first stream update with the configured mode, not by its chat event's placeholder lock, keeps that mode, and is cleared at the job's end", async () => {
-        const { fake, chat, db, locked, chatEvent, copyWith, apply, chunk, accepted } = await boot();
-        db().streamingDisplayOptimizationMode = "strong";
+        const { fake, chat, settings, locked, chatEvent, copyWith, apply, chunk, accepted } = await boot();
+        settings.ui.streamingDisplayOptimizationMode = "strong";
         const revision = bumped(fake.chat("c", "k")!.revision, 1);
         apply(
             "J",
@@ -728,7 +733,7 @@ describe("the streaming state follows a job's stream", () => {
         expect(state(chat)).toEqual({ ...refK, messageId: "b", mode: "strong" });
         expect(chat.isStreamingMessage(refK, "b")).toBe(true);
         // A later chunk of the same generation keeps the mode it started with.
-        db().streamingDisplayOptimizationMode = "balanced";
+        settings.ui.streamingDisplayOptimizationMode = "balanced";
         apply("J", chunk("g1", 1, "RAW ONE"));
         expect(state(chat)).toEqual({ ...refK, messageId: "b", mode: "strong" });
         apply("J", { type: "done", epoch: fake.store.epoch(), revision: null });
@@ -736,15 +741,15 @@ describe("the streaming state follows a job's stream", () => {
         expect(state(chat)).toEqual(none);
 
         // Without the setting: "off". A generation that starts with a chunk sets it too.
-        // Cleared in its record: a `delete` would remove the facade's accessor and leave the record.
-        db().streamingDisplayOptimizationMode = undefined;
+        // Cleared through the view (the section views are frozen accessors; the record holds the value).
+        settings.ui.streamingDisplayOptimizationMode = undefined;
         apply("K", chunk("g2", 0, "FIRST", "c"));
         expect(state(chat)).toEqual({ ...refK, messageId: "c", mode: "off" });
     });
 
     it("is cleared when a chat event releases the generation or hands its message to another one, and a later generation keeps it when an earlier one's lock is released", async () => {
-        const { fake, chat, db, chatEvent, copyWith, apply, chunk, accepted } = await boot();
-        db().streamingDisplayOptimizationMode = "balanced";
+        const { fake, chat, settings, chatEvent, copyWith, apply, chunk, accepted } = await boot();
+        settings.ui.streamingDisplayOptimizationMode = "balanced";
         apply("A", accepted("A", "g1", "a"));
         expect(state(chat)).toEqual({ ...refK, messageId: "a", mode: "balanced" });
         // Another job's generation takes the state over.
@@ -765,7 +770,7 @@ describe("the streaming state follows a job's stream", () => {
         apply("B", chatEvent("B", [{ messageId: "c", generationId: "g4", seq: 0 }], { revision }));
         expect(chat.isMessageLocked(refK, "c")).toBe(true);
         expect(state(chat)).toEqual(none);
-        db().streamingDisplayOptimizationMode = "strong";
+        settings.ui.streamingDisplayOptimizationMode = "strong";
         apply("B", chunk("g4", 1, "CONTINUED", "c"));
         expect(state(chat)).toEqual({ ...refK, messageId: "c", mode: "strong" });
 
@@ -867,15 +872,15 @@ describe("a refusal for a generating message", () => {
     });
 
     it("keeps a refused character delete as an unsaved membership change without polling, refuses a flush, and deletes at the retry; an undo clears it", async () => {
-        const { fake, sync, chat, db, unloadWarning } = await boot();
+        const { fake, sync, chat, characters, unloadWarning } = await boot();
         const characterStore = await import("../characterStore.svelte");
         lockB(fake);
         const timeouts = vi.spyOn(globalThis, "setTimeout");
         // The list changes through the character module (Phase 6 slice 5: a splice through the
-        // facade is refused); removing the selected character selects home.
+        // list wrapper is refused); removing the selected character selects home.
         // Phase 6 slice 9a: a copy of the record carries no chats; the legacy shape with them is
         // built with `withChatsCopy`.
-        const removed = chat.withChatsCopy(JSON.parse(JSON.stringify(db().characters[0])));
+        const removed = chat.withChatsCopy(JSON.parse(JSON.stringify(characters()[0])));
         expect(characterStore.removeCharacter("c")).toBe(true);
         await tick();
         await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
@@ -920,7 +925,7 @@ describe("a refusal for a generating message", () => {
             runnable: chat.hasChatWork(),
             idle: chat.idleChatRefreshes(),
             deferred: chat.deferredReloads(),
-            mirror: db().characters.map((entry: any) => [entry.chaId, entry.chats.map((c: any) => c.id)]),
+            mirror: characters().map((entry: any) => [entry.chaId, entry.chats.map((c: any) => c.id)]),
         }).toEqual({ chatWork: false, runnable: false, idle: [], deferred: [], mirror: [["c", ["k", "j"]]] });
         expect(unloadWarning()).toBe(false);
         // Deleted again while still locked, then the job ends: the retry deletes it with its chats.
@@ -935,13 +940,13 @@ describe("a refusal for a generating message", () => {
     });
 
     it("handles an ordinary conflict and a generating refusal in one batch: the record reloads with its notice, the chat work waits", async () => {
-        const { fake, sync, chat, db } = await boot();
+        const { fake, sync, chat, settings } = await boot();
         lockB(fake);
-        db().theme = "mine";
+        settings.ui.theme = "mine";
         fake.set("ui", "main", { ...(fake.record("ui", "main")!.data as object), theme: "theirs" });
         chat.setMessageText(refK, "b", "edited");
         await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
-        expect(db().theme).toBe("theirs");
+        expect(settings.ui.theme).toBe("theirs");
         expect(alerts.normal.mock.calls.map(([text]) => text).sort()).toEqual(["generating", "reloaded"]);
         expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
         fake.lock!.endJob("T");

@@ -14,7 +14,7 @@ import { bootMutations, m, refK } from "../storage/tests/mutationStoresHarness";
 
 const { server } = vi.hoisted(() => ({ server: { current: null as any } }));
 
-vi.mock("../storage/nodeStorage", () => ({
+vi.mock("../storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));

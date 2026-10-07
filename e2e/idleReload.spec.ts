@@ -4,8 +4,8 @@ import { openApp } from "../util/playwright/stack.mjs";
 // Phase 3, slice 4: the convergence rule in the browser (`docs/plan/phases/slices/
 // phase-3-settings-sections/client-section-mirrors.md`, Validation). The stack of
 // `playwright.config.ts` starts with an empty store, so the first boot is the first run: the server
-// materializes every section, collection, and `presets`, and the client's `setDatabase` defaults
-// create only the two Phase 1 lists it fills (no `root` record since slice 6). From then on an idle
+// materializes every section, collection, and `presets`, and the client's boot (`installBootRecords`)
+// creates only the two Phase 1 lists it fills (no `root` record since slice 6). From then on an idle
 // reload must write nothing: every projection equals the server's normalized text.
 
 /** The ops of every batch the page sends, as `kind` with `+` for a create. */
@@ -43,13 +43,14 @@ test("a fresh store: the first boot creates only modules and plugins; an idle re
     expect(batches).toEqual([]);
     expect(errors).toEqual([]);
 
-    // The mirror holds the server's records: both selections resolve by id.
+    // The records hold the server's data: both selections resolve by id.
     const selections = await page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        const db = DBState.db;
+        const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        const translator = settings.translatorPresets;
+        const hypa = settings.hypaV3Presets;
         return {
-            translator: db.translatorPresets.some((preset: { id: string }) => preset.id === db.translatorPresetId),
-            hypa: db.hypaV3Presets.some((preset: { id: string }) => preset.id === db.hypaV3PresetId),
+            translator: translator.items.some((preset: { id: string }) => preset.id === translator.selectedId),
+            hypa: hypa.items.some((preset: { id: string }) => preset.id === hypa.selectedId),
         };
     });
     expect(selections).toEqual({ translator: true, hypa: true });

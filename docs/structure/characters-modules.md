@@ -111,7 +111,7 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 
 ## Coupling
 
-- Depends on `database.svelte.ts`, `stores.svelte.ts` (`selectedCharID`, `ReloadGUIPointer`, `moduleBackgroundEmbedding`), `globalApi` assets and writers, `alert.ts`, `util.ts`, `media/`, the lorebook codecs, scripts, triggers.
+- Depends on `database.svelte.ts`, `stores.svelte.ts` (`ReloadGUIPointer`, `moduleBackgroundEmbedding`), `selection.svelte.ts`, `globalApi` assets and writers, `alert.ts`, `util.ts`, `media/`, the lorebook codecs, scripts, triggers.
 - `@risuai/ccardlib` is imported for types only. There is no runtime validation.
 
 ## Invariants
@@ -132,7 +132,7 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 
 ## Recipes
 
-- Add a card field: `createBaseV2`/`createBaseV3`, `importCharacterCardSpec`, and the `character` type plus its `setDatabase` default. Verify PNG, JSON, and CharX round trips and old Tavern input.
+- Add a card field: `createBaseV2`/`createBaseV3`, `importCharacterCardSpec`, and the `character` type plus its default in the server's character normalizer (`normalizeCharacter`). Verify PNG, JSON, and CharX round trips and old Tavern input.
 - Add an asset kind: the tuple creation in `CharConfig.svelte`/`AssetInput.svelte`, the asset typing in `createBaseV3`, the embedding in `exportCharacterCard`, and the resolution in `importCharacterCardSpec`.
 - Add a module capability: `RisuModule`, `ModuleMenu.svelte`, `exportModuleLegacy`/`readModule`, a `getModule*` getter, and the consuming code path. Call `refreshModules`.
 - Change the lorebook editor: `LoreBookSetting`/`LoreBookList`/`LoreBookData`. Keep `mode`, `id`, `folder`, and `bookVersion`.

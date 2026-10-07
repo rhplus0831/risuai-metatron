@@ -26,7 +26,7 @@ const { server, alerts, picker } = vi.hoisted(() => ({
     picker: { file: null as { name: string; data: Uint8Array } | null },
 }));
 
-vi.mock("../storage/nodeStorage", () => ({
+vi.mock("../storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -99,7 +99,7 @@ async function boot() {
         server.current = fake;
     });
     // `globalApi` and `util` stay real (a `vi.mock` wrapper would outlive `vi.resetModules` and keep
-    // the first graph's `DBState`); the asset store, `sleep`, and the file dialog are spied per graph.
+    // the first graph's records); the asset store, `sleep`, and the file dialog are spied per graph.
     const globalApi = await import("../globalApi.svelte");
     vi.spyOn(globalApi, "saveAsset").mockResolvedValue("asset");
     const util = await import("../util");
@@ -107,8 +107,8 @@ async function boot() {
     vi.spyOn(util, "selectSingleFile").mockImplementation(async () => picker.file as any);
     const modules = await import("./modules");
     const cards = await import("../characterCards");
-    const { db, sync, record } = booted;
-    const list = () => plain(db().modules) as any[];
+    const { settings, sync, record } = booted;
+    const list = () => plain(settings.modules) as any[];
     /** Imports `file` and returns the module added (the only new entry), checked on the server after a cycle. */
     const imported = async (file: { name: string; data: Uint8Array }) => {
         const before = list().map((module) => module.id);
@@ -121,7 +121,7 @@ async function boot() {
         expect(record("modules")).toEqual(list());
         return { module: added[0], result };
     };
-    const order = () => plain(db().characterOrder) as unknown[];
+    const order = () => plain(settings.characterOrder) as unknown[];
     return { ...booted, modules, cards, list, imported, order };
 }
 

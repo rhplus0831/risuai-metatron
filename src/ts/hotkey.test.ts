@@ -36,13 +36,15 @@ vi.mock("./process/index.svelte", () => ({
 
 import { alertToast, doingAlert, terminalNotice } from "./alert";
 import { hotkeyMatches, initHotkey } from "./hotkey";
-import { setDatabase, type Database } from "./storage/database.svelte";
+import { characterList } from "./storage/characterStore.svelte";
+import type { Database } from "./storage/database.svelte";
 import { setRecordWriteListener } from "./storage/records.svelte";
 import { llmSecretState, setMaskedSecrets } from "./storage/llmSecrets.svelte";
 import { maskLlmSecrets } from "../../shared/llmSecrets.ts";
-import { selectCharacter, selection, selectPreset } from "./storage/selection.svelte";
-import { settings } from "./storage/settingsViews.svelte";
-import { DBState, popUpEditorStore, selectedCharID, settingsOpen } from "./stores.svelte";
+import { selectCharacter, selectedIndex, selection, selectPreset } from "./storage/selection.svelte";
+import { activePreset, selectedPresetIndex, settings } from "./storage/settingsViews.svelte";
+import { installFlatDatabase } from "./storage/tests/installFlatDatabase";
+import { popUpEditorStore, settingsOpen } from "./stores.svelte";
 
 let installed = false;
 
@@ -57,8 +59,7 @@ beforeEach(() => {
     // The write-only `llmSecrets` state (7b): an empty masked record and no queued credential write.
     llmSecretState.queue.splice(0);
     setMaskedSecrets(maskLlmSecrets({}));
-    DBState.db = {} as Database;
-    setDatabase({
+    installFlatDatabase({
         characters: [],
         botPresets: [
             { id: "a", name: "A", temperature: 80 },
@@ -77,7 +78,6 @@ beforeEach(() => {
 afterEach(() => {
     (terminalNotice as unknown as Writable<string | null>).set(null);
     popUpEditorStore.open = false;
-    DBState.db = {} as Database;
 });
 
 describe("preset hotkeys", () => {
@@ -85,7 +85,7 @@ describe("preset hotkeys", () => {
         press("3");
         await Promise.resolve();
         expect(selection.presetId).toBe("c");
-        expect(DBState.db.temperature).toBe(30);
+        expect(activePreset.temperature).toBe(30);
         expect(alertToast).toHaveBeenLastCalledWith("Changed to Preset: C");
 
         press("2");
@@ -98,9 +98,9 @@ describe("preset hotkeys", () => {
         expect(alertToast).toHaveBeenCalledTimes(2);
 
         // A reorder does not move the selection: the id is what is kept.
-        DBState.db.botPresets.reverse();
+        settings.presets.reverse();
         expect(selection.presetId).toBe("b");
-        expect(DBState.db.botPresetsId).toBe(1);
+        expect(selectedPresetIndex()).toBe(1);
         press("1");
         await Promise.resolve();
         expect(selection.presetId).toBe("c");
@@ -143,7 +143,7 @@ describe("hotkey matching", () => {
     // built-in hotkeys carry no `shift` flag. Matching filled the missing flags in on the stored
     // element, so a session's first key press saved the `hotkeys` record.
     it("reads a stored hotkey with missing modifier flags as 'not held' and writes nothing, for the dispatch and the textarea caller", async () => {
-        setDatabase({
+        installFlatDatabase({
             characters: [],
             botPresets: [{ id: "a", name: "A" }],
             hotkeys: [
@@ -166,7 +166,7 @@ describe("hotkey matching", () => {
             );
             await Promise.resolve();
             // `TextAreaInput`'s popup-editor check passes the stored element itself.
-            const popup = DBState.db.hotkeys.find((hotkey) => hotkey.action === "popupEditor");
+            const popup = settings.hotkeys.find((hotkey) => hotkey.action === "popupEditor");
             expect(hotkeyMatches(popup, new KeyboardEvent("keydown", { key: "e", ctrlKey: true }))).toBe(true);
             expect(
                 hotkeyMatches(popup, new KeyboardEvent("keydown", { key: "e", ctrlKey: true, shiftKey: true })),
@@ -175,7 +175,7 @@ describe("hotkey matching", () => {
                 false,
             );
             expect(written).toEqual([]);
-            expect(JSON.parse(JSON.stringify(DBState.db.hotkeys))).toEqual([
+            expect(JSON.parse(JSON.stringify(settings.hotkeys))).toEqual([
                 { key: "r", ctrl: true, alt: true, action: "reroll" },
                 { key: "e", ctrl: true, action: "popupEditor" },
             ]);
@@ -188,12 +188,12 @@ describe("hotkey matching", () => {
 describe("the stored hotkeys and their ui toggle (Phase 6 slice 7)", () => {
     // `initHotkey` reads the `hotkeys` record and the `ui` section's `enableScrollToActiveChar`
     // through the settings views at each key press: an edit of either is what the next press uses.
-    // The facade is taken away once the records are installed (as slice 10 leaves it).
+    // The records are all there is (slice 10 took the aggregate away).
     const pressWith = (key: string) =>
         document.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey: true, bubbles: true, cancelable: true }));
 
     it("dispatch the stored hotkeys, follow an edit of the record, and drop scrollToActiveChar while its toggle is off", () => {
-        setDatabase({
+        installFlatDatabase({
             characters: [],
             botPresets: [{ id: "a", name: "A" }],
             hotkeys: [
@@ -202,7 +202,6 @@ describe("the stored hotkeys and their ui toggle (Phase 6 slice 7)", () => {
             ],
             enableScrollToActiveChar: true,
         } as unknown as Database);
-        DBState.db = {} as Database;
         const scrolls = vi.fn();
         window.addEventListener("scrollToActiveCharacter", scrolls);
         try {
@@ -238,7 +237,7 @@ describe("the previous/next character hotkeys (Phase 6 slice 8)", () => {
 
     beforeEach(() => {
         // Created in this order (the list position), not in name order.
-        setDatabase({
+        installFlatDatabase({
             characters: [character("c", "Carol"), character("a", "Alice"), character("b", "Bob")],
             botPresets: [{ id: "a", name: "A" }],
         } as unknown as Database);
@@ -259,7 +258,7 @@ describe("the previous/next character hotkeys (Phase 6 slice 8)", () => {
         pressChar("]");
         expect(selection.characterId).toBe("c");
         // The list itself is not sorted (the plugin index APIs address its positions).
-        expect(DBState.db.characters.map((entry) => entry.chaId)).toEqual(["c", "a", "b"]);
+        expect(characterList().map((entry) => entry.chaId)).toEqual(["c", "a", "b"]);
     });
 
     it("previous steps back by name, does nothing from the first, and does nothing from home", () => {
@@ -278,9 +277,9 @@ describe("the previous/next character hotkeys (Phase 6 slice 8)", () => {
 
     it("previous works from the last character by name (it used to refuse it)", () => {
         selectCharacter("c");
-        expect(get(selectedCharID)).toBe(0);
+        expect(selectedIndex()).toBe(0);
         pressChar("[");
         expect(selection.characterId).toBe("b");
-        expect(get(selectedCharID)).toBe(2);
+        expect(selectedIndex()).toBe(2);
     });
 });

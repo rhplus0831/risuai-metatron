@@ -4,24 +4,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // `safeLocalStorage` implementations from the removed API 2.1 layer. They now
 // live in `v3.svelte.ts`. These tests pin the contracts the move must keep:
 // - `setDatabaseLite`/`setDatabase` route each `allowedDbKeys` key to the
-//   mutation that owns it on the live database (a forwarded key such as
+//   mutation that owns it on the settings records (a forwarded key such as
 //   `temperature` into the selected preset) and every other key to the top
 //   level of `pluginCustomStorage`, without touching the v3 `_pluginStorage`
 //   sub-object. The removed `pluginV2` key is no longer an allowed key, so it
-//   lands in custom storage too.
-// - neither setter calls the whole-database normalizer `setDatabase` of
-//   `database.svelte` (Phase 4: each routed value is checked by its owner).
+//   lands in custom storage too. Nothing normalizes the records globally
+//   (Phase 4: each routed value is checked by its owner; the whole-database
+//   normalizer is gone since Phase 6 slice 10).
 // - the `_*SafeLocalStorage` aliases work when called detached, which is how
 //   the sandbox RPC (`CALL_ROOT` does `fn(...args)`) invokes them. `key` and
 //   `clear` used to be exported unbound and threw on `this`.
 
 type CapturedApi = Record<string, (...args: any[]) => any>;
 
-const { captured, dbMocks } = vi.hoisted(() => ({
+const { captured } = vi.hoisted(() => ({
     captured: { api: null as CapturedApi | null },
-    dbMocks: {
-        setDatabase: vi.fn(),
-    },
 }));
 
 vi.mock("./factory", () => ({
@@ -37,26 +34,11 @@ vi.mock("./factory", () => ({
     },
 }));
 
-vi.mock("src/ts/storage/database.svelte", async () => {
-    // The live database, as in the app (the mutations the setters route to write `DBState.db`);
-    // resolved here because the factory runs before this file's own imports are initialized.
-    // The whole-database normalizer `setDatabase` is a spy only to assert it is no longer called.
-    const stores = await vi.importActual<typeof import("src/ts/stores.svelte")>("src/ts/stores.svelte");
-    return {
-        getDatabase: () => stores.DBState.db,
-        setDatabase: dbMocks.setDatabase,
-        getCurrentCharacter: vi.fn(),
-        getCurrentChat: vi.fn(),
-        setCurrentChat: vi.fn(),
-    };
-});
-
 vi.mock("src/ts/globalApi.svelte", () => ({
     checkCharOrder: vi.fn(),
     getFetchLogs: vi.fn(() => []),
     globalFetch: vi.fn(),
     fetchNative: vi.fn(),
-    forageStorage: { getItem: vi.fn(), setItem: vi.fn(), keys: vi.fn(async () => []) },
     saveAsset: vi.fn(),
     readImage: vi.fn(),
     getFileSrc: vi.fn(),
@@ -71,47 +53,34 @@ vi.mock("src/ts/alert", () => ({
     alertStore: { set: vi.fn(), subscribe: vi.fn() },
 }));
 
-// The real parser module installs a module-level `$effect.root` that reads
-// `selIdState` from `stores.svelte`, which is still uninitialized here because
-// the two modules import each other. Nothing under test parses CBS.
+// The real parser module installs a module-level `$effect.root` over the selection, which is
+// still uninitialized here because the modules import each other. Nothing under test parses CBS.
 vi.mock("src/ts/parser/parser.svelte", () => ({
     hasher: vi.fn(async () => ""),
     risuChatParser: vi.fn((text: string) => text),
 }));
 
 import { normalizeCharacter } from "../../../../shared/characters.ts";
-import { DBState } from "src/ts/stores.svelte";
-import { installForwarding } from "src/ts/storage/forwarding.svelte";
-import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
+import { characterList } from "src/ts/storage/characterStore.svelte";
 import { selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
+import { activePreset, selectedPersonaIndex, settings } from "src/ts/storage/settingsViews.svelte";
+import { rootSnapshot } from "src/ts/storage/snapshots.svelte";
+import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { executePluginV3 } from "./v3.svelte";
 
 /**
- * A live database with the forwarding accessors installed, as `setDatabaseLite` installs them in
- * the app (its record fields moved into the records first, the whole set replaced): a forwarded
- * key such as `temperature` reads and writes the selected preset (`preset`, selected here), and
- * `selectedPersona` reads this client's persona selection.
+ * The records installed as the app installs them (the whole-database aggregate is gone since Phase
+ * 6 slice 10): one preset (`preset`, selected here), which a forwarded key such as `temperature`
+ * reads and writes through `activePreset`, and the characters' chats held in the chat module, as
+ * boot assembles them (Phase 6 slice 9a). `selectedPersonaIndex()` reads this client's persona
+ * selection.
  */
-function forwardedDatabase(fields: Record<string, unknown>) {
+function installDatabase(fields: Record<string, unknown>) {
     selectPreset("preset");
-    const raw: Record<string, unknown> = { botPresets: [{ id: "preset", name: "P", temperature: 0 }], ...fields };
-    // The records hold no chats (Phase 6 slice 9a): the characters' chats are held in the chat
-    // module, as boot assembles them.
-    const characters = (Array.isArray(raw.characters) ? raw.characters : []) as { chaId: string; chats?: any[] }[];
-    const chats = characters.flatMap((char) =>
-        (char.chats ?? []).map((chat) => ({ characterId: char.chaId, id: chat.id, revision: "r1", data: chat })),
-    );
-    const orders = characters.map((char) => ({
-        characterId: char.chaId,
-        revision: "o1",
-        ids: (char.chats ?? []).map((chat) => chat.id),
-    }));
-    initializeRecords(takeRecordFields(raw));
-    chatStore.assembleChats(characters, chats, orders);
-    return installForwarding(raw) as any;
+    installFlatDatabaseWithChats({ botPresets: [{ id: "preset", name: "P", temperature: 0 }], ...fields });
 }
 
-const selectedPresetOf = (db: any) => db.botPresets.find((preset: { id: string }) => preset.id === "preset");
+const selectedPresetOf = () => settings.presets.find((preset: { id: string }) => preset.id === "preset") as any;
 
 async function makeApi(): Promise<CapturedApi> {
     captured.api = null;
@@ -126,8 +95,7 @@ async function makeApi(): Promise<CapturedApi> {
 
 describe("v3 setDatabase / setDatabaseLite routing", () => {
     beforeEach(() => {
-        DBState.db = forwardedDatabase({ characters: [], pluginCustomStorage: undefined });
-        dbMocks.setDatabase.mockClear();
+        installDatabase({ characters: [], pluginCustomStorage: undefined });
     });
 
     it("setDatabaseLite assigns allowed keys and routes the rest into pluginCustomStorage", async () => {
@@ -142,33 +110,32 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
         // `characters` is reconciled on the live mirror: a new character is added with a `chaId`, the
         // shared defaults and a `creation_date` (prepared as a creation, Phase 6 slice 5b), and ids for its
         // chats (a default chat when it has none), usable at once.
-        // (Phase 6 slice 9a: the chats are the facade view, not own keys of the record.)
-        expect(DBState.db.characters).toEqual([
+        // (Phase 6 slice 9a: the chats are the wrapper's chat view, not own keys of the record.)
+        expect(characterList()).toEqual([
             {
                 ...normalizeCharacter({ name: "c" }),
                 chaId: expect.any(String),
                 creation_date: expect.any(Number),
             },
         ]);
-        expect(DBState.db.characters[0].chatPage).toBe(0);
-        expect(DBState.db.characters[0].chats).toEqual([
+        expect((characterList()[0] as any).chatPage).toBe(0);
+        expect((characterList()[0] as any).chats).toEqual([
             { id: expect.any(String), message: [], note: "", name: "Chat 1", localLore: [], fmIndex: -1 },
         ]);
-        expect(DBState.db.pluginCustomStorage).toEqual({ custom: { x: 1 }, pluginV2: [{ name: "old" }] });
-        expect("custom" in DBState.db).toBe(false);
-        expect("pluginV2" in DBState.db).toBe(false);
-        expect(dbMocks.setDatabase).not.toHaveBeenCalled();
+        expect(settings.pluginStorage).toEqual({ custom: { x: 1 }, pluginV2: [{ name: "old" }] });
+        // Neither key is a settings root: the legacy flat shape has no such field.
+        expect("custom" in rootSnapshot()).toBe(false);
+        expect("pluginV2" in rootSnapshot()).toBe(false);
     });
 
-    it("setDatabase routes the same way, a forwarded key into the selected preset, without the normalizing setDatabase", async () => {
+    it("setDatabase routes the same way, a forwarded key into the selected preset, with no global normalization", async () => {
         const api = await makeApi();
 
         await api.setDatabase({ temperature: 80, custom: "v" });
 
-        expect(selectedPresetOf(DBState.db).temperature).toBe(80);
-        expect(DBState.db.temperature).toBe(80);
-        expect(DBState.db.pluginCustomStorage).toEqual({ custom: "v" });
-        expect(dbMocks.setDatabase).not.toHaveBeenCalled();
+        expect(selectedPresetOf().temperature).toBe(80);
+        expect(activePreset.temperature).toBe(80);
+        expect(settings.pluginStorage).toEqual({ custom: "v" });
     });
 
     it("keeps existing ids, gives a persona without an id one, and drops non-object entries (Phase 3 slice 6)", async () => {
@@ -184,7 +151,7 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
         // gets one, an existing id is kept, a non-object entry is dropped, and the four persona fields
         // are filled as strings (`note` here).
         await api.setDatabaseLite({ personas });
-        const lite = DBState.db.personas as any[];
+        const lite = settings.personas as any[];
         expect(lite).toHaveLength(3);
         expect(lite[0]).toEqual({ name: "no id", icon: "", personaPrompt: "", note: "", id: expect.any(String) });
         expect(lite[0].id.length).toBeGreaterThan(0);
@@ -196,20 +163,19 @@ describe("v3 setDatabase / setDatabaseLite routing", () => {
         expect(personas[3]).toBeNull();
 
         await api.setDatabase({ personas: [{ name: "again", icon: "", personaPrompt: "" }] });
-        const full = DBState.db.personas as any[];
+        const full = settings.personas as any[];
         expect(full).toHaveLength(1);
         expect(full[0].id.length).toBeGreaterThan(0);
-        expect(dbMocks.setDatabase).not.toHaveBeenCalled();
     });
 
     it("keeps the v3 _pluginStorage sub-object next to routed custom keys", async () => {
-        DBState.db.pluginCustomStorage = { _pluginStorage: { k: 1 } };
+        settings.pluginStorage = { _pluginStorage: { k: 1 } };
         const api = await makeApi();
 
         await api.setDatabaseLite({ custom: 1 });
         await api.setDatabase({ other: 2 });
 
-        expect(DBState.db.pluginCustomStorage).toEqual({ _pluginStorage: { k: 1 }, custom: 1, other: 2 });
+        expect(settings.pluginStorage).toEqual({ _pluginStorage: { k: 1 }, custom: 1, other: 2 });
         expect(await api._getPluginStorage("k")).toBe(1);
     });
 });
@@ -225,7 +191,7 @@ describe("v3 setDatabase / setDatabaseLite against server-normalized fields", ()
 
     beforeEach(() => {
         selectPersona("p");
-        DBState.db = forwardedDatabase({
+        installDatabase({
             characters: [],
             askRemoval: true,
             theme: "",
@@ -237,7 +203,6 @@ describe("v3 setDatabase / setDatabaseLite against server-normalized fields", ()
             characterOrder: ["c"],
             pluginCustomStorage: undefined,
         });
-        dbMocks.setDatabase.mockClear();
         vi.spyOn(console, "warn").mockImplementation(() => {});
     });
 
@@ -249,34 +214,33 @@ describe("v3 setDatabase / setDatabaseLite against server-normalized fields", ()
         const api = await makeApi();
 
         await api.setDatabaseLite({ askRemoval: null, personas: undefined, customCSS: null, theme: undefined });
-        expect(DBState.db.askRemoval).toBe(true);
-        expect(DBState.db.personas).toEqual(personas);
-        expect(DBState.db.customCSS).toBe("");
-        expect(DBState.db.theme).toBe("");
+        expect(settings.ui.askRemoval).toBe(true);
+        expect(settings.personas).toEqual(personas);
+        expect(settings.ui.customCSS).toBe("");
+        expect(settings.ui.theme).toBe("");
         expect(console.warn).toHaveBeenCalledTimes(4);
         expect(vi.mocked(console.warn).mock.calls[0][0]).toContain("askRemoval");
 
         await api.setDatabase({ characterOrder: null, personas: null, askRemoval: undefined });
-        expect(DBState.db.characterOrder).toEqual(["c"]);
-        expect(DBState.db.personas).toEqual(personas);
-        expect(DBState.db.askRemoval).toBe(true);
-        expect(dbMocks.setDatabase).not.toHaveBeenCalled();
+        expect(settings.characterOrder).toEqual(["c"]);
+        expect(settings.personas).toEqual(personas);
+        expect(settings.ui.askRemoval).toBe(true);
         // Nothing lands in the custom storage either: the key is known, only its value is refused
         // (and the setters no longer create an empty dictionary when no custom key is sent).
-        expect(DBState.db.pluginCustomStorage).toBeUndefined();
+        expect(settings.pluginStorage).toBeUndefined();
     });
 
     it("refuses null in a non-nullable forwarded preset field and an index that names no persona, and warns", async () => {
         const api = await makeApi();
         // A second persona, selected, so an unchanged selection is told apart from the fallback to the first.
-        DBState.db.personas = [...personas, { ...personas[0], id: "q", name: "Q" }];
+        settings.personas = [...personas, { ...personas[0], id: "q", name: "Q" }];
         selectPersona("q");
-        expect(DBState.db.selectedPersona).toBe(1);
+        expect(selectedPersonaIndex()).toBe(1);
 
         await api.setDatabaseLite({ temperature: null, selectedPersona: undefined });
-        expect(selectedPresetOf(DBState.db).temperature).toBe(0);
-        expect(DBState.db.temperature).toBe(0);
-        expect(DBState.db.selectedPersona).toBe(1);
+        expect(selectedPresetOf().temperature).toBe(0);
+        expect(activePreset.temperature).toBe(0);
+        expect(selectedPersonaIndex()).toBe(1);
         expect(selection.personaId).toBe("q");
         expect(console.warn).toHaveBeenCalledTimes(2);
         expect(vi.mocked(console.warn).mock.calls[0][0]).toMatch(
@@ -287,20 +251,19 @@ describe("v3 setDatabase / setDatabaseLite against server-normalized fields", ()
         );
 
         await api.setDatabase({ temperature: null });
-        expect(selectedPresetOf(DBState.db).temperature).toBe(0);
+        expect(selectedPresetOf().temperature).toBe(0);
         expect(console.warn).toHaveBeenCalledTimes(3);
-        expect(dbMocks.setDatabase).not.toHaveBeenCalled();
     });
 
     it("accepts a non-null value of a server-normalized field as-is (the server repairs a malformed one on write)", async () => {
         const api = await makeApi();
         await api.setDatabaseLite({ askRemoval: "yes", customCSS: ".x {}", theme: "dark" });
-        expect(DBState.db.askRemoval).toBe("yes");
-        expect(DBState.db.customCSS).toBe(".x {}");
-        expect(DBState.db.theme).toBe("dark");
+        expect(settings.ui.askRemoval).toBe("yes");
+        expect(settings.ui.customCSS).toBe(".x {}");
+        expect(settings.ui.theme).toBe("dark");
         expect(console.warn).not.toHaveBeenCalled();
         await api.setDatabase({ askRemoval: false });
-        expect(DBState.db.askRemoval).toBe(false);
+        expect(settings.ui.askRemoval).toBe(false);
     });
 });
 
@@ -380,8 +343,8 @@ describe("v3 character setters and the generation lock", () => {
     let job = 0;
 
     beforeEach(() => {
-        // The characters are records since Phase 6 slice 5: installed as `setDatabaseLite` installs them.
-        DBState.db = forwardedDatabase({ characters: liveCharacters(), pluginCustomStorage: undefined });
+        // The characters are records since Phase 6 slice 5: installed as boot installs them.
+        installDatabase({ characters: liveCharacters(), pluginCustomStorage: undefined });
         vi.spyOn(console, "warn").mockImplementation(() => {});
         job += 1;
         chatStore.applyServerGeneration(refK, {
@@ -401,23 +364,23 @@ describe("v3 character setters and the generation lock", () => {
     it("keeps a generating character that setDatabaseLite's list omits, and refuses to replace it by another id", async () => {
         const api = await makeApi();
         await api.setDatabaseLite({ characters: [liveCharacters()[1]] });
-        expect(DBState.db.characters.map((character: any) => character.chaId)).toEqual(["c", "d"]);
+        expect(characterList().map((character: any) => character.chaId)).toEqual(["c", "d"]);
         expect(chatStore.isMessageLocked(refK, "a")).toBe(true);
         expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/removal was skipped/));
 
         await api.setCharacterToIndex(0, { chaId: "other", type: "character", name: "Other", chats: [], chatPage: 0 });
-        expect(DBState.db.characters.map((character: any) => character.chaId)).toEqual(["c", "d"]);
+        expect(characterList().map((character: any) => character.chaId)).toEqual(["c", "d"]);
         expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/replacement was skipped/));
         // A character that is not generating can be replaced.
         await api.setCharacterToIndex(1, { chaId: "other", type: "character", name: "Other", chats: [], chatPage: 0 });
-        expect(DBState.db.characters.map((character: any) => character.chaId)).toEqual(["c", "other"]);
+        expect(characterList().map((character: any) => character.chaId)).toEqual(["c", "other"]);
     });
 
     it("refuses a character list with duplicate ids before changing anything", async () => {
         const api = await makeApi();
         const [c, d] = liveCharacters();
         await api.setDatabaseLite({ characters: [{ ...c, name: "renamed" }, d, { ...c, name: "again" }] });
-        expect(DBState.db.characters.map((character: any) => [character.chaId, character.name])).toEqual([
+        expect(characterList().map((character: any) => [character.chaId, character.name])).toEqual([
             ["c", "C"],
             ["d", "D"],
         ]);
@@ -453,8 +416,8 @@ describe("v3 character setters and the generation lock", () => {
 
 describe("v3 character setters normalize new characters", () => {
     beforeEach(() => {
-        // The characters are records since Phase 6 slice 5: installed as `setDatabaseLite` installs them.
-        DBState.db = forwardedDatabase({
+        // The characters are records since Phase 6 slice 5: installed as boot installs them.
+        installDatabase({
             characters: [
                 {
                     chaId: "c",
@@ -482,7 +445,7 @@ describe("v3 character setters normalize new characters", () => {
 
     it("gives a character added by a list, with or without a chaId, chat and message ids at once, and keeps the existing ones", async () => {
         const api = await makeApi();
-        const existing = JSON.parse(JSON.stringify(DBState.db.characters));
+        const existing = JSON.parse(JSON.stringify(characterList()));
         await api.setDatabaseLite({
             characters: [
                 ...existing,
@@ -494,7 +457,7 @@ describe("v3 character setters normalize new characters", () => {
                 { name: "without id", chats: [] },
             ],
         });
-        const [c, d, n, w] = DBState.db.characters as any[];
+        const [c, d, n, w] = characterList() as any[];
         expect([c.chaId, d.chaId, n.chaId]).toEqual(["c", "d", "n"]);
         expect(typeof w.chaId).toBe("string");
         expect(w.chaId).not.toBe("");
@@ -514,14 +477,14 @@ describe("v3 character setters normalize new characters", () => {
 
     it("refuses a list that names one id-less object twice (it would get one id twice), leaving the mirror unchanged", async () => {
         const api = await makeApi();
-        const existing = JSON.parse(JSON.stringify(DBState.db.characters));
+        const existing = JSON.parse(JSON.stringify(characterList()));
         const twice = { name: "alias", chats: [] };
         await api.setDatabaseLite({ characters: [...existing, twice, twice] });
-        expect(DBState.db.characters.map((character: any) => character.chaId)).toEqual(["c", "d"]);
+        expect(characterList().map((character: any) => character.chaId)).toEqual(["c", "d"]);
         expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/duplicate chaId/));
         // The same object once is an ordinary new character.
         await api.setDatabaseLite({ characters: [...existing, twice] });
-        expect(DBState.db.characters.map((character: any) => character.name)).toEqual(["C", "D", "alias"]);
+        expect(characterList().map((character: any) => character.name)).toEqual(["C", "D", "alias"]);
     });
 
     it("normalizes a replacement character in setCharacterToIndex, and skips one whose chaId another character has", async () => {
@@ -530,7 +493,7 @@ describe("v3 character setters normalize new characters", () => {
             name: "replacement",
             chats: [{ message: [], note: "", name: "R", localLore: [] }],
         });
-        const r = DBState.db.characters[1] as any;
+        const r = characterList()[1] as any;
         expect(typeof r.chaId).toBe("string");
         expect(r.chaId).not.toBe("d");
         expect(typeof r.chats[0].id).toBe("string");
@@ -544,8 +507,8 @@ describe("v3 character setters normalize new characters", () => {
             chats: [],
             chatPage: 0,
         });
-        expect(DBState.db.characters.map((character: any) => character.chaId)).toEqual(["c", r.chaId]);
-        expect((DBState.db.characters[1] as any).name).toBe("replacement");
+        expect(characterList().map((character: any) => character.chaId)).toEqual(["c", r.chaId]);
+        expect((characterList()[1] as any).name).toBe("replacement");
         expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/another character already has/));
     });
 
@@ -560,7 +523,7 @@ describe("v3 character setters normalize new characters", () => {
             ttsMode: "none",
             globalLore: [oldLore],
         });
-        const created = DBState.db.characters[1] as any;
+        const created = characterList()[1] as any;
         expect(created).toMatchObject({
             chaId: "n",
             desc: "",
@@ -574,7 +537,7 @@ describe("v3 character setters normalize new characters", () => {
 
         // The same id: a whole replacement of the character's fields, with the defaults, no creation step.
         await api.setCharacterToIndex(1, { chaId: "n", name: "replaced", globalLore: [oldLore], ttsMode: "none" });
-        const replaced = DBState.db.characters[1] as any;
+        const replaced = characterList()[1] as any;
         expect(replaced).toMatchObject({ chaId: "n", name: "replaced", desc: "", ttsMode: "none" });
         expect(JSON.parse(JSON.stringify(replaced.globalLore))).toEqual([oldLore]);
         expect(replaced).not.toHaveProperty("creation_date");
@@ -586,7 +549,6 @@ describe("v3 character setters normalize new characters", () => {
 // their index, now read through `characterList()`/`selectedCharacter()`. The sidebar's order
 // (`characterOrder`, which its drag rewrites) and the name order of the previous/next hotkeys are
 // not the plugin's index; a getter's result is a detached copy.
-import { settings } from "src/ts/storage/settingsViews.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { removeCharacter } from "src/ts/storage/characterStore.svelte";
 
@@ -600,7 +562,7 @@ describe("v3 index APIs address the character list's position", () => {
     });
 
     beforeEach(() => {
-        DBState.db = forwardedDatabase({
+        installDatabase({
             characters: [character("c", "Zed"), character("d", "Amy"), character("e", "Bob")],
             characterOrder: ["e", "d", "c"],
             pluginCustomStorage: undefined,
@@ -629,7 +591,7 @@ describe("v3 index APIs address the character list's position", () => {
 
         const copy = await api.getCharacterFromIndex(0);
         copy.name = "changed by the plugin";
-        expect(DBState.db.characters[0].name).toBe("Zed");
+        expect(characterList()[0].name).toBe("Zed");
 
         // The selected character moves down when an earlier one leaves the list; its index follows.
         removeCharacter("c");

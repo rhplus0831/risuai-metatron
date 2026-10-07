@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { activePreset } from "./storage/settingsViews.svelte";
 import { installFlatDatabase } from "./storage/tests/installFlatDatabase";
 import { encode } from "./tokenizer";
 
@@ -12,20 +13,13 @@ const mocks = vi.hoisted(() => {
         googleClaudeTokenizing: false,
         useTokenizerCaching: false,
     };
-    return { fixture, db: { ...fixture } as typeof fixture, constructedWith: [] as string[] };
+    return { fixture, constructedWith: [] as string[] };
 });
 
-vi.mock("src/ts/storage/database.svelte", () => ({
-    getCurrentCharacter: () => null,
-    getDatabase: () => mocks.db,
-}));
-
-vi.mock("src/ts/stores.svelte", () => ({
-    DBState: { db: mocks.db },
-}));
-
+// `database.svelte` (reached through the records' graph) re-exports the asset writer.
 vi.mock("src/ts/globalApi.svelte", () => ({
     globalFetch: vi.fn(),
+    saveAsset: vi.fn(),
 }));
 
 vi.mock("src/ts/parser/parser.svelte", () => ({
@@ -60,13 +54,15 @@ vi.mock("src/etc/o200k_base.json", () => ({
     pat_str: "",
 }));
 
-// `mocks.db` installed as `setDatabaseLite` installs a database (`database.svelte` is mocked here),
-// since the tokenizer reads the settings through the record views (Phase 6 slice 7): its root preset
-// fields become the one preset's, and its writes go through the accessors to the records.
-installFlatDatabase(mocks.db, "tokenizer-preset");
+// The fixture installed into the records, since the tokenizer reads the settings through the record
+// views (Phase 6 slice 7): its root preset fields (`aiModel`, `currentPluginProvider`) become the one
+// preset's, the others the `providers` section's. A case changes them through the views.
+installFlatDatabase({ ...mocks.fixture }, "tokenizer-preset");
 
 describe("encode", () => {
     it("tokenizes WebLLM models (LLMTokenizer.Local) with the default tiktoken encoder", async () => {
+        // The installed preset is what the tokenizer reads (not a default of an absent field).
+        expect(activePreset.aiModel).toBe(mocks.fixture.aiModel);
         const result = await encode("hi");
 
         expect(Array.from(result)).toEqual([104, 105]);
@@ -76,16 +72,20 @@ describe("encode", () => {
 
 describe("the routing shared with the server (Phase 5 slice 4)", () => {
     const base = { ...mocks.fixture };
-    const restore = () => Object.assign(mocks.db, base);
+    const restore = () => {
+        activePreset.aiModel = base.aiModel;
+        activePreset.currentPluginProvider = base.currentPluginProvider;
+    };
 
     it("a legacy plugin provider without options counts with o200k_base; a `custom` tokenizer without its function answers [0]", async () => {
         const { pluginHooks } = await import("./plugins/pluginHooks");
         try {
-            Object.assign(mocks.db, { aiModel: "custom", currentPluginProvider: "absent" });
+            activePreset.aiModel = "custom";
+            activePreset.currentPluginProvider = "absent";
             expect(Array.from(await encode("hi"))).toEqual([104, 105]);
             expect(mocks.constructedWith.at(-1)).toBe("o200k_base");
             pluginHooks.providerOptions.set("p", { tokenizer: "custom" } as any);
-            mocks.db.currentPluginProvider = "p";
+            activePreset.currentPluginProvider = "p";
             expect(Array.from(await encode("hi"))).toEqual([0]);
             pluginHooks.providerOptions.set("p", { tokenizer: "custom", tokenizerFunc: async () => [7, 8, 9] } as any);
             expect(Array.from(await encode("hi"))).toEqual([7, 8, 9]);

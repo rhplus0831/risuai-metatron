@@ -1,4 +1,3 @@
-import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain } from "src/ts/storage/tests/mutationStoresHarness";
 import type { RPCToolCallContent } from "../../mcplib";
@@ -25,7 +24,7 @@ const { server, alerts, consent } = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("src/ts/storage/nodeStorage", () => ({
+vi.mock("src/ts/storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -61,7 +60,6 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     getFetchLogs: vi.fn(() => []),
     globalFetch: vi.fn(),
     fetchNative: vi.fn(),
-    forageStorage: { getItem: vi.fn(), setItem: vi.fn(), keys: vi.fn(async () => []) },
     saveAsset: vi.fn(),
     readImage: vi.fn(),
     getFileSrc: vi.fn(),
@@ -112,7 +110,7 @@ async function boot() {
     const handler = new CharacterHandler();
     const call = async (tool: string, args: Record<string, unknown>) => text(await handler.handle(tool, args));
     const other = booted.characterStore.addCharacter({ name: "Other", desc: "other" });
-    booted.stores.selectedCharID.set(booted.db().characters.findIndex((entry: any) => entry.chaId === other));
+    booted.selectionModule.selectCharacter(other);
     await booted.sync.flushResources();
     booted.fake.requests.length = 0;
     /** Holds the next consent prompt open; `release` answers it. */
@@ -159,8 +157,8 @@ afterEach(() => {
 
 describe("write tools on a character that is not selected", () => {
     it("set-character-info writes the remapped fields in one patch by name and by id, and only that record is sent", async () => {
-        const { call, sync, fake, saved, character, stores, other } = await boot();
-        expect(get(stores.selectedCharID)).not.toBe(0);
+        const { call, sync, fake, saved, character, selectionModule, other } = await boot();
+        expect(selectionModule.selectedIndex()).not.toBe(0);
         expect(
             await call("risu-set-character-info", {
                 id: "C",
@@ -420,12 +418,12 @@ describe("the consent gate", () => {
     });
 
     it("keeps the captured id as the target through a rename, a same-name character, and a selection change", async () => {
-        const { call, hold, characterStore, stores, db, sync, saved } = await boot();
+        const { call, hold, characterStore, selectionModule, sync, saved } = await boot();
         const release = hold();
         const pending = call("risu-set-character-info", { id: "C", data: { description: "by name" } });
         characterStore.updateCharacter("c", { name: "Zed" });
         const twin = characterStore.addCharacter({ chaId: "c2", name: "C" });
-        stores.selectedCharID.set(db().characters.findIndex((entry: any) => entry.chaId === twin));
+        selectionModule.selectCharacter(twin);
         release(true);
         expect(await pending).toBe("Successfully updated character Zed");
         await sync.flushResources();
@@ -435,7 +433,7 @@ describe("the consent gate", () => {
         // The empty id resolves the selection at entry, not at consent.
         const releaseSelected = hold();
         const pendingSelected = call("risu-set-character-info", { id: "", data: { description: "was selected" } });
-        stores.selectedCharID.set(0);
+        selectionModule.selectCharacterAt(0);
         releaseSelected(true);
         expect(await pendingSelected).toBe("Successfully updated character C");
         await sync.flushResources();
@@ -444,7 +442,7 @@ describe("the consent gate", () => {
     });
 
     it("answers not found for a character removed while the prompt was open, and recreates nothing", async () => {
-        const { call, hold, characterStore, fake, db, sync } = await boot();
+        const { call, hold, characterStore, fake, characterList, sync } = await boot();
         const release = hold();
         const pending = call("risu-set-character-lorebook", { id: "c", name: "X", content: "x" });
         expect(characterStore.removeCharacter("c")).toBe(true);
@@ -452,7 +450,7 @@ describe("the consent gate", () => {
         expect(await pending).toBe("Error: Character with ID c not found.");
         await sync.flushResources();
         expect(fake.record("characters", "c")).toBeNull();
-        expect(db().characters.some((entry: any) => entry.chaId === "c")).toBe(false);
+        expect(characterList().some((entry: any) => entry.chaId === "c")).toBe(false);
     });
 
     it("refuses a character that became a group while the prompt was open", async () => {

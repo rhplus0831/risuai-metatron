@@ -20,7 +20,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -31,6 +31,7 @@ vi.mock("../../alert", () => ({
 }));
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
+    changeLanguage: vi.fn(),
 }));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -43,9 +44,10 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
-type Stores = typeof import("../../stores.svelte");
 type ChatModule = typeof import("../chatStore.svelte");
 type Bootstrap = typeof import("../../bootstrap");
+type CharacterStore = typeof import("../characterStore.svelte");
+type Selection = typeof import("../selection.svelte");
 type Transport = typeof import("../../network/generationJobs");
 
 const KINDS = Object.values(RESOURCE_KIND);
@@ -55,7 +57,8 @@ const B = { characterId: "c", chatId: "k", messageId: "b" };
 /**
  * Boots the adapter, the chat module, and the transport the way `loadData` does: the server holds
  * the collections and a character `c` with chats `k` (messages a, b, c) and `j` (empty), guarded by
- * the generation lock; read with chats, seed, assemble, select, start, and let the boot pass run.
+ * the generation lock; read with chats, seed, install the records (`installBootRecords`), select
+ * `c`, start, and let the boot pass run.
  */
 async function boot() {
     vi.resetModules();
@@ -94,20 +97,20 @@ async function boot() {
     });
     server.current = fake;
 
-    const stores: Stores = await import("../../stores.svelte");
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const chat: ChatModule = await import("../chatStore.svelte");
     const transport: Transport = await import("../../network/generationJobs");
     const bootstrap: Bootstrap = await import("../../bootstrap");
-    const database = await import("../database.svelte");
+    const { characterList }: CharacterStore = await import("../characterStore.svelte");
+    const selection: Selection = await import("../selection.svelte");
 
     const snapshot = await client.readKinds(KINDS, { chats: true });
     sync.seedResources(snapshot);
     chat.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    // Installed as `loadData` installs it (the records, Phase 6 slices 4 and 5).
-    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(0);
+    // Installed as `loadData` installs it (the records, Phase 6 slices 4, 5 and 10).
+    bootstrap.installBootRecords(snapshot);
+    selection.selectCharacterAt(0);
     chat.initializeChats();
     fake.requests.length = 0;
     // Each boot's graph would register its page lifecycle listeners on the shared window and
@@ -121,8 +124,7 @@ async function boot() {
     await sync.flushResources();
     expect(fake.batchCount()).toBe(0);
     fake.requests.length = 0;
-    const db = () => stores.DBState.db as any;
-    const character = () => db().characters.find((entry: any) => entry.chaId === "c");
+    const character = () => (characterList() as any[]).find((entry: any) => entry.chaId === "c");
     const mirrorChat = (id = "k") => character().chats.find((entry: any) => entry.id === id) as Chat | undefined;
     /** The feed's change set for chat `id` of `c`, at the revision the server store holds now (null: deleted). */
     const notify = (id: string) =>

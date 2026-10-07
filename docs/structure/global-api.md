@@ -20,13 +20,11 @@
 `src/ts/globalApi.svelte.ts` exports, grouped:
 
 - Storage and assets:
-  - `forageStorage`: the `AutoStorage` singleton.
   - `saveAsset`: hashes the bytes and stores them as `assets/<hash>.<ext>`.
   - `loadAsset`, `readImage`.
   - `getFileSrc`: returns a displayable URL: `/sw/img/<hex>` when the service worker holds the file (it registers it once per path; each worker request is bounded at 10 s), else an object URL (`blob:`, `image/png`) of its bytes kept for the page (also on a page the worker does not control yet, its first load; a data URL would inflate the text a display transform sends). Concurrent reads of a path share one load; a missing or empty file is never registered and resolves `""`, as does a failed load, and either is dropped so the next read tries again. The message rich copy embeds `blob:` message images and icons like the other URLs it reads.
   - `downloadFile`, `getBasename`.
 - Save:
-  - `saveDb`: starts the resource save adapter (`storage/resourceSync.svelte.ts`, see `persistence.md`); called once from `loadData`.
   - `saving`: indicator state (re-exported from the adapter).
   - `loadInternalBackup`: lists the server's resource snapshots, restores the chosen one, reloads.
   - `setUsingSw`.
@@ -124,7 +122,7 @@ Alerts:
 
 ## State
 
-- `forageStorage` logical keys: `assets/*` only (the database is in the server resources).
+- Asset logical keys (`storage/assetClient.ts`): `assets/*` only (the database is in the server resources).
 - `fetchLog[]` is private. `getFetchLogs` exposes the live array. `appendFetchLog(entry)` adds an entry the server built (the `log` events of `/api/llm/request`, credentials redacted): the provider calls the server makes appear in the tab's request log.
 - `chatFoldedState.data` is `{charId, chatId, messageId}`.
 
@@ -141,7 +139,7 @@ Alerts:
 - Each alert close path must write `type: 'none'`, or the awaiting caller hangs forever.
   - `alertSelect` encodes options joined with `||`.
   - `alertConfirm` returns true only for the exact `'yes'`.
-- Keep the keypair stored by `util.ts:saveKeypairStore` non-extractable. `NodeStorage` keeps its JWT signing key in IndexedDB `DPoPDB`, store `node`, record `dpop`; keep that format.
+- Keep the keypair stored by `util.ts:saveKeypairStore` non-extractable. `storage/serverAuth.ts` keeps its JWT signing key in IndexedDB `DPoPDB`, store `node`, record `dpop`; keep that format.
 
 ## Recipes
 
@@ -163,7 +161,7 @@ Alerts:
 - `src/ts/network/auxFetch.test.ts`: `auxFetch` (Phase 5 slice 7b): the save barrier before anything is sent, the operation's method and the caller's headers with no credential, JSON, bytes, and a `FormData` body serialized once with its boundary, the body interceptors in order, a failed key save or a halt failing the call, an abort during the barrier or an interceptor settling at once with no later interceptor or request, no unobserved rejection from a hook that aborts synchronously or rejects late, the dispatch check after authentication, and `auxFetchJson`.
 - `src/ts/network/eventFeed.test.ts` (Phase 6 live updates, fake `WebSocket`): one connection with a signed JWT, `hello` → `listRevisions` → `reconcileRemote`, a loaded-epoch `change` → `noteRemoteChanges`; other-epoch changes and malformed frames ignored, an `epoch` frame or foreign `hello` halting; backoff 1 to 30 s, a fresh JWT after five minutes, reset on `hello`; a failed reconcile closing the socket, late listings and replaced sockets ignored; `stopEventFeed`.
 - `src/ts/alertTerminal.test.ts`: the terminal notice over the real `alert.ts`: ordinary alerts leave it pending, one acknowledgement resolves it, a second call reuses it, the store is read-only.
-- Nothing directly tests `globalFetch`/`fetchNative` routing, `saveDb`, the writers, the rest of the alert protocol, or `util.ts`.
+- Nothing directly tests `globalFetch`/`fetchNative` routing, the writers, the rest of the alert protocol, or `util.ts`.
 
 ## Known Hazards
 

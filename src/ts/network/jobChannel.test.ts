@@ -19,6 +19,9 @@ import { MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
 // duplicates and replays, the nesting rules, cache pressure, the hook list). The real stores are
 // behind the barrier in `jobChannelBarrier.test.ts`.
 
+/** A chat the mocked chat module holds for a character of the fixture. */
+type FixtureChat = { id: string; message?: { chatId: string }[] };
+
 const deps = vi.hoisted(() => ({
     flush: vi.fn<(options?: { scope?: unknown }) => Promise<{ discarded: string[] }>>(),
     applyHydration: vi.fn<(record: unknown) => boolean>(),
@@ -26,6 +29,8 @@ const deps = vi.hoisted(() => ({
     heldRecord: vi.fn<(kind: string, id: string) => string | null>(),
     contexts: [] as unknown[],
     selection: null as { characterId: string | null } | null,
+    /** The chats the mocked chat module holds, by character (the selected one at `chatPage`). */
+    chats: {} as Record<string, { chatPage?: number; chats: { id: string; message?: { chatId: string }[] }[] }>,
     mcps: new Map<string, { callTool: (tool: string, args: unknown) => Promise<unknown> }>(),
     sayTTS: vi.fn(),
     stableDiff: vi.fn<(char: unknown, text: string, target: { check?: () => void }) => Promise<unknown>>(),
@@ -47,14 +52,12 @@ vi.mock("../storage/resourceSync.svelte", () => ({
     applyHydration: (record: unknown) => deps.applyHydration(record),
     heldRecordRevision: (kind: string, id: string) => deps.heldRecord(kind, id),
 }));
-// The chat module's readers the dispatcher calls (Phase 6 slice 9a), over the mocked mirror's chats:
-// the fixture's characters hold them here, the selected chat at `chatPage`, as the mirror did. The
-// selected character is the real selection's (`deps.selection`, set in `beforeEach`).
-vi.mock("../storage/chatStore.svelte", async () => {
-    const { DBState } = await import("../stores.svelte");
-    type Owner = { chaId: string; chatPage?: number; chats?: { id: string }[] };
-    const owner = (chaId: string) =>
-        (DBState.db.characters as unknown as Owner[]).find((entry) => entry?.chaId === chaId);
+// The chat module's readers the dispatcher calls (Phase 6 slice 9a), over the fixture's chats
+// (`deps.chats`, by character, the selected chat at `chatPage`); the characters themselves are in
+// the real records (`characterList()`, installed in `beforeEach`). The selected character is the
+// real selection's (`deps.selection`, set in `beforeEach`).
+vi.mock("../storage/chatStore.svelte", () => {
+    const owner = (chaId: string) => deps.chats[chaId];
     const selectedChatId = (chaId: string) => {
         const found = owner(chaId);
         return found?.chats?.[found.chatPage ?? 0]?.id ?? null;
@@ -86,25 +89,11 @@ vi.mock("../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
     return {
         alertStore: writable({ type: "none", msg: "" }),
-        selectedCharID: writable(0),
         ReloadGUIPointer: writable(0),
         ReloadChatPointer: writable({} as Record<number, number>),
         CharEmotion: writable({} as Record<string, [string, string, number][]>),
         hypaV3ProgressStore: writable({ open: false, miniMsg: "", msg: "", subMsg: "" }),
         bodyIntercepterStore: [] as { id: string; callback: (body: unknown, type: string) => Promise<unknown> }[],
-        DBState: {
-            db: {
-                notification: false,
-                characters: [
-                    {
-                        chaId: "c",
-                        type: "character",
-                        chatPage: 0,
-                        chats: [{ id: "k", message: [{ chatId: "m1" }, { chatId: "m2" }] }],
-                    },
-                ],
-            },
-        },
     };
 });
 vi.mock("../plugins/apiV3/pluginContext", () => ({
@@ -117,7 +106,7 @@ vi.mock("../plugins/apiV3/pluginContext", () => ({
 vi.mock("../process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: deps.mcps }));
 vi.mock("../util", () => ({ sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)) }));
 vi.mock("../../lang", () => ({ language: {} }));
-vi.mock("../storage/database.svelte", () => ({ getDatabase: () => ({}) }));
+vi.mock("../storage/database.svelte", () => ({}));
 vi.mock("../process/tts", () => ({ sayTTS: deps.sayTTS }));
 vi.mock("../process/stableDiff", () => ({ stableDiff: deps.stableDiff }));
 vi.mock("../model/modellist", () => ({ getModelInfo: deps.getModelInfo }));
@@ -125,6 +114,8 @@ vi.mock("../model/modellist", () => ({ getModelInfo: deps.getModelInfo }));
 type Channel = typeof import("./jobChannel");
 type Stores = typeof import("../stores.svelte");
 type Hooks = typeof import("../plugins/pluginHooks");
+type CharacterStore = typeof import("../storage/characterStore.svelte");
+type Records = typeof import("../storage/records.svelte");
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 /** A revision token of the loaded epoch (`<epoch>:<seq>:<revision>`). */
@@ -177,6 +168,33 @@ function deferred<T = void>() {
 let channel: Channel;
 let stores: Stores;
 let hooks: Hooks["pluginHooks"];
+let characterStore: CharacterStore;
+let records: Records;
+/** The fixture's chats: character `c` with chat `k` (messages m1, m2). */
+const fixtureChats = (): typeof deps.chats => ({
+    c: { chatPage: 0, chats: [{ id: "k", message: [{ chatId: "m1" }, { chatId: "m2" }] }] },
+});
+/**
+ * Puts `character` into the real record list for `body` (the chat module's mock holds `chats` for
+ * it), and takes it out again: the membership change of a mocked chat module goes to the records
+ * directly, as `characterStore.addCharacter` would hand the chats to the real one.
+ */
+async function withCharacter(
+    character: { chaId: string } & Record<string, unknown>,
+    chats: { chatPage?: number; chats: FixtureChat[] } | null,
+    body: () => Promise<void> | void,
+) {
+    records.insertCharacterRecord(character);
+    if (chats) {
+        deps.chats[character.chaId] = chats;
+    }
+    try {
+        await body();
+    } finally {
+        records.removeCharacterRecords([character.chaId]);
+        delete deps.chats[character.chaId];
+    }
+}
 /** A follow's `send`: the answers it took, in order. */
 function transport() {
     const answers: ChannelAnswer[] = [];
@@ -219,9 +237,19 @@ beforeEach(async () => {
     stores.CharEmotion.set({});
     hooks = (await import("../plugins/pluginHooks")).pluginHooks;
     channel = await import("./jobChannel");
-    // The tab shows the fixture's character (the readers resolve it by `selection.characterId`).
-    deps.selection = (await import("../storage/selection.svelte")).selection;
-    deps.selection.characterId = "c";
+    // The fixture: character `c` in the real records (its chats in the chat module's mock), shown
+    // by the tab (the readers resolve it by `selection.characterId`).
+    characterStore = await import("../storage/characterStore.svelte");
+    records = await import("../storage/records.svelte");
+    records.initializeRecords({ characters: [{ chaId: "c", type: "character" }] });
+    for (const chaId of Object.keys(deps.chats)) {
+        delete deps.chats[chaId];
+    }
+    Object.assign(deps.chats, fixtureChats());
+    const selectionModule = await import("../storage/selection.svelte");
+    selectionModule.selectCharacter("c");
+    deps.selection = selectionModule.selection;
+    expect(deps.selection.characterId).toBe("c");
     tx = transport();
 });
 
@@ -748,7 +776,7 @@ describe("the reply tail's callbacks (slice 11a)", () => {
     // removed does not run, one it added does), gives each listener a plain copy of the speaker and
     // the chat as they are then with indices looked up again, logs a throw, and answers `true`.
     it("chatOutput runs the live listener set in order with fresh copies and indices, logs a throw, and answers true", async () => {
-        const chat = stores.DBState.db.characters[0].chats[0] as unknown as { message: { chatId: string }[] };
+        const chat = deps.chats.c.chats[0] as { message: { chatId: string }[] };
         const original = [...chat.message];
         const calls: { name: string; messages: number; messageIndex: number; chatIndex: number }[] = [];
         const listener = (name: string, effect?: () => void) => (arg: unknown) => {
@@ -811,7 +839,8 @@ describe("the reply tail's callbacks (slice 11a)", () => {
         ]);
         expect(deps.stableDiff).toHaveBeenCalledTimes(2);
         const [char, text, target] = deps.stableDiff.mock.calls[0];
-        expect(char).toBe(stores.DBState.db.characters[0]);
+        // The character's record wrapper, as the tab's own path hands it over.
+        expect(char).toBe(characterStore.characterList()[0]);
         expect(text).toBe("user: hi \n");
         expect(target).toMatchObject({ chatRef: targets.chatRef, pluginContext: targets });
         expect(() => target.check!()).not.toThrow();
@@ -842,41 +871,35 @@ describe("the reply tail's callbacks (slice 11a)", () => {
         expect(deps.stableDiff).toHaveBeenCalledTimes(3);
     });
 
-    it("recentEmotions lists the last five emotions shown for the chat's character, or for each member of its group", () => {
+    it("recentEmotions lists the last five emotions shown for the chat's character, or for each member of its group", async () => {
         const shown = (names: string[]) => names.map((name, i) => [name, `${name}.png`, i] as [string, string, number]);
         stores.CharEmotion.set({ c: shown(["a", "b", "c", "d", "e", "f"]), d: shown(["x"]), other: shown(["z"]) });
         expect(channel.recentEmotions("c")).toEqual({ c: ["b", "c", "d", "e", "f"] });
-        const characters = stores.DBState.db.characters as unknown[];
-        characters.push({ chaId: "g", type: "group", characters: ["c", "d", "e"], chats: [] });
-        try {
+        await withCharacter({ chaId: "g", type: "group", characters: ["c", "d", "e"] }, null, () => {
             // Each member with something shown; a member without is left out, the group itself is not listed.
             expect(channel.recentEmotions("g")).toEqual({ c: ["b", "c", "d", "e", "f"], d: ["x"] });
-        } finally {
-            characters.pop();
-        }
+        });
         expect(channel.recentEmotions("unknown")).toEqual({});
     });
 });
 
 describe("the selectedChat callback (slice 12b)", () => {
     it("answers the chat this tab has selected for a character (its chatPage), or null for a character or chat it does not have", async () => {
-        const characters = stores.DBState.db.characters as unknown[];
-        characters.push(
-            { chaId: "o", type: "character", chatPage: 1, chats: [{ id: "o1" }, { id: "o2" }] },
-            { chaId: "e", type: "character", chatPage: 0, chats: [] },
+        await withCharacter(
+            { chaId: "o", type: "character" },
+            { chatPage: 1, chats: [{ id: "o1" }, { id: "o2" }] },
+            () =>
+                withCharacter({ chaId: "e", type: "character" }, { chatPage: 0, chats: [] }, async () => {
+                    send(callback("s1", "selectedChat", { characterId: "c" }));
+                    await pump();
+                    send(callback("s2", "selectedChat", { characterId: "o" }));
+                    await pump();
+                    send(callback("s3", "selectedChat", { characterId: "e" }));
+                    await pump();
+                    send(callback("s4", "selectedChat", { characterId: "nobody" }));
+                    await pump();
+                }),
         );
-        try {
-            send(callback("s1", "selectedChat", { characterId: "c" }));
-            await pump();
-            send(callback("s2", "selectedChat", { characterId: "o" }));
-            await pump();
-            send(callback("s3", "selectedChat", { characterId: "e" }));
-            await pump();
-            send(callback("s4", "selectedChat", { characterId: "nobody" }));
-            await pump();
-        } finally {
-            characters.splice(-2);
-        }
         expect(tx.answers).toEqual([
             { type: "answer", id: "s1", outcome: "answered", value: { chatId: "k" } },
             { type: "answer", id: "s2", outcome: "answered", value: { chatId: "o2" } },

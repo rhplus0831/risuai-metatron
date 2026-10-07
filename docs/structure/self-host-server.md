@@ -10,7 +10,7 @@
   - The client/server contract, seen from the server side.
 - Paths: `server/{src/**,tsconfig.json,ssl/*}`, `Dockerfile`, `.dockerignore`, `server.sh`, `server.bat`.
 - Client counterparts, owned by other guides:
-  - `src/ts/storage/nodeStorage.ts` → `persistence.md`.
+  - `src/ts/storage/serverAuth.ts` and `src/ts/storage/assetClient.ts` → `persistence.md`.
   - `globalApi.svelte.ts` `fetchNative` → `global-api.md`.
   - `characterCards.ts` `hubURL` → `characters-modules.md`.
 
@@ -28,7 +28,7 @@ The server is TypeScript run directly by Node's type stripping (`pnpm runserver`
 - `server/src/data/chats.ts`: the pure chat normalizers: `normalizeChatMeta` (drops `message` and the streaming flags, sets `id`, defaults `name`/`note`/`localLore` and `fmIndex` (-1, Phase 6 slice 5b), type-checks them), `normalizeMessage` (`user`/`char` role, string `data`, valid `chatId`), `normalizeMessageList` (a whole chat's messages: missing, invalid, or duplicate ids get UUIDs), `assertPatchableMetaKeys`, `CHAT_SCHEMA_VERSION`.
 - `server/src/data/chatStore.ts`: the chat tables (`chats`, `messages`, `chatOrders`) inside the resource store: batch preparation before any transaction (`prepareChatGroups`, `prepareChatOrders`, `countChatOperations`: shapes, legal op combinations, normalization, errors prefixed `chats[i].ops[j]`), `createChatTables` (applies groups and reorders inside the store's transaction, reads, restore), the generation fence, and `readChatSnapshotRows` (snapshot validation).
 - `server/src/data/kinds.ts`: `ResourceKind<T>` (name, `schemaVersion`, `singleton`, `materialize`, pure and idempotent `normalize(input, { id })`, and for a write-only record `project` (what every read route answers) and `prepareWrite(incoming, stored)` (runs before a resource PUT or batch write; throws `ResourceValidationError` to refuse it)), `createKindRegistry` (reserves `batch` and `read`; a `materialize` kind must be a singleton), and `DEFAULT_RESOURCE_KINDS`. Phase 1 kinds (`root` was removed in Phase 3): `presets`, `modules`, `plugins`, `pluginStorage`, `pluginPermissions` (singletons, id `main`), `characters`, `inlays`, with minimum-shape normalizers that return the input unchanged, except `characters` (the shared character defaults, `normalize/characters.ts`, Phase 6 slice 5b) and `presets`, which gets `normalizePresets` (`shared/presets.ts`) and is materialized (one default preset); `modules` checks each module's shape (`normalize/modules.ts`, the rule the client's module mutations apply too: `normalizeModule` in `shared/modules.ts`; a non-string name or description or a non-list lorebook, regex, or trigger refuses the write, Phase 6 slice 4). A `characters` record may not hold `chats` (chats are their own tables); `chat` and `chatOrder` are reserved kind names (conflict discriminators). Phase 3 kinds (singletons, `materialize`): the sections `providers`, `secrets`, `llmSecrets` (write-only since Phase 5 slice 7b: `project` is `maskLlmSecrets`, and `prepareWrite` refuses a write carrying a credential path (400 "credentials are written through /api/llm-secrets") and merges the stored credentials into the rest, `withStoredSecrets`; `shared/llmSecrets.ts`), `ui`, `memoryTranslateMedia` and the collections `loreBook`, `globalscript`, `hotkeys`, `customSidebarItems`, `characterOrder`, `authRefreshes`, `globalChatVariables`, `personas`, `translatorPresets`, `hypaV3Presets`, `customModels`, `enabledModules`, `statics` (`shared/sections.ts`).
-- `server/src/data/normalize/`: the Phase 3 normalizers, pure and returning new objects. `shared.ts` (`normalizeSection`: every field of `SECTION_FIELDS[section]` in order, its value when it has the field's JSON kind and its fresh-boot default otherwise, no other key; `requireObject`, `requireArrayOfObjects`), one file per section with its `SectionSpec` (each field's kind and the default from `src/ts/storage/tests/fixtures/phase3/boot-snapshot.json`) and the `setDatabase` migrations it owns (`providers`: the keep-on-switch containers; `secrets`: `hypaCustomSettings`; `llmSecrets`: `google`, the `presets` map of `{ proxyKey }` by preset id, the `customModels` map of `{ key }` by custom model id (slice 7b); `memoryTranslateMedia`: the NAI v4 fields; `ui`: `customColorScheme`, the quote colors, the chat load pages), `personas.ts` (id backstop, a repeated id re-keyed), `presets.ts` (`normalizePresets`), and `collections.ts` (the rest: shape checks, `customModels` entries without `key`, the `hotkeys` merge of `defaultHotkeys` by `action`, `statics` counters, and the `{ items, selectedId }` records of `translatorPresets` and `hypaV3Presets`, whose `selectedId` falls back to the first item). Each accepts `undefined` (materialization) and returns the fresh-boot value; a record or element of the wrong container shape is rejected. `characters.ts` (Phase 6 slice 5b): a character record is an object whose `chaId` is its id and that holds no `chats`, with the shared deterministic defaults filled in (`normalizeCharacter`, `shared/characters.ts`, the same helper the client applies at creation and before a save); a group whose `characters` is not a list is refused.
+- `server/src/data/normalize/`: the Phase 3 normalizers, pure and returning new objects. `shared.ts` (`normalizeSection`: every field of `SECTION_FIELDS[section]` in order, its value when it has the field's JSON kind and its fresh-boot default otherwise, no other key; `requireObject`, `requireArrayOfObjects`), one file per section with its `SectionSpec` (each field's kind and the default from `src/ts/storage/tests/fixtures/phase3/boot-snapshot.json`) and the migrations it owns (formerly the client's `setDatabase`) (`providers`: the keep-on-switch containers; `secrets`: `hypaCustomSettings`; `llmSecrets`: `google`, the `presets` map of `{ proxyKey }` by preset id, the `customModels` map of `{ key }` by custom model id (slice 7b); `memoryTranslateMedia`: the NAI v4 fields; `ui`: `customColorScheme`, the quote colors, the chat load pages), `personas.ts` (id backstop, a repeated id re-keyed), `presets.ts` (`normalizePresets`), and `collections.ts` (the rest: shape checks, `customModels` entries without `key`, the `hotkeys` merge of `defaultHotkeys` by `action`, `statics` counters, and the `{ items, selectedId }` records of `translatorPresets` and `hypaV3Presets`, whose `selectedId` falls back to the first item). Each accepts `undefined` (materialization) and returns the fresh-boot value; a record or element of the wrong container shape is rejected. `characters.ts` (Phase 6 slice 5b): a character record is an object whose `chaId` is its id and that holds no `chats`, with the shared deterministic defaults filled in (`normalizeCharacter`, `shared/characters.ts`, the same helper the client applies at creation and before a save); a group whose `characters` is not a list is refused.
 - `server/src/data/snapshots.ts` `createSnapshotManager`: periodic snapshots under `save/backups/`, the lock every whole-database operation takes (`exclusive`), `withMaintenance` (closes the `MaintenanceGate`, waits for admitted storage mutations), `track` (admits a resource handler or backup operation; refused after `stop`), `list`, `resolve`, `snapshotNow`, `start`, `stop`. `MaintenanceError` answers 503.
 - `server/src/data/archive.ts`: the backup archive container (`encodeRecordHeader`, `indexArchive` with record-count and name-byte caps, `readRecord`, `copyRecordToFile`).
 - `server/src/routes/resources.ts` `registerResourceRoutes`: `/api/resources` (multi-kind read), `/api/resources/read`, `/api/resources/batch`, `/api/resources/revisions` (registered before `/api/resources/:kind`), `/api/resources/:kind[/:id]`.
@@ -144,19 +144,19 @@ Boot:
 Client detection:
 
 1. `GET /` and `GET /index.html` inject `__NODE__`, which makes `isNodeServer` true in the client. Without it the client shows only the `NodeServerRequired` notice, so no route may serve `index.html` raw.
-2. `AutoStorage` always uses `NodeStorage`.
+2. The client always uses this server (`storage/assetClient.ts` for assets, `storage/serverAuth.ts` for auth).
 
 Development (`pnpm dev`):
 
 1. Run `pnpm runserver` and `pnpm dev` side by side. The Vite dev server (port 5174) injects `__NODE__` into its own `index.html` (plugin `risu-node-flag`, serve only) and proxies `/api`, `/proxy`, `/proxy2`, and `/hub-proxy` (including the WS upgrade) to `RISU_DEV_SERVER` (default `http://localhost:6001`; set `https://...` when the server found a certificate).
 2. The dev origin keeps its own IndexedDB `DPoPDB` key pair, so it logs in separately from the server origin.
 3. The server sees every proxied request as coming from the Vite process, so all dev clients share one rate-limit bucket (including the 10-per-30 s login limiter). The dev proxy does not add `X-Forwarded-For`, so `TRUST_PROXY` alone does not separate them.
-4. `NodeStorage` needs `crypto.subtle`, so open the dev server via `localhost` (a plain-HTTP LAN address is not a secure context).
+4. The client's auth (`serverAuth.ts`) needs `crypto.subtle`, so open the dev server via `localhost` (a plain-HTTP LAN address is not a secure context).
 
 Auth:
 
-1. `NodeStorage.checkAuth` creates an ES256 JWT (P-256, 5-minute expiry, public JWK). The key pair is kept in IndexedDB `DPoPDB`, entry `node`.
-2. It calls `/api/test_auth`, then either `/api/set_password` followed by `/api/login` with the same digest (first run, so the first request is already authorized) or `/api/login`. One check runs at a time per `NodeStorage` instance.
+1. The client's auth check (`serverAuth.ts`) creates an ES256 JWT (P-256, 5-minute expiry, public JWK). The key pair is kept in IndexedDB `DPoPDB`, entry `node`.
+2. It calls `/api/test_auth`, then either `/api/set_password` followed by `/api/login` with the same digest (first run, so the first request is already authorized) or `/api/login`. One check runs at a time for the whole tab (one auth state, Phase 6 slice 10).
 3. Once logged in, the server knows the key hash, and later requests only send the JWT.
 
 Resources and saving (client side: `persistence.md`):
@@ -259,7 +259,7 @@ Process memory, inside the `createServerContext` closure:
   - `proxy-addr` and `ipaddr.js`.
   - Node `crypto`/`fs`/`http`/`https`/`net`/`sqlite`.
   - All of the above are prod dependencies because the Docker runtime stage installs `--prod`.
-- Client dependencies that use this server: `NodeStorage`, `AutoStorage`, `globalApi` proxy code, `characterCards.hubURL` (`/hub-proxy`), `util.ts` DPoP storage.
+- Client dependencies that use this server: `serverAuth.ts`, `assetClient.ts`, `resourceClient.ts`, `globalApi` proxy code, `characterCards.hubURL` (`/hub-proxy`), `util.ts` DPoP storage.
 
 ## Invariants
 
@@ -308,10 +308,10 @@ Process memory, inside the `createServerContext` closure:
 
 - Add a storage operation:
   - Add a route in `routes/storage.ts` with `auth.checkAuth`, the shared limiter, `decodeKeyHeader`, and `resolveStorageKey`.
-  - Add the matching `NodeStorage` method.
+  - Add the matching client function in `src/ts/storage/assetClient.ts`.
 - Add a storage namespace: add it to `STORAGE_NAMESPACES`; the client key prefix is the folder name.
 - Change auth:
-  - Client: `NodeStorage.createAuth`/`checkAuth`/`digestPassword`.
+  - Client: `src/ts/storage/serverAuth.ts` (`createAuth`, `checkAuth`, `digestPassword`).
   - Server: `routes/auth.ts` (`verifyJwt`, the `/api/login` route).
   - Verify first run, restart, token expiry, and unknown keys.
 - Change proxy policy: server `sanitizeTargetUrl`, client `localNetwork.ts` + `fetchNative`.

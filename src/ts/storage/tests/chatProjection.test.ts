@@ -14,8 +14,7 @@ import { bootMutations, m, refJ, refK } from "./mutationStoresHarness";
 // - `ensureChatLoaded` answers a listed chat with no request; `loadChat` adopts a newer server copy,
 //   keeps a chat with unsent work, and never applies across its owner's retirement.
 // - Pins count per lifetime; a removal, a replacement, and ids named like `Object.prototype`
-//   members; `withChatsCopy`; the remote collections over the held store; `setDatabase` on the
-//   installed database (boot's `checkNewFormat`) keeps the store.
+//   members; `withChatsCopy`; the remote collections over the held store.
 // - `readChatsDetached` saves first and reads every chat of several characters in the server
 //   order, refuses after a discard of a requested character's chat or a failed save; and
 //   `exportAsDataset` over it.
@@ -27,7 +26,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -148,15 +147,6 @@ describe("the records are chat-free", () => {
         expect(saved.desc).toBe("described");
         expect(saved).not.toHaveProperty("chats");
         expect(saved).not.toHaveProperty("chatPage");
-    });
-
-    it("setDatabase on the installed database (boot's checkNewFormat) keeps the held chats", async () => {
-        const { chat, database, db } = await boot();
-        const held = chat.findChat(refK);
-        database.setDatabase(db());
-        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
-        expect(chat.findChat(refK)).toBe(held);
-        expect(db().characters[0].chats[0]).toBe(held);
     });
 });
 

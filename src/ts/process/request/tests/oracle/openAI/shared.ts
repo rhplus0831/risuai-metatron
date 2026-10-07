@@ -1,4 +1,4 @@
-import { getDatabase } from "src/ts/storage/database.svelte";
+import { getDatabase } from "../database";
 import { isLocalNetworkUrl } from "src/ts/network/localNetwork";
 
 export interface LocalNetworkRequestOptions {

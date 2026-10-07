@@ -2,13 +2,11 @@ import { type AnyClientCharacter, selectedCharacter } from "./storage/characterS
 import { selectedChat } from "./storage/chatStore.svelte";
 import { settings, activePreset } from "./storage/settingsViews.svelte";
 import { writable } from "svelte/store";
-import type { character, Database, groupChat } from "./storage/database.svelte";
 import { type simpleCharacterArgument } from "./parser/parser.svelte";
 import type { alertData } from "./alert";
 import { moduleUpdate } from "./process/modules";
 import { resetTransformEffects } from "./parser/transformClient";
 import type { hubType } from "./characterCards";
-import { selectedCharacterIndex, selectedIndex } from "./storage/selection.svelte";
 
 function updateSize() {
     SizeStore.set({
@@ -27,12 +25,6 @@ export const loadedStore = writable(false);
 export const DynamicGUI = writable(false);
 export const sideBarClosing = writable(false);
 export const sideBarStore = writable(window.innerWidth > 1024);
-/**
- * The selected character as an index into `DBState.db.characters` (-1: home): an index view of
- * `selection.characterId` (`selection.svelte.ts`, Phase 6 slice 5). `set` selects the character at
- * that index; the value follows the character when the list changes around it.
- */
-export const selectedCharID = selectedCharacterIndex;
 export const CurrentTriggerIdStore = writable<string | null>(null);
 export const CharEmotion = writable({} as { [key: string]: [string, string, number][] });
 export const ViewBoxsize = writable({ width: 12 * 16, height: 12 * 16 }); // Default width and height in pixels
@@ -65,15 +57,6 @@ export const hypaV3ProgressStore = writable({
     msg: "",
     subMsg: "",
 });
-/** `selectedCharID` as a reactive field (`selIdState.selId`), for runes code; writable the same way. */
-export const selIdState = {
-    get selId(): number {
-        return selectedIndex();
-    },
-    set selId(index: number) {
-        selectedCharID.set(index);
-    },
-};
 
 CustomCSSStore.subscribe((css) => {
     console.log(css);
@@ -107,10 +90,6 @@ export function createSimpleCharacter(char: AnyClientCharacter | null | undefine
 
 updateSize();
 window.addEventListener("resize", updateSize);
-export const DBState = $state({
-    db: {} as any as Database,
-});
-
 export const LoadingStatusState = $state({
     text: "",
 });
@@ -175,7 +154,15 @@ export const customSideBarConfigDialogStore = $state({
 //Set might be more ideal, however since Svelte doesn't support reactive Sets, using array for now
 export const hotReloading = $state<string[]>([]);
 
+// `subscribe` calls back at once, while this module is still evaluating; that first call has nothing
+// to reset, and calling into `transformClient` then (which imports this module) can reach it before
+// its own bindings exist. So the first call is skipped.
+let guiPointerSubscribed = false;
 ReloadGUIPointer.subscribe(() => {
+    if (!guiPointerSubscribed) {
+        guiPointerSubscribed = true;
+        return;
+    }
     ReloadChatPointer.set({});
     resetTransformEffects();
 });

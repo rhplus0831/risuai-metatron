@@ -1,6 +1,7 @@
 import { FORWARDED_PRESET_KEYS } from "../../../../shared/sections.ts";
-import { forwardedPresetField, installForwarding, reconcileSelection } from "../forwarding.svelte";
+import { assembleChats } from "../chatStore.svelte";
 import { initializeRecords, takeRecordFields } from "../records.svelte";
+import { forwardedPresetField, reconcileSelection } from "../settingsViews.svelte";
 
 /**
  * Takes the preset fields a flat fixture carries on its root (`FORWARDED_PRESET_KEYS`, by their
@@ -19,14 +20,16 @@ export function takeRootPresetFields(raw: Record<string, unknown>): Record<strin
 }
 
 /**
- * Installs a flat database fixture (the shape the Node hosts and the pre-records tests read: the
- * selected preset's fields on the root) as `setDatabaseLite` installs a database, for a test that
- * mocks `database.svelte`: the root preset fields, if any, become the one preset's (`presetId`; a
- * fixture with `botPresets` has none on its root), every record field moves into the records, the
- * forwarding accessors go on `raw`, and the selection is resolved. Returns `raw`, now serving the
- * records.
+ * Installs a flat database fixture (the legacy whole-database shape the pre-slice-10 tests read:
+ * the selected preset's fields on the root) into the records, as the removed `setDatabaseLite`
+ * installed one: the root preset fields, if any, become the one preset's (`presetId`; a fixture
+ * with `botPresets` has none on its root), every record field moves into the records
+ * (`initializeRecords(takeRecordFields(raw))`: the fields are removed from `raw`), and the
+ * selection is resolved (`reconcileSelection`). Nothing is normalized: a fixture gives valid data.
+ * The test then reads the views (`settings`, `activePreset`, `activePersona`, `characterList()`,
+ * `rootSnapshot()`), never `raw`. Returns the installed preset's id.
  */
-export function installFlatDatabase<T extends object>(raw: T, presetId = "fixture-preset"): T {
+export function installFlatDatabase(raw: object, presetId = "fixture-preset"): string {
     const fields = raw as Record<string, unknown>;
     const preset = takeRootPresetFields(fields);
     if (Object.keys(preset).length > 0) {
@@ -36,7 +39,39 @@ export function installFlatDatabase<T extends object>(raw: T, presetId = "fixtur
         fields.botPresets = [{ ...preset, id: presetId, name: presetId }];
     }
     initializeRecords(takeRecordFields(fields));
-    installForwarding(raw);
-    reconcileSelection(raw as never);
-    return raw;
+    reconcileSelection();
+    return presetId;
+}
+
+type FixtureChat = { id: string } & Record<string, unknown>;
+type FixtureCharacter = { chaId: string; chats?: FixtureChat[]; chatPage?: number } & Record<string, unknown>;
+
+/**
+ * `installFlatDatabase` for a fixture whose characters carry their chats in the legacy shape
+ * (`chats`, `chatPage`): the records hold no chats (Phase 6 slice 9a), so each character's chats
+ * are held in the chat module as boot assembles them (`assembleChats`, every chat loaded, in the
+ * fixture's order), before the installation strips them off the character objects. The chat
+ * selection is not made here (`initializeChats` or `selectChat`).
+ */
+export function installFlatDatabaseWithChats(raw: object, presetId = "fixture-preset"): string {
+    const fields = raw as Record<string, unknown>;
+    const characters = (Array.isArray(fields.characters) ? fields.characters : []).filter(
+        (entry): entry is FixtureCharacter => !!entry && typeof entry === "object",
+    );
+    const chats = characters.flatMap((character) =>
+        (character.chats ?? []).map((chat) => ({
+            characterId: character.chaId,
+            id: chat.id,
+            revision: "r1",
+            data: chat as any,
+        })),
+    );
+    const orders = characters.map((character) => ({
+        characterId: character.chaId,
+        revision: "o1",
+        ids: (character.chats ?? []).map((chat) => chat.id),
+    }));
+    const id = installFlatDatabase(raw, presetId);
+    assembleChats(characters, chats, orders);
+    return id;
 }

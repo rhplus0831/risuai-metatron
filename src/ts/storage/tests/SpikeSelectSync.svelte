@@ -5,7 +5,7 @@
     // option is written through `setSettingValue`, exactly as the current wrapper does through its
     // `localValue`. It reads the current value untracked, as the current wrapper does, so it
     // re-runs only when the visible options change, never on a selection switch. The registry calls
-    // are the pre-slice-6 copies over `DBState.db` (`spikeRegistry.ts`), which reach the prototype.
+    // are the pre-slice-6 copies over the spike's root holder (`spikeRegistry.ts`), which reach the prototype.
     import type { SettingItem, SettingContext } from "src/ts/setting/types";
     import { candidateGetSettingValue, candidateSetSettingValue } from "./spikeRegistry";
     import { untrack } from "svelte";

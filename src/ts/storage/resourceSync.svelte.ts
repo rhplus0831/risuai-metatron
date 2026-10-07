@@ -41,8 +41,7 @@ import {
 import { alertError, alertNormal, alertTerminal } from "../alert";
 import { assignsInherited } from "./mutationValidation";
 import { normalizeCharacter } from "../../../shared/characters.ts";
-import { DBState } from "../stores.svelte";
-import { reconcileSelection } from "./forwarding.svelte";
+import { reconcileSelection } from "./settingsViews.svelte";
 import {
     applyRaw,
     applyRawCharacter,
@@ -52,6 +51,7 @@ import {
     REMOVE_FIELD,
     setCharacterWriteListener,
     setRecordWriteListener,
+    trackedCharacters,
     type RecordKind,
 } from "./records.svelte";
 import type { character, Chat, Database, groupChat } from "./database.svelte";
@@ -123,8 +123,8 @@ import {
 } from "./resourceClient";
 
 /**
- * The write adapter of PLAN invariant 2: `DBState.db` stays the live model, and this module writes
- * it back to the server resources per collection: the
+ * The write adapter of PLAN invariant 2: the records (`records.svelte.ts`) and the chat module are
+ * the live model, and this module writes them back to the server resources per collection: the
  * Phase 3 sections and collections (`shared/sections.ts`; `llmSecrets` also carries
  * `llmSecretPresets`), `presets`, `modules`, `plugins`, `pluginStorage`, and one `characters`
  * record per `chaId`. Chats are not part of a
@@ -263,7 +263,7 @@ const REMOTE_DELAY_MS = 50;
 /** Most records (and, separately, chat lists) one cycle reads for live updates; the rest wait for the next. */
 const MAX_REMOTE_READS = 1000;
 
-/** Records what the server holds, from the boot read. Call before `setDatabase` touches the data. */
+/** Records what the server holds, from the boot read. Call before the boot installs the records. */
 export function seedResources(result: ResourceReadKindsResult) {
     setResourceEpoch(result.epoch);
     persisted.clear();
@@ -825,7 +825,8 @@ function runCycle(): Promise<void> {
 }
 
 async function cycle() {
-    if (halted || !DBState.db?.characters) {
+    // Nothing is saved before the boot installed the records.
+    if (halted || trackedCharacters() === undefined) {
         return;
     }
     for (const stage of [reloadDeferredChats, hydrateCharacters, applyRemoteUpdates, refreshIdleChats]) {
@@ -944,7 +945,7 @@ const SECRET_CONFLICT_RETRIES = 2;
 function entryOwnerState(field: SecretEntryMap, id: string): "live" | "unsaved" | "gone" {
     const holds = (list: unknown) =>
         Array.isArray(list) && list.some((entry) => (entry as { id?: unknown } | null)?.id === id);
-    const mirror = field === "presets" ? DBState.db.botPresets : DBState.db.customModels;
+    const mirror = recordData(field === "presets" ? RESOURCE_KIND.presets : COLLECTION_KIND.customModels);
     if (holds(mirror)) {
         return "live";
     }
@@ -1680,7 +1681,7 @@ function applyToMirror(kind: string, id: string, data: unknown) {
     if (isSection(kind) || isSettingsCollection(kind)) {
         applySettingsRecord(kind, data);
         if (kind === COLLECTION_KIND.personas) {
-            reconcileSelection(DBState.db);
+            reconcileSelection();
         }
         return;
     }
@@ -1692,7 +1693,7 @@ function applyToMirror(kind: string, id: string, data: unknown) {
             if (data !== null) {
                 applyRaw(kind, data);
                 if (kind === RESOURCE_KIND.presets) {
-                    reconcileSelection(DBState.db);
+                    reconcileSelection();
                 }
             }
             return;
@@ -2308,7 +2309,7 @@ function collectMembershipChanges(): boolean {
 
 /**
  * Starts saving. Every collection and every character is marked once, and the membership once, so
- * the client's load-time writes (`setDatabase`, `checkNewFormat`, the boot's trash pruning) reach
+ * the client's load-time writes (the boot's defaults, its trash pruning and order repair) reach
  * the server; unchanged records compare equal and are not sent.
  */
 export function startResourceSync() {

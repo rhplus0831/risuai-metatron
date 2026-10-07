@@ -14,7 +14,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
 }));
 vi.mock("../../alert", () => ({
@@ -24,6 +24,7 @@ vi.mock("../../alert", () => ({
 }));
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored" },
+    changeLanguage: vi.fn(),
 }));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -36,9 +37,8 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
-type Stores = typeof import("../../stores.svelte");
 type Bootstrap = typeof import("../../bootstrap");
-type DatabaseModule = typeof import("../database.svelte");
+type SettingsViews = typeof import("../settingsViews.svelte");
 
 async function boot() {
     vi.resetModules();
@@ -53,22 +53,21 @@ async function boot() {
     await materialize(fake);
     server.current = fake;
 
-    const stores: Stores = await import("../../stores.svelte");
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
-    const database: DatabaseModule = await import("../database.svelte");
+    const { settings }: SettingsViews = await import("../settingsViews.svelte");
 
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(-1);
+    // The records and the selection (at home), as `loadData` installs them.
+    bootstrap.installBootRecords(snapshot);
     fake.requests.length = 0;
     sync.startResourceSync();
     await tick();
     await sync.flushResources();
     fake.requests.length = 0;
-    return { fake, sync, db: () => stores.DBState.db as any };
+    return { fake, sync, settings };
 }
 
 beforeEach(() => {
@@ -91,9 +90,9 @@ const warns = () => {
 
 describe("page lifecycle", () => {
     it("saves at once when the page is hidden, and warns before unload only while work is unsaved", async () => {
-        const { fake, db } = await boot();
+        const { fake, settings } = await boot();
         expect(warns()).toBe(false);
-        db().theme = "hidden";
+        settings.ui.theme = "hidden";
         await tick();
         expect(warns()).toBe(true);
         expect(fake.batchCount()).toBe(0);

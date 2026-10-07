@@ -32,7 +32,7 @@ const { serverHolder, gate } = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: async (path: string, init?: RequestInit) => {
         const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
         const response = serverHolder.current.fetch(path, init);
@@ -58,7 +58,6 @@ vi.mock("../../alert", () => ({
 }));
 
 type ChatModule = typeof import("../chatStore.svelte");
-type Stores = typeof import("../../stores.svelte");
 
 const m = (id: string, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
 const texts = (chat: { message: readonly { data: string }[] } | undefined) =>
@@ -117,20 +116,22 @@ async function boot() {
             create("e", "only", { name: "Only", message: [m("z", "Z")] }),
         ],
     });
-    const stores: Stores = await import("../../stores.svelte");
     const chat: ChatModule = await import("../chatStore.svelte");
-    const database = await import("../database.svelte");
+    const records = await import("../records.svelte");
     const selection = await import("../selection.svelte");
     const characterStore = await import("../characterStore.svelte");
     const read = server.store.readKinds([characters], { chatSummaries: true });
     expect(read.chats).toBeUndefined();
-    database.setDatabaseLite({ characters: read.kinds.characters.map((record) => record.data) } as any);
+    records.initializeRecords(
+        records.takeRecordFields({ characters: read.kinds.characters.map((record) => record.data) }),
+    );
     chat.seedChats(read.chatSummaries!, read.chatOrders!);
-    chat.assembleChats(stores.DBState.db.characters as any, read.chatSummaries!, read.chatOrders!);
+    chat.assembleChats(characterStore.characterList() as any, read.chatSummaries!, read.chatOrders!);
     chat.initializeChats();
     server.requests.length = 0;
 
-    const character = (chaId = "c") => stores.DBState.db.characters.find((entry: any) => entry?.chaId === chaId) as any;
+    const character = (chaId = "c") =>
+        characterStore.characterList().find((entry: any) => entry?.chaId === chaId) as any;
     const take = () => chat.takeChatWork(new Set());
     const apply = (work: ReturnType<typeof take>) =>
         work.groups.length + work.orders.length === 0
@@ -216,7 +217,6 @@ async function boot() {
     };
     return {
         server,
-        stores,
         chat,
         selection,
         characterStore,

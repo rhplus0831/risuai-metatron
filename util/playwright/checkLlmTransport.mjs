@@ -113,7 +113,8 @@ try {
                     const proc = await import("/src/ts/process/index.svelte.ts");
                     const request = await import("/src/ts/process/request/request.ts");
                     const sync = await import("/src/ts/storage/resourceSync.svelte.ts");
-                    const DBState = stores.DBState;
+                    const views = await import("/src/ts/storage/settingsViews.svelte.ts");
+                    const selection = await import("/src/ts/storage/selection.svelte.ts");
                     ${body}
                 } catch (error) { return { thrown: String(error && error.stack || error).slice(0, 1500) }; } })();`,
             ),
@@ -123,26 +124,24 @@ try {
     // Seed: a preset on the mock provider through the reverse proxy, a character with a chat.
     const seeded = await evaluate(
         `
-        DBState.db.didFirstSetup = true;
+        views.writeSettingsRoot("didFirstSetup", true);
         // The onboarding's preset (a fresh store's preset has no prompt template yet).
-        const dbm = await import("/src/ts/storage/database.svelte.ts");
+        const dbm = await import("/src/ts/storage/presets.svelte.ts");
         const templates = await import("/shared/presetTemplates.ts");
         dbm.applyPresetTemplate(templates.prebuiltPresets.OAI2);
-        DBState.db.aiModel = "reverse_proxy";
-        DBState.db.subModel = "reverse_proxy";
-        DBState.db.forceReplaceUrl = arg.providerURL + "/v1/chat/completions";
-        DBState.db.customProxyRequestModel = "mock-model";
-        DBState.db.useStreaming = false;
+        views.writeSettingsRoot("aiModel", "reverse_proxy");
+        views.writeSettingsRoot("subModel", "reverse_proxy");
+        views.writeSettingsRoot("forceReplaceUrl", arg.providerURL + "/v1/chat/completions");
+        views.writeSettingsRoot("customProxyRequestModel", "mock-model");
+        views.writeSettingsRoot("useStreaming", false);
         const char = characters.createBlankChar();
         char.name = "Mock Character";
         char.firstMessage = "Hello.";
         // A chat made by the UI has its greeting index; the blank character's chat does not.
         char.chats[0].fmIndex = -1;
         const chaId = characterStore.addCharacter(char);
-        const index = DBState.db.characters.findIndex((c) => c?.chaId === chaId);
-        stores.selectedCharID.set(index);
-        const live = DBState.db.characters[index];
-        const chatId = live.chats[live.chatPage].id;
+        selection.selectCharacter(chaId);
+        const chatId = chatStore.selectedChatId(chaId);
         await sync.flushResources();
         return { chaId, chatId };
         `,
@@ -202,7 +201,7 @@ try {
     // 3. A submodel call with the character (the suggestion's shape).
     const sub = await evaluate(
         `
-        const char = DBState.db.characters.find((c) => c.chaId === arg.chaId);
+        const char = characterStore.findCharacter(arg.chaId);
         return await request.requestChatData({ formated: [{ role: "user", content: "suggest" }], bias: {}, currentChar: char }, "submodel");
         `,
         seeded,
@@ -212,7 +211,7 @@ try {
     // 4. An edit followed at once by a send: the edit reaches the provider.
     const edited = await evaluate(
         `
-        DBState.db.customProxyRequestModel = "edited-model";
+        views.writeSettingsRoot("customProxyRequestModel", "edited-model");
         const r = await request.requestChatData({ formated: [{ role: "user", content: "after edit" }], bias: {} }, "model");
         return r.type;
         `,
@@ -226,13 +225,13 @@ try {
     // 5. A streaming send.
     const streamed = await evaluate(
         `
-        DBState.db.useStreaming = true;
+        views.writeSettingsRoot("useStreaming", true);
         // The chat screen clears \`doingChat\` after a send; a direct call has to.
         proc.doingChat.set(false);
         chatStore.appendMessage({ chaId: arg.chaId, chatId: arg.chatId }, { role: "user", data: "stream please" });
         const ok = await proc.sendChat(-1);
         const chat = chatStore.findChat({ chaId: arg.chaId, chatId: arg.chatId });
-        DBState.db.useStreaming = false;
+        views.writeSettingsRoot("useStreaming", false);
         const alertMod = await import("/src/ts/alert.ts");
         let alertValue = null;
         alertMod.alertStore?.subscribe?.((v) => (alertValue = v))?.();
@@ -299,8 +298,9 @@ try {
     );
     const mirror = await evaluate(`
         const secrets = await import("/src/ts/storage/llmSecrets.svelte.ts");
-        const id = DBState.db.botPresets[DBState.db.botPresetsId]?.id;
-        return { proxyKey: DBState.db.proxyKey, status: secrets.secretStatus({ kind: "entry", field: "presets", id }) };
+        const snapshots = await import("/src/ts/storage/snapshots.svelte.ts");
+        const id = views.currentPresetRecord()?.id;
+        return { proxyKey: snapshots.rootSnapshot().proxyKey, status: secrets.secretStatus({ kind: "entry", field: "presets", id }) };
     `);
     check(
         'mirror: proxyKey reads "" and the status is set with the last four characters',

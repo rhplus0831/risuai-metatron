@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Phase 3, slice 5: the plugin `setDatabase` host setter over the forwarding layer. A forwarded key
+// Phase 3, slice 5: the plugin `setDatabase` host setter over the settings records. A forwarded key
 // of `allowedDbKeys` (`temperature`, `maxContext`, ...) lands in the preset this client has selected.
 // When the object also carries `plugins`, the install prompt is awaited before anything is assigned,
 // so every field lands in the preset selected when the prompt is answered, not in two different
@@ -48,16 +48,15 @@ vi.mock("src/ts/process/index.svelte", () => ({
     doingChat: { set: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }));
 
-import { DBState } from "src/ts/stores.svelte";
-import { changeToPreset, setDatabase, type Database } from "src/ts/storage/database.svelte";
 import { llmSecretState, setMaskedSecrets } from "src/ts/storage/llmSecrets.svelte";
 import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
+import { changeToPreset } from "src/ts/storage/presets.svelte";
 import { selectPreset } from "src/ts/storage/selection.svelte";
+import { activePreset, settings } from "src/ts/storage/settingsViews.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { executePluginV3 } from "./v3.svelte";
 
-type AnyDb = Record<string, any>;
-const db = () => DBState.db as unknown as AnyDb;
-const preset = (id: string) => db().botPresets.find((entry: { id: string }) => entry.id === id);
+const preset = (id: string) => settings.presets.find((entry: { id: string }) => entry.id === id) as any;
 
 beforeEach(async () => {
     sessionStorage.clear();
@@ -67,23 +66,19 @@ beforeEach(async () => {
     llmSecretState.queue.splice(0);
     setMaskedSecrets(maskLlmSecrets({}));
     captured.confirm.length = 0;
-    DBState.db = {} as Database;
-    setDatabase({
+    // The records installed as the app installs them (the aggregate is gone since Phase 6 slice 10).
+    installFlatDatabase({
         characters: [],
         plugins: [],
         botPresets: [
             { id: "a", name: "A", temperature: 80, maxContext: 4000 },
             { id: "b", name: "B", temperature: 50, maxContext: 5000 },
         ],
-    } as unknown as Database);
+    });
     if (!captured.api) {
         await executePluginV3({ name: "host-setter-test", script: "", version: "3.0" } as any);
     }
     expect(captured.api?.setDatabase).toBeTypeOf("function");
-});
-
-afterEach(() => {
-    DBState.db = {} as Database;
 });
 
 describe("the plugin setDatabase host setter", () => {
@@ -91,7 +86,7 @@ describe("the plugin setDatabase host setter", () => {
         await captured.api!.setDatabase({ temperature: 91, maxContext: 9100 });
         expect(preset("a")).toMatchObject({ temperature: 91, maxContext: 9100 });
         expect(preset("b")).toMatchObject({ temperature: 50, maxContext: 5000 });
-        expect(db().temperature).toBe(91);
+        expect(activePreset.temperature).toBe(91);
 
         changeToPreset("b", false);
         await captured.api!.setDatabase({ temperature: 92 });
@@ -117,6 +112,6 @@ describe("the plugin setDatabase host setter", () => {
 
         expect(preset("b")).toMatchObject({ temperature: 91, maxContext: 9100 });
         expect(preset("a")).toMatchObject({ temperature: 80, maxContext: 4000 });
-        expect(db().plugins.map((plugin: { name: string }) => plugin.name)).toEqual(["installed-via-plugin"]);
+        expect(settings.plugins.map((plugin: { name: string }) => plugin.name)).toEqual(["installed-via-plugin"]);
     });
 });

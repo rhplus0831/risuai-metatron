@@ -74,7 +74,7 @@ vi.mock("localforage", () => {
     };
 });
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: async (path: string, init: RequestInit = {}) => {
         if (path === "/api/read" && init.method === "HEAD") {
             const key = Buffer.from(new Headers(init.headers).get("file-path")!, "hex").toString("utf-8");
@@ -86,17 +86,22 @@ vi.mock("../nodeStorage", () => ({
         }
         return server.current.fetch(path, init);
     },
+    getNodeServerProxyAuth: async () => "signed-token",
+}));
+
+vi.mock("../assetClient", () => ({
+    writeAsset: vi.fn(async (key: string, value: Uint8Array) => {
+        assets.set(key, new Uint8Array(value));
+    }),
+    readAsset: vi.fn(async (key: string) => {
+        const bytes = assets.get(key);
+        return bytes ? Buffer.from(bytes) : null;
+    }),
 }));
 
 vi.mock("../../globalApi.svelte", () => ({
     downloadFile: vi.fn(),
     saveAsset: vi.fn(),
-    forageStorage: {
-        setItem: vi.fn(async (key: string, value: Uint8Array) => {
-            assets.set(key, new Uint8Array(value));
-        }),
-        getItem: vi.fn(async (key: string) => assets.get(key) ?? null),
-    },
 }));
 
 vi.mock("../../alert", () => ({
@@ -105,7 +110,10 @@ vi.mock("../../alert", () => ({
     alertNormalWait: alerts.normalWait,
     alertTerminal: alerts.terminal,
 }));
-vi.mock("src/lang", () => ({ language: { resourceReloaded: "reloaded", resourceRestored: "restored" } }));
+vi.mock("src/lang", () => ({
+    language: { resourceReloaded: "reloaded", resourceRestored: "restored" },
+    changeLanguage: vi.fn(),
+}));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),
@@ -132,28 +140,23 @@ async function sha256(text: string) {
 }
 
 let fake: FakeResourceServer;
-let stores: typeof import("../../stores.svelte");
 let sync: typeof import("../resourceSync.svelte");
 let client: typeof import("../resourceClient");
 let importer: typeof import("../browserLocalImport");
 let permissions: typeof import("../../plugins/apiV3/permissionStore");
 let bootstrap: typeof import("../../bootstrap");
-let database: typeof import("../database.svelte");
 
 async function boot() {
     vi.resetModules();
     await materialize(fake);
-    stores = await import("../../stores.svelte");
     client = await import("../resourceClient");
     sync = await import("../resourceSync.svelte");
     importer = await import("../browserLocalImport");
     permissions = await import("../../plugins/apiV3/permissionStore");
     bootstrap = await import("../../bootstrap");
-    database = await import("../database.svelte");
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(-1);
+    bootstrap.installBootRecords(snapshot);
     sync.startResourceSync();
     await tick();
     await sync.flushResources();

@@ -1,6 +1,6 @@
 import { language } from "src/lang";
 import { alertError } from "src/ts/alert";
-import { getDatabase } from "src/ts/storage/database.svelte";
+import { getDatabase } from "../database";
 import { LLMFlags } from "src/ts/model/modellist";
 import { addFetchLog, fetchNative, globalFetch, textifyReadableStream } from "src/ts/globalApi.svelte";
 import { simplifySchema } from "src/ts/util";

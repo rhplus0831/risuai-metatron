@@ -5,16 +5,17 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Phase 3, slice 2 (`docs/plan/phases/slices/phase-3-settings-sections/shared-schema-and-ids.md`):
-// the client preset paths that build on `normalizePreset`. `setDatabase` normalizes the stored
-// list on every call (also the plugin `setDatabase` path), `copyPreset` and every `importPreset`
+// the client preset paths that build on `normalizePreset`: `copyPreset` and every `importPreset`
 // path assign fresh ids, and `downloadPreset` strips the id. Since slice 5
-// (`forwarding-presets-and-selection.md`) the preset fields of `DBState.db` are forwarded to the
-// preset this client selected (`selection.svelte.ts`, never persisted), `changeToPreset`,
-// `copyPreset`, and `downloadPreset` take ids, and `saveCurrentPreset` writes only the keep-on-switch
-// fields into the selected preset. The step-0 fixtures (`fixtures/phase3/*.risup`, captured before
-// any Phase 3 change) pin the `.risup` contract: an import followed by an export decodes to the
-// fixture preset apart from `id` (Astra challenge point 1 found `seperateModels` gained a default
-// here before the keep-on-switch rule).
+// (`forwarding-presets-and-selection.md`) the preset fields are served from the preset this client
+// selected (`selection.svelte.ts`, never persisted; `activePreset` since Phase 6 slice 10, where the
+// whole-database aggregate and its boot normalization backstop went away: the server normalizes, so
+// the fixtures here are normalized by the shared normalizer), `changeToPreset`, `copyPreset`, and
+// `downloadPreset` take ids, and `saveCurrentPreset` writes only the keep-on-switch fields into the
+// selected preset. The actions live in `presets.svelte.ts`. The step-0 fixtures
+// (`fixtures/phase3/*.risup`, captured before any Phase 3 change) pin the `.risup` contract: an
+// import followed by an export decodes to the fixture preset apart from `id` (Astra challenge point 1
+// found `seperateModels` gained a default here before the keep-on-switch rule).
 
 // As in the browser, the `buffer` polyfill is the global `Buffer` before msgpackr loads. msgpackr
 // binds its string encoder at load time: with Node's `Buffer` it takes the `utf8Write` path, which
@@ -34,8 +35,8 @@ vi.mock("../../alert", () => ({
     alertError: vi.fn(),
 }));
 
-// `stores.svelte` runs a module-level effect that reaches back into `database.svelte` while it is
-// still being evaluated, and the real parser module reads `selIdState` early. Neither is exercised.
+// `stores.svelte` wires module updates into a module-level effect, and the real parser module
+// reaches the request pipeline. Neither is exercised.
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),
@@ -65,21 +66,16 @@ vi.mock("../../rpack/rpack_js", () => {
 
 import { decodeRPack } from "../../rpack/rpack_js";
 import { decryptBuffer } from "../../util";
-import { DBState } from "../../stores.svelte";
-import {
-    changeToPreset,
-    copyPreset,
-    downloadPreset,
-    importPreset,
-    saveCurrentPreset,
-    setDatabase,
-    type botPreset,
-    type Database,
-} from "../database.svelte";
+import type { botPreset, Database } from "../database.svelte";
+import { changeToPreset, copyPreset, downloadPreset, importPreset, saveCurrentPreset } from "../presets.svelte";
 import { selection, selectPreset } from "../selection.svelte";
 import { llmSecretState } from "../llmSecrets.svelte";
+import { activePreset, selectedPresetIndex, settings, writeSettingsRoot } from "../settingsViews.svelte";
+import { installFlatDatabase } from "./installFlatDatabase";
 import {
+    normalizePresets,
     normalizePromptTemplate,
+    plainClone,
     PRESET_DEFAULTS,
     PRESET_KEEP_ON_SWITCH_FIELDS,
     presetTemplate,
@@ -104,64 +100,27 @@ function ownKeys(value: object): string[] {
     return Object.keys(value).sort();
 }
 
-function legacySave(extra: Record<string, unknown>): Database {
-    return { characters: [], ...extra } as unknown as Database;
-}
-
+/**
+ * Installs a legacy save into the records, its presets normalized by the shared normalizer as the
+ * server normalizes what it serves (the boot's backstop is gone since slice 10): a save without
+ * presets gets the one default preset, and the installation selects the first preset.
+ */
 function bootWith(extra: Record<string, unknown> = {}) {
-    DBState.db = {} as Database;
-    setDatabase(legacySave(extra));
-    return DBState.db;
+    installFlatDatabase({
+        characters: [],
+        ...extra,
+        botPresets: normalizePresets(plainClone(extra.botPresets)),
+    } as unknown as Database);
 }
 
-describe("setDatabase normalizes the stored presets", () => {
+describe("the selected preset over a normalized list", () => {
     beforeEach(() => {
-        DBState.db = {} as Database;
-        // The selection store is module state: an empty id makes `setDatabase` select the first preset.
+        // The selection store is module state: an empty id makes the installation select the first preset.
         selectPreset("");
     });
 
-    it("gives a fresh save one default preset with an id, selected", () => {
-        const db = bootWith();
-        expect(db.botPresets).toHaveLength(1);
-        expect(db.botPresets[0].id).toMatch(UUID_V4);
-        expect(db.botPresets[0].name).toBe("New Preset");
-        expect(db.botPresetsId).toBe(0);
-    });
-
-    it("backstops ids of presets saved before Phase 3, keeps existing ids and values, and re-keys a duplicate", () => {
-        const db = bootWith({
-            botPresets: [
-                {
-                    name: "legacy",
-                    temperature: 42,
-                    openAIKey: "sk-old",
-                    autoSuggestPrefix: "p",
-                    autoSuggestClean: true,
-                },
-                { id: "keep", name: "kept", maxResponse: 777 },
-                { id: "keep", name: "dup" },
-            ],
-        });
-        const [legacy, kept, dup] = db.botPresets;
-        expect(legacy.id).toMatch(UUID_V4);
-        expect(legacy.name).toBe("legacy");
-        expect(legacy.temperature).toBe(42);
-        // Not preset fields any more: the global secret and the two `ui` fields leave the record.
-        expect(Object.hasOwn(legacy, "openAIKey")).toBe(false);
-        expect(Object.hasOwn(legacy, "autoSuggestPrefix")).toBe(false);
-        expect(Object.hasOwn(legacy, "autoSuggestClean")).toBe(false);
-        expect(kept.id).toBe("keep");
-        expect(kept.maxResponse).toBe(777);
-        expect(dup.id).toMatch(UUID_V4);
-        expect(dup.name).toBe("dup");
-        // The selection is per client and by id (slice 5): selecting the kept id reads back as its index.
-        selectPreset("keep");
-        expect(db.botPresetsId).toBe(1);
-    });
-
     it("fills an omitted sampling field but keeps an explicit null (Astra challenge point 2)", () => {
-        const db = bootWith({
+        bootWith({
             botPresets: [
                 {
                     id: "nulls",
@@ -174,7 +133,7 @@ describe("setDatabase normalizes the stored presets", () => {
                 { id: "omitted", name: "omitted" },
             ],
         });
-        const [nulls, omitted] = db.botPresets;
+        const [nulls, omitted] = settings.presets;
         expect(nulls.min_p).toBeNull();
         expect(nulls.top_a).toBeNull();
         expect(nulls.repetition_penalty).toBeNull();
@@ -190,15 +149,15 @@ describe("setDatabase normalizes the stored presets", () => {
         // field stays null (as `setPreset` always passed it through), and `setPreset` copies the
         // keep-on-switch fallback for the null `seperateModels` into `providers`.
         changeToPreset("nulls", false);
-        expect(DBState.db.min_p).toBeNull();
-        expect(DBState.db.repetition_penalty).toBeNull();
-        expect(DBState.db.seperateModels).toEqual({ memory: "", emotion: "", translate: "", otherAx: "" });
+        expect(activePreset.min_p).toBeNull();
+        expect(activePreset.repetition_penalty).toBeNull();
+        expect(settings.providers.seperateModels).toEqual({ memory: "", emotion: "", translate: "", otherAx: "" });
         changeToPreset("omitted", false);
-        expect(DBState.db.min_p).toBe(0);
-        expect(DBState.db.repetition_penalty).toBe(1);
+        expect(activePreset.min_p).toBe(0);
+        expect(activePreset.repetition_penalty).toBe(1);
     });
 
-    it("re-entering setDatabase on the live database (the plugin setDatabase path) keeps ids, values, and the selection, and later save and switch land on the right preset", () => {
+    it("keeps ids, values, and the selection across an edit, and later save and switch land on the right preset", () => {
         bootWith({
             botPresets: [
                 { id: "first", name: "first", temperature: 10, maxContext: 1000 },
@@ -207,67 +166,53 @@ describe("setDatabase normalizes the stored presets", () => {
             ],
         });
         changeToPreset("second", false);
-        expect(DBState.db.temperature).toBe(20);
+        expect(activePreset.temperature).toBe(20);
 
-        // What `setPluginDatabase` does after assigning an allowed key on the live database.
-        const live = DBState.db;
-        live.theme = "plugin-theme";
-        setDatabase(live);
+        // A section write beside the presets (what a plugin `setDatabase` of an allowed key does
+        // through the views now) touches neither the list nor the selection.
+        settings.ui.theme = "plugin-theme";
 
-        expect(DBState.db.botPresets.map((preset) => preset.id)).toEqual(["first", "second", "third"]);
-        expect(DBState.db.botPresets.map((preset) => preset.temperature)).toEqual([10, 20, 30]);
-        expect(DBState.db.botPresets.map((preset) => preset.maxContext)).toEqual([1000, 2000, 3000]);
-        expect(DBState.db.botPresetsId).toBe(1);
-        expect(DBState.db.theme).toBe("plugin-theme");
+        expect(settings.presets.map((preset) => preset.id)).toEqual(["first", "second", "third"]);
+        expect(settings.presets.map((preset) => preset.temperature)).toEqual([10, 20, 30]);
+        expect(settings.presets.map((preset) => preset.maxContext)).toEqual([1000, 2000, 3000]);
+        expect(selectedPresetIndex()).toBe(1);
+        expect(settings.ui.theme).toBe("plugin-theme");
 
         // An edit of a forwarded field lands in the selected preset under its id, and
         // `saveCurrentPreset` leaves it there.
-        DBState.db.temperature = 25;
+        activePreset.temperature = 25;
         saveCurrentPreset();
-        expect(DBState.db.botPresets[1].id).toBe("second");
-        expect(DBState.db.botPresets[1].temperature).toBe(25);
-        expect(DBState.db.botPresets[0].temperature).toBe(10);
-        expect(DBState.db.botPresets[2].temperature).toBe(30);
+        expect(settings.presets[1].id).toBe("second");
+        expect(settings.presets[1].temperature).toBe(25);
+        expect(settings.presets[0].temperature).toBe(10);
+        expect(settings.presets[2].temperature).toBe(30);
 
         // A switch keeps the edit in preset 1 and reads preset 2.
-        DBState.db.temperature = 26;
+        activePreset.temperature = 26;
         changeToPreset("third");
-        expect(DBState.db.botPresetsId).toBe(2);
-        expect(DBState.db.temperature).toBe(30);
-        expect(DBState.db.maxContext).toBe(3000);
-        expect(DBState.db.botPresets[1].temperature).toBe(26);
-        expect(DBState.db.botPresets.map((preset) => preset.id)).toEqual(["first", "second", "third"]);
-    });
-
-    it("normalizes the same list to the same text on a second pass (no spurious save on reload)", () => {
-        const db = bootWith({
-            botPresets: [
-                { id: "a", name: "a", min_p: null, promptTemplate: [{ type: "plain", role: "assistant", text: "t" }] },
-                { name: "b" },
-            ],
-        });
-        const first = JSON.stringify(db.botPresets);
-        setDatabase(DBState.db);
-        expect(JSON.stringify(DBState.db.botPresets)).toBe(first);
+        expect(selectedPresetIndex()).toBe(2);
+        expect(activePreset.temperature).toBe(30);
+        expect(activePreset.maxContext).toBe(3000);
+        expect(settings.presets[1].temperature).toBe(26);
+        expect(settings.presets.map((preset) => preset.id)).toEqual(["first", "second", "third"]);
     });
 });
 
 describe("saveCurrentPreset", () => {
     beforeEach(() => {
-        DBState.db = {} as Database;
-        // The selection store is module state: an empty id makes `setDatabase` select the first preset.
+        // The selection store is module state: an empty id makes the installation select the first preset.
         selectPreset("");
     });
 
     it("writes the canonical form under the current id: no id churn, no credential or global fields", () => {
         bootWith({ botPresets: [{ id: "current", name: "current" }] });
         llmSecretState.queue.splice(0);
-        DBState.db.openAIKey = "sk-live";
-        DBState.db.autoSuggestPrefix = "prefix";
-        DBState.db.autoSuggestClean = true;
-        DBState.db.temperature = 55;
+        settings.llmSecrets.openAIKey = "sk-live";
+        writeSettingsRoot("autoSuggestPrefix", "prefix");
+        writeSettingsRoot("autoSuggestClean", true);
+        activePreset.temperature = 55;
         saveCurrentPreset();
-        const saved = DBState.db.botPresets[0] as unknown as Record<string, unknown>;
+        const saved = settings.presets[0] as unknown as Record<string, unknown>;
         expect(saved.id).toBe("current");
         expect(saved.name).toBe("current");
         expect(saved.temperature).toBe(55);
@@ -280,25 +225,25 @@ describe("saveCurrentPreset", () => {
         expect(llmSecretState.queue.map((op) => op.request)).toEqual([
             { kind: "put", path: { kind: "flat", field: "openAIKey" }, value: "sk-live" },
         ]);
-        expect(DBState.db.openAIKey).toBeUndefined();
+        expect(settings.llmSecrets.openAIKey).toBeUndefined();
     });
 
     it("keeps seperateModels null while doNotChangeSeperateModels is on (Astra challenge point 1)", () => {
         bootWith({ botPresets: [{ id: "current", name: "current" }] });
-        DBState.db.seperateModels = { memory: "m", emotion: "e", translate: "t", otherAx: "o" };
-        DBState.db.seperateModelsForAxModels = true;
+        settings.providers.seperateModels = { memory: "m", emotion: "e", translate: "t", otherAx: "o" };
+        settings.providers.seperateModelsForAxModels = true;
 
-        DBState.db.doNotChangeSeperateModels = true;
+        settings.providers.doNotChangeSeperateModels = true;
         saveCurrentPreset();
-        const frozen = DBState.db.botPresets[0];
+        const frozen = settings.presets[0];
         expect(Object.hasOwn(frozen, "seperateModels")).toBe(true);
         expect(frozen.seperateModels).toBeNull();
         expect(frozen.seperateModelsForAxModels).toBe(false);
         expect(frozen.id).toBe("current");
 
-        DBState.db.doNotChangeSeperateModels = false;
+        settings.providers.doNotChangeSeperateModels = false;
         saveCurrentPreset();
-        const written = DBState.db.botPresets[0];
+        const written = settings.presets[0];
         expect(written.seperateModels).toEqual({ memory: "m", emotion: "e", translate: "t", otherAx: "o" });
         expect(written.seperateModelsForAxModels).toBe(true);
     });
@@ -310,19 +255,18 @@ describe("saveCurrentPreset", () => {
         // fields go nowhere; the first preset is not written instead.
         bootWith({ botPresets: [{ id: "only", name: "only" }] });
         selectPreset("missing");
-        DBState.db.fallbackWhenBlankResponse = true;
+        settings.providers.fallbackWhenBlankResponse = true;
         saveCurrentPreset();
-        expect(DBState.db.botPresets).toHaveLength(1);
-        expect(DBState.db.botPresets[0].id).toBe("only");
-        expect(Object.hasOwn(DBState.db.botPresets[0], "fallbackWhenBlankResponse")).toBe(false);
+        expect(settings.presets).toHaveLength(1);
+        expect(settings.presets[0].id).toBe("only");
+        expect(Object.hasOwn(settings.presets[0], "fallbackWhenBlankResponse")).toBe(false);
         expect(selection.presetId).toBe("missing");
     });
 });
 
 describe("copyPreset and importPreset", () => {
     beforeEach(() => {
-        DBState.db = {} as Database;
-        // The selection store is module state: an empty id makes `setDatabase` select the first preset.
+        // The selection store is module state: an empty id makes the installation select the first preset.
         selectPreset("");
     });
 
@@ -330,7 +274,7 @@ describe("copyPreset and importPreset", () => {
         bootWith({ botPresets: [{ id: "source", name: "Source", temperature: 33, min_p: null }] });
         changeToPreset("source", false);
         copyPreset("source");
-        const [source, copy] = DBState.db.botPresets;
+        const [source, copy] = settings.presets;
         expect(source.id).toBe("source");
         expect(copy.id).toMatch(UUID_V4);
         expect(copy.name).toBe("Source Copy");
@@ -350,8 +294,8 @@ describe("copyPreset and importPreset", () => {
             openAIKey: "sk-in-file",
         };
         await importPreset({ name: "p.json", data: new TextEncoder().encode(JSON.stringify(file)) });
-        expect(DBState.db.botPresets).toHaveLength(2);
-        const imported = DBState.db.botPresets[1] as unknown as Record<string, unknown>;
+        expect(settings.presets).toHaveLength(2);
+        const imported = settings.presets[1] as unknown as Record<string, unknown>;
         expect(imported.id).toMatch(UUID_V4);
         expect(imported.id).not.toBe("from-file");
         expect(imported.name).toBe("From file");
@@ -394,7 +338,7 @@ describe("copyPreset and importPreset", () => {
         };
         await importPreset({ name: "st.json", data: new TextEncoder().encode(JSON.stringify(st)) });
 
-        const [, naiPreset, stPreset] = DBState.db.botPresets;
+        const [, naiPreset, stPreset] = settings.presets;
         expect(naiPreset.id).toMatch(UUID_V4);
         expect(naiPreset.name).toBe("NAI file");
         expect(naiPreset.maxResponse).toBe(150);
@@ -403,14 +347,13 @@ describe("copyPreset and importPreset", () => {
         expect(stPreset.name).toBe("Imported ST Preset");
         expect(stPreset.temperature).toBe(50);
         expect(stPreset.promptTemplate).toEqual([{ type: "plain", type2: "main", text: "hello", role: "system" }]);
-        expect(new Set(DBState.db.botPresets.map((preset) => preset.id)).size).toBe(3);
+        expect(new Set(settings.presets.map((preset) => preset.id)).size).toBe(3);
     });
 });
 
 describe(".risup round trip against the step-0 fixtures", () => {
     beforeEach(() => {
-        DBState.db = {} as Database;
-        // The selection store is module state: an empty id makes `setDatabase` select the first preset.
+        // The selection store is module state: an empty id makes the installation select the first preset.
         selectPreset("");
     });
 
@@ -421,8 +364,8 @@ describe(".risup round trip against the step-0 fixtures", () => {
             expect(Object.hasOwn(fixture, "id")).toBe(false);
 
             await importPreset({ name, data: readFixture(name) });
-            expect(DBState.db.botPresets).toHaveLength(2);
-            const imported = DBState.db.botPresets[1];
+            expect(settings.presets).toHaveLength(2);
+            const imported = settings.presets[1];
             expect(imported.id).toMatch(UUID_V4);
             expect(imported.name).toBe(fixture.name);
 
@@ -477,7 +420,6 @@ function legacyImportPreset(decoded: Record<string, unknown>): Record<string, un
 
 describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
     beforeEach(() => {
-        DBState.db = {} as Database;
         selectPreset("");
     });
 
@@ -495,7 +437,7 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
             );
 
             await importPreset({ name, data: readFixture(name) });
-            const first = await downloadPreset(DBState.db.botPresets[1].id, "return");
+            const first = await downloadPreset(settings.presets[1].id, "return");
             const decodedFirst = await decodeRisup(first.buf as Uint8Array);
             // `toStrictEqual` distinguishes a missing key from an `undefined` one (`toEqual` does not).
             expect(ownKeys(decodedFirst)).toEqual(ownKeys(fixture));
@@ -509,8 +451,8 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
 
             // A second import/export cycle of the new export is a fixed point.
             await importPreset({ name, data: first.buf as Uint8Array });
-            expect(DBState.db.botPresets).toHaveLength(3);
-            const second = await downloadPreset(DBState.db.botPresets[2].id, "return");
+            expect(settings.presets).toHaveLength(3);
+            const second = await downloadPreset(settings.presets[2].id, "return");
             expect(await decodeRisup(second.buf as Uint8Array)).toStrictEqual(fixture);
 
             // The pre-phase reader stores the same preset from the new export as from the fixture: in
@@ -527,7 +469,7 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
     it("the JSON export drops the unset fields, as the pre-phase JSON export did (JSON has no undefined)", async () => {
         bootWith();
         await importPreset({ name: "default.risup", data: readFixture("default.risup") });
-        const exported = await downloadPreset(DBState.db.botPresets[1].id, "json");
+        const exported = await downloadPreset(settings.presets[1].id, "json");
         // The `.json` path hands the same object to the file writer; its JSON text has no unset key.
         const text = JSON.stringify(exported.data);
         expect(Object.hasOwn(exported.data, "promptPreprocess")).toBe(true);
@@ -545,7 +487,6 @@ describe(".risup compatibility with the pre-Phase 3 reader (slice 7)", () => {
  */
 describe("importPreset through addPreset (Phase 4 slice 7)", () => {
     beforeEach(() => {
-        DBState.db = {} as Database;
         selectPreset("");
     });
 
@@ -557,21 +498,21 @@ describe("importPreset through addPreset (Phase 4 slice 7)", () => {
             prompts: [{ identifier: "main", content: "hello", role: "system" }],
         };
         await importPreset({ name: "st.json", data: new TextEncoder().encode(JSON.stringify(st)) });
-        expect(DBState.db.botPresets).toHaveLength(2);
-        const imported = DBState.db.botPresets[1];
+        expect(settings.presets).toHaveLength(2);
+        const imported = settings.presets[1];
         expect(imported.id).toMatch(UUID_V4);
         expect(imported.PresensePenalty).toBe(PRESET_DEFAULTS.PresensePenalty);
         expect(Number.isFinite(imported.PresensePenalty)).toBe(true);
         expect(imported.name).toBe("Imported ST Preset");
         expect(selection.presetId).toBe(selected);
-        expect(DBState.db.botPresetsId).toBe(0);
+        expect(selectedPresetIndex()).toBe(0);
     });
 
     it("an NAI preset with omitted optional parameters gets the NAI defaults", async () => {
         bootWith();
         const nai = { presetVersion: 3, name: "Sparse NAI", parameters: { temperature: 1.1, max_length: 150 } };
         await importPreset({ name: "nai.json", data: new TextEncoder().encode(JSON.stringify(nai)) });
-        const imported = DBState.db.botPresets[1];
+        const imported = settings.presets[1];
         expect(imported.id).toMatch(UUID_V4);
         expect(imported.name).toBe("Sparse NAI");
         expect(imported.temperature).toBeCloseTo(110);
@@ -586,13 +527,13 @@ describe("importPreset through addPreset (Phase 4 slice 7)", () => {
         llmSecretState.queue.splice(0);
         const file = { name: "With key", proxyKey: "pk-from-file", temperature: 12 };
         await importPreset({ name: "keyed.json", data: new TextEncoder().encode(JSON.stringify(file)) });
-        const imported = DBState.db.botPresets[1] as unknown as Record<string, unknown>;
+        const imported = settings.presets[1] as unknown as Record<string, unknown>;
         expect(imported.id).toMatch(UUID_V4);
         expect(Object.hasOwn(imported, "proxyKey")).toBe(false);
         // Write-only `llmSecrets` (Phase 5 slice 7b): the key goes to the server through the queue.
         expect(llmSecretState.queue.map((op) => op.request)).toEqual([
             { kind: "put", path: { kind: "entry", field: "presets", id: imported.id }, value: "pk-from-file" },
         ]);
-        expect(DBState.db.botPresetsId).toBe(0);
+        expect(selectedPresetIndex()).toBe(0);
     });
 });

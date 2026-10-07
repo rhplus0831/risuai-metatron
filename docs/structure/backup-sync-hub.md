@@ -38,7 +38,7 @@
 
 ## State
 
-- DB: `localNetworkMode`, `localNetworkTimeoutSec`. `setDatabase` deletes the legacy `account` token; old saves may still carry an unused character `realmId`.
+- DB: `localNetworkMode`, `localNetworkTimeoutSec`. The removed legacy `account` token is no record field (the boot never installs it); old saves may still carry an unused character `realmId`.
 - Stores: `OpenRealmStore`, `RealmInitialOpenChar`.
 
 ## Coupling

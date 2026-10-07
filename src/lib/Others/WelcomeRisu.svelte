@@ -3,7 +3,7 @@
     import { setSecret } from "src/ts/storage/llmSecrets.svelte";
     import { Send } from "@lucide/svelte";
     import { changeLanguage, language } from "src/lang";
-    import { applyPresetTemplate } from "src/ts/storage/database.svelte";
+    import { applyPresetTemplate } from "src/ts/storage/presets.svelte";
     import Chat from "../ChatScreens/Chat.svelte";
     import { prebuiltPresets } from "src/ts/process/templates/templates";
     import { updateTextThemeAndCSS } from "src/ts/gui/colorscheme";

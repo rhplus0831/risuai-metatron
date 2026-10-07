@@ -49,8 +49,8 @@ vi.mock("src/ts/process/modules", () => ({
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 
-import { DBState } from "src/ts/stores.svelte";
-import { setDatabaseLite } from "src/ts/storage/database.svelte";
+import { settings } from "src/ts/storage/settingsViews.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import OtherBotSettings from "./OtherBotSettings.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
@@ -77,9 +77,9 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 beforeEach(() => {
     const exported = createHypaV3Preset("Exported", { memoryTokensRatio: 0.35, queryChatCount: 7 });
     const other = createHypaV3Preset("Other");
-    // Installed the way the app installs a database (its fields moved into the records), since the
-    // page reads the records through the settings views (Phase 6 slice 6).
-    setDatabaseLite({
+    // Installed into the records the way the app installs a boot (its fields moved into the
+    // records), since the page reads the records through the settings views (Phase 6 slice 6).
+    installFlatDatabase({
         characters: [],
         hypaV3: true,
         hypav2: false,
@@ -110,11 +110,11 @@ describe("the HypaV3 preset export", () => {
         const [name, bytes] = mocks.downloadFile.mock.calls[0] as unknown as [string, Uint8Array];
         expect(name).toBe("hypaV3_export_Exported.json");
         const text = new TextDecoder().decode(bytes);
-        expect(text).not.toContain(DBState.db.hypaV3PresetId);
+        expect(text).not.toContain(settings.hypaV3Presets.selectedId);
         const file = JSON.parse(text);
         expect(Object.keys(file)).toEqual(["type", "ver", "data"]);
         expect(Object.keys(file.data)).toEqual(["name", "settings"]);
-        const selected = DBState.db.hypaV3Presets[1];
+        const selected = settings.hypaV3Presets.items[1];
         expect(file).toStrictEqual({
             type: "risu",
             ver: 1,
@@ -128,21 +128,21 @@ describe("the HypaV3 preset export", () => {
         page.exportButton().click();
         await settle();
         const [, bytes] = mocks.downloadFile.mock.calls[0] as unknown as [string, Uint8Array];
-        const before = DBState.db.hypaV3Presets.map((preset) => preset.id);
+        const before = settings.hypaV3Presets.items.map((preset) => preset.id);
 
         mocks.selectSingleFile.mockResolvedValueOnce({ name: "hypaV3_export_Exported.json", data: bytes });
         page.importButton().click();
         await settle();
 
         expect(mocks.alertError).not.toHaveBeenCalled();
-        expect(DBState.db.hypaV3Presets).toHaveLength(3);
-        const imported = DBState.db.hypaV3Presets[2];
+        expect(settings.hypaV3Presets.items).toHaveLength(3);
+        const imported = settings.hypaV3Presets.items[2];
         expect(before).not.toContain(imported.id);
         expect(imported.id).toEqual(expect.any(String));
-        expect(DBState.db.hypaV3PresetId).toBe(imported.id);
+        expect(settings.hypaV3Presets.selectedId).toBe(imported.id);
         expect(imported.name).toBe("Exported");
         expect(JSON.parse(JSON.stringify(imported.settings))).toStrictEqual(
-            JSON.parse(JSON.stringify(DBState.db.hypaV3Presets[1].settings)),
+            JSON.parse(JSON.stringify(settings.hypaV3Presets.items[1].settings)),
         );
     });
 });

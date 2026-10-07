@@ -9,12 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/spike-projection-bindings.md`). Every
 // case runs over the test-only prototype in `projectionHarness.svelte.ts`: per-resource records
 // held as `$state`, the two wrapper candidates (`projectRecord`, accessor-backed; `trackedRecord`,
-// deep write-through), a root facade installed on the real `DBState.db` (so the real
+// deep write-through), a root facade installed on the real `spikeRoot.db` (so the real
 // `customQuotesData` items and real components run against it), and a prototype transport over the
 // real server store (`StoreBackedServer`). Since Phase 6 slice 6 the real `getSettingValue` /
 // `setSettingValue` resolve `bindKey`/`bindPath` through the settings record views (the real
 // records), which the prototype does not back: the registry proofs run the pre-slice-6 registry copy
-// over `DBState.db` (`spikeRegistry.ts`), and the items' callbacks get a context over the facade.
+// over `spikeRoot.db` (`spikeRegistry.ts`), and the items' callbacks get a context over the facade.
 //
 // Every per-candidate proof runs three times: `accessor` (candidate 1), `tracked` (candidate 2,
 // validating its path on every access), and `tracked-cached` (candidate 2 with the resolve cache).
@@ -42,7 +42,7 @@ vi.mock("../../alert", () => ({
 import type { character } from "../../../../shared/database.ts";
 import { displaySettingsItems } from "../../setting/displaySettingsData.svelte";
 import type { SettingContext, SettingItem } from "../../setting/types";
-import { DBState } from "../../stores.svelte";
+import { spikeRoot } from "./spikeRoot.svelte";
 import { isSecretSet, llmSecretState, secretStatus } from "../llmSecrets.svelte";
 import { safeStructuredClone } from "../../polyfill";
 import { writeEntries } from "../mutationValidation";
@@ -201,7 +201,7 @@ afterEach(async () => {
     resetProjection();
 });
 
-/** The candidate's settings context (`spikeRegistry.ts`): every section view is the facade on `DBState.db`. */
+/** The candidate's settings context (`spikeRegistry.ts`): every section view is the facade on `spikeRoot.db`. */
 function ctx(): SettingContext {
     return candidateContext();
 }
@@ -516,9 +516,9 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                         id: "spike.lore3",
                         type: "text",
                         // Item callbacks take the context since slice 6; the character is the facade's.
-                        getValue: () => (DBState.db.characters[0] as character).globalLore[3].content,
+                        getValue: () => (spikeRoot.db.characters[0] as character).globalLore[3].content,
                         setValue: (value: string) => {
-                            (DBState.db.characters[0] as character).globalLore[3].content = value;
+                            (spikeRoot.db.characters[0] as character).globalLore[3].content = value;
                         },
                     },
                     key: CHAR,
@@ -573,7 +573,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
                 expect(Array.isArray(wrapper), kind).toBe(Array.isArray(expected));
             }
 
-            const facade = snapshot(DBState.db) as any;
+            const facade = snapshot(spikeRoot.db) as any;
             expect(leaks(facade)).toEqual([]);
             expect(() => structuredClone(facade)).not.toThrow();
             expect(facade.customCSS).toBe("body { color: red; }");
@@ -582,13 +582,13 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             expect(facade.characters).toEqual([recordJson(CHARACTERS_KIND, CHA)]);
             expect(facade.temperature).toBe(80);
             expect(facade.reverseProxyOobaArgs).toEqual({ mode: "instruct", name1_instruct: "a-user" });
-            const json = JSON.parse(JSON.stringify(DBState.db));
+            const json = JSON.parse(JSON.stringify(spikeRoot.db));
             expect(json.botPresets).toEqual(facade.botPresets);
             expect(json.characters).toEqual(facade.characters);
             expect(json.customQuotesData).toEqual(["«", "»", "‹", "›"]);
-            expect(Object.keys(DBState.db)).toContain("botPresets");
-            expect(Object.keys(DBState.db)).toContain("temperature");
-            expect(forInKeys(DBState.db)).toEqual(Object.keys(DBState.db));
+            expect(Object.keys(spikeRoot.db)).toContain("botPresets");
+            expect(Object.keys(spikeRoot.db)).toContain("temperature");
+            expect(forInKeys(spikeRoot.db)).toEqual(Object.keys(spikeRoot.db));
 
             expect(stats.queueCalls.size).toBe(0);
             expect(dirtyKeys()).toEqual([]);
@@ -677,7 +677,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
         });
 
         it("the cast form `(db.characters[i] as character).x = v`", async () => {
-            (DBState.db.characters[0] as character).desc = "cast";
+            (spikeRoot.db.characters[0] as character).desc = "cast";
             expect(liveChar().desc).toBe("cast");
             const result = await capture(CHAR);
             expect(result.captured).toBe(true);
@@ -775,9 +775,9 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             const after = items.map((item) => candidateGetSettingValue(item, ctx()));
             const fields = JSON.parse(
                 JSON.stringify({
-                    customQuotes: DBState.db.customQuotes,
-                    customQuotesData: DBState.db.customQuotesData,
-                    deeplXOptions: DBState.db.deeplXOptions,
+                    customQuotes: spikeRoot.db.customQuotes,
+                    customQuotesData: spikeRoot.db.customQuotesData,
+                    deeplXOptions: spikeRoot.db.deeplXOptions,
                 }),
             );
             return { before, after, fields };
@@ -792,7 +792,7 @@ describe.each(CANDIDATES)("candidate %s", (candidate) => {
             expect(liveRecord<any>("secrets").deeplXOptions.url).toBe("https://changed");
 
             // The same sequence over a plain object holding the seeded values.
-            DBState.db = {
+            spikeRoot.db = {
                 customQuotes: true,
                 customQuotesData: ["«", "»", "‹", "›"],
                 deeplXOptions: { url: "https://deeplx.local", token: "" },
@@ -2108,7 +2108,7 @@ describe("proof 5: cost", () => {
 
     it("mounting and re-rendering a component bound to 60 fields", () => {
         // A 60-field record of the section fields' primitive values (the `ui` record holds 58), held
-        // as one record so the direct baseline is one `$state` object, as `DBState.db` is today.
+        // as one record so the direct baseline is one `$state` object, as `spikeRoot.db` is today.
         const primitives = (data: Record<string, unknown>) =>
             Object.entries(data).filter(([, value]) => ["string", "number", "boolean"].includes(typeof value));
         const bench = Object.fromEntries(

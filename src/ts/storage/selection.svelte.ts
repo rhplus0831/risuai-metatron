@@ -1,5 +1,4 @@
 import { untrack } from "svelte";
-import { writable, type Writable } from "svelte/store";
 import { characterData, characterIndex, setCharacterMembershipHook } from "./records.svelte";
 
 /**
@@ -7,8 +6,8 @@ import { characterData, characterIndex, setCharacterMembershipHook } from "./rec
  * uses, which global lorebook page it shows, and (Phase 6 slice 5) which character this tab shows. It is not shared data and is never saved to the server. Each
  * change is kept in `sessionStorage`, so a reload restores this tab's selection even when another
  * tab of the same browser chose differently, and in `localStorage`, the starting selection of a new
- * tab (the last choice made in any tab). The forwarding layer
- * (`forwarding.svelte.ts`) resolves every read against the current collections, so an id that names
+ * tab (the last choice made in any tab). The settings views
+ * (`settingsViews.svelte.ts`) resolve every read against the current collections, so an id that names
  * no record (deleted here, by another client, or by a plugin) falls back to the first record there.
  */
 export interface Selection {
@@ -84,28 +83,12 @@ export function selectLoreBookPage(page: number) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The selected character (Phase 6 slice 5). `selectedCharacterIndex` is the index store the app
-// knows as `selectedCharID` (`stores.svelte.ts`): its value is the index of `selection.characterId`
-// in the character list (-1: home), and `set(index)` selects the character at that index. A read is
-// synchronous (`get` right after `set` answers the new index), and subscribers hear of every change
-// at once: a selection, and every completed membership change of the list (the records' hook), so a
-// subscriber never indexes the list with an index from before the change.
+// The selected character (Phase 6 slice 5), by id: `selection.characterId` (`null`: home).
+// `selectedIndex()` is its index in the character list, tracked; a completed membership change of
+// the list that removes the selected character selects home (the records' hook below).
 
-/**
- * The published index: a Svelte `writable` (its subscriber queue and invalidation protocol keep
- * derived stores consistent), set synchronously to the current index after every change.
- */
-const published = writable(-1);
 const selectedListeners = new Set<(chaId: string) => void>();
 const changeListeners = new Set<() => void>();
-
-function currentIndex(): number {
-    return untrack(() => characterIndex(selection.characterId));
-}
-
-function publish() {
-    published.set(currentIndex());
-}
 
 /** Registers a listener called when a tab selects a character (not home, not a reconciliation). */
 export function onCharacterSelected(listener: (chaId: string) => void): () => void {
@@ -129,8 +112,6 @@ export function selectCharacter(chaId: string | null) {
         const id = chaId !== null && characterIndex(chaId) !== -1 ? chaId : null;
         const changed = selection.characterId !== id;
         selection.characterId = id;
-        // The index is published first, so a listener (and every subscriber) reads the new selection.
-        publish();
         if (changed) {
             for (const listener of [...changeListeners]) {
                 listener();
@@ -166,21 +147,9 @@ class SelectedIndexState {
 }
 const selectedIndexState = new SelectedIndexState();
 
-/** The selection as an index store (`selectedCharID`): subscribe, set, update. */
-export const selectedCharacterIndex: Writable<number> = {
-    subscribe: published.subscribe,
-    set(index: number) {
-        selectCharacterAt(index);
-    },
-    update(fn: (index: number) => number) {
-        selectCharacterAt(fn(currentIndex()));
-    },
-};
-
 // After every completed membership change: a selected character that left the list selects home.
 setCharacterMembershipHook(() => {
     if (selection.characterId !== null && untrack(() => characterIndex(selection.characterId)) === -1) {
         selection.characterId = null;
     }
-    publish();
 });

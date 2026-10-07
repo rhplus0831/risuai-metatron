@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from "vitest";
-import { writable } from "svelte/store";
 import { ParseMarkdown } from "../parser.svelte";
 
 //#region module mocks
@@ -9,9 +8,7 @@ vi.mock(
     () =>
         ({
             appVer: "1234.5.67",
-            getCurrentCharacter: () => ({}),
-            getDatabase: () => ({}),
-        }) as typeof import("../../storage/database.svelte"),
+        }) as unknown as typeof import("../../storage/database.svelte"),
 );
 
 vi.mock(import("../../globalApi.svelte"), () => ({
@@ -19,28 +16,8 @@ vi.mock(import("../../globalApi.svelte"), () => ({
     getFileSrc: () => Promise.resolve(""),
 }));
 
-vi.mock(import("../../stores.svelte"), () => {
-    return {
-        DBState: {
-            db: {
-                characters: [
-                    {
-                        chaId: "c",
-                        chatPage: 0,
-                        chats: [{ id: "k" }],
-                        defaultVariables: "",
-                    },
-                ],
-                globalChatVariables: {},
-                templateDefaultVariables: "",
-            },
-        },
-        selIdState: {
-            selId: 0,
-        },
-        selectedCharID: writable(0),
-    } as unknown as typeof import("../../stores.svelte");
-});
+// `stores.svelte` runs module effects over the selection and the chat; nothing under test reads it.
+vi.mock(import("../../stores.svelte"), () => ({}) as unknown as typeof import("../../stores.svelte"));
 
 //#endregion
 

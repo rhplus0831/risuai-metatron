@@ -20,7 +20,7 @@ const { server, alerts } = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
 }));
 vi.mock("../../alert", () => ({
@@ -31,6 +31,7 @@ vi.mock("../../alert", () => ({
 }));
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored" },
+    changeLanguage: vi.fn(),
 }));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -43,9 +44,8 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
-type Stores = typeof import("../../stores.svelte");
 type Bootstrap = typeof import("../../bootstrap");
-type DatabaseModule = typeof import("../database.svelte");
+type SettingsViews = typeof import("../settingsViews.svelte");
 
 async function boot() {
     vi.resetModules();
@@ -58,21 +58,20 @@ async function boot() {
     await materialize(fake);
     server.current = fake;
 
-    const stores: Stores = await import("../../stores.svelte");
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
-    const database: DatabaseModule = await import("../database.svelte");
+    const { settings }: SettingsViews = await import("../settingsViews.svelte");
 
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(-1);
+    // The records and the selection (at home), as `loadData` installs them.
+    bootstrap.installBootRecords(snapshot);
     sync.startResourceSync();
     await tick();
     await sync.flushResources();
     fake.requests.length = 0;
-    return { fake, sync, db: () => stores.DBState.db as any };
+    return { fake, sync, settings };
 }
 
 beforeEach(() => {
@@ -99,11 +98,11 @@ describe("page lifecycle after a restore", () => {
         alerts.terminal.mockImplementationOnce(
             () => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))),
         );
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         const reload = (location as any).reload;
 
         // Unsaved work on an ordinary page: the warning is asked for.
-        db().theme = "edited before the restore";
+        settings.ui.theme = "edited before the restore";
         await tick();
         expect(warns()).toBe(true);
 
@@ -115,7 +114,7 @@ describe("page lifecycle after a restore", () => {
         expect(reload).not.toHaveBeenCalled();
         expect(warns()).toBe(false);
         // Work added while the notice shows is unsaved too, and still no warning.
-        db().theme = "edited behind the notice";
+        settings.ui.theme = "edited behind the notice";
         await tick();
         expect(warns()).toBe(false);
 

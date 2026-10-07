@@ -29,13 +29,13 @@ import { writeEntries } from "./mutationValidation";
  * `$state` data whose every trap resolves the current data; a read of a nested container returns its
  * own wrapper; a write, `delete`, or `defineProperty` at any depth goes into the `$state` data and
  * queues the record's write in the same task (`setRecordWriteListener`: the save loop's `markKey`).
- * `DBState.db`'s root fields for these kinds are accessors onto the records (`forwarding.svelte.ts`).
+ * Readers reach them through the settings views (`settingsViews.svelte.ts`).
  *
  * Paths into a record:
  * - `initializeRecords` (an installation: boot, a test fixture) replaces the whole set and
  *   `applyRaw` (a server copy: a conflict reload, a live update, a job hydration) replaces one
  *   record; neither queues a write.
- * - `replaceRecord` (a local whole-record replacement, `db.botPresets = [...]`) and every write
+ * - `replaceRecord` (a local whole-record replacement, `settings.presets = [...]`) and every write
  *   through a wrapper queue one.
  * - `batchRecordWrites(fn)` runs a bulk writer: the record writes inside it are queued once per
  *   kind when it ends.
@@ -1296,7 +1296,7 @@ function isCharacterLocal(node: TrackedNode, prop: string | symbol): boolean {
 
 /** Refuses a change of the character list made through its wrapper (`characterStore` changes membership). */
 function refuseListWrite(what: string): never {
-    throw new TypeError(`characters: ${what} through DBState.db.characters; use characterStore`);
+    throw new TypeError(`characters: ${what} through the character list; use characterStore`);
 }
 
 /** Whether `value` (a wrapper, a `$state` object, a plain one) stands for the object `current`. */
@@ -1722,7 +1722,7 @@ function wrappedList(list: unknown): { node: TrackedNode; target: unknown[] } | 
 }
 
 /**
- * Moves the element at `from` of a record list (a wrapper, e.g. `DBState.db.botPresets`) to `to` (its
+ * Moves the element at `from` of a record list (a wrapper, e.g. `settings.presets`) to `to` (its
  * index after the move), in one write: the elements keep their identity (retained wrappers follow
  * them), and the record's write is queued once. Out-of-range indexes change nothing. A plain list is
  * moved in place.
@@ -1784,10 +1784,10 @@ export function replaceRecordList(list: unknown[], items: readonly unknown[]) {
 // ---------------------------------------------------------------------------------------------
 // The character list (Phase 6 slice 5, `character-ownership`).
 //
-// `DBState.db.characters` is the list's wrapper (`trackedCharacters`): an element is one character,
+// `characterList()` is the list's wrapper (`trackedCharacters`): an element is one character,
 // by id on `chaId`; a write under it (any depth, except its local field `reloadKeys`, which stays raw)
-// queues that character's save. Its `chats` and `chatPage` are the chat module's facade view (Phase 6
-// slice 9a; `setCharacterChatView`): never stored on the record, written only through the chat
+// queues that character's save. Its `chats` and `chatPage` are the chat module's compatibility view
+// for the shared CBS evaluator (Phase 6 slice 9a; `setCharacterChatView`): never stored on the record, written only through the chat
 // module. The list's membership changes only
 // through the operations below, which `characterStore` calls: each validates first, changes the raw
 // list once, queues the membership change and the characters it stored, and runs the selection's hook.
@@ -1817,20 +1817,9 @@ export function characterIndex(chaId: string | null): number {
     return -1;
 }
 
-/** The character list's wrapper (`DBState.db.characters`); `undefined` before an installation. */
+/** The character list's wrapper (`characterList()`); `undefined` before an installation. */
 export function trackedCharacters<T = unknown[]>(): T | undefined {
     return trackedRoot<T>(CHARACTERS);
-}
-
-/**
- * An assignment to `DBState.db.characters`: only the list itself (a Svelte 3 self-assignment) is
- * accepted, and changes nothing; membership changes go through `characterStore`.
- */
-export function assignCharacters(value: unknown) {
-    const list = untrack(() => records[CHARACTERS]);
-    if (!standsFor(value, list)) {
-        refuseListWrite("replacing the list");
-    }
 }
 
 function rawList(): CharacterObject[] {

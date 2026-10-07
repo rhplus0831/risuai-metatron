@@ -42,8 +42,8 @@ vi.mock("src/ts/util", () => ({
     sleep: vi.fn(async () => undefined),
 }));
 
-import { DBState } from "src/ts/stores.svelte";
-import { setDatabaseLite } from "src/ts/storage/database.svelte";
+import { settings } from "src/ts/storage/settingsViews.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import TranslatorPresetSettings from "./TranslatorPresetSettings.svelte";
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
@@ -79,20 +79,21 @@ function render() {
     };
 }
 
-const names = () => DBState.db.translatorPresets.map((entry) => entry.name);
-const ids = () => DBState.db.translatorPresets.map((entry) => entry.id);
+const names = () => settings.translatorPresets.items.map((entry) => entry.name);
+const ids = () => settings.translatorPresets.items.map((entry) => entry.id);
+const selectedId = () => settings.translatorPresets.selectedId;
 
 /** What a conflict reload does: the list and the selection replaced by the server's copy. */
 function reloadFromServer(items: ReturnType<typeof preset>[], selectedId: string) {
-    DBState.db.translatorPresets = items;
-    DBState.db.translatorPresetId = selectedId;
+    settings.translatorPresets.items = items;
+    settings.translatorPresets.selectedId = selectedId;
     flushSync();
 }
 
 beforeEach(() => {
-    // Installed the way the app installs a database (its fields moved into the records), since the
-    // page reads the records through the settings views (Phase 6 slice 6).
-    setDatabaseLite({
+    // Installed into the records the way the app installs a boot (its fields moved into the
+    // records), since the page reads the records through the settings views (Phase 6 slice 6).
+    installFlatDatabase({
         characters: [],
         translatorPresets: [preset("a", "A"), preset("b", "B")],
         translatorPresetId: "a",
@@ -111,10 +112,10 @@ describe("selection by id", () => {
     it("shows the preset whose id is selected and falls back to the first one when that id is gone", () => {
         const page = render();
         expect(page.select().value).toBe("a");
-        DBState.db.translatorPresetId = "b";
+        settings.translatorPresets.selectedId = "b";
         flushSync();
         expect(page.select().value).toBe("b");
-        DBState.db.translatorPresetId = "deleted elsewhere";
+        settings.translatorPresets.selectedId = "deleted elsewhere";
         flushSync();
         expect(page.select().value).toBe("a");
     });
@@ -133,7 +134,7 @@ describe("rename while the dialog is open", () => {
         await dialog.promise;
         await tick();
         expect(names()).toEqual(["C", "A renamed"]);
-        expect(DBState.db.translatorPresetId).toBe("c");
+        expect(selectedId()).toBe("c");
         expect(page.select().value).toBe("c");
     });
 
@@ -162,7 +163,7 @@ describe("rename while the dialog is open", () => {
 
 describe("delete while the dialog is open", () => {
     it("refuses to delete the last preset before asking", () => {
-        DBState.db.translatorPresets = [preset("a", "A")];
+        settings.translatorPresets.items = [preset("a", "A")];
         const page = render();
         page.remove().click();
         expect(alerts.error).toHaveBeenCalledTimes(1);
@@ -182,7 +183,7 @@ describe("delete while the dialog is open", () => {
         await dialog.promise;
         await tick();
         expect(ids()).toEqual(["c"]);
-        expect(DBState.db.translatorPresetId).toBe("c");
+        expect(selectedId()).toBe("c");
         expect(page.select().value).toBe("c");
     });
 
@@ -196,7 +197,7 @@ describe("delete while the dialog is open", () => {
         await dialog.promise;
         await tick();
         expect(ids()).toEqual(["b", "c"]);
-        expect(DBState.db.translatorPresetId).toBe("c");
+        expect(selectedId()).toBe("c");
     });
 
     it("does nothing when the list shrank to one preset meanwhile", async () => {
@@ -209,7 +210,7 @@ describe("delete while the dialog is open", () => {
         await dialog.promise;
         await tick();
         expect(ids()).toEqual(["a"]);
-        expect(DBState.db.translatorPresetId).toBe("a");
+        expect(selectedId()).toBe("a");
     });
 
     it("does nothing when the target vanished meanwhile", async () => {
@@ -222,7 +223,7 @@ describe("delete while the dialog is open", () => {
         await dialog.promise;
         await tick();
         expect(ids()).toEqual(["c", "d"]);
-        expect(DBState.db.translatorPresetId).toBe("d");
+        expect(selectedId()).toBe("d");
     });
 
     it("keeps everything when the dialog is declined", async () => {
@@ -232,6 +233,6 @@ describe("delete while the dialog is open", () => {
         await tick();
         await tick();
         expect(ids()).toEqual(["a", "b"]);
-        expect(DBState.db.translatorPresetId).toBe("a");
+        expect(selectedId()).toBe("a");
     });
 });

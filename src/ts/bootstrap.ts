@@ -1,14 +1,7 @@
-import { settings } from "./storage/settingsViews.svelte";
+import { reconcileSelection, settings } from "./storage/settingsViews.svelte";
 import { sleep } from "./util";
 import { get } from "svelte/store";
-import { setDatabase, getDatabase, type Database } from "./storage/database.svelte";
-import {
-    COLLECTION_FIELDS,
-    COLLECTION_KIND,
-    COLLECTION_SELECTION_FIELDS,
-    SECTION_FIELDS,
-    SECTION_KIND,
-} from "../../shared/sections.ts";
+import { COLLECTION_KIND, COLLECTION_SELECTION_FIELDS, SECTION_FIELDS, SECTION_KIND } from "../../shared/sections.ts";
 import { mirrorFields, setMaskedSecrets } from "./storage/llmSecrets.svelte";
 import type { MaskedLlmSecrets } from "../../shared/llmSecrets.ts";
 import { loadSelection, selectCharacter } from "./storage/selection.svelte";
@@ -18,21 +11,27 @@ import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./aler
 import { characterURLImport } from "./characterCards";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
-import { language } from "src/lang";
+import { changeLanguage, language } from "src/lang";
 import { startObserveDom } from "./observer.svelte";
 import { updateGuisize } from "./gui/guisize";
 import { moduleUpdate } from "./process/modules";
-import { forageStorage, saveDb, setUsingSw, checkCharOrder } from "./globalApi.svelte";
+import { setUsingSw, checkCharOrder } from "./globalApi.svelte";
 import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import { readKinds } from "./storage/resourceClient";
-import { onRemoteRecordApplied, seedResources, setRemoteResourceOwner } from "./storage/resourceSync.svelte";
-import { removeCharacters } from "./storage/characterStore.svelte";
+import {
+    onRemoteRecordApplied,
+    seedResources,
+    setRemoteResourceOwner,
+    startResourceSync,
+} from "./storage/resourceSync.svelte";
+import { characterList, removeCharacters } from "./storage/characterStore.svelte";
 import { importBrowserLocalData } from "./storage/browserLocalImport";
 import { assembleChats, initializeChats, seedChats, setRemoteChatListener } from "./storage/chatStore.svelte";
 import { invalidateInlayCaches, noteRemoteInlay, reconcileInlays, seedInlays } from "./process/files/inlays";
 import { loadPluginPermissions, refreshPluginPermissions } from "./plugins/apiV3/permissionStore";
 import { startEventFeed } from "./network/eventFeed";
 import { registerModelDynamic } from "./model/modellist";
+import { initializeRecords, type RecordFields, type RecordKind } from "./storage/records.svelte";
 
 /**
  * Loads the application data.
@@ -41,8 +40,6 @@ export async function loadData() {
     const loaded = get(loadedStore);
     if (!loaded) {
         try {
-            await forageStorage.Init();
-
             LoadingStatusState.text = "Loading Save Data...";
             // Chat summaries, not chats (Phase 6 slice 9b): no message row is read here; a chat is
             // loaded when it is selected or a consumer needs it.
@@ -52,9 +49,9 @@ export async function loadData() {
             seedResources(snapshot);
             seedChats(snapshot.chatSummaries ?? snapshot.chats ?? [], snapshot.chatOrders ?? []);
             seedInlays(snapshot.kinds[RESOURCE_KIND.inlays] ?? []);
-            // This client's preset and lorebook page; the forwarding layer checks the ids.
+            // This client's preset and lorebook page; the installation checks the ids.
             loadSelection();
-            setDatabase(assembleDatabase(snapshot));
+            installBootRecords(snapshot);
 
             LoadingStatusState.text = "Checking Service Worker...";
             if (navigator.serviceWorker) {
@@ -77,7 +74,7 @@ export async function loadData() {
                 }
             } catch (error) {}
             LoadingStatusState.text = "Checking For Format Update...";
-            await checkNewFormat();
+            maintainCharacters();
             // Each tab selects its own chat (the browser's last choice), and a character without a
             // chat gets one; queued work waits until saving starts below.
             initializeChats();
@@ -96,7 +93,7 @@ export async function loadData() {
             }
 
             // Saving starts before plugins load, so the browser-local import below can save.
-            saveDb();
+            startResourceSync();
             watchRemoteRecords();
             LoadingStatusState.text = "Moving Browser Data To The Server...";
             await importBrowserLocalData();
@@ -133,18 +130,18 @@ export async function loadData() {
 }
 
 /**
- * Builds the in-memory `Database` from the server resources: the five sections (their
- * `SECTION_FIELDS`), the collections (`translatorPresets` and `hypaV3Presets` unpack
- * `{ items, selectedId }` into their two fields), the Phase 1 collections, and the characters in
- * creation order, without chats: the chat module holds every chat in its server order (`assembleChats`;
- * the boot read gives summaries, held as unloaded chats). The flat preset and persona fields
- * and the selection indexes are not assembled: the forwarding layer serves them
- * (`forwarding.svelte.ts`). The server creates and normalizes
- * every section and collection, so a missing one is an error, not a default. The `llmSecrets`
- * record is masked (Phase 5 slice 7b): its status goes to `llmSecretState`, and the mirror's
- * credential fields are `""`.
+ * Installs the server resources into the records (`initializeRecords`, nothing queued): the five
+ * sections (their `SECTION_FIELDS`), the collections (`translatorPresets` and `hypaV3Presets` as
+ * `{ items, selectedId }`), `presets`, `modules` and `plugins` (`[]` when the server has none yet,
+ * which the first save then creates), `pluginStorage` when present, and the characters in creation
+ * order, without chats: the chat module holds every chat in its server order (`assembleChats`; the
+ * boot read gives summaries, held as unloaded chats). The server creates and normalizes every
+ * section, collection, and the presets, so a missing one is an error, not a default. The
+ * `llmSecrets` record is masked (Phase 5 slice 7b): its status goes to `llmSecretState`, and the
+ * record's credential fields are `""`. Then this client's selection is resolved against the records
+ * and the interface language is set.
  */
-export function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
+export function installBootRecords(snapshot: ResourceReadKindsResult) {
     const single = (kind: string) =>
         snapshot.kinds[kind]?.find((record) => record.id === SINGLETON_RESOURCE_ID)?.data as any;
     const required = (kind: string) => {
@@ -154,44 +151,45 @@ export function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
         }
         return data;
     };
-    const db: Record<string, unknown> = {};
+    const fields: RecordFields = {};
     for (const section of Object.values(SECTION_KIND)) {
-        // The write-only `llmSecrets` record arrives masked: its siblings into the mirror (the
+        // The write-only `llmSecrets` record arrives masked: its siblings into the record (the
         // credential fields `""`), its status into `llmSecretState`.
         const record = section === SECTION_KIND.llmSecrets ? mirrorFields(required(section)) : required(section);
+        const data: Record<string, unknown> = {};
+        let any = false;
         for (const field of SECTION_FIELDS[section]) {
             if (Object.hasOwn(record, field)) {
-                db[field] = record[field];
+                any = true;
+                if (record[field] !== undefined) {
+                    data[field] = record[field];
+                }
             }
+        }
+        if (any) {
+            fields[section] = data;
         }
     }
     setMaskedSecrets(required(RESOURCE_KIND.llmSecrets) as MaskedLlmSecrets);
     for (const kind of Object.values(COLLECTION_KIND)) {
         const record = required(kind);
-        if (Object.hasOwn(COLLECTION_SELECTION_FIELDS, kind)) {
-            db[COLLECTION_FIELDS[kind]] = record.items;
-            db[COLLECTION_SELECTION_FIELDS[kind as keyof typeof COLLECTION_SELECTION_FIELDS]] = record.selectedId;
-        } else {
-            db[COLLECTION_FIELDS[kind]] = record;
-        }
+        fields[kind as RecordKind] = Object.hasOwn(COLLECTION_SELECTION_FIELDS, kind)
+            ? { items: record.items ?? [], selectedId: record.selectedId ?? null }
+            : record;
     }
-    db.botPresets = required(RESOURCE_KIND.presets);
-    const modules = single(RESOURCE_KIND.modules);
-    if (modules !== undefined) {
-        db.modules = modules;
-    }
-    const plugins = single(RESOURCE_KIND.plugins);
-    if (plugins !== undefined) {
-        db.plugins = plugins;
-    }
+    fields.presets = required(RESOURCE_KIND.presets);
+    fields.modules = single(RESOURCE_KIND.modules) ?? [];
+    fields.plugins = single(RESOURCE_KIND.plugins) ?? [];
     const pluginStorage = single(RESOURCE_KIND.pluginStorage);
     if (pluginStorage !== undefined) {
-        db.pluginCustomStorage = pluginStorage;
+        fields.pluginStorage = pluginStorage;
     }
     const characters = (snapshot.kinds[RESOURCE_KIND.characters] ?? []).map((record) => record.data as any);
-    db.characters = characters;
+    fields.characters = characters;
     assembleChats(characters, snapshot.chatSummaries ?? snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    return db as unknown as Database;
+    initializeRecords(fields);
+    reconcileSelection();
+    changeLanguage(settings.ui.language);
 }
 
 /** A live update of the plugin permissions: read again, retried a few times (5 s apart) after a failed read. */
@@ -270,21 +268,18 @@ function updateHeightMode() {
 }
 
 /**
- * The boot's maintenance of the installed database: the trash pruning, the preset and persona
- * backstops again (`setDatabase`), and the character order.
+ * The boot's maintenance of the installed characters: those in the trash for more than three days
+ * are deleted (one change of the list), and the character order is repaired. The characters arrive
+ * normalized by the server (`normalizeCharacter`); the client applies no default at boot (Phase 6
+ * slice 5b).
  */
-async function checkNewFormat(): Promise<void> {
-    let db = getDatabase();
-
-    // The characters arrive normalized by the server (`normalizeCharacter`); the client applies no
-    // default at boot (Phase 6 slice 5b). Their ids were made valid and unique when they were installed.
-
-    // Characters in the trash for more than three days are deleted (one change of the list).
+function maintainCharacters() {
     const now = Date.now();
     removeCharacters(
-        db.characters.filter((v) => v.trashTime && v.trashTime + 1000 * 60 * 60 * 24 * 3 < now).map((v) => v.chaId),
+        characterList()
+            .filter((v) => v.trashTime && v.trashTime + 1000 * 60 * 60 * 24 * 3 < now)
+            .map((v) => v.chaId),
     );
-    setDatabase(db);
     checkCharOrder();
 }
 

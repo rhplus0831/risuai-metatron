@@ -207,8 +207,8 @@ try {
 
     for (const mode of ["off", "balanced", "strong"]) {
         await page.evaluate(async (mode) => {
-            const { DBState } = await import("/src/ts/stores.svelte.ts");
-            DBState.db.streamingDisplayOptimizationMode = mode;
+            const { writeSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
+            writeSettingsRoot("streamingDisplayOptimizationMode", mode);
         }, mode);
         await page.waitForTimeout(1000);
         const input = page.locator("textarea.input-text").first();

@@ -7,7 +7,7 @@ import {
     type ResourceReadRefsResult,
     type ResourceRevisionListing,
 } from "../../../shared/resources.ts";
-import { authFetch, getNodeServerProxyAuth } from "./nodeStorage";
+import { authFetch, getNodeServerProxyAuth } from "./serverAuth";
 
 /**
  * Transport for the server resource routes (`/api/resources`, `/api/backups`). Every mutation sends

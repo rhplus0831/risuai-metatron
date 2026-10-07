@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // `SafeLocalPluginStorage` (the plugin API's `getLocalPluginStorage()`) over
 // `pluginCustomStorage._safeLocalPluginStorage` through the plugin storage mutations
 // (`pluginStorageStore.svelte.ts`), with the documented JSON-only contract, against the real
-// `DBState` proxy so key handling is what plugins see.
+// `pluginStorage` record wrapper (`settings.pluginStorage`) so key handling is what plugins see.
 
 vi.mock("../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -14,17 +14,17 @@ vi.mock("../process/modules", () => ({
 vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 
-import { DBState } from "../stores.svelte";
-import { setDatabaseLite } from "../storage/database.svelte";
 import { SAFE_LOCAL_PLUGIN_STORAGE_KEY, setSafeLocalPluginValue } from "../storage/pluginStorageStore.svelte";
+import { settings } from "../storage/settingsViews.svelte";
+import { installFlatDatabase } from "../storage/tests/installFlatDatabase";
 import { isJsonValue, SafeLocalPluginStorage } from "./pluginSafeClass";
 
-const stored = () => (DBState.db.pluginCustomStorage as any)?.[SAFE_LOCAL_PLUGIN_STORAGE_KEY];
+const stored = () => (settings.pluginStorage as any)?.[SAFE_LOCAL_PLUGIN_STORAGE_KEY];
 
 beforeEach(() => {
     // Installed the way the app installs a database (its fields moved into the records), since the
     // plugin storage mutations write the records through the settings views (Phase 6 slice 7).
-    setDatabaseLite({ characters: [] } as any);
+    installFlatDatabase({ characters: [] });
 });
 
 describe("isJsonValue", () => {
@@ -76,9 +76,9 @@ describe("isJsonValue", () => {
 describe("SafeLocalPluginStorage", () => {
     it("stores clones inside pluginCustomStorage and reads clones back", async () => {
         const storage = new SafeLocalPluginStorage();
-        expect(DBState.db.pluginCustomStorage).toBeUndefined();
+        expect(settings.pluginStorage).toBeUndefined();
         expect(await storage.getItem("missing")).toBeNull();
-        expect(DBState.db.pluginCustomStorage).toBeUndefined();
+        expect(settings.pluginStorage).toBeUndefined();
         const value = { list: [1, 2], nested: { ok: true } };
         await storage.setItem("key", value);
         value.list.push(3);

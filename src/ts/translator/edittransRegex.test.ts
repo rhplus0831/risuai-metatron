@@ -1,12 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { character, customscript } from "../storage/database.svelte";
 
-const database: { presetRegex: customscript[] } = { presetRegex: [] };
-
-vi.mock("../storage/database.svelte", () => ({
-    getDatabase: () => database,
-}));
-
 vi.mock("../process/modules", () => ({
     getModuleRegexScripts: () => [] as customscript[],
     moduleUpdate: () => {},
@@ -22,13 +16,14 @@ vi.mock("../parser/parser.svelte", () => ({
     },
 }));
 
+import { activePreset } from "../storage/settingsViews.svelte";
 import { installFlatDatabase } from "../storage/tests/installFlatDatabase";
 import { applyEdittransRegex } from "./translator";
 
-// `database` installed as `setDatabaseLite` installs a database (`database.svelte` is mocked here),
-// since the translator reads the preset's scripts through the record views (Phase 6 slice 7): its
-// root `presetRegex` becomes the one preset's `regex`, which its writes reach through the accessors.
-installFlatDatabase(database, "translator-preset");
+// A fixture installed into the records, since the translator reads the preset's scripts through the
+// record views (Phase 6 slice 7): its root `presetRegex` becomes the one preset's `regex`, which a
+// case sets through `activePreset`.
+installFlatDatabase({ presetRegex: [] }, "translator-preset");
 
 const script = (v: Partial<customscript>): customscript =>
     ({
@@ -42,12 +37,12 @@ const script = (v: Partial<customscript>): customscript =>
 const alwaysExistChar = { customscript: [] } as unknown as character;
 
 const apply = (text: string, scripts: customscript[], chatID = -1) => {
-    database.presetRegex = scripts;
+    activePreset.regex = scripts;
     return applyEdittransRegex(text, "chatid", alwaysExistChar, chatID);
 };
 
 beforeEach(() => {
-    database.presetRegex = [];
+    activePreset.regex = [];
     parserCalls.length = 0;
     vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -142,7 +137,7 @@ describe("applyEdittransRegex", () => {
     });
 
     it("returns the text untouched for an empty charArg", () => {
-        database.presetRegex = [script({ in: "hello", out: "bye" })];
+        activePreset.regex = [script({ in: "hello", out: "bye" })];
         expect(applyEdittransRegex("hello", "", alwaysExistChar)).toBe("hello");
     });
 });

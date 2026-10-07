@@ -2,7 +2,7 @@
     import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { alertConfirm, alertError } from "../../ts/alert";
     import { language } from "../../lang";
-    import { changeToPreset, copyPreset, downloadPreset, importPreset } from "../../ts/storage/database.svelte";
+    import { changeToPreset, copyPreset, downloadPreset, importPreset } from "../../ts/storage/presets.svelte";
     import { deletePresetSecret } from "src/ts/storage/llmSecrets.svelte";
     import {
         CopyIcon,

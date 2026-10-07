@@ -1,4 +1,3 @@
-import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, refJ, refK } from "src/ts/storage/tests/mutationStoresHarness";
 
@@ -20,7 +19,7 @@ const { server, alerts, captured } = vi.hoisted(() => ({
     captured: { api: null as CapturedApi | null },
 }));
 
-vi.mock("src/ts/storage/nodeStorage", () => ({
+vi.mock("src/ts/storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -38,8 +37,8 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleLorebooks: vi.fn(() => []),
     getModuleAssets: vi.fn(() => []),
 }));
-// The real parser module installs a module-level `$effect.root` over `selIdState`, which is still
-// uninitialized here because the two modules import each other. Nothing under test parses CBS.
+// The real parser module installs a module-level `$effect.root` over the selection, which is still
+// uninitialized here because the modules import each other. Nothing under test parses CBS.
 vi.mock("src/ts/parser/parser.svelte", () => ({
     hasher: vi.fn(async () => ""),
     risuChatParser: vi.fn((text: string) => text),
@@ -49,7 +48,6 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     getFetchLogs: vi.fn(() => []),
     globalFetch: vi.fn(),
     fetchNative: vi.fn(),
-    forageStorage: { getItem: vi.fn(), setItem: vi.fn(), keys: vi.fn(async () => []) },
     saveAsset: vi.fn(),
     readImage: vi.fn(),
     getFileSrc: vi.fn(),
@@ -131,14 +129,14 @@ afterEach(() => {
 describe("a hook's writes reach the records its context names", () => {
     it("setCharacter from a listener of a non-selected character's chat is saved to that character's record", async () => {
         const seen: Record<string, unknown> = {};
-        const { run, sync, record, stores, db, fake } = await boot(async (api) => {
+        const { run, sync, record, selectionModule, characterList, fake } = await boot(async (api) => {
             const character = await api.getCharacter();
             seen.chaId = character.chaId;
             seen.chatId = character.chats[character.chatPage].id;
             seen.chatIndex = api.getCurrentChatIndex();
             await api.setCharacter({ ...character, desc: "listener wrote" });
         });
-        expect(get(stores.selectedCharID)).toBe(-1);
+        expect(selectionModule.selectedIndex()).toBe(-1);
         const before = record("characters", "c");
 
         await run(refJ);
@@ -146,7 +144,7 @@ describe("a hook's writes reach the records its context names", () => {
 
         expect(seen).toEqual({ chaId: "c", chatId: "j", chatIndex: 1 });
         expect(record("characters", "c")).toEqual({ ...before, desc: "listener wrote" });
-        expect(db().characters[0].chatPage).toBe(0);
+        expect((characterList()[0] as any).chatPage).toBe(0);
         // The chats are the chat module's: none was rewritten by the round trip.
         expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
         expect(fake.texts("c", "j")).toEqual([]);
@@ -180,7 +178,7 @@ describe("a hook's writes reach the records its context names", () => {
 
 describe("the callback persistence contract (beginMutationScope + flushResources({ scope }))", () => {
     it("reports a discard caused by a conflict during the hook, and the mirror holds the server's value", async () => {
-        const { run, sync, record, fake, db } = await boot(async (api) => {
+        const { run, sync, record, fake, settings } = await boot(async (api) => {
             // Another tab writes the `ui` record while the hook runs; the hook's write then conflicts.
             fake.set("ui", "main", { ...fake.record("ui", "main")!.data, theme: "remote" });
             await api.setDatabaseLite({ theme: "from the hook" });
@@ -190,7 +188,7 @@ describe("the callback persistence contract (beginMutationScope + flushResources
         const result = await sync.flushResources({ scope });
         expect(result.discarded).toEqual(["ui/main"]);
         expect(record("ui").theme).toBe("remote");
-        expect(db().theme).toBe("remote");
+        expect(settings.ui.theme).toBe("remote");
     });
 
     it("reports nothing when the hook's writes all persisted", async () => {

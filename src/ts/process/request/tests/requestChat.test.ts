@@ -13,7 +13,7 @@ const stubs = vi.hoisted(() => ({
     readRefs: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
 }));
 
-vi.mock("src/ts/storage/nodeStorage", () => ({ authFetch: vi.fn(), getNodeServerProxyAuth: async () => "" }));
+vi.mock("src/ts/storage/serverAuth", () => ({ authFetch: vi.fn(), getNodeServerProxyAuth: async () => "" }));
 vi.mock("src/ts/storage/resourceClient", () => ({
     readRefs: (...args: unknown[]) => stubs.readRefs(...args),
     getResourceEpoch: () => "epoch-1",
@@ -50,8 +50,6 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 
-import { DBState } from "src/ts/stores.svelte";
-import { installForwarding } from "src/ts/storage/forwarding.svelte";
 import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
 import {
     assembleChats,
@@ -81,7 +79,6 @@ function install() {
         characters: [{ chaId: "a", type: "character", name: "A", chatPage: 0, chats: [] }],
     };
     initializeRecords(takeRecordFields(raw));
-    DBState.db = installForwarding(raw) as never;
     const chats = [
         { characterId: "a", id: "a1", revision: REVISION, name: "A1", fmIndex: -1 },
         ...OTHERS.map((id) => ({ characterId: "a", id, revision: REVISION, data: chatOf(id) as never })),

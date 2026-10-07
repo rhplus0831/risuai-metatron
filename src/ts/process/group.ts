@@ -4,7 +4,6 @@ import shuffle from "lodash/shuffle";
 import { findCharacterbyId } from "../util";
 import { alertConfirm, alertError, alertSelectChar } from "../alert";
 import { language } from "src/lang";
-import { setDatabase } from "../storage/database.svelte";
 
 export async function addGroupChar() {
     const chaId = selectedCharacter()?.chaId;

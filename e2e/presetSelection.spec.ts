@@ -18,11 +18,11 @@ interface PresetView {
 
 const presets = (page: Page): Promise<PresetView> =>
     page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
+        const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
         const { selection } = await import("/src/ts/storage/selection.svelte.ts");
         return {
             selected: selection.presetId,
-            list: DBState.db.botPresets.map((preset: any) => ({
+            list: settings.presets.map((preset: any) => ({
                 id: preset.id,
                 name: preset.name,
                 temperature: preset.temperature,
@@ -33,7 +33,7 @@ const presets = (page: Page): Promise<PresetView> =>
 
 const select = (page: Page, id: string) =>
     page.evaluate(async (presetId) => {
-        const { changeToPreset } = await import("/src/ts/storage/database.svelte.ts");
+        const { changeToPreset } = await import("/src/ts/storage/presets.svelte.ts");
         changeToPreset(presetId, false);
     }, id);
 
@@ -46,13 +46,13 @@ async function reload(page: Page, baseURL: string) {
 /** The first boot of the store: skips the onboarding, names the default preset P1, and adds P2. */
 async function seedPresets(page: Page): Promise<[string, string]> {
     const ids = await page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
+        const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
         const { normalizePreset } = await import("/shared/presets.ts");
-        DBState.db.didFirstSetup = true;
-        DBState.db.useLegacyGUI = true;
-        DBState.db.botPresets[0].name = "P1";
-        DBState.db.botPresets.push(normalizePreset({ name: "P2", temperature: 50, maxResponse: 555 }));
-        return DBState.db.botPresets.map((preset: any) => preset.id);
+        settings.ui.didFirstSetup = true;
+        settings.ui.useLegacyGUI = true;
+        settings.presets[0].name = "P1";
+        settings.presets.push(normalizePreset({ name: "P2", temperature: 50, maxResponse: 555 }));
+        return settings.presets.map((preset: any) => preset.id);
     });
     await settle(page);
     return [ids[0], ids[1]];
@@ -119,8 +119,8 @@ test("two clients keep their own selection across reloads, and so do two tabs of
 
     // A's edit of a forwarded field goes to A's preset; B sees it in P1 after a reload and is still on P2.
     await pageA.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        DBState.db.temperature = 61;
+        const { activePreset } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        activePreset.temperature = 61;
     });
     await settle(pageA);
     await reload(pageB, baseURL!);

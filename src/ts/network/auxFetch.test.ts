@@ -19,7 +19,7 @@ const { deps } = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("../storage/nodeStorage", () => ({
+vi.mock("../storage/serverAuth", () => ({
     authFetch: (...args: unknown[]) => deps.authFetch(...args),
 }));
 vi.mock("../storage/resourceSync.svelte", () => ({

@@ -26,7 +26,7 @@ const { server, alerts } = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
 }));
 vi.mock("../../alert", () => ({
@@ -37,6 +37,7 @@ vi.mock("../../alert", () => ({
 }));
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", resourceRecordRefused: "refused" },
+    changeLanguage: vi.fn(),
 }));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -49,9 +50,8 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
-type Stores = typeof import("../../stores.svelte");
 type Bootstrap = typeof import("../../bootstrap");
-type DatabaseModule = typeof import("../database.svelte");
+type SettingsViews = typeof import("../settingsViews.svelte");
 type Secrets = typeof import("../llmSecrets.svelte");
 
 const STORED_KEY = "sk-stored-SENTINEL-AAAA";
@@ -116,24 +116,23 @@ async function boot() {
     );
     server.current = fake;
 
-    const stores: Stores = await import("../../stores.svelte");
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
-    const database: DatabaseModule = await import("../database.svelte");
+    const { settings }: SettingsViews = await import("../settingsViews.svelte");
     const secrets: Secrets = await import("../llmSecrets.svelte");
 
     const snapshot = await client.readKinds(Object.values(RESOURCE_KIND));
     sync.seedResources(snapshot);
-    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(-1);
+    // The records and the selection (at home), as `loadData` installs them.
+    bootstrap.installBootRecords(snapshot);
     fake.requests.length = 0;
     sync.startResourceSync();
     await tick();
     await sync.flushResources();
     const bootBatches = fake.batchBodies();
     fake.requests.length = 0;
-    return { fake, stores, client, sync, secrets, bootBatches, db: () => stores.DBState.db as any };
+    return { fake, client, sync, secrets, bootBatches, settings };
 }
 
 beforeEach(() => {
@@ -150,7 +149,7 @@ afterEach(() => {
 
 describe("a queued credential write", () => {
     it("is sent after the cycle's batch on the record's revision, never in the record, and its acknowledgement bumps the path's version", async () => {
-        const { fake, sync, secrets, db, bootBatches } = await boot();
+        const { fake, sync, secrets, settings, bootBatches } = await boot();
         const path = flat("openAIKey");
         // An idle boot with set and unset keys writes nothing for the record, and shows the statuses.
         expect(bootBatches.flatMap((batch) => batch.ops.map((op) => op.kind))).not.toContain("llmSecrets");
@@ -158,7 +157,7 @@ describe("a queued credential write", () => {
         expect(secrets.secretStatus(flat("claudeAPIKey"))).toEqual({ set: false, hint: "", pending: false });
         expect(secrets.secretStatus(preset("p1"))).toEqual({ set: true, hint: "", pending: false });
         expect(secrets.secretStatus(model("m1"))).toEqual({ set: true, hint: "", pending: false });
-        expect(db().openAIKey).toBe("");
+        expect(settings.llmSecrets.openAIKey).toBe("");
         const unload = () => {
             const event = new Event("beforeunload", { cancelable: true });
             window.dispatchEvent(event);
@@ -167,10 +166,10 @@ describe("a queued credential write", () => {
         expect(unload()).toBe(false);
 
         const revision = fake.get("llmSecrets", "main")!.revision;
-        db().zoomsize = 123;
+        settings.ui.zoomsize = 123;
         secrets.setSecret(path, "sk-new-SENTINEL-BBBB");
         expect(secrets.secretStatus(path)).toEqual({ set: true, hint: "", pending: true });
-        expect(db().openAIKey).toBe("");
+        expect(settings.llmSecrets.openAIKey).toBe("");
         // A queued write is unsaved work: the unload warning shows.
         expect(unload()).toBe(true);
         await sync.flushResources();
@@ -181,7 +180,7 @@ describe("a queued credential write", () => {
         expect(secrets.secretStatus(path)).toEqual({ set: true, hint: "BBBB", pending: false });
         expect(secrets.llmSecretState.queue).toEqual([]);
         expect(secrets.secretVersion(path)).toBe(1);
-        expect(db().openAIKey).toBe("");
+        expect(settings.llmSecrets.openAIKey).toBe("");
         // Nothing is echoed afterwards (adopting the server's record marks the mirror once more, as
         // any reload does; the next cycle finds the text equal), and nothing is unsaved.
         await sync.flushResources();
@@ -215,8 +214,8 @@ describe("a queued credential write", () => {
     });
 
     it("goes after the batch that creates its preset: a copy, and a key queued while a batch is in flight", async () => {
-        const { fake, sync, secrets, db } = await boot();
-        db().botPresets.push({ ...JSON.parse(JSON.stringify(db().botPresets[0])), id: "p3", name: "p3" });
+        const { fake, sync, secrets, settings } = await boot();
+        settings.presets.push({ ...JSON.parse(JSON.stringify(settings.presets[0])), id: "p3", name: "p3" });
         secrets.copyPresetSecret("p1", "p3");
         expect(secrets.secretStatus(preset("p3"))).toEqual({ set: true, hint: "", pending: true });
         await sync.flushResources();
@@ -231,10 +230,10 @@ describe("a queued credential write", () => {
         // next cycle, after the batch that carries the preset.
         fake.requests.length = 0;
         fake.holdNextBatch = true;
-        db().botPresets.push({ ...JSON.parse(JSON.stringify(db().botPresets[0])), id: "p4", name: "p4" });
+        settings.presets.push({ ...JSON.parse(JSON.stringify(settings.presets[0])), id: "p4", name: "p4" });
         const flushed = sync.flushResources();
         await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
-        db().botPresets.push({ ...JSON.parse(JSON.stringify(db().botPresets[0])), id: "p5", name: "p5" });
+        settings.presets.push({ ...JSON.parse(JSON.stringify(settings.presets[0])), id: "p5", name: "p5" });
         secrets.setSecret(preset("p5"), "pk-5");
         await tick();
         fake.releaseBatch!();
@@ -361,10 +360,10 @@ describe("a queued credential write", () => {
 
 describe("adopting the server's record after a write or a reread", () => {
     it("takes the server's siblings when the local ones are unchanged, even under a no-op dirty mark", async () => {
-        const { fake, sync, secrets, db } = await boot();
+        const { fake, sync, secrets, settings } = await boot();
         // A dirty mark without a change: an edit and its undo in one tick.
-        db().vertexClientEmail = "tmp";
-        db().vertexClientEmail = "";
+        settings.llmSecrets.vertexClientEmail = "tmp";
+        settings.llmSecrets.vertexClientEmail = "";
         await tick();
         // Another tab changed a sibling.
         const remote = fake.data("llmSecrets", "main");
@@ -378,8 +377,8 @@ describe("adopting the server's record after a write or a reread", () => {
             "GET /api/resources/llmSecrets/main",
             "PUT /api/llm-secrets/openAIKey",
         ]);
-        expect(db().google.projectId).toBe("remote");
-        expect(db().google.accessToken).toBe("");
+        expect(settings.llmSecrets.google.projectId).toBe("remote");
+        expect(settings.llmSecrets.google.accessToken).toBe("");
         expect(fake.data("llmSecrets", "main")).toMatchObject({ openAIKey: "sk-x", google: { projectId: "remote" } });
         // The reread's changed revision invalidated every path; the write bumped its own again.
         expect(secrets.secretVersion(flat("claudeAPIKey"))).toBe(1);
@@ -392,17 +391,17 @@ describe("adopting the server's record after a write or a reread", () => {
     });
 
     it("keeps a local sibling edit made during the write and sends it next on the acknowledged revision", async () => {
-        const { fake, sync, secrets, db } = await boot();
-        db().zoomsize = 5;
+        const { fake, sync, secrets, settings } = await boot();
+        settings.ui.zoomsize = 5;
         secrets.setSecret(flat("openAIKey"), "sk-y");
         fake.beforeNextBatch = () => {
-            db().vertexClientEmail = "edited-during";
+            settings.llmSecrets.vertexClientEmail = "edited-during";
         };
         const first = await sync.flushResources();
         expect(first.discarded).toEqual([]);
         expect(requestLog(fake)).toEqual(["POST /api/resources/batch", "PUT /api/llm-secrets/openAIKey"]);
         expect(fake.data("llmSecrets", "main").openAIKey).toBe("sk-y");
-        expect(db().vertexClientEmail).toBe("edited-during");
+        expect(settings.llmSecrets.vertexClientEmail).toBe("edited-during");
         const second = await sync.flushResources();
         expect(second.discarded).toEqual([]);
         expect(alerts.normal).not.toHaveBeenCalled();
@@ -421,19 +420,19 @@ describe("adopting the server's record after a write or a reread", () => {
     });
 
     it("treats a local edit over a remotely changed sibling as the normal conflict: the server's copy wins, the discard is reported, the write still lands", async () => {
-        const { fake, sync, secrets, db } = await boot();
-        db().zoomsize = 6;
+        const { fake, sync, secrets, settings } = await boot();
+        settings.ui.zoomsize = 6;
         secrets.setSecret(flat("openAIKey"), "sk-z");
         fake.beforeNextBatch = () => {
             const remote = fake.data("llmSecrets", "main");
             fake.set("llmSecrets", "main", { ...remote, vertexClientEmail: "remote" });
-            db().vertexClientEmail = "local";
+            settings.llmSecrets.vertexClientEmail = "local";
         };
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["llmSecrets/main"]);
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
-        expect(db().vertexClientEmail).toBe("remote");
-        expect(db().openAIKey).toBe("");
+        expect(settings.llmSecrets.vertexClientEmail).toBe("remote");
+        expect(settings.llmSecrets.openAIKey).toBe("");
         expect(fake.data("llmSecrets", "main")).toMatchObject({ openAIKey: "sk-z", vertexClientEmail: "remote" });
         expect(secrets.secretStatus(flat("openAIKey"))).toEqual({ set: true, hint: "", pending: false });
         fake.requests.length = 0;
@@ -442,15 +441,15 @@ describe("adopting the server's record after a write or a reread", () => {
     });
 
     it("recognizes a sibling write whose acknowledgement was lost on the conflict reread, keeps the stored keys, and echoes nothing", async () => {
-        const { fake, sync, secrets, db } = await boot();
+        const { fake, sync, secrets, settings } = await boot();
         fake.dropNextBatchResponse = true;
-        db().vertexClientEmail = "lost-ack";
+        settings.llmSecrets.vertexClientEmail = "lost-ack";
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
         expect(fake.data("llmSecrets", "main")).toMatchObject({ vertexClientEmail: "lost-ack", openAIKey: STORED_KEY });
         const result = await sync.flushResources();
         expect(result.discarded).toEqual([]);
         expect(alerts.normal).not.toHaveBeenCalled();
-        expect(db().vertexClientEmail).toBe("lost-ack");
+        expect(settings.llmSecrets.vertexClientEmail).toBe("lost-ack");
         expect(secrets.secretStatus(flat("openAIKey"))).toEqual({ set: true, hint: "AAAA", pending: false });
         fake.requests.length = 0;
         await sync.flushResources();
@@ -459,16 +458,16 @@ describe("adopting the server's record after a write or a reread", () => {
 });
 
 describe("the cleanup of a deleted owner's entry", () => {
-    const removePreset = (db: any, id: string) => {
-        db.botPresets.splice(
-            db.botPresets.findIndex((entry: { id: string }) => entry.id === id),
+    const removePreset = (presets: { id: string }[], id: string) => {
+        presets.splice(
+            presets.findIndex((entry) => entry.id === id),
             1,
         );
     };
 
     it("is sent once the deletion is saved, for a preset and for a custom model", async () => {
-        const { fake, sync, secrets, db } = await boot();
-        removePreset(db(), "p2");
+        const { fake, sync, secrets, settings } = await boot();
+        removePreset(settings.presets, "p2");
         secrets.deletePresetSecret("p2");
         expect(secrets.secretStatus(preset("p2"))).toEqual({ set: false, hint: "", pending: true });
         await sync.flushResources();
@@ -478,7 +477,7 @@ describe("the cleanup of a deleted owner's entry", () => {
         expect(secrets.secretStatus(preset("p2"))).toEqual({ set: false, hint: "", pending: false });
 
         fake.requests.length = 0;
-        db().customModels.splice(0, 1);
+        settings.customModels.splice(0, 1);
         secrets.deleteEntrySecret("customModels", "m1");
         await sync.flushResources();
         expect(requestLog(fake)).toEqual(["POST /api/resources/batch", "PUT /api/llm-secrets/customModels/~m1/key"]);
@@ -488,7 +487,7 @@ describe("the cleanup of a deleted owner's entry", () => {
     });
 
     it("is dropped without a request when a conflict restored the owner, while an explicit clear of a live owner still goes", async () => {
-        const { fake, sync, secrets, db } = await boot();
+        const { fake, sync, secrets, settings } = await boot();
         // Another tab renamed p1: this client's deletion of p2 conflicts and is discarded.
         const presets = fake.data("presets", "main");
         fake.set(
@@ -496,11 +495,11 @@ describe("the cleanup of a deleted owner's entry", () => {
             "main",
             presets.map((p: { id: string }) => (p.id === "p1" ? { ...p, name: "renamed" } : p)),
         );
-        removePreset(db(), "p2");
+        removePreset(settings.presets, "p2");
         secrets.deletePresetSecret("p2");
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["presets/main"]);
-        expect(db().botPresets.map((p: { id: string; name: string }) => [p.id, p.name])).toEqual([
+        expect(settings.presets.map((p) => [p.id, p.name])).toEqual([
             ["p1", "renamed"],
             ["p2", "p2"],
         ]);
@@ -520,21 +519,21 @@ describe("the cleanup of a deleted owner's entry", () => {
         fake.requests.length = 0;
         const models = fake.data("customModels", "main");
         fake.set("customModels", "main", [{ ...models[0], name: "renamed" }]);
-        db().customModels.splice(0, 1);
+        settings.customModels.splice(0, 1);
         secrets.deleteEntrySecret("customModels", "m1");
         expect((await sync.flushResources()).discarded).toEqual(["customModels/main"]);
-        expect(db().customModels.map((m: { id: string }) => m.id)).toEqual(["m1"]);
+        expect(settings.customModels.map((m: { id: string }) => m.id)).toEqual(["m1"]);
         expect(secretRequests(fake)).toEqual([]);
         expect(fake.data("llmSecrets", "main").customModels).toEqual({ m1: { key: "mk-1" } });
         expect(secrets.secretStatus(model("m1")).set).toBe(true);
     });
 
     it("waits behind a quarantined deletion without keeping the loop running, the barrier names the refusal, and goes once the deletion is saved", async () => {
-        const { fake, sync, secrets, db } = await boot();
+        const { fake, sync, secrets, settings } = await boot();
         // The adapter's own periodic timers, set at start; a scheduled cycle would add one.
         const timersAtRest = vi.getTimerCount();
         fake.failNext = { status: 400, body: { error: "ops[0]: presets refused" }, times: 1, match: onBatch };
-        removePreset(db(), "p2");
+        removePreset(settings.presets, "p2");
         secrets.deletePresetSecret("p2");
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 400 });
         expect(fake.batchCount()).toBe(1);
@@ -551,7 +550,7 @@ describe("the cleanup of a deleted owner's entry", () => {
         expect(secrets.llmSecretState.queue).toHaveLength(1);
 
         // An edit of the refused collection retries it; the cleanup follows the saved deletion.
-        db().botPresets[0].name = "fixed";
+        settings.presets[0].name = "fixed";
         await sync.flushResources();
         expect(requestLog(fake).slice(1)).toEqual([
             "POST /api/resources/batch",

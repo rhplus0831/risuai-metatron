@@ -1,6 +1,6 @@
 import { language } from "src/lang";
 import { alertError } from "src/ts/alert";
-import { getDatabase } from "src/ts/storage/database.svelte";
+import { getDatabase } from "../database";
 import { LLMFlags, LLMFormat, LLMProvider } from "src/ts/model/modellist";
 import { strongBan, tokenizeNum } from "src/ts/tokenizer";
 import { getFreeOpenRouterModels } from "src/ts/model/openrouter";

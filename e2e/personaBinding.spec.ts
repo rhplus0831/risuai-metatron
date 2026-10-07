@@ -27,14 +27,15 @@ interface PersonaView {
 
 const personas = (page: Page): Promise<PersonaView> =>
     page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
+        const { settings, activePersona, selectedPersonaIndex } =
+            await import("/src/ts/storage/settingsViews.svelte.ts");
         const { selection } = await import("/src/ts/storage/selection.svelte.ts");
         return {
             selected: selection.personaId,
-            index: DBState.db.selectedPersona,
-            username: DBState.db.username,
-            personaPrompt: DBState.db.personaPrompt,
-            list: DBState.db.personas.map((persona: any) => ({
+            index: selectedPersonaIndex(),
+            username: activePersona.name,
+            personaPrompt: activePersona.personaPrompt,
+            list: settings.personas.map((persona: any) => ({
                 id: persona.id,
                 name: persona.name,
                 icon: persona.icon,
@@ -58,14 +59,14 @@ async function reload(page: Page, baseURL: string) {
 /** The first boot of the store: skips the onboarding, names the default persona U1, and adds U2. */
 async function seedPersonas(page: Page): Promise<[string, string]> {
     const ids = await page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
+        const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
         const { newPersonaId } = await import("/shared/presets.ts");
-        DBState.db.didFirstSetup = true;
-        DBState.db.useLegacyGUI = true;
-        DBState.db.personas[0].name = "U1";
+        settings.ui.didFirstSetup = true;
+        settings.ui.useLegacyGUI = true;
+        settings.personas[0].name = "U1";
         const id = newPersonaId();
-        DBState.db.personas.push({ id, name: "U2", icon: "", personaPrompt: "I am two.", note: "" });
-        return [DBState.db.personas[0].id, id];
+        settings.personas.push({ id, name: "U2", icon: "", personaPrompt: "I am two.", note: "" });
+        return [settings.personas[0].id, id];
     });
     await settle(page);
     return [ids[0], ids[1]];
@@ -84,20 +85,18 @@ test("an icon picked while another persona is selected lands on the persona the 
 
     // A character whose current chat is bound to U2 (the sidebar's bind action, by the selected id).
     const bound = await page.evaluate(async () => {
-        const { DBState, selectedCharID } = await import("/src/ts/stores.svelte.ts");
+        const { settings, selectedPersonaIndex } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        const { selectCharacter } = await import("/src/ts/storage/selection.svelte.ts");
         const { createNewCharacter } = await import("/src/ts/characters.ts");
-        const { setChatMeta } = await import("/src/ts/storage/chatStore.svelte.ts");
-        // `createNewCharacter` returns the new character's id (Phase 6 slice 8); the shim selects by index.
+        const { findChat, selectedChatId, setChatMeta } = await import("/src/ts/storage/chatStore.svelte.ts");
+        // `createNewCharacter` returns the new character's id (Phase 6 slice 8); the selection is by id.
         const chaId = createNewCharacter();
-        selectedCharID.set(DBState.db.characters.findIndex((entry) => entry.chaId === chaId));
+        selectCharacter(chaId);
         await new Promise((resolve) => setTimeout(resolve, 500));
-        const char = DBState.db.characters.find((entry) => entry.chaId === chaId)!;
-        const chat = char.chats[char.chatPage] ?? char.chats[0];
-        setChatMeta(
-            { chaId: char.chaId, chatId: chat.id },
-            { bindedPersona: DBState.db.personas[DBState.db.selectedPersona].id },
-        );
-        return { chaId: char.chaId, chatId: chat.id, bindedPersona: chat.bindedPersona };
+        // The character's chats are the chat module's: its selected chat, else its first.
+        const chatId = selectedChatId(chaId)!;
+        setChatMeta({ chaId, chatId }, { bindedPersona: settings.personas[selectedPersonaIndex()].id });
+        return { chaId, chatId, bindedPersona: findChat({ chaId, chatId })?.bindedPersona };
     });
     expect(bound.bindedPersona).toBe(u2);
     await settle(page);
@@ -169,8 +168,8 @@ test("two clients keep their own persona selection across reloads while the pers
 
     // A's edit of a forwarded persona field goes to U2; B sees it after a reload and is still on U1.
     await pageA.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        DBState.db.personaPrompt = "Two, edited in A.";
+        const { activePersona } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        activePersona.personaPrompt = "Two, edited in A.";
     });
     await settle(pageA);
     await reload(pageB, baseURL!);
@@ -183,13 +182,13 @@ test("two clients keep their own persona selection across reloads while the pers
     expect(viewA.selected).toBe(u2);
     expect(viewA.personaPrompt).toBe("Two, edited in A.");
 
-    // A plugin's `setDatabase({ selectedPersona })` is an index into the list; it selects on this
-    // client only, and it survives a reload here while B is untouched.
+    // A plugin's `setDatabase({ selectedPersona })` is an index into the list, which the plugin host
+    // resolves to the persona's id (`selectPersona`); it selects on this client only, and it survives
+    // a reload here while B is untouched.
     await pageA.evaluate(async () => {
-        const { getDatabase, setDatabase } = await import("/src/ts/storage/database.svelte.ts");
-        const db = getDatabase();
-        db.selectedPersona = 0;
-        setDatabase(db);
+        const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        const { selectPersona } = await import("/src/ts/storage/selection.svelte.ts");
+        selectPersona(settings.personas[0].id);
     });
     expect((await personas(pageA)).selected).toBe(u1);
     await settle(pageA);

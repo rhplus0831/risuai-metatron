@@ -64,33 +64,11 @@ vi.mock("./factory", () => ({
     },
 }));
 
-vi.mock("src/ts/storage/database.svelte", async () => {
-    // The live database (the mutations write `DBState.db`); resolved here because the factory runs
-    // before this file's own imports are initialized.
-    const stores = await vi.importActual<typeof import("src/ts/stores.svelte")>("src/ts/stores.svelte");
-    const { get } = await vi.importActual<typeof import("svelte/store")>("svelte/store");
-    const plain = (value: unknown) => (value === undefined ? value : JSON.parse(JSON.stringify(value)));
-    return {
-        getDatabase: () => stores.DBState.db,
-        setDatabase: vi.fn(),
-        getCurrentCharacter: vi.fn((options?: { snapshot?: boolean }) => {
-            const character = stores.DBState.db.characters?.[get(stores.selectedCharID)];
-            return options?.snapshot ? plain(character) : character;
-        }),
-        getCurrentChat: vi.fn(() => {
-            const character = stores.DBState.db.characters?.[get(stores.selectedCharID)];
-            return character?.chats?.[character.chatPage];
-        }),
-        setCurrentChat: vi.fn(),
-    };
-});
-
 vi.mock("src/ts/globalApi.svelte", () => ({
     checkCharOrder: vi.fn(),
     getFetchLogs: vi.fn(() => []),
     globalFetch: vi.fn(),
     fetchNative: vi.fn(),
-    forageStorage: { getItem: vi.fn(), setItem: vi.fn(), keys: vi.fn(async () => []) },
     saveAsset: vi.fn(),
     readImage: vi.fn(),
     getFileSrc: vi.fn(),
@@ -116,8 +94,8 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 
-// The real parser module installs a module-level `$effect.root` over `selIdState`, which is still
-// uninitialized here because the two modules import each other. Nothing under test parses CBS.
+// The real parser module installs a module-level `$effect.root` over the selection, which is still
+// uninitialized here because the modules import each other. Nothing under test parses CBS.
 vi.mock("src/ts/parser/parser.svelte", () => ({
     hasher: vi.fn(async () => ""),
     risuChatParser: vi.fn((text: string) => text),
@@ -176,9 +154,9 @@ vi.mock("src/ts/process/request/request", () => {
 // The factory does not load the actual module (as `request` above): since Phase 6 slice 9a its imports
 // reach the chat module and, through it, the transform client, which then bound to the unmocked
 // `authFetch` while the mock was being made. The other export forwards to the actual module at its call.
-vi.mock("src/ts/storage/nodeStorage", () => {
-    type NodeStorageModule = typeof import("src/ts/storage/nodeStorage");
-    const actual = () => vi.importActual<NodeStorageModule>("src/ts/storage/nodeStorage");
+vi.mock("src/ts/storage/serverAuth", () => {
+    type ServerAuthModule = typeof import("src/ts/storage/serverAuth");
+    const actual = () => vi.importActual<ServerAuthModule>("src/ts/storage/serverAuth");
     const answer = (id: string, text: string) => ({
         id,
         ok: true,
@@ -217,13 +195,17 @@ vi.mock("src/ts/storage/nodeStorage", () => {
     };
 });
 
-import { DBState, selectedCharID } from "src/ts/stores.svelte";
 import * as chatStore from "src/ts/storage/chatStore.svelte";
-import { removeCharacter } from "src/ts/storage/characterStore.svelte";
-import { installForwarding } from "src/ts/storage/forwarding.svelte";
-import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
-import { selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
-import { settings } from "src/ts/storage/settingsViews.svelte";
+import { characterList, removeCharacter } from "src/ts/storage/characterStore.svelte";
+import {
+    selectCharacterAt,
+    selectedIndex,
+    selection,
+    selectPersona,
+    selectPreset,
+} from "src/ts/storage/selection.svelte";
+import { activePreset, settings } from "src/ts/storage/settingsViews.svelte";
+import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { doingChat } from "src/ts/process/index.svelte";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
@@ -239,9 +221,8 @@ vi.stubGlobal("safeStructuredClone", (value: unknown) =>
     value === undefined ? value : JSON.parse(JSON.stringify(value)),
 );
 
-const db = () => DBState.db as any;
-const preset = (id: string) => db().botPresets.find((entry: { id: string }) => entry.id === id);
-const characterOf = (chaId: string) => db().characters.find((entry: any) => entry?.chaId === chaId);
+const preset = (id: string) => settings.presets.find((entry: { id: string }) => entry.id === id) as any;
+const characterOf = (chaId: string) => characterList().find((entry: any) => entry?.chaId === chaId) as any;
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const texts = (ref: chatStore.ChatRef) => chatStore.findChat(ref)!.message.map((message) => message.data);
 /** Marks chats as saved on the server (a held revision): the server transform applies to them. */
@@ -263,7 +244,11 @@ const chat = (id: string, fields: Record<string, unknown> = {}) => ({
     ...fields,
 });
 
-/** The live database, installed as `setDatabaseLite` installs it (its record fields moved into the records first). */
+/**
+ * The live records, installed as boot installs them (the whole-database aggregate is gone since
+ * Phase 6 slice 10): the record fields into the records, the characters' chats into the chat module
+ * (Phase 6 slice 9a), the selection resolved.
+ */
 function liveDatabase() {
     selectPreset("a");
     selectPersona("p");
@@ -307,27 +292,13 @@ function liveDatabase() {
         pluginCustomStorage: undefined,
         theme: "",
         customCSS: "",
-        aiModel: "gpt-4o",
         useStreaming: false,
         genTime: 1,
         requestRetrys: 0,
         fallbackModels: {},
         banCharacterset: [],
     };
-    // The records hold no chats (Phase 6 slice 9a): the characters' chats are held in the chat
-    // module, as boot assembles them.
-    const characters = raw.characters as { chaId: string; chats: any[] }[];
-    const chats = characters.flatMap((char) =>
-        char.chats.map((entry) => ({ characterId: char.chaId, id: entry.id, revision: "r1", data: entry })),
-    );
-    const orders = characters.map((char) => ({
-        characterId: char.chaId,
-        revision: "o1",
-        ids: char.chats.map((entry) => entry.id),
-    }));
-    initializeRecords(takeRecordFields(raw));
-    chatStore.assembleChats(characters, chats, orders);
-    return installForwarding(raw) as any;
+    installFlatDatabaseWithChats(raw);
 }
 
 let counter = 0;
@@ -366,8 +337,8 @@ const listenerArg = { char: {}, chat: {}, characterIndex: 0, chatIndex: 0, messa
 beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
-    DBState.db = liveDatabase();
-    selectedCharID.set(0);
+    liveDatabase();
+    selectCharacterAt(0);
     doingChat.set(false);
     sends.length = 0;
     transforms.length = 0;
@@ -442,7 +413,7 @@ describe("a chatOutput listener for a chat that is not selected", () => {
             seen.lore = await api.getCurrentLorebookEntries();
         });
         const context = capturePluginContext(refB1);
-        selectedCharID.set(0);
+        selectCharacterAt(0);
 
         await invokeHook(listener, context, listenerArg);
 
@@ -451,7 +422,7 @@ describe("a chatOutput listener for a chat that is not selected", () => {
         expect(characterOf("a").desc).toBe("alpha");
         // The user's chat selection of the hook's character and the tab's selection are unchanged.
         expect(characterOf("b").chatPage).toBe(0);
-        expect(get(selectedCharID)).toBe(0);
+        expect(selectedIndex()).toBe(0);
         expect(characterOf("a").chatPage).toBe(0);
         expect(console.warn).not.toHaveBeenCalled();
     });
@@ -474,13 +445,13 @@ describe("a chatOutput listener for a chat that is not selected", () => {
         });
         await invokeHook(listener, capturePluginContext(refB1), listenerArg);
         expect(characterOf("b").chatPage).toBe(2);
-        expect(get(selectedCharID)).toBe(0);
+        expect(selectedIndex()).toBe(0);
         expect(console.warn).not.toHaveBeenCalled();
     });
 
     it("a round trip with a chat switch of the same character edits the hook's chat, not the newly selected one", async () => {
         const api = await makeApi();
-        selectedCharID.set(1);
+        selectCharacterAt(1);
         const listener = await listenerOf(api, async () => {
             const got = await api.getCharacter();
             const target = got.chats[got.chatPage];
@@ -502,7 +473,7 @@ describe("a chatOutput listener for a chat that is not selected", () => {
 
     it("without a context the same functions act on the selection, as before", async () => {
         const api = await makeApi();
-        selectedCharID.set(1);
+        selectCharacterAt(1);
         chatStore.selectChat("b", 2);
         const listener = await listenerOf(api, async () => {
             expect(where(api)).toEqual([1, 2]);
@@ -605,9 +576,9 @@ describe("settings inside a hook", () => {
 
         expect(preset("a")).toMatchObject({ temperature: 33, maxContext: 3333 });
         expect(preset("b")).toMatchObject({ temperature: 20, maxContext: 2000 });
-        // The accessors still serve the selected preset; the section key landed at the root.
-        expect(db().temperature).toBe(20);
-        expect(db().theme).toBe("hooked");
+        // The views still serve the selected preset; the section key landed in its record.
+        expect(activePreset.temperature).toBe(20);
+        expect(settings.ui.theme).toBe("hooked");
         expect(selection.presetId).toBe("b");
         // After the hook, the same calls act on the selection.
         expect((await api.getDatabase(["temperature"])).temperature).toBe(20);
@@ -648,7 +619,7 @@ describe("settings inside a hook", () => {
         await running;
         expect(preset("a").temperature).toBe(55);
         expect(preset("b").temperature).toBe(21);
-        expect(db().plugins.map((plugin: any) => plugin.name)).toEqual(["installed-by-hook"]);
+        expect(settings.plugins.map((plugin: any) => plugin.name)).toEqual(["installed-by-hook"]);
     });
 });
 
@@ -745,16 +716,16 @@ describe("gone targets", () => {
             await api.setDatabaseLite({ theme: "ok", aiModel: "custom value" });
         });
         const context = capturePluginContext(refB1);
-        db().botPresets = db().botPresets.filter((entry: { id: string }) => entry.id !== "a");
+        settings.presets = settings.presets.filter((entry: { id: string }) => entry.id !== "a");
         selectPreset("b");
-        const model = db().aiModel;
+        const model = activePreset.aiModel;
 
         await invokeHook(listener, context, listenerArg);
 
-        expect(db().theme).toBe("ok");
-        expect(plain(db().pluginCustomStorage)).toEqual({ aiModel: "custom value" });
+        expect(settings.ui.theme).toBe("ok");
+        expect(plain(settings.pluginStorage)).toEqual({ aiModel: "custom value" });
         // The forwarded `aiModel` of the selected preset is not what the plugin wrote.
-        expect(db().aiModel).toBe(model);
+        expect(activePreset.aiModel).toBe(model);
         expect("aiModel" in preset("b")).toBe(false);
         expect(preset("b")).toMatchObject({ temperature: 20, maxContext: 2000 });
         expect(console.warn).not.toHaveBeenCalled();
@@ -770,7 +741,7 @@ describe("the runners", () => {
             return `${data}:${temperature}:${where(api).join("/")}`;
         });
         saved(refB1);
-        const beta = db().characters[1];
+        const beta = characterList()[1];
         const context = capturePluginContext(refB1);
         selectPreset("b");
 
@@ -859,7 +830,7 @@ describe("the host functions that forward the hook's target", () => {
         });
         saved(refB1);
         const context = capturePluginContext(refB1);
-        selectedCharID.set(0);
+        selectCharacterAt(0);
         chatStore.selectChat("b", 2);
         selectPreset("b");
         vi.mocked(risuChatParser).mockClear();
@@ -946,7 +917,7 @@ describe("the host functions that forward the hook's target", () => {
             );
         });
         const context = capturePluginContext(refB1);
-        selectedCharID.set(0);
+        selectCharacterAt(0);
         selectPreset("b");
 
         await invokeHook(listener, context, listenerArg);
@@ -995,7 +966,7 @@ describe("the host functions that forward the hook's target", () => {
                 seen.push(await api.getCurrentLorebookEntries());
             });
             const context = capturePluginContext(refB1);
-            selectedCharID.set(0);
+            selectCharacterAt(0);
             chatStore.selectChat("b", 2);
 
             await invokeHook(listener, context, listenerArg);
@@ -1068,7 +1039,7 @@ describe("unload and reload", () => {
 
     it("removes the old instance's script handler, replacers, and listener, and the reloaded instance has its own stack", async () => {
         const plugin = { name: `context-reload-${++counter}`, script: "s", version: "3.0" };
-        db().plugins = [plugin];
+        settings.plugins = [plugin as any];
         const old = await reload(plugin);
         const gate = deferred<void>();
         const oldListener = await listenerOf(old, () => gate.promise);

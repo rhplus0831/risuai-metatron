@@ -6,6 +6,26 @@ import type { RisuModule } from "../modules.ts";
  * The CBS types both runtimes share. The registry (`registry.ts`) and the evaluator
  * (`evaluator.ts`) reach their host only through `CBSRegisterArg` and `CbsHost`.
  */
+/**
+ * The settings and the character list shared CBS reads from its host's database (Phase 6 slice 10,
+ * F-d): the server's job projection is a whole `Database`; the client serves these fields from its
+ * records (`parser.svelte.ts`). The characters are in the legacy shape: shared CBS reads a
+ * character's `chats` and `chatPage`.
+ */
+export type CbsDatabase = Pick<
+    Database,
+    | "aiModel"
+    | "subModel"
+    | "maxContext"
+    | "promptTemplate"
+    | "mainPrompt"
+    | "jailbreak"
+    | "jailbreakToggle"
+    | "globalNote"
+    | "language"
+    | "characters"
+>;
+
 export type CbsConditions = {
     firstmsg?: boolean;
     chatRole?: string;
@@ -18,7 +38,7 @@ export type matcherArg = {
      * character's selected chat. Chat variables and chat/history macros read this chat.
      */
     chatRef?: { chaId: string; chatId: string } | null;
-    db: Database;
+    db: CbsDatabase;
     chara: character | string;
     rmVar: boolean;
     var?: { [key: string]: string } | null;
@@ -63,7 +83,7 @@ export type CBSRegisterArg = {
         };
         internalOnly?: boolean;
     }) => void | Promise<void>;
-    getDatabase: () => Database;
+    getDatabase: () => CbsDatabase;
     getUserName: (chatRef?: matcherArg["chatRef"]) => string;
     getPersonaPrompt: (chatRef?: matcherArg["chatRef"]) => string;
     risuChatParser: (text: string, arg: matcherArg) => string;

@@ -132,9 +132,9 @@ try {
         state(
             p,
             async (id) => {
-                const { DBState } = await import("/src/ts/stores.svelte.ts");
+                const { findCharacter } = await import("/src/ts/storage/characterStore.svelte.ts");
                 const { chatList, ensureChatLoaded } = await import("/src/ts/storage/chatStore.svelte.ts");
-                const c = DBState.db.characters.find((entry) => entry?.chaId === id);
+                const c = findCharacter(id);
                 if (!c) {
                     return null;
                 }
@@ -238,15 +238,19 @@ try {
     // 2. A settings edit in A1 (the save loop writes it) reaches A2 and B.
     since = Date.now();
     await state(A1, async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        DBState.db.zoomsize = 110;
+        const { writeSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        writeSettingsRoot("zoomsize", 110);
     });
     for (const [label, p] of [
         ["A2", A2],
         ["B", B],
     ]) {
         const ok = await waitFor(async () =>
-            state(p, async () => (await import("/src/ts/stores.svelte.ts")).DBState.db.zoomsize === 110),
+            state(
+                p,
+                async () =>
+                    (await import("/src/ts/storage/settingsViews.svelte.ts")).readSettingsRoot("zoomsize") === 110,
+            ),
         );
         check(`settings edit: ${label} shows zoomsize 110`, ok === true, ok);
     }
@@ -268,13 +272,16 @@ try {
         check(`character edit: ${label} shows the new description`, ok === true, ok);
     }
 
-    // 4. A preset edit in A1 through the forwarded field reaches B (same preset selected on both).
+    // 4. A preset edit in A1 through the selected preset's view reaches B (same preset selected on both).
     await state(A1, async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        DBState.db.temperature = 42;
+        const { activePreset } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        activePreset.temperature = 42;
     });
     const presetTemp = (p) =>
-        state(p, async () => (await import("/src/ts/stores.svelte.ts")).DBState.db.botPresets[0]?.temperature);
+        state(
+            p,
+            async () => (await import("/src/ts/storage/settingsViews.svelte.ts")).settings.presets[0]?.temperature,
+        );
     {
         const ok = await waitFor(async () => (await presetTemp(B)) === 42);
         check("preset edit: B's first preset has temperature 42", ok === true, ok);
@@ -284,7 +291,7 @@ try {
     await state(
         B,
         async (id) => {
-            const { changeToPreset } = await import("/src/ts/storage/database.svelte.ts");
+            const { changeToPreset } = await import("/src/ts/storage/presets.svelte.ts");
             changeToPreset(id);
         },
         second.id,
@@ -292,8 +299,8 @@ try {
     await B.waitForTimeout(2500);
     const selectedName = (p) =>
         state(p, async () => {
-            const { DBState } = await import("/src/ts/stores.svelte.ts");
-            return DBState.db.botPresets[DBState.db.botPresetsId]?.name;
+            const { currentPresetRecord } = await import("/src/ts/storage/settingsViews.svelte.ts");
+            return currentPresetRecord()?.name;
         });
     check("selection: B switched to Preset Two", (await selectedName(B)) === "Preset Two", await selectedName(B));
     check("selection: A1 keeps Preset One", (await selectedName(A1)) === "Preset One", await selectedName(A1));
@@ -440,7 +447,9 @@ try {
     check("restart: changes stored right after it", afterRestart.status === 200, afterRestart);
     for (const [label, p] of tabs) {
         const ok = await waitFor(async () => {
-            const zoom = await state(p, async () => (await import("/src/ts/stores.svelte.ts")).DBState.db.zoomsize);
+            const zoom = await state(p, async () =>
+                (await import("/src/ts/storage/settingsViews.svelte.ts")).readSettingsRoot("zoomsize"),
+            );
             const c = await charOf(p, miaId);
             return zoom === 120 && c?.chats?.[0]?.message?.[0]?.data === "After restart.";
         }, 60000);

@@ -7,8 +7,8 @@ import { StoreBackedServer } from "./storeBackedServer";
  * The boot shared by the Phase 4 slice 1 tests (`characterStore.test.ts`, `collectionStore.test.ts`,
  * `pluginStorageStore.test.ts`, `mutationScope.test.ts`): the real server store in memory with two
  * presets, one plugin, and a character `c` with chats `k` (messages a, b, c) and `j` (empty), read,
- * seeded, assembled, installed through the real `setDatabase` (the forwarding accessors and the
- * selection), the chat module initialized, and the adapter started with its boot pass done. The
+ * seeded, installed into the records through the real boot (`installBootRecords`: the records and
+ * the selection, at home), the chat module initialized, and the adapter started with its boot pass done. The
  * test file declares the module mocks (`vi.mock` is per file), calls `vi.resetModules()` first, and
  * installs the server through `install` (its hoisted holder for the `authFetch` mock).
  */
@@ -63,7 +63,8 @@ export async function bootMutations(install: (server: StoreBackedServer) => void
     const sync = await import("../resourceSync.svelte");
     const chat = await import("../chatStore.svelte");
     const bootstrap = await import("../../bootstrap");
-    const database = await import("../database.svelte");
+    const settingsViews = await import("../settingsViews.svelte");
+    const snapshots = await import("../snapshots.svelte");
     const characterStore = await import("../characterStore.svelte");
     const collectionStore = await import("../collectionStore.svelte");
     const pluginStorageStore = await import("../pluginStorageStore.svelte");
@@ -74,8 +75,8 @@ export async function bootMutations(install: (server: StoreBackedServer) => void
     const snapshot = await client.readKinds(KINDS, { chats: true });
     sync.seedResources(snapshot);
     chat.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    database.setDatabase(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(-1);
+    bootstrap.installBootRecords(snapshot);
+    selectionModule.selectCharacter(null);
     chat.initializeChats();
     fake.requests.length = 0;
     sync.startResourceSync();
@@ -83,14 +84,16 @@ export async function bootMutations(install: (server: StoreBackedServer) => void
     await sync.flushResources();
     fake.requests.length = 0;
 
-    const db = () => stores.DBState.db as any;
+    const { settings, activePreset, activePersona } = settingsViews;
+    /** The character list's wrapper, loosely typed as the facade's `characters` was (the chat view, `desc`, ...). */
+    const characterList = () => characterStore.characterList() as any[];
     /** Everything the server holds, as text: the records of every kind and the chats. */
     const serverText = () => {
         const read = fake.store.readKinds(KINDS.map((kind) => fake.kind(kind)) as unknown[], { chats: true });
         return JSON.stringify({ kinds: read.kinds, chats: read.chats, orders: read.chatOrders });
     };
-    /** The mirror as text (the forwarded accessors included). */
-    const mirrorText = () => JSON.stringify(db());
+    /** The mirror as text: the legacy flat shape of the settings (`rootSnapshot`) and the character list (its chat view included). */
+    const mirrorText = () => JSON.stringify({ root: snapshots.rootSnapshot(), characters: characterList() });
     /**
      * Runs `mutate`, which must throw an error of `errorClass`, then checks that neither the mirror
      * nor the server changed and that nothing was sent (after a flush, so a stray mark would show).
@@ -106,21 +109,25 @@ export async function bootMutations(install: (server: StoreBackedServer) => void
         expect(fake.batchCount()).toBe(batches);
     };
     const record = (kind: string, id = "main") => fake.record(kind, id)?.data as any;
-    const character = (id: string) => db().characters.find((entry: any) => entry?.chaId === id);
+    const character = (id: string): any => characterList().find((entry: any) => entry?.chaId === id);
     return {
         fake,
         stores,
         sync,
         chat,
-        database,
+        settingsViews,
+        settings,
+        activePreset,
+        activePersona,
+        snapshots,
         characterStore,
+        characterList,
         collectionStore,
         pluginStorageStore,
         characterOrder,
         selection: selectionModule.selection,
         selectionModule,
         validation,
-        db,
         record,
         character,
         serverText,

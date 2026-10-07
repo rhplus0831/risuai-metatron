@@ -15,10 +15,6 @@ const hooks = vi.hoisted(() => ({
     serverRuns: [] as { char: any; name: string; ref: any }[],
 }));
 
-vi.mock("../storage/database.svelte", async () => {
-    const stores = await vi.importActual<typeof import("../stores.svelte")>("../stores.svelte");
-    return { getDatabase: () => stores.DBState.db };
-});
 vi.mock("../alert", () => ({
     alertInput: vi.fn((prompt: string) => hooks.input?.(prompt) ?? Promise.resolve("typed")),
     alertMd: vi.fn(),
@@ -60,9 +56,9 @@ vi.mock("./serverCommands", () => ({
 import { processMultiCommand } from "./command";
 import { doingChat, sendChat } from "./index.svelte";
 import * as chat from "../storage/chatStore.svelte";
-import { DBState, selectedCharID } from "../stores.svelte";
-import { installForwarding } from "../storage/forwarding.svelte";
+import { characterList } from "../storage/characterStore.svelte";
 import { initializeRecords, takeRecordFields } from "../storage/records.svelte";
+import { selectCharacterAt } from "../storage/selection.svelte";
 
 const m = (id: string, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
 const texts = (ref: chat.ChatRef) => chat.findChat(ref)!.message.map((message) => message.data);
@@ -129,16 +125,14 @@ beforeAll(async () => {
         ],
     });
     const read = server.store.readKinds([characters], { chats: true });
-    // The characters are records since Phase 6 slice 5: installed as `setDatabaseLite` installs them
-    // (`database.svelte` is mocked here), so the selection (by id) sees them.
+    // The characters are records since Phase 6 slice 5: installed into the records, so the selection
+    // (by id) sees them.
     const raw = { characters: read.kinds.characters.map((record) => record.data) } as any;
     initializeRecords(takeRecordFields(raw));
-    installForwarding(raw);
-    DBState.db = raw;
     chat.seedChats(read.chats!, read.chatOrders!);
-    chat.assembleChats(DBState.db.characters as any, read.chats!, read.chatOrders!);
+    chat.assembleChats(characterList(), read.chats!, read.chatOrders!);
     chat.initializeChats();
-    selectedCharID.set(0);
+    selectCharacterAt(0);
 });
 
 afterAll(() => {

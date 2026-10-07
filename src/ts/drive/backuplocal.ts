@@ -1,6 +1,6 @@
 import { alertError, alertNormal, alertStore, alertWait, alertMd, alertConfirm } from "../alert";
 import { LocalWriter } from "../globalApi.svelte";
-import { getDatabase, type Database } from "../storage/database.svelte";
+import { buildBackupInventory, type BackupInventory } from "../storage/snapshots.svelte";
 import { language } from "src/lang";
 import type { BackupArchiveManifest } from "../../../shared/resources.ts";
 import { exportBackup, importBackup, ResourceEpochMismatchError } from "../storage/resourceClient";
@@ -15,8 +15,8 @@ import { flushResources } from "../storage/resourceSync.svelte";
 
 type AssetInfo = { charName: string; assetName: string };
 
-/** Assets the database references, for the missing-asset report. */
-function referencedAssets(db: Database): Map<string, AssetInfo> {
+/** Assets the characters and settings reference, for the missing-asset report. */
+function referencedAssets(db: BackupInventory): Map<string, AssetInfo> {
     const assetMap = new Map<string, AssetInfo>();
     for (const char of db.characters ?? []) {
         if (!char) continue;
@@ -59,7 +59,7 @@ function referencedAssets(db: Database): Map<string, AssetInfo> {
 }
 
 /** The profile images a partial backup keeps. */
-function partialAssets(db: Database): Map<string, AssetInfo> {
+function partialAssets(db: BackupInventory): Map<string, AssetInfo> {
     const assetMap = new Map<string, AssetInfo>();
 
     // Only collect main profile images for both characters and groups
@@ -189,7 +189,7 @@ function reportMissing(missing: string[], assetMap: Map<string, AssetInfo>, intr
 /** A full backup: the resource database and every asset on the server. */
 export async function SaveLocalBackup() {
     try {
-        const assetMap = referencedAssets(getDatabase());
+        const assetMap = referencedAssets(buildBackupInventory());
         const manifest = await downloadArchive("Saving local Backup");
         if (!manifest) {
             return;
@@ -228,7 +228,7 @@ export async function SavePartialLocalBackup() {
     }
 
     try {
-        const assetMap = partialAssets(getDatabase());
+        const assetMap = partialAssets(buildBackupInventory());
         const keys = [...assetMap.keys()].filter((key) => key.startsWith("assets/"));
         const manifest = await downloadArchive("Saving partial local backup", keys);
         if (!manifest) {

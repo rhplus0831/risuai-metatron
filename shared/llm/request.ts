@@ -110,9 +110,9 @@ export type LlmRequestBody = {
         presetId: string;
         /** The effective persona (bound to the chat, else selected), whose name is `getUserName()`. */
         personaId: string;
-        /** The tab's selected persona (the forwarded `db.username`). */
+        /** The tab's selected persona. */
         selectedPersonaId: string;
-        /** The tab's selected character (`getCurrentCharacter()`), whose name most adapters use. */
+        /** The tab's selected character, whose name most adapters use. */
         selectedCharacterId: string | null;
         /** `arg.currentChar` (a group's replying member), whose name Ollama uses. */
         speakerId: string | null;

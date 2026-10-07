@@ -1,5 +1,4 @@
 import { tick } from "svelte";
-import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_EPOCH_HEADER, RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { StoreBackedServer } from "./storeBackedServer";
@@ -14,7 +13,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -25,6 +24,7 @@ vi.mock("../../alert", () => ({
 }));
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored" },
+    changeLanguage: vi.fn(),
 }));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -37,10 +37,11 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
-type Stores = typeof import("../../stores.svelte");
 type ChatModule = typeof import("../chatStore.svelte");
 type Bootstrap = typeof import("../../bootstrap");
-type DatabaseModule = typeof import("../database.svelte");
+type SettingsViews = typeof import("../settingsViews.svelte");
+type CharacterStore = typeof import("../characterStore.svelte");
+type Selection = typeof import("../selection.svelte");
 
 const KINDS = Object.values(RESOURCE_KIND);
 const m = (id: string | undefined, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
@@ -50,7 +51,8 @@ const refJ = { chaId: "c", chatId: "j" };
 /**
  * Boots the adapter and the chat module the way `loadData` does: the server holds the collections
  * and a character `c` with chats `k` (messages a, b, c) and `j` (empty); read with chats, seed,
- * assemble, select, start, and let the boot compare pass run (`bootBatches` is what it sent).
+ * install the records (`installBootRecords`, the selection at home), select the chats, start, and
+ * let the boot compare pass run (`bootBatches` is what it sent).
  */
 async function boot(prepare?: (server: StoreBackedServer) => void) {
     vi.resetModules();
@@ -92,19 +94,20 @@ async function boot(prepare?: (server: StoreBackedServer) => void) {
     prepare?.(fake);
     server.current = fake;
 
-    const stores: Stores = await import("../../stores.svelte");
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const chat: ChatModule = await import("../chatStore.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
-    const database: DatabaseModule = await import("../database.svelte");
+    const { settings }: SettingsViews = await import("../settingsViews.svelte");
+    const { characterList }: CharacterStore = await import("../characterStore.svelte");
+    const selection: Selection = await import("../selection.svelte");
 
     const snapshot = await client.readKinds(KINDS, { chats: true });
     sync.seedResources(snapshot);
     chat.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    // `assembleDatabase` also assembles the chats into the characters.
-    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(-1);
+    // `installBootRecords` also assembles the chats into the chat module.
+    bootstrap.installBootRecords(snapshot);
+    selection.selectCharacter(null);
     chat.initializeChats();
     fake.requests.length = 0;
     sync.startResourceSync();
@@ -112,11 +115,12 @@ async function boot(prepare?: (server: StoreBackedServer) => void) {
     await sync.flushResources();
     const bootBatches = fake.batchBodies();
     fake.requests.length = 0;
-    const db = () => stores.DBState.db as any;
+    /** The character wrappers, with the chat module's compatibility view (`chats`, `chatPage`). */
+    const characters = () => characterList() as any[];
     // The membership (Phase 6 slice 9b): a chat another tab created is listed as a summary until it is
-    // loaded, so the facade (the loaded chats only) is not the list.
+    // loaded, so the compatibility view (the loaded chats only) is not the list.
     const mirrorIds = () => chat.chatList("c").map((entry) => entry.id);
-    return { fake, stores, client, sync, chat, bootBatches, db, mirrorIds };
+    return { fake, client, sync, chat, bootBatches, settings, characters, selection, mirrorIds };
 }
 
 beforeEach(() => {
@@ -138,13 +142,13 @@ afterEach(() => {
 
 describe("boot and mixed batches", () => {
     it("hydrates the chats without echoing anything back, and keeps chats out of the character record", async () => {
-        const { fake, sync, chat, db, bootBatches, mirrorIds } = await boot();
+        const { fake, sync, chat, characters, bootBatches, mirrorIds } = await boot();
         expect(bootBatches).toEqual([]);
         expect(mirrorIds()).toEqual(["k", "j"]);
-        expect(db().characters[0].chatPage).toBe(0);
+        expect(characters()[0].chatPage).toBe(0);
         await sync.flushResources();
         expect(fake.batchCount()).toBe(0);
-        db().characters[0].name = "renamed";
+        characters()[0].name = "renamed";
         // Phase 6 slice 9a: a wrapper refuses a `chatPage` write; the selection is the chat module's.
         chat.selectChat("c", 1);
         // The write itself queues the character's save (Phase 6 slice 5: no mark).
@@ -156,9 +160,9 @@ describe("boot and mixed batches", () => {
     });
 
     it("sends resource ops, chat groups, and reorders in one request, without touching the character revision", async () => {
-        const { fake, sync, chat, db, mirrorIds } = await boot();
+        const { fake, sync, chat, settings, mirrorIds } = await boot();
         const characterRevision = fake.record("characters", "c")!.revision;
-        db().theme = "edited";
+        settings.ui.theme = "edited";
         chat.appendMessage(refK, m("d", "D"));
         chat.setChatMeta(refJ, { note: "j note" });
         chat.createChat("c", { id: "n", name: "N", message: [m("x", "X")] } as any, { index: 0 });
@@ -186,9 +190,9 @@ describe("boot and mixed batches", () => {
     });
 
     it("creates a new character's chats exactly once, with the record holding none of them", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, characters } = await boot();
         const characterStore = await import("../characterStore.svelte");
-        // The list changes through the character module (Phase 6 slice 5: a push through the facade is refused).
+        // The list changes through the character module (Phase 6 slice 5: a push through the list wrapper is refused).
         characterStore.addCharacter({
             chaId: "d",
             name: "D",
@@ -205,7 +209,7 @@ describe("boot and mixed batches", () => {
         expect(order.ids).toHaveLength(2);
         expect(order.ids[0]).toBe("d1");
         expect(fake.texts("d", "d1")).toEqual(["X"]);
-        expect(db().characters[1].chats.map((entry: any) => entry.id)).toEqual(order.ids);
+        expect(characters()[1].chats.map((entry: any) => entry.id)).toEqual(order.ids);
         const before = fake.batchCount();
         await sync.flushResources();
         expect(fake.batchCount()).toBe(before);
@@ -338,10 +342,10 @@ describe("one chat's trouble does not block the rest", () => {
         // The per-chat quarantine relies on the server naming the group (`chats[i]...`) in every
         // validation error of a chat group, including one found while applying the group (a `meta`
         // patch whose merged result the normalizer refuses).
-        const { fake, sync, chat, db } = await boot();
+        const { fake, sync, chat, settings } = await boot();
         chat.setChatMeta(refK, { fmIndex: "not a number" as any });
         chat.setChatMeta(refJ, { note: "fine" });
-        db().theme = "section edit";
+        settings.ui.theme = "section edit";
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["chats/c/k"]);
         expect(alerts.error).toHaveBeenCalledTimes(1);
@@ -357,7 +361,7 @@ describe("one chat's trouble does not block the rest", () => {
     });
 
     it("defers the conflict of a chat a server job streams into, saves the rest on its own, and reloads the chat once the job ends", async () => {
-        const { fake, sync, chat, db } = await boot();
+        const { fake, sync, chat, settings } = await boot();
         chat.applyServerGeneration(refK, { jobId: "J", messageId: "a", generationId: "g", text: "streamed", seq: 0 });
         fake.chatBatch([
             {
@@ -369,7 +373,7 @@ describe("one chat's trouble does not block the rest", () => {
         ]);
         chat.removeMessages(refK, ["b", "c"]);
         chat.setChatMeta(refJ, { note: "j saved" });
-        db().theme = "section saved";
+        settings.ui.theme = "section saved";
         await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
         await vi.waitFor(() => expect(fake.record("ui", "main")!.data).toMatchObject({ theme: "section saved" }), {
             timeout: 5000,
@@ -416,15 +420,15 @@ describe("one chat's trouble does not block the rest", () => {
     });
 
     it("removes a character another tab deleted, with its chats, and moves the selection home", async () => {
-        const { fake, sync, chat, db, stores } = await boot();
+        const { fake, sync, chat, characters, selection } = await boot();
         fake.store.delete(fake.kind("characters"), "c", fake.record("characters", "c")!.revision);
-        stores.selectedCharID.set(0);
+        selection.selectCharacterAt(0);
         await tick();
         chat.setChatMeta(refK, { note: "edit on a deleted character's chat" });
         const result = await sync.flushResources();
         expect(result.discarded.sort()).toEqual(["characters/c", "chats/c/k"]);
-        expect(db().characters).toEqual([]);
-        expect(get(stores.selectedCharID)).toBe(-1);
+        expect(characters()).toEqual([]);
+        expect(selection.selectedIndex()).toBe(-1);
         expect(chat.hasChatWork()).toBe(false);
         const before = fake.batchCount();
         await sync.flushResources();

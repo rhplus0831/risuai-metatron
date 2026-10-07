@@ -6,7 +6,7 @@ import { FakeResourceServer } from "../../storage/tests/fakeResourceServer";
 
 const { server } = vi.hoisted(() => ({ server: { current: null as any } }));
 
-vi.mock("../../storage/nodeStorage", () => ({
+vi.mock("../../storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
 }));
 

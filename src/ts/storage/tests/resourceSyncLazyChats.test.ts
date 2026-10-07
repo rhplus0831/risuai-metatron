@@ -27,7 +27,7 @@ const { server, alerts } = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: async (path: string, init?: RequestInit, options: { beforeDispatch?: () => void } = {}) => {
         options.beforeDispatch?.();
         return server.current.fetch(path, init);
@@ -51,10 +51,8 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
-type Stores = typeof import("../../stores.svelte");
 type ChatModule = typeof import("../chatStore.svelte");
 type Bootstrap = typeof import("../../bootstrap");
-type DatabaseModule = typeof import("../database.svelte");
 type Selection = typeof import("../selection.svelte");
 
 const KINDS = Object.values(RESOURCE_KIND);
@@ -99,12 +97,10 @@ async function boot() {
     });
     server.current = fake;
 
-    const stores: Stores = await import("../../stores.svelte");
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const chat: ChatModule = await import("../chatStore.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
-    const database: DatabaseModule = await import("../database.svelte");
     const selection: Selection = await import("../selection.svelte");
     const chatEdits = await import("../chatEdits");
     const dataset = await import("../exportAsDataset");
@@ -115,8 +111,8 @@ async function boot() {
     expect(snapshot.chatSummaries).toHaveLength(C_IDS.length + 1);
     sync.seedResources(snapshot);
     chat.seedChats(snapshot.chatSummaries ?? [], snapshot.chatOrders ?? []);
-    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(-1);
+    bootstrap.installBootRecords(snapshot);
+    selection.selectCharacter(null);
     chat.initializeChats();
     const adding = vi.spyOn(window, "addEventListener").mockImplementation(() => {});
     const addingDocument = vi.spyOn(document, "addEventListener").mockImplementation(() => {});

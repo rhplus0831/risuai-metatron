@@ -1,17 +1,17 @@
-import { type AnyClientCharacter, selectedCharacter } from "../storage/characterStore.svelte";
+import { untrack } from "svelte";
+import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { withCompatChats } from "../storage/chatStore.svelte";
-import { settings } from "../storage/settingsViews.svelte";
+import { forwardedPresetField, readSettingsRoot, settings } from "../storage/settingsViews.svelte";
 import DOMPurify from "dompurify";
 import markdownit from "markdown-it";
 import {
     appVer,
-    getDatabase,
     type character,
     type customscript,
     type groupChat,
     type triggerscript,
 } from "../storage/database.svelte";
-import { CurrentTriggerIdStore, DBState } from "../stores.svelte";
+import { CurrentTriggerIdStore } from "../stores.svelte";
 import { aiWatermarkingLawApplies, getFileSrc } from "../globalApi.svelte";
 import {
     getChatVar,
@@ -23,13 +23,12 @@ import {
 } from "./chatVar.svelte";
 import { type CapturedTransform, captureTransform, serverProcessScript } from "./transformClient";
 import { get } from "svelte/store";
+import { selectedIndex } from "../storage/selection.svelte";
 import css, { type CssAtRuleAST } from "@adobe/css-tools";
-import { selectedCharID } from "../stores.svelte";
 import { calcString } from "../process/infunctions";
 import { findCharacterbyId, getPersonaPrompt, getUserIcon, getUserName, pickHashRand, replaceAsync } from "../util";
-import { PRESET_ROOT_ALIASES, presetFieldValue, type PresetField } from "../../../shared/presets.ts";
+import { presetFieldValue } from "../../../shared/presets.ts";
 import { PluginTargetGoneError } from "../plugins/apiV3/pluginContext";
-import { FORWARDED_PRESET_KEYS } from "../../../shared/sections.ts";
 import { getInlayAssetBlob } from "../process/files/inlays";
 import { getModuleAssets, getModuleLorebooks, getModules } from "../process/modules";
 import hljs from "highlight.js/lib/core";
@@ -45,7 +44,7 @@ import {
     type CbsHost,
     type CbsParseArg,
 } from "../../../shared/cbs/evaluator.ts";
-import type { CbsConditions } from "../../../shared/cbs/types.ts";
+import type { CbsConditions, CbsDatabase } from "../../../shared/cbs/types.ts";
 import cssSelectorParser from "postcss-selector-parser";
 
 const markdownItOptions = {
@@ -1083,9 +1082,48 @@ function clientCbsEvaluator(): CbsEvaluator {
     return cbsEvaluator;
 }
 
+/** The settings shared CBS reads (`CbsDatabase`), by their root names. */
+const CBS_SETTING_KEYS = [
+    "aiModel",
+    "subModel",
+    "maxContext",
+    "promptTemplate",
+    "mainPrompt",
+    "jailbreak",
+    "jailbreakToggle",
+    "globalNote",
+    "language",
+] as const satisfies readonly (keyof CbsDatabase)[];
+
+/**
+ * The tab's CBS database (Phase 6 slice 10): getters over the records, read when the evaluator reads
+ * them. Each setting reads its view by root name (`readSettingsRoot`: a preset field from the selected
+ * preset, else its section), or, with `presetField`, a preset field from that function. `characters`
+ * is the character list, whose wrappers carry the chat module's compatibility `chats`/`chatPage`
+ * view (`setCharacterChatView`), the shape shared CBS reads; the client type has no chats, hence
+ * the cast.
+ */
+function cbsDatabase(presetField?: (rootKey: string) => unknown): CbsDatabase {
+    const view = {};
+    for (const key of CBS_SETTING_KEYS) {
+        const fromPreset = presetField !== undefined && forwardedPresetField(key) !== undefined;
+        Object.defineProperty(view, key, {
+            enumerable: true,
+            get: fromPreset ? () => presetField(key) : () => readSettingsRoot(key),
+        });
+    }
+    Object.defineProperty(view, "characters", {
+        enumerable: true,
+        get: () => characterList() as unknown as CbsDatabase["characters"],
+    });
+    return Object.freeze(view) as CbsDatabase;
+}
+
+const tabCbsDatabase = cbsDatabase();
+
 function clientCbsHost(): CbsHost {
     return {
-        getDatabase: () => getDatabase(),
+        getDatabase: () => tabCbsDatabase,
         getUserName: getUserName,
         getPersonaPrompt: getPersonaPrompt,
         safeStructuredClone: safeStructuredClone,
@@ -1103,9 +1141,8 @@ function clientCbsHost(): CbsHost {
         getModules: getModules,
         getModuleLorebooks: getModuleLorebooks,
         pickHashRand: pickHashRand,
-        getSelectedCharID: () => {
-            return get(selectedCharID);
-        },
+        // Untracked, as the index store it replaces was: a parse inside a `$derived` does not rerun on a selection.
+        getSelectedCharID: () => untrack(() => selectedIndex()),
         getModelInfo: getModelInfo,
         callInternalFunction: function (args: string[]): string {
             return "";
@@ -1137,8 +1174,6 @@ export function risuChatParser(da: string, arg: ClientCbsParseArg = {}): string 
     return clientCbsEvaluator().risuChatParser(da, sharedParseArg(arg));
 }
 
-const presetFieldOf: Record<string, string> = PRESET_ROOT_ALIASES;
-const forwardedPresetKeys = new Set<string>(FORWARDED_PRESET_KEYS);
 const scopedEvaluators = new Map<string, CbsEvaluator>();
 
 /**
@@ -1159,14 +1194,14 @@ export function risuChatParserScoped(
     if (!evaluator) {
         const base = clientCbsHost();
         const personaOf = () => {
-            const persona = DBState.db.personas?.find((entry) => entry?.id === scope.personaId);
+            const persona = settings.personas?.find((entry) => entry?.id === scope.personaId);
             if (!persona) {
                 throw new PluginTargetGoneError("persona");
             }
             return persona;
         };
         const presetOf = () => {
-            const preset = (DBState.db.botPresets as unknown as Record<string, unknown>[] | undefined)?.find(
+            const preset = (settings.presets as unknown as Record<string, unknown>[] | undefined)?.find(
                 (entry) => entry?.id === scope.presetId,
             );
             if (!preset) {
@@ -1174,26 +1209,13 @@ export function risuChatParserScoped(
             }
             return preset;
         };
+        // Both targets are checked on every parse, before any text is evaluated (a gone one fails
+        // the parse); the preset fields then read the context's preset as it is now. `{{user}}` and
+        // the persona prompt come from the host functions below, not from the database.
         const scopedDb = () => {
-            const live = getDatabase();
             const preset = presetOf();
-            const persona = personaOf();
-            return new Proxy(live, {
-                get(target, prop, receiver) {
-                    if (typeof prop === "string") {
-                        if (forwardedPresetKeys.has(prop)) {
-                            return presetFieldValue(preset, (presetFieldOf[prop] ?? prop) as PresetField);
-                        }
-                        if (prop === "username") {
-                            return persona.name;
-                        }
-                        if (prop === "personaPrompt") {
-                            return persona.personaPrompt;
-                        }
-                    }
-                    return Reflect.get(target, prop, receiver);
-                },
-            });
+            personaOf();
+            return cbsDatabase((rootKey) => presetFieldValue(preset, forwardedPresetField(rootKey)!));
         };
         evaluator = createCbsEvaluator({
             ...base,

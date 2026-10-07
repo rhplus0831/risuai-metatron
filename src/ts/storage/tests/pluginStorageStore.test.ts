@@ -12,7 +12,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -116,7 +116,7 @@ describe("the safe local dictionary and the custom keys", () => {
     });
 
     it("stores custom keys, including the reserved dictionary names, removes one for undefined, and replaces the whole object", async () => {
-        const { sync, pluginStorageStore: ps, record, db } = await boot();
+        const { sync, pluginStorageStore: ps, record, settings } = await boot();
         ps.setPluginCustomValue("custom", { v: 1 });
         ps.setPluginCustomValue("_pluginStorage", { k: { v: 2 } });
         expect(ps.getPluginStorageValue("k")).toEqual({ v: 2 });
@@ -124,7 +124,7 @@ describe("the safe local dictionary and the custom keys", () => {
         expect(record("pluginStorage")).toEqual({ custom: { v: 1 }, _pluginStorage: { k: { v: 2 } } });
         ps.setPluginCustomValue("custom", undefined);
         ps.setPluginCustomValue("never", undefined);
-        expect(plain(db().pluginCustomStorage)).toEqual({ _pluginStorage: { k: { v: 2 } } });
+        expect(plain(settings.pluginStorage)).toEqual({ _pluginStorage: { k: { v: 2 } } });
         await sync.flushResources();
         expect(record("pluginStorage")).toEqual({ _pluginStorage: { k: { v: 2 } } });
         const whole = { top: 1, _safeLocalPluginStorage: { s: true } };
@@ -139,7 +139,7 @@ describe("the safe local dictionary and the custom keys", () => {
 
 describe("keys the proxy would not store", () => {
     it("keeps an own __proto__ key and the names of Object.prototype members in every dictionary and at the top level", async () => {
-        const { sync, pluginStorageStore: ps, record, db } = await boot();
+        const { sync, pluginStorageStore: ps, record, settings } = await boot();
         ps.setPluginStorageItem("__proto__", { own: 1 });
         ps.setPluginStorageItem("constructor", { v: 1 });
         ps.setPluginStorageItem("ordinary", 0);
@@ -153,8 +153,8 @@ describe("keys the proxy would not store", () => {
         expect(ps.getPluginStorageValue("constructor")).toEqual({ v: 1 });
         expect(ps.hasSafeLocalPluginValue("toString")).toBe(true);
         expect(ps.getSafeLocalPluginValue("__proto__")).toBe("safe");
-        expect(Object.getPrototypeOf(db().pluginCustomStorage)).toBe(Object.prototype);
-        expect(Object.getPrototypeOf(db().pluginCustomStorage._pluginStorage)).toBe(Object.prototype);
+        expect(Object.getPrototypeOf(settings.pluginStorage)).toBe(Object.prototype);
+        expect(Object.getPrototypeOf(settings.pluginStorage._pluginStorage)).toBe(Object.prototype);
         expect(Object.hasOwn(Object.prototype, "own")).toBe(false);
         await sync.flushResources();
         const saved = record("pluginStorage");

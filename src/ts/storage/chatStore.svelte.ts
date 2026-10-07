@@ -33,9 +33,8 @@ import { readRefs } from "./resourceClient";
  * chat is loaded on demand (`ensureChatLoaded`, `loadChats`, the selected chat when it is selected),
  * kept loaded while it is pinned or busy, and evicted beyond `MAX_LOADED_CHATS` idle loaded chats
  * (least recently used first). Readers use `chatList`, `chatEntry`, `selectedChat`, `findChat`, and
- * the loading functions, and the facade's `DBState.db.characters[].chats`/`chatPage` is a view of the
- * loaded chats built here (`setCharacterChatView`) for the readers still on the aggregate until
- * `aggregate-removal`.
+ * the loading functions; a character wrapper's `chats`/`chatPage` is a view of the loaded chats
+ * built here (`setCharacterChatView`) for the shared CBS evaluator, which reads that legacy shape.
  *
  * - Addressing is by `ChatRef` (`chaId`, `chatId`) and message id, never by index.
  * - Per chat, work is unsent (`pending`) or in flight (`inflight`, immutable until the save loop
@@ -3633,9 +3632,8 @@ export function scheduleTrim() {
 }
 
 /**
- * The facade view of a character's chats (`DBState.db.characters[i].chats`/`chatPage`) for the
- * readers left on the aggregate until `aggregate-removal` (the shared CBS host and evaluator): the
- * loaded chats in order and the selected chat's index among them (-1 when it is not loaded). Those
+ * The compatibility view of a character's chats (a character wrapper's `chats`/`chatPage`) for the
+ * shared CBS host and evaluator, which read that legacy shape: the loaded chats in order and the selected chat's index among them (-1 when it is not loaded). Those
  * readers find a chat by its ref's id or the selected one; an unloaded chat is not found. Read-only
  * by contract; not enforced.
  */

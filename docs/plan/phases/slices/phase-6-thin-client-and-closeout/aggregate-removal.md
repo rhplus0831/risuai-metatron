@@ -1,6 +1,6 @@
 # Slice: Aggregate Removal
 
-Status: planned (drafted 2026-09-30, refined after review, not started).
+Status: implemented (2026-10-07; the whole-database aggregate removed, the records as the only client model).
 
 Phase: [Phase 6](../../phase-6-thin-client-and-closeout.md), "Accessors" (the live
 `getDatabase()` removed; `setDatabase`, `setDatabaseLite`, `setCurrentCharacter`,
@@ -163,3 +163,90 @@ export and import, a card export; an idle reload writes nothing; Docker smoke.
 The plugin `getDatabase()` with `characters` reads every chat from the server on each call
 (compatibility over cost; documented in `plugins.md`). `Database` survives as a type alias with
 no runtime instance. The `selectedCharID` shim's fate is decided here, not gated.
+
+## Implementation notes (2026-10-07)
+
+The allowlist was recomputed at the slice's start: the Stop C entry in `implementation-plan.md` lists every remaining site. Of the consumers the spec named, `exportAsDataset`, `exportChar`, `formatChars`, `getEmotion`, `templateCheck` and `IrisModal` already read the records (slices 6 to 9b), so they needed no change.
+
+- **The aggregate.**
+  - `DBState`, `selectedCharID` and `selIdState` are deleted from `stores.svelte.ts`, and `selection.svelte.ts` loses its index store.
+  - `forwarding.svelte.ts` is deleted whole. Its rules (the read fallback, untracked writes, a dropped write when the selection names nothing) moved to `settingsViews.svelte.ts` over the records:
+    - `presetRecordForWrite` and `personaRecordForWrite`;
+    - `selectedPresetIndex` and `selectedPersonaIndex`;
+    - `reconcileSelection()`;
+    - `hasPreset`, `readPresetFieldOf`, `writePresetField` and `forwardedPresetField`;
+    - `SETTINGS_ROOT_KEYS`.
+  - `records.svelte.ts` loses `assignCharacters`, the facade's `characters` setter. Its list guards stay. `characterStore`'s list reads `trackedCharacters()`.
+- **The accessors.**
+  - `database.svelte.ts` keeps only the version, the type re-exports, the defaults, `saveImage` and `defaultSdDataFunc`.
+  - The preset actions moved to `presets.svelte.ts` over `settings.providers` and `settings.presets`.
+- **Boot.**
+  - `installBootRecords` installs the records straight from the snapshot: the required records strictly, `modules` and `plugins` as `[]` when absent, and `pluginStorage` when present. Then it resolves the selection and sets the language.
+  - `maintainCharacters` prunes the trash and repairs the order.
+  - `startResourceSync` is called from `loadData`. `saveDb` and `forageStorage.Init` are gone.
+- **CBS.**
+  - `CbsDatabase` (`shared/cbs/types.ts`) narrows the host's database to the ten fields shared CBS reads.
+  - The client host serves them from frozen getters over the records: `readSettingsRoot`, and `characterList()`, whose wrappers keep the chat module's compatibility `chats`/`chatPage` view.
+  - The scoped host checks its captured preset and persona on every parse, then reads the preset fields from that preset.
+  - The selected index is read untracked, as the store it replaces was.
+- **Snapshots.** `snapshots.svelte.ts` provides:
+  - `rootSnapshot` (every root name, `proxyKey: ""` and the three selection indexes, cloned per value);
+  - `buildDatabaseSubset` (the plugin `getDatabase`);
+  - `buildSettingsReport` (the report and its redaction);
+  - `buildBackupInventory`.
+
+  `DatabaseSubset` in `risuai.d.ts` now declares `selectedPersona` and `characterOrder`.
+
+- **Storage.**
+  - `serverAuth.ts` holds one auth state for the tab, where `NodeStorage` used two: the asset backend's and the resource client's.
+  - `assetClient.ts` has `readAsset` and `writeAsset` with the old wire behavior.
+  - `nodeStorage.ts`, `autoStorage.ts` and `forageStorage` are deleted, and every importer was repointed.
+- **Tools and docs.**
+  - The `util/playwright` scripts that drive the current tree read and write through the views.
+  - `capturePhase3Fixtures.mjs` and `capturePhase5Baseline.mjs` capture their own baseline commits and are left unchanged.
+  - `STRUCTURE.md` and the guides were corrected where they named a removed module as current; slice 11 rewrites the guides.
+
+### Plan review
+
+Astra raised nine points, and all were adopted (the plan's "Decisions"):
+
+1. `checkLiveUpdates.mjs` and the e2e specs to adapt are named.
+2. The snapshot values are cloned per value, keeping `undefined`.
+3. `rootSnapshot` keeps `proxyKey: ""` for the boot oracle.
+4. The backup inventory is a detached, chat-free asset shape.
+5. The scoped CBS host checks its targets eagerly.
+6. Only `assignCharacters` and the index store go; the list guards and the selection hook stay.
+7. The asset and auth contracts are kept exactly.
+8. The strict boot checks and the boot order are kept, and so is `checkCharOrder` after the pruning.
+9. The `DBState` gate is literal, and the test manifest is exact.
+
+### After the challenge
+
+Astra found one gap: the planned `DatabaseSubset` declaration fix was missing. It is fixed. No runtime regression was found in the selection rules, the list guards, module initialization, reactivity, CBS, the boot writes, the preset actions, the snapshots, the report (34 distinct redacted keys, as before), auth and assets, or the removed-symbol audit.
+
+### Deviations
+
+- **`Database` stays the flat interface in `shared/database.ts`**, not a type-level composition. The server's job projection, the normalizers, `shared/resources.ts` and the section maps use it. A composition with the same keys changes nothing at runtime, and the client holds no value of the whole type.
+- **The plugin `getDatabase` keeps the 9a/9b mechanism** (load and pin the chats, then one synchronous pass), not `readChatsDetached`.
+- **The records' character chat view stays**, because shared CBS reads `character.chats`.
+- **A leftover `pluginCustomStorage._coldplugin` key is kept as data.** The client no longer deletes it at boot: this is an alpha with no migration owed. An old boot could have written a cleanup.
+- **The preset and persona backstop (`normalizePresets`/`normalizePersonas`) is gone from the client.** The server normalizes and materializes both.
+- **The `ReloadGUIPointer` subscriber in `stores.svelte.ts` skips its first, synchronous call** (found by the test adapter). `stores.svelte.ts` and `transformClient.ts` import each other, and that first call reached `resetTransformEffects` while `stores.svelte.ts` was still evaluating: when `transformClient` was evaluated first, its `appliedEmotions` set was not initialized yet. The app always loaded `stores.svelte` first, and the aggregate's imports hid the order in `pluginContext.test.ts`. The skipped call had nothing to reset: the set was empty and the chat pointer had no subscribers.
+
+### Tests
+
+The Fable test adapter adapted 86 test files and retired 2:
+
+- `autoStorage.test.ts` and `database.setDatabase.test.ts` (backend selection and the boot cleanups, both removed).
+- `nodeStorage.test.ts` split into `serverAuth.test.ts` and `assetClient.test.ts`.
+- `forwarding.test.ts` and `forwardingPersonas.test.ts` moved to the views as `presetViews.test.ts` and `personaViews.test.ts`.
+- The cases that pinned removed paths were retired, with the reason recorded for each: accessor installation, the boot re-installation, `assignCharacters`, the store shims, and the client preset normalization.
+
+### Review
+
+Fable reviewed the slice and found no problem: the selection rules, the boot, CBS, the plugin host, the snapshots, auth and assets, the audit, the `stores.svelte.ts` deviation, and the adapted assertions. It wrote two test files:
+
+- `snapshots.test.ts` (11 cases): the snapshot builders and the report redaction, which had no direct test.
+- `stores.importOrder.test.ts` (2 cases): the import cycle, in both orders.
+
+It judged Astra's manual checks covered by the e2e specs, the Docker smoke and `checkLiveUpdates`.

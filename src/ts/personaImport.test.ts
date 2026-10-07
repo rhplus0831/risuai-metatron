@@ -25,7 +25,7 @@ const { server, alerts, picker, saving } = vi.hoisted(() => ({
     saving: { hold: Promise.resolve(), icon: "icon-1", calls: 0 },
 }));
 
-vi.mock("./storage/nodeStorage", () => ({
+vi.mock("./storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -86,7 +86,7 @@ async function boot() {
     const util = await import("./util");
     vi.spyOn(util, "selectSingleFile").mockImplementation(async () => picker.file as any);
     const persona = await import("./persona");
-    const personas = () => plain(booted.db().personas) as any[];
+    const personas = () => plain(booted.settings.personas) as any[];
     // The harness seeds no `personas` record: one persona added and saved gives the server a record to compare.
     booted.collectionStore.addPersona({ name: "Seed", icon: "", personaPrompt: "seed", note: "" });
     await booted.sync.flushResources();

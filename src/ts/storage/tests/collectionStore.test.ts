@@ -12,7 +12,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -36,9 +36,11 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 
 async function boot() {
     vi.resetModules();
-    return bootMutations((fake) => {
+    const booted = await bootMutations((fake) => {
         server.current = fake;
     });
+    const presets = await import("../presets.svelte");
+    return { ...booted, presets };
 }
 
 beforeEach(() => {
@@ -61,32 +63,32 @@ afterEach(() => {
 
 describe("updateSettings", () => {
     it("writes a forwarded key into the selected preset by id, and with presetId into that preset after a switch", async () => {
-        const { sync, collectionStore, database, selection, record, db } = await boot();
-        const [p1, p2] = db().botPresets.map((preset: any) => preset.id);
+        const { sync, collectionStore, presets, selection, record, settings, activePreset } = await boot();
+        const [p1, p2] = settings.presets.map((preset: any) => preset.id);
         expect(selection.presetId).toBe(p1);
         collectionStore.updateSettings({ temperature: 5, maxContext: 1234 });
-        expect(db().temperature).toBe(5);
-        expect(db().botPresets[1].temperature).not.toBe(5);
+        expect(activePreset.temperature).toBe(5);
+        expect(settings.presets[1].temperature).not.toBe(5);
         // A caller that captured p1 before an await writes there although p2 is selected now.
-        database.changeToPreset(p2);
+        presets.changeToPreset(p2);
         expect(selection.presetId).toBe(p2);
         collectionStore.updateSettings({ temperature: 9 }, { presetId: p1 });
-        expect(db().botPresets[0].temperature).toBe(9);
-        expect(db().temperature).not.toBe(9);
+        expect(settings.presets[0].temperature).toBe(9);
+        expect(activePreset.temperature).not.toBe(9);
         collectionStore.updateSettings({ temperature: 2 });
-        expect(db().botPresets[1].temperature).toBe(2);
+        expect(settings.presets[1].temperature).toBe(2);
         await sync.flushResources();
-        const presets = record("presets");
-        expect(presets.map((preset: any) => [preset.id, preset.temperature, preset.maxContext])).toEqual([
+        const saved = record("presets");
+        expect(saved.map((preset: any) => [preset.id, preset.temperature, preset.maxContext])).toEqual([
             [p1, 9, 1234],
             [p2, 2, expect.any(Number)],
         ]);
     });
 
     it("writes a keep-on-switch key into providers and section keys into their sections, including absent optional fields", async () => {
-        const { sync, collectionStore, record, db } = await boot();
-        expect(db().guiHTML).toBeUndefined();
-        expect(db().googleSearchCredentials).toBeUndefined();
+        const { sync, collectionStore, record, settings } = await boot();
+        expect(settings.ui.guiHTML).toBeUndefined();
+        expect(settings.secrets.googleSearchCredentials).toBeUndefined();
         collectionStore.updateSettings({
             fallbackWhenBlankResponse: true,
             theme: "waifu",
@@ -104,13 +106,13 @@ describe("updateSettings", () => {
     });
 
     it("applies the preset aliases and the nullable rule, and detaches the value", async () => {
-        const { sync, collectionStore, record, db, refused, validation } = await boot();
+        const { sync, collectionStore, record, settings, refused, validation } = await boot();
         const nai = { cfg_scale: 3 };
         collectionStore.updateSettings({ NAIsettings: nai, min_p: null, reasoningEffort: 2 });
         nai.cfg_scale = 4;
-        expect(db().botPresets[0].NAISettings.cfg_scale).toBe(3);
-        expect(db().botPresets[0].min_p).toBeNull();
-        expect(db().botPresets[0].reasonEffort).toBe(2);
+        expect(settings.presets[0].NAISettings.cfg_scale).toBe(3);
+        expect(settings.presets[0].min_p).toBeNull();
+        expect(settings.presets[0].reasonEffort).toBe(2);
         await sync.flushResources();
         expect(record("presets")[0]).toMatchObject({ NAISettings: { cfg_scale: 3 }, min_p: null, reasonEffort: 2 });
         await refused(() => collectionStore.updateSettings({ temperature: null }), validation.MutationValidationError);
@@ -120,7 +122,7 @@ describe("updateSettings", () => {
     });
 
     it("validates a mixed patch before any write, and throws MutationTargetGoneError for a stale preset id", async () => {
-        const { sync, collectionStore, refused, validation, record, db } = await boot();
+        const { sync, collectionStore, refused, validation, record, activePreset } = await boot();
         await refused(
             () => collectionStore.updateSettings({ maxContext: 999, temperature: "hot" }),
             validation.MutationValidationError,
@@ -137,7 +139,7 @@ describe("updateSettings", () => {
         collectionStore.updateSettings({ theme: "only" }, { presetId: "nope" });
         await sync.flushResources();
         expect(record("ui").theme).toBe("only");
-        expect(db().maxContext).not.toBe(999);
+        expect(activePreset.maxContext).not.toBe(999);
     });
 
     it("refuses credentials, persona and selection keys, unknown keys, wrong kinds, and non-data values", async () => {
@@ -170,22 +172,22 @@ describe("updateSettings", () => {
 
 describe("incrementStatic and addPreset", () => {
     it("raises one counter and keeps the other, from the server's zeroed record", async () => {
-        const { sync, collectionStore, record, db } = await boot();
-        expect(plain(db().statics)).toEqual({ messages: 0, imports: 0 });
+        const { sync, collectionStore, record, settings } = await boot();
+        expect(plain(settings.statics)).toEqual({ messages: 0, imports: 0 });
         collectionStore.incrementStatic("imports");
-        db().statics = { messages: 3, imports: db().statics.imports };
+        settings.statics = { messages: 3, imports: settings.statics.imports };
         collectionStore.incrementStatic("imports");
         collectionStore.incrementStatic("messages");
-        expect(plain(db().statics)).toEqual({ messages: 4, imports: 2 });
+        expect(plain(settings.statics)).toEqual({ messages: 4, imports: 2 });
         await sync.flushResources();
         expect(record("statics")).toEqual({ messages: 4, imports: 2 });
-        db().statics = { messages: "x", imports: Number.NaN };
+        settings.statics = { messages: "x", imports: Number.NaN } as any;
         collectionStore.incrementStatic("messages");
-        expect(db().statics.messages).toBe(1);
+        expect(settings.statics.messages).toBe(1);
     });
 
     it("adds a preset under a fresh id with the canonical fields, without the credentials", async () => {
-        const { sync, collectionStore, record, db, selection, refused, validation } = await boot();
+        const { sync, collectionStore, record, settings, selection, refused, validation } = await boot();
         const selected = selection.presetId;
         const id = collectionStore.addPreset({
             name: "Added",
@@ -195,7 +197,7 @@ describe("incrementStatic and addPreset", () => {
             id: "given",
         });
         expect(id).not.toBe("given");
-        expect(db().botPresets.map((preset: any) => preset.id)).toContain(id);
+        expect(settings.presets.map((preset: any) => preset.id)).toContain(id);
         expect(selection.presetId).toBe(selected);
         await sync.flushResources();
         const saved = record("presets").find((preset: any) => preset.id === id);
@@ -210,61 +212,61 @@ describe("incrementStatic and addPreset", () => {
 
 describe("personas", () => {
     it("setPersonas assigns ids to new entries, keeps existing ones, and reconciles the selection", async () => {
-        const { sync, collectionStore, selectionModule, selection, record, db } = await boot();
-        const first = db().personas[0].id;
+        const { sync, collectionStore, selectionModule, selection, record, settings, activePersona } = await boot();
+        const first = settings.personas[0].id;
         collectionStore.addPersona({ name: "Second", id: "second" });
         selectionModule.selectPersona("second");
-        expect(db().username).toBe("Second");
+        expect(activePersona.name).toBe("Second");
         collectionStore.setPersonas([{ name: "Kept", id: first }, { name: "Fresh" }, "not an object"]);
-        expect(db().personas.map((persona: any) => persona.name)).toEqual(["Kept", "Fresh"]);
-        expect(db().personas[0].id).toBe(first);
-        expect(db().personas[1].id).toEqual(expect.any(String));
-        expect(db().personas[1]).toMatchObject({ icon: "", personaPrompt: "", note: "" });
+        expect(settings.personas.map((persona: any) => persona.name)).toEqual(["Kept", "Fresh"]);
+        expect(settings.personas[0].id).toBe(first);
+        expect(settings.personas[1].id).toEqual(expect.any(String));
+        expect(settings.personas[1]).toMatchObject({ icon: "", personaPrompt: "", note: "" });
         // The selected persona is gone: the selection falls back to the first record.
         expect(selection.personaId).toBe(first);
-        expect(db().username).toBe("Kept");
+        expect(activePersona.name).toBe("Kept");
         await sync.flushResources();
         expect(record("personas").map((persona: any) => persona.name)).toEqual(["Kept", "Fresh"]);
-        expect(record("personas")[1].id).toBe(db().personas[1].id);
+        expect(record("personas")[1].id).toBe(settings.personas[1].id);
     });
 
     it("setPersonas refuses a non-list or non-data input, and never leaves the list empty", async () => {
-        const { sync, collectionStore, refused, validation, record, db } = await boot();
+        const { sync, collectionStore, refused, validation, record, settings } = await boot();
         await refused(() => collectionStore.setPersonas({ name: "x" }), validation.MutationValidationError);
         await refused(() => collectionStore.setPersonas([{ name: () => 1 }]), validation.MutationValidationError);
         collectionStore.setPersonas([]);
-        expect(db().personas).toHaveLength(1);
+        expect(settings.personas).toHaveLength(1);
         await sync.flushResources();
         expect(record("personas")).toHaveLength(1);
     });
 
     it("addPersona assigns a new id when it is missing, invalid, or taken, and keeps a valid one", async () => {
-        const { sync, collectionStore, record, db, refused, validation } = await boot();
-        const first = db().personas[0].id;
+        const { sync, collectionStore, record, settings, refused, validation } = await boot();
+        const first = settings.personas[0].id;
         const missing = collectionStore.addPersona({ name: "A" });
         const taken = collectionStore.addPersona({ name: "B", id: first });
         const empty = collectionStore.addPersona({ name: "C", id: "" });
         expect(collectionStore.addPersona({ name: "D", id: "mine", personaPrompt: 5 })).toBe("mine");
         expect(new Set([first, missing, taken, empty, "mine"]).size).toBe(5);
-        expect(db().personas.at(-1)).toMatchObject({ id: "mine", personaPrompt: "", icon: "", note: "" });
+        expect(settings.personas.at(-1)).toMatchObject({ id: "mine", personaPrompt: "", icon: "", note: "" });
         await sync.flushResources();
         expect(record("personas").map((persona: any) => persona.id)).toEqual([first, missing, taken, empty, "mine"]);
         await refused(() => collectionStore.addPersona("x"), validation.MutationValidationError);
     });
 
     it("updatePersona refuses the id and non-string persona fields, throws for a missing persona, and stores prototype-named keys", async () => {
-        const { sync, collectionStore, record, db, refused, validation } = await boot();
-        const id = db().personas[0].id;
+        const { sync, collectionStore, record, settings, activePersona, refused, validation } = await boot();
+        const id = settings.personas[0].id;
         await refused(() => collectionStore.updatePersona(id, { id: "other" }), validation.MutationValidationError);
         await refused(() => collectionStore.updatePersona(id, { name: 1 }), validation.MutationValidationError);
         await refused(() => collectionStore.updatePersona(id, { note: undefined }), validation.MutationValidationError);
         await refused(() => collectionStore.updatePersona("nope", { name: "x" }), validation.MutationTargetGoneError);
         collectionStore.updatePersona(id, { name: "Renamed", extra: 1, constructor: 1, hasOwnProperty: "h" });
         collectionStore.updatePersona(id, { extra: undefined });
-        expect(db().username).toBe("Renamed");
-        expect(db().personas[0].id).toBe(id);
-        expect(plain(db().personas[0])).toMatchObject({ constructor: 1, hasOwnProperty: "h" });
-        expect(plain(db().personas[0])).not.toHaveProperty("extra");
+        expect(activePersona.name).toBe("Renamed");
+        expect(settings.personas[0].id).toBe(id);
+        expect(plain(settings.personas[0])).toMatchObject({ constructor: 1, hasOwnProperty: "h" });
+        expect(plain(settings.personas[0])).not.toHaveProperty("extra");
         await sync.flushResources();
         expect(record("personas")[0]).toMatchObject({ id, name: "Renamed", constructor: 1, hasOwnProperty: "h" });
     });
@@ -272,12 +274,12 @@ describe("personas", () => {
 
 describe("modules", () => {
     it("adds, replaces, patches, and removes modules by id, and keeps enabledModules on removal", async () => {
-        const { sync, collectionStore, record, db, refused, validation } = await boot();
+        const { sync, collectionStore, record, settings, refused, validation } = await boot();
         const generated = collectionStore.addModule({ name: "gen" });
         expect(collectionStore.addModule({ name: "given", id: "given" })).toBe("given");
         expect(collectionStore.findModule("given")?.name).toBe("given");
         collectionStore.setEnabledModules(["given", "given", generated]);
-        expect(db().enabledModules).toEqual(["given", generated]);
+        expect(settings.enabledModules).toEqual(["given", generated]);
         expect(collectionStore.updateModule("given", { name: "patched", toString: "t", extra: 1 })).toBe(true);
         expect(collectionStore.updateModule("given", { extra: undefined })).toBe(true);
         expect(collectionStore.updateModule("nope", { name: "x" })).toBe(false);
@@ -286,16 +288,16 @@ describe("modules", () => {
         expect(plain(collectionStore.findModule("given"))).toEqual({ id: "given", name: "patched", toString: "t" });
         expect(collectionStore.removeModule(generated)).toBe(true);
         expect(collectionStore.removeModule(generated)).toBe(false);
-        expect(db().enabledModules).toEqual(["given", generated]);
+        expect(settings.enabledModules).toEqual(["given", generated]);
         collectionStore.setModuleEnabled(generated, false);
         collectionStore.setModuleEnabled("third", true);
         collectionStore.setModuleEnabled("third", true);
-        expect(db().enabledModules).toEqual(["given", "third"]);
+        expect(settings.enabledModules).toEqual(["given", "third"]);
         await sync.flushResources();
         expect(record("modules")).toEqual([{ id: "given", name: "patched", toString: "t" }]);
         expect(record("enabledModules")).toEqual(["given", "third"]);
         collectionStore.setModules([{ name: "only" }, { id: "", name: "empty id" }]);
-        expect(db().modules.every((module: any) => typeof module.id === "string" && module.id !== "")).toBe(true);
+        expect(settings.modules.every((module: any) => typeof module.id === "string" && module.id !== "")).toBe(true);
         await sync.flushResources();
         expect(record("modules").map((module: any) => module.name)).toEqual(["only", "empty id"]);
     });
@@ -314,7 +316,7 @@ describe("modules", () => {
 
 describe("character order, plugins, and OAuth entries", () => {
     it("setCharacterOrder accepts ids and folders with member lists, and refuses anything else", async () => {
-        const { sync, collectionStore, record, db, refused, validation } = await boot();
+        const { sync, collectionStore, record, settings, refused, validation } = await boot();
         for (const order of [
             [[]],
             [{}],
@@ -331,21 +333,21 @@ describe("character order, plugins, and OAuth entries", () => {
         const folder = { id: "f", name: "F", data: ["c"] };
         collectionStore.setCharacterOrder(["c", folder]);
         folder.data.push("mutated");
-        expect(plain(db().characterOrder)).toEqual(["c", { id: "f", name: "F", data: ["c"] }]);
+        expect(plain(settings.characterOrder)).toEqual(["c", { id: "f", name: "F", data: ["c"] }]);
         await sync.flushResources();
         expect(record("characterOrder")).toEqual(["c", { id: "f", name: "F", data: ["c"] }]);
     });
 
     it("setPlugins, upsertPlugin, and setPluginArgument write the plugin list by name", async () => {
-        const { sync, collectionStore, record, db, refused, validation } = await boot();
+        const { sync, collectionStore, record, settings, refused, validation } = await boot();
         for (const list of [Array(1), [null], [{}], [{ name: "" }], [{ name: 1 }], {}]) {
             await refused(() => collectionStore.setPlugins(list), validation.MutationValidationError);
         }
         await refused(() => collectionStore.upsertPlugin({ name: "" }), validation.MutationValidationError);
         collectionStore.upsertPlugin({ name: "plug", realArg: { a: "2" }, version: 2 });
         collectionStore.upsertPlugin({ name: "other", realArg: {} });
-        collectionStore.setPlugins([...plain(db().plugins), { name: "plug", realArg: {} }]);
-        expect(db().plugins.map((plugin: any) => plugin.name)).toEqual(["plug", "other", "plug"]);
+        collectionStore.setPlugins([...plain(settings.plugins), { name: "plug", realArg: {} }]);
+        expect(settings.plugins.map((plugin: any) => plugin.name)).toEqual(["plug", "other", "plug"]);
         // Every plugin with that name, as `setArg` does.
         expect(collectionStore.setPluginArgument("plug", "k", "v")).toBe(true);
         expect(collectionStore.setPluginArgument("plug", "n", 3)).toBe(true);
@@ -362,12 +364,12 @@ describe("character order, plugins, and OAuth entries", () => {
         expect(collectionStore.setPluginArgument("other", "constructor", "c")).toBe(true);
         expect(collectionStore.setPluginArgument("other", "__proto__", "p")).toBe(true);
         expect(collectionStore.setPluginArgument("other", "toString", "t")).toBe(true);
-        expect(plain(db().plugins[0].realArg)).toEqual({ a: "2", k: "v", n: 3 });
-        expect(plain(db().plugins[2].realArg)).toEqual({ k: "v", n: 3 });
-        const otherArgs = plain(db().plugins[1].realArg);
+        expect(plain(settings.plugins[0].realArg)).toEqual({ a: "2", k: "v", n: 3 });
+        expect(plain(settings.plugins[2].realArg)).toEqual({ k: "v", n: 3 });
+        const otherArgs = plain(settings.plugins[1].realArg);
         expect(Object.hasOwn(otherArgs, "__proto__")).toBe(true);
         expect(otherArgs).toMatchObject({ constructor: "c", toString: "t" });
-        expect(Object.getPrototypeOf(db().plugins[1].realArg)).toBe(Object.prototype);
+        expect(Object.getPrototypeOf(settings.plugins[1].realArg)).toBe(Object.prototype);
         await sync.flushResources();
         const saved = record("plugins");
         // The own `__proto__` is saved too (Phase 6 slice 4, `settings-ownership.md`, "Observable
@@ -408,13 +410,13 @@ describe("character order, plugins, and OAuth entries", () => {
     });
 
     it("addAuthRefresh keeps one entry per server url: a new login replaces every entry of that url in place and keeps the others (Phase 5 slice 12a)", async () => {
-        const { sync, collectionStore, record, db } = await boot();
+        const { sync, collectionStore, record, settings } = await boot();
         collectionStore.addAuthRefresh({ url: "https://a", refreshToken: "1" });
         collectionStore.addAuthRefresh({ url: "https://b", refreshToken: "2" });
         // A duplicate from before the replacement rule (the core app wrote the list directly).
-        db().authRefreshes.push({ url: "https://a", refreshToken: "3" } as never);
+        settings.authRefreshes.push({ url: "https://a", refreshToken: "3" } as never);
         collectionStore.addAuthRefresh({ url: "https://a", refreshToken: "9", tokenUrl: "https://a/token" });
-        expect(plain(db().authRefreshes)).toEqual([
+        expect(plain(settings.authRefreshes)).toEqual([
             { url: "https://a", refreshToken: "9", tokenUrl: "https://a/token" },
             { url: "https://b", refreshToken: "2" },
         ]);

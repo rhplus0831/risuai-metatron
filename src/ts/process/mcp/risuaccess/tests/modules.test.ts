@@ -1,8 +1,8 @@
 import fc from "fast-check";
 import type { RisuModule } from "src/ts/process/modules";
 import type { customscript, loreBook } from "src/ts/storage/database.svelte";
+import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { DBState } from "src/ts/stores.svelte";
 import { beforeEach, expect, test, vi } from "vitest";
 import type { RPCToolCallTextContent } from "../../mcplib";
 import { ModuleHandler } from "../modules";
@@ -16,27 +16,24 @@ vi.mock(import("src/ts/alert"), () => ({
     alertConfirm: vi.fn(),
 }));
 
-vi.mock(import("src/ts/stores.svelte"), () => {
-    return {
-        DBState: {
-            db: {
-                characters: [],
-                enabledModules: [],
-                modules: [],
-            },
-        },
-        selIdState: {
-            selId: 0,
-        },
-    } as typeof import("src/ts/stores.svelte");
-});
+// The chat module (reached through the fixture helper) imports the resource client, whose auth
+// module reaches the keypair store and the app stores: nothing here talks to a server.
+vi.mock(
+    import("src/ts/storage/serverAuth"),
+    () =>
+        ({
+            authFetch: vi.fn(),
+            getNodeServerProxyAuth: vi.fn(),
+            ensureAuth: vi.fn(),
+        }) as unknown as typeof import("src/ts/storage/serverAuth"),
+);
 
 //#endregion
 
-// The mocked `DBState.db` installed as `setDatabaseLite` installs a database: its fields moved into
-// the records, the accessors on, since the handler reads the modules through the settings views
-// (Phase 6 slice 7). `DBState.db.modules` and `DBState.db.enabledModules` are those records.
-installFlatDatabase(DBState.db);
+// An empty database installed into the records, since the handler reads the modules through the
+// settings views (Phase 6 slice 7): `settings.modules` and `settings.enabledModules` are those
+// records (an assignment replaces the record; an index read gives the stored module).
+installFlatDatabase({ characters: [], enabledModules: [], modules: [] });
 
 const makeLorebook = (name: string): loreBook => ({
     alwaysActive: false,
@@ -87,15 +84,15 @@ test("lists installed modules with pagination", async () => {
     const modules = Array(10)
         .fill(0)
         .map((_, i) => makeModule(String(i)));
-    DBState.db.modules = modules;
-    DBState.db.enabledModules = [modules[0].id, modules[2].id];
+    settings.modules = modules;
+    settings.enabledModules = [modules[0].id, modules[2].id];
 
     expect(await instance.handle("risu-list-modules", { count: 3 })).toMatchSnapshot();
     expect(await instance.handle("risu-list-modules", { count: 3, offset: 3 })).toMatchSnapshot();
     expect(await instance.handle("risu-list-modules", { count: 3, offset: 10 })).toMatchSnapshot();
 
-    DBState.db.modules = [];
-    DBState.db.enabledModules = [];
+    settings.modules = [];
+    settings.enabledModules = [];
 
     expect(await instance.handle("risu-list-modules", {})).toEqual(makeToolResponse([]));
 });
@@ -106,8 +103,8 @@ test("retrieves bgEmbedding, toggles, description, id, enabled, low level access
     const modules = Array(10)
         .fill(0)
         .map((_, i) => makeModule(String(i)));
-    DBState.db.modules = modules;
-    DBState.db.enabledModules = [modules[0].id, modules[2].id, modules[4].id];
+    settings.modules = modules;
+    settings.enabledModules = [modules[0].id, modules[2].id, modules[4].id];
 
     await fc.assert(
         fc.asyncProperty(
@@ -122,13 +119,13 @@ test("retrieves bgEmbedding, toggles, description, id, enabled, low level access
             ]),
             fc.integer({ max: 9, min: 0 }),
             async (fieldsArg, targetIndex) => {
-                const target = DBState.db.modules[targetIndex];
+                const target = settings.modules[targetIndex];
                 const fields = fieldsArg.length > 0 ? fieldsArg : ["name", "description", "id", "enabled"];
 
                 const expected = Object.fromEntries(
                     fields.map((field) => {
                         if (field === "enabled") {
-                            return ["enabled", DBState.db.enabledModules.includes(target.id)];
+                            return ["enabled", settings.enabledModules.includes(target.id)];
                         }
                         return [field, target[field]];
                     }),
@@ -151,14 +148,14 @@ test("lists lorebooks of a module with pagination", async () => {
             .fill(0)
             .map((_, i) => makeLorebook(String(i))),
     };
-    DBState.db.modules = [module];
+    settings.modules = [module];
 
     expect(await instance.handle("risu-list-module-lorebooks", { count: 3, id: "A" })).toMatchSnapshot();
     expect(await instance.handle("risu-list-module-lorebooks", { count: 3, offset: 3, id: "A" })).toMatchSnapshot();
     expect(await instance.handle("risu-list-module-lorebooks", { count: 3, offset: 10, id: "A" })).toMatchSnapshot();
 
     // A change goes through the record (the stored module), not the object assigned into it.
-    DBState.db.modules[0].lorebook = [];
+    settings.modules[0].lorebook = [];
 
     expect(await instance.handle("risu-list-module-lorebooks", { id: "A" })).toEqual(makeToolResponse([]));
 });
@@ -172,7 +169,7 @@ test("retrieves fields of a lorebook", async () => {
             .fill(0)
             .map((_, i) => makeLorebook(String(i))),
     };
-    DBState.db.modules = [module];
+    settings.modules = [module];
 
     expect(await instance.handle("risu-get-module-lorebook", { id: "A", names: ["0", "2", "99"] })).toMatchSnapshot();
 });
@@ -186,12 +183,12 @@ test("lists all regex scripts of a module", async () => {
             .fill(0)
             .map((_, i) => makeRegex(String(i))),
     };
-    DBState.db.modules = [module];
+    settings.modules = [module];
 
     expect(await instance.handle("risu-get-module-regex-scripts", { id: "A" })).toMatchSnapshot();
 
     // A change goes through the record (the stored module), not the object assigned into it.
-    DBState.db.modules[0].regex = [];
+    settings.modules[0].regex = [];
 
     expect(await instance.handle("risu-get-module-regex-scripts", { id: "A" })).toEqual(makeToolResponse([]));
 });
@@ -215,7 +212,7 @@ test("retrieves a module Lua script", async () => {
             },
         ],
     };
-    DBState.db.modules = [module];
+    settings.modules = [module];
 
     expect(await instance.handle("risu-get-module-lua-script", { id: "A" })).toEqual(
         makeToolResponse('print("hello")'),
@@ -225,7 +222,7 @@ test("retrieves a module Lua script", async () => {
 test("errs retrieving a module Lua script if it is not using one", async () => {
     const instance = new ModuleHandler();
 
-    DBState.db.modules = [makeModule("A")];
+    settings.modules = [makeModule("A")];
 
     expect(await instance.handle("risu-get-module-lua-script", { id: "A" })).toEqual(
         makeToolResponse("Error: This module does not contain a Lua trigger."),

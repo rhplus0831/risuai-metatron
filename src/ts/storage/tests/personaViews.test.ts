@@ -4,16 +4,20 @@ import { flushSync } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Phase 3, slice 6 (`docs/plan/phases/slices/phase-3-settings-sections/forwarding-personas.md`):
-// the persona half of the forwarding layer (`forwarding.svelte.ts`) installed by `setDatabase` on
-// the real database, over the real Svelte proxy, and the persona functions of `persona.ts` that
-// changed with it. The cases pin: the four persona accessors and `selectedPersona` (reads and writes
-// by the selected id, tracked reads and untracked writes), the resolution after the collection is
-// replaced or the selected persona removed (a read repairs the selection, a write is dropped and
-// never redirected), the non-string read rule, `setDatabase`'s persona contract, `changeUserPersona`,
-// `selectUserImg` keeping the id across its `await` (the exit criterion: a bound chat keeps its
-// binding after an icon change) and dropping the icon when the persona was deleted meanwhile, and
-// `importUserPersona` reaching the live list when the collection was replaced while its image was
-// being saved (Astra challenge point 3).
+// the persona half of the selected-record rules, over the settings record views
+// (`settingsViews.svelte.ts`, `activePersona`) since Phase 6 slice 10 moved them there from the
+// removed forwarding layer (`forwarding.svelte.ts`, the accessors on the whole-database aggregate),
+// and the persona functions of `persona.ts` that changed with it. The cases pin: the four persona
+// fields and `selectedPersonaIndex` (reads and writes by the selected id, tracked reads and
+// untracked writes), the resolution after the collection is replaced or the selected persona
+// removed (a read repairs the selection, a write is dropped and never redirected), the non-string
+// read rule, the legacy flat snapshot (`rootSnapshot`), `changeUserPersona`, `selectUserImg`
+// keeping the id across its `await` (the exit criterion: a bound chat keeps its binding after an
+// icon change) and dropping the icon when the persona was deleted meanwhile, and `importUserPersona`
+// reaching the live list when the collection was replaced while its image was being saved (Astra
+// challenge point 3). The cases about the accessors themselves (their descriptors, `setDatabaseLite`,
+// the index setter's input checks) and about the removed boot backstop (`setDatabase`'s personas
+// contract; the server normalizes) were retired with the aggregate.
 
 await vi.hoisted(async () => {
     const { Buffer: BufferPolyfill } = await import("buffer");
@@ -59,24 +63,35 @@ vi.mock("../../util", async (importOriginal) => ({
     ),
 }));
 
-import { DBState } from "../../stores.svelte";
-import { getDatabase, setDatabase, setDatabaseLite, type Database } from "../database.svelte";
-import { reconcileSelection, selectedPersona, selectedPersonaForWrite } from "../forwarding.svelte";
+import { initializeRecords, resetRecords, takeRecordFields } from "../records.svelte";
 import { selection, selectPersona, selectPreset } from "../selection.svelte";
+import {
+    activePersona,
+    currentPersonaRecord,
+    personaRecordForWrite,
+    readSettingsRoot,
+    reconcileSelection,
+    selectedPersonaIndex,
+    settings,
+    writeSettingsRoot,
+} from "../settingsViews.svelte";
+import { rootSnapshot } from "../snapshots.svelte";
 import { changeUserPersona, importUserPersona, selectUserImg } from "../../persona";
 import { alertNormal } from "../../alert";
 import { saveAsset } from "../../globalApi.svelte";
 import { PERSONA_DEFAULTS } from "../../../../shared/personas.ts";
 import { PERSONA_ROOT_ALIASES, plainClone } from "../../../../shared/presets.ts";
-import { PERSONA_ROOT_KEYS } from "../../../../shared/sections.ts";
 import { createProbe, createWriterEffect } from "./reactiveProbe.svelte";
 
 type AnyDb = Record<string, any>;
 
-const db = () => DBState.db as unknown as AnyDb;
-const persona = (id: string) => db().personas.find((entry: { id: string }) => entry.id === id);
+const persona$ = activePersona as unknown as AnyDb;
+/** The views under a loose type, for the fixture-shaped writes below. */
+const settings$ = settings as unknown as AnyDb;
+const personas = () => settings.personas as unknown as AnyDb[];
+const persona = (id: string) => personas().find((entry: { id: string }) => entry.id === id);
 const text = (value: unknown) => JSON.stringify(plainClone(value));
-const ids = () => db().personas.map((entry: { id: string }) => entry.id);
+const ids = () => personas().map((entry: { id: string }) => entry.id);
 
 const u1 = () => ({ id: "u1", name: "One", icon: "icon-1", personaPrompt: "prompt one", note: "note one" });
 const u2 = () => ({
@@ -88,11 +103,14 @@ const u2 = () => ({
     largePortrait: true,
 });
 
-/** Boots the real `setDatabase` over a save with the given personas (and extra fields). */
-function boot(personas: unknown = [u1(), u2()], extra: Record<string, unknown> = {}) {
-    DBState.db = {} as Database;
-    setDatabase({ characters: [], botPresets: [], personas, ...extra } as unknown as Database);
-    return db();
+/**
+ * Installs the records from a legacy-shaped save with the given personas (and extra fields), as
+ * boot installs them, and resolves the selection. The fixture is valid data: the removed boot
+ * backstop normalized it before; the server does now.
+ */
+function boot(list: unknown = [u1(), u2()], extra: Record<string, unknown> = {}) {
+    initializeRecords(takeRecordFields({ characters: [], botPresets: [], personas: list, ...extra }));
+    reconcileSelection();
 }
 
 beforeEach(() => {
@@ -108,11 +126,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-    DBState.db = {} as Database;
+    resetRecords();
 });
 
-describe("install and the contract at setDatabase", () => {
-    it("defines the four persona accessors and selectedPersona; a snapshot carries the selected persona's values", () => {
+describe("installation", () => {
+    it("a root snapshot carries the selected persona's values under the four root names and the selection index, as plain data", () => {
         boot();
         expect(PERSONA_ROOT_ALIASES).toEqual({
             username: "name",
@@ -120,14 +138,8 @@ describe("install and the contract at setDatabase", () => {
             userNote: "note",
             personaPrompt: "personaPrompt",
         });
-        for (const key of [...PERSONA_ROOT_KEYS, "selectedPersona"]) {
-            const descriptor = Object.getOwnPropertyDescriptor(DBState.db, key);
-            expect(typeof descriptor?.get, key).toBe("function");
-            expect(typeof descriptor?.set, key).toBe("function");
-            expect(descriptor?.enumerable, key).toBe(true);
-        }
         expect(selection.personaId).toBe("u1");
-        const snapshot = getDatabase({ snapshot: true }) as unknown as AnyDb;
+        const snapshot = rootSnapshot();
         expect(snapshot).toMatchObject({
             username: "One",
             userIcon: "icon-1",
@@ -138,77 +150,50 @@ describe("install and the contract at setDatabase", () => {
         expect(Object.getOwnPropertyDescriptor(snapshot, "username")).toHaveProperty("value", "One");
     });
 
-    it("applies the personas contract: an empty or missing list becomes the default persona, fields are filled, duplicate ids repaired", () => {
-        boot([]);
-        expect(db().personas).toHaveLength(1);
-        expect(db().personas[0]).toMatchObject({ name: "User", icon: "", personaPrompt: "", note: "" });
-        expect(db().personas[0].id).toEqual(expect.any(String));
-        expect(db().username).toBe("User");
-        expect(selection.personaId).toBe(db().personas[0].id);
-
-        DBState.db = {} as Database;
-        setDatabase({ characters: [], botPresets: [] } as unknown as Database);
-        expect(db().personas).toHaveLength(1);
-        expect(db().username).toBe("User");
-
-        boot([{ id: "dup", name: "first", extra: 1 }, { id: "dup", name: "second", note: 5 }, { id: "" }]);
-        expect(db().personas.map((entry: AnyDb) => entry.name)).toEqual(["first", "second", "User"]);
-        expect(db().personas[0]).toEqual({
-            id: "dup",
-            name: "first",
-            extra: 1,
-            icon: "",
-            personaPrompt: "",
-            note: "",
-        });
-        expect(db().personas[1].id).not.toBe("dup");
-        expect(db().personas[1].note).toBe("");
-        expect(new Set(ids()).size).toBe(3);
-        // A stored selection that names the kept id resolves to it; the repaired one is a new persona.
-        expect(selection.personaId).toBe("dup");
-    });
-
     it("selects the first persona for an empty or unknown stored selection, and keeps a stored one that exists", () => {
         selectPersona("gone");
         boot();
         expect(selection.personaId).toBe("u1");
         // A write right after boot, before any read, has a record to go to.
-        db().userNote = "written first";
+        persona$.note = "written first";
         expect(persona("u1").note).toBe("written first");
 
         selectPersona("u2");
         boot();
         expect(selection.personaId).toBe("u2");
-        expect(db().username).toBe("Two");
-        expect(db().selectedPersona).toBe(1);
+        expect(persona$.name).toBe("Two");
+        expect(selectedPersonaIndex()).toBe(1);
     });
 });
 
 describe("reads and writes by the selected id", () => {
     it("reads and writes the selected persona through the aliases, leaving the other persona alone", () => {
         boot();
-        expect(db().username).toBe("One");
-        expect(db().userIcon).toBe("icon-1");
-        expect(db().userNote).toBe("note one");
-        expect(db().personaPrompt).toBe("prompt one");
+        expect(persona$.name).toBe("One");
+        expect(readSettingsRoot("username")).toBe("One");
+        expect(persona$.icon).toBe("icon-1");
+        expect(readSettingsRoot("userIcon")).toBe("icon-1");
+        expect(persona$.note).toBe("note one");
+        expect(readSettingsRoot("userNote")).toBe("note one");
+        expect(persona$.personaPrompt).toBe("prompt one");
+        expect(readSettingsRoot("personaPrompt")).toBe("prompt one");
 
-        db().username = "Renamed";
-        db().userIcon = "icon-new";
-        db().userNote = "n";
-        db().personaPrompt = "p";
+        persona$.name = "Renamed";
+        writeSettingsRoot("userIcon", "icon-new");
+        writeSettingsRoot("userNote", "n");
+        persona$.personaPrompt = "p";
         expect(persona("u1")).toEqual({ id: "u1", name: "Renamed", icon: "icon-new", personaPrompt: "p", note: "n" });
         expect(persona("u2")).toEqual(u2());
-        // The root never holds a value: the accessor is still there, and the record is the source.
-        expect(typeof Object.getOwnPropertyDescriptor(DBState.db, "username")?.get).toBe("function");
+        // The record is the source: an edit there is what the view reads.
         persona("u1").name = "Edited in the record";
-        expect(db().username).toBe("Edited in the record");
+        expect(persona$.name).toBe("Edited in the record");
 
         changeUserPersona("u2");
         expect(selection.personaId).toBe("u2");
-        expect(db().username).toBe("Two");
-        expect(db().personaPrompt).toBe("prompt two");
-        expect(db().selectedPersona).toBe(1);
-        expect(selectedPersona(DBState.db)?.id).toBe("u2");
+        expect(persona$.name).toBe("Two");
+        expect(persona$.personaPrompt).toBe("prompt two");
+        expect(selectedPersonaIndex()).toBe(1);
+        expect(currentPersonaRecord()?.id).toBe("u2");
         // An unknown id changes nothing.
         changeUserPersona("nope");
         expect(selection.personaId).toBe("u2");
@@ -216,7 +201,7 @@ describe("reads and writes by the selected id", () => {
 
     it("tracks reads (a derived and an effect follow a record edit and a switch) and resolves writes untracked", () => {
         boot();
-        const probe = createProbe(() => db().personaPrompt);
+        const probe = createProbe(() => persona$.personaPrompt);
         expect(probe.seen).toEqual(["prompt one"]);
         expect(probe.derived()).toBe("prompt one");
 
@@ -231,7 +216,7 @@ describe("reads and writes by the selected id", () => {
 
         // An effect that assigns a persona field must not rerun into the next persona on a switch.
         const writer = createWriterEffect(() => {
-            db().userNote = "from effect";
+            persona$.note = "from effect";
         });
         expect(writer.runs()).toBe(1);
         expect(persona("u2").note).toBe("from effect");
@@ -252,13 +237,13 @@ describe("reads and writes by the selected id", () => {
         delete record.icon;
         record.personaPrompt = null;
         const before = text(record);
-        expect(db().userNote).toBe(PERSONA_DEFAULTS.note);
-        expect(db().userIcon).toBe(PERSONA_DEFAULTS.icon);
-        expect(db().personaPrompt).toBe(PERSONA_DEFAULTS.personaPrompt);
-        getDatabase({ snapshot: true });
-        JSON.stringify(DBState.db);
+        expect(persona$.note).toBe(PERSONA_DEFAULTS.note);
+        expect(persona$.icon).toBe(PERSONA_DEFAULTS.icon);
+        expect(persona$.personaPrompt).toBe(PERSONA_DEFAULTS.personaPrompt);
+        rootSnapshot();
+        JSON.stringify(settings.personas);
         expect(text(record)).toBe(before);
-        db().userIcon = "set";
+        persona$.icon = "set";
         expect(record.icon).toBe("set");
     });
 });
@@ -267,30 +252,30 @@ describe("reconcileSelection after a replacement or a removal", () => {
     it("resolves anew after the collection is replaced, as a conflict reload or a plugin setter does", () => {
         boot();
         changeUserPersona("u2");
-        const replacement = plainClone(db().personas);
+        const replacement = plainClone(personas());
         replacement[1].personaPrompt = "replaced";
-        db().personas = replacement;
-        reconcileSelection(DBState.db);
+        settings$.personas = replacement;
+        reconcileSelection();
         expect(selection.personaId).toBe("u2");
-        expect(db().personaPrompt).toBe("replaced");
-        db().personaPrompt = "after";
-        expect(db().personas[1].personaPrompt).toBe("after");
+        expect(persona$.personaPrompt).toBe("replaced");
+        persona$.personaPrompt = "after";
+        expect(personas()[1].personaPrompt).toBe("after");
 
         // A replacement without the selected id: the selection moves to the first record.
-        db().personas = [{ id: "u3", name: "Three", icon: "", personaPrompt: "", note: "" }];
-        reconcileSelection(DBState.db);
+        settings.personas = [{ id: "u3", name: "Three", icon: "", personaPrompt: "", note: "" }];
+        reconcileSelection();
         expect(selection.personaId).toBe("u3");
-        expect(db().username).toBe("Three");
-        expect(db().selectedPersona).toBe(0);
+        expect(persona$.name).toBe("Three");
+        expect(selectedPersonaIndex()).toBe(0);
     });
 
     it("falls back to the first record on a read when the selected persona is removed, and makes it the selection (also inside a derived)", () => {
         boot();
         changeUserPersona("u2");
-        const probe = createProbe(() => db().username);
+        const probe = createProbe(() => persona$.name);
         expect(probe.seen).toEqual(["Two"]);
 
-        db().personas.splice(1, 1);
+        personas().splice(1, 1);
         flushSync();
         // The read that repairs the selection writes a dependency of its own effect, which Svelte
         // may run once more (self-invalidation, bounded); every run after the removal sees the
@@ -301,7 +286,7 @@ describe("reconcileSelection after a replacement or a removal", () => {
         expect(() => probe.derived()).not.toThrow();
         expect(probe.derived()).toBe("One");
         expect(selection.personaId).toBe("u1");
-        expect(db().selectedPersona).toBe(0);
+        expect(selectedPersonaIndex()).toBe(0);
         probe.dispose();
     });
 
@@ -309,49 +294,38 @@ describe("reconcileSelection after a replacement or a removal", () => {
         boot();
         const before = [text(persona("u1")), text(persona("u2"))];
         selectPersona("missing");
-        expect(selectedPersonaForWrite(DBState.db)).toBeUndefined();
+        expect(personaRecordForWrite()).toBeUndefined();
 
-        db().username = "lost";
-        db().personaPrompt = "lost";
-        db().userIcon = "lost";
-        db().userNote = "lost";
+        persona$.name = "lost";
+        persona$.personaPrompt = "lost";
+        writeSettingsRoot("userIcon", "lost");
+        writeSettingsRoot("userNote", "lost");
         expect([text(persona("u1")), text(persona("u2"))]).toEqual(before);
         expect(selection.personaId).toBe("missing");
 
-        expect(db().username).toBe("One");
+        expect(persona$.name).toBe("One");
         expect(selection.personaId).toBe("u1");
-        db().username = "found";
+        persona$.name = "found";
         expect(persona("u1").name).toBe("found");
     });
 
-    it("selectedPersona is the selected persona's index; assigning an index selects on this client; out of range or non-number is ignored; a reorder keeps the persona", () => {
+    it("selectedPersonaIndex is the selected persona's index; selecting an id moves it; an unknown id leaves the index on the fallback; a reorder keeps the persona", () => {
         boot();
-        expect(db().selectedPersona).toBe(0);
-        db().selectedPersona = 1;
+        expect(selectedPersonaIndex()).toBe(0);
+        selectPersona("u2");
         expect(selection.personaId).toBe("u2");
-        expect(db().selectedPersona).toBe(1);
-        expect(db().username).toBe("Two");
-        db().selectedPersona = 5;
-        db().selectedPersona = -1;
-        db().selectedPersona = "0";
-        db().selectedPersona = undefined;
-        expect(selection.personaId).toBe("u2");
-        // The selection travels with the persona, not the slot (the settings page reorders the list).
-        db().personas = [plainClone(persona("u2")), plainClone(persona("u1"))];
-        expect(db().selectedPersona).toBe(0);
-        expect(selection.personaId).toBe("u2");
-        expect(db().username).toBe("Two");
-    });
-
-    it("setDatabaseLite installs the accessors on a raw object and resolves the persona selection against it", () => {
-        boot();
-        changeUserPersona("u2");
-        const raw = { characters: [], botPresets: [], personas: [u1()] } as unknown as Database;
-        setDatabaseLite(raw);
-        expect(typeof Object.getOwnPropertyDescriptor(DBState.db, "username")?.get).toBe("function");
+        expect(selectedPersonaIndex()).toBe(1);
+        expect(persona$.name).toBe("Two");
+        // An unknown id names no record: the index read resolves the fallback (the first persona).
+        selectPersona("nope");
+        expect(selectedPersonaIndex()).toBe(0);
         expect(selection.personaId).toBe("u1");
-        db().userNote = "lite";
-        expect(db().personas[0].note).toBe("lite");
+        selectPersona("u2");
+        // The selection travels with the persona, not the slot (the settings page reorders the list).
+        settings$.personas = [plainClone(persona("u2")), plainClone(persona("u1"))];
+        expect(selectedPersonaIndex()).toBe(0);
+        expect(selection.personaId).toBe("u2");
+        expect(persona$.name).toBe("Two");
     });
 });
 
@@ -375,7 +349,7 @@ describe("selectUserImg", () => {
         expect(persona("u1").icon).toBe("icon-1");
         expect(ids()).toEqual(["u1", "u2"]);
         expect(selection.personaId).toBe("u1");
-        expect(db().userIcon).toBe("icon-1");
+        expect(persona$.icon).toBe("icon-1");
     });
 
     it("drops the icon when that persona was deleted meanwhile, never redirecting it; a cancelled dialog changes nothing", async () => {
@@ -383,17 +357,17 @@ describe("selectUserImg", () => {
         changeUserPersona("u2");
         const done = selectUserImg();
         await Promise.resolve();
-        db().personas.splice(1, 1);
+        personas().splice(1, 1);
         held.file!({ name: "icon.png", data: new Uint8Array([1]) });
         await vi.waitFor(() => expect(held.asset).not.toBeNull());
         held.asset!("assets/orphan.png");
         await done;
-        expect(db().personas).toEqual([u1()]);
-        // Nothing read a persona accessor: the selection still names the deleted persona (a write
+        expect(plainClone(personas())).toEqual([u1()]);
+        // Nothing read a persona view: the selection still names the deleted persona (a write
         // there is dropped) until the next read repairs it.
         expect(selection.personaId).toBe("u2");
-        expect(selectedPersonaForWrite(DBState.db)).toBeUndefined();
-        expect(db().username).toBe("One");
+        expect(personaRecordForWrite()).toBeUndefined();
+        expect(persona$.name).toBe("One");
         expect(selection.personaId).toBe("u1");
 
         const cancelled = selectUserImg();
@@ -401,7 +375,7 @@ describe("selectUserImg", () => {
         held.file!(null);
         await cancelled;
         expect(vi.mocked(saveAsset)).toHaveBeenCalledTimes(1);
-        expect(db().personas).toEqual([u1()]);
+        expect(plainClone(personas())).toEqual([u1()]);
     });
 });
 
@@ -418,21 +392,21 @@ describe("importUserPersona", () => {
 
         // The list is replaced while the image is being saved, as a conflict reload or a full
         // plugin `setDatabase` (which normalizes `personas`) does.
-        const detached = db().personas;
-        db().personas = plainClone(db().personas);
+        const detached = personas();
+        settings$.personas = plainClone(personas());
         held.asset!("assets/imported.png");
         await done;
 
         expect(vi.mocked(alertNormal)).toHaveBeenCalledTimes(1);
-        expect(db().personas).toHaveLength(3);
-        expect(db().personas[2]).toEqual({
+        expect(personas()).toHaveLength(3);
+        expect(plainClone(personas()[2])).toEqual({
             name: "Imported",
             icon: "assets/imported.png",
             personaPrompt: "ip",
             note: "",
             id: expect.any(String),
         });
-        expect(db().personas[2].id.length).toBeGreaterThan(0);
+        expect(personas()[2].id.length).toBeGreaterThan(0);
         // A retained wrapper follows its record across replacements (Phase 6 slice 4,
         // `settings-ownership.md`, "Observable changes"): the list held before the replacement shows
         // the live list.

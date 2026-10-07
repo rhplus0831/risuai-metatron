@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import { cardV2, cardV3, characterBook, charx, nested, pngWithText } from "./storage/tests/importFixtures";
@@ -31,7 +30,7 @@ const { server, alerts, picker, assets } = vi.hoisted(() => ({
     assets: { saved: [] as Uint8Array[] },
 }));
 
-vi.mock("./storage/nodeStorage", () => ({
+vi.mock("./storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -87,7 +86,7 @@ async function boot() {
         server.current = fake;
     });
     // `globalApi` and `util` stay real (a `vi.mock` wrapper would outlive `vi.resetModules` and keep
-    // the first graph's `DBState`); the asset store, `sleep` (a faked timer), and the file dialog are
+    // the first graph's records); the asset store, `sleep` (a faked timer), and the file dialog are
     // spied on this graph's namespaces.
     const globalApi = await import("./globalApi.svelte");
     vi.spyOn(globalApi, "saveAsset").mockImplementation((async (data: Uint8Array) => {
@@ -98,9 +97,11 @@ async function boot() {
     vi.spyOn(util, "sleep").mockResolvedValue(undefined);
     vi.spyOn(util, "selectFileByDom").mockImplementation(async () => picker.files);
     const cards = await import("./characterCards");
-    const { db, fake, sync } = booted;
-    const ids = () => db().characters.map((entry: any) => entry.chaId as string);
-    const order = () => plain(db().characterOrder) as string[];
+    const { characterList, settings, fake, sync } = booted;
+    const ids = () => characterList().map((entry: any) => entry.chaId as string);
+    const order = () => plain(settings.characterOrder) as string[];
+    /** The `statics` collection's import stamp (`incrementStatic`); 0 before the record exists. */
+    const imports = () => (settings.statics as any)?.imports ?? 0;
     /** The character added last, the chat it got, and what the server holds for both after a cycle. */
     const added = async (before: string[]) => {
         const chaId = ids().find((id) => !before.includes(id))!;
@@ -117,7 +118,7 @@ async function boot() {
         // A plain copy carries no chats (Phase 6 slice 9a): the legacy shape is built with `withChatsCopy`.
         return { chaId, character: plain(booted.chat.withChatsCopy(plain(character))), record };
     };
-    return { ...booted, cards, ids, order, added };
+    return { ...booted, cards, ids, order, imports, added };
 }
 
 // The first boot compiles the module graph; done once here so no test pays for it, in the
@@ -156,11 +157,11 @@ afterEach(() => {
 
 describe("importCharacterProcess creates the character through addCharacter", () => {
     it("a JSON V2 card: the character, its chat, and the order entry are created in one cycle and saved", async () => {
-        const { cards, ids, added, db, stores } = await boot();
+        const { cards, ids, added, imports, selectionModule } = await boot();
         const before = ids();
         const card = cardV2("Json", { character_book: characterBook("Json Lore", "json lore") });
         const chaId = await cards.importCharacterProcess({ name: "card.json", data: encode(card) });
-        expect(chaId).toBe(db().characters[db().characters.length - 1].chaId);
+        expect(chaId).toBe(ids().at(-1));
         const { character, record } = await added(before);
         expect(character.name).toBe("Json");
         expect(character.firstMessage).toBe("hello from Json");
@@ -170,8 +171,8 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(alerts.normal).toHaveBeenCalledWith(language.importedCharacter);
         expect(alerts.error).not.toHaveBeenCalled();
         // The JSON paths return before the stamp, as before the slice.
-        expect(db().statics?.imports ?? 0).toBe(0);
-        expect(get(stores.selectedCharID)).toBe(-1);
+        expect(imports()).toBe(0);
+        expect(selectionModule.selectedIndex()).toBe(-1);
     });
 
     it("a card is prepared as a creation (Phase 6 slice 5b): the defaults, the time, the lore conversion; the record is the server's normalized text", async () => {
@@ -212,40 +213,40 @@ describe("importCharacterProcess creates the character through addCharacter", ()
     });
 
     it("a PNG card (`chara` chunk): the image is saved, the stamp goes up by one, and the character is saved", async () => {
-        const { cards, ids, added, db } = await boot();
+        const { cards, ids, added, imports } = await boot();
         const before = ids();
         const png = pngWithText({ chara: cardV2("Png", {}, { additionalText: "from png" }) });
         const chaId = await cards.importCharacterProcess({ name: "card.png", data: png });
-        expect(chaId).toBe(db().characters[db().characters.length - 1].chaId);
+        expect(chaId).toBe(ids().at(-1));
         const { character, record } = await added(before);
         expect(character.name).toBe("Png");
         expect(character.image).toBe("asset-1");
         expect(character.additionalText).toBe("from png");
         expect(record.image).toBe("asset-1");
-        expect(db().statics.imports).toBe(1);
+        expect(imports()).toBe(1);
         expect(alerts.normal).toHaveBeenCalledWith(language.importedCharacter);
     });
 
     it("a CharX card (`card.json`, V3) through the real zip importer: the V3 fields land and the stamp goes up", async () => {
-        const { cards, ids, added, db } = await boot();
+        const { cards, ids, added, imports } = await boot();
         const before = ids();
         const chaId = await cards.importCharacterProcess({ name: "card.charx", data: charx(cardV3("Charx")) });
-        expect(chaId).toBe(db().characters[db().characters.length - 1].chaId);
+        expect(chaId).toBe(ids().at(-1));
         const { character, record } = await added(before);
         expect(character.name).toBe("Charx");
         expect(character.nickname).toBe("Charx nick");
         expect(character.creation_date).toBe(1);
         expect(record.nickname).toBe("Charx nick");
-        expect(db().statics.imports).toBe(1);
+        expect(imports()).toBe(1);
         // A second import of the same file is another character with its own id.
         await cards.importCharacterProcess({ name: "card.charx", data: charx(cardV3("Charx")) });
         expect(ids()).toHaveLength(before.length + 2);
         expect(new Set(ids()).size).toBe(before.length + 2);
-        expect(db().statics.imports).toBe(2);
+        expect(imports()).toBe(2);
     });
 
     it("a character imported with `returnCharacter` (the module converter's path) is returned and not added", async () => {
-        const { cards, ids, order, db } = await boot();
+        const { cards, ids, order, imports } = await boot();
         const before = ids();
         const char = await cards.importCharacterProcess({
             name: "card.charx",
@@ -255,7 +256,7 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(char).toMatchObject({ name: "Detached", chaId: expect.stringMatching(UUID_V4) });
         expect(ids()).toEqual(before);
         expect(order()).not.toContain((char as any).chaId);
-        expect(db().statics.imports).toBe(1);
+        expect(imports()).toBe(1);
     });
 });
 
@@ -263,7 +264,7 @@ describe("a refused or rejected card", () => {
     const deep = () => cardV2("Deep", { extensions: { risuai: {}, deep: nested(300) } });
 
     it("a card addCharacter refuses (nested past the JSON check) changes no character, chat, or order entry", async () => {
-        const { cards, ids, serverText, mirrorText, sync, fake, validation, db } = await boot();
+        const { cards, ids, serverText, mirrorText, sync, fake, validation, imports } = await boot();
         const characters = mirrorText();
         const server = serverText();
         const batches = fake.batchCount();
@@ -275,11 +276,11 @@ describe("a refused or rejected card", () => {
         expect(serverText()).toBe(server);
         expect(fake.batchCount()).toBe(batches);
         expect(ids()).toEqual(JSON.parse(characters).characters.map((entry: any) => entry.chaId));
-        expect(db().statics?.imports ?? 0).toBe(0);
+        expect(imports()).toBe(0);
     });
 
     it("through a PNG the stamp and the saved image stay (the importer is not transactional), the list is unchanged", async () => {
-        const { cards, ids, order, sync, validation, db } = await boot();
+        const { cards, ids, order, sync, validation, imports } = await boot();
         const before = ids();
         const orderBefore = order();
         await expect(
@@ -287,7 +288,7 @@ describe("a refused or rejected card", () => {
         ).rejects.toBeInstanceOf(validation.MutationValidationError);
         expect(ids()).toEqual(before);
         expect(order()).toEqual(orderBefore);
-        expect(db().statics.imports).toBe(1);
+        expect(imports()).toBe(1);
         expect(assets.saved).toHaveLength(1);
         await sync.flushResources();
         expect(server.current.record("characterOrder", "main").data).toEqual(orderBefore);
@@ -319,12 +320,12 @@ describe("a refused or rejected card", () => {
     });
 
     it("a PNG without a card chunk reports noData; only the stamp moved", async () => {
-        const { cards, ids, db } = await boot();
+        const { cards, ids, imports } = await boot();
         const before = ids();
         await cards.importCharacterProcess({ name: "blank.png", data: pngWithText({}) });
         expect(alerts.error).toHaveBeenCalledWith(language.errors.noData);
         expect(ids()).toEqual(before);
-        expect(db().statics.imports).toBe(1);
+        expect(imports()).toBe(1);
     });
 });
 

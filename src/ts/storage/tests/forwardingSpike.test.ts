@@ -6,11 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Phase 3, slice 1: the forwarding-layer spike (`docs/plan/phases/slices/phase-3-settings-sections/
 // spike-forwarding-layer.md`). Every case runs over the test-only prototype layer in
-// `forwardingHarness.svelte.ts`, installed on `DBState.db`. Since Phase 6 slice 6 the real
+// `forwardingHarness.svelte.ts`, installed on the spike's own `$state` holder (`spikeRoot.svelte.ts`;
+// it stood on the aggregate until Phase 6 slice 10 removed it). Since Phase 6 slice 6 the real
 // `getSettingValue` / `setSettingValue` resolve `bindKey`/`bindPath` through the settings record
 // views (the real records), which the prototype does not back: the spike's wrapper components bind
-// through the pre-slice-6 registry copy over `DBState.db` (`spikeRegistry.ts`), and the real
-// `SettingNumber.svelte` case (proof 4) runs over the production layer, installed as the app does.
+// through the pre-slice-6 registry copy over the holder (`spikeRegistry.ts`), and the real
+// `SettingNumber.svelte` case (proof 4) runs over the production records, installed as the app does.
+// The cases about installing accessors on a database object (the install's descriptors and
+// idempotence through the proxy, the shadowing `delete`, the plugin setters' root assignment) were
+// retired with the aggregate in slice 10; the kept rules they also showed (tracked reads, untracked
+// writes into the selected record) are pinned on the views (`presetViews.test.ts`).
 //
 // `stores.svelte.ts` wires module updates into a module-level effect, `Help.svelte` (reached
 // through the real wrapper) imports the alert module, and `database.svelte.ts` (reached through
@@ -31,25 +36,19 @@ vi.mock("../../alert", () => ({
 }));
 
 import type { SettingContext, SettingItem } from "../../setting/types";
-import { DBState } from "../../stores.svelte";
-import { setDatabase, type Database } from "../database.svelte";
-import { resetRecords } from "../records.svelte";
+import { initializeRecords, resetRecords, takeRecordFields } from "../records.svelte";
 import { selectPreset } from "../selection.svelte";
-import { activePersona, activePreset, settings } from "../settingsViews.svelte";
+import { activePersona, activePreset, reconcileSelection, settings } from "../settingsViews.svelte";
 import SettingNumber from "src/lib/Setting/Wrappers/SettingNumber.svelte";
 import {
     createProbe,
     createRawDb,
     currentDb,
     FORWARDED_KEYS,
-    installForwarding,
     mountSpikeDb,
     persona,
-    pluginSetDatabase,
-    pluginSetDatabaseLite,
     preset,
     snapshot,
-    SPIKE_DEFAULTS,
     switchPersona,
     switchTo,
     type SpikeDb,
@@ -140,103 +139,6 @@ afterEach(async () => {
     // Proof 4's real-wrapper case installs the production layer; forget its records and selection.
     selectPreset("");
     resetRecords();
-});
-
-describe("the installed Svelte proxy over forwarding accessors", () => {
-    it("installs enumerable, configurable accessors once; a proxy-level defineProperty of an accessor throws", () => {
-        const raw = createRawDb();
-        installForwarding(raw);
-        const before = FORWARDED_KEYS.map((key) => Object.getOwnPropertyDescriptor(raw, key.rootKey));
-        for (const descriptor of before) {
-            expect(typeof descriptor?.get).toBe("function");
-            expect(typeof descriptor?.set).toBe("function");
-            expect(descriptor?.enumerable).toBe(true);
-            expect(descriptor?.configurable).toBe(true);
-        }
-
-        // Idempotent on the raw object: the same getters stay in place.
-        installForwarding(raw);
-        FORWARDED_KEYS.forEach((key, index) => {
-            expect(Object.getOwnPropertyDescriptor(raw, key.rootKey)?.get).toBe(before[index]?.get);
-        });
-
-        // Idempotent through the proxy too: the descriptor check sees the target's getters and skips,
-        // which is what keeps a second install from hitting the proxy's defineProperty trap.
-        const proxied = mountSpikeDb(raw);
-        expect(() => installForwarding(proxied)).not.toThrow();
-        expect(Object.getOwnPropertyDescriptor(proxied, "temperature")?.get).toBe(before[0]?.get);
-
-        // The trap itself refuses any descriptor without `value` (the spike's first assumption).
-        expect(() =>
-            Object.defineProperty(proxied, "late", {
-                enumerable: true,
-                configurable: true,
-                get: () => 1,
-            }),
-        ).toThrow(/state_descriptors_fixed/);
-    });
-
-    it("get: the getter runs with the proxy as `this`, and the read is tracked through selection and record", () => {
-        const probe = createProbe(() => db.temperature);
-        expect(probe.seen).toEqual([80]);
-
-        preset("a")!.temperature = 81;
-        flushSync();
-        expect(probe.seen).toEqual([80, 81]);
-
-        switchTo("b");
-        flushSync();
-        expect(probe.seen).toEqual([80, 81, 50]);
-        expect(probe.derived()).toBe(50);
-
-        // Reads never turned the accessor into a value source on the proxy.
-        expect(typeof Object.getOwnPropertyDescriptor(db, "temperature")?.get).toBe("function");
-        probe.dispose();
-    });
-
-    it("set: the setter runs against the selected record and no value source shadows the accessor afterwards", () => {
-        const probe = createProbe(() => db.temperature);
-
-        db.temperature = 70;
-        expect(preset("a")!.temperature).toBe(70);
-        expect(preset("b")!.temperature).toBe(50);
-        flushSync();
-        expect(probe.seen).toEqual([80, 70]);
-        expect(typeof Object.getOwnPropertyDescriptor(db, "temperature")?.get).toBe("function");
-
-        // A later switch still reads the other record: the write did not pin a value on the root.
-        switchTo("b");
-        flushSync();
-        expect(probe.seen).toEqual([80, 70, 50]);
-        probe.dispose();
-    });
-
-    it("deleteProperty: shadows the key for reads and enumeration while a later write still reaches the record", () => {
-        expect(delete (db as unknown as Record<string, unknown>).temperature).toBe(true);
-
-        expect(db.temperature).toBeUndefined();
-        expect("temperature" in db).toBe(false);
-        expect(Object.keys(db)).not.toContain("temperature");
-        expect(preset("a")!.temperature).toBe(80);
-
-        // The setter still runs (the target descriptor is intact) ...
-        db.temperature = 66;
-        expect(preset("a")!.temperature).toBe(66);
-
-        // ... but from here on reads come from the proxy's own source, not from the record: the
-        // written value is echoed back, a selection switch no longer changes it, and the proxy
-        // reports a value descriptor for the key (the target's accessor is intact but unreachable).
-        // Refines the spike's assumption ("reads return undefined"): after a write, reads return
-        // the shadow source's value.
-        expect(db.temperature).toBe(66);
-        switchTo("b");
-        expect(db.temperature).toBe(66);
-        expect(preset("b")!.temperature).toBe(50);
-        const shadowed = Object.getOwnPropertyDescriptor(db, "temperature");
-        expect(shadowed?.get).toBeUndefined();
-        expect(shadowed?.value).toBe(66);
-        expect(Object.keys(db)).toContain("temperature");
-    });
 });
 
 describe("proof 1: bind:value on a top-level and a nested forwarded key writes the selected record", () => {
@@ -373,54 +275,26 @@ describe("proof 2: snapshots, JSON, and key enumeration see forwarded values as 
     });
 });
 
-describe("proof 3: the plugin setters land forwarded keys in the selected record", () => {
-    it("setPluginDatabaseLite: per-key assignment on the proxy, then `DBState.db = db`", () => {
-        const before = DBState.db;
-        pluginSetDatabaseLite({ temperature: 66, plainKey: "from-plugin" });
-
-        expect(preset("a")!.temperature).toBe(66);
-        expect(preset("b")!.temperature).toBe(50);
-        expect(db.plainKey).toBe("from-plugin");
-        expect(DBState.db).toBe(before);
-        expect(typeof Object.getOwnPropertyDescriptor(DBState.db, "temperature")?.get).toBe("function");
-        expect(db.temperature).toBe(66);
-    });
-
-    it("setPluginDatabase: the same plus a checkNullish pass that reads through the getters", () => {
-        switchTo("b");
-        pluginSetDatabase({ maxContext: 1234, reasoningEffort: null });
-
-        expect(preset("b")!.maxContext).toBe(1234);
-        expect(preset("a")!.maxContext).toBe(4000);
-        // The plugin nulled the forwarded key; the pass read null through the getter and wrote the
-        // default through the setter, into the selected record only.
-        expect(preset("b")!.reasonEffort).toBe(SPIKE_DEFAULTS.reasoningEffort);
-        expect(preset("a")!.reasonEffort).toBe(1);
-        // Non-nullish forwarded values were read through the getters and left alone.
-        expect(preset("b")!.temperature).toBe(50);
-        expect(persona("p1")!.name).toBe("User One");
-        // `promptSettings` is null on b: the pass defaults it, in the record.
-        expect(preset("b")!.promptSettings).toEqual(SPIKE_DEFAULTS.promptSettings);
-        expect(preset("a")!.promptSettings?.postEndInnerFormat).toBe("a-format");
-    });
-});
-
 describe("proof 4: a wrapper write made in the same flush as a switch must land in the record selected at the time", () => {
     it("the real SettingNumber.svelte (a function binding since slice 5): 91 lands in `a`, `b` is unchanged, onChange fires once", () => {
         // The spike's proof 4 showed that the old wrapper (`localValue` + two effects) lost this
         // edit: the DB-to-local effect ran first and overwrote `localValue` with b's value, so the
         // guarded write-back had nothing to write. Slice 5 rewrote the wrapper to the replacement
         // pattern below; this is the regression test for the real wrapper. Since slice 6 its
-        // registry reads the real records, so it runs over the production layer (presets `a` at 80
+        // registry reads the real records, so it runs over the production records (presets `a` at 80
         // and `b` at 50, as in the harness), installed as the app does; the switch is the selection.
         selectPreset("");
-        setDatabase({
-            characters: [],
-            botPresets: [
-                { id: "a", name: "A", temperature: 80 },
-                { id: "b", name: "B", temperature: 50 },
-            ],
-        } as unknown as Database);
+        initializeRecords(
+            takeRecordFields({
+                characters: [],
+                botPresets: [
+                    { id: "a", name: "A", temperature: 80 },
+                    { id: "b", name: "B", temperature: 50 },
+                ],
+            }),
+        );
+        reconcileSelection();
+        const real = (id: string) => settings.presets.find((entry) => entry.id === id)!;
         const item = numberItem();
         const { target } = render(SettingNumber, { item, ctx: realCtx() });
         const element = target.querySelector<HTMLInputElement>("input")!;
@@ -430,8 +304,8 @@ describe("proof 4: a wrapper write made in the same flush as a switch must land 
         selectPreset("b");
         flushSync();
 
-        expect(preset("a")!.temperature).toBe(91);
-        expect(preset("b")!.temperature).toBe(50);
+        expect(real("a").temperature).toBe(91);
+        expect(real("b").temperature).toBe(50);
         expect(element.value).toBe("50");
         expect(item.onChange).toHaveBeenCalledTimes(1);
         expect(item.onChange).toHaveBeenCalledWith(91, expect.anything());

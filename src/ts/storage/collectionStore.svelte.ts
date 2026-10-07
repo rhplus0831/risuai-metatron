@@ -1,4 +1,11 @@
-import { settings } from "./settingsViews.svelte";
+import {
+    forwardedPresetField,
+    hasPreset,
+    reconcileSelection,
+    settings,
+    writePresetField,
+    writeSettingsRoot,
+} from "./settingsViews.svelte";
 import { untrack } from "svelte";
 import { v4 } from "uuid";
 import type { Database, RisuPersona } from "../../../shared/database.ts";
@@ -16,8 +23,6 @@ import {
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { SECTION_FIELDS } from "../../../shared/sections.ts";
 import { valueKindOf } from "../../../shared/valueKinds.ts";
-import { DBState } from "../stores.svelte";
-import { forwardedPresetField, hasPreset, reconcileSelection, writePresetField } from "./forwarding.svelte";
 import {
     detach,
     MutationTargetGoneError,
@@ -35,9 +40,9 @@ import { selection } from "./selection.svelte";
  * The mutations of the settings sections, the small collections, presets, modules, and plugins
  * (Phase 4). The external contracts write these records only through the functions here. Each
  * validates its whole input before the mirror changes (a refusal throws `MutationValidationError`
- * and changes nothing), detaches the caller's data, and writes by id through `DBState.db`, whose
- * fields are the settings records (`records.svelte.ts`, Phase 6 slice 4): a write queues its record's
- * save, and a function that writes several times does so in one `batchRecordWrites` scope, so each
+ * and changes nothing), detaches the caller's data, and writes by id into the settings records
+ * (`records.svelte.ts`, Phase 6 slice 4) through their views (`settingsViews.svelte.ts`): a write
+ * queues its record's save, and a function that writes several times does so in one `batchRecordWrites` scope, so each
  * record it changed is queued once. The checks refuse what they can see (JSON data, the kind of a preset field,
  * the shape of a list); the server's normalizers may still rewrite a value that passes (a
  * non-canonical one then stays different in the mirror until reload, as Phase 3 accepted).
@@ -51,10 +56,6 @@ const llmSecretKeys = new Set<string>([...(SECTION_FIELDS.llmSecrets as readonly
 const personaKeys = new Set(["username", "userIcon", "userNote", "personaPrompt"]);
 const selectionKeys = new Set(["botPresetsId", "selectedPersona", "loreBookPage"]);
 const nullablePresetFields = new Set<PresetField>(PRESET_NULLABLE_FIELDS);
-
-function db(): Database & Record<string, unknown> {
-    return DBState.db as Database & Record<string, unknown>;
-}
 
 function checkPresetValue(key: string, field: PresetField, value: unknown) {
     if (value === undefined) {
@@ -111,15 +112,15 @@ export function updateSettings(patch: Record<string, unknown>, options: { preset
     const entries = Object.entries(patch).map(([key, value]) => ({ key, value, target: checkSettingKey(key, value) }));
     const prepared = entries.map((entry) => ({ ...entry, value: detach(entry.value) }));
     const presetId = options.presetId ?? untrack(() => selection.presetId);
-    if (entries.some((entry) => entry.target === "preset") && !hasPreset(DBState.db, presetId)) {
+    if (entries.some((entry) => entry.target === "preset") && !hasPreset(presetId)) {
         throw new MutationTargetGoneError(`preset ${presetId}`);
     }
     batchRecordWrites(() => {
         for (const { key, value, target } of prepared) {
             if (target === "preset") {
-                writePresetField(DBState.db, presetId, key, value);
+                writePresetField(presetId, key, value);
             } else {
-                db()[key] = value;
+                writeSettingsRoot(key, value);
             }
         }
     });
@@ -144,7 +145,7 @@ export function setPersonas(list: unknown) {
     requireArray("personas", list);
     requireJsonData("personas", list);
     settings.personas = normalizePersonas(detach(list));
-    reconcileSelection(DBState.db);
+    reconcileSelection();
 }
 
 /** Adds a persona under the same contract; an id that is missing, invalid, or taken gets a new one. Returns the id. */

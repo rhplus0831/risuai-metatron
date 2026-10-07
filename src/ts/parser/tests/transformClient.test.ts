@@ -58,13 +58,22 @@ vi.mock("../../storage/chatStore.svelte", async () => {
 });
 vi.mock("../../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
-    return { CharEmotion: writable({}), DBState: { db: {} } };
+    return { CharEmotion: writable({}) };
 });
-vi.mock("../../storage/forwarding.svelte", () => ({
-    selectedPreset: () => (state.preset ? { id: state.preset } : undefined),
-    selectedPersona: () => (state.persona ? { id: state.persona } : undefined),
+// The selected preset's and persona's ids, as the views serve them (`undefined` when there is none).
+vi.mock("../../storage/settingsViews.svelte", () => ({
+    activePreset: {
+        get id() {
+            return state.preset;
+        },
+    },
+    activePersona: {
+        get id() {
+            return state.persona;
+        },
+    },
 }));
-vi.mock("../../storage/nodeStorage", () => ({
+vi.mock("../../storage/serverAuth", () => ({
     authFetch: async (path: string, init: { body: string; headers: Record<string, string> }) => {
         const body = JSON.parse(init.body);
         state.calls.push({ path, body, headers: init.headers });

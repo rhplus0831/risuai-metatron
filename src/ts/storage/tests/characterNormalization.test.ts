@@ -1,4 +1,3 @@
-import { get } from "svelte/store";
 import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeCharacter } from "../../../../shared/characters.ts";
@@ -22,7 +21,7 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -97,20 +96,20 @@ async function boot() {
         ],
     });
 
-    const stores = await import("../../stores.svelte");
     const client = await import("../resourceClient");
     const sync = await import("../resourceSync.svelte");
     const chat = await import("../chatStore.svelte");
     const bootstrap = await import("../../bootstrap");
-    const database = await import("../database.svelte");
+    const snapshots = await import("../snapshots.svelte");
     const characterStore = await import("../characterStore.svelte");
+    const selectionModule = await import("../selection.svelte");
     const validation = await import("../mutationValidation");
 
     const snapshot = await client.readKinds(KINDS, { chats: true });
     sync.seedResources(snapshot);
     chat.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    database.setDatabase(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(-1);
+    bootstrap.installBootRecords(snapshot);
+    selectionModule.selectCharacter(null);
     chat.initializeChats();
     const adding = vi.spyOn(window, "addEventListener").mockImplementation(() => {});
     const addingDocument = vi.spyOn(document, "addEventListener").mockImplementation(() => {});
@@ -130,9 +129,11 @@ async function boot() {
     };
     fake.onFeed = (event) => (live.paused ? live.queue.push(event) : deliver(event));
 
-    const db = () => stores.DBState.db as any;
-    const character = (id: string) => db().characters.find((entry: any) => entry?.chaId === id);
+    const character = (id: string) => characterStore.characterList().find((entry: any) => entry?.chaId === id) as any;
     const record = (id: string) => fake.record("characters", id)?.data as any;
+    /** The mirror as text: the legacy flat shape of the settings (`rootSnapshot`) and the character list. */
+    const mirrorText = () =>
+        JSON.stringify({ root: snapshots.rootSnapshot(), characters: characterStore.characterList() });
     /** The character as the save loop projects it (own fields in their order, no local fields), as text. */
     const projected = (id: string) =>
         JSON.stringify(Object.fromEntries(Object.entries(plain(character(id))).filter(([key]) => !LOCAL.has(key))));
@@ -172,12 +173,12 @@ async function boot() {
     return {
         fake,
         live,
-        stores,
         sync,
         chat,
         characterStore,
+        selectionModule,
         validation,
-        db,
+        mirrorText,
         character,
         record,
         projected,
@@ -298,8 +299,8 @@ describe("a character's creation (prepareNewCharacter)", () => {
     });
 
     it("refuses a creation whose lore cannot be converted, or a group whose members are not a list, and changes nothing", async () => {
-        const { characterStore, validation, db, fake, sync } = await boot();
-        const mirror = JSON.stringify(db());
+        const { characterStore, validation, mirrorText, fake, sync } = await boot();
+        const mirror = mirrorText();
         for (const bad of [
             { name: "bad lore", globalLore: [oldEntry(), null] },
             { name: "bad lore", globalLore: "x" },
@@ -310,7 +311,7 @@ describe("a character's creation (prepareNewCharacter)", () => {
                 validation.MutationValidationError,
             );
         }
-        expect(JSON.stringify(db())).toBe(mirror);
+        expect(mirrorText()).toBe(mirror);
         await sync.flushResources();
         expect(fake.batchCount()).toBe(0);
         expect(fake.record("characters", "n")).toBeNull();
@@ -684,7 +685,7 @@ describe("chat defaults on the client", () => {
 
 describe("a selection", () => {
     it("changeChar writes nothing and stamps no lastInteraction", async () => {
-        const { fake, stores, character, characterStore, record, settle, noNotice } = await boot();
+        const { fake, selectionModule, character, characterStore, record, settle, noNotice } = await boot();
         const { changeChar } = await import("../../characters");
         const added = characterStore.addCharacter({ name: "S" });
         await settle();
@@ -693,10 +694,10 @@ describe("a selection", () => {
             c: fake.record("characters", "c")!.revision,
             s: fake.record("characters", added)!.revision,
         };
-        const indexOf = (id: string) => stores.DBState.db.characters.findIndex((entry: any) => entry.chaId === id);
+        const indexOf = (id: string) => characterStore.characterList().findIndex((entry: any) => entry.chaId === id);
         for (const id of ["c", added, "c"]) {
             await changeChar(id);
-            expect(get(stores.selectedCharID)).toBe(indexOf(id));
+            expect(selectionModule.selectedIndex()).toBe(indexOf(id));
         }
         await settle();
         expect(fake.batchCount()).toBe(0);

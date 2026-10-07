@@ -11,17 +11,9 @@ import {
     alertWait,
     waitAlert,
 } from "../alert";
-import { setDatabase, type customscript, type loreBook, type triggerscript } from "../storage/database.svelte";
+import type { customscript, loreBook, triggerscript } from "../storage/database.svelte";
 import { findChat, selectedChat } from "../storage/chatStore.svelte";
-import {
-    AppendableBuffer,
-    downloadFile,
-    forageStorage,
-    LocalWriter,
-    readImage,
-    saveAsset,
-    VirtualWriter,
-} from "../globalApi.svelte";
+import { AppendableBuffer, downloadFile, LocalWriter, readImage, saveAsset, VirtualWriter } from "../globalApi.svelte";
 import { checkPersonaBinded, selectSingleFile, sleep } from "../util";
 import { v4 } from "uuid";
 import { convertExternalLorebook } from "./lorebook.svelte";

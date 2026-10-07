@@ -9,7 +9,7 @@ import { StoreBackedServer } from "./storeBackedServer";
 /** The server of the running test, for the chat module's own reads (a load of a chat held as its summary). */
 const { serverHolder } = vi.hoisted(() => ({ serverHolder: { current: null as any } }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => serverHolder.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -28,7 +28,6 @@ vi.mock("../../alert", () => ({
 }));
 
 type ChatModule = typeof import("../chatStore.svelte");
-type Stores = typeof import("../../stores.svelte");
 
 const m = (id: string | undefined, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -71,19 +70,21 @@ async function boot(server?: StoreBackedServer) {
             ],
         });
     }
-    const stores: Stores = await import("../../stores.svelte");
     const chat: ChatModule = await import("../chatStore.svelte");
-    const database = await import("../database.svelte");
     const records = await import("../records.svelte");
+    const characterStore = await import("../characterStore.svelte");
+    const selection = await import("../selection.svelte");
     const read = server.store.readKinds([characters], { chats: true });
     // The characters are records since Phase 6 slice 5: installed as `loadData` installs them, so the
     // selection (by id) sees them.
-    database.setDatabaseLite({ characters: read.kinds.characters.map((record) => record.data) } as any);
+    records.initializeRecords(
+        records.takeRecordFields({ characters: read.kinds.characters.map((record) => record.data) }),
+    );
     chat.seedChats(read.chats!, read.chatOrders!);
-    chat.assembleChats(stores.DBState.db.characters as any, read.chats!, read.chatOrders!);
+    chat.assembleChats(characterStore.characterList() as any, read.chats!, read.chatOrders!);
     chat.initializeChats();
     const ref = { chaId: "c", chatId: "k" };
-    const character = () => stores.DBState.db.characters[0] as any;
+    const character = () => characterStore.characterList()[0] as any;
     const take = () => chat.takeChatWork(new Set());
     const apply = (work: ChatModule["takeChatWork"] extends (...args: any) => infer R ? R : never) =>
         work.groups.length + work.orders.length === 0
@@ -138,7 +139,21 @@ async function boot(server?: StoreBackedServer) {
         return { conflicts, ...result };
     };
     const open = () => chat.unsettledChatObligations(chat.captureChatObligations());
-    return { server, stores, chat, records, ref, character, take, apply, ack, commit, recover, open };
+    return {
+        server,
+        chat,
+        records,
+        characterStore,
+        selection,
+        ref,
+        character,
+        take,
+        apply,
+        ack,
+        commit,
+        recover,
+        open,
+    };
 }
 
 beforeEach(() => {
@@ -858,7 +873,7 @@ describe("streaming message identity", () => {
 
 describe("new characters", () => {
     it("normalizeNewCharacter gives a new character's chats and messages ids (a default chat when it has none) without queuing anything; adoptCharacter queues the creates once", async () => {
-        const { server, stores, chat, records } = await boot();
+        const { server, chat, records, characterStore, selection } = await boot();
         // The list changes only through its operations (Phase 6 slice 5): the raw insertion
         // `addCharacter` makes, here without the normalization this case calls by hand. Since Phase 6
         // slice 9a the record holds no chats: they are installed in the chat module first
@@ -889,8 +904,8 @@ describe("new characters", () => {
         }
         chat.normalizeNewCharacter("n");
         chat.normalizeNewCharacter("e");
-        const n = stores.DBState.db.characters[1] as any;
-        const e = stores.DBState.db.characters[2] as any;
+        const n = characterStore.characterList()[1] as any;
+        const e = characterStore.characterList()[2] as any;
         expect(n.chats.map((entry: any) => typeof entry.id)).toEqual(["string", "string", "string"]);
         expect(new Set(n.chats.map((entry: any) => entry.id)).size).toBe(3);
         expect(n.chats[1].id).toBe("same");
@@ -902,9 +917,9 @@ describe("new characters", () => {
             { id: expect.any(String), message: [], note: "", name: "Chat 1", localLore: [], fmIndex: -1 },
         ]);
         expect(e.chatPage).toBe(0);
-        stores.selectedCharID.set(0);
+        selection.selectCharacterAt(0);
         expect(chat.currentChatRef()).toEqual({ chaId: "c", chatId: "k" });
-        stores.selectedCharID.set(2);
+        selection.selectCharacterAt(2);
         expect(chat.currentChatRef()).toEqual({ chaId: "e", chatId: e.chats[0].id });
         // Nothing is queued: the creates travel with the character's own create in the save loop.
         expect(chat.hasChatWork()).toBe(false);

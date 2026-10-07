@@ -20,7 +20,7 @@ const { server, alerts, captured } = vi.hoisted(() => ({
     captured: { api: null as CapturedApi | null },
 }));
 
-vi.mock("src/ts/storage/nodeStorage", () => ({
+vi.mock("src/ts/storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -38,8 +38,8 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleLorebooks: vi.fn(() => []),
     getModuleAssets: vi.fn(() => []),
 }));
-// The real parser module installs a module-level `$effect.root` over `selIdState`, which is still
-// uninitialized here because the two modules import each other. Nothing under test parses CBS.
+// The real parser module installs a module-level `$effect.root` over the selection, which is still
+// uninitialized here because the modules import each other. Nothing under test parses CBS.
 vi.mock("src/ts/parser/parser.svelte", () => ({
     hasher: vi.fn(async () => ""),
     risuChatParser: vi.fn((text: string) => text),
@@ -49,7 +49,6 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     getFetchLogs: vi.fn(() => []),
     globalFetch: vi.fn(),
     fetchNative: vi.fn(),
-    forageStorage: { getItem: vi.fn(), setItem: vi.fn(), keys: vi.fn(async () => []) },
     saveAsset: vi.fn(),
     readImage: vi.fn(),
     getFileSrc: vi.fn(),
@@ -174,7 +173,7 @@ describe("plugin storage writes sent without the watcher", () => {
     });
 
     it("a record another tab changed is reloaded on the conflict and not echoed back", async () => {
-        const { api, sync, storage, fake, db } = await boot();
+        const { api, sync, storage, fake, settings } = await boot();
         await api._setPluginStorage("k", 1);
         await sync.flushResources();
         // Another tab writes the record; this client's next write is stale and is discarded.
@@ -182,7 +181,7 @@ describe("plugin storage writes sent without the watcher", () => {
         await api._setPluginStorage("k", 2);
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["pluginStorage/main"]);
-        expect(plain(db().pluginCustomStorage)).toEqual({ _pluginStorage: { k: 1, remote: true } });
+        expect(plain(settings.pluginStorage)).toEqual({ _pluginStorage: { k: 1, remote: true } });
         expect(await api._getPluginStorage("remote")).toBe(true);
         expect(await api._getPluginStorage("k")).toBe(1);
         // The hydrated data is the saved state: nothing is echoed back.
@@ -228,11 +227,11 @@ describe("the other setters land in their owners' records", () => {
     });
 
     it("an explicit characterOrder sent before the characters it names is the saved order", async () => {
-        const { api, sync, record, fake, db } = await boot();
+        const { api, sync, record, fake, characterList } = await boot();
         await api.setDatabaseLite({
             characterOrder: [{ id: "f", name: "F", color: "", data: ["e", "c"] }, "d"],
             characters: [
-                plain(db().characters[0]),
+                plain(characterList()[0]),
                 { chaId: "d", name: "D", chats: [] },
                 { chaId: "e", name: "E", chats: [] },
             ],
@@ -242,6 +241,6 @@ describe("the other setters land in their owners' records", () => {
         expect(record("characters", "d")).toMatchObject({ name: "D" });
         expect(record("characters", "e")).toMatchObject({ name: "E" });
         expect(fake.order("e")!.ids).toHaveLength(1);
-        expect(db().characters.map((character: any) => character.chaId)).toEqual(["c", "d", "e"]);
+        expect(characterList().map((character: any) => character.chaId)).toEqual(["c", "d", "e"]);
     });
 });

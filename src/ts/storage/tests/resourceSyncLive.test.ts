@@ -25,7 +25,7 @@ const { server, alerts, dispatch } = vi.hoisted(() => ({
     dispatch: { gate: null as Promise<void> | null },
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     // `authFetch`'s contract: `beforeDispatch` runs after authentication and signing, right before the request.
     authFetch: async (path: string, init?: RequestInit, options: { beforeDispatch?: () => void } = {}) => {
         if (dispatch.gate) {
@@ -44,6 +44,7 @@ vi.mock("../../alert", () => ({
 }));
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
+    changeLanguage: vi.fn(),
 }));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -56,10 +57,10 @@ vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
-type Stores = typeof import("../../stores.svelte");
 type ChatModule = typeof import("../chatStore.svelte");
 type Bootstrap = typeof import("../../bootstrap");
-type DatabaseModule = typeof import("../database.svelte");
+type SettingsViews = typeof import("../settingsViews.svelte");
+type CharacterStore = typeof import("../characterStore.svelte");
 type Selection = typeof import("../selection.svelte");
 type Secrets = typeof import("../llmSecrets.svelte");
 
@@ -107,20 +108,20 @@ async function boot(options: { secret?: boolean } = {}) {
     });
     server.current = fake;
 
-    const stores: Stores = await import("../../stores.svelte");
     const client: Client = await import("../resourceClient");
     const sync: Sync = await import("../resourceSync.svelte");
     const chatModule: ChatModule = await import("../chatStore.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
-    const database: DatabaseModule = await import("../database.svelte");
+    const { settings }: SettingsViews = await import("../settingsViews.svelte");
+    const { characterList }: CharacterStore = await import("../characterStore.svelte");
     const selection: Selection = await import("../selection.svelte");
     const secrets: Secrets = await import("../llmSecrets.svelte");
 
     const snapshot = await client.readKinds(KINDS, { chats: true });
     sync.seedResources(snapshot);
     chatModule.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
-    database.setDatabaseLite(bootstrap.assembleDatabase(snapshot));
-    stores.selectedCharID.set(0);
+    bootstrap.installBootRecords(snapshot);
+    selection.selectCharacterAt(0);
     chatModule.initializeChats();
     const adding = vi.spyOn(window, "addEventListener").mockImplementation(() => {});
     const addingDocument = vi.spyOn(document, "addEventListener").mockImplementation(() => {});
@@ -174,12 +175,13 @@ async function boot(options: { secret?: boolean } = {}) {
         close: () => fake.close(),
     });
 
-    const db = () => stores.DBState.db as any;
-    const character = (id = "c") => db().characters.find((entry: any) => entry.chaId === id);
+    /** The character wrappers, with the chat module's compatibility view (`chats`, `chatPage`). */
+    const characters = () => characterList() as any[];
+    const character = (id = "c") => characters().find((entry: any) => entry.chaId === id);
     // The membership (Phase 6 slice 9b): a chat another writer created is listed as a summary until it
-    // is loaded, so the facade (the loaded chats only) is not the list.
+    // is loaded, so the compatibility view (the loaded chats only) is not the list.
     const chatIds = (id = "c") => chatModule.chatList(id).map((entry) => entry.id);
-    // The chat module's own read of a loaded chat (Phase 6 slice 9a): the facade's `chats` builds a
+    // The chat module's own read of a loaded chat (Phase 6 slice 9a): the wrapper's `chats` builds a
     // fresh list on every read, which a check over a thousand chats would rebuild once per chat. A
     // case reading a chat that arrived as a summary loads it first (`ensureChatLoaded`).
     const texts = (chaId: string, chatId: string) =>
@@ -188,14 +190,14 @@ async function boot(options: { secret?: boolean } = {}) {
         fake,
         sync,
         client,
-        stores,
         chat: chatModule,
         selection,
         secrets,
         live,
         flushFeed,
         intercept,
-        db,
+        settings,
+        characters,
         character,
         chatIds,
         texts,
@@ -240,10 +242,10 @@ const noNotice = () => {
 
 describe("records another writer committed", () => {
     it("applies an idle record's change without a write, a notice, or a discard entry", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         editUi(fake, { zoomsize: 150 });
         await settle(fake);
-        expect(db().zoomsize).toBe(150);
+        expect(settings.ui.zoomsize).toBe(150);
         expect(sync.heldRecordRevision("ui", "main")).toBe(fake.record("ui", "main")!.revision);
         expect(reads(fake)).toBe(1);
         expect(fake.batchCount()).toBe(0);
@@ -252,9 +254,9 @@ describe("records another writer committed", () => {
     });
 
     it("applies another writer's character update raw, without a write; the element and a retained nested wrapper then write into the applied copy on its revision (Phase 6 slice 5a)", async () => {
-        const { fake, sync, stores, character } = await boot();
+        const { fake, sync, characters, character } = await boot();
         // `d` is not selected (`c` is): its record's own writes are saved all the same.
-        expect(stores.DBState.db.characters[0].chaId).toBe("c");
+        expect(characters()[0].chaId).toBe("c");
         character("d").globalLore = [{ key: "k", content: "mine" }];
         await tick();
         await sync.flushResources();
@@ -292,8 +294,8 @@ describe("records another writer committed", () => {
     });
 
     it("drops the echo of this tab's own save that arrives before its acknowledgement, and keeps the acknowledged revision", async () => {
-        const { fake, sync, db } = await boot();
-        db().zoomsize = 120;
+        const { fake, sync, settings } = await boot();
+        settings.ui.zoomsize = 120;
         await tick();
         await sync.flushResources();
         // The feed delivered the commit inside the batch request, before its answer.
@@ -302,19 +304,19 @@ describe("records another writer committed", () => {
         await settle(fake);
         expect(reads(fake)).toBe(0);
         expect(fake.batchCount()).toBe(1);
-        expect(db().zoomsize).toBe(120);
+        expect(settings.ui.zoomsize).toBe(120);
         noNotice();
     });
 
     it("does not apply a copy read while this tab edited the record; its save then conflicts through the 409 path with the notice", async () => {
-        const { fake, sync, db, intercept } = await boot();
-        const iconsize = db().iconsize;
+        const { fake, settings, intercept } = await boot();
+        const iconsize = settings.ui.iconsize;
         intercept.hold = (path) => path === "/api/resources/read";
         editUi(fake, { zoomsize: 200 });
         await vi.advanceTimersByTimeAsync(100);
         expect(intercept.release).not.toBeNull();
         // The local edit lands while the read is out.
-        db().iconsize = 77;
+        settings.ui.iconsize = 77;
         intercept.release!();
         await vi.advanceTimersByTimeAsync(0);
         // The fetched copy was not applied over the edit: the edit was still in the mirror when the batch left.
@@ -323,22 +325,22 @@ describe("records another writer committed", () => {
         await vi.advanceTimersByTimeAsync(3000);
         // Two tabs edited one whole-record section: the later saver's edit goes, with the notice.
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
-        expect(db().zoomsize).toBe(200);
-        expect(db().iconsize).toBe(iconsize);
+        expect(settings.ui.zoomsize).toBe(200);
+        expect(settings.ui.iconsize).toBe(iconsize);
         expect(fake.record("ui", "main")!.data.iconsize).toBe(iconsize);
     });
 
     it("leaves a record alone while its save is in flight and applies a later commit after the acknowledgement", async () => {
-        const { fake, db, intercept } = await boot();
+        const { fake, settings, intercept } = await boot();
         intercept.afterApply = (path) => {
             expect(path).toBe("/api/resources/batch");
             // Another tab commits right after this tab's save, before its answer arrives.
             editUi(fake, { iconsize: 55 });
         };
-        db().zoomsize = 111;
+        settings.ui.zoomsize = 111;
         await settle(fake);
-        expect(db().zoomsize).toBe(111);
-        expect(db().iconsize).toBe(55);
+        expect(settings.ui.zoomsize).toBe(111);
+        expect(settings.ui.iconsize).toBe(55);
         expect(fake.record("ui", "main")!.data).toMatchObject({ zoomsize: 111, iconsize: 55 });
         expect(fake.batchCount()).toBe(1);
         expect(reads(fake)).toBe(1);
@@ -346,7 +348,7 @@ describe("records another writer committed", () => {
     });
 
     it("does not apply a read answer older than a job's hydration that landed meanwhile", async () => {
-        const { fake, sync, db, intercept } = await boot();
+        const { fake, sync, settings, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         editUi(fake, { zoomsize: 201 });
         await vi.advanceTimersByTimeAsync(100);
@@ -358,26 +360,26 @@ describe("records another writer committed", () => {
         );
         intercept.release!();
         await settle(fake);
-        expect(db().zoomsize).toBe(202);
+        expect(settings.ui.zoomsize).toBe(202);
         expect(sync.heldRecordRevision("ui", "main")).toBe(newest.revision);
         expect(fake.batchCount()).toBe(0);
         noNotice();
     });
 
     it("resolves this tab's preset selection after a presets replacement removed the selected one, without a write", async () => {
-        const { fake, db, selection } = await boot();
+        const { fake, settings, selection } = await boot();
         const ids = (fake.record("presets", "main")!.data as { id: string }[]).map((preset) => preset.id);
         selection.selectPreset(ids[1]);
         fake.set("presets", "main", [fake.record("presets", "main")!.data[0]]);
         await settle(fake);
-        expect(db().botPresets.map((preset: any) => preset.id)).toEqual([ids[0]]);
+        expect(settings.presets.map((preset: any) => preset.id)).toEqual([ids[0]]);
         expect(selection.selection.presetId).toBe(ids[0]);
         expect(fake.batchCount()).toBe(0);
         noNotice();
     });
 
     it("brings an `authRefreshes` entry a server job wrote to this tab (the job socket never carries that kind)", async () => {
-        const { fake, sync, db } = await boot();
+        const { fake, sync, settings } = await boot();
         fake.lock!.addToken("T");
         const kind = fake.kind("authRefreshes");
         const entries = [{ url: "https://mcp.test", refreshToken: "refresh-1" }];
@@ -394,13 +396,13 @@ describe("records another writer committed", () => {
             sync.applyHydration({ kind: "authRefreshes", id: "main", revision: stored.revision, data: stored.data }),
         ).toBe(false);
         await settle(fake);
-        expect(db().authRefreshes).toEqual(entries);
+        expect(settings.authRefreshes).toEqual(entries);
         expect(fake.batchCount()).toBe(0);
         noNotice();
     });
 
     it("adopts another credential with the same hint: the masked status is the same, every credential cache is invalidated, nothing is written", async () => {
-        const { fake, db, secrets } = await boot({ secret: true });
+        const { fake, settings, secrets } = await boot({ secret: true });
         const path = secretPathKey({ kind: "flat", field: "openAIKey" });
         expect(secrets.llmSecretState.masked?.openAIKey).toEqual({ set: true, hint: "1234" });
         const before = secrets.llmSecretState.versions[path] ?? 0;
@@ -411,7 +413,7 @@ describe("records another writer committed", () => {
         await settle(fake);
         expect(secrets.llmSecretState.masked?.openAIKey).toEqual({ set: true, hint: "1234" });
         expect(secrets.llmSecretState.versions[path]).toBe(before + 1);
-        expect(db().openAIKey).toBe("");
+        expect(settings.llmSecrets.openAIKey).toBe("");
         expect(JSON.stringify(fake.feedEvents)).not.toContain("credential");
         expect(fake.batchCount()).toBe(0);
         expect(fake.secretRequests()).toEqual([]);
@@ -464,15 +466,12 @@ describe("characters another writer created or deleted", () => {
     });
 
     it("removes a deleted selected character and moves the selection home; a recreation (a new incarnation) is inserted", async () => {
-        const { fake, stores, db, character, chatIds } = await boot();
+        const { fake, selection, characters, character, chatIds } = await boot();
         fake.store.delete(characterKind(fake), "c", fake.record("characters", "c")!.revision);
         await settle(fake);
         expect(character("c")).toBeUndefined();
-        expect(db().characters.map((entry: any) => entry.chaId)).toEqual(["d"]);
-        expect(stores.selectedCharID).toBeDefined();
-        let selected = 0;
-        stores.selectedCharID.subscribe((value) => (selected = value))();
-        expect(selected).toBe(-1);
+        expect(characters().map((entry: any) => entry.chaId)).toEqual(["d"]);
+        expect(selection.selectedIndex()).toBe(-1);
         fake.store.applyChanges({
             ops: [{ kind: characterKind(fake), id: "c", baseRevision: null, data: { chaId: "c", name: "C2" } }],
             chats: [create("c", "k2")],
@@ -485,12 +484,12 @@ describe("characters another writer created or deleted", () => {
     });
 
     it("applies a cascaded deletion (the character, its chats, and its order) of a non-selected character", async () => {
-        const { fake, db } = await boot();
+        const { fake, characters } = await boot();
         fake.store.delete(characterKind(fake), "d", fake.record("characters", "d")!.revision);
         const event = fake.feedEvents.at(-1) as Extract<ServerFeedEvent, { type: "change" }>;
         expect(event.changes.chats).toEqual([{ characterId: "d", id: "m", revision: null }]);
         await settle(fake);
-        expect(db().characters.map((entry: any) => entry.chaId)).toEqual(["c"]);
+        expect(characters().map((entry: any) => entry.chaId)).toEqual(["c"]);
         expect(fake.batchCount()).toBe(0);
         noNotice();
     });
@@ -624,13 +623,13 @@ describe("characters another writer created or deleted", () => {
     });
 
     it("keeps the selected character after an earlier one is removed without running the selection's side effects (finding 6)", async () => {
-        const { fake, sync, stores, db, character } = await boot();
-        db().hypaV3 = true;
-        db().hypaV3Presets = [
-            { ...(db().hypaV3Presets?.[0] ?? {}), id: "h", name: "H", settings: { alwaysToggleOn: true } },
-        ];
-        db().hypaV3PresetId = "h";
-        stores.selectedCharID.set(1);
+        const { fake, sync, selection, settings, characters, character } = await boot();
+        settings.memoryTranslateMedia.hypaV3 = true;
+        settings.hypaV3Presets.items = [
+            { ...(settings.hypaV3Presets.items?.[0] ?? {}), id: "h", name: "H", settings: { alwaysToggleOn: true } },
+        ] as any;
+        settings.hypaV3Presets.selectedId = "h";
+        selection.selectCharacterAt(1);
         // Selecting `d` is a selection: it switches its memory on (a write).
         expect(character("d").supaMemory).toBe(true);
         character("d").supaMemory = false;
@@ -640,10 +639,8 @@ describe("characters another writer created or deleted", () => {
         const batches = fake.batchCount();
         fake.store.delete(characterKind(fake), "c", fake.record("characters", "c")!.revision);
         await settle(fake);
-        let selected = -2;
-        stores.selectedCharID.subscribe((value) => (selected = value))();
-        expect(selected).toBe(0);
-        expect(db().characters[0].chaId).toBe("d");
+        expect(selection.selectedIndex()).toBe(0);
+        expect(characters()[0].chaId).toBe("d");
         expect(character("d").supaMemory).toBe(false);
         expect(fake.batchCount()).toBe(batches);
     });
@@ -925,7 +922,7 @@ describe("work that waits", () => {
 
 describe("the reconcile after a `hello`", () => {
     it("reads every record that differs, drops a removed one, and reads nothing when nothing differs", async () => {
-        const { fake, sync, live, db, character, chatIds, texts } = await boot();
+        const { fake, sync, live, settings, character, chatIds, texts } = await boot();
         live.paused = true;
         editUi(fake, { zoomsize: 175 });
         fake.store.delete(characterKind(fake), "d", fake.record("characters", "d")!.revision);
@@ -943,7 +940,7 @@ describe("the reconcile after a `hello`", () => {
         live.paused = false;
         sync.reconcileRemote(fake.store.listRevisions());
         await settle(fake);
-        expect(db().zoomsize).toBe(175);
+        expect(settings.ui.zoomsize).toBe(175);
         expect(character("d")).toBeUndefined();
         expect(chatIds()).toEqual(["k", "j", "z"]);
         expect(texts("c", "k")[0]).toBe("A9");
@@ -958,7 +955,7 @@ describe("the reconcile after a `hello`", () => {
 
 describe("halting for a restore", () => {
     it("applies nothing and sends nothing once an epoch change lands during a live read (finding 9)", async () => {
-        const { fake, client, db, character, intercept } = await boot();
+        const { fake, client, settings, character, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         editUi(fake, { zoomsize: 190 });
         // A local edit of another record waits for this cycle's batch, after the live read.
@@ -970,16 +967,16 @@ describe("halting for a restore", () => {
         intercept.release!();
         await vi.advanceTimersByTimeAsync(5000);
         expect(fake.batchCount()).toBe(0);
-        expect(db().zoomsize).not.toBe(190);
+        expect(settings.ui.zoomsize).not.toBe(190);
         expect(fake.record("characters", "c")!.data.name).toBe("C");
         expect(alerts.terminal).toHaveBeenCalledWith("restored");
     });
 
     it("refuses a batch at dispatch when saving halted after it was captured (finding 9)", async () => {
-        const { fake, sync, client, db, chat } = await boot();
+        const { fake, sync, client, settings, chat } = await boot();
         let open!: () => void;
         dispatch.gate = new Promise<void>((resolve) => (open = resolve));
-        db().iconsize = 44;
+        settings.ui.iconsize = 44;
         chat.setMessageText(refK, "a", "local");
         const flushing = sync.flushResources().catch((error) => error);
         await vi.advanceTimersByTimeAsync(0);

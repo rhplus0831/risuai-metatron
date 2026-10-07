@@ -1,6 +1,6 @@
 import { fetchNative, textifyReadableStream } from "src/ts/globalApi.svelte";
 import { LLMFlags, LLMFormat, type LLMModel } from "src/ts/model/modellist";
-import { getDatabase } from "src/ts/storage/database.svelte";
+import { getDatabase } from "./database";
 import { base64url, simplifySchema } from "src/ts/util";
 import { v4 } from "uuid";
 import { saveInlayedSignature, setInlayAsset, writeInlayImage, type InlaySignature } from "../../../files/inlays";

@@ -1,5 +1,5 @@
 import { addFetchLog } from "../globalApi.svelte";
-import { authFetch } from "../storage/nodeStorage";
+import { authFetch } from "../storage/serverAuth";
 import { assertSaveAdmission, awaitSecretWrites } from "../storage/resourceSync.svelte";
 import { bodyIntercepterStore } from "../stores.svelte";
 

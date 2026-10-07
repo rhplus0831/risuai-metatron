@@ -40,7 +40,8 @@ vi.mock("../storage/characterStore.svelte", () => ({
     updateCharacter: stubs.updateCharacter,
     characterList: () => stubs.db.characters,
 }));
-vi.mock("../stores.svelte", () => ({ DBState: { db: stubs.db } }));
+// `stores.svelte` runs module effects; the module under test reads the records through the stubs above.
+vi.mock("../stores.svelte", () => ({}));
 vi.mock("./prereroll", () => ({ addRerolls: stubs.addRerolls }));
 
 type Module = typeof import("./serverGeneration");

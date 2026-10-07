@@ -25,7 +25,7 @@ const { server, alerts } = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("./storage/nodeStorage", () => ({
+vi.mock("./storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -73,8 +73,9 @@ async function boot() {
     const booted = await bootMutations((fake) => {
         server.current = fake;
     });
-    // `globalApi`, `util`, and `database.svelte` stay real (a `vi.mock` wrapper would keep the first
-    // graph's `DBState`); the file dialog, the image store, and the download are spied on this graph.
+    // `globalApi`, `util`, and `database.svelte` stay real (a `vi.mock` wrapper would outlive
+    // `vi.resetModules` and keep the first graph's records); the file dialog, the image store, and
+    // the download are spied on this graph.
     const util = await import("./util");
     const database = await import("./storage/database.svelte");
     const globalApi = await import("./globalApi.svelte");
@@ -117,19 +118,19 @@ afterEach(() => {
 
 describe("selection by id", () => {
     it("changeChar selects the character by its id (also after an earlier one left the list); an unknown id is home", async () => {
-        const { characters, characterStore, selection, stores } = await boot();
+        const { characters, characterStore, selection, selectionModule } = await boot();
         const e = characterStore.addCharacter({ chaId: "e", name: "E" });
         await characters.changeChar(e);
         expect(selection.characterId).toBe(e);
-        expect(get(stores.selectedCharID)).toBe(2);
+        expect(selectionModule.selectedIndex()).toBe(2);
         characterStore.removeCharacter("c");
         expect(selection.characterId).toBe(e);
-        expect(get(stores.selectedCharID)).toBe(1);
+        expect(selectionModule.selectedIndex()).toBe(1);
         await characters.changeChar("d");
         expect(selection.characterId).toBe("d");
         await characters.changeChar("gone");
         expect(selection.characterId).toBeNull();
-        expect(get(stores.selectedCharID)).toBe(-1);
+        expect(selectionModule.selectedIndex()).toBe(-1);
     });
 
     it("the add dialog selects the character it created, and nothing when its import added none", async () => {

@@ -93,24 +93,32 @@ async function waitSaved(page: Page, chaId: string, chatId: string) {
 const captureMarkdown = (page: Page) =>
     page.evaluate(
         async ({ md, baseSettings, fixedTime }) => {
-            const stores = await import("/src/ts/stores.svelte.ts");
-            const dbm = await import("/src/ts/storage/database.svelte.ts");
+            const { settings, writeSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
+            const presetActions = await import("/src/ts/storage/presets.svelte.ts");
+            const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
+            const selectionModule = await import("/src/ts/storage/selection.svelte.ts");
             const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
             const parser = await import("/src/ts/parser/parser.svelte.ts");
             const transform = await import("/src/ts/parser/transformClient.ts");
             const hooks = await import("/src/ts/plugins/pluginHooks.ts");
-            const DBState = stores.DBState;
             const clone = (v: unknown) => JSON.parse(JSON.stringify(v));
             const w = window as any;
-            dbm.changeToPreset(DBState.db.botPresets[0].id, true);
+            // A flat setting by its root name: the three selection indexes select by id (as the
+            // removed accessors did); every other name writes through its view.
+            const applyRoot = (key: string, value: any) => {
+                if (key === "botPresetsId") return selectionModule.selectPreset(settings.presets[value].id);
+                if (key === "selectedPersona") return selectionModule.selectPersona(settings.personas[value].id);
+                if (key === "loreBookPage") return selectionModule.selectLoreBookPage(value);
+                writeSettingsRoot(key, clone(value));
+            };
+            presetActions.changeToPreset(settings.presets[0].id, true);
             for (const [key, value] of Object.entries(baseSettings)) {
-                (DBState.db as any)[key] = clone(value);
+                applyRoot(key, value);
             }
-            const index = DBState.db.characters.findIndex((c: any) => c?.chaId === md.chaId);
-            stores.selectedCharID.set(index);
+            selectionModule.selectCharacter(md.chaId);
             chatStore.selectChat(md.chaId, md.chatId);
             const ref = { chaId: md.chaId, chatId: md.chatId };
-            const char = DBState.db.characters[index] as any;
+            const char = characterList().find((c: any) => c?.chaId === md.chaId) as any;
             const chat = chatStore.findChat(ref)!;
             const RealDate = Date;
             const fixed = new RealDate(fixedTime).getTime();
@@ -241,18 +249,26 @@ test("the server transform reproduces markdown.json (final HTML and editprocess 
     // The capture's seed step, from scenario.json.
     await page.evaluate(
         async (s) => {
-            const { DBState } = await import("/src/ts/stores.svelte.ts");
+            const { settings, writeSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
+            const selectionModule = await import("/src/ts/storage/selection.svelte.ts");
             const presets = await import("/shared/presets.ts");
             const characterStore = await import("/src/ts/storage/characterStore.svelte.ts");
             const clone = (v: unknown) => JSON.parse(JSON.stringify(v));
-            const db = DBState.db as any;
-            db.didFirstSetup = true;
-            db.useLegacyGUI = true;
-            for (const preset of s.presets) db.botPresets.push(presets.normalizePreset(clone(preset)));
-            db.personas = clone(s.personas);
-            for (const [key, value] of Object.entries(s.baseSettings)) db[key] = clone(value);
+            // A flat setting by its root name: the three selection indexes select by id (as the
+            // removed accessors did); every other name writes through its view.
+            const applyRoot = (key: string, value: any) => {
+                if (key === "botPresetsId") return selectionModule.selectPreset(settings.presets[value].id);
+                if (key === "selectedPersona") return selectionModule.selectPersona(settings.personas[value].id);
+                if (key === "loreBookPage") return selectionModule.selectLoreBookPage(value);
+                writeSettingsRoot(key, clone(value));
+            };
+            settings.ui.didFirstSetup = true;
+            settings.ui.useLegacyGUI = true;
+            for (const preset of s.presets) settings.presets.push(presets.normalizePreset(clone(preset)));
+            settings.personas = clone(s.personas);
+            for (const [key, value] of Object.entries(s.baseSettings)) applyRoot(key, value);
             for (const character of s.characters) {
-                if (!db.characters.some((c: any) => c?.chaId === character.chaId)) {
+                if (!characterStore.characterList().some((c: any) => c?.chaId === character.chaId)) {
                     characterStore.addCharacter(clone(character));
                 }
             }
@@ -304,11 +320,10 @@ async function seedExtra(
 ) {
     const stored = await page.evaluate(
         async ({ chaId, chatId, pics, pic1Size }) => {
-            const { DBState } = await import("/src/ts/stores.svelte.ts");
+            const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
             const characterStore = await import("/src/ts/storage/characterStore.svelte.ts");
             const { saveAsset } = await import("/src/ts/globalApi.svelte.ts");
-            const db = DBState.db as any;
-            db.didFirstSetup = true;
+            settings.ui.didFirstSetup = true;
             // Stored 1x1 PNGs, or for pic1 a noise PNG that does not compress.
             const png = Uint8Array.from(
                 atob(
@@ -335,7 +350,9 @@ async function seedExtra(
             }
             const pic1 = await saveAsset(first, pics[0], `${pics[0]}.png`);
             const pic2 = await saveAsset(png, pics[1], `${pics[1]}.png`);
-            if (db.characters.some((c: any) => c?.chaId === chaId)) return { pic1, pic2, pic1Bytes: first.length };
+            if (characterStore.characterList().some((c: any) => c?.chaId === chaId)) {
+                return { pic1, pic2, pic1Bytes: first.length };
+            }
             characterStore.addCharacter({
                 type: "character",
                 chaId,
@@ -409,13 +426,13 @@ async function seedExtra(
 const renderExtra = (page: Page, chaId: string, chatId: string) =>
     page.evaluate(
         async ({ chaId, chatId }) => {
-            const stores = await import("/src/ts/stores.svelte.ts");
+            const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
+            const { selectCharacter } = await import("/src/ts/storage/selection.svelte.ts");
             const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
             const parser = await import("/src/ts/parser/parser.svelte.ts");
-            const index = stores.DBState.db.characters.findIndex((c: any) => c?.chaId === chaId);
-            stores.selectedCharID.set(index);
+            selectCharacter(chaId);
             chatStore.selectChat(chaId, chatId);
-            const char = stores.DBState.db.characters[index] as any;
+            const char = characterList().find((c: any) => c?.chaId === chaId) as any;
             // The selection is immediate and the chat loads on demand (Phase 6 slice 9b): loaded
             // here before its messages are read.
             const chat = (await chatStore.ensureChatLoaded({ chaId, chatId }))!;

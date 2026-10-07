@@ -107,7 +107,7 @@ A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate 
 
 ## Recipes
 
-- Add or change a top-level algorithm: the selector in `OtherBotSettings.svelte`, the DB fields and defaults in `setDatabase`, and the branch plus persistence in the server's `assemblePrompt`. Verify the `supaMemory` gate and the priority order.
+- Add or change a top-level algorithm: the selector in `OtherBotSettings.svelte`, the fields in `shared/sections.ts` and their defaults in the server normalizer, and the branch plus persistence in the server's `assemblePrompt`. Verify the `supaMemory` gate and the priority order.
 - Add an embedding model: `hypamemory.ts` (`HypaModel`, `localModels`, `getEmbeds`), `hypamemoryv2.ts:getAPIEmbeds`, `transformers.ts` `EmbeddingModel`, and the UI options.
 - Add a contextual provider: `contextualEmbedding.ts`, the grouped paths in `HypaProcessorV2`, and `HypaProcesserEx.addSummaryChunksContextual`.
 - Change V3 behavior: both V3 mains, `HypaV3Settings`, `createHypaV3Preset`, and the settings bindings.

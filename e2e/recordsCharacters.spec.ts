@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
 // Phase 6 slice 5a (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/character-ownership.md`,
-// "Validation", the manual list): the characters are write-through records and `DBState.db.characters`
+// "Validation", the manual list): the characters are write-through records and `characterList()`
 // is their list's wrapper, which refuses any structural write (a push, a splice, an index assignment
 // of another object, a list assignment) with a `TypeError`. A UI writer the slice missed would throw
 // only when its flow runs, so the flows run here in the browser, against the isolated stack of
@@ -41,15 +41,17 @@ interface CharacterView {
 
 const characters = (page: Page): Promise<CharacterView[]> =>
     page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        return DBState.db.characters.map((entry: any) => ({
+        const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
+        const { chatCount } = await import("/src/ts/storage/chatStore.svelte.ts");
+        // The chats are the chat module's (Phase 6 slice 9a): its count of the character's chats.
+        return characterList().map((entry: any) => ({
             chaId: entry.chaId,
             name: entry.name,
             type: entry.type,
             trashTime: entry.trashTime,
             removedQuotes: entry.removedQuotes,
             viewScreen: entry.viewScreen,
-            chats: entry.chats.length,
+            chats: chatCount(entry.chaId),
         }));
     });
 
@@ -93,18 +95,18 @@ test("the character flows run through the records without an error, save, and su
     await openApp(page, baseURL!);
     await settle(page);
     await page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        DBState.db.didFirstSetup = true;
-        DBState.db.useLegacyGUI = true;
+        const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        settings.ui.didFirstSetup = true;
+        settings.ui.useLegacyGUI = true;
     });
     await settle(page);
 
     // Create a character and a group the way the sidebar's add dialog does, and open the character.
     const created = await page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
+        const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
         const { createNewCharacter, createNewGroup, changeChar } = await import("/src/ts/characters.ts");
         // The creations return the new character's id, and `changeChar` takes one (Phase 6 slice 8).
-        const byId = (chaId: string) => DBState.db.characters.find((entry) => entry.chaId === chaId)!;
+        const byId = (chaId: string) => characterList().find((entry) => entry.chaId === chaId)!;
         const character = createNewCharacter();
         byId(character).name = "Alpha";
         byId(character).creatorNotes = "A creator quote";
@@ -240,8 +242,9 @@ test("the character flows run through the records without an error, save, and su
     for (const round of [1, 2]) {
         await page.evaluate(async () => {
             const stores = await import("/src/ts/stores.svelte.ts");
+            const { selectCharacter } = await import("/src/ts/storage/selection.svelte.ts");
             stores.botMakerMode.set(false);
-            stores.selectedCharID.set(-1);
+            selectCharacter(null);
             stores.PlaygroundStore.set(1);
         });
         const chatLabel = await page.evaluate(async () => (await import("/src/lang/index.ts")).language.Chat);
@@ -258,14 +261,15 @@ test("the character flows run through the records without an error, save, and su
     expect(list.find((entry) => entry.chaId === "§playground")!.name).toBe("assistant");
     await page.evaluate(async () => {
         const stores = await import("/src/ts/stores.svelte.ts");
+        const { selectCharacter } = await import("/src/ts/storage/selection.svelte.ts");
         stores.PlaygroundStore.set(0);
-        stores.selectedCharID.set(-1);
+        selectCharacter(null);
     });
 
     // A module converted to a character (the module settings page's conversion mode).
     await page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        DBState.db.modules.push({ name: "Module X", description: "From a module", id: "module-x" } as any);
+        const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        settings.modules.push({ name: "Module X", description: "From a module", id: "module-x" } as any);
     });
     await settle(page);
     await page.evaluate(async () => {

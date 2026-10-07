@@ -32,23 +32,6 @@ vi.mock("../storage/resourceSync.svelte", () => ({ flushResources: flush }));
 vi.mock("src/lang", () => ({
     language: { partialBackupFirstConfirm: "first?", partialBackupSecondConfirm: "second?" },
 }));
-vi.mock("../storage/database.svelte", () => ({
-    getDatabase: () => ({
-        characters: [
-            {
-                name: "Alice",
-                type: "character",
-                image: "assets/alice.png",
-                emotionImages: [["happy", "assets/happy.png"]],
-            },
-            { name: "Group", type: "group", image: "assets/group.png" },
-        ],
-        userIcon: "assets/icon.png",
-        personas: [{ name: "Me", icon: "assets/me.png" }],
-        botPresets: [{ name: "P", image: "assets/preset.png" }],
-        characterOrder: [{ name: "F", img: "assets/folder.png" }],
-    }),
-}));
 vi.mock("../globalApi.svelte", () => ({
     LocalWriter: class {
         writer = { abort: writer.abort };
@@ -69,7 +52,7 @@ vi.mock("../globalApi.svelte", () => ({
         }
     },
 }));
-vi.mock("../storage/nodeStorage", () => ({
+vi.mock("../storage/serverAuth", () => ({
     authFetch: async (path: string, init: RequestInit = {}) => {
         requests.push({ path, init });
         if (path === "/api/backups/export") {
@@ -90,9 +73,37 @@ vi.mock("../storage/nodeStorage", () => ({
 }));
 
 import { setResourceEpoch } from "../storage/resourceClient";
+import { installFlatDatabase } from "../storage/tests/installFlatDatabase";
 import { LoadLocalBackup, SaveLocalBackup, SavePartialLocalBackup } from "./backuplocal";
 
 const encoder = new TextEncoder();
+
+/**
+ * The records the backup inventory (`buildBackupInventory`, Phase 6 slice 10) reads: Alice (a main
+ * image and an emotion image), a group (a main image), the personas (`userIcon` is the selected
+ * persona's icon: the first one, `assets/icon.png`; `Me` is another persona), a preset with an
+ * image, and a folder with an image.
+ */
+function installInventory() {
+    installFlatDatabase({
+        characters: [
+            {
+                chaId: "alice",
+                name: "Alice",
+                type: "character",
+                image: "assets/alice.png",
+                emotionImages: [["happy", "assets/happy.png"]],
+            },
+            { chaId: "group", name: "Group", type: "group", image: "assets/group.png" },
+        ],
+        personas: [
+            { id: "self", name: "Self", icon: "assets/icon.png", personaPrompt: "", note: "" },
+            { id: "me", name: "Me", icon: "assets/me.png", personaPrompt: "", note: "" },
+        ],
+        botPresets: [{ id: "p", name: "P", image: "assets/preset.png" }],
+        characterOrder: [{ id: "f", type: "folder", name: "F", img: "assets/folder.png", data: [] }],
+    });
+}
 
 /** One archive record: u32 LE name length, utf8 name, u32 LE data length, bytes. */
 function record(name: string, data: Uint8Array): Uint8Array {
@@ -169,6 +180,7 @@ beforeEach(() => {
     writer.chunks.length = 0;
     writer.initResult = true;
     writer.failWriteAt = -1;
+    installInventory();
     setResourceEpoch("epoch-1");
     vi.stubGlobal("location", { reload: vi.fn() });
     vi.spyOn(console, "error").mockImplementation(() => {});

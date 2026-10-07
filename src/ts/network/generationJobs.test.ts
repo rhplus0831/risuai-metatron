@@ -25,7 +25,7 @@ const stubs = vi.hoisted(() => ({
     changeToPreset: vi.fn(),
 }));
 
-vi.mock("../storage/nodeStorage", () => ({
+vi.mock("../storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => stubs.fetch(path, init),
     getNodeServerProxyAuth: () =>
         new Promise<string>((resolve, reject) => {
@@ -43,7 +43,8 @@ vi.mock("./jobChannel", () => ({
     rememberHydration: stubs.rememberHydration,
     endJobChannel: stubs.endJobChannel,
 }));
-vi.mock("../storage/database.svelte", () => ({ changeToPreset: stubs.changeToPreset }));
+// A job's `preset` event applies the preset through the preset actions module (Phase 6 slice 10).
+vi.mock("../storage/presets.svelte", () => ({ changeToPreset: stubs.changeToPreset }));
 
 type Transport = typeof import("./generationJobs");
 type Client = typeof import("../storage/resourceClient");

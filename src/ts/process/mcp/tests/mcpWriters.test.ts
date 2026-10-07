@@ -28,7 +28,7 @@ const { tab } = vi.hoisted(() => ({
     tab: { constructed: 0, handshakes: 0, destroyed: 0, release: null as null | (() => void) },
 }));
 
-vi.mock("src/ts/storage/nodeStorage", () => ({
+vi.mock("src/ts/storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -58,7 +58,6 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     globalFetch: vi.fn(),
     fetchNative: vi.fn(),
     openURL: vi.fn(),
-    forageStorage: { getItem: vi.fn(), setItem: vi.fn(), keys: vi.fn(async () => []) },
     saveAsset: vi.fn(),
     readImage: vi.fn(),
     getFileSrc: vi.fn(),
@@ -174,15 +173,15 @@ afterEach(() => {
 
 describe("importMCPModule", () => {
     it("adds a module with an id and the MCP url from the server's info, saved by the next cycle", async () => {
-        const { sync, record, db } = await boot();
+        const { sync, record, settings } = await boot();
         const mcp = await import("../mcp");
         alerts.inputs.push("https://mcp.example/sse");
         await mcp.importMCPModule();
         expect(remote.constructed).toEqual(["https://mcp.example/sse"]);
         expect(alerts.error).not.toHaveBeenCalled();
         expect(alerts.normal).toHaveBeenCalledWith(expect.stringContaining("Remote Server"));
-        expect(db().modules).toHaveLength(1);
-        const added = db().modules[0];
+        expect(settings.modules).toHaveLength(1);
+        const added = settings.modules[0];
         expect(added.id).toEqual(expect.any(String));
         expect(added.id).not.toBe("");
         expect(added).toMatchObject({ name: "Remote Server", description: "MCP from https://mcp.example/sse" });
@@ -210,19 +209,19 @@ describe("importMCPModule", () => {
     });
 
     it("adds nothing for an invalid url", async () => {
-        const { unchanged, db } = await boot();
+        const { unchanged, settings } = await boot();
         const mcp = await import("../mcp");
         alerts.inputs.push("ftp://mcp.example");
         await unchanged(() => mcp.importMCPModule());
         expect(alerts.error).toHaveBeenCalledWith("Invalid URL");
-        expect(db().modules).toEqual([]);
+        expect(settings.modules).toEqual([]);
         expect(remote.constructed).toEqual([]);
     });
 });
 
 describe("initializeMCPs", () => {
     it("stores the refresh token a remote server registers as an authRefreshes entry under the server's url", async () => {
-        const { sync, record, db } = await boot();
+        const { sync, record, settings } = await boot();
         const mcp = await import("../mcp");
         remote.refresh = {
             clientId: "id",
@@ -231,7 +230,7 @@ describe("initializeMCPs", () => {
             tokenUrl: "https://mcp.example/token",
         };
         await mcp.initializeMCPs(["https://mcp.example/sse"]);
-        expect(db().authRefreshes).toEqual([{ url: "https://mcp.example/sse", ...remote.refresh }]);
+        expect(settings.authRefreshes).toEqual([{ url: "https://mcp.example/sse", ...remote.refresh }]);
         expect(await (mcp.MCPs["https://mcp.example/sse"] as any).getRefreshToken()).toMatchObject({
             refreshToken: "r",
         });
@@ -288,12 +287,12 @@ describe("GoogleSearchClient credentials", () => {
     });
 
     it("writes the trimmed inputs into the secrets section", async () => {
-        const { sync, record, db } = await boot();
+        const { sync, record, settings } = await boot();
         const { GoogleSearchClient } = await import("../googlesearchclient");
         const client = new GoogleSearchClient();
         alerts.inputs.push("  key  ", " cx ");
         await client.checkHandshake();
-        expect(db().googleSearchCredentials).toEqual({ apiKey: "key", searchEngineId: "cx" });
+        expect(settings.secrets.googleSearchCredentials).toEqual({ apiKey: "key", searchEngineId: "cx" });
         await sync.flushResources();
         expect(record("secrets").googleSearchCredentials).toEqual({ apiKey: "key", searchEngineId: "cx" });
         // Initialized once: a second handshake asks nothing more.
@@ -304,16 +303,16 @@ describe("GoogleSearchClient credentials", () => {
     });
 
     it("writes nothing for a cancelled or blank input, and asks again on the next handshake", async () => {
-        const { unchanged, db } = await boot();
+        const { unchanged, settings } = await boot();
         const { GoogleSearchClient } = await import("../googlesearchclient");
         const client = new GoogleSearchClient();
         alerts.inputs.push(undefined);
         await unchanged(() => expect(client.checkHandshake()).rejects.toThrow("API Key is required"));
         alerts.inputs.push("key", "   ");
         await unchanged(() => expect(client.checkHandshake()).rejects.toThrow("Engine ID is required"));
-        expect(db().googleSearchCredentials).toBeUndefined();
+        expect(settings.secrets.googleSearchCredentials).toBeUndefined();
         alerts.inputs.push("key", "cx");
         await client.checkHandshake();
-        expect(db().googleSearchCredentials).toEqual({ apiKey: "key", searchEngineId: "cx" });
+        expect(settings.secrets.googleSearchCredentials).toEqual({ apiKey: "key", searchEngineId: "cx" });
     });
 });

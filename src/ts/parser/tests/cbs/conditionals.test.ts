@@ -1,9 +1,8 @@
 import fc from "fast-check";
-import { writable } from "svelte/store";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { risuChatParser } from "../../parser.svelte";
 import { selection } from "../../../storage/selection.svelte";
-import { holdMockedChats, trimVarPrefix, validCBSArgProp } from "./lib";
+import { holdMockedChats, trimVarPrefix, validCBSArgProp, type MockedCharacter } from "./lib";
 
 //#region module mocks
 
@@ -12,9 +11,7 @@ vi.mock(
     () =>
         ({
             appVer: "1234.5.67",
-            getCurrentCharacter: () => ({}),
-            getDatabase: () => ({}),
-        }) as typeof import("../../../storage/database.svelte"),
+        }) as unknown as typeof import("../../../storage/database.svelte"),
 );
 
 vi.mock(import("../../../globalApi.svelte"), () => ({
@@ -43,31 +40,8 @@ const varStorage = vi.hoisted(
         ),
 );
 
-vi.mock(import("../../../stores.svelte"), () => {
-    return {
-        DBState: {
-            db: {
-                characters: [
-                    {
-                        chaId: "c",
-                        chatPage: 0,
-                        chats: [
-                            {
-                                id: "k",
-                                scriptstate: varStorage,
-                            },
-                        ],
-                        defaultVariables: "",
-                    },
-                ],
-            },
-        },
-        selIdState: {
-            selId: 0,
-        },
-        selectedCharID: writable(0),
-    } as unknown as typeof import("../../../stores.svelte");
-});
+// `stores.svelte` runs module effects over the selection and the chat; nothing under test reads it.
+vi.mock(import("../../../stores.svelte"), () => ({}) as unknown as typeof import("../../../stores.svelte"));
 
 // The parser reads the global variables through the settings views (Phase 6 slice 7). The
 // variable storage answers any key, which record data cannot hold, so the view serves it there;
@@ -83,16 +57,20 @@ vi.mock(import("../../../storage/settingsViews.svelte"), async (importOriginal) 
 
 //#endregion
 
-// The template's default variables live in the selected preset's record (installed as
-// `setDatabaseLite` installs a database); the character stays on `DBState.db`.
-// Since Phase 6 slice 9a a copy of the character is in the records too, and its chat in the chat module.
-holdMockedChats({
+// The fixture character in the legacy shape (its chat holds the variable storage); until Phase 6
+// slice 10 it sat on the removed aggregate's mocked holder.
+const characters: MockedCharacter[] = [
+    { chaId: "c", chatPage: 0, chats: [{ id: "k", scriptstate: varStorage } as any], defaultVariables: "" },
+];
+
+// The template's default variables live in the selected preset's record; a copy of the character
+// is in the records (Phase 6 slice 9a), and its chat in the chat module.
+holdMockedChats(characters, {
     botPresets: [{ id: "preset", name: "Preset", templateDefaultVariables: "" }],
 });
 
 // The readers resolve the selected character by `selection.characterId` (Phase 6 slice 8), over
-// the character list (`characterList()`, here the mocked `DBState.db.characters`): the fixture's
-// character is the selected one, as `selectedCharID` 0 selected it.
+// the character list (`characterList()`, the records): the fixture's character is the selected one.
 selection.characterId = "c";
 
 const template = (op: string, body: string) => `0 {{${op}}}${body}{{/}} 9`;

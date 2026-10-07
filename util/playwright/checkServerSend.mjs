@@ -276,9 +276,9 @@ try {
             // A settings edit right before a preview reaches the prompt (the flush comes first). The
             // preview is a DevTool function: it needs the dev modules.
             const previewHead = await page.evaluate(async () => {
-                const stores = await import("/src/ts/stores.svelte.ts");
+                const views = await import("/src/ts/storage/settingsViews.svelte.ts");
                 const proc = await import("/src/ts/process/index.svelte.ts");
-                stores.DBState.db.mainPrompt = "Edited main for {{char}}.";
+                views.activePreset.mainPrompt = "Edited main for {{char}}.";
                 const ok = await proc.sendChat(-1, { preview: true });
                 proc.doingChat.set(false);
                 return ok ? proc.previewFormated[0]?.content : null;

@@ -353,7 +353,7 @@ describe("whole-list helpers (challenge point 7)", () => {
         initializeRecords({ loreBook: [{ name: "Book", data: [{ key: "a" }, { key: "b" }, { key: "c" }] }] });
         const book = trackedRecord<any[]>("loreBook")![0];
         const [a, b, c] = [book.data[0], book.data[1], book.data[2]];
-        // `LoreBookList.svelte`'s global branch: `DBState.db.loreBook[page].data = newArray`.
+        // `LoreBookList.svelte`'s global branch: `settings.loreBook[page].data = newArray`.
         book.data = [c, a, b];
         expect(notified).toEqual(["loreBook"]);
         expect(JSON.parse(text("loreBook"))[0].data).toEqual([{ key: "c" }, { key: "a" }, { key: "b" }]);

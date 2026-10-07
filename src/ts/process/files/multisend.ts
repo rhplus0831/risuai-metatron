@@ -1,4 +1,3 @@
-import { getDatabase, setDatabase } from "src/ts/storage/database.svelte";
 import { appendMessage, currentChatRef, findChat } from "../../storage/chatStore.svelte";
 import { doingChat, sendChat } from "../index.svelte";
 import { downloadFile } from "src/ts/globalApi.svelte";

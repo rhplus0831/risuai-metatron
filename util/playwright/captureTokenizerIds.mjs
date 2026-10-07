@@ -37,7 +37,8 @@ try {
     await openApp(page, stack.baseURL);
     const families = await page.evaluate(async (texts) => {
         const tk = await import("/src/ts/tokenizer.ts");
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
+        const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
+        const { readSettingsRoot, writeSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
         const fnv = (ids) => {
             let h = 0x811c9dc5;
             for (const ch of Array.from(ids).join(",")) {
@@ -76,13 +77,13 @@ try {
             for (const name of Object.keys(texts))
                 out[family][name] = await record((t) => tk.encodeWithTokenizer(t, type), name);
         }
-        DBState.db.useTokenizerCaching = false;
-        DBState.db.aiModel = "openrouter";
-        DBState.db.customTokenizer = "tik";
+        writeSettingsRoot("useTokenizerCaching", false);
+        writeSettingsRoot("aiModel", "openrouter");
+        writeSettingsRoot("customTokenizer", "tik");
         out.o200k_base = {};
         for (const name of Object.keys(texts)) out.o200k_base[name] = await record((t) => tk.encode(t), name);
-        DBState.db.aiModel = "gemini-2.5-flash-image";
-        DBState.db.googleClaudeTokenizing = true;
+        writeSettingsRoot("aiModel", "gemini-2.5-flash-image");
+        writeSettingsRoot("googleClaudeTokenizing", true);
         out.gemmaSentencePiece = {};
         for (const name of Object.keys(texts)) out.gemmaSentencePiece[name] = await record((t) => tk.encode(t), name);
         return out;

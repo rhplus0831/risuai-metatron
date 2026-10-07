@@ -19,14 +19,13 @@ import {
     type CollectionKind,
     type SectionKind,
 } from "../../../shared/sections.ts";
-import { selectedPersona, selectedPersonaForWrite, selectedPreset, selectedPresetForWrite } from "./forwarding.svelte";
 import { replaceRecord, trackedRecord, writeRecordField, type RecordKind } from "./records.svelte";
-import { selectLoreBookPage, selection } from "./selection.svelte";
+import { selectLoreBookPage, selectPersona, selectPreset, selection } from "./selection.svelte";
 
 /**
- * The settings record views (Phase 6 slice 6): what a settings reader binds to instead of the
- * `DBState.db` aggregate. They serve the same records with the same rules as the facade's accessors
- * (`forwarding.svelte.ts`), and resolve the selected preset and persona with the same functions:
+ * The settings record views (Phase 6 slice 6): what a settings reader binds to (the whole-database
+ * aggregate they replaced is gone since slice 10). They resolve the selected preset and persona
+ * with the selection functions below:
  *
  * - `settings.<section>.<field>`: a section record's field (`SECTION_FIELDS`); a write is
  *   `writeRecordField` (credentials routed or refused by the records).
@@ -46,8 +45,8 @@ import { selectLoreBookPage, selection } from "./selection.svelte";
  *
  * Every getter looks its record up when it runs (nothing is captured), so templates and `$derived`
  * track the record reads; every setter runs untracked. The LLM credentials stay off these views: a
- * preset's `proxyKey` is the facade's (`SecretInput` edits it), and an `llmSecrets` credential written
- * to a section field is routed or refused by the records. The auxiliary credentials of the `secrets`
+ * preset's `proxyKey` is written through `llmSecrets.svelte.ts` (its secret path), and an
+ * `llmSecrets` credential written to a section field is routed or refused by the records. The auxiliary credentials of the `secrets`
  * section are ordinary readable fields (`settings.secrets.<field>`), bound like any other.
  */
 
@@ -75,15 +74,152 @@ export type ActivePreset = Pick<botPreset, ActivePresetField> & { readonly id: s
 export type ActivePersonaField = "name" | "icon" | "note" | "personaPrompt" | "largePortrait";
 export type ActivePersona = Pick<RisuPersona, ActivePersonaField> & { readonly id: string | undefined };
 
-/** The facade's resolution functions take a database; this one reads the records directly. */
-const recordsDb = {
-    get botPresets() {
-        return trackedRecord("presets");
-    },
-    get personas() {
-        return trackedRecord("personas");
-    },
-} as unknown as Database;
+// ---------------------------------------------------------------------------------------------
+// The selected preset and persona (Phase 3's forwarding rules, over the records since slice 10)
+//
+// - Every access resolves the record anew from the current collection (nothing is cached), so a
+//   collection replaced by a conflict reload or a splice is honored at once.
+// - When the selected id names no record, a read falls back to the first record and makes it the
+//   selection (untracked: the read may come from a `$derived`, where a tracked write throws). A
+//   write made while the id names no record is dropped, never redirected to another record.
+// - Writes resolve untracked: an `$effect` that writes must not rerun, and write again, into the
+//   next record when the selection changes.
+
+type PresetRecord = Record<string, unknown> & { id: string };
+type PersonaRecord = Record<string, unknown> & { id: string };
+
+function presetList(): PresetRecord[] {
+    const list = trackedRecord<PresetRecord[]>("presets");
+    return Array.isArray(list) ? list : [];
+}
+
+function findPreset(id: string): PresetRecord | undefined {
+    return presetList().find((preset) => preset?.id === id);
+}
+
+/** The selected preset: the one `selection.presetId` names, else the first, which becomes the selection. */
+function resolvePreset(): PresetRecord | undefined {
+    const record = findPreset(selection.presetId);
+    if (record !== undefined) {
+        return record;
+    }
+    const first = presetList()[0];
+    if (first === undefined || typeof first?.id !== "string") {
+        return undefined;
+    }
+    untrack(() => selectPreset(first.id));
+    return first;
+}
+
+function personaList(): PersonaRecord[] {
+    const list = trackedRecord<PersonaRecord[]>("personas");
+    return Array.isArray(list) ? list : [];
+}
+
+function findPersona(id: string): PersonaRecord | undefined {
+    return personaList().find((persona) => persona?.id === id);
+}
+
+/** The selected persona: the one `selection.personaId` names, else the first, which becomes the selection. */
+function resolvePersona(): PersonaRecord | undefined {
+    const record = findPersona(selection.personaId);
+    if (record !== undefined) {
+        return record;
+    }
+    const first = personaList()[0];
+    if (first === undefined || typeof first?.id !== "string") {
+        return undefined;
+    }
+    untrack(() => selectPersona(first.id));
+    return first;
+}
+
+/**
+ * The preset a write to the selected preset goes to, without the read fallback: `undefined` when
+ * the selection names no record (the write is then dropped, never redirected).
+ */
+export function presetRecordForWrite(): botPreset | undefined {
+    return untrack(() => findPreset(selection.presetId)) as unknown as botPreset | undefined;
+}
+
+/** The persona a write to the selected persona goes to, without the read fallback. */
+export function personaRecordForWrite(): RisuPersona | undefined {
+    return untrack(() => findPersona(selection.personaId)) as unknown as RisuPersona | undefined;
+}
+
+/**
+ * The selected preset's index in the list (the plugin API's and the report's `botPresetsId`): the
+ * selection resolved first, 0 when there is none.
+ */
+export function selectedPresetIndex(): number {
+    const record = resolvePreset();
+    return record === undefined
+        ? 0
+        : Math.max(
+              0,
+              presetList().findIndex((preset) => preset?.id === record.id),
+          );
+}
+
+/** The selected persona's index in the list (the plugin API's `selectedPersona`), likewise. */
+export function selectedPersonaIndex(): number {
+    const record = resolvePersona();
+    return record === undefined
+        ? 0
+        : Math.max(
+              0,
+              personaList().findIndex((persona) => persona?.id === record.id),
+          );
+}
+
+/** Resolves the selection against the records now, so a write before the first read has a record to go to. */
+export function reconcileSelection() {
+    untrack(() => {
+        resolvePreset();
+        resolvePersona();
+        selectedLoreBookPage();
+    });
+}
+
+const forwardedPresetKeys = new Set<string>(FORWARDED_PRESET_KEYS);
+const presetFieldOfRoot: Record<string, string> = PRESET_ROOT_ALIASES;
+
+/** The preset field a root name mirrors (`PRESET_ROOT_ALIASES`), or `undefined` for a root name that is not a preset field. */
+export function forwardedPresetField(rootKey: string): PresetField | undefined {
+    return forwardedPresetKeys.has(rootKey) ? ((presetFieldOfRoot[rootKey] ?? rootKey) as PresetField) : undefined;
+}
+
+/** Whether a preset with `id` exists (untracked). */
+export function hasPreset(id: string): boolean {
+    return untrack(() => findPreset(id)) !== undefined;
+}
+
+/**
+ * Reads a preset field (by its root name) from the preset with `presetId`, as `activePreset` reads
+ * the selected one (the same fallbacks): for a caller that captured its preset (a plugin hook).
+ * `undefined` when the name is not a preset field or no preset has that id.
+ */
+export function readPresetFieldOf(presetId: string, rootKey: string): unknown {
+    const field = forwardedPresetField(rootKey);
+    const record = untrack(() => findPreset(presetId));
+    return field === undefined || record === undefined ? undefined : presetFieldValue(record, field);
+}
+
+/**
+ * Writes a preset field (by its root name, `FORWARDED_PRESET_KEYS`) into the preset with
+ * `presetId`, whatever is selected, for a caller that captured its preset (`collectionStore`'s
+ * `updateSettings`). Returns `false`, writing nothing, when no preset has that id or the name is not
+ * a preset field; never redirects.
+ */
+export function writePresetField(presetId: string, rootKey: string, value: unknown): boolean {
+    const field = forwardedPresetField(rootKey);
+    const record = untrack(() => findPreset(presetId));
+    if (field === undefined || record === undefined) {
+        return false;
+    }
+    record[field] = value;
+    return true;
+}
 
 function defineView(target: object, key: string, get: () => unknown, set?: (value: unknown) => void) {
     Object.defineProperty(target, key, {
@@ -172,16 +308,16 @@ function buildActivePreset(): ActivePreset {
         defineView(
             view,
             field,
-            () => presetFieldValue(selectedPreset(recordsDb) as unknown as Record<string, unknown> | undefined, field),
+            () => presetFieldValue(resolvePreset(), field),
             (value) => {
-                const record = selectedPresetForWrite(recordsDb) as unknown as Record<string, unknown> | undefined;
+                const record = untrack(() => findPreset(selection.presetId));
                 if (record !== undefined) {
                     record[field] = value;
                 }
             },
         );
     }
-    defineView(view, "id", () => selectedPreset(recordsDb)?.id);
+    defineView(view, "id", () => resolvePreset()?.id);
     return Object.freeze(view) as ActivePreset;
 }
 
@@ -195,21 +331,21 @@ function buildActivePersona(): ActivePersona {
             view,
             field,
             () => {
-                const value = selectedPersona(recordsDb)?.[field];
+                const value = resolvePersona()?.[field];
                 if (field in PERSONA_DEFAULTS) {
                     return typeof value === "string" ? value : PERSONA_DEFAULTS[field as keyof typeof PERSONA_DEFAULTS];
                 }
                 return value;
             },
             (value) => {
-                const record = selectedPersonaForWrite(recordsDb) as unknown as Record<string, unknown> | undefined;
+                const record = untrack(() => findPersona(selection.personaId));
                 if (record !== undefined) {
                     record[field] = value;
                 }
             },
         );
     }
-    defineView(view, "id", () => selectedPersona(recordsDb)?.id);
+    defineView(view, "id", () => resolvePersona()?.id);
     return Object.freeze(view) as ActivePersona;
 }
 
@@ -217,17 +353,17 @@ export const activePersona: ActivePersona = buildActivePersona();
 
 /** The selected preset's record (its wrapper), resolved as `activePreset` reads it; `undefined` when there is none. */
 export function currentPresetRecord(): botPreset | undefined {
-    return selectedPreset(recordsDb);
+    return resolvePreset() as unknown as botPreset | undefined;
 }
 
 /** The selected persona's record (its wrapper); `undefined` when there is none. */
 export function currentPersonaRecord(): RisuPersona | undefined {
-    return selectedPersona(recordsDb);
+    return resolvePersona() as unknown as RisuPersona | undefined;
 }
 
 /**
  * The global lorebook page this client shows: the selection, or 0 when it is past the list's end
- * (then also selected, untracked), as the facade's `loreBookPage` reads it.
+ * (then also selected, untracked).
  */
 export function selectedLoreBookPage(): number {
     const page = selection.loreBookPage;
@@ -245,7 +381,7 @@ export function selectedLoreBookPage(): number {
 // ---------------------------------------------------------------------------------------------
 // Root names (the settings registry's `bindKey`/`bindPath`, a dynamic field name)
 
-/** The preset fields the facade forwards (every preset field but `name`, `image`, the keep-on-switch group). */
+/** The preset fields served under root names (every preset field but `name`, `image`, the keep-on-switch group). */
 type ForwardedPresetField = Exclude<ActivePresetField, "name" | "image">;
 type PresetAliasRoot = keyof typeof PRESET_ROOT_ALIASES;
 /** Their root names (`FORWARDED_PRESET_KEYS`, which is typed `keyof Database`): the aliases' roots for theirs. */
@@ -311,6 +447,13 @@ function buildRootRoutes(): ReadonlyMap<string, RootRoute> {
 }
 
 const rootRoutes = buildRootRoutes();
+
+/**
+ * Every root name the views serve (the section fields, the preset fields under their root names,
+ * the persona fields, the collections and the selectable ones' selected ids, the Phase 1 lists):
+ * the flat names of the legacy database shape, for a builder of that shape (`snapshots.svelte.ts`).
+ */
+export const SETTINGS_ROOT_KEYS: readonly string[] = Object.freeze([...rootRoutes.keys()]);
 
 /** Whether `key` is a root name the views serve. */
 export function isSettingsRootKey(key: string): key is SettingsRootKey {

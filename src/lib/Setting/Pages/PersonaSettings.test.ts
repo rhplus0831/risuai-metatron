@@ -32,14 +32,15 @@ vi.mock("src/ts/process/modules", () => ({
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 
-import { DBState } from "src/ts/stores.svelte";
-import { setDatabaseLite, type Database } from "src/ts/storage/database.svelte";
+import type { Database } from "src/ts/storage/database.svelte";
 import { selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
+import { settings } from "src/ts/storage/settingsViews.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import PersonaSettings from "./PersonaSettings.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
 const persona = (id: string) =>
-    (DBState.db.personas as unknown as Record<string, unknown>[]).find((entry) => entry.id === id)!;
+    (settings.personas as unknown as Record<string, unknown>[]).find((entry) => entry.id === id)!;
 
 function render() {
     const target = document.createElement("div");
@@ -61,7 +62,7 @@ beforeEach(() => {
     localStorage.clear();
     selectPreset("");
     selectPersona("");
-    setDatabaseLite({
+    installFlatDatabase({
         characters: [],
         personas: [
             { id: "p1", name: "Ann", icon: "", note: "", personaPrompt: "", largePortrait: false },
@@ -74,7 +75,6 @@ beforeEach(() => {
 afterEach(async () => {
     await Promise.all(mounted.splice(0).map((instance) => unmount(instance)));
     document.body.replaceChildren();
-    DBState.db = {} as Database;
 });
 
 describe("PersonaSettings", () => {

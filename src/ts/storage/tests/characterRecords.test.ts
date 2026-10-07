@@ -1,10 +1,8 @@
-import { derived, get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
     DetachedWrapperError,
     REMOVE_FIELD,
     applyRawCharacter,
-    assignCharacters,
     batchRecordWrites,
     characterData,
     initializeRecords,
@@ -24,8 +22,9 @@ import {
 } from "../records.svelte";
 import {
     onCharacterSelected,
+    onCharacterSelectionChanged,
     selectCharacter,
-    selectedCharacterIndex,
+    selectCharacterAt,
     selectedIndex,
     selection,
 } from "../selection.svelte";
@@ -37,12 +36,13 @@ import { assembleChats, findChat } from "../chatStore.svelte";
 // the tab's character selection, checked directly. These are the regressions for Astra's challenge
 // reproductions and its first re-check (a raw merge after a local reorder or removal, orphaned
 // wrappers across a field patch and a whole replacement, a same-id local replacement with a held
-// nested wrapper, a repeated object at installation, the reset, the derived-store diamond, the
-// selection read inside its listener and a reentrant selection, a removal inside a `$derived`), and
-// the contracts the plan review asked for: per-character ownership (a value of A assigned into B is
-// a copy), the local-field policy on every trap, the facade's structural refusals with nothing
-// changed, and the notification contract (`setCharacterWriteListener`). A refusal is checked for no
-// side effect: the raw list text unchanged and no notification.
+// nested wrapper, a repeated object at installation, the reset, a removal before the selected
+// character, the selection read inside its listener and a reentrant selection, a removal inside a
+// `$derived`), and the contracts the plan review asked for: per-character ownership (a value of A
+// assigned into B is a copy), the local-field policy on every trap, the list's structural refusals
+// with nothing changed, and the notification contract (`setCharacterWriteListener`). A refusal is
+// checked for no side effect: the raw list text unchanged and no notification. The selection is by
+// index through `selectCharacterAt`/`selectedIndex` (Phase 6 slice 10: the index store is gone).
 
 let notified: string[] = [];
 
@@ -388,7 +388,7 @@ describe("the local fields (plan review point 3)", () => {
     });
 });
 
-describe("structural writes through the facade (plan review point 7) and the immutable chaId (point 9)", () => {
+describe("structural writes through the list wrapper (plan review point 7) and the immutable chaId (point 9)", () => {
     it("refuses every list mutator, index and length writes, delete, defineProperty, and list assignment, with nothing changed", () => {
         initializeRecords({ characters: [character("a"), character("b")] });
         const characters = list();
@@ -415,8 +415,6 @@ describe("structural writes through the facade (plan review point 7) and the imm
                     enumerable: true,
                     configurable: true,
                 }),
-            () => assignCharacters([other]),
-            () => assignCharacters([...characterData()]),
             () => moveRecordListItem(characters, 0, 1),
             () => replaceRecordList(characters, [characters[1], characters[0]]),
         ]) {
@@ -430,8 +428,6 @@ describe("structural writes through the facade (plan review point 7) and the imm
         characters[0] = characters[0];
         characters[1] = characterData()[1] as any;
         characters.length = 2;
-        assignCharacters(characters);
-        assignCharacters(characterData());
         expect(notified).toEqual([]);
         expect(characterData().map((entry) => entry.chaId)).toEqual(["a", "b"]);
     });
@@ -498,36 +494,38 @@ describe("notifications (setCharacterWriteListener)", () => {
 });
 
 describe("the selection (plan review points 4 and 5)", () => {
-    it("publishes the index synchronously after every membership change, local or raw, and follows its character", () => {
+    it("answers the index synchronously after every membership change, local or raw, and follows its character; the listeners hear every selection", () => {
         initializeRecords({ characters: [character("a"), character("b"), character("c")] });
         const seen: number[] = [];
-        const unsubscribe = selectedCharacterIndex.subscribe((value) => seen.push(value));
-        selectedCharacterIndex.set(2);
+        const off = onCharacterSelectionChanged(() => seen.push(selectedIndex()));
+        selectCharacterAt(2);
         expect(selection.characterId).toBe("c");
-        expect(get(selectedCharacterIndex)).toBe(2);
         expect(selectedIndex()).toBe(2);
 
         removeCharacterRecords(["a"]);
-        expect(get(selectedCharacterIndex)).toBe(1);
         expect(selectedIndex()).toBe(1);
         insertCharacterRecord({ chaId: "d", name: "D" });
-        expect(get(selectedCharacterIndex)).toBe(1);
+        expect(selectedIndex()).toBe(1);
         applyRawCharacter("b", null);
-        expect(get(selectedCharacterIndex)).toBe(0);
         expect(selectedIndex()).toBe(0);
         applyRawCharacter("c", { chaId: "c", name: "server" });
-        expect(get(selectedCharacterIndex)).toBe(0);
-        expect(seen).toEqual([-1, 2, 1, 0]);
+        expect(selectedIndex()).toBe(0);
+        expect(seen).toEqual([2]);
 
-        selectedCharacterIndex.update((index) => index + 1);
+        selectCharacterAt(selectedIndex() + 1);
         expect(selection.characterId).toBe("d");
-        selectedCharacterIndex.set(-1);
+        expect(selectedIndex()).toBe(1);
+        selectCharacterAt(-1);
         expect(selection.characterId).toBeNull();
-        selectedCharacterIndex.set(7);
+        expect(selectedIndex()).toBe(-1);
+        // An index past the list, a non-integer, and an unknown id select home (no change: no news).
+        selectCharacterAt(7);
+        selectCharacterAt(0.5);
         expect(selection.characterId).toBeNull();
         selectCharacter("missing");
         expect(selection.characterId).toBeNull();
-        unsubscribe();
+        expect(seen).toEqual([2, 1, -1]);
+        off();
     });
 
     it("selects home when the selected character leaves by removal, a same-index different-id replacement, a raw delete, or a reinstall, and stays home on reinsertion", () => {
@@ -541,10 +539,9 @@ describe("the selection (plan review points 4 and 5)", () => {
         ]) {
             initializeRecords({ characters: [character("a"), character("b")] });
             selectCharacter("a");
-            expect(get(selectedCharacterIndex)).toBe(0);
+            expect(selectedIndex()).toBe(0);
             leave();
             expect(selection.characterId).toBeNull();
-            expect(get(selectedCharacterIndex)).toBe(-1);
             expect(selectedIndex()).toBe(-1);
         }
         initializeRecords({ characters: [character("a"), character("b")] });
@@ -552,7 +549,7 @@ describe("the selection (plan review points 4 and 5)", () => {
         removeCharacterRecords(["a"]);
         insertCharacterRecord({ chaId: "a", name: "A again" });
         expect(selection.characterId).toBeNull();
-        expect(get(selectedCharacterIndex)).toBe(-1);
+        expect(selectedIndex()).toBe(-1);
     });
 
     it("keeps the selection across a same-id replacement and a raw same-id copy", () => {
@@ -561,33 +558,22 @@ describe("the selection (plan review points 4 and 5)", () => {
         replaceCharacterRecordAt(1, { chaId: "b", name: "B2" });
         applyRawCharacter("b", { chaId: "b", name: "B3" });
         expect(selection.characterId).toBe("b");
-        expect(get(selectedCharacterIndex)).toBe(1);
+        expect(selectedIndex()).toBe(1);
     });
 
-    it("keeps derived stores consistent (the diamond: no mixed old and new values)", () => {
+    it("moves the index down in one step when a character before the selected one is removed", () => {
         initializeRecords({ characters: [character("a"), character("b")] });
-        const left = derived(selectedCharacterIndex, (index) => index * 2);
-        const right = derived(selectedCharacterIndex, (index) => index * 3);
-        const both = derived([left, right], ([l, r]) => [l, r]);
-        const seen: number[][] = [];
-        const unsubscribe = both.subscribe((value) => seen.push(value));
-        selectedCharacterIndex.set(1);
+        selectCharacterAt(1);
         removeCharacterRecords(["a"]);
-        unsubscribe();
-        for (const [l, r] of seen) {
-            expect(l / 2).toBe(r / 3);
-        }
-        expect(seen.at(-1)).toEqual([0, 0]);
+        expect([selection.characterId, selectedIndex()]).toEqual(["b", 0]);
     });
 
     it("lets a selection listener read the new selection everywhere, and skips one superseded by a reentrant selection", () => {
         initializeRecords({ characters: [character("a"), character("b"), character("c")] });
         const reads: unknown[] = [];
-        const offRead = onCharacterSelected((chaId) =>
-            reads.push([chaId, selection.characterId, selectedIndex(), get(selectedCharacterIndex)]),
-        );
+        const offRead = onCharacterSelected((chaId) => reads.push([chaId, selection.characterId, selectedIndex()]));
         selectCharacter("b");
-        expect(reads).toEqual([["b", "b", 1, 1]]);
+        expect(reads).toEqual([["b", "b", 1]]);
         // Selecting the same character again is no news.
         selectCharacter("b");
         expect(reads).toHaveLength(1);
@@ -596,8 +582,9 @@ describe("the selection (plan review points 4 and 5)", () => {
         const heard: string[] = [];
         const offHeard = onCharacterSelected((chaId) => heard.push(chaId));
         let redirected = false;
-        const unsubscribe = selectedCharacterIndex.subscribe((index) => {
-            if (index === 0 && !redirected) {
+        // A change listener (they run before the selected listeners) that selects again.
+        const offRedirect = onCharacterSelectionChanged(() => {
+            if (selectedIndex() === 0 && !redirected) {
                 redirected = true;
                 selectCharacter("c");
             }
@@ -605,8 +592,8 @@ describe("the selection (plan review points 4 and 5)", () => {
         selectCharacter("a");
         expect(heard).toEqual(["c"]);
         expect(selection.characterId).toBe("c");
-        expect(get(selectedCharacterIndex)).toBe(2);
-        unsubscribe();
+        expect(selectedIndex()).toBe(2);
+        offRedirect();
         offHeard();
 
         // A listener that selects again: the later listeners hear only the newer selection.
@@ -620,7 +607,7 @@ describe("the selection (plan review points 4 and 5)", () => {
         const offSecond = onCharacterSelected((chaId) => order.push(`second:${chaId}`));
         selectCharacter("a");
         expect(order).toEqual(["first:a", "first:b", "second:b"]);
-        expect(get(selectedCharacterIndex)).toBe(1);
+        expect(selectedIndex()).toBe(1);
         offFirst();
         offSecond();
     });
@@ -644,6 +631,6 @@ describe("the selection (plan review points 4 and 5)", () => {
         expect(removed).toEqual(["a"]);
         expect(characterData().map((entry) => entry.chaId)).toEqual(["b"]);
         expect(selection.characterId).toBeNull();
-        expect(get(selectedCharacterIndex)).toBe(-1);
+        expect(selectedIndex()).toBe(-1);
     });
 });

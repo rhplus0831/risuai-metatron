@@ -5,7 +5,6 @@ import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 // Before `../stores.svelte`: its module effects read `selectedCharacter()` while this module is still loading.
 import { onCharacterSelected, selectCharacter, selection } from "./selection.svelte";
-import { DBState } from "../stores.svelte";
 import { CharacterShapeError, normalizeCharacter } from "../../../shared/characters.ts";
 import { ModuleShapeError, upgradeLorebook } from "../../../shared/modules.ts";
 import type { Chat } from "../../../shared/database.ts";
@@ -32,6 +31,7 @@ import {
     insertCharacterRecord,
     removeCharacterRecords,
     replaceCharacterRecordAt,
+    trackedCharacters,
 } from "./records.svelte";
 import { settings } from "./settingsViews.svelte";
 
@@ -66,7 +66,7 @@ const FIXED_FIELDS = CHARACTER_FIXED_FIELDS;
 const INPUT_EXCLUDED = new Set(["chats", "chatPage", "reloadKeys"]);
 
 function list(): AnyClientCharacter[] {
-    return (DBState.db.characters ?? []) as AnyClientCharacter[];
+    return (trackedCharacters<AnyClientCharacter[]>() ?? []) as AnyClientCharacter[];
 }
 
 function indexOf(chaId: string): number {
@@ -396,9 +396,7 @@ onCharacterSelected((chaId) => {
 });
 
 /**
- * Legacy only: the shared body of `setCurrentCharacter` and `setCharacterByIndex`
- * (`database.svelte.ts`, the core-app wrappers until `aggregate-removal`), and of
- * `replaceCharacterFields` after its checks. Replaces the own fields of the record at `index` with
+ * The body of `replaceCharacterFields` after its checks. Replaces the own fields of the record at `index` with
  * `char`'s, keeping the render key (one queued save; any `chats`/`chatPage` in `char` are not record
  * fields and are dropped). Not validated or detached. External contracts never call it.
  */

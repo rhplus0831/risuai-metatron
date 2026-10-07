@@ -10,7 +10,7 @@ const { server, calls } = vi.hoisted(() => ({
     calls: [] as { path: string; init: RequestInit }[],
 }));
 
-vi.mock("../nodeStorage", () => ({
+vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init: RequestInit = {}) => {
         calls.push({ path, init });
         return server.current.fetch(path, init);

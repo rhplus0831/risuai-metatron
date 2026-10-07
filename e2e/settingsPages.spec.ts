@@ -3,8 +3,8 @@ import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
 // Phase 6 slice 4 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/settings-ownership.md`,
 // "Validation", the manual check "every settings page still loads and saves through the facade"): the
-// settings records are the source of truth and `DBState.db`'s fields are accessors onto them, so every
-// settings page reads and binds through record wrappers. Each page (and, in the legacy GUI, every
+// settings records are the source of truth and the settings views (`settingsViews.svelte.ts`) read and
+// write them, so every settings page reads and binds through record wrappers. Each page (and, in the legacy GUI, every
 // accordion it holds) mounts without a page error and without writing anything; an edit made through
 // the page's own controls (a section field bound with `bind:checked`, a nested section field bound
 // with `bind:value`) is saved and survives a reload. The community page (index 7) and the supporter
@@ -49,10 +49,11 @@ const openSettings = (page: Page, index: number) =>
         stores.SettingsMenuIndex.set(menu);
     }, index);
 
+/** A settings field by its root name, read through the views. */
 const read = <T>(page: Page, field: string) =>
     page.evaluate(async (key) => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        return JSON.parse(JSON.stringify((DBState.db as any)[key] ?? null));
+        const { readSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        return JSON.parse(JSON.stringify(readSettingsRoot(key) ?? null));
     }, field) as Promise<T>;
 
 test("every settings page mounts through the records without an error or a write, and its controls save", async ({
@@ -66,11 +67,11 @@ test("every settings page mounts through the records without an error or a write
     await openApp(page, baseURL!);
     await settle(page);
     await page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        DBState.db.didFirstSetup = true;
-        DBState.db.useLegacyGUI = true;
+        const { settings, activePreset } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        settings.ui.didFirstSetup = true;
+        settings.ui.useLegacyGUI = true;
         // The prompt template page edits the selected preset's template (Bot Settings turns it on).
-        DBState.db.promptTemplate = [
+        activePreset.promptTemplate = [
             { type: "plain", text: "Main prompt", role: "system", type2: "main" },
             { type: "chat", rangeStart: 0, rangeEnd: "end" },
         ] as any;
@@ -120,8 +121,8 @@ test("every settings page mounts through the records without an error or a write
 
     batches.length = 0;
     await page.evaluate(async () => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
-        DBState.db.sdProvider = "novelai";
+        const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        settings.memoryTranslateMedia.sdProvider = "novelai";
     });
     await settle(page);
     batches.length = 0;

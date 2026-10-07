@@ -22,7 +22,7 @@ const { server, alerts, hooks } = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("../storage/nodeStorage", () => ({
+vi.mock("../storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
@@ -105,8 +105,8 @@ async function boot(messages = [message("m1", "user", "nothing")], characterFiel
     const booted = await bootMutations((fake) => {
         server.current = fake;
     });
-    const { characterStore, stores, db } = booted;
-    db().username = "User";
+    const { characterStore, selectionModule, activePersona } = booted;
+    activePersona.name = "User";
     const chaId = characterStore.addCharacter({
         type: "character",
         name: "Lore",
@@ -115,7 +115,7 @@ async function boot(messages = [message("m1", "user", "nothing")], characterFiel
         globalLore: [],
         ...characterFields,
     });
-    stores.selectedCharID.set(db().characters.findIndex((c: any) => c?.chaId === chaId));
+    selectionModule.selectCharacter(chaId);
     const ref = { chaId, chatId: "l1" };
     const lorebook = await import("./lorebook.svelte");
     const chatVar = await import("../parser/chatVar.svelte");
@@ -199,7 +199,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
     }, 30_000);
 
     it("scans the user's messages under the bound persona's name, else the selected persona's, else User", async () => {
-        const { characterStore, collectionStore, chat, chaId, ref, lorebook, db } = await boot([
+        const { characterStore, collectionStore, chat, chaId, ref, lorebook, activePersona } = await boot([
             message("m1", "user", "a dragon"),
         ]);
         characterStore.updateCharacter(chaId, { globalLore: [lore("rx", "/dragon/", "d", { useRegex: true })] });
@@ -207,15 +207,15 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         expect(await prompt()).toBe("\x01{{User}}:a dragon\x01");
         const personaId = collectionStore.addPersona({ name: "Mina", personaPrompt: "", icon: "" });
         chat.setChatMeta(ref, { bindedPersona: personaId });
-        expect(db().username).toBe("User");
+        expect(activePersona.name).toBe("User");
         expect(await prompt()).toBe("\x01{{Mina}}:a dragon\x01");
         chat.setChatMeta(ref, {}, ["bindedPersona"]);
-        db().username = undefined;
+        activePersona.name = undefined as any;
         expect(await prompt()).toBe("\x01{{User}}:a dragon\x01");
     }, 30_000);
 
     it("merges the module lore enabled globally, on the chat, on the character, and by moduleIntergration, in module order", async () => {
-        const { characterStore, collectionStore, chat, chaId, ref, sources, db } = await boot([
+        const { characterStore, collectionStore, chat, chaId, ref, sources, activePreset } = await boot([
             message("m1", "user", "g c h i n"),
         ]);
         for (const id of ["g", "c", "h", "i", "n"]) {
@@ -224,7 +224,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         collectionStore.setEnabledModules(["g"]);
         chat.setChatMeta(ref, { modules: ["c"] });
         characterStore.updateCharacter(chaId, { modules: ["h"] });
-        db().moduleIntergration = "i";
+        activePreset.moduleIntergration = "i";
         // The module lore follows the character's and the chat's; the result is reversed.
         expect(await sources()).toEqual(["lore-i", "lore-h", "lore-c", "lore-g"]);
         collectionStore.setEnabledModules([]);

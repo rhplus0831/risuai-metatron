@@ -10,8 +10,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // - `setItem` JSON-normalizes the value and rejects what the save file cannot
 //   hold (BigInt) without touching the database,
 // - falsy stored values survive `getItem`; only a missing key yields null.
-// The storage functions write the records through `pluginStorageStore.svelte.ts`, so the database
-// under test is `DBState.db` over freshly installed records (per case).
+// The storage functions write the records through `pluginStorageStore.svelte.ts`, so the record
+// under test is `settings.pluginStorage` over freshly installed records (per case).
 
 type CapturedApi = Record<string, (...args: any[]) => any>;
 
@@ -32,24 +32,11 @@ vi.mock("./factory", () => ({
     },
 }));
 
-vi.mock("src/ts/storage/database.svelte", async () => {
-    // Resolved here because the factory runs before this file's own imports are initialized.
-    const stores = await vi.importActual<typeof import("src/ts/stores.svelte")>("src/ts/stores.svelte");
-    return {
-        getDatabase: () => stores.DBState.db,
-        setDatabase: vi.fn(),
-        getCurrentCharacter: vi.fn(),
-        getCurrentChat: vi.fn(),
-        setCurrentChat: vi.fn(),
-    };
-});
-
 vi.mock("src/ts/globalApi.svelte", () => ({
     checkCharOrder: vi.fn(),
     getFetchLogs: vi.fn(() => []),
     globalFetch: vi.fn(),
     fetchNative: vi.fn(),
-    forageStorage: { getItem: vi.fn(), setItem: vi.fn(), keys: vi.fn(async () => []) },
     saveAsset: vi.fn(),
     readImage: vi.fn(),
     getFileSrc: vi.fn(),
@@ -64,19 +51,19 @@ vi.mock("src/ts/alert", () => ({
     alertStore: { set: vi.fn(), subscribe: vi.fn() },
 }));
 
-// The real parser module installs a module-level `$effect.root` that reads
-// `selIdState` from `stores.svelte`, which is still uninitialized here because
-// the two modules import each other. Nothing under test parses CBS.
+// The real parser module installs a module-level `$effect.root` over the selection, which is
+// still uninitialized here because the modules import each other. Nothing under test parses CBS.
 vi.mock("src/ts/parser/parser.svelte", () => ({
     hasher: vi.fn(async () => ""),
     risuChatParser: vi.fn((text: string) => text),
 }));
 
-import { DBState } from "src/ts/stores.svelte";
+import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { executePluginV3 } from "./v3.svelte";
 
-const db = () => DBState.db as { pluginCustomStorage: Record<string, any> | undefined };
+/** The `pluginStorage` record (the legacy `pluginCustomStorage`), through its view. */
+const stored = () => settings.pluginStorage as Record<string, any> | undefined;
 
 async function makeApi(): Promise<CapturedApi> {
     captured.api = null;
@@ -91,10 +78,9 @@ async function makeApi(): Promise<CapturedApi> {
 
 describe("v3 pluginStorage without cold storage", () => {
     beforeEach(() => {
-        // Installed as `setDatabaseLite` installs a database (`database.svelte` is mocked here): its
-        // fields moved into the records, the accessors on, since the storage functions write the
-        // records through the settings views (Phase 6 slice 7).
-        DBState.db = installFlatDatabase({ pluginCustomStorage: undefined } as any);
+        // The records installed as the app installs them (no `pluginStorage` record yet), since the
+        // storage functions write the records through the settings views (Phase 6 slice 7).
+        installFlatDatabase({ pluginCustomStorage: undefined });
     });
 
     it("stores values inline under pluginCustomStorage._pluginStorage and reads them back", async () => {
@@ -104,14 +90,14 @@ describe("v3 pluginStorage without cold storage", () => {
         await api._setPluginStorage("count", 3);
         await api._setPluginStorage("prefs", { nested: { list: [1, "two", null] } });
 
-        expect(db().pluginCustomStorage).toEqual({
+        expect(stored()).toEqual({
             _pluginStorage: {
                 theme: "dark",
                 count: 3,
                 prefs: { nested: { list: [1, "two", null] } },
             },
         });
-        expect(db().pluginCustomStorage!._coldplugin).toBeUndefined();
+        expect(stored()!._coldplugin).toBeUndefined();
 
         expect(await api._getPluginStorage("theme")).toBe("dark");
         expect(await api._getPluginStorage("count")).toBe(3);
@@ -143,7 +129,7 @@ describe("v3 pluginStorage without cold storage", () => {
         // level. `characters` is a real DB key that a plugin may plausibly pick as a storage
         // key; it must not land at the top level either, where `setDatabase` would later
         // treat it as a routed custom property.
-        db().pluginCustomStorage = { settings: "legacy", characters: "legacy-list" };
+        settings.pluginStorage = { settings: "legacy", characters: "legacy-list" };
         const api = await makeApi();
 
         expect(await api._getPluginStorage("settings")).toBeNull();
@@ -152,17 +138,17 @@ describe("v3 pluginStorage without cold storage", () => {
         await api._setPluginStorage("settings", { v3: true });
         await api._setPluginStorage("characters", []);
 
-        expect(db().pluginCustomStorage.settings).toBe("legacy");
-        expect(db().pluginCustomStorage.characters).toBe("legacy-list");
-        expect(Object.keys(db().pluginCustomStorage).sort()).toEqual(["_pluginStorage", "characters", "settings"]);
+        expect(stored()!.settings).toBe("legacy");
+        expect(stored()!.characters).toBe("legacy-list");
+        expect(Object.keys(stored()!).sort()).toEqual(["_pluginStorage", "characters", "settings"]);
         expect(await api._keysPluginStorage()).toEqual(["settings", "characters"]);
 
         await api._removePluginStorage("settings");
-        expect(db().pluginCustomStorage.settings).toBe("legacy");
+        expect(stored()!.settings).toBe("legacy");
         expect(await api._keysPluginStorage()).toEqual(["characters"]);
 
         await api._clearPluginStorage();
-        expect(db().pluginCustomStorage).toEqual({
+        expect(stored()).toEqual({
             settings: "legacy",
             characters: "legacy-list",
             _pluginStorage: {},
@@ -180,19 +166,19 @@ describe("v3 pluginStorage without cold storage", () => {
         expect(await api._getPluginStorage("undef")).toBeNull();
         expect(await api._getPluginStorage("fn")).toBeNull();
         expect(await api._getPluginStorage("holes")).toEqual({ keep: 1, when: "1970-01-01T00:00:00.000Z" });
-        expect("drop" in db().pluginCustomStorage!._pluginStorage.holes).toBe(false);
+        expect("drop" in stored()!._pluginStorage.holes).toBe(false);
     });
 
     it("rejects a BigInt before touching the database so saving cannot break", async () => {
         const api = await makeApi();
 
         await expect(api._setPluginStorage("counter", 1n)).rejects.toThrow(TypeError);
-        expect(db().pluginCustomStorage).toBeUndefined();
+        expect(stored()).toBeUndefined();
 
         await api._setPluginStorage("ok", 1);
         await expect(api._setPluginStorage("counter", { big: 2n })).rejects.toThrow(TypeError);
-        expect(db().pluginCustomStorage).toEqual({ _pluginStorage: { ok: 1 } });
-        expect(() => JSON.stringify(db().pluginCustomStorage)).not.toThrow();
+        expect(stored()).toEqual({ _pluginStorage: { ok: 1 } });
+        expect(() => JSON.stringify(stored())).not.toThrow();
     });
 
     it("returns a detached copy so a plugin cannot mutate the live database object", async () => {
@@ -203,6 +189,6 @@ describe("v3 pluginStorage without cold storage", () => {
         read.a = 2;
         read.injected = true;
 
-        expect(db().pluginCustomStorage!._pluginStorage.prefs).toEqual({ a: 1 });
+        expect(stored()!._pluginStorage.prefs).toEqual({ a: 1 });
     });
 });

@@ -1,6 +1,6 @@
 import { EVENT_FEED_PATH, type EventFeedFrame } from "../../../shared/events.ts";
 import { epochMismatch, getResourceEpoch, listRevisions, ResourceEpochMismatchError } from "../storage/resourceClient";
-import { getNodeServerProxyAuth } from "../storage/nodeStorage";
+import { getNodeServerProxyAuth } from "../storage/serverAuth";
 import { noteRemoteChanges, reconcileRemote } from "../storage/resourceSync.svelte";
 
 /**

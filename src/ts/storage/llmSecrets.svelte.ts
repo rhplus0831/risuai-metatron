@@ -15,8 +15,8 @@ import {
 /**
  * The tab's view of the write-only `llmSecrets` record (Phase 5 slice 7b, `shared/llmSecrets.ts`):
  * the masked record the server last answered (each credential's `{ set, hint }`; the readable
- * siblings are mirrored into `DBState.db` like any section field, the credential fields there are
- * always `""`), a version per credential path (bumped whenever its acknowledged status changes, so
+ * siblings are held in the `llmSecrets` record like any section field, the credential fields there
+ * are always `""`), a version per credential path (bumped whenever its acknowledged status changes, so
  * a view that depends on a key refreshes when it is replaced), and the queue of credential writes
  * the save adapter sends (`resourceSync.svelte.ts`) through `/api/llm-secrets/*`. The status a view
  * shows is the masked record with the queued writes applied over it.
@@ -176,7 +176,7 @@ export function removeSecretOp(id: number) {
 }
 
 /**
- * The fields the mirror (`DBState.db`) holds for a masked record: the readable siblings as they
+ * The fields the tab's `llmSecrets` record holds for a masked record: the readable siblings as they
  * are, every flat credential `""`, each container's credential leaf `""`, `OaiCompAPIKeys` empty.
  */
 export function mirrorFields(masked: Record<string, any>): Record<string, unknown> {

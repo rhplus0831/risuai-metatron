@@ -417,6 +417,20 @@ interface DatabaseSubset {
     guiHTML?: string;
     /** Color scheme name */
     colorSchemeName?: string;
+    /** The index of this client's selected persona in `personas` (setting it selects on this client only) */
+    selectedPersona?: number;
+    /** The character list's order: character ids and folders of character ids */
+    characterOrder?: (string | CharacterFolder)[];
+}
+
+/** A folder in the character list's order. */
+interface CharacterFolder {
+    name: string;
+    data: string[];
+    color: string;
+    id: string;
+    imgFile?: string;
+    img?: string;
 }
 
 // ============================================================================

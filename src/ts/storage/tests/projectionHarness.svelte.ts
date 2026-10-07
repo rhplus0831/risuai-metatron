@@ -10,7 +10,7 @@ import {
 import { PRESET_ROOT_ALIASES } from "../../../../shared/presets.ts";
 import { compareRevision, RESOURCE_EPOCH_HEADER, SINGLETON_RESOURCE_ID } from "../../../../shared/resources.ts";
 import { FORWARDED_PRESET_KEYS, SECTION_FIELDS, SECTION_KIND, type SectionKind } from "../../../../shared/sections.ts";
-import { DBState } from "../../stores.svelte";
+import { spikeRoot } from "./spikeRoot.svelte";
 import type { Database } from "../database.svelte";
 import {
     clearSecret,
@@ -42,7 +42,7 @@ import type { StoreBackedServer } from "./storeBackedServer";
 //      `deleteProperty`, and `defineProperty` forward to the Svelte proxy and call
 //      `queueRecordWrite` in the same task. Array mutators run through the traps.
 // - The root facade (`mountFacade`): a raw object with enumerable accessors, installed before
-//   `DBState.db = raw` proxies it (as `src/ts/storage/forwarding.svelte.ts` does), so the real
+//   `spikeRoot.db = raw` proxies it (as `src/ts/storage/forwarding.svelte.ts` does), so the real
 //   `getSettingValue`/`setSettingValue` and real components run against it.
 // - `queueRecordWrite` and a reduced transport prototype over `StoreBackedServer` that mirrors the
 //   save loop's capture, flush, acknowledgement, conflict, and hydration rules
@@ -1473,7 +1473,7 @@ function defineAccessor(raw: object, key: string, get: () => unknown, set: (valu
 }
 
 /**
- * Builds the facade for `candidate` and makes it `DBState.db`:
+ * Builds the facade for `candidate` and makes it `spikeRoot.db`:
  * - each section field forwards to its section record's wrapper;
  * - `botPresets` is the presets record wrapper (an assignment replaces the record locally, queued);
  * - each forwarded preset field (by its root name, `PRESET_ROOT_ALIASES`) reads the selected preset
@@ -1552,8 +1552,8 @@ export function mountFacade(candidate: Candidate, characterIds: readonly string[
             throw new TypeError("character membership is not a facade write (slice 5)");
         },
     );
-    DBState.db = raw as unknown as Database;
-    return DBState.db;
+    spikeRoot.db = raw as unknown as Database;
+    return spikeRoot.db;
 }
 
 /** Switches the preset selection only (no copy). */

@@ -1,11 +1,11 @@
 import fc from "fast-check";
-import { writable } from "svelte/store";
 import { beforeEach, expect, test, vi } from "vitest";
-import { DBState } from "../../stores.svelte";
-import { selection } from "../../storage/selection.svelte";
+import { characterList } from "../../storage/characterStore.svelte";
+import { selectChat, setChatMeta } from "../../storage/chatStore.svelte";
+import { selectCharacterAt } from "../../storage/selection.svelte";
 import { activePreset, settings } from "../../storage/settingsViews.svelte";
+import { installFlatDatabaseWithChats } from "../../storage/tests/installFlatDatabase";
 import { getChatVar, getGlobalChatVar, setChatVar } from "../chatVar.svelte";
-import { holdMockedChats, resetChatVariables } from "./cbs/lib";
 
 //#region module mocks
 
@@ -14,8 +14,6 @@ vi.mock(
     () =>
         ({
             appVer: "1234.5.67",
-            getCurrentCharacter: () => ({}),
-            getDatabase: () => ({}),
         }) as typeof import("../../storage/database.svelte"),
 );
 
@@ -24,47 +22,47 @@ vi.mock(import("../../globalApi.svelte"), () => ({
     getFileSrc: () => Promise.resolve(""),
 }));
 
-vi.mock(import("../../stores.svelte"), () => {
-    return {
-        DBState: {
-            db: {
-                characters: [
-                    {
-                        chaId: "c",
-                        chatPage: 0,
-                        chats: [
-                            {
-                                id: "k",
-                                scriptstate: {},
-                            },
-                        ],
-                        defaultVariables: "",
-                    },
-                ],
-            },
-        },
-        selIdState: {
-            selId: 0,
-        },
-        selectedCharID: writable(0),
-    } as unknown as typeof import("../../stores.svelte");
-});
-
 //#endregion
 
-// The settings live in the records (installed as `setDatabaseLite` installs a database), which
-// `chatVar.svelte` reads through the settings views (Phase 6 slice 7): the global variables, and
-// the template's default variables in the selected preset. The character stays on `DBState.db`;
-// since Phase 6 slice 9a a copy is in the records too, and its chat in the chat module.
-holdMockedChats({
+// The fixture lives in the records (installed as the removed `setDatabaseLite` installed a
+// database; there is no whole-database object since Phase 6 slice 10), which `chatVar.svelte`
+// reads through the settings views (Phase 6 slice 7: the global variables, and the template's
+// default variables in the selected preset), the character store (slice 8: the selected character,
+// by `selection.characterId`) and the chat module (slice 9a: its selected chat). The character and
+// its chat are selected as `selectedCharID` 0 and the chat page selected them.
+installFlatDatabaseWithChats({
     globalChatVariables: {},
     botPresets: [{ id: "preset", name: "Preset", templateDefaultVariables: "" }],
+    characters: [
+        {
+            chaId: "c",
+            chatPage: 0,
+            chats: [
+                {
+                    id: "k",
+                    scriptstate: {},
+                },
+            ],
+            defaultVariables: "",
+        },
+    ],
 });
+selectCharacterAt(0);
+selectChat("c", "k");
 
-// The readers resolve the selected character by `selection.characterId` (Phase 6 slice 8), over
-// the character list (`characterList()`, here the mocked `DBState.db.characters`): the fixture's
-// character is the selected one, as `selectedCharID` 0 selected it.
-selection.characterId = "c";
+/** The fixture's character record (its wrapper in the character list). */
+const character = () => characterList()[0];
+
+/**
+ * Resets `globalChatVariables` and its default values, as well as the character's chat's
+ * scriptstate and its default values, where the readers read them.
+ */
+function resetChatVariables() {
+    setChatMeta({ chaId: "c", chatId: "k" }, { scriptstate: {} });
+    character().defaultVariables = "";
+    settings.globalChatVariables = {};
+    activePreset.templateDefaultVariables = "";
+}
 
 const anyValidDefaultVarKey = fc.string({ minLength: 1, unit: "grapheme" }).filter((s) => !/[=\n]/.test(s));
 const anyValidDefaultVarValue = fc
@@ -80,7 +78,7 @@ beforeEach(() => {
 test("can get a character default variable", () => {
     fc.assert(
         fc.property(anyValidDefaultVarKey, anyValidDefaultVarValue, (key, value) => {
-            DBState.db.characters[0].defaultVariables = `${key}=${value}`;
+            character().defaultVariables = `${key}=${value}`;
             expect(getChatVar(key)).toBe(value);
         }),
     );
@@ -112,7 +110,7 @@ test("can set and get a chat variable", () => {
 });
 
 test("can set a chat variable over its default value", () => {
-    DBState.db.characters[0].defaultVariables = "char=default";
+    character().defaultVariables = "char=default";
     activePreset.templateDefaultVariables = "template=default";
 
     setChatVar("char", "overridden");

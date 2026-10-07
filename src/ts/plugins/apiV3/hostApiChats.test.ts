@@ -15,12 +15,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type CapturedApi = Record<string, (...args: any[]) => any>;
 
-const { captured, dbMocks, reads } = vi.hoisted(() => ({
+const { captured, reads } = vi.hoisted(() => ({
     captured: { api: null as CapturedApi | null },
-    dbMocks: { setDatabase: vi.fn() },
     /**
      * The chat module's reads (`readRefs`, Phase 6 slice 9b) for the chats a fixture installs as
-     * summaries (`forwardedDatabase`'s `unloaded`): each read answers `chats` by key, after `gate`
+     * summaries (`installDatabase`'s `unloaded`): each read answers `chats` by key, after `gate`
      * resolves while one is set (the test releases it to end the load).
      */
     reads: {
@@ -65,22 +64,11 @@ vi.mock("./factory", () => ({
     },
 }));
 
-vi.mock("src/ts/storage/database.svelte", async () => {
-    const stores = await vi.importActual<typeof import("src/ts/stores.svelte")>("src/ts/stores.svelte");
-    return {
-        getDatabase: () => stores.DBState.db,
-        setDatabase: dbMocks.setDatabase,
-        getCurrentCharacter: vi.fn(),
-        setCurrentChat: vi.fn(),
-    };
-});
-
 vi.mock("src/ts/globalApi.svelte", () => ({
     checkCharOrder: vi.fn(),
     getFetchLogs: vi.fn(() => []),
     globalFetch: vi.fn(),
     fetchNative: vi.fn(),
-    forageStorage: { getItem: vi.fn(), setItem: vi.fn(), keys: vi.fn(async () => []) },
     saveAsset: vi.fn(),
     readImage: vi.fn(),
     getFileSrc: vi.fn(),
@@ -100,10 +88,9 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
 }));
 
-import { DBState } from "src/ts/stores.svelte";
-import { installForwarding } from "src/ts/storage/forwarding.svelte";
 import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
 import { selectCharacter, selectPreset } from "src/ts/storage/selection.svelte";
+import { reconcileSelection, settings } from "src/ts/storage/settingsViews.svelte";
 import * as chatStore from "src/ts/storage/chatStore.svelte";
 import { characterList, removeCharacter } from "src/ts/storage/characterStore.svelte";
 import { executePluginV3 } from "./v3.svelte";
@@ -136,11 +123,13 @@ function liveCharacters() {
 }
 
 /**
- * The records and the chat module installed as `setDatabaseLite` and boot install a database. The
- * chats of the characters in `unloaded` are held as their summaries, as boot holds every chat (Phase
- * 6 slice 9b); a load reads them through the mocked `readRefs` (`reads`).
+ * The records and the chat module installed as boot installs them (the whole-database aggregate is
+ * gone since Phase 6 slice 10): the record fields into the records, the selection resolved, and the
+ * characters' chats into the chat module. The chats of the characters in `unloaded` are held as
+ * their summaries, as boot holds every chat (Phase 6 slice 9b); a load reads them through the
+ * mocked `readRefs` (`reads`).
  */
-function forwardedDatabase(fields: Record<string, unknown>, unloaded: readonly string[] = []) {
+function installDatabase(fields: Record<string, unknown>, unloaded: readonly string[] = []) {
     selectPreset("preset");
     const raw: Record<string, unknown> = { botPresets: [{ id: "preset", name: "P", temperature: 0 }], ...fields };
     const characters = (Array.isArray(raw.characters) ? raw.characters : []) as { chaId: string; chats?: any[] }[];
@@ -164,8 +153,8 @@ function forwardedDatabase(fields: Record<string, unknown>, unloaded: readonly s
         ids: (char.chats ?? []).map((entry) => entry.id),
     }));
     initializeRecords(takeRecordFields(raw));
+    reconcileSelection();
     chatStore.assembleChats(characters, chats, orders);
-    return installForwarding(raw) as any;
 }
 
 async function makeApi(): Promise<CapturedApi> {
@@ -183,7 +172,7 @@ const ids = () => characterList().map((entry) => entry?.chaId);
 const chatIds = (chaId: string) => chatStore.chatList(chaId).map((entry) => entry.id);
 /** Installs the fixture again with `d`'s chat held as its summary (a setter naming `d` loads it first). */
 function unloadD() {
-    DBState.db = forwardedDatabase({ characters: liveCharacters(), pluginCustomStorage: undefined }, ["d"]);
+    installDatabase({ characters: liveCharacters(), pluginCustomStorage: undefined }, ["d"]);
     chatStore.initializeChats();
     selectCharacter("c");
     expect(chatStore.findChat({ chaId: "d", chatId: "kd" })).toBeUndefined();
@@ -203,7 +192,7 @@ function holdReads() {
 const warnings = () => vi.mocked(console.warn).mock.calls.map((call) => String(call[0]));
 
 beforeEach(() => {
-    DBState.db = forwardedDatabase({ characters: liveCharacters(), pluginCustomStorage: undefined });
+    installDatabase({ characters: liveCharacters(), pluginCustomStorage: undefined });
     // As boot does after the assembly: the remembered selections (none: the preference `selectChat`
     // wrote to localStorage in the last test is cleared) replace the last test's.
     localStorage.clear();
@@ -307,7 +296,7 @@ describe("the setters", () => {
     it("setDatabaseLite applies at once when no chats load, after the load when a characters list names existing characters", async () => {
         const api = await makeApi();
         const atOnce = api.setDatabaseLite({ theme: "sync" });
-        expect(DBState.db.theme).toBe("sync");
+        expect(settings.ui.theme).toBe("sync");
         await atOnce;
 
         // `d`'s chat is held as its summary (Phase 6 slice 9b): the list names `d`, so its chats load
@@ -410,7 +399,7 @@ describe("lazy loading (Phase 6 slice 9b)", () => {
     });
 
     it("setChar after an eviction: the plugin's change to the evicted chat is applied as a change, not a create; a chat left out of the list is deleted through the order", async () => {
-        DBState.db = forwardedDatabase({ characters: manyCharacters(), pluginCustomStorage: undefined });
+        installDatabase({ characters: manyCharacters(), pluginCustomStorage: undefined });
         chatStore.initializeChats();
         seedRevisions();
         selectCharacter("c");

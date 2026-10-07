@@ -55,33 +55,35 @@ Verification
 
 Data and persistence (details: `docs/structure/persistence.md`)
 
-- D1. The live database is the single rune `DBState.db` (`src/ts/stores.svelte.ts`), the client's
-  mirror of the server resources (`shared/resources.ts`; loaded in `bootstrap.ts:loadData`). Its
-  shapes (`Database`, `character`, `groupChat`, `Chat`, `Message`, `botPreset`) live in
+- D1. The client holds no whole-database object (Phase 6 slice 10). Its mirror of the server
+  resources (`shared/resources.ts`; installed in `bootstrap.ts:loadData`) is the settings records
+  (`src/ts/storage/records.svelte.ts`, read and written through the views of
+  `src/ts/storage/settingsViews.svelte.ts`), the character records (`characterStore.svelte.ts`),
+  and the chat module. A consumer that needs the legacy flat shape (the plugin `getDatabase`, the
+  settings report, the backup inventory) gets a fresh copy from `src/ts/storage/snapshots.svelte.ts`.
+  The shapes (`Database`, `character`, `groupChat`, `Chat`, `Message`, `botPreset`) live in
   `shared/database.ts` and are re-exported by `src/ts/storage/database.svelte.ts`. `shared/` is
   compiled by both the client and the strict server project: no DOM types, runes, or enums, and
   only relative `.ts` imports between `shared/` files (`persistence.md`). The chats are not part of
   the character records (Phase 6 slice 9a): the chat module (`src/ts/storage/chatStore.svelte.ts`)
   holds them, the client reads them through `chatList`, `selectedChat`, and `findChat` (the client's
-  character type, `ClientCharacter`, has no `chats` or `chatPage`; the facade's
-  `DBState.db.characters[i].chats`/`chatPage` is a read-only view for the shared CBS host until
-  slice 10), only the chat module writes them, and every chat change goes through its functions (`appendMessage`, `setMessageText`, `setChatMeta`, `applyChatResult`, ...), addressed by
+  character type, `ClientCharacter`, has no `chats` or `chatPage`; a character wrapper's
+  `chats`/`chatPage` is a read-only view for the shared CBS host, which reads that legacy shape),
+  only the chat module writes them, and every chat change goes through its functions (`appendMessage`, `setMessageText`, `setChatMeta`, `applyChatResult`, ...), addressed by
   chat id and message id (`Message.chatId`), never by index after an await. Svelte `bind:` on a
   chat field bypasses the type check: bind a getter/setter pair or a synced editing copy. Beside
   it, the mutation modules own the other records for the external contracts (plugins, MCP,
   imports; since the Phase 5 cutover Lua and triggers run on the server and write through their job): `characterStore.svelte.ts` (characters by `chaId`), `collectionStore.svelte.ts`
   (settings sections, collections, presets, modules, plugins), and `pluginStorageStore.svelte.ts`.
-  A contract never assigns into `DBState.db`; the core-app UI still does until Phase 6.
+  The core-app UI writes the settings through the views and the characters through their records.
 - D2. A new persisted field needs a type entry and a place in `shared/sections.ts`. A section or
   collection field gets its default and migration in its server normalizer
-  (`server/src/data/normalize/`), never in `setDatabase`: the client's projection must equal the
-  server's normalized text. The flat preset and persona fields of `DBState.db` and the selection
-  indexes (`FORWARDED_ROOT_KEYS`) are accessors that read and write the selected preset or persona,
-  or this client's selection (`src/ts/storage/forwarding.svelte.ts`): never `delete` one, and write
-  them synchronously (a value copied back from an `$effect` can land after a switch). The section,
-  collection, `botPresets`, `modules`, `plugins`, and `pluginCustomStorage` fields are accessors onto
-  the settings records (`records.svelte.ts`). `setDatabaseLite` moves a fresh object's record fields
-  into the records, installs the accessors, and does not normalize. Chat and message fields
+  (`server/src/data/normalize/`), never on the client: the client's projection must equal the
+  server's normalized text. The flat preset and persona fields (`FORWARDED_ROOT_KEYS`) are served
+  by `activePreset`/`activePersona` and by root name (`readSettingsRoot`/`writeSettingsRoot`) from
+  the selected preset or persona (`settingsViews.svelte.ts`); write them synchronously (a value
+  copied back from an `$effect` can land after a switch). The boot installs the records as the
+  server sent them (`initializeRecords`) and does not normalize. Chat and message fields
   are the exception: they are stored as the client sends them (the server normalizer in
   `server/src/data/chats.ts` fills only `name`, `note`, `localLore`, and `fmIndex`), so readers default a
   missing chat field where they read it.
@@ -91,12 +93,12 @@ Data and persistence (details: `docs/structure/persistence.md`)
 - D4. The database lives in server resources (the Phase 3 sections and collections, `presets`,
   `modules`, `plugins`, `pluginStorage`, one `characters` record per `chaId` without its chats) and in chat records (one
   per chat, messages as rows, one chat order per character); the save adapter
-  (`src/ts/storage/resourceSync.svelte.ts`, started by `saveDb`) saves the settings records
+  (`src/ts/storage/resourceSync.svelte.ts`, started by `startResourceSync` in `loadData`) saves the settings records
   (`src/ts/storage/records.svelte.ts`: the sections, the collections, `presets`, `modules`,
   `plugins`, `pluginStorage`) and the character records (one per `chaId`, without its chats), which
-  mark themselves on every local write through `DBState.db`'s accessors, and sends the chat module's
+  mark themselves on every local write through their wrappers, and sends the chat module's
   queued ops. Add, replace, or remove a character only through `characterStore.svelte.ts`: a
-  structural write through `DBState.db.characters` throws. Every write names the revision and epoch
+  structural write through the character list's wrapper throws. Every write names the revision and epoch
   it was based on; a stale one reloads that record, except chat ops that address one message by id
   (and per-field chat metadata), which still apply to an older chat revision while that message
   exists. Message ids are assigned optimistically by the client; the server keeps them, renames a
@@ -149,8 +151,8 @@ UI conventions (details: `docs/structure/ui-theming.md`, `docs/structure/setting
 - U4. There is no router. The screen is chosen by ordered conditionals in `src/App.svelte` and
   `src/lib/ChatScreens/DefaultChatScreen.svelte`, driven by stores. The selected character is
   `selection.characterId` (per tab; `null` is the home screen), read as `selectedCharacter()`
-  (`characterStore.svelte.ts`) and set with `selectCharacter(chaId)`. `selectedCharID` is an index
-  view of it, kept as a subscription shim; readers resolve characters by id, not by that index.
+  (`characterStore.svelte.ts`) and set with `selectCharacter(chaId)`; `selectedIndex()` is its
+  index in the list. Readers resolve characters by id, not by that index.
 
 Release
 
@@ -220,7 +222,7 @@ targeted path to read them.
 | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------ |
 | CBS                                    | Curly-brace syntax `{{fn::arg}}` template language evaluated by `risuChatParser`                                  | cbs-rendering      |
 | Lorebook / loreBook                    | Keyword-activated context entries (global/character, chat-local, module), with `@@` decorators                    | chat-pipeline      |
-| Prompt template                        | `DBState.db.promptTemplate: PromptItem[]`, the ordered prompt cards                                               | chat-pipeline      |
+| Prompt template                        | `activePreset.promptTemplate: PromptItem[]`, the ordered prompt cards                                             | chat-pipeline      |
 | Regex script (`customscript`)          | Find/replace rules run in `editinput`/`editoutput`/`editprocess`/`editdisplay` (plus `edittrans` for translation) | scripts-triggers   |
 | Trigger v2 (`triggerscript`)           | Event-driven effect lists; v2 is a flat array with `indent` blocks and a header sentinel at index 0               | scripts-triggers   |
 | Module (`RisuModule`, `.risum`)        | Bundle of lorebook/regex/trigger/assets/MCP, enabled globally, per chat, per character, or via a persona          | characters-modules |
@@ -245,7 +247,7 @@ Do not extend these without first confirming intent.
   `src/etc/patchNote.ts`: no importers.
 - `src/ts/gui/codearea/cbsMonaco.ts`: `registerCBSMonaco` is empty. CBS highlighting is
   `src/ts/gui/highlight.ts`.
-- `src/lib/Setting/Pages/GlobalRegex.svelte`: edits `DBState.db.globalscript`, which the regex
+- `src/lib/Setting/Pages/GlobalRegex.svelte`: edits `settings.globalscript`, which the regex
   runtime never applies. The runtime uses `presetRegex`.
 - `memoryAlgorithmType`: written by the settings UI, never read. The memory branch is chosen by
   boolean flags.
