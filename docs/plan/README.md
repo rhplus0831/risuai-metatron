@@ -10,7 +10,8 @@ When no plans are active, keep the list below set to `None`.
 
 Active planning and implementation:
 
-- None.
+- [Split Preset](split-preset.md): split the bot preset into model and prompt
+  presets (draft).
 
 ## Archived
 
