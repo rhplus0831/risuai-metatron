@@ -479,12 +479,13 @@ describe("a generating character (the generation deferral is gone)", () => {
 describe("restore (412) and errors", () => {
     it("halts, alerts, and reloads on a 412 from a batch", async () => {
         const { fake, sync, settings } = await boot();
+        const themeBefore = fake.data("ui", "main").theme;
         fake.restore("epoch-2");
         settings.ui.theme = "after restore";
         await expect(sync.flushResources()).rejects.toThrow();
         expect(alerts.terminal).toHaveBeenCalledWith("restored");
         await vi.waitFor(() => expect((location as any).reload).toHaveBeenCalled());
-        expect(fake.data("ui", "main").theme).toBe("");
+        expect(fake.data("ui", "main").theme).toBe(themeBefore);
         await expect(sync.flushResources()).rejects.toThrow(/restored/);
     });
 
@@ -518,6 +519,7 @@ describe("restore (412) and errors", () => {
             () => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))),
         );
         const { fake, sync, client, settings } = await boot();
+        const themeBefore = fake.data("ui", "main").theme;
         const reload = (location as any).reload;
         fake.restore("epoch-2");
         settings.ui.theme = "after restore";
@@ -538,7 +540,7 @@ describe("restore (412) and errors", () => {
         await vi.advanceTimersByTimeAsync(1000);
         expect(alerts.terminal).toHaveBeenCalledTimes(1);
         expect(reload).toHaveBeenCalledTimes(1);
-        expect(fake.data("ui", "main").theme).toBe("");
+        expect(fake.data("ui", "main").theme).toBe(themeBefore);
     });
 
     it("quarantines a record the server refuses as too large, keeps saving the rest, and retries it once it changes", async () => {
@@ -574,6 +576,7 @@ describe("restore (412) and errors", () => {
 
     it("quarantines a record the server refuses as invalid by its content, alerts once, and keeps saving the others", async () => {
         const { fake, sync, settings } = await boot();
+        const themeBefore = fake.data("ui", "main").theme;
         fake.failNext = {
             status: 400,
             body: { error: "ops[0]: ui main: theme must be a string" },
@@ -586,7 +589,7 @@ describe("restore (412) and errors", () => {
         // Not resent while unchanged, even though the server would now accept it.
         await vi.advanceTimersByTimeAsync(3000);
         expect(fake.batchCount()).toBe(1);
-        expect(fake.data("ui", "main").theme).toBe("");
+        expect(fake.data("ui", "main").theme).toBe(themeBefore);
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 400 });
         expect(alerts.error).toHaveBeenCalledTimes(1);
         // Another record saves on its own, without the refused one.

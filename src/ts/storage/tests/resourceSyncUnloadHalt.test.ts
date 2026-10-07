@@ -99,6 +99,7 @@ describe("page lifecycle after a restore", () => {
             () => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))),
         );
         const { fake, sync, settings } = await boot();
+        const themeBefore = fake.data("ui", "main").theme;
         const reload = (location as any).reload;
 
         // Unsaved work on an ordinary page: the warning is asked for.
@@ -122,6 +123,6 @@ describe("page lifecycle after a restore", () => {
         acknowledge();
         await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
         expect(warns()).toBe(false);
-        expect(fake.data("ui", "main").theme).toBe("");
+        expect(fake.data("ui", "main").theme).toBe(themeBefore);
     });
 });
