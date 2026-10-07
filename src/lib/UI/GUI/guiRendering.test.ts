@@ -305,4 +305,60 @@ describe("GUI rendering without a browser session", () => {
         expect(disabledSliderElement.getAttribute("aria-valuenow")).toBe("0");
         expect(disabledSliderElement.getAttribute("aria-valuetext")).toBe("0");
     });
+
+    it("moves the slider with a touch only once the touch goes sideways or taps", async () => {
+        const slider = renderGui(SliderInput, { min: 0, max: 10, value: 5 });
+        const sliderElement = slider.getBySelector<HTMLDivElement>('[role="slider"]');
+        vi.spyOn(sliderElement, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 100, 32));
+
+        async function pointer(type: string, pointerType: string, clientX: number, clientY = 0) {
+            sliderElement.dispatchEvent(
+                new PointerEvent(type, { bubbles: true, pointerId: 1, pointerType, clientX, clientY }),
+            );
+            await tick();
+        }
+        async function click(clientX: number) {
+            sliderElement.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX }));
+            await tick();
+        }
+        const current = () => sliderElement.getAttribute("aria-valuenow");
+
+        expect(sliderElement.style.touchAction).toBe("pan-y pinch-zoom");
+
+        // A vertical scroll that starts on the slider leaves the value alone.
+        await pointer("pointerdown", "touch", 80, 0);
+        expect(current()).toBe("5");
+        await pointer("pointermove", "touch", 81, 4);
+        await pointer("pointermove", "touch", 82, 40);
+        expect(current()).toBe("5");
+        await pointer("pointercancel", "touch", 82, 40);
+        await click(80);
+        expect(current()).toBe("5");
+
+        // A sideways touch drags once it passes the slop.
+        await pointer("pointerdown", "touch", 20, 0);
+        await pointer("pointermove", "touch", 30, 2);
+        expect(current()).toBe("3");
+        await pointer("pointermove", "touch", 70, 30);
+        expect(current()).toBe("7");
+        await pointer("pointerup", "touch", 70, 30);
+        await click(70);
+        await pointer("pointermove", "touch", 10, 0);
+        expect(current()).toBe("7");
+
+        // A tap sets the value through its click.
+        await pointer("pointerdown", "touch", 90, 0);
+        await pointer("pointerup", "touch", 90, 0);
+        expect(current()).toBe("7");
+        await click(90);
+        expect(current()).toBe("9");
+
+        // A mouse press still moves the value at once.
+        await pointer("pointerdown", "mouse", 10, 0);
+        expect(current()).toBe("1");
+        await pointer("pointerup", "mouse", 10, 0);
+        await click(10);
+        await pointer("pointermove", "mouse", 60, 0);
+        expect(current()).toBe("1");
+    });
 });

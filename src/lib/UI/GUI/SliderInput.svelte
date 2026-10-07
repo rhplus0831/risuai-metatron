@@ -2,8 +2,16 @@
     import { language } from "src/lang";
     import CheckInput from "./CheckInput.svelte";
 
+    // A touch or pen moving this far decides whether it drags the slider or scrolls the page.
+    const TOUCH_SLOP_PX = 8;
+
     let slider: HTMLDivElement = $state();
-    let mouseDown = $state(false);
+    // The value follows the pointer.
+    let dragging = false;
+    // Where a touch or pen landed, until its direction is known.
+    let pendingTouch: { x: number; y: number } | null = null;
+    // A touch or pen that may still end as a tap; the click it produces sets the value.
+    let tapPending = false;
     interface Props {
         min?: number;
         max?: number;
@@ -41,13 +49,71 @@
             : customText,
     );
 
-    function changeValue(event: PointerEvent) {
+    function changeValue(event: MouseEvent) {
         const rect = slider.getBoundingClientRect();
         const x = event.clientX - rect.left;
-        console.log(x, rect.width);
         let newValue = (x / rect.width) * (max - min) + min;
         newValue = Math.round(newValue / step) * step;
         value = Math.min(Math.max(newValue, min), max);
+    }
+
+    function startDrag(event: PointerEvent) {
+        dragging = true;
+        slider.setPointerCapture(event.pointerId);
+        changeValue(event);
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+        if (event.pointerType === "mouse") {
+            tapPending = false;
+            if (event.button === 0) {
+                startDrag(event);
+            }
+            return;
+        }
+        // A touch may be the start of a page scroll, so it changes nothing yet.
+        pendingTouch = { x: event.clientX, y: event.clientY };
+        tapPending = true;
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+        if (dragging) {
+            changeValue(event);
+            return;
+        }
+        if (!pendingTouch) {
+            return;
+        }
+        const dx = Math.abs(event.clientX - pendingTouch.x);
+        const dy = Math.abs(event.clientY - pendingTouch.y);
+        if (Math.max(dx, dy) < TOUCH_SLOP_PX) {
+            return;
+        }
+        pendingTouch = null;
+        tapPending = false;
+        // Mostly vertical: a scroll, which touch-action leaves to the browser.
+        if (dy > dx) {
+            return;
+        }
+        startDrag(event);
+    }
+
+    function endPointer() {
+        dragging = false;
+        pendingTouch = null;
+    }
+
+    function handlePointerCancel() {
+        endPointer();
+        tapPending = false;
+    }
+
+    // The browser sends no click for a tap that stops a scroll fling, so a touch tap sets the value here.
+    function handleClick(event: MouseEvent) {
+        if (tapPending) {
+            tapPending = false;
+            changeValue(event);
+        }
     }
 
     function handleKeydown(event: KeyboardEvent) {
@@ -117,21 +183,13 @@
         class="relative w-full h-8 border-darkborderc border rounded-full cursor-pointer"
         class:rounded-l-none={disableable}
         style:background={`linear-gradient(to right, var(--risu-theme-darkbutton) 0%, var(--risu-theme-darkbutton) ${sliderPercent}%, var(--risu-theme-darkbg) ${sliderPercent}%, var(--risu-theme-darkbg) 100%)`}
-        onpointerdown={(event) => {
-            mouseDown = true;
-            changeValue(event);
-        }}
-        onpointermove={(event) => {
-            if (mouseDown) {
-                changeValue(event);
-            }
-        }}
-        onpointerup={() => {
-            mouseDown = false;
-        }}
-        onpointerleave={() => {
-            mouseDown = false;
-        }}
+        style:touch-action="pan-y pinch-zoom"
+        onpointerdown={handlePointerDown}
+        onpointermove={handlePointerMove}
+        onpointerup={endPointer}
+        onpointercancel={handlePointerCancel}
+        onlostpointercapture={endPointer}
+        onclick={handleClick}
         onkeydown={handleKeydown}
         bind:this={slider}
     >

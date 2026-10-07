@@ -58,7 +58,7 @@ Others:
 
 GUI primitives (`src/lib/UI/GUI/*`):
 
-- `Button`, `IconButton`, `CheckInput`, `ColorInput`, `NumberInput`, `TextInput`, `TextAreaInput` (contenteditable plus CBS highlight and autocomplete), `TextAreaResizable`, `SelectInput`/`OptionInput`, `SegmentedControl`, `SliderInput` (`-1000` means disabled), `OptionalInput` (nullable), `MultiLangInput`/`MultiLangDisplay`.
+- `Button`, `IconButton`, `CheckInput`, `ColorInput`, `NumberInput`, `TextInput`, `TextAreaInput` (contenteditable plus CBS highlight and autocomplete), `TextAreaResizable`, `SelectInput`/`OptionInput`, `SegmentedControl`, `SliderInput` (`-1000` means disabled; a touch or pen drags only after it moves sideways past a slop, a vertical move is left to page scrolling, and a tap sets the value through its click), `OptionalInput` (nullable), `MultiLangInput`/`MultiLangDisplay`.
 - `Portal`/`PortalConsumer`/`LazyPortal`.
 - `SideBarArrow`.
 - `SyntaxHighlightedTextarea` is empty.
