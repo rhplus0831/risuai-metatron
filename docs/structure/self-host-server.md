@@ -318,6 +318,7 @@ Process memory, inside the `createServerContext` closure:
 
 ## Tests
 
+- Server tests tagged `slow` (real wall-clock limits, the real effect limit, cold tokenizer loads, fresh Node processes) run only in `pnpm test:slow`; the list and the paths that call for them are in `build-test-platforms.md` `Tests`.
 - Server (`// @vitest-environment node`, type-checked by `pnpm check` through `server/tsconfig.json`):
   - `server/src/tests/app.test.ts`: `__NODE__` injection (`/` and `/index.html`), auth flow and JWT failure bodies, JSON rules, login limiter, storage layout (including `save/data/` and `save/backups/`) and key mapping (only `assets/`; `database/` and `remotes/` keys have no storage location), batch remove.
   - `server/src/tests/proxy.test.ts`: proxy auth, raw bodies, header filtering, SSE, timeout, HEAD, hub proxy.

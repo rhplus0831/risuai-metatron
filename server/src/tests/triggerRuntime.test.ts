@@ -1471,27 +1471,35 @@ describe("recursion and the effect limit", () => {
         expect(h.metaWrites).toEqual([]);
     });
 
-    it("ends a privileged self-recursion with the job's effect limit, not a stack overflow", async () => {
-        const h = harness({ triggers: [trig([ef("v2RunTrigger", { target: "go" })])] });
-        await expect(h.run()).rejects.toThrow(`more than ${MAX_TRIGGER_EFFECTS} trigger effects`);
-        expect(h.effects.count).toBe(MAX_TRIGGER_EFFECTS + 1);
-    }, 30_000);
+    it(
+        "ends a privileged self-recursion with the job's effect limit, not a stack overflow",
+        { tags: ["slow"], timeout: 30_000 },
+        async () => {
+            const h = harness({ triggers: [trig([ef("v2RunTrigger", { target: "go" })])] });
+            await expect(h.run()).rejects.toThrow(`more than ${MAX_TRIGGER_EFFECTS} trigger effects`);
+            expect(h.effects.count).toBe(MAX_TRIGGER_EFFECTS + 1);
+        },
+    );
 
-    it("ends `/trigger` recursion through the real command executor with the same shared limit", async () => {
-        const h = harness({ triggers: [trig([ef("v2Command", v("/trigger go"))])] });
-        const executor = createCommandExecutor({
-            services: h.services,
-            ctx: h.ctx,
-            character: () => h.stored,
-            runManualTrigger: async (name) => {
-                await h.runtime.runTrigger(h.stored, "manual", { chat: structuredClone(h.live), manualName: name });
-            },
-            multisend: () => {},
-        });
-        h.state.command = (line) => executor.processMultiCommand(line);
-        await expect(h.run()).rejects.toThrow(`more than ${MAX_TRIGGER_EFFECTS} trigger effects`);
-        expect(h.effects.count).toBe(MAX_TRIGGER_EFFECTS + 1);
-    }, 30_000);
+    it(
+        "ends `/trigger` recursion through the real command executor with the same shared limit",
+        { tags: ["slow"], timeout: 30_000 },
+        async () => {
+            const h = harness({ triggers: [trig([ef("v2Command", v("/trigger go"))])] });
+            const executor = createCommandExecutor({
+                services: h.services,
+                ctx: h.ctx,
+                character: () => h.stored,
+                runManualTrigger: async (name) => {
+                    await h.runtime.runTrigger(h.stored, "manual", { chat: structuredClone(h.live), manualName: name });
+                },
+                multisend: () => {},
+            });
+            h.state.command = (line) => executor.processMultiCommand(line);
+            await expect(h.run()).rejects.toThrow(`more than ${MAX_TRIGGER_EFFECTS} trigger effects`);
+            expect(h.effects.count).toBe(MAX_TRIGGER_EFFECTS + 1);
+        },
+    );
 
     it("ends an endless loop with the limit", async () => {
         const h = harness({

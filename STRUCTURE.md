@@ -46,8 +46,12 @@ Tooling
 
 Verification
 
-- V1. `pnpm check` (svelte-check, about 20 s) and `pnpm test` (`vitest run`, happy-dom, about 5 s)
-  are the standard gates. `pnpm build` bundles. The service worker and the Vite dev proxy have no
+- V1. `pnpm check` (svelte-check, about 20 s) and `pnpm test` (`vitest run --tags-filter=!slow`,
+  happy-dom, about 35 s) are the standard gates. `pnpm test` leaves out the tests tagged `slow`
+  (real wall-clock limits, the real effect limit, cold tokenizer loads, fresh Node processes). When
+  a change touches what one of them covers (the list and the paths are in `build-test-platforms.md`
+  `Tests`), also run `pnpm test:slow` (about 30 s; it still imports every file to read the tags);
+  `pnpm test:all` runs both. `pnpm build` bundles. The service worker and the Vite dev proxy have no
   automated tests and need manual verification; server routes are covered by `server/src/tests/*.test.ts`.
 - V2. Tests are `*.test.ts`, colocated next to the code or in a sibling `tests/` folder.
   `vitest.setup.ts` mocks KaTeX, replaces `safeStructuredClone` with a JSON clone, and patches

@@ -29,7 +29,9 @@
 | `dev`       | `vite`                                                                   | dev server (needs `runserver`)           |
 | `build`     | `vite build --sourcemap`                                                 | production build (served by `runserver`) |
 | `check`     | `svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json` | type check (client + server)             |
-| `test`      | `vitest run`                                                             | tests                                    |
+| `test`      | `vitest run --tags-filter=!slow`                                         | tests without the `slow` tag (the gate)  |
+| `test:slow` | `vitest run --tags-filter=slow`                                          | only the `slow` tests                    |
+| `test:all`  | `vitest run`                                                             | every test                               |
 | `test:e2e`  | `playwright test`                                                        | browser specs in `e2e/` (not in `test`)  |
 | `runserver` | `node server/src/main.ts`                                                | self-host server                         |
 
@@ -93,10 +95,32 @@ Web:
 - Change the build: `vite.config.ts`, plus the consumers of any env var (`bootstrap.ts`). Verify with `pnpm check`, `pnpm test`, `pnpm build`.
 - Change the service worker: `public/sw.js`, `bootstrap.ts:registerSw`, `globalApi.getFileSrc`, `characterURLImport`, and `manifest.json`.
 - Release: bump `version.json` and `appVer`.
+- Add a slow test: first try to make it fast (a test-only option for the limit, as
+  `createScriptWorkerPool`'s `syncHostTimeoutMs` and `sleepCaps`). Tag it `slow` only when the cost
+  is the subject: a real wall-clock limit, a real production limit, cold loads of every tokenizer, or
+  a fresh Node process. Tag a test with `{ tags: ["slow"] }` (the timeout goes in the same object)
+  and a whole file with a `/** @module-tag slow */` comment, then add it to the slow-test table in
+  `Tests`. The tag is defined in `vitest.config.ts`; an undefined tag fails the run.
 
 ## Tests
 
-Run everything with `pnpm test` (Vitest, happy-dom). At the closeout there are about 190 test files and 2,700 tests (3 skipped), all passing; `pnpm check` reports 0 errors.
+`pnpm test` (Vitest, happy-dom) runs every test except the ones tagged `slow`; `pnpm test:slow` runs only those, and `pnpm test:all` both. There are about 190 test files and 2,700 tests (3 skipped by their own conditions), all passing; `pnpm check` reports 0 errors.
+
+Slow tests (`pnpm test:slow`, about 30 s; each one alone takes 5 to 16 s). Run them when a change touches the paths in the last column; `pnpm test:slow --changed` runs the ones whose files import a changed file.
+
+| Test (file in `server/src/tests/`)                                                                                 | Covers                                                                                                                                                                   | Run after changing                                                                     |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `tokenPlainNode.test.ts` (the whole file)                                                                          | Every tokenizer family loaded cold and concurrently in a plain `node` process from a dist-only root, with the browser's ids; the `loadAll` entry's report and exit codes | `server/src/prompt/tokenizers/`, `public/token/`, the Dockerfile's `dist/token` layout |
+| `tokenParity.test.ts` "counts the smoke strings for every family as the browser does"                              | `loadAll` in process: a cold load of every family                                                                                                                        | `server/src/prompt/tokenizers/`, `public/token/`                                       |
+| `scriptWorker.test.ts` "caps sleep at 2 s per call and 6 s per run"                                                | Lua `sleep` at the production caps (`MAX_SLEEP_MS`, `MAX_TOTAL_SLEEP_MS`); a fast version runs at `sleepCaps` of 200/600 ms                                              | `server/src/lua/runtime.ts`, `server/src/scripts/`                                     |
+| `scriptWorker.test.ts` "charges a C-level runaway that follows the worker's own 10 s give-up"                      | The watchdog after a synchronous host call times out at the production `SYNC_HOST_TIMEOUT_MS`; a fast version runs at `syncHostTimeoutMs: 1000`                          | `server/src/scripts/`                                                                  |
+| `luaRuntime.test.ts` "pins the address, verifies the URL's host, ... and answers 408 on the deadline"              | The pinned TLS transport in a fresh process against a local HTTPS server, including the real 10 s request deadline                                                       | `server/src/lua/egress.ts`                                                             |
+| `manualTriggers.test.ts` "ends the job with an error past the effect limit (the tab would loop forever)"           | A manual trigger job that loops to the real 100,000-effect limit (`MAX_TRIGGER_EFFECTS`)                                                                                 | `server/src/prompt/triggers.ts`, `server/src/jobs/`                                    |
+| `triggerRuntime.test.ts` "ends a privileged self-recursion with the job's effect limit, not a stack overflow"      | `v2RunTrigger` self-recursion to the real effect limit, without a stack overflow                                                                                         | `server/src/prompt/triggers.ts`                                                        |
+| `triggerRuntime.test.ts` "ends `/trigger` recursion through the real command executor with the same shared limit"  | `/trigger` recursion through the real command executor sharing that limit                                                                                                | `server/src/prompt/triggers.ts`, `server/src/prompt/commands.ts`                       |
+| `promptRunner.test.ts` "writes the checkpoint 3 s after a chunk while the provider stalls, before any other chunk" | The stream checkpoint on its real 3 s timer while the provider stalls                                                                                                    | `server/src/prompt/runner.ts` (`CHECKPOINT_INTERVAL_MS`)                               |
+
+`triggerRuntime.test.ts` "ends an endless loop with the limit" still covers the effect limit in `pnpm test`.
 
 Test inventory:
 

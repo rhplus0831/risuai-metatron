@@ -1,4 +1,5 @@
 // @vitest-environment node
+/** @module-tag slow */
 import { spawn } from "node:child_process";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";

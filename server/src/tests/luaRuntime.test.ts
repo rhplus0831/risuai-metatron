@@ -320,14 +320,17 @@ describe("the pinned TLS transport against a local server", () => {
         );
     });
 
-    it("pins the address, verifies the URL's host, follows no redirect, caps the body, settles on failures, and answers 408 on the deadline", async () => {
-        // A fresh process trusts the minted certificate through NODE_EXTRA_CA_CERTS; the URL names
-        // `fable.test` (never resolved: the lookup seam answers a public address, the fetch pins
-        // 127.0.0.1), as the server would pin a validated address while the host drives SNI.
-        const script = path.join(certDir, "transport.mjs");
-        writeFileSync(
-            script,
-            `import https from "node:https";
+    it(
+        "pins the address, verifies the URL's host, follows no redirect, caps the body, settles on failures, and answers 408 on the deadline",
+        { tags: ["slow"], timeout: 40_000 },
+        async () => {
+            // A fresh process trusts the minted certificate through NODE_EXTRA_CA_CERTS; the URL names
+            // `fable.test` (never resolved: the lookup seam answers a public address, the fetch pins
+            // 127.0.0.1), as the server would pin a validated address while the host drives SNI.
+            const script = path.join(certDir, "transport.mjs");
+            writeFileSync(
+                script,
+                `import https from "node:https";
 import { readFileSync } from "node:fs";
 import { pinnedHttpsFetch, serverLuaRequest, createRequestLimiter } from ${JSON.stringify(path.join(REPO_ROOT, "server/src/lua/egress.ts"))};
 const dir = ${JSON.stringify(certDir)};
@@ -364,24 +367,25 @@ server.closeAllConnections();
 server.close();
 console.log(JSON.stringify({ ok, redirect, big, cut, slow, wrongHost, e2e: JSON.parse(e2e), e2eBig: JSON.parse(e2eBig), e2eTimeout: { ...JSON.parse(e2eTimeout.raw), ms: e2eTimeout.ms } }));
 `,
-        );
-        const result = await runNode([script], { NODE_EXTRA_CA_CERTS: path.join(certDir, "cert.pem") });
-        expect(result.stderr).toBe("");
-        expect(result.code).toBe(0);
-        const out = JSON.parse(result.stdout.trim()) as Record<string, Record<string, unknown>>;
-        expect(out.ok).toEqual({ value: { status: 200, data: "hello" } });
-        expect(out.redirect).toEqual({ value: { status: 302, data: "moved" } });
-        expect(out.big).toMatchObject({ error: "response too large" });
-        expect(out.cut).toHaveProperty("error");
-        expect(out.cut.value).toBeUndefined();
-        expect(out.slow).toMatchObject({ error: "request aborted" });
-        expect(out.wrongHost).toMatchObject({ code: "ERR_TLS_CERT_ALTNAME_INVALID" });
-        expect(out.e2e).toEqual({ status: 200, data: "hello" });
-        expect(out.e2eBig).toEqual({ status: 400, data: "internal error" });
-        expect(out.e2eTimeout).toMatchObject({ status: 408, data: "request timeout" });
-        expect(out.e2eTimeout.ms as number).toBeGreaterThanOrEqual(9_500);
-        expect(out.e2eTimeout.ms as number).toBeLessThan(14_000);
-    }, 40_000);
+            );
+            const result = await runNode([script], { NODE_EXTRA_CA_CERTS: path.join(certDir, "cert.pem") });
+            expect(result.stderr).toBe("");
+            expect(result.code).toBe(0);
+            const out = JSON.parse(result.stdout.trim()) as Record<string, Record<string, unknown>>;
+            expect(out.ok).toEqual({ value: { status: 200, data: "hello" } });
+            expect(out.redirect).toEqual({ value: { status: 302, data: "moved" } });
+            expect(out.big).toMatchObject({ error: "response too large" });
+            expect(out.cut).toHaveProperty("error");
+            expect(out.cut.value).toBeUndefined();
+            expect(out.slow).toMatchObject({ error: "request aborted" });
+            expect(out.wrongHost).toMatchObject({ code: "ERR_TLS_CERT_ALTNAME_INVALID" });
+            expect(out.e2e).toEqual({ status: 200, data: "hello" });
+            expect(out.e2eBig).toEqual({ status: 400, data: "internal error" });
+            expect(out.e2eTimeout).toMatchObject({ status: 408, data: "request timeout" });
+            expect(out.e2eTimeout.ms as number).toBeGreaterThanOrEqual(9_500);
+            expect(out.e2eTimeout.ms as number).toBeLessThan(14_000);
+        },
+    );
 });
 
 describe("the engine lifecycle inside a worker (plain Node)", () => {

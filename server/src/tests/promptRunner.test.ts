@@ -533,6 +533,7 @@ describe("a send", () => {
 
     it(
         "writes the checkpoint 3 s after a chunk while the provider stalls, before any other chunk",
+        { tags: ["slow"], timeout: SLOW },
         async () => {
             const chaId = await seedCharacter({ name: "Ann" });
             mode = { chunks: ["First.", " Second."], delayMs: 4500 };
@@ -550,7 +551,6 @@ describe("a send", () => {
             expect(terminal?.type).toBe("done");
             expect(texts(await readChat(chaId)).at(-1)).toBe("char:First. Second.");
         },
-        SLOW,
     );
 
     it(

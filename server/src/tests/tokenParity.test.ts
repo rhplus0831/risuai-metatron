@@ -160,17 +160,21 @@ describe("createTokenCounter", () => {
 });
 
 describe("loadAll in process", () => {
-    it("counts the smoke strings for every family as the browser does", async () => {
-        const report = await loadAll(REPO_ROOT);
-        expect(report.families).toHaveLength(TOKENIZER_FAMILIES.length);
-        for (const entry of report.families) {
-            expect(entry).not.toHaveProperty("error");
-            if ("counts" in entry) {
-                const expected = TEXT_NAMES.slice(0, 3).map(
-                    (name) => (fixture.families[entry.family][name] as { ids: number[] }).ids.length,
-                );
-                expect(entry.counts, entry.family).toEqual(expected);
+    it(
+        "counts the smoke strings for every family as the browser does",
+        { tags: ["slow"], timeout: 60_000 },
+        async () => {
+            const report = await loadAll(REPO_ROOT);
+            expect(report.families).toHaveLength(TOKENIZER_FAMILIES.length);
+            for (const entry of report.families) {
+                expect(entry).not.toHaveProperty("error");
+                if ("counts" in entry) {
+                    const expected = TEXT_NAMES.slice(0, 3).map(
+                        (name) => (fixture.families[entry.family][name] as { ids: number[] }).ids.length,
+                    );
+                    expect(entry.counts, entry.family).toEqual(expected);
+                }
             }
-        }
-    }, 60_000);
+        },
+    );
 });

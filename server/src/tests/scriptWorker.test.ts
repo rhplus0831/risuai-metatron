@@ -853,7 +853,7 @@ describe("the shared pool", () => {
             expect(fetches).toBe(30);
         });
 
-        it("caps sleep at 2 s per call and 6 s per run", async () => {
+        it("caps sleep at 2 s per call and 6 s per run", { tags: ["slow"], timeout: 20_000 }, async () => {
             const [r, ms] = await timed(() =>
                 pool.runLua(
                     task(`probe = async(function(id)
@@ -868,7 +868,7 @@ describe("the shared pool", () => {
             expect(r.res).toBe("truetruetruefalse");
             expect(ms).toBeGreaterThanOrEqual(6000);
             expect(ms).toBeLessThan(9000);
-        }, 20_000);
+        });
 
         it("caps sleep per call and per run at the pool's sleepCaps", async () => {
             const capped = makePool({ size: 1, maxSize: 1, sleepCaps: { perCallMs: 200, perRunMs: 600 } });
@@ -891,18 +891,25 @@ describe("the shared pool", () => {
 });
 
 describe("the watchdog after a synchronous call timed out in the worker", () => {
-    it("charges a C-level runaway that follows the worker's own 10 s give-up", async () => {
-        const one = makePool({ size: 1, maxSize: 1, wallMs: 30_000 });
-        const [r, ms] = await timed(() =>
-            one.runLua(task(`function probe(id) pcall(never, id) return ${C_RUNAWAY} end`, "probe", { cpuMs: 100 }), {
-                host: { sync: { never: () => new Promise(() => {}) } },
-            }),
-        );
-        expect(r.error).toBe("Lua execution limit exceeded (worker terminated)");
-        expect(r.timedOut).toBe(true);
-        expect(ms).toBeGreaterThanOrEqual(10_000);
-        expect(ms).toBeLessThan(16_000);
-    }, 40_000);
+    it(
+        "charges a C-level runaway that follows the worker's own 10 s give-up",
+        { tags: ["slow"], timeout: 40_000 },
+        async () => {
+            const one = makePool({ size: 1, maxSize: 1, wallMs: 30_000 });
+            const [r, ms] = await timed(() =>
+                one.runLua(
+                    task(`function probe(id) pcall(never, id) return ${C_RUNAWAY} end`, "probe", { cpuMs: 100 }),
+                    {
+                        host: { sync: { never: () => new Promise(() => {}) } },
+                    },
+                ),
+            );
+            expect(r.error).toBe("Lua execution limit exceeded (worker terminated)");
+            expect(r.timedOut).toBe(true);
+            expect(ms).toBeGreaterThanOrEqual(10_000);
+            expect(ms).toBeLessThan(16_000);
+        },
+    );
 
     it("charges a C-level runaway that follows a shortened give-up (syncHostTimeoutMs)", async () => {
         const one = makePool({ size: 1, maxSize: 1, wallMs: 30_000, syncHostTimeoutMs: 1000 });

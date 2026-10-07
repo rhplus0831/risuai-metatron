@@ -653,6 +653,7 @@ describe("a manual trigger job", () => {
 
     it(
         "ends the job with an error past the effect limit (the tab would loop forever)",
+        { tags: ["slow"], timeout: SLOW },
         async () => {
             const chaId = await seedCharacter({
                 triggers: [
@@ -670,7 +671,6 @@ describe("a manual trigger job", () => {
                 message: /^Trigger: more than 100000 trigger effects/,
             });
         },
-        SLOW,
     );
 });
 
