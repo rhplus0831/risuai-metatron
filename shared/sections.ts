@@ -228,6 +228,7 @@ export const SECTION_FIELDS = {
         "autoSuggestClean",
         "useChatCopy",
         "classicMaxWidth",
+        "chatScreenWidth",
         "useChatSticker",
         "useAdditionalAssetsPreview",
         "personaNote",

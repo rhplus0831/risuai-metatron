@@ -38,7 +38,7 @@ headless Chrome context, answers the password prompt, and waits for `loadedStore
 After that capture, the `theme` default `"metatron"` and the nine preset defaults
 `moduleIntergration`, `JinjaTemplate`, `jsonSchemaEnabled`, `jsonSchema`, `extractJson`,
 `groupTemplate`, `thinkingTokens`, `outputImageModal`, and `dynamicOutput` were added to
-`boot-snapshot.json` by hand as deliberate fresh-boot defaults.
+`boot-snapshot.json` by hand as deliberate fresh-boot defaults, and so was the `ui` default `chatScreenWidth` 900.
 
 Re-running the script overwrites all three files. Across captures, the snapshot's ids and the
 `.risup` bytes differ while the decoded presets are equal, so compare decoded presets, never bytes.

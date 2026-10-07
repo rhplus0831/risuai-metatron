@@ -1208,6 +1208,7 @@ export const languageEnglish = {
     successApplyModule: "Module is successfully applied",
     font: "Font",
     lineHeight: "Line Height",
+    chatScreenWidth: "Chat Screen Width",
     notCharxWarn:
         "This character uses multiple assets. It is recommended to export this character as a CharX format for better compatibility.",
     noPlugins: "No Plugins Installed",

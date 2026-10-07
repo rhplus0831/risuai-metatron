@@ -512,6 +512,15 @@ body {
     overflow-wrap: anywhere;
 }
 
+/* The chat screen's transcript, composer, and their auxiliary rows share one centered column
+   (`chatScreenWidth`, published by DefaultChatScreen as --chat-screen-width). */
+.chat-screen-content-width,
+.default-chat-screen > .risu-chat {
+    width: min(var(--chat-screen-width, 900px), 100%);
+    margin-inline: auto;
+    flex-shrink: 0;
+}
+
 .chat-message-container .dyna-icon {
     display: none;
 }

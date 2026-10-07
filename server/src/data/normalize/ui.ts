@@ -55,6 +55,7 @@ const spec: SectionSpec<"ui"> = {
     autoSuggestClean: ["boolean", true],
     useChatCopy: ["boolean"],
     classicMaxWidth: ["boolean", false],
+    chatScreenWidth: ["number", 900],
     useChatSticker: ["boolean"],
     useAdditionalAssetsPreview: ["boolean"],
     personaNote: ["boolean"],

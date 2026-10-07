@@ -158,6 +158,14 @@ export const displaySizeSettingsItems: SettingItem[] = [
         keywords: ["line", "height", "spacing"],
     },
     {
+        id: "display.chatScreenWidth",
+        type: "slider",
+        labelKey: "chatScreenWidth",
+        bindKey: "chatScreenWidth",
+        options: { min: 500, max: 2000, step: 10, customText: (value) => `${value}px` },
+        keywords: ["chat", "screen", "width"],
+    },
+    {
         id: "display.iconsize",
         type: "slider",
         labelKey: "iconSize",

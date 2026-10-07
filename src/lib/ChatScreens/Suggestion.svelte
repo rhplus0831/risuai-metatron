@@ -199,7 +199,7 @@
     });
 </script>
 
-<div class="ml-4 flex flex-wrap">
+<div class="chat-screen-content-width ml-4 flex flex-wrap">
     {#if progress}
         <div class="flex bg-textcolor2 p-2 rounded-lg items-center">
             <div class="loadmove mx-2"></div>

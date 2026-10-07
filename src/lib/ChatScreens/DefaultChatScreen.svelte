@@ -693,6 +693,7 @@
         <div
             class="h-full w-full flex flex-col-reverse overflow-y-auto relative default-chat-screen"
             class:metatron-chat-theme={settings.ui.theme === "metatron"}
+            style:--chat-screen-width="{settings.ui.chatScreenWidth ?? 900}px"
             onscroll={(e) => {
                 //@ts-expect-error scrollHeight/clientHeight/scrollTop don't exist on EventTarget, but target is HTMLElement here
                 const scrolled = e.target.scrollHeight - e.target.clientHeight + e.target.scrollTop;
@@ -716,7 +717,7 @@
             <div
                 class="{settings.ui.fixedChatTextarea
                     ? 'sticky pt-2 pb-2 right-0 bottom-0 bg-bgcolor'
-                    : 'mt-2 mb-2'} flex items-stretch w-full"
+                    : 'mt-2 mb-2'} chat-screen-content-width flex items-stretch w-full"
                 style={settings.ui.fixedChatTextarea ? "z-index:29;" : ""}
             >
                 {#if settings.ui.useChatSticker && currentCharacter.type !== "group"}
@@ -840,7 +841,7 @@
                 {/if}
             </div>
             {#if settings.memoryTranslateMedia.useAutoTranslateInput && currentCharacter?.chaId !== "§playground"}
-                <div class="flex items-center mt-2 mb-2">
+                <div class="chat-screen-content-width flex items-center mt-2 mb-2">
                     <label for="messageInputTranslate" class="text-textcolor ml-4">
                         <LanguagesIcon />
                     </label>
@@ -871,7 +872,9 @@
             {/if}
 
             {#if fileInput.length > 0}
-                <div class="flex items-center ml-4 flex-wrap p-2 m-2 border-darkborderc border rounded-md">
+                <div
+                    class="chat-screen-content-width flex items-center ml-4 flex-wrap p-2 m-2 border-darkborderc border rounded-md"
+                >
                     {#each fileInput as file, i}
                         {#await getInlayAsset(file) then inlayAsset}
                             <div class="relative">
@@ -911,7 +914,7 @@
             {/if}
 
             {#if toggleStickers}
-                <div class="ml-4 flex flex-wrap">
+                <div class="chat-screen-content-width ml-4 flex flex-wrap">
                     <AssetInput
                         {currentCharacter}
                         onSelect={(additionalAsset) => {
@@ -943,7 +946,7 @@
             {/if}
 
             {#if chatPanelStore.length > 0}
-                <div class="mx-4 my-2 flex flex-col gap-2">
+                <div class="chat-screen-content-width mx-4 my-2 flex flex-col gap-2">
                     {#each chatPanelStore as panel (panel.id)}
                         <section
                             class={`rounded-md border border-darkborderc bg-darkbg/80 p-3 text-textcolor ${panel.className ?? ""}`}
@@ -956,7 +959,7 @@
             {/if}
 
             {#if chatFoldedStateMessageIndex.index !== -1}
-                <button class="w-full flex justify-center max-w-full p-4">
+                <button class="chat-screen-content-width w-full flex justify-center max-w-full p-4">
                     <Button
                         className="max-w-xl w-full"
                         onclick={() => {
@@ -1021,7 +1024,9 @@
                         totalPages={currentCharacter.alternateGreetings.length + 1}
                     />
                     {#if aiLawApplies() && currentChat.message.length === 0}
-                        <div class="ml-auto mr-auto mt-4 text-textcolor2 italic max-w-2/3 wrap-break-word text-center">
+                        <div
+                            class="chat-screen-content-width ml-auto mr-auto mt-4 text-textcolor2 italic max-w-2/3 wrap-break-word text-center"
+                        >
                             {language.aiGenerationWarning}
                         </div>
                     {/if}

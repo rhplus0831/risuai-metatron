@@ -32,6 +32,7 @@ Chat:
 - `ChatScreen.svelte`: layout theme switch (`waifu`, classic). Mounts `BackgroundDom`, `TransitionImage`, `ResizeBox`, `ChatList`, and the module menu.
 - `DefaultChatScreen.svelte`: input box, send/reroll (see `chat-pipeline.md`), and menus. Chooses home, playground, or chat.
   - The `metatron` theme adds `metatron-chat-theme` to the chat scroller; `src/styles.css` styles each message (`.risu-chat`) as a card under it. Any other non-`waifu` theme keeps the classic layout.
+  - The chat scroller publishes `settings.ui.chatScreenWidth` (Display, default 900) as `--chat-screen-width`. The transcript (`Chats`), the first greeting (`.default-chat-screen > .risu-chat`), the composer, and the rows around them carry `chat-screen-content-width` (`src/styles.css`): one centered column of `min(--chat-screen-width, 100%)`. A new row in the chat scroller gets the class too.
 - `Chats.svelte`: mounts `Chat` instances imperatively, keyed by message hash.
   - `updateChatBody` diffs mount, update, and remove, keeping reverse-chronological DOM order.
   - Streaming instances are updated through `Chat.updateStreamingDisplay`.

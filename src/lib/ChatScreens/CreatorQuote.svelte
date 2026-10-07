@@ -11,7 +11,7 @@
     let { onRemove, quote }: Props = $props();
 </script>
 
-<div class="flex w-full justify-center mt-4 max-w-100vw">
+<div class="chat-screen-content-width flex w-full justify-center mt-4 max-w-100vw">
     <div class="w-5/6 max-w-80vw bg-darkbg rounded-md p-3 text-textcolor text-sm">
         <h1 class="font-bold mb-2">
             {language.creatorNotes}

@@ -182,6 +182,7 @@ export interface Database {
     useAutoTranslateInput: boolean;
     imageCompression: boolean;
     classicMaxWidth: boolean;
+    chatScreenWidth: number;
     useChatSticker: boolean;
     useAdditionalAssetsPreview: boolean;
     usePlainFetch: boolean;

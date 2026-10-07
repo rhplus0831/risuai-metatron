@@ -234,6 +234,7 @@
     }
   ],
   "classicMaxWidth": false,
+  "chatScreenWidth": 900,
   "ooba": {
     "max_new_tokens": 180,
     "do_sample": true,

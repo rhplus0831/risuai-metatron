@@ -233,4 +233,4 @@
     });
 </script>
 
-<div class="flex flex-col-reverse" bind:this={chatBody}></div>
+<div class="chat-screen-content-width flex flex-col-reverse" bind:this={chatBody}></div>
