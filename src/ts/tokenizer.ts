@@ -439,8 +439,12 @@ export async function getCharToken(char?: AnyClientCharacter | null) {
     return { persistant, dynamic };
 }
 
-export async function getChatToken(chat: DeepReadonly<Chat>) {
+/** The tokens of a chat's messages (0 for none: a selected chat that is still loading). */
+export async function getChatToken(chat: DeepReadonly<Chat> | null) {
     let persistant = 0;
+    if (!chat) {
+        return persistant;
+    }
 
     const chatTokenizer = new ChatTokenizer(0, "name");
     const chatf = chat.message.map((d) => {

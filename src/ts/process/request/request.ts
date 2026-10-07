@@ -6,7 +6,7 @@ import { risuEscape, risuUnescape } from "../../parser/parser.svelte";
 import { capturePluginContext, invokeHook, type PluginCallContext } from "../../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../../plugins/pluginHooks";
 import { type character } from "../../storage/database.svelte";
-import type { ChatRef } from "../../storage/chatStore.svelte";
+import { type ChatRef, chatEntry, chatOwnerToken, ensureChatLoaded, pinChat } from "../../storage/chatStore.svelte";
 import { sleep } from "../../util";
 import type { OpenAIChat } from "../index.svelte";
 import { getTools } from "../mcp/mcp";
@@ -44,6 +44,11 @@ interface requestDataArgument {
      * or a plugin hook's own), else `requestChatData` captures one from `chatRef` at its start.
      */
     pluginContext?: PluginCallContext;
+    /**
+     * The owner lifetime of the request's chat when the request began (`chatOwnerToken`; set by
+     * `requestChatData`): every later stage, the transport included, refuses a chat replaced meanwhile.
+     */
+    chatOwner?: string;
     noMultiGen?: boolean;
     schema?: string;
     extractJson?: string;
@@ -100,15 +105,146 @@ export interface StreamResponseChunk {
     [key: string]: string;
 }
 
+/**
+ * Requests a reply for the tab (translation, suggestions, the HypaV3 modal, plugins). The request's
+ * chat (its `chatRef`, else its plugin context's) is pinned and loaded from the start, before tool
+ * discovery and the plugin hooks, until the request and its after-request hooks end (a streamed
+ * reply keeps the transport's own pin until its stream ends). A chat that is gone fails the request.
+ */
 export async function requestChatData(
     arg: requestDataArgument,
     model: ModelModeExtended,
     abortSignal: AbortSignal = null,
 ): Promise<requestDataResponse> {
     arg.pluginContext ??= capturePluginContext(arg.chatRef);
+    const target = arg.chatRef ?? arg.pluginContext?.chatRef ?? null;
+    arg.chatOwner ??= target ? chatOwnerToken(target.chaId) : undefined;
+    return await withRequestChat(target, () => requestPinnedChatData(arg, model, abortSignal), arg.chatOwner);
+}
+
+/** Whether a request's chat is still the one it began with (listed, same owner); true without a chat. */
+export function requestChatHeld(target: ChatRef | null | undefined, owner: string | undefined): boolean {
+    return (
+        !target || (chatEntry(target) !== undefined && (owner === undefined || chatOwnerToken(target.chaId) === owner))
+    );
+}
+
+const requestChatGone = (): requestDataResponse => ({
+    type: "fail",
+    result: "The chat this request is for no longer exists",
+});
+
+/**
+ * Runs a request of `target`'s chat with that chat pinned and loaded from the start until `run`
+ * ends: a chat that is gone, could not be loaded, or was replaced meanwhile (even under the same
+ * ids) fails the request instead. Without a target `run` runs as it is.
+ */
+export async function withRequestChat(
+    target: ChatRef | null,
+    run: () => Promise<requestDataResponse>,
+    owner: string = target ? chatOwnerToken(target.chaId) : "",
+): Promise<requestDataResponse> {
+    if (!target) {
+        return await run();
+    }
+    const release = pinChat(target);
+    // A stream handed out keeps the chat pinned until it ends (`guardStream` releases it then).
+    let handedOff = false;
+    try {
+        let loaded;
+        try {
+            loaded = await ensureChatLoaded(target);
+        } catch (error) {
+            return {
+                type: "fail",
+                result: `The chat could not be loaded: ${error instanceof Error ? error.message : error}`,
+            };
+        }
+        if (!loaded || chatOwnerToken(target.chaId) !== owner) {
+            return requestChatGone();
+        }
+        const result = await run();
+        if (!requestChatHeld(target, owner)) {
+            // Its chat was deleted or replaced while the reply came: the reply is not accepted.
+            if (result.type === "streaming") {
+                result.result.cancel().catch(() => {});
+            }
+            return requestChatGone();
+        }
+        if (result.type === "streaming") {
+            handedOff = true;
+            return { ...result, result: guardStream(result.result, target, owner, release) };
+        }
+        return result;
+    } finally {
+        if (!handedOff) {
+            release();
+        }
+    }
+}
+
+/**
+ * A streamed reply that is accepted only while its request's chat is the one it began with: a chunk
+ * or the end after the chat was deleted or replaced errors the stream (and cancels the source). The
+ * chat stays pinned until the stream ends, fails, or is cancelled (`release`).
+ */
+function guardStream<T>(
+    source: ReadableStream<T>,
+    target: ChatRef,
+    owner: string,
+    release: () => void,
+): ReadableStream<T> {
+    const reader = source.getReader();
+    let done = false;
+    const finish = () => {
+        if (!done) {
+            done = true;
+            release();
+        }
+    };
+    return new ReadableStream<T>({
+        async pull(controller) {
+            try {
+                const { done: ended, value } = await reader.read();
+                if (!requestChatHeld(target, owner)) {
+                    reader.cancel().catch(() => {});
+                    controller.error(new Error("The chat this request is for no longer exists"));
+                    finish();
+                    return;
+                }
+                if (ended) {
+                    controller.close();
+                    finish();
+                    return;
+                }
+                controller.enqueue(value);
+            } catch (error) {
+                controller.error(error);
+                finish();
+            }
+        },
+        cancel(reason) {
+            finish();
+            return reader.cancel(reason);
+        },
+    });
+}
+
+async function requestPinnedChatData(
+    arg: requestDataArgument,
+    model: ModelModeExtended,
+    abortSignal: AbortSignal,
+): Promise<requestDataResponse> {
     const pluginContext = arg.pluginContext;
     const fallBackModels: string[] = safeStructuredClone(settings.providers.fallbackModels?.[model] ?? []);
-    const tools = arg.tools ?? (await getTools());
+    // The request's chat chooses the module MCP servers, not the selection now. After every await
+    // below, the chat must still be the one the request began with.
+    const target = arg.chatRef ?? pluginContext?.chatRef;
+    const held = () => requestChatHeld(target, arg.chatOwner);
+    const tools = arg.tools ?? (await getTools(target));
+    if (!held()) {
+        return requestChatGone();
+    }
     fallBackModels.push("");
     let da: requestDataResponse;
 
@@ -137,10 +273,17 @@ export async function requestChatData(
                     result: "Aborted",
                 };
             }
+            if (!held()) {
+                // Each attempt (a retry after a wait too) starts only for the chat the request began with.
+                return requestChatGone();
+            }
 
             if (pluginHooks.replacerbeforeRequest.size > 0) {
                 for (const replacer of pluginHooks.replacerbeforeRequest) {
                     arg.formated = await invokeHook(replacer, pluginContext, arg.formated, model);
+                    if (!held()) {
+                        return requestChatGone();
+                    }
                 }
             }
 
@@ -162,6 +305,13 @@ export async function requestChatData(
                     result: "Aborted",
                 };
             }
+            if (!held()) {
+                // Its chat was replaced or deleted while the reply came: the reply is not accepted.
+                if (da.type === "streaming") {
+                    da.result.cancel().catch(() => {});
+                }
+                return requestChatGone();
+            }
 
             if (da.type === "success" && arg.escape) {
                 da.result = risuEscape(da.result);
@@ -170,6 +320,9 @@ export async function requestChatData(
             if (da.type === "success" && pluginHooks.replacerafterRequest.size > 0) {
                 for (const replacer of pluginHooks.replacerafterRequest) {
                     da.result = await invokeHook(replacer, pluginContext, da.result, model);
+                    if (!held()) {
+                        return requestChatGone();
+                    }
                 }
             }
 

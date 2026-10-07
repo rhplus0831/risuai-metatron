@@ -40,6 +40,7 @@
     import { ArrowUpIcon, GlobeIcon, PlusIcon } from "@lucide/svelte";
     import { hypaV3ModalOpen, hypaV3ProgressStore } from "./ts/stores.svelte";
     import HypaV3Modal from "./lib/Others/HypaV3Modal.svelte";
+    import { selectedChat } from "./ts/storage/chatStore.svelte";
     import HypaV3Progress from "./lib/Others/HypaV3Progress.svelte";
     import PopupList from "./lib/UI/PopupList.svelte";
     import EasyPanel from "./lib/Others/ProTools/EasyPanel.svelte";
@@ -292,7 +293,8 @@
     {#if $bookmarkListOpen}
         <BookmarkList />
     {/if}
-    {#if $hypaV3ModalOpen}
+    <!-- It edits the selected chat's memory: shown once that chat is loaded. -->
+    {#if $hypaV3ModalOpen && selectedChat()}
         <HypaV3Modal />
     {/if}
     <SavePopupIconComp />

@@ -424,6 +424,11 @@ describe("membership of the store", () => {
         expect(chat.applyRemoteCollection(collection())).toBe(true);
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["j", "n", "k"]);
         expect(chat.findChat(refK)).toBe(heldK);
+        // The new chat is held as its summary (Phase 6 slice 9b): listed, in the facade (the loaded
+        // chats) only once it is loaded.
+        expect(chat.findChat({ chaId: "c", chatId: "n" })).toBeUndefined();
+        expect(character("c").chats.map((entry: any) => entry.id)).toEqual(["j", "k"]);
+        await chat.ensureChatLoaded({ chaId: "c", chatId: "n" });
         expect(chat.findChat({ chaId: "c", chatId: "n" })!.message.map((message) => message.data)).toEqual(["new"]);
         expect([chat.selectedChatId("c"), chat.selectedChatIndex("c")]).toEqual(["j", 0]);
         expect(character("c").chats.map((entry: any) => entry.id)).toEqual(["j", "n", "k"]);

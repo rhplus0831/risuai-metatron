@@ -97,6 +97,7 @@ export function selectLoreBookPage(page: number) {
  */
 const published = writable(-1);
 const selectedListeners = new Set<(chaId: string) => void>();
+const changeListeners = new Set<() => void>();
 
 function currentIndex(): number {
     return untrack(() => characterIndex(selection.characterId));
@@ -114,6 +115,14 @@ export function onCharacterSelected(listener: (chaId: string) => void): () => vo
     };
 }
 
+/** Registers a listener called after every change of the selected character by `selectCharacter`, home included. */
+export function onCharacterSelectionChanged(listener: () => void): () => void {
+    changeListeners.add(listener);
+    return () => {
+        changeListeners.delete(listener);
+    };
+}
+
 /** Selects the character with `chaId` (`null`, or an id no character has: home). */
 export function selectCharacter(chaId: string | null) {
     untrack(() => {
@@ -122,6 +131,11 @@ export function selectCharacter(chaId: string | null) {
         selection.characterId = id;
         // The index is published first, so a listener (and every subscriber) reads the new selection.
         publish();
+        if (changed) {
+            for (const listener of [...changeListeners]) {
+                listener();
+            }
+        }
         if (!changed || id === null) {
             return;
         }

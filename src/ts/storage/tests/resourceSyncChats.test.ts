@@ -113,7 +113,9 @@ async function boot(prepare?: (server: StoreBackedServer) => void) {
     const bootBatches = fake.batchBodies();
     fake.requests.length = 0;
     const db = () => stores.DBState.db as any;
-    const mirrorIds = () => db().characters[0].chats.map((entry: any) => entry.id) as string[];
+    // The membership (Phase 6 slice 9b): a chat another tab created is listed as a summary until it is
+    // loaded, so the facade (the loaded chats only) is not the list.
+    const mirrorIds = () => chat.chatList("c").map((entry) => entry.id);
     return { fake, stores, client, sync, chat, bootBatches, db, mirrorIds };
 }
 

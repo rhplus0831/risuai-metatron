@@ -557,8 +557,9 @@ export function getModuleToggles(chatRef?: ModuleChatRef) {
     return costomModuleToggles;
 }
 
-export function getModuleMcps() {
-    const modules = getModules();
+/** The MCP servers of the enabled modules for `chatRef`'s chat (default: the selected one). */
+export function getModuleMcps(chatRef?: ModuleChatRef) {
+    const modules = getModules(chatRef);
 
     return modules.map((v) => v.mcp?.url).filter((v) => v);
 }

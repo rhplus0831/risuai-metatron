@@ -56,15 +56,17 @@ import {
     applyChatResult,
     captureChatBaseline,
     chatList,
+    chatOwnerToken,
     currentChatRef,
     ensureChatLoaded,
     findChat,
     isCharacterGenerating,
+    chatsLoaded,
     loadChats,
+    pinChat,
     pinChats,
     reconcileCharacterChats,
     selectChat,
-    selectedChat,
     selectedChatIndex,
     withChatsCopy,
 } from "src/ts/storage/chatStore.svelte";
@@ -98,7 +100,7 @@ import { captureTransform, serverProcessScript } from "src/ts/parser/transformCl
 import { getModelInfo } from "src/ts/model/modellist";
 import type { ModelModeExtended } from "src/ts/process/request/shared";
 import type { RegexScriptMode as ScriptMode } from "../../../../shared/scripts/regex.ts";
-import { requestChatDataMain } from "src/ts/process/request/request";
+import { requestChatDataMain, withRequestChat } from "src/ts/process/request/request";
 import { getModuleLorebooks } from "src/ts/process/modules";
 import {
     registerTTSPreprocessor,
@@ -737,6 +739,20 @@ const authorizationHeaders = ["x-api-key", "authorization", "proxy-authorization
  * `PluginTargetGoneError` when either was deleted: the call is refused, never redirected.
  */
 function contextTarget(context: PluginCallContext) {
+    const member = contextMember(context);
+    const chat = findChat(context.chatRef);
+    if (!chat) {
+        // A listed chat that is not loaded: the caller loads it first (`ensureChatLoaded`).
+        throw new Error("The chat this plugin hook runs for is not loaded");
+    }
+    return { ...member, chat };
+}
+
+/**
+ * The hook's character and chat by membership (the chat may be unloaded): refused with
+ * `PluginTargetGoneError` when either is gone. For checks before a load and for index reads.
+ */
+function contextMember(context: PluginCallContext) {
     const characters = characterList();
     const characterIndex = characters.findIndex((entry) => entry?.chaId === context.chatRef.chaId);
     const character = characters[characterIndex];
@@ -744,24 +760,42 @@ function contextTarget(context: PluginCallContext) {
         throw new PluginTargetGoneError("character");
     }
     const chatIndex = chatList(character.chaId).findIndex((entry) => entry.id === context.chatRef.chatId);
-    const chat = chatIndex === -1 ? undefined : findChat(context.chatRef);
-    if (!chat) {
+    if (chatIndex === -1 || (context.owner !== undefined && chatOwnerToken(character.chaId) !== context.owner)) {
+        // Gone, or replaced (its character's chats installed again) since the hook began.
         throw new PluginTargetGoneError("chat");
     }
-    return { characterIndex, character, chatIndex, chat };
+    return { characterIndex, character, chatIndex };
 }
 
 /**
  * Runs `run` (synchronous) once the chats of `chaIds` are loaded, with them pinned from before the
- * load until it returns (Phase 6 slice 9a: boot loads every chat, so the load resolves at once).
+ * load until it returns. A character can gain a chat (not loaded) while another one loads, so every
+ * target is checked again right before `run`, and loaded again (a few rounds) when it is incomplete.
  * The targets are captured by id before the load and found again inside `run`.
  */
 async function withChatsLoaded<T>(chaIds: readonly (string | undefined)[], run: () => T): Promise<T> {
     const ids = [...new Set(chaIds.filter((chaId): chaId is string => typeof chaId === "string"))];
+    const owners = new Map(ids.map((chaId) => [chaId, chatOwnerToken(chaId)]));
     const releases = ids.map((chaId) => pinChats(chaId));
     try {
-        for (const chaId of ids) {
-            await loadChats(chaId);
+        for (let round = 0; ; round++) {
+            const missing = ids.filter((chaId) => !chatsLoaded(chaId));
+            if (missing.length === 0) {
+                break;
+            }
+            if (round === 3) {
+                throw new Error("The chats could not be loaded");
+            }
+            for (const chaId of missing) {
+                await loadChats(chaId);
+            }
+        }
+        // A character whose chats were replaced meanwhile (a re-import under the same id) is another
+        // owner: nothing is read or applied for it. A deleted one is left to `run` (it is gone).
+        for (const [chaId, owner] of owners) {
+            if (chatOwnerToken(chaId) !== owner && characterList().some((entry) => entry?.chaId === chaId)) {
+                throw new PluginTargetGoneError("character");
+            }
         }
         return run();
     } finally {
@@ -802,7 +836,7 @@ const setChar = async (context: PluginCallContext | undefined, char: any) => {
     if (context) {
         // Before the load: a `chatPage` naming the hook's chat (as `getChar` reported it then) is not
         // a selection change, whatever the order is after the load.
-        const { chatIndex } = contextTarget(context);
+        const { chatIndex } = contextMember(context);
         if (char && typeof char === "object" && char.chatPage === chatIndex) {
             const { chatPage: _reported, ...rest } = char;
             char = rest;
@@ -1514,11 +1548,16 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             // The hook's chat (refused at once when it is gone), else the one selected when the call
             // came, loaded first; the target is found again after the load.
             if (context) {
-                contextTarget(context);
+                contextMember(context);
             }
             const ref = context ? context.chatRef : currentChatRef();
             if (ref) {
-                await ensureChatLoaded(ref);
+                // The same chat after the load: deleted or replaced meanwhile (even under the same
+                // ids) refuses the call.
+                const owner = chatOwnerToken(ref.chaId);
+                if (!(await ensureChatLoaded(ref)) || chatOwnerToken(ref.chaId) !== owner) {
+                    throw new PluginTargetGoneError("chat");
+                }
             }
             const target = context ? contextTarget(context) : undefined;
             const char = target
@@ -1599,33 +1638,50 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         getCurrentCharacterIndex: () => {
             const context = currentContext(contextOwner);
-            return context ? contextTarget(context).characterIndex : selectedIndex();
+            return context ? contextMember(context).characterIndex : selectedIndex();
         },
         getCurrentChatIndex: () => {
             const context = currentContext(contextOwner);
             if (context) {
-                return contextTarget(context).chatIndex;
+                return contextMember(context).chatIndex;
             }
             return selectedChatIndex(selectedCharacter().chaId);
         },
-        getCurrentLorebookEntries: () => {
+        getCurrentLorebookEntries: async () => {
+            // The hook's chat, else the one selected when the call came, loaded first (its local lore
+            // and its chat modules' lore are part of the result).
             const context = currentContext(contextOwner);
             if (context) {
-                const { character, chat } = contextTarget(context);
+                contextMember(context);
+            }
+            const ref = context ? context.chatRef : currentChatRef();
+            if (!ref) {
+                const char = selectedCharacter();
+                return char ? $state.snapshot([...(char.globalLore ?? []), ...getModuleLorebooks()]) : [];
+            }
+            const owner = chatOwnerToken(ref.chaId);
+            const release = pinChat(ref);
+            try {
+                if (!(await ensureChatLoaded(ref)) || chatOwnerToken(ref.chaId) !== owner) {
+                    throw new PluginTargetGoneError("chat");
+                }
+                const { character, chat } = context
+                    ? contextTarget(context)
+                    : {
+                          character: characterList().find((entry) => entry?.chaId === ref.chaId),
+                          chat: findChat(ref),
+                      };
+                if (!character || !chat) {
+                    throw new PluginTargetGoneError(character ? "chat" : "character");
+                }
                 return $state.snapshot([
                     ...(character.globalLore ?? []),
                     ...(chat.localLore ?? []),
-                    ...getModuleLorebooks(context.chatRef),
+                    ...getModuleLorebooks(ref),
                 ]);
+            } finally {
+                release();
             }
-            const char = selectedCharacter();
-            if (!char) {
-                return [];
-            }
-            const characterLore = char.globalLore ?? [];
-            const chatLore = selectedChat()?.localLore ?? [];
-            const moduleLore = getModuleLorebooks();
-            return $state.snapshot([...characterLore, ...chatLore, ...moduleLore]);
         },
         //New names for character APIs, to match API naming conventions
         getCharacter: () => getChar(currentContext(contextOwner)),
@@ -1976,25 +2032,33 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             // hooks get the hook's context.
             const context = currentContext(contextOwner);
             if (context) {
-                contextTarget(context);
+                contextMember(context);
             }
-            return requestChatDataMain(
-                {
-                    formated: options.messages,
-                    bias: {},
-                    staticModel: options.staticModel,
-                    ...(context ? { chatRef: context.chatRef, pluginContext: context } : {}),
+            // The hook's chat stays loaded for the request (a plugin provider may read it), and the
+            // request refuses it once it was replaced (its owner when the call came).
+            const chatOwner = context ? chatOwnerToken(context.chatRef.chaId) : undefined;
+            return withRequestChat(
+                context?.chatRef ?? null,
+                () =>
+                    requestChatDataMain(
+                        {
+                            formated: options.messages,
+                            bias: {},
+                            staticModel: options.staticModel,
+                            ...(context ? { chatRef: context.chatRef, pluginContext: context, chatOwner } : {}),
 
-                    // Calls into plugin-provided models are blocked by default to
-                    // guard against accidental IPC loops between provider plugins.
-                    // Plugin authors who need to reach the user's plugin-supplied
-                    // main or auxiliary model (e.g. a TTS preprocessor that
-                    // rewrites text with the configured otherAx model) can opt in
-                    // explicitly with `allowPlugins: true`, accepting responsibility
-                    // for avoiding provider-to-provider call loops.
-                    blockPlugins: !options.allowPlugins,
-                },
-                options.mode,
+                            // Calls into plugin-provided models are blocked by default to
+                            // guard against accidental IPC loops between provider plugins.
+                            // Plugin authors who need to reach the user's plugin-supplied
+                            // main or auxiliary model (e.g. a TTS preprocessor that
+                            // rewrites text with the configured otherAx model) can opt in
+                            // explicitly with `allowPlugins: true`, accepting responsibility
+                            // for avoiding provider-to-provider call loops.
+                            blockPlugins: !options.allowPlugins,
+                        },
+                        options.mode,
+                    ),
+                chatOwner,
             );
         },
         sendChat: async (message: string) => {
@@ -2020,11 +2084,16 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             // Inside a hook, the send goes to the hook's chat (refused at once when it is gone), else to
             // the selected one; loaded first, the target found again after the load.
             if (context) {
-                contextTarget(context);
+                contextMember(context);
             }
             const ref = context ? context.chatRef : currentChatRef();
             if (ref) {
-                await ensureChatLoaded(ref);
+                // The same chat after the load: deleted or replaced meanwhile (even under the same
+                // ids) refuses the call.
+                const owner = chatOwnerToken(ref.chaId);
+                if (!(await ensureChatLoaded(ref)) || chatOwnerToken(ref.chaId) !== owner) {
+                    throw new PluginTargetGoneError("chat");
+                }
             }
             const target = context ? contextTarget(context) : undefined;
             const char = target

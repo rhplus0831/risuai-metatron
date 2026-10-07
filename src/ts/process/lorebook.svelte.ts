@@ -11,7 +11,16 @@ import { downloadFile } from "../globalApi.svelte";
 import { getModuleLorebooks } from "./modules";
 import { activateLore } from "../../../shared/lore/activation.ts";
 import { v4 } from "uuid";
-import { type ChatRef, currentChatRef, findChat, selectedChat, setChatMeta } from "../storage/chatStore.svelte";
+import {
+    type ChatRef,
+    chatOwnerToken,
+    currentChatRef,
+    ensureChatLoaded,
+    findChat,
+    pinChat,
+    selectedChat,
+    setChatMeta,
+} from "../storage/chatStore.svelte";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { findCharacter, updateCharacter } from "../storage/characterStore.svelte";
 import { upgradeLorebook } from "../../../shared/modules.ts";
@@ -90,9 +99,31 @@ export function addLorebookFolder(type: number) {
  */
 export async function loadLoreBookV3Prompt(chatRef?: ChatRef | null) {
     const ref = chatRef ?? currentChatRef();
+    // The chat stays loaded for the whole activation (its variables are read and written as it goes).
+    const release = ref ? pinChat(ref) : null;
+    try {
+        return await activatePinnedLore(ref);
+    } finally {
+        release?.();
+    }
+}
+
+async function activatePinnedLore(ref: ChatRef | null) {
     const char = ref ? characterList().find((entry) => entry?.chaId === ref.chaId) : selectedCharacter();
     const lorechat = ref ? findChat(ref) : selectedChat();
-    return await activateLore(
+    if (!lorechat) {
+        // A chat that is not loaded (the selected one while it loads) has no lore to activate yet.
+        throw new Error("The chat is not loaded");
+    }
+    // The chat's owner now: if its character's chats are replaced during the activation (even under
+    // the same ids), its variables are not read or written there and the result is dropped.
+    const owner = ref ? chatOwnerToken(ref.chaId) : null;
+    const same = () => {
+        if (ref && chatOwnerToken(ref.chaId) !== owner) {
+            throw new Error("The chat changed during the lore activation");
+        }
+    };
+    const result = await activateLore(
         {
             character: char,
             chat: lorechat,
@@ -104,20 +135,33 @@ export async function loadLoreBookV3Prompt(chatRef?: ChatRef | null) {
         {
             clone: safeStructuredClone,
             findCharacterName: (id) => findCharacterbyId(id)?.name,
-            getChatVar: (key) => getChatVarOf(ref, key),
-            setChatVar: (key, value) => setChatVarOf(ref, key, value),
+            getChatVar: (key) => {
+                same();
+                return getChatVarOf(ref, key);
+            },
+            setChatVar: (key, value) => {
+                same();
+                return setChatVarOf(ref, key, value);
+            },
             pickHashRand,
-            parseCBS: (text) => risuChatParser(text, { chara: char, chatRef: ref }),
+            parseCBS: (text) => {
+                same();
+                return risuChatParser(text, { chara: char, chatRef: ref });
+            },
             tokenize,
             testRegex: (pattern, flags, text) => new RegExp(pattern, flags).test(text),
         },
     );
+    same();
+    return result;
 }
 
 export async function importLoreBook(mode: "global" | "local" | "sglobal") {
     const chaId = selectedCharacter()?.chaId;
-    // The chat (for local lore) is captured before the file dialog, so a chat switch cannot redirect it.
+    // The chat (for local lore) is captured before the file dialog, so a chat switch cannot redirect
+    // it, with its owner (a replacement of its character's chats meanwhile gets nothing).
     const chatTarget = mode === "local" ? currentChatRef() : null;
+    const chatOwner = chatTarget ? chatOwnerToken(chatTarget.chaId) : null;
     const lore: loreBook[] = [];
     const lorebook = (await selectSingleFile(["json", "lorebook"])).data;
     if (!lorebook) {
@@ -144,8 +188,9 @@ export async function importLoreBook(mode: "global" | "local" | "sglobal") {
                 updateCharacter(chaId, { globalLore: [...(character.globalLore ?? []), ...upgradeLorebook(lore)] });
             }
         } else if (chatTarget) {
-            const chat = findChat(chatTarget);
-            if (chat) {
+            // Loaded again: the dialog may have outlasted the chat's stay in memory.
+            const chat = await ensureChatLoaded(chatTarget);
+            if (chat && chatOwnerToken(chatTarget.chaId) === chatOwner) {
                 setChatMeta(chatTarget, { localLore: [...$state.snapshot(chat.localLore ?? []), ...lore] });
             }
         }

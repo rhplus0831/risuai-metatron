@@ -1,7 +1,7 @@
-// Measurement for Phase 6 slice 9a (chat projection, records and readers; `docs/plan/phases/slices/
+// Measurement for Phase 6 slice 9 (chat projection and lazy loading; `docs/plan/phases/slices/
 // phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`): the chats left the
-// character records for the chat module's own store, and the chat screen, the chat lists, and the
-// message rows read them through `selectedChat()` and `chatList()`.
+// character records for the chat module's own store (9a), and boot reads summaries, a chat loads
+// when it is selected, and idle loaded chats are evicted beyond eight (9b).
 //
 // Against the production build (`pnpm build` first: the server serves `dist/`), in headless Chrome,
 // through the real UI, with a character "Many" of 30 chats (one of them "Long", 2,000 messages; the
@@ -9,7 +9,9 @@
 // streams into (the server's generation job, 200 chunks 20 ms apart):
 // - the boot: a fresh page until the sidebar shows "Many" (3 runs), and the JS heap after a forced
 //   garbage collection;
-// - switching Many's chats from its chat list (alternating "Long" and a 20-message chat);
+// - switching Many's chats from its chat list (alternating "Long" and a 20-message chat, both
+//   loaded after the first switch), and cold switches: each of 28 other 20-message chats once, until
+//   its chat screen shows (9b: it loads first; with eight idle loaded chats kept, each is a load);
 // - a streamed reply: the frame intervals while it streams (each chunk renders through the chat
 //   screen's readers) and the long tasks;
 // - opening the chat list (the list entries of 30 chats).
@@ -326,6 +328,33 @@ try {
     }
     console.log("switch to Long (2,000 messages, the default visible window)", split(switches.long));
     console.log("switch to a 20-message chat", split(switches.short));
+
+    // 2b. Cold switches: until the chat screen shows the chat (after its load, when it was not loaded).
+    await page.evaluate(() => {
+        window.__untilChat = (start) =>
+            new Promise((resolve) => {
+                const frame = () => {
+                    if (document.querySelector(".default-chat-screen")) {
+                        requestAnimationFrame(() => resolve(performance.now() - start));
+                    } else {
+                        requestAnimationFrame(frame);
+                    }
+                };
+                requestAnimationFrame(frame);
+            });
+    });
+    const cold = [];
+    for (let i = 2; i < 30; i++) {
+        const handle = await chatRow(`Short ${i}`).elementHandle();
+        const ms = await page.evaluate((row) => {
+            const start = performance.now();
+            row.click();
+            return window.__untilChat(start);
+        }, handle);
+        cold.push(ms);
+        await page.waitForTimeout(200);
+    }
+    console.log("cold switch until the chat shows (28 chats, each once)", stats(cold));
 
     // 3. A streamed reply into Stream's chat: frame intervals and long tasks while it streams.
     await selectCharacter(streamId);

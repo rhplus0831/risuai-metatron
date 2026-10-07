@@ -13,16 +13,13 @@
     import SettingRenderer from "../Setting/SettingRenderer.svelte";
     import { checkPersonaBinded, getUserName } from "src/ts/util";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
-    import { selectedChat } from "src/ts/storage/chatStore.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
     let configPage: "list" | "add" | "addSettingsSubmenu" = $state("list");
     let search = $state("");
 
-    let bindedPersona = $derived.by(() => {
-        selectedChat();
-        return checkPersonaBinded();
-    });
+    // The selected chat's list entry: it holds also while the chat loads.
+    let bindedPersona = $derived(checkPersonaBinded());
 
     let personaName = $derived.by(() => {
         if (bindedPersona) {

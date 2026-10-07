@@ -1,6 +1,6 @@
 import { settings, activePreset, activePersona } from "../../storage/settingsViews.svelte";
 import { untrack } from "svelte";
-import { findChat, type ChatRef } from "../../storage/chatStore.svelte";
+import { chatEntry, chatOwnerToken, type ChatRef } from "../../storage/chatStore.svelte";
 
 /**
  * The call context of a plugin hook (Phase 4, `PLAN.md` Decision 5 for client hooks): the chat a hook
@@ -22,6 +22,11 @@ export interface PluginCallContext {
     readonly chatRef: ChatRef;
     readonly presetId: string;
     readonly personaId: string;
+    /**
+     * The chat's owner lifetime when the context was captured (`chatOwnerToken`): a host function
+     * refuses the hook's chat once its character's chats were replaced, even under the same ids.
+     */
+    readonly owner?: string;
 }
 
 /** A hook's chat, character, or preset no longer exists; the host call is refused rather than redirected to the tab's selection. */
@@ -38,12 +43,14 @@ export function capturePluginContext(chatRef: ChatRef | null | undefined): Plugi
         return undefined;
     }
     return untrack(() => {
-        const bound = findChat(chatRef)?.bindedPersona;
+        // The list entry: the bound persona holds also while the chat is not loaded.
+        const bound = chatEntry(chatRef)?.bindedPersona;
         const boundPersona = bound ? settings.personas?.find((persona) => persona?.id === bound) : undefined;
         return {
             chatRef: { chaId: chatRef.chaId, chatId: chatRef.chatId },
             presetId: activePreset.id ?? "",
             personaId: boundPersona?.id ?? activePersona.id ?? "",
+            owner: chatOwnerToken(chatRef.chaId),
         };
     });
 }

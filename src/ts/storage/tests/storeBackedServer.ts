@@ -1,4 +1,4 @@
-import type { ChatOp, ChatOrderRecord, ChatRecord } from "../../../../shared/chats.ts";
+import type { ChatOp, ChatOrderRecord, ChatRecord, ChatSummary } from "../../../../shared/chats.ts";
 import { parseSecretPath, readSecret, writeSecret, type SecretPath } from "../../../../shared/llmSecrets.ts";
 import { type ChangeSet, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } from "../../../../shared/resources.ts";
 
@@ -27,21 +27,27 @@ export type ServerStore = {
     delete(kind: unknown, id: string, baseRevision: string): void;
     readKinds(
         kinds: readonly unknown[],
-        options?: { chats?: boolean },
+        options?: { chats?: boolean; chatSummaries?: boolean },
     ): {
         epoch: string;
         kinds: Record<string, { id: string; revision: string; data: any }[]>;
         chats?: ChatRecord[];
+        chatSummaries?: ChatSummary[];
         chatOrders?: ChatOrderRecord[];
     };
     readRefs(
         refs: readonly { kind: unknown; id: string }[],
-        options?: { chats?: readonly { characterId: string; id: string }[]; chatCollections?: readonly string[] },
+        options?: {
+            chats?: readonly { characterId: string; id: string }[];
+            chatCollections?: readonly string[];
+            chatSummaryCollections?: readonly string[];
+        },
     ): {
         epoch: string;
         items: { kind: string; id: string; revision: string | null; data: unknown }[];
         chats: (ChatRecord | { characterId: string; id: string; revision: null; data: null })[];
         chatCollections: { characterId: string; order: ChatOrderRecord | null; chats: ChatRecord[] }[];
+        chatSummaryCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatSummary[] }[];
     };
     applyChanges(
         batch: { ops?: readonly unknown[]; chats?: unknown; chatOrders?: unknown },
@@ -296,9 +302,13 @@ export class StoreBackedServer {
 
         if (url.pathname === "/api/resources" && method === "GET") {
             const names = (url.searchParams.get("kinds") ?? "").split(",").filter((name) => name !== "");
+            // The boot read's two forms (the real route's query parameters): whole chats, or their summaries.
             const read = this.store.readKinds(
                 names.map((name) => this.kind(name)),
-                { chats: url.searchParams.get("chats") === "1" },
+                {
+                    chats: url.searchParams.get("chats") === "1",
+                    chatSummaries: url.searchParams.get("chatSummaries") === "1",
+                },
             );
             for (const name of names) {
                 read.kinds[name] = read.kinds[name].map((record) => ({
@@ -319,6 +329,7 @@ export class StoreBackedServer {
             const read = this.store.readRefs(refs, {
                 chats: body.chats ?? [],
                 chatCollections: body.chatCollections ?? [],
+                chatSummaryCollections: body.chatSummaryCollections ?? [],
             });
             return Response.json({
                 ...read,

@@ -8,7 +8,13 @@
     import { createSimpleCharacter, bookmarkListOpen, ScrollToMessageStore } from "src/ts/stores.svelte";
     import { language } from "src/lang";
     import { alertInput } from "src/ts/alert";
-    import { currentChatRef, findChat, selectedChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
+    import {
+        currentChatRef,
+        ensureChatLoaded,
+        findChat,
+        selectedChat,
+        setChatMeta,
+    } from "src/ts/storage/chatStore.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
     const close = () => ($bookmarkListOpen = false);
@@ -97,7 +103,8 @@
         const ref = currentChatRef();
         const chat = ref ? findChat(ref) : undefined;
         const newName = await alertInput(language.bookmarkAskNameOrCancel, [], chat?.bookmarkNames?.[chatId] || "");
-        const current = ref ? findChat(ref) : undefined;
+        // Loaded again: the dialog may have outlasted the chat's stay in memory (another chat selected).
+        const current = ref ? await ensureChatLoaded(ref) : undefined;
         if (ref && current && newName && newName.trim() !== "") {
             setChatMeta(ref, { bookmarkNames: { ...(current.bookmarkNames ?? {}), [chatId]: newName } });
         }

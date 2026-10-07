@@ -141,6 +141,10 @@
     function isOrphan(): boolean {
         const char = currentCharacter;
         const chat = selectedChat();
+        if (!chat) {
+            // The selected chat is loading (the modal closes over it).
+            return false;
+        }
 
         for (const chatMemo of summary.chatMemos) {
             if (chatMemo == null) {
@@ -189,6 +193,9 @@
     async function getMessageFromChatMemo(chatMemo: string | null): Promise<DeepReadonly<Message> | null> {
         const char = currentCharacter;
         const chat = selectedChat();
+        if (!chat) {
+            return null;
+        }
         const shouldProcess = getCurrentHypaV3Preset().settings.processRegexScript;
 
         let msg = null;

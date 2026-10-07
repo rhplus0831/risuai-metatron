@@ -125,13 +125,27 @@ try {
 
     // State of a tab, through the dev server's modules (the same instances the app uses).
     const state = (p, fn, arg) => p.evaluate(fn, arg);
+    // A character with its chats in list order. Chats load on demand (Phase 6 slice 9b): each listed
+    // chat is loaded as a reader showing it would (once; afterwards the held copy is what live
+    // updates refresh).
     const charOf = (p, chaId) =>
         state(
             p,
             async (id) => {
                 const { DBState } = await import("/src/ts/stores.svelte.ts");
+                const { chatList, ensureChatLoaded } = await import("/src/ts/storage/chatStore.svelte.ts");
                 const c = DBState.db.characters.find((entry) => entry?.chaId === id);
-                return c ? JSON.parse(JSON.stringify({ ...c, chats: c.chats })) : null;
+                if (!c) {
+                    return null;
+                }
+                const chats = [];
+                for (const entry of chatList(id)) {
+                    const chat = await ensureChatLoaded({ chaId: id, chatId: entry.id });
+                    if (chat) {
+                        chats.push(chat);
+                    }
+                }
+                return JSON.parse(JSON.stringify({ ...c, chats }));
             },
             chaId,
         );

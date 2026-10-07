@@ -20,7 +20,7 @@ import {
     releaseGenerationJob,
     savedGenerationJobIds,
 } from "../network/generationJobs";
-import { type ChatRef, findChat, heldChatRevision } from "../storage/chatStore.svelte";
+import { type ChatRef, ensureChatLoaded, heldChatRevision, pinChat } from "../storage/chatStore.svelte";
 import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 import {
     flushResources,
@@ -57,17 +57,27 @@ const following = new Map<string, Promise<GenerationTerminalEvent | "lost">>();
  * times, without creating the job again: a status read that fails is retried; a job that ended
  * meanwhile is attached again too (its attach sends its final records and its terminal). The end is
  * reported once (`alertError` for an error or a lost job). Returns the terminal event, or `"lost"`;
- * a lost job is released as its end would release it.
+ * a lost job is released as its end would release it. The job's chat is pinned and loaded before the
+ * follow attaches (a load that keeps failing makes the job lost) and stays pinned through every
+ * reconnect and the terminal's hydration, so no event of the job finds its chat evicted.
  */
 export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<GenerationTerminalEvent | "lost"> {
     let shared = following.get(jobId);
     if (!shared) {
         shared = (async () => {
+            let release: (() => void) | null = ref ? pinChat(ref) : null;
             try {
-                const target = ref ?? (await discover(jobId));
-                if (target === "gone") {
+                const discovered = ref ?? (await discover(jobId));
+                if (discovered === "gone") {
                     releaseGenerationJob(jobId);
                     return "lost";
+                }
+                let target: ChatRef | "lost" = discovered;
+                if (target !== "lost") {
+                    release ??= pinChat(target);
+                    if (!(await loadJobChat(target))) {
+                        target = "lost";
+                    }
                 }
                 const end = target === "lost" ? "lost" : await followOnce(jobId, target);
                 if (end === "lost") {
@@ -85,11 +95,16 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                     // again later gets the same terminal), not awaited by the job's caller. A reload
                     // meanwhile drops what is left.
                     followedUp.add(jobId);
-                    void runFollowUps(target, end.followUps).catch((error) => console.error("[Generation]", error));
+                    // Pinned before the follow-ups' first await (this follow's pin ends below).
+                    const followUpRelease = pinChat(target);
+                    void runFollowUps(target, end.followUps)
+                        .catch((error) => console.error("[Generation]", error))
+                        .finally(followUpRelease);
                 }
                 return end;
             } finally {
                 following.delete(jobId);
+                release?.();
             }
         })();
         following.set(jobId, shared);
@@ -97,9 +112,30 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
     return shared;
 }
 
-/** The parts a command job's `/multisend` queued, sent as the tab's own `/multisend` sends them. */
+/**
+ * The job's chat, loaded (the caller pinned it): a failed read is retried like `discover`; false when
+ * it is gone or could not be loaded.
+ */
+async function loadJobChat(ref: ChatRef): Promise<boolean> {
+    for (let read = 0; read < MAX_ATTACHES; read++) {
+        if (read > 0) {
+            await sleep(REATTACH_DELAY_MS);
+        }
+        try {
+            return (await ensureChatLoaded(ref)) !== undefined;
+        } catch (error) {
+            console.error("[Generation]", error);
+        }
+    }
+    return false;
+}
+
+/** The parts a command job's `/multisend` queued, sent as the tab's own `/multisend` sends them (the caller pinned the chat). */
 async function runFollowUps(ref: ChatRef, followUps: readonly GenerationFollowUp[]): Promise<void> {
     const { runMultisend } = await import("./command");
+    if (!(await ensureChatLoaded(ref))) {
+        return;
+    }
     for (const followUp of followUps) {
         if (!(await runMultisend(ref, followUp.clear, followUp.parts))) {
             return;
@@ -203,22 +239,39 @@ export type ServerJobRequest = {
  * its alerts and questions through the job's channel. An error ends with `alertError`. `onStart`
  * runs once the job exists, before it is followed. `signal` aborts the job (`DELETE`), also when it
  * fires while the job is being created, and the busy job of this tab followed instead; an abort
- * before the flush ends runs nothing.
+ * before the flush ends runs nothing. The target chat is pinned from the start until the follow ends
+ * and is loaded before the job is created (a failed load runs nothing).
  */
 export async function runServerJob(
     char: AnyClientCharacter,
     ref: ChatRef | null,
     request: ServerJobRequest,
-    options: {
-        onStart?: () => void;
-        signal?: AbortSignal;
-        identity?: { presetId: string | null; personaId: string | null };
-    } = {},
+    options: ServerJobOptions = {},
+): Promise<{ outcome: ServerCommandOutcome; terminal: GenerationTerminalEvent | "lost" | null }> {
+    if (!ref) {
+        return { outcome: "refused", terminal: null };
+    }
+    const release = pinChat(ref);
+    try {
+        return await runPinnedServerJob(char, ref, request, options);
+    } finally {
+        release();
+    }
+}
+
+type ServerJobOptions = {
+    onStart?: () => void;
+    signal?: AbortSignal;
+    identity?: { presetId: string | null; personaId: string | null };
+};
+
+async function runPinnedServerJob(
+    char: AnyClientCharacter,
+    ref: ChatRef,
+    request: ServerJobRequest,
+    options: ServerJobOptions,
 ): Promise<{ outcome: ServerCommandOutcome; terminal: GenerationTerminalEvent | "lost" | null }> {
     const refused = { outcome: "refused" as const, terminal: null };
-    if (!ref) {
-        return refused;
-    }
     const presetId = options.identity ? options.identity.presetId : (activePreset.id ?? null);
     const selectedPersonaId = activePersona.id ?? null;
     // `getUserName(ref)`: the chat's bound persona, else the selected one.
@@ -248,7 +301,14 @@ export async function runServerJob(
         alertError(`Local changes could not be saved: ${errorText(error)}`);
         return refused;
     }
-    if (!findChat(ref) || options.signal?.aborted) {
+    let target;
+    try {
+        target = await ensureChatLoaded(ref);
+    } catch (error) {
+        alertError(`The chat could not be loaded: ${errorText(error)}`);
+        return refused;
+    }
+    if (!target || options.signal?.aborted) {
         return refused;
     }
     const chatRevision = heldChatRevision(ref);

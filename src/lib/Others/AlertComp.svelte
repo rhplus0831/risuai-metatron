@@ -446,7 +446,7 @@
                         {/if}
                     {/each}
                 </div>
-            {:else if $alertStore.type === "requestdata"}
+            {:else if $alertStore.type === "requestdata" && currentChat}
                 {#if aiLawApplies()}
                     <div>
                         {language.generatedByAIDisclaimer}
@@ -656,7 +656,7 @@
                         </div>
                     {/if}
                 {/if}
-            {:else if $alertStore.type === "hypaV2"}
+            {:else if $alertStore.type === "hypaV2" && currentChat}
                 <div class="flex flex-wrap gap-2 mb-4 max-w-full w-124">
                     <Button
                         selected={generationInfoMenuIndex === 0}

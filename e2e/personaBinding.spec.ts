@@ -126,19 +126,22 @@ test("an icon picked while another persona is selected lands on the persona the 
     const view = await personas(page);
     expect(view.selected).toBe(u1);
     expect(view.list.map((persona) => persona.id)).toEqual([u1, u2]);
+    // After the reload the chat is held as its summary (Phase 6 slice 9b: boot reads summaries, and the
+    // tab is at home): the binding is read from its list entry, and the persona readers resolve it
+    // without loading the chat.
     const binding = await page.evaluate(async ({ chaId, chatId }) => {
-        const { DBState } = await import("/src/ts/stores.svelte.ts");
+        const { chatEntry, findChat } = await import("/src/ts/storage/chatStore.svelte.ts");
         const { getUserIcon, getPersonaPrompt, getUserName } = await import("/src/ts/util.ts");
-        const char = DBState.db.characters.find((entry: any) => entry.chaId === chaId);
-        const chat = char.chats.find((entry: any) => entry.id === chatId);
         const ref = { chaId, chatId };
         return {
-            bindedPersona: chat.bindedPersona,
+            loaded: findChat(ref) !== undefined,
+            bindedPersona: chatEntry(ref)?.bindedPersona,
             name: getUserName(ref),
             icon: getUserIcon(ref),
             prompt: getPersonaPrompt(ref),
         };
     }, bound);
+    expect(binding.loaded).toBe(false);
     expect(binding.bindedPersona).toBe(u2);
     expect(binding.name).toBe("U2");
     expect(binding.icon).toBe(view.list[1].icon);

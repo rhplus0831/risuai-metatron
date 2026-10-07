@@ -25,6 +25,8 @@ const stubs = vi.hoisted(() => ({
     writeInlayImage: vi.fn<(image: unknown, arg: unknown) => Promise<string>>(),
     setInlayAsset: vi.fn<(id: string, asset: unknown) => Promise<void>>(),
     parserScoped: vi.fn<(text: string, arg: unknown, scope: unknown) => string>(),
+    /** `readRefs`: answers each requested chat with an empty chat of that id (a load of an unloaded chat). */
+    readRefs: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
     epochMismatch: vi.fn((epoch: string) =>
         Object.assign(new Error(`replaced ${epoch}`), { name: "ResourceEpochMismatchError" }),
     ),
@@ -82,6 +84,8 @@ vi.mock("src/ts/storage/nodeStorage", () => ({
 vi.mock("src/ts/storage/resourceClient", () => ({
     epochMismatch: stubs.epochMismatch,
     getResourceEpoch: () => "epoch-1",
+    // The chat module's own reads (a load of a chat the transport needs; Phase 6 slice 9b).
+    readRefs: (...args: unknown[]) => stubs.readRefs(...args),
 }));
 vi.mock("src/ts/storage/resourceSync.svelte", () => ({ flushResources: () => stubs.flush() }));
 vi.mock("src/ts/util", () => ({ checkPersonaBinded: () => stubs.selected.bound }));
@@ -103,7 +107,42 @@ import { selectCharacter, selectPersona, selectPreset } from "src/ts/storage/sel
 import { activePreset } from "src/ts/storage/settingsViews.svelte";
 import { takeRootPresetFields } from "src/ts/storage/tests/installFlatDatabase";
 import { requestServer } from "../transport";
-import { assembleChats } from "src/ts/storage/chatStore.svelte";
+import {
+    assembleChats,
+    createChat,
+    deleteChat,
+    findChat,
+    installCharacterChats,
+} from "src/ts/storage/chatStore.svelte";
+
+const fixtureCharacters = () => [
+    { chaId: "char-1", type: "character", name: "Char 1", chatPage: 0, chats: [{ id: "chat-1", message: [] }] },
+    { chaId: "char-2", type: "character", name: "Char 2", chatPage: 0, chats: [{ id: "chat-2", message: [] }] },
+    { chaId: "char-9", type: "character", name: "Char 9", chatPage: 0, chats: [{ id: "chat-9", message: [] }] },
+    { chaId: "other", type: "character", name: "Other", chatPage: 0, chats: [{ id: "k", message: [] }] },
+];
+
+/**
+ * Holds the fixture's chats in the chat module, as boot assembles them (the records hold no chats,
+ * Phase 6 slice 9a): loaded, except the chats of the characters in `unloaded`, held as their
+ * summaries (slice 9b) and read through `stubs.readRefs` when the transport loads them.
+ */
+function assembleFixture(unloaded: readonly string[]) {
+    const characters = fixtureCharacters();
+    const chats = characters.flatMap((char) =>
+        char.chats.map((chat) =>
+            unloaded.includes(char.chaId)
+                ? { characterId: char.chaId, id: chat.id, revision: "r1", name: chat.id, fmIndex: -1 }
+                : { characterId: char.chaId, id: chat.id, revision: "r1", data: chat as never },
+        ),
+    );
+    const orders = characters.map((char) => ({
+        characterId: char.chaId,
+        revision: "o1",
+        ids: char.chats.map((chat) => chat.id),
+    }));
+    assembleChats(characters, chats, orders);
+}
 
 /**
  * The settings installed in the records (as `setDatabaseLite` installs a database), since the
@@ -123,23 +162,14 @@ function installSettings() {
         { id: "persona-1", name: "Persona 1" },
         { id: "persona-2", name: "Persona 2" },
     ];
-    const characters = [
-        { chaId: "char-1", type: "character", name: "Char 1", chatPage: 0, chats: [{ id: "chat-1", message: [] }] },
-        { chaId: "char-2", type: "character", name: "Char 2", chatPage: 0, chats: [{ id: "chat-2", message: [] }] },
-    ];
-    // The records hold no chats (Phase 6 slice 9a): the chat module holds them, as boot assembles them.
-    const chats = characters.flatMap((char) =>
-        char.chats.map((chat) => ({ characterId: char.chaId, id: chat.id, revision: "r1", data: chat as never })),
-    );
-    const orders = characters.map((char) => ({
-        characterId: char.chaId,
-        revision: "o1",
-        ids: char.chats.map((chat) => chat.id),
-    }));
+    // `char-9`/`chat-9` is the request chat the cases name, `other`/`k` the chat a `cbs` callback names
+    // instead: since Phase 6 slice 9b the transport loads both before it works for them (refusing a
+    // chat the store does not list), so they are held here, loaded.
+    const characters = fixtureCharacters();
     raw.characters = characters;
     initializeRecords(takeRecordFields(raw));
     DBState.db = installForwarding(raw) as never;
-    assembleChats(characters, chats, orders);
+    assembleFixture([]);
     selectPreset("preset-1");
     selectPersona("persona-1");
     selectCharacter("char-1");
@@ -214,6 +244,15 @@ beforeEach(() => {
     stubs.writeInlayImage.mockResolvedValue("img");
     stubs.setInlayAsset.mockResolvedValue(undefined);
     stubs.parserScoped.mockImplementation((text) => `parsed:${text}`);
+    stubs.readRefs.mockImplementation(async (_refs, options) => ({
+        epoch: "epoch-1",
+        items: [],
+        chatCollections: [],
+        chatSummaryCollections: [],
+        chats: ((options as { chats?: { characterId: string; id: string }[] }).chats ?? []).map(
+            ({ characterId, id }) => ({ characterId, id, revision: "r1", data: { id, name: id, message: [] } }),
+        ),
+    }));
     stubs.channelCall = null;
     stubs.dynamicIds.clear();
     installSettings();
@@ -613,7 +652,8 @@ describe("the callbacks", () => {
             ["{{char}}", { chatRef: { chaId: "other", chatId: "k" } }, scope],
         ]);
         expect(stubs.callTool).toHaveBeenCalledTimes(1);
-        expect(stubs.callTool).toHaveBeenCalledWith("roll", { sides: 6 });
+        // The tool call names the request's chat (Phase 6 slice 9b: its module MCP servers, not the selection's).
+        expect(stubs.callTool).toHaveBeenCalledWith("roll", { sides: 6 }, { chaId: "char-9", chatId: "chat-9" });
         const sent = answers();
         expect(sent.every((entry) => entry.path === "/api/llm/request/req-1/answer")).toBe(true);
         expect(sent.map((entry) => entry.body)).toEqual([
@@ -688,5 +728,154 @@ describe("the callbacks", () => {
         expect(stubs.callTool).toHaveBeenCalledTimes(1);
         // The request is dead: the late answer is not posted either.
         expect(answers()).toHaveLength(0);
+    });
+});
+
+// Phase 6 slice 9b: the request's chat (and its parse chat) are pinned and loaded after the flush,
+// before the POST, and every later event checks that they are still the chats the request began
+// with (listed, same owner lifetime): a chat deleted or replaced under the same ids meanwhile is
+// another chat's request. A `cbs` callback naming another chat loads it for its parse.
+describe("the request's chats (Phase 6 slice 9b)", () => {
+    const chat9 = { chaId: "char-9", chatId: "chat-9" };
+    const gone = "The chat this request is for no longer exists";
+    /** A re-import of `char-9` under the same ids: its chats are installed again (a new owner lifetime). */
+    const replaceChar9 = () =>
+        installCharacterChats(
+            "char-9",
+            [{ id: "chat-9", name: "again", note: "", localLore: [], message: [] }] as never,
+            {
+                firstMsgIndex: -1,
+            },
+        );
+
+    it("loads a `cbs` callback's other chat before the parse when it is not loaded, and fails the callback for a chat that is not listed", async () => {
+        assembleFixture(["other"]);
+        expect(findChat({ chaId: "other", chatId: "k" })).toBeUndefined();
+        stubs.fetch.mockResolvedValueOnce(
+            sseResponse([
+                accepted,
+                {
+                    type: "callback",
+                    id: "cb-1",
+                    name: "cbs",
+                    payload: { text: "{{char}}", chatRef: { chaId: "other", chatId: "k" } },
+                },
+                {
+                    type: "callback",
+                    id: "cb-2",
+                    name: "cbs",
+                    payload: { text: "{{char}}", chatRef: { chaId: "other", chatId: "zz" } },
+                },
+                success,
+            ]),
+        );
+        expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
+            type: "success",
+            result: "ok",
+        });
+        await flushTick();
+        await flushTick();
+        expect(stubs.readRefs).toHaveBeenCalledTimes(1);
+        expect((stubs.readRefs.mock.calls[0][1] as { chats: unknown }).chats).toEqual([
+            { characterId: "other", id: "k" },
+        ]);
+        expect(findChat({ chaId: "other", chatId: "k" })).toBeDefined();
+        expect(stubs.parserScoped.mock.calls).toEqual([
+            [
+                "{{char}}",
+                { chatRef: { chaId: "other", chatId: "k" } },
+                { presetId: "preset-1", personaId: "persona-1" },
+            ],
+        ]);
+        // Answered as each finishes (the gone chat's callback fails before the load's parse answers).
+        expect(answers().map((entry) => entry.body)).toEqual(
+            expect.arrayContaining([
+                { clientId: "tab-1", callbackId: "cb-1", outcome: "answered", value: "parsed:{{char}}" },
+                {
+                    clientId: "tab-1",
+                    callbackId: "cb-2",
+                    outcome: "failed",
+                    error: "The chat this parse is for no longer exists",
+                },
+            ]),
+        );
+        expect(answers()).toHaveLength(2);
+    });
+
+    it("posts nothing when the request's chat is deleted or replaced under the same ids during the flush", async () => {
+        // A second chat, so `chat-9` can be deleted.
+        createChat("char-9", { id: "chat-9b", name: "B", note: "", localLore: [], message: [] } as never);
+        stubs.flush.mockImplementationOnce(async () => {
+            deleteChat(chat9);
+        });
+        expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
+            type: "fail",
+            result: gone,
+        });
+        expect(posted()).toHaveLength(0);
+        installSettings();
+        stubs.flush.mockImplementationOnce(async () => {
+            replaceChar9();
+        });
+        expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
+            type: "fail",
+            result: gone,
+        });
+        expect(posted()).toHaveLength(0);
+        // The replacement's chat is listed and loaded: a request for it afterwards runs.
+        expect(findChat(chat9)?.name).toBe("again");
+        expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
+            type: "success",
+            result: "ok",
+        });
+        expect(posted()).toHaveLength(1);
+    });
+
+    it("an MCP callback whose tool finishes after the request's chat was replaced answers failed once, and the reply after it is refused", async () => {
+        let releaseTool!: (value: unknown) => void;
+        stubs.callTool.mockReturnValueOnce(new Promise((resolve) => (releaseTool = resolve)));
+        const controlled = controlledResponse();
+        stubs.fetch.mockResolvedValueOnce(controlled.response);
+        const pending = requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo);
+        controlled.event(accepted);
+        controlled.event({ type: "callback", id: "cb-1", name: "mcpTool", payload: { name: "roll", args: {} } });
+        await flushTick();
+        expect(stubs.callTool).toHaveBeenCalledTimes(1);
+        replaceChar9();
+        releaseTool([{ type: "text", text: "late" }]);
+        await flushTick();
+        await flushTick();
+        expect(answers().map((entry) => entry.body)).toEqual([
+            { clientId: "tab-1", callbackId: "cb-1", outcome: "failed", error: gone },
+        ]);
+        controlled.event(success);
+        expect(await pending).toEqual({ type: "fail", result: gone });
+        expect(stubs.callTool).toHaveBeenCalledTimes(1);
+    });
+
+    it("a stream handed out errors at the next chunk after the request's chat was replaced, and the POST is aborted", async () => {
+        let postSignal: AbortSignal | undefined;
+        const controlled = controlledResponse();
+        stubs.fetch.mockImplementationOnce(async (_path, init) => {
+            postSignal = init?.signal as AbortSignal;
+            return controlled.response;
+        });
+        const pending = requestServer(
+            { ...baseArg(), useStreaming: true, chatRef: chat9 } as never,
+            "model",
+            null,
+            modelInfo,
+        );
+        controlled.event(accepted);
+        controlled.event({ type: "streaming" });
+        const response = (await pending) as { type: string; result: ReadableStream<StreamResponseChunk> };
+        expect(response.type).toBe("streaming");
+        const reader = response.result.getReader();
+        controlled.event({ type: "chunk", set: { "0": "first" } });
+        expect(await reader.read()).toEqual({ done: false, value: { "0": "first" } });
+        replaceChar9();
+        controlled.event({ type: "chunk", set: { "0": "second" } });
+        await expect(reader.read()).rejects.toThrow(gone);
+        expect(postSignal?.aborted).toBe(true);
     });
 });

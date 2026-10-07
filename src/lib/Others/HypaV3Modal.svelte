@@ -39,7 +39,7 @@
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
     /** The selected chat's memory data as the chat holds it (read-only). */
-    const chatHypaV3Data = $derived(currentChat.hypaV3Data);
+    const chatHypaV3Data = $derived(currentChat?.hypaV3Data);
 
     // The modal and its children edit a copy of the memory data; every change of the copy is written
     // to the chat through the chat module, and a change of the chat's copy from elsewhere (a
@@ -622,7 +622,7 @@
         const char = currentCharacter;
         const chat = selectedChat();
 
-        return chat.hypaV3Data?.summaries?.length === 0 && chat.hypaV2Data != null;
+        return chat?.hypaV3Data?.summaries?.length === 0 && chat.hypaV2Data != null;
     }
 
     function convertHypaV2ToV3(): { success: boolean; error?: string } {

@@ -31,7 +31,7 @@
     }
 
     function isAllChatLoreAlwaysActive() {
-        const localLore = currentChat.localLore;
+        const localLore = currentChat?.localLore;
         return localLore && localLore.every((book) => book.alwaysActive);
     }
 

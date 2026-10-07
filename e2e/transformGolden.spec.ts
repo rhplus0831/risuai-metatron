@@ -416,7 +416,9 @@ const renderExtra = (page: Page, chaId: string, chatId: string) =>
             stores.selectedCharID.set(index);
             chatStore.selectChat(chaId, chatId);
             const char = stores.DBState.db.characters[index] as any;
-            const chat = chatStore.findChat({ chaId, chatId })!;
+            // The selection is immediate and the chat loads on demand (Phase 6 slice 9b): loaded
+            // here before its messages are read.
+            const chat = (await chatStore.ensureChatLoaded({ chaId, chatId }))!;
             const out: Record<string, string> = {};
             const texts: [string, string, number, object][] = [
                 ["greeting", char.firstMessage, -1, { firstmsg: true, chatRole: "char" }],

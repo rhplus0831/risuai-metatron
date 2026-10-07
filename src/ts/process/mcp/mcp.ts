@@ -1,7 +1,7 @@
 import { settings } from "../../storage/settingsViews.svelte";
 import { addAuthRefresh, addModule } from "src/ts/storage/collectionStore.svelte";
 import { MCPClient, type JsonRPC, type MCPTool, type RPCToolCallContent } from "./mcplib";
-import { getModuleMcps } from "../modules";
+import { getModuleMcps, type ModuleChatRef } from "../modules";
 import { alertError, alertInput, alertNormal } from "src/ts/alert";
 import { v4 } from "uuid";
 import type { MCPClientLike } from "./internalmcp";
@@ -50,8 +50,62 @@ export async function readyTabClient(identifier: string): Promise<MCPClientLike>
     return client;
 }
 
-export async function initializeMCPs(additionalMCPs?: string[]) {
-    const mcpUrls = getModuleMcps();
+type AnyMCPClient = MCPClient | MCPClientLike;
+
+/**
+ * Consumers using a client now (a tool listing or a tool call, `syncMCPs` with `held`): an
+ * initialization for another chat does not destroy a client in use; it is destroyed when its last
+ * consumer ends.
+ */
+const leases = new Map<AnyMCPClient, number>();
+const destroyWhenFree = new Set<AnyMCPClient>();
+
+function takeLease(client: AnyMCPClient, held: AnyMCPClient[]) {
+    leases.set(client, (leases.get(client) ?? 0) + 1);
+    held.push(client);
+}
+
+function releaseLeases(held: readonly AnyMCPClient[]) {
+    for (const client of held) {
+        const count = (leases.get(client) ?? 1) - 1;
+        if (count > 0) {
+            leases.set(client, count);
+            continue;
+        }
+        leases.delete(client);
+        if (destroyWhenFree.delete(client)) {
+            client.destroy();
+        }
+    }
+}
+
+/** Connects the MCP servers of `chatRef`'s modules (default: the selected chat's), plus `additionalMCPs`. */
+export async function initializeMCPs(additionalMCPs?: string[], chatRef?: ModuleChatRef) {
+    await syncMCPs(additionalMCPs, chatRef);
+}
+
+/**
+ * `initializeMCPs`, answering this call's own clients (the servers of `chatRef`'s modules, the
+ * additional ones, and the call-only ones), whatever another chat's initialization does to the
+ * shared registry meanwhile. With `held`, each client is leased as soon as it is known (release with
+ * `releaseLeases(held)`), so no other initialization destroys it while this caller uses it.
+ */
+async function syncMCPs(
+    additionalMCPs: string[] | undefined,
+    chatRef: ModuleChatRef,
+    held?: AnyMCPClient[],
+): Promise<{ active: Record<string, AnyMCPClient>; callOnly: Record<string, AnyMCPClient> }> {
+    const own: Record<string, AnyMCPClient> = {};
+    const keep = (mcp: string) => {
+        const client = MCPs[mcp];
+        if (client && !own[mcp]) {
+            own[mcp] = client;
+            if (held) {
+                takeLease(client, held);
+            }
+        }
+    };
+    const mcpUrls = getModuleMcps(chatRef);
     if (additionalMCPs && additionalMCPs.length > 0) {
         for (const mcp of additionalMCPs) {
             if (!mcpUrls.includes(mcp)) {
@@ -67,6 +121,7 @@ export async function initializeMCPs(additionalMCPs?: string[]) {
         }
     }
     for (const mcp of mcpUrls) {
+        keep(mcp);
         if (!MCPs[mcp]) {
             let mcpUrl = mcp;
 
@@ -76,6 +131,7 @@ export async function initializeMCPs(additionalMCPs?: string[]) {
                     case "internal:googlesearch": {
                         // Registered before its handshake, as every internal client is.
                         MCPs[mcp] = await tabClient(mcp);
+                        keep(mcp);
                         await readyTabClient(mcp);
                         continue;
                     }
@@ -101,7 +157,8 @@ export async function initializeMCPs(additionalMCPs?: string[]) {
                     }
                 }
 
-                await MCPs[mcp].checkHandshake();
+                keep(mcp);
+                await own[mcp]?.checkHandshake();
                 continue;
             }
 
@@ -109,7 +166,8 @@ export async function initializeMCPs(additionalMCPs?: string[]) {
                 const customMCP = registeredCustomPluginMCPs.get(mcp);
                 if (customMCP) {
                     MCPs[mcp] = customMCP;
-                    await MCPs[mcp].checkHandshake();
+                    keep(mcp);
+                    await customMCP.checkHandshake();
                     continue;
                 }
             }
@@ -149,7 +207,12 @@ export async function initializeMCPs(additionalMCPs?: string[]) {
                 mcpClient.registerRefreshToken = registerRefresh;
                 mcpClient.getRefreshToken = getRefresh;
                 await mcpClient.checkHandshake();
-                MCPs[mcp] = mcpClient;
+                MCPs[mcp] ??= mcpClient;
+                if (MCPs[mcp] !== mcpClient) {
+                    // Another initialization connected it meanwhile: that client is the one.
+                    mcpClient.destroy();
+                }
+                keep(mcp);
             } catch (error) {
                 console.error(`MCP: Failed to initialize MCP at ${mcp}:`, error);
             }
@@ -158,9 +221,14 @@ export async function initializeMCPs(additionalMCPs?: string[]) {
 
     for (const key of Object.keys(MCPs)) {
         if (!mcpUrls.includes(key)) {
-            // A shared tab client stays as it is for a server job that uses it: only this reference goes.
+            // A shared tab client stays as it is for a server job that uses it: only this reference
+            // goes. A client another call is using is destroyed when that call ends.
             if (!TAB_MCP_IDENTIFIERS.includes(key)) {
-                MCPs[key].destroy();
+                if (leases.has(MCPs[key])) {
+                    destroyWhenFree.add(MCPs[key]);
+                } else {
+                    MCPs[key].destroy();
+                }
             }
             delete MCPs[key];
         }
@@ -172,22 +240,34 @@ export async function initializeMCPs(additionalMCPs?: string[]) {
             delete MCPs[mcp];
         }
     }
+    const active: Record<string, AnyMCPClient> = {};
+    const callOnly: Record<string, AnyMCPClient> = {};
+    for (const [mcp, client] of Object.entries(own)) {
+        (callOnlyMCPUrlsThatIsNotInDefault.includes(mcp) ? callOnly : active)[mcp] = client;
+    }
+    return { active, callOnly };
 }
 
-export async function getMCPTools(additionalMCPs?: string[]) {
-    await initializeMCPs(additionalMCPs);
-    const tools: MCPToolWithURL[] = [];
-    for (const key of Object.keys(MCPs)) {
-        const t = (await MCPs[key].getToolList()).map((tool) => {
-            return {
-                ...tool,
-                mcpURL: key,
-            };
-        });
+/** The tools of `chatRef`'s MCP servers (its own clients, leased while they are listed). */
+export async function getMCPTools(additionalMCPs?: string[], chatRef?: ModuleChatRef) {
+    const held: AnyMCPClient[] = [];
+    try {
+        const { active } = await syncMCPs(additionalMCPs, chatRef, held);
+        const tools: MCPToolWithURL[] = [];
+        for (const [key, client] of Object.entries(active)) {
+            const t = (await client.getToolList()).map((tool) => {
+                return {
+                    ...tool,
+                    mcpURL: key,
+                };
+            });
 
-        tools.push(...t);
+            tools.push(...t);
+        }
+        return tools;
+    } finally {
+        releaseLeases(held);
     }
-    return tools;
 }
 
 export async function getMCPMeta(additionalMCPs?: string[]) {
@@ -199,15 +279,25 @@ export async function getMCPMeta(additionalMCPs?: string[]) {
     return meta;
 }
 
-export async function callMCPTool(methodName: string, args: any): Promise<RPCToolCallContent[]> {
-    await initializeMCPs();
-    const combinedMCPs = { ...MCPs, ...callOnlyMCPs };
-    for (const key of Object.keys(combinedMCPs)) {
-        const tools = await combinedMCPs[key].getToolList();
-        const tool = tools.find((t) => t.name === methodName);
-        if (tool) {
-            return await combinedMCPs[key].callTool(methodName, args);
+/** Calls a tool on `chatRef`'s MCP servers (its own clients, leased for the call). */
+export async function callMCPTool(
+    methodName: string,
+    args: any,
+    chatRef?: ModuleChatRef,
+): Promise<RPCToolCallContent[]> {
+    const held: AnyMCPClient[] = [];
+    try {
+        const { active, callOnly } = await syncMCPs(undefined, chatRef, held);
+        const combinedMCPs = { ...active, ...callOnly };
+        for (const key of Object.keys(combinedMCPs)) {
+            const tools = await combinedMCPs[key].getToolList();
+            const tool = tools.find((t) => t.name === methodName);
+            if (tool) {
+                return await combinedMCPs[key].callTool(methodName, args);
+            }
         }
+    } finally {
+        releaseLeases(held);
     }
     return [
         {
@@ -218,13 +308,14 @@ export async function callMCPTool(methodName: string, args: any): Promise<RPCToo
 }
 
 //Currently just a wrapper for getMCPTools, but can be extended later for more than MCPs
-export async function getTools() {
-    return await getMCPTools();
+/** The tools for a request of `chatRef`'s chat (default: the selected chat; its modules choose the MCP servers). */
+export async function getTools(chatRef?: ModuleChatRef) {
+    return await getMCPTools(undefined, chatRef);
 }
 
 //Currently just a wrapper for callMCPTool, but can be extended later for more than MCPs
-export async function callTool(methodName: string, args: any) {
-    return await callMCPTool(methodName, args);
+export async function callTool(methodName: string, args: any, chatRef?: ModuleChatRef) {
+    return await callMCPTool(methodName, args, chatRef);
 }
 
 export async function importMCPModule() {

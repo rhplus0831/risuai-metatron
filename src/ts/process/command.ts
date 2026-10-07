@@ -4,7 +4,9 @@ import {
     appendMessage,
     type ChatRef,
     currentChatRef,
+    ensureChatLoaded,
     findChat,
+    pinChat,
     removeMessages,
     setChatMeta,
     setMessageText,
@@ -55,9 +57,22 @@ export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: read
 /**
  * Runs a command line typed in the chat input. Every command writes to and reads (CBS arguments,
  * lore) `ref`: by default the chat selected when the line started. `/trigger` runs on the server
- * (Phase 5 slice 8b; a server trigger's `v2Command` runs on the server too).
+ * (Phase 5 slice 8b; a server trigger's `v2Command` runs on the server too). The chat is pinned (kept
+ * loaded) for the whole line, and loaded first.
  */
 export async function processMultiCommand(command: string, ref: ChatRef | null = currentChatRef()) {
+    const release = ref ? pinChat(ref) : null;
+    try {
+        if (ref && !(await ensureChatLoaded(ref))) {
+            return "";
+        }
+        return await processPinnedCommands(command, ref);
+    } finally {
+        release?.();
+    }
+}
+
+async function processPinnedCommands(command: string, ref: ChatRef | null) {
     let pipe = "";
     const splited: string[] = [];
     let lastIndex = 0;

@@ -379,7 +379,9 @@ describe("the local fields (plan review point 3)", () => {
         applyRawCharacter("n", { chaId: "n", name: "N", chats: [{ id: "ignored" }] });
         expect(raw("n")).toEqual({ chaId: "n", name: "N" });
         expect(byId("n").chats).toEqual([]);
-        expect(byId("n").chatPage).toBe(0);
+        // The facade's `chatPage` is the selected chat's index among the loaded chats, -1 with none
+        // (Phase 6 slice 9b).
+        expect(byId("n").chatPage).toBe(-1);
         applyRawCharacter("n", null);
         expect(raw("n")).toBeUndefined();
         expect(notified).toEqual([]);

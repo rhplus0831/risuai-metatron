@@ -1,6 +1,6 @@
 import isEqual from "lodash/isEqual";
 import { tick, untrack } from "svelte";
-import type { ChatOrderRecord, ChatRecord } from "../../../shared/chats.ts";
+import type { ChatOrderRecord, ChatSummary } from "../../../shared/chats.ts";
 import { HIDDEN_HYDRATION_KINDS, type StreamingMessage } from "../../../shared/jobs.ts";
 import {
     compareRevision,
@@ -62,7 +62,7 @@ import {
     canApplyRemoteCollection,
     heldChatRefs,
     heldChatRevision,
-    heldChatRevisionsOf,
+    heldChatRevisionsByCharacter,
     heldOrderRevision,
     noteRemoteChat,
     adoptCharacter,
@@ -93,6 +93,10 @@ import {
     deferredReloads,
     finishDeferredReload,
     idleChatRefreshes,
+    idleSummaryRefreshes,
+    scheduleTrim,
+    settleSummaryRefresh,
+    summaryRefreshNotices,
     chatNoticeSeq,
     finishIdleChatRefresh,
     settleUnloadWork,
@@ -801,6 +805,8 @@ function runCycle(): Promise<void> {
                 applyHydration(record);
             }
             saving.state = false;
+            // Chats whose protection ended in this cycle (saved, refreshed, released) may be evicted now.
+            scheduleTrim();
             backoffUntil = lastError ? Date.now() + Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(failures, 5)) : 0;
             const retryAt = jobRetryAt();
             if (retryAt === null) {
@@ -1524,8 +1530,9 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
 }
 
 /**
- * Reads the chat lists of characters a recovery inserted or whose chats changed on the server, and
- * puts them into the mirror. A character stays listed until its read succeeds.
+ * Reads the chat lists of characters a recovery inserted or whose chats changed on the server (their
+ * summaries: a chat is loaded only on demand), and puts them into the mirror. A character stays
+ * listed until its read succeeds.
  */
 async function hydrateCharacters(): Promise<boolean> {
     // A character with a running generation waits until it ends.
@@ -1535,13 +1542,13 @@ async function hydrateCharacters(): Promise<boolean> {
     }
     const read = await readRefs(
         ids.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
-        { chatCollections: ids },
+        { chatSummaryCollections: ids },
     );
     if (halted) {
         return false;
     }
     const records = new Map(read.items.map((item) => [item.id, item]));
-    for (const collection of read.chatCollections ?? []) {
+    for (const collection of read.chatSummaryCollections ?? []) {
         const record = records.get(collection.characterId);
         if (!collection.order && record && record.revision === null) {
             // The character itself is gone on the server: remove it with its chats.
@@ -1586,8 +1593,16 @@ async function reloadDeferredChats() {
     showReloadedNotice();
 }
 
-/** Stale acknowledgements rebase only idle chats, inside the cycle and without a reload notice. */
+/**
+ * Stale acknowledgements and live notices rebase only idle chats, inside the cycle and without a
+ * reload notice: loaded chats are read whole, chats that are not loaded through their character's
+ * summary list (`refreshIdleSummaries`).
+ */
 async function refreshIdleChats() {
+    await refreshIdleSummaries();
+    if (halted) {
+        return;
+    }
     const refs = idleChatRefreshes().slice(0, MAX_REMOTE_READS);
     if (refs.length === 0) {
         return;
@@ -1610,6 +1625,28 @@ async function refreshIdleChats() {
         ) {
             // The chat is gone: the character's list is read again, never discarding local work.
             noteRemoteCollection(chat.characterId);
+        }
+    }
+}
+
+/**
+ * Reads the summary lists of characters with an idle stale or noticed chat that is not loaded and
+ * applies them as live updates; an applied list ends those chats' marks (`settleSummaryRefresh`).
+ */
+async function refreshIdleSummaries() {
+    const ids = idleSummaryRefreshes().slice(0, MAX_REMOTE_READS);
+    if (ids.length === 0) {
+        return;
+    }
+    const notices = summaryRefreshNotices(ids);
+    const issued = heldChatRevisionsByCharacter(ids);
+    const read = await readRefs([], { chatSummaryCollections: ids });
+    if (halted) {
+        return;
+    }
+    for (const collection of read.chatSummaryCollections ?? []) {
+        if (applyRemoteCollection(collection, issued.get(collection.characterId))) {
+            settleSummaryRefresh(collection, notices);
         }
     }
 }
@@ -1925,7 +1962,7 @@ function adoptRemoteSecretRecord(revision: string, masked: MaskedLlmSecrets): bo
 /** Puts a live update into the mirror as the server holds it: no discard, no settled key, no notice. */
 function applyRemoteRecord(
     item: { kind: string; id: string; revision: string | null; data: unknown },
-    collection?: { characterId: string; order: ChatOrderRecord | null; chats: ChatRecord[] },
+    collection?: { characterId: string; order: ChatOrderRecord | null; chats: ChatSummary[] },
 ) {
     const key = recordKey(item.kind, item.id);
     const isNew = item.kind === RESOURCE_KIND.characters && !persisted.has(key);
@@ -1973,16 +2010,16 @@ async function applyRemoteUpdates() {
     const issuedEntries = new Map(records);
     const issuedHeld = new Map(records.map(([key]) => [key, persisted.get(key)?.revision ?? null]));
     const issuedSeqs = new Map(collections.map((id) => [id, remoteCollections.get(id)]));
-    const issuedChats = new Map(collections.map((id) => [id, heldChatRevisionsOf(id)]));
+    const issuedChats = heldChatRevisionsByCharacter(collections);
     const read = await readRefs(
         records.map(([, entry]) => ({ kind: entry.kind, id: entry.id })),
-        { chatCollections: collections },
+        { chatSummaryCollections: collections },
     );
     await tick();
     if (halted) {
         return;
     }
-    const collectionOf = new Map((read.chatCollections ?? []).map((entry) => [entry.characterId, entry]));
+    const collectionOf = new Map((read.chatSummaryCollections ?? []).map((entry) => [entry.characterId, entry]));
     for (const item of read.items) {
         const key = recordKey(item.kind, item.id);
         const entry = remoteRecords.get(key);

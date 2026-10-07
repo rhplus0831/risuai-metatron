@@ -1,5 +1,12 @@
 import { selectedCharacter } from "../../storage/characterStore.svelte";
-import { currentChatRef } from "../../storage/chatStore.svelte";
+import {
+    type ChatRef,
+    chatEntry,
+    chatOwnerToken,
+    currentChatRef,
+    ensureChatLoaded,
+    pinChat,
+} from "../../storage/chatStore.svelte";
 import { settings, activePreset, activePersona } from "../../storage/settingsViews.svelte";
 import {
     REQUEST_ARG_KEYS,
@@ -43,6 +50,8 @@ export type TransportArgument = RequestArgs & {
     currentChar?: { chaId?: string } | null;
     pluginContext?: PluginCallContext;
     tools?: MCPTool[];
+    /** The request chat's owner when the request began (`requestChatData`); captured here otherwise. */
+    chatOwner?: string;
 };
 
 /** The markers the adapters decode (`<tool_call>inner</tool_call>`; the widest of their patterns). */
@@ -106,8 +115,9 @@ export async function requestServer(
     abortSignal: AbortSignal | null,
     modelInfo: LLMModel,
 ): Promise<ClientResponse> {
-    // Everything that depends on the selection is read now, before any await.
-    const chatRef = arg.chatRef ?? null;
+    // Everything that depends on the selection is read now, before any await. A plugin context's
+    // chat is the request's chat when the caller named none.
+    const chatRef = arg.chatRef ?? arg.pluginContext?.chatRef ?? null;
     // A parse the server asks for without a chat runs on the chat that was selected now.
     const parseChatRef = chatRef ?? selectedChatRef();
     const pluginContext = arg.pluginContext ?? capturePluginContext(parseChatRef);
@@ -173,9 +183,37 @@ export async function requestServer(
         return fail("Aborted");
     }
     abortSignal?.addEventListener("abort", onAbort, { once: true });
-    const detach = () => abortSignal?.removeEventListener("abort", onAbort);
+    // The request's chat and its parse chat stay loaded until its events end: its tool records are
+    // read and stored there, and the server's CBS callbacks parse there (`detach` releases them).
+    const targets = [chatRef, parseChatRef].filter(
+        (ref, index, all): ref is ChatRef =>
+            ref !== null &&
+            all.findIndex((other) => other?.chaId === ref.chaId && other.chatId === ref.chatId) === index,
+    );
+    const releases = targets.map((ref) => pinChat(ref));
+    // Their owners when the request began (the request chat's from `requestChatData`, else now): a
+    // chat replaced (even under the same ids) or deleted meanwhile is another chat's request, refused
+    // before the POST and in every later callback.
+    const owners = targets.map((ref) =>
+        ref === chatRef && arg.chatOwner !== undefined ? arg.chatOwner : chatOwnerToken(ref.chaId),
+    );
+    const targetsHeld = () =>
+        targets.every((ref, index) => chatEntry(ref) !== undefined && chatOwnerToken(ref.chaId) === owners[index]);
+    const detach = () => {
+        abortSignal?.removeEventListener("abort", onAbort);
+        for (const release of releases) {
+            release();
+        }
+    };
     try {
         await flushResources();
+        for (const ref of targets) {
+            if (!(await ensureChatLoaded(ref)) || !targetsHeld()) {
+                // A captured chat that is gone (deleted or replaced meanwhile): nothing is requested for it.
+                detach();
+                return fail("The chat this request is for no longer exists");
+            }
+        }
     } catch (error) {
         detach();
         return fail(`${error instanceof Error ? error.message : error}`);
@@ -185,7 +223,17 @@ export async function requestServer(
         return fail("Aborted");
     }
     // The request's chat as captured above (not the selection after the awaits).
-    const toolRecords = await collectToolRecords(requestArgs.formated, chatRef);
+    let toolRecords: Awaited<ReturnType<typeof collectToolRecords>>;
+    try {
+        toolRecords = await collectToolRecords(requestArgs.formated, chatRef);
+    } catch (error) {
+        detach();
+        throw error;
+    }
+    if (!targetsHeld()) {
+        detach();
+        return fail("The chat this request is for no longer exists");
+    }
     if (controller.signal.aborted) {
         detach();
         return fail("Aborted");
@@ -235,7 +283,32 @@ export async function requestServer(
         parseChatRef,
         toolChatRef: chatRef,
         scope,
+        targetsHeld,
     });
+}
+
+/**
+ * A `cbs` callback's parse in its chat: the request's pinned chats are loaded already; another chat
+ * the callback names is pinned and loaded for the parse (a chat that is gone fails the callback).
+ */
+async function parseInLoadedChat(
+    text: string,
+    target: ChatRef | null,
+    scope: { presetId: string; personaId: string },
+): Promise<string> {
+    if (!target) {
+        return risuChatParserScoped(text, {}, scope);
+    }
+    const owner = chatOwnerToken(target.chaId);
+    const release = pinChat(target);
+    try {
+        if (!(await ensureChatLoaded(target)) || chatOwnerToken(target.chaId) !== owner || !chatEntry(target)) {
+            throw new Error("The chat this parse is for no longer exists");
+        }
+        return risuChatParserScoped(text, { chatRef: target }, scope);
+    } finally {
+        release();
+    }
 }
 
 type ReadOptions = {
@@ -247,6 +320,8 @@ type ReadOptions = {
     /** The chat a parse without its own target runs on (the request's, else the one selected at its start). */
     parseChatRef: { chaId: string; chatId: string } | null;
     scope: { presetId: string; personaId: string };
+    /** Whether the request's chats are still the ones it began with (a callback or record for a replaced chat is refused). */
+    targetsHeld: () => boolean;
 };
 
 async function readEvents(body: ReadableStream<Uint8Array>, options: ReadOptions): Promise<ClientResponse> {
@@ -308,13 +383,25 @@ async function readEvents(body: ReadableStream<Uint8Array>, options: ReadOptions
 
     async function compute(event: Extract<LlmRequestEvent, { type: "callback" }>): Promise<LlmCallbackAnswer> {
         try {
+            if (!options.targetsHeld()) {
+                throw new Error("The chat this request is for no longer exists");
+            }
             let value: unknown;
             if (event.name === "mcpTool") {
-                value = await callTool(event.payload.name, event.payload.args);
+                // The request's chat chooses the module MCP servers, not the selection now.
+                value = await callTool(
+                    event.payload.name,
+                    event.payload.args,
+                    options.toolChatRef ?? options.parseChatRef,
+                );
             } else {
                 const target = event.payload.chatRef ?? options.parseChatRef;
-                const parseArg = target ? { chatRef: target } : {};
-                value = risuChatParserScoped(event.payload.text, parseArg, options.scope);
+                value = await parseInLoadedChat(event.payload.text, target, options.scope);
+            }
+            if (!options.targetsHeld()) {
+                // A late answer for a request whose chat is gone or replaced is refused (a tool that
+                // ran may have had its effects; its answer is not accepted).
+                throw new Error("The chat this request is for no longer exists");
             }
             return { callbackId: event.id, outcome: "answered", value: JSON.parse(JSON.stringify(value ?? null)) };
         } catch (error) {
@@ -338,6 +425,26 @@ async function readEvents(body: ReadableStream<Uint8Array>, options: ReadOptions
 
     async function handle(event: LlmRequestEvent) {
         if (stopped) {
+            return;
+        }
+        if (
+            (event.type === "result" ||
+                event.type === "streaming" ||
+                event.type === "chunk" ||
+                event.type === "chunkText" ||
+                event.type === "end") &&
+            !options.targetsHeld()
+        ) {
+            // The request's chat was deleted or replaced while the reply came: the reply is not
+            // accepted (a stream handed out already fails), and the request ends.
+            const gone = "The chat this request is for no longer exists";
+            if (!settled) {
+                respond(fail(gone));
+            } else {
+                stream?.error(new Error(gone));
+                stream = null;
+            }
+            stop(new Error(gone));
             return;
         }
         switch (event.type) {
@@ -369,7 +476,11 @@ async function readEvents(body: ReadableStream<Uint8Array>, options: ReadOptions
                 return;
             }
             case "toolRecord":
-                // Stored with the request's chat (the server reads it there for a later request).
+                // Stored with the request's chat (the server reads it there for a later request),
+                // never with a chat that replaced it meanwhile.
+                if (!options.targetsHeld()) {
+                    throw new Error("The chat this request is for no longer exists");
+                }
                 await encodeToolCall(event.record, options.toolChatRef);
                 return;
             case "callback":

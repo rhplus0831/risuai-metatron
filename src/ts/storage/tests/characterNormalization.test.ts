@@ -254,7 +254,7 @@ describe("a character's creation (prepareNewCharacter)", () => {
     });
 
     it("moves the note into the chat at chatPage (else the first), keeps explicit chat indexes and a supplied creation date", async () => {
-        const { characterStore, character, mirrorMeta, serverMeta, agree, settle, noNotice } = await boot();
+        const { chat, characterStore, character, mirrorMeta, serverMeta, agree, settle, noNotice } = await boot();
         const chats = () => [
             { id: "x", name: "X", note: "first", localLore: [], message: [], fmIndex: 0 },
             { id: "y", name: "Y", note: "second", message: [] },
@@ -283,11 +283,17 @@ describe("a character's creation (prepareNewCharacter)", () => {
             expect(mirrorMeta(id, character(id).chats[0].id).note, String(chatPage)).toBe("first\nnote");
             expect(mirrorMeta(id, character(id).chats[1].id).note, String(chatPage)).toBe("second");
         }
+        // The fixture holds more loaded chats than the trim keeps after a save cycle (Phase 6 slice
+        // 9b): `page` is pinned so the comparison below is on the mirror's copy as it was normalized
+        // here, not on a copy read back from the server.
+        const release = chat.pinChats(page);
         await settle();
         agree(page);
         for (const chatId of ["x", "y", "z"]) {
+            expect(chat.findChat({ chaId: page, chatId }), `${chatId} stays loaded`).toBeDefined();
             expect(serverMeta(page, chatId)).toEqual(mirrorMeta(page, chatId));
         }
+        release();
         noNotice();
     });
 

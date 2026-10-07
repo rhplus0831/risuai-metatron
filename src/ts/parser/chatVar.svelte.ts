@@ -2,7 +2,7 @@ import { characterList, selectedCharacter } from "../storage/characterStore.svel
 import { settings, activePreset } from "../storage/settingsViews.svelte";
 import { parseKeyValue } from "../util";
 import { setCurrentChatMeta } from "../storage/chatEdits";
-import { type ChatRef, findChat, selectedChat, setChatMeta } from "../storage/chatStore.svelte";
+import { type ChatRef, currentChatRef, findChat, selectedChat, setChatMeta } from "../storage/chatStore.svelte";
 
 export function getChatVar(key: string): string {
     const char = selectedCharacter();
@@ -105,6 +105,10 @@ export function getGlobalChatVar(key: string): string {
 }
 
 export function setGlobalChatVar(key: string, value: string) {
+    if (currentChatRef() && !selectedChat()) {
+        // The selected chat loads: whether it keeps global variables locally is not known yet.
+        throw new Error("The chat is not loaded");
+    }
     if (selectedChat()?.useLocallySetGlobalVariables) {
         setGLChatVar(key, value);
         return;

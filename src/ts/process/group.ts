@@ -1,5 +1,5 @@
 import { characterList, selectedCharacter } from "../storage/characterStore.svelte";
-import { appendMessage, selectedChatId } from "../storage/chatStore.svelte";
+import { appendMessage, ensureChatLoaded, selectedChatId } from "../storage/chatStore.svelte";
 import shuffle from "lodash/shuffle";
 import { findCharacterbyId } from "../util";
 import { alertConfirm, alertError, alertSelectChar } from "../alert";
@@ -21,13 +21,18 @@ export async function addGroupChar() {
                 alertError(language.errors.alreadyCharInGroup);
             } else {
                 const loadFirstMessage = await alertConfirm(language.askLoadFirstMsg);
+                // The captured group's selected chat (not whatever character is selected now), loaded.
+                const firstChatId = group ? selectedChatId(group.chaId) : null;
+                const firstChat =
+                    loadFirstMessage && group && firstChatId !== null
+                        ? await ensureChatLoaded({ chaId: group.chaId, chatId: firstChatId })
+                        : undefined;
                 group = groupOf();
                 if (!group) {
                     return;
                 }
                 if (loadFirstMessage) {
-                    // The captured group's selected chat (not whatever character is selected now).
-                    const chatId = selectedChatId(group.chaId);
+                    const chatId = firstChat ? firstChatId : null;
                     if (chatId !== null) {
                         appendMessage(
                             { chaId: group.chaId, chatId },

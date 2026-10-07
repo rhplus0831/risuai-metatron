@@ -1132,6 +1132,9 @@ export const languageEnglish = {
     noWaitForTranslate: "No Wait for Translate",
     antiClaudeOverload: "Anti-Claude Overload",
     resourceReloaded: "Another tab or device changed this data. The latest version was loaded.",
+    chatLoadFailed: "This chat could not be loaded: {0}",
+    chatLoadRetry: "Try again",
+    chatUnavailable: "the chat is not available on the server",
     chatCreateRefused:
         "This chat could not be created on the server. Its local messages have been kept, but this chat will not save during this session. Export it before reloading.",
     resourceRecordRefused:

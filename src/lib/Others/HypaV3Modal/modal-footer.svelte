@@ -16,6 +16,10 @@
     async function getNextSummarizationTarget(): Promise<DeepReadonly<Message> | null> {
         const char = currentCharacter;
         const chat = selectedChat();
+        if (!chat) {
+            // The selected chat is loading.
+            return null;
+        }
         const shouldProcess = getCurrentHypaV3Preset().settings.processRegexScript;
 
         // Summaries exist

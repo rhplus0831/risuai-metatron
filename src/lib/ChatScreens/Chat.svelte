@@ -1,5 +1,5 @@
 <script module lang="ts">
-    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
+    import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
@@ -76,7 +76,10 @@
         type ChatRef,
         chatSaveVersion,
         createChat,
+        chatOwnerToken,
+        chatSelectionVersion,
         currentChatRef,
+        ensureChatLoaded,
         findChat,
         isMessageLocked,
         removeMessages,
@@ -611,7 +614,7 @@
                     hover:ring-darkbutton hover:ring-3 rounded-md hover:text-textcolor transition-all flex justify-center items-center"
                 onclick={() => {
                     const currentGenerationInfo =
-                        idx >= 0 ? currentChat.message[idx].generationInfo : messageGenerationInfo;
+                        idx >= 0 ? currentChat?.message[idx]?.generationInfo : messageGenerationInfo;
 
                     alertRequestData({
                         genInfo: currentGenerationInfo,
@@ -1249,17 +1252,30 @@
         class="flex items-center hover:text-blue-500 transition-colors"
         onclick={async () => {
             const target = messageTarget();
+            // Captured with the target: its owner (a replacement of the character's chats meanwhile
+            // gets no branch) and its selection (a newer selection in that character is kept).
+            const ownerToken = target ? chatOwnerToken(target.ref.chaId) : null;
+            const selectedVersion = target ? chatSelectionVersion(target.ref.chaId) : 0;
             await sleep(1);
-            const currentChat = target ? findChat(target.ref) : undefined;
+            // Loaded again: the captured chat (it may no longer be the selected one after the wait).
+            const currentChat = target ? await ensureChatLoaded(target.ref) : undefined;
             const branchIndex = currentChat?.message.findIndex((entry) => entry.chatId === target?.id) ?? -1;
-            if (!target || !currentChat || branchIndex === -1) {
+            // The chat's own character (by id), not whatever is selected after the wait.
+            const owner = target ? characterList().find((entry) => entry?.chaId === target.ref.chaId) : undefined;
+            if (
+                !target ||
+                !currentChat ||
+                !owner ||
+                chatOwnerToken(target.ref.chaId) !== ownerToken ||
+                branchIndex === -1
+            ) {
                 return;
             }
 
             if (settings.ui.createFolderOnBranch && !currentChat.folderId) {
                 const folderId = v4();
-                currentCharacter.chatFolders ??= [];
-                currentCharacter.chatFolders.unshift({
+                owner.chatFolders ??= [];
+                owner.chatFolders.unshift({
                     id: folderId,
                     name: `Branches of ${currentChat.name}`,
                     folded: false,
@@ -1285,13 +1301,17 @@
             };
             const newChat = {
                 ...source,
-                name: createChatCopyName(source.name, "Branch"),
+                name: createChatCopyName(source.name, "Branch", target.ref.chaId),
                 id: v4(),
                 message: [...source.message.slice(0, branchIndex + 1), branchComment],
             };
 
-            createChat(target.ref.chaId, newChat, { index: 0, select: true });
-            changeChatTo(0);
+            // Selected by id in its own character (the selection of another character is not changed),
+            // unless that character's selection changed while the branch was made.
+            createChat(target.ref.chaId, newChat, {
+                index: 0,
+                select: chatSelectionVersion(target.ref.chaId) === selectedVersion,
+            });
         }}
     >
         <SplitIcon size={20} />
@@ -1308,7 +1328,7 @@
             const target = messageTarget();
             await sleep(1);
             const currentMessage = target
-                ? findChat(target.ref)?.message.find((entry) => entry.chatId === target.id)
+                ? (await ensureChatLoaded(target.ref))?.message.find((entry) => entry.chatId === target.id)
                 : undefined;
             if (target && currentMessage && !refuseLocked(target.ref, [target.id])) {
                 replaceMessage(target.ref, { ...$state.snapshot(currentMessage), disabled: !currentMessage.disabled });
@@ -1329,7 +1349,7 @@
             const target = messageTarget();
             await sleep(1);
             const currentMessage = target
-                ? findChat(target.ref)?.message.find((entry) => entry.chatId === target.id)
+                ? (await ensureChatLoaded(target.ref))?.message.find((entry) => entry.chatId === target.id)
                 : undefined;
             if (target && currentMessage && !refuseLocked(target.ref, [target.id])) {
                 replaceMessage(target.ref, {

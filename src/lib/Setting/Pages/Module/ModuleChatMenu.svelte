@@ -89,13 +89,17 @@
                                 </button>
                             {:else}
                                 <button
-                                    class={currentChat.modules?.includes(rmodule.id)
+                                    class={currentChat?.modules?.includes(rmodule.id)
                                         ? "mr-2 cursor-pointer text-blue-500"
                                         : currentCharacter?.modules?.includes(rmodule.id)
                                           ? "mr-2 cursor-pointer text-violet-500"
                                           : "text-textcolor2 hover:text-blue-400 mr-2 cursor-pointer"}
                                     onclick={async (e) => {
                                         e.stopPropagation();
+                                        if (!currentChat) {
+                                            // The selected chat is loading.
+                                            return;
+                                        }
                                         const chatModules = [...(currentChat.modules ?? [])];
                                         setCurrentChatMeta({
                                             modules: chatModules.includes(rmodule.id)

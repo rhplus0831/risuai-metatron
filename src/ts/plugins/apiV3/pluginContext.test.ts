@@ -163,6 +163,9 @@ vi.mock("src/ts/process/request/request", () => {
         requestChatDataMain: vi.fn(async (...args: Parameters<Request["requestChatDataMain"]>) =>
             (await actual()).requestChatDataMain(...args),
         ),
+        // `runLLMModel` runs inside the request's chat guard (Phase 6 slice 9b): the real helper.
+        withRequestChat: async (...args: Parameters<Request["withRequestChat"]>) =>
+            (await actual()).withRequestChat(...args),
     };
 });
 
@@ -385,10 +388,15 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
+// The context carries its chat's owner lifetime (`chatOwnerToken`, Phase 6 slice 9b): the token as the
+// chat module holds it now, never an incidental literal.
+const ownerA = () => chatStore.chatOwnerToken("a");
+const ownerB = () => chatStore.chatOwnerToken("b");
+
 describe("capturePluginContext", () => {
     it("captures the chat ref, the selected preset, and the chat's bound persona, else the selected persona", () => {
-        expect(capturePluginContext(refB1)).toEqual({ chatRef: refB1, presetId: "a", personaId: "q" });
-        expect(capturePluginContext(refA1)).toEqual({ chatRef: refA1, presetId: "a", personaId: "p" });
+        expect(capturePluginContext(refB1)).toEqual({ chatRef: refB1, presetId: "a", personaId: "q", owner: ownerB() });
+        expect(capturePluginContext(refA1)).toEqual({ chatRef: refA1, presetId: "a", personaId: "p", owner: ownerA() });
         selectPreset("b");
         expect(capturePluginContext(refA1)!.presetId).toBe("b");
         expect(capturePluginContext(null)).toBeUndefined();
@@ -396,13 +404,13 @@ describe("capturePluginContext", () => {
     });
 
     it("resolves through the settings views (Phase 6 slice 7): a bound persona that is gone, and a selection naming no record, fall back as before", () => {
-        expect(capturePluginContext(refB1)).toEqual({ chatRef: refB1, presetId: "a", personaId: "q" });
+        expect(capturePluginContext(refB1)).toEqual({ chatRef: refB1, presetId: "a", personaId: "q", owner: ownerB() });
         selectPersona("q");
         expect(capturePluginContext(refA1)!.personaId).toBe("q");
         // The bound persona `q` deleted: the chat's binding names no record, so the selected persona
         // is captured (the selection, which named `q`, falls back to the first persona and selects it).
         settings.personas.splice(1, 1);
-        expect(capturePluginContext(refB1)).toEqual({ chatRef: refB1, presetId: "a", personaId: "p" });
+        expect(capturePluginContext(refB1)).toEqual({ chatRef: refB1, presetId: "a", personaId: "p", owner: ownerB() });
         expect(selection.personaId).toBe("p");
         // A preset selection naming no record: the first preset, which becomes the selection.
         selectPreset("gone");
@@ -430,7 +438,8 @@ describe("a chatOutput listener for a chat that is not selected", () => {
             seen.where = where(api);
             seen.legacy = (await api.getChar()).chaId;
             await api.setCharacter({ ...character, desc: "listener wrote" });
-            seen.lore = api.getCurrentLorebookEntries();
+            // Async since Phase 6 slice 9b (it loads the hook's chat first).
+            seen.lore = await api.getCurrentLorebookEntries();
         });
         const context = capturePluginContext(refB1);
         selectedCharID.set(0);
@@ -983,7 +992,7 @@ describe("the host functions that forward the hook's target", () => {
         try {
             const seen: unknown[] = [];
             const listener = await listenerOf(api, async () => {
-                seen.push(api.getCurrentLorebookEntries());
+                seen.push(await api.getCurrentLorebookEntries());
             });
             const context = capturePluginContext(refB1);
             selectedCharID.set(0);
@@ -994,13 +1003,15 @@ describe("the host functions that forward the hook's target", () => {
             expect(seen).toEqual([[{ comment: "b global" }, { comment: "b1 local" }, { comment: "module for b/b1" }]]);
             expect(getModuleLorebooks).toHaveBeenLastCalledWith(refB1);
 
-            // Outside the hook: the selected character's lore, its selected chat, and the selection's modules.
-            expect(api.getCurrentLorebookEntries()).toEqual([
+            // Outside the hook: the selected character's lore, its selected chat, and that chat's
+            // modules. The selected chat is captured as the call's target before its load (Phase 6
+            // slice 9b), so the module lookup names it instead of reading the selection afterwards.
+            expect(await api.getCurrentLorebookEntries()).toEqual([
                 { comment: "a global" },
                 { comment: "a0 local" },
-                { comment: "module for the selection" },
+                { comment: "module for a/a0" },
             ]);
-            expect(getModuleLorebooks).toHaveBeenLastCalledWith();
+            expect(getModuleLorebooks).toHaveBeenLastCalledWith({ chaId: "a", chatId: "a0" });
         } finally {
             vi.mocked(getModuleLorebooks).mockImplementation(() => []);
         }

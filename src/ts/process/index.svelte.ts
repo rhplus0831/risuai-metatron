@@ -1,5 +1,5 @@
 import { get, writable } from "svelte/store";
-import { findChat } from "../storage/chatStore.svelte";
+import { chatEntry } from "../storage/chatStore.svelte";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { sendChatOnServer, type ServerSendArg } from "./serverGeneration";
 
@@ -24,13 +24,13 @@ type SendChatArg = ServerSendArg & {
 
 /**
  * Sends in `arg.target` (default: the selected chat) as a server job: refused while this tab is busy
- * or when the target chat is gone; sets `doingChat` (its callers clear it). `chatProcessIndex` is
+ * or when the target chat is gone (it may be unloaded: the job loads it); sets `doingChat` (its callers clear it). `chatProcessIndex` is
  * kept for the plugin API's and the slash commands' signature and is not read (a group's speakers
  * are chosen by the server).
  */
 export async function sendChat(chatProcessIndex = -1, arg: SendChatArg = {}): Promise<boolean> {
     void chatProcessIndex;
-    if (get(doingChat) || (arg.target && !findChat(arg.target))) {
+    if (get(doingChat) || (arg.target && !chatEntry(arg.target))) {
         arg.onServerRefused?.(false);
         return false;
     }

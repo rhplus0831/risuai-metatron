@@ -44,11 +44,13 @@ export async function loadData() {
             await forageStorage.Init();
 
             LoadingStatusState.text = "Loading Save Data...";
-            const snapshot = await readKinds(Object.values(RESOURCE_KIND), { chats: true });
+            // Chat summaries, not chats (Phase 6 slice 9b): no message row is read here; a chat is
+            // loaded when it is selected or a consumer needs it.
+            const snapshot = await readKinds(Object.values(RESOURCE_KIND), { chatSummaries: true });
             // What the server holds, recorded before normalization changes anything, so the first save
             // writes exactly what the client normalized.
             seedResources(snapshot);
-            seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
+            seedChats(snapshot.chatSummaries ?? snapshot.chats ?? [], snapshot.chatOrders ?? []);
             seedInlays(snapshot.kinds[RESOURCE_KIND.inlays] ?? []);
             // This client's preset and lorebook page; the forwarding layer checks the ids.
             loadSelection();
@@ -134,8 +136,8 @@ export async function loadData() {
  * Builds the in-memory `Database` from the server resources: the five sections (their
  * `SECTION_FIELDS`), the collections (`translatorPresets` and `hypaV3Presets` unpack
  * `{ items, selectedId }` into their two fields), the Phase 1 collections, and the characters in
- * creation order, without chats: the chat module holds every chat in its server order (`assembleChats`,
- * eager boot). The flat preset and persona fields
+ * creation order, without chats: the chat module holds every chat in its server order (`assembleChats`;
+ * the boot read gives summaries, held as unloaded chats). The flat preset and persona fields
  * and the selection indexes are not assembled: the forwarding layer serves them
  * (`forwarding.svelte.ts`). The server creates and normalizes
  * every section and collection, so a missing one is an error, not a default. The `llmSecrets`
@@ -188,7 +190,7 @@ export function assembleDatabase(snapshot: ResourceReadKindsResult): Database {
     }
     const characters = (snapshot.kinds[RESOURCE_KIND.characters] ?? []).map((record) => record.data as any);
     db.characters = characters;
-    assembleChats(characters, snapshot.chats ?? [], snapshot.chatOrders ?? []);
+    assembleChats(characters, snapshot.chatSummaries ?? snapshot.chats ?? [], snapshot.chatOrders ?? []);
     return db as unknown as Database;
 }
 

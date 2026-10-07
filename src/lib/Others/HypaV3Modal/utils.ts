@@ -80,6 +80,10 @@ export function handleDualAction(element: HTMLElement, params: DualActionParams 
 export function getFirstMessage(): string | null {
     const char = selectedCharacter();
     const chat = selectedChat();
+    if (!chat) {
+        // The selected chat is loading.
+        return null;
+    }
 
     return chat.fmIndex === -1
         ? char.firstMessage

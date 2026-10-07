@@ -69,6 +69,10 @@ vi.mock("../storage/chatStore.svelte", async () => {
         },
         findChat: (ref: { chaId: string; chatId: string }) =>
             owner(ref.chaId)?.chats?.find((chat) => chat.id === ref.chatId),
+        // The speaker's pin and load before each output listener (Phase 6 slice 9b): the fixture's
+        // chats are all held here, so a load answers them at once.
+        pinChats: () => () => {},
+        loadChats: async (chaId: string) => owner(chaId)?.chats ?? [],
         chatList: (chaId: string) =>
             (owner(chaId)?.chats ?? []).map((chat) => ({ id: chat.id, name: "", fmIndex: -1 })),
         withChatsCopy: (copy: { chaId: string }) => ({

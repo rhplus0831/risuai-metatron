@@ -42,6 +42,8 @@ import {
     currentChatRef,
     findChat,
     heldChatRevision,
+    loadChats,
+    pinChats,
     selectedChatId,
     withChatsCopy,
 } from "../storage/chatStore.svelte";
@@ -577,31 +579,40 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             const messageId = String(payload.messageId);
             const speakerId = String(payload.speakerId);
             const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-            // The live set, as the tab's own send walks it: a listener an earlier one removed does not
-            // run, one it added does.
-            for (const listener of pluginHooks.chatOutput) {
-                stillWanted();
-                // The plugin's `characterIndex` is the list position (the plugin index API's mapping).
-                const characterIndex = characterList().findIndex((entry) => entry?.chaId === chaId);
-                const owner = characterList()[characterIndex];
-                const chatIndex = owner ? chatList(owner.chaId).findIndex((entry) => entry.id === chatId) : -1;
-                const chat = chatIndex === -1 ? undefined : findChat({ chaId, chatId });
-                const speaker = characterList().find((entry) => entry?.chaId === speakerId);
-                if (!owner || !chat || !speaker) {
-                    throw new CallbackFailed("hook", "The chat the output listeners run for is gone");
+            // The speaker's chats (another character in a group) are pinned and loaded before each
+            // listener: its copy carries them all, and an earlier listener may have changed them.
+            const releaseSpeaker = pinChats(speakerId);
+            try {
+                // The live set, as the tab's own send walks it: a listener an earlier one removed does not
+                // run, one it added does.
+                for (const listener of pluginHooks.chatOutput) {
+                    stillWanted();
+                    await loadChats(speakerId);
+                    stillWanted();
+                    // The plugin's `characterIndex` is the list position (the plugin index API's mapping).
+                    const characterIndex = characterList().findIndex((entry) => entry?.chaId === chaId);
+                    const owner = characterList()[characterIndex];
+                    const chatIndex = owner ? chatList(owner.chaId).findIndex((entry) => entry.id === chatId) : -1;
+                    const chat = chatIndex === -1 ? undefined : findChat({ chaId, chatId });
+                    const speaker = characterList().find((entry) => entry?.chaId === speakerId);
+                    if (!owner || !chat || !speaker) {
+                        throw new CallbackFailed("hook", "The chat the output listeners run for is gone");
+                    }
+                    try {
+                        await invokeHook(listener, context, {
+                            // The legacy shape a plugin listener gets: the speaker with its chats.
+                            char: withChatsCopy(plain(speaker)),
+                            chat: plain(chat),
+                            characterIndex,
+                            chatIndex,
+                            messageIndex: chat.message.findIndex((message) => message.chatId === messageId),
+                        });
+                    } catch (error) {
+                        console.error(error);
+                    }
                 }
-                try {
-                    await invokeHook(listener, context, {
-                        // The legacy shape a plugin listener gets: the speaker with its chats.
-                        char: withChatsCopy(plain(speaker)),
-                        chat: plain(chat),
-                        characterIndex,
-                        chatIndex,
-                        messageIndex: chat.message.findIndex((message) => message.chatId === messageId),
-                    });
-                } catch (error) {
-                    console.error(error);
-                }
+            } finally {
+                releaseSpeaker();
             }
             return true;
         }

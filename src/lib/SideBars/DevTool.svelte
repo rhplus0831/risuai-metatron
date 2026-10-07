@@ -124,7 +124,7 @@
 
 <Accordion styled name={"Variables"}>
     <div class="rounded-md border border-darkborderc grid grid-cols-2 gap-2 p-2">
-        {#if currentChat.scriptstate && Object.keys(currentChat.scriptstate).length > 0}
+        {#if currentChat?.scriptstate && Object.keys(currentChat.scriptstate).length > 0}
             {#each Object.keys(currentChat.scriptstate) as key}
                 <span>{key}</span>
                 {#if typeof currentChat.scriptstate[key] === "object"}

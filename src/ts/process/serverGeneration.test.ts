@@ -17,6 +17,8 @@ const ref = { chaId: "c", chatId: "k" };
 const stubs = vi.hoisted(() => ({
     run: vi.fn<(...args: unknown[]) => Promise<{ outcome: string; terminal: unknown }>>(),
     findChat: vi.fn<() => unknown>(),
+    /** The membership (`chatEntry`, Phase 6 slice 9b): a chat may be listed without being loaded. */
+    members: new Set<string>(),
     currentChatRef: vi.fn<() => unknown>(() => null),
     incrementStatic: vi.fn(),
     updateCharacter: vi.fn<(chaId: string, patch: Record<string, unknown>) => boolean>(),
@@ -25,7 +27,13 @@ const stubs = vi.hoisted(() => ({
 }));
 
 vi.mock("./serverCommands", () => ({ runServerJob: stubs.run }));
-vi.mock("../storage/chatStore.svelte", () => ({ findChat: stubs.findChat, currentChatRef: stubs.currentChatRef }));
+vi.mock("../storage/chatStore.svelte", () => ({
+    findChat: stubs.findChat,
+    currentChatRef: stubs.currentChatRef,
+    chatEntry: (ref: { chaId: string; chatId: string }) =>
+        stubs.members.has(`${ref.chaId}/${ref.chatId}`) ? { id: ref.chatId, name: "", fmIndex: -1 } : undefined,
+    pinChat: () => () => {},
+}));
 vi.mock("../storage/collectionStore.svelte", () => ({ incrementStatic: stubs.incrementStatic }));
 // The character list as the real module serves it (the records' list, here the stub list).
 vi.mock("../storage/characterStore.svelte", () => ({
@@ -52,6 +60,9 @@ beforeEach(async () => {
     vi.resetModules();
     stubs.run.mockReset();
     stubs.findChat.mockReset().mockReturnValue({ message: [] });
+    // The chats the store lists: `c/k` and the group's `g/k` (`nobody` has none, `other` has no chat `k`).
+    stubs.members.clear();
+    stubs.members.add("c/k").add("g/k");
     stubs.currentChatRef.mockReset().mockReturnValue(null);
     // The character module's write by id, applied to the stub list as the real one applies it to the record.
     stubs.updateCharacter.mockReset().mockImplementation((chaId, patch) => {
@@ -134,7 +145,8 @@ describe("sendChatOnServer", () => {
             outcome: "refused",
             refusal: "definite",
         });
-        stubs.findChat.mockReturnValueOnce(undefined);
+        // The chat left the list meanwhile (Phase 6 slice 9b: the send checks the membership, not a loaded chat).
+        stubs.members.delete("c/k");
         expect(await send({ target: ref })).toEqual({ ok: false, outcome: "refused", refusal: "definite" });
         expect(stubs.run).toHaveBeenCalledTimes(1);
         expect(stubs.incrementStatic).toHaveBeenCalledTimes(1);

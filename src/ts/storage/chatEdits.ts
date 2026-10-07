@@ -2,11 +2,13 @@ import type { Chat } from "../../../shared/database.ts";
 import {
     applyChatResult,
     captureChatBaseline,
+    chatOwnerToken,
     type ChatRef,
     currentChatRef,
     ensureChatLoaded,
     findChat,
     orderChats,
+    pinChat,
     setChatMeta,
 } from "./chatStore.svelte";
 import { readRefs } from "./resourceClient";
@@ -19,17 +21,26 @@ import { flushResources } from "./resourceSync.svelte";
  * detached bulk read for exports (`readChatsDetached`).
  */
 
-/** Runs `edit` on a copy of a chat (it may await) and applies its changes. Does nothing when the chat is gone. */
+/**
+ * Runs `edit` on a copy of a chat (it may await) and applies its changes. Does nothing when the chat
+ * is gone. The chat is pinned (kept loaded) from its load until the changes are applied.
+ */
 export async function editChat(ref: ChatRef, edit: (chat: Chat) => void | Promise<void>): Promise<void> {
-    await ensureChatLoaded(ref);
-    // Found again after the load: a chat deleted meanwhile is left alone.
-    if (!findChat(ref)) {
-        return;
+    const owner = chatOwnerToken(ref.chaId);
+    const release = pinChat(ref);
+    try {
+        // A chat deleted meanwhile, or whose character's chats were replaced (even under the same
+        // ids), is left alone.
+        if (!(await ensureChatLoaded(ref)) || chatOwnerToken(ref.chaId) !== owner || !findChat(ref)) {
+            return;
+        }
+        const baseline = captureChatBaseline(ref);
+        const draft = structuredClone(baseline.chat);
+        await edit(draft);
+        applyChatResult(baseline, draft);
+    } finally {
+        release();
     }
-    const baseline = captureChatBaseline(ref);
-    const draft = structuredClone(baseline.chat);
-    await edit(draft);
-    applyChatResult(baseline, draft);
 }
 
 /** `editChat` for a synchronous edit. */
@@ -51,7 +62,10 @@ export function editCurrentChat(edit: (chat: Chat) => void) {
     }
 }
 
-/** Sets one field of the selected chat (nothing when there is none). */
+/**
+ * Sets fields of the selected chat (nothing when there is none). While it loads only its list fields
+ * can be set (`setChatMeta`).
+ */
 export function setCurrentChatMeta(set: Partial<Chat>, unset: readonly string[] = []) {
     const ref = currentChatRef();
     if (ref) {

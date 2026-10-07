@@ -30,6 +30,7 @@
     import Toggles from "./Toggles.svelte";
     import { changeChatTo, createChatCopyName } from "src/ts/globalApi.svelte";
     import {
+        chatEntry,
         chatList,
         type ChatListEntry,
         createChat,
@@ -94,15 +95,16 @@
                 break;
             }
             case 1: {
-                if (findChat(ref)?.bindedPersona) {
+                // The list entry: a chat that is not loaded has its persona binding there too.
+                if (chatEntry(ref)?.bindedPersona) {
                     const confirm = await alertConfirm(language.doYouWantToUnbindCurrentPersona);
-                    if (confirm && findChat(ref)) {
+                    if (confirm && chatEntry(ref)) {
                         setChatMeta(ref, { bindedPersona: "" });
                         alertNormal(language.personaUnbindedSuccess);
                     }
                 } else {
                     const confirm = await alertConfirm(language.doYouWantToBindCurrentPersona);
-                    if (confirm && findChat(ref)) {
+                    if (confirm && chatEntry(ref)) {
                         setChatMeta(ref, { bindedPersona: activePersona.id });
                         console.log(currentPersonaRecord());
                         alertNormal(language.personaBindedSuccess);

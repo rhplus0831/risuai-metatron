@@ -44,9 +44,11 @@
         currentChatRef,
         findChat,
         isChatGenerating,
+        retrySelectedChatLoad,
         setChatMeta,
         setMessageText,
         selectedChat,
+        selectedChatLoad,
     } from "../../ts/storage/chatStore.svelte";
     import { editChatSync } from "../../ts/storage/chatEdits";
     import { getCharImage } from "../../ts/characters";
@@ -96,6 +98,8 @@
     let { openModuleList = $bindable(false), openChatList = $bindable(false), customStyle = "" }: Props = $props();
     let currentCharacter = $derived(selectedCharacter());
     let currentChat = $derived(selectedChat());
+    // While the selected chat loads (null when it is loaded or nothing is selected).
+    let selectedLoad = $derived(selectedChatLoad());
     let messages = $derived(currentChat?.message ?? []);
 
     function scrollToBottom() {
@@ -248,7 +252,8 @@
             rerollid = -1;
         }
         const ref = currentChatRef();
-        if (!ref) {
+        // Nothing while the selected chat loads.
+        if (!ref || !currentChat) {
             return;
         }
         // The last reply stays locked until its server job releases it.
@@ -318,7 +323,8 @@
             rerollid = -1;
         }
         const ref = currentChatRef();
-        if (!ref) {
+        // Nothing while the selected chat loads.
+        if (!ref || !currentChat) {
             return;
         }
         // The last reply stays locked until its server job releases it.
@@ -683,13 +689,13 @@
                 <PlaygroundMenu />
             {/await}
         {/if}
-    {:else}
+    {:else if currentChat}
         <div
             class="h-full w-full flex flex-col-reverse overflow-y-auto relative default-chat-screen"
             onscroll={(e) => {
                 //@ts-expect-error scrollHeight/clientHeight/scrollTop don't exist on EventTarget, but target is HTMLElement here
                 const scrolled = e.target.scrollHeight - e.target.clientHeight + e.target.scrollTop;
-                if (scrolled < 100 && currentChat.message.length > loadPages) {
+                if (scrolled < 100 && (currentChat?.message.length ?? 0) > loadPages) {
                     loadPages += getAdditionalChatLoadPages(settings.ui);
                 }
                 const chatTarget = e.target as HTMLElement;
@@ -980,7 +986,7 @@
                     <Chat
                         character={createSimpleCharacter(currentCharacter)}
                         name={currentCharacter.name}
-                        message={currentChat.fmIndex === -1
+                        message={(currentChat?.fmIndex ?? -1) === -1
                             ? currentCharacter.firstMessage
                             : currentCharacter.alternateGreetings[currentChat.fmIndex]}
                         role="char"
@@ -1010,7 +1016,7 @@
                             }
                         }}
                         isLastMemory={false}
-                        currentPage={(currentChat.fmIndex ?? -1) + 2}
+                        currentPage={(currentChat?.fmIndex ?? -1) + 2}
                         totalPages={currentCharacter.alternateGreetings.length + 1}
                     />
                     {#if aiLawApplies() && currentChat.message.length === 0}
@@ -1228,6 +1234,16 @@
                         </div>
                     {/if}
                 </div>
+            {/if}
+        </div>
+    {:else}
+        <!-- The selected chat loads (Phase 6 slice 9b): nothing chat-dependent renders until it is here. -->
+        <div class="h-full w-full flex flex-col items-center justify-center gap-2 text-textcolor2">
+            {#if selectedLoad?.error}
+                <span>{language.chatLoadFailed.replace("{0}", selectedLoad.error)}</span>
+                <Button onclick={() => retrySelectedChatLoad()}>{language.chatLoadRetry}</Button>
+            {:else}
+                <span>{language.loading}</span>
             {/if}
         </div>
     {/if}

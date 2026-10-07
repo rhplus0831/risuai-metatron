@@ -1,6 +1,6 @@
 # Slice: Chat Projection And Lazy Loading
 
-Status: 9a implemented (2026-10-05; records and readers, eager boot); 9b (summaries at boot, pins, LRU) planned.
+Status: 9a implemented (2026-10-05; records and readers, eager boot); 9b implemented (2026-10-07; summaries at boot, pins, LRU).
 
 Phase: [Phase 6](../../phase-6-thin-client-and-closeout.md), "Projections" (the selected chat's
 loaded pages), "Lazy loading" (chat summaries per character, the full message list only for the
@@ -348,3 +348,220 @@ The reviewer drove these checks in the browser: switching chats, bookmarks, the 
 its pin, the HypaV3 modal, dataset export, the MCP chat history tool, a send while another chat of
 the same character is selected, and two tabs converging on chat renames. All passed with no page
 error. A plugin calling `getChar` and `setChar` is covered by the tests, not by the browser.
+
+## Implementation notes, 9b (2026-10-07)
+
+Split per `implementation-plan.md` "Slice 9b". Boot reads summaries, chats load on demand, and idle
+loaded chats are evicted.
+
+- **The store.** Per character the module holds the ids in order (the membership), the loaded chats,
+  and the summaries of the chats that are not loaded (`ChatEntryMeta`: the list fields). Every member
+  is in exactly one of the two. `chatRevisions` keeps a revision for every server chat, loaded or
+  not, so the save loop's membership rules (order readiness, reorder permutations, acknowledgement
+  of orders, the reconcile listing) are unchanged.
+- **Boot.** `readKinds(kinds, { chatSummaries: true })`; `seedChats` and `assembleChats` take the
+  summaries (a whole `ChatRecord` is still held loaded, as tests and the eager path give them). Boot
+  ends at home, so no chat is loaded by the snapshot itself.
+- **Readers.** `chatList` and the new `chatEntry(ref)` read the loaded chat or the summary.
+  `withChatsCopy` throws unless every chat of the character is loaded; the facade view and
+  `withCompatChats` give the loaded chats and the selected chat's index among them (-1 when it is not
+  loaded), so the shared CBS readers find a chat by id or the selected one, or nothing.
+- **Writes on unloaded chats.** `setChatMeta` on a chat that is not loaded accepts the list fields
+  only (`name`, `folderId`, `bindedPersona`, `fmIndex`, typed as the summary holds them, checked
+  before anything changes): the summary changes and the same `meta` op is queued. The chat lists
+  rename, refile, and bind personas without loading the chat. Everything else needs the chat loaded.
+- **Loading.** `loadChat`, `ensureChatLoaded`, and `loadChats` (500 per request) read unloaded
+  members and install them (`installRead`). A read older than the held revision is read again (three
+  times at most, then the load rejects). A chat with local work keeps its list fields: the summary
+  is laid over the read. A gone chat is removed under the issued-revision fence and the character's
+  summary list is read so its replacement is found. Every step is fenced on the owner's lifetime,
+  and a fenced load resolves to `undefined`. Concurrent loads of one chat share one read.
+- **Server copies never load a chat.** `applyRemoteChat` and a job's chat event (`hydrateChat`) give
+  an unloaded member its summary and revision. `applyRemoteCollection` (live) and
+  `acceptRemoteCollection` (recovery) iterate the members, take whole chats or summaries, keep
+  their separate rules, and mark a loaded chat that a summary list shows newer as stale instead of
+  replacing it. The save loop reads summary lists (`chatSummaryCollections`) for live collections,
+  recovered characters, and new characters. `noteRemoteChat` records a notice for an unloaded
+  member and answers `"collection"`; idle stale or noticed unloaded chats are refreshed through their
+  character's summary list (`idleSummaryRefreshes`, `settleSummaryRefresh`), loaded ones whole.
+- **Pins and eviction.** `pinChat(ref)` joins `pinChats(chaId)`. `trimLoadedChats` keeps at most
+  eight idle loaded chats (least recently used first: stamped at a load, a selection, and a cached
+  `ensureChatLoaded`). It is scheduled after a load, a pin release, every save cycle, and every
+  selection change, never synchronously, so a caller reading right after its release still finds its
+  chat. The loaded chats are tracked in a set, so a trim with eight or fewer costs nothing.
+- **Selection.** Selecting a character or a chat is immediate; the selected chat is loaded when it
+  is not (`selectedChatLoad`, `retrySelectedChatLoad`). The chat screen renders nothing
+  chat-dependent until it is here; the sidebars, the alert's generation info and HypaV2 editor, the
+  module menu, DevTool, the lorebook settings, and the HypaV3 modal (mounted only with a loaded chat)
+  tolerate a null selected chat. `setGlobalChatVar` and `loadLoreBookV3Prompt` refuse while the
+  selected chat loads.
+- **Jobs.** `runServerJob` pins its target from the start and loads it before the job is created (a
+  failed load alerts and runs nothing). `followJobToEnd` pins the job's chat once it is known and
+  loads it (retried like `discover`, then the job is lost), through every reconnect and the
+  terminal's hydration; a command job's `/multisend` follow-ups take their own pin before their first
+  await. `sendChatOnServer` checks the membership (`chatEntry`), not a loaded chat, and pins until it
+  has read the reply's alternatives.
+- **Other readers.** `processMultiCommand` pins its chat for the whole line. `requestServer` pins
+  the request's chat and its parse chat from its start until its event stream ends. `editChat` pins
+  through its callback. The group output listeners' speaker is loaded before each listener.
+  `checkPersonaBinded` and `capturePluginContext` read the bound persona from the list entry. The
+  bookmark rename and the message actions load their captured chat again after their awaits.
+  `withChatsLoaded` (plugins) checks every target again right before its synchronous pass.
+
+### Plan review, 9b
+
+Astra's plan review (2026-10-07) raised fifteen points: eleven were adopted as raised, three with
+changes (points 2, 13, and 15: Stop C's Docker smoke and allowlist run at the stop after this
+slice, as Stop B's did), and one was deferred:
+
+- **Point 14, deferred.** The job channel keeps every job's hydration records (`jobChannel.ts`
+  `hydrations`) for the tab's lifetime. This predates 9b; it limits the memory the LRU saves after
+  many jobs. Recorded as a follow-up.
+- **Point 2, with changes.** No op replay: an unloaded chat's summary is the local truth of its list
+  fields (a busy member's summary is never replaced remotely), laid over a read installed while the
+  chat is busy.
+
+### After the challenge, 9b
+
+Astra's challenge (2026-10-07) raised eleven points; all were fixed:
+
+1. A load installed while the chat has local work lays the summary over the read and marks the chat
+   stale (read whole once idle); its notice is not settled.
+2. A save acknowledgement never moves a held revision back (a load may have installed a later read
+   while the group was in flight).
+3. `settleSummaryRefresh(collection, notices)` ends only the marks the applied list answers: a member
+   it shows at or below the held revision, or one it no longer lists; nothing for a list older than
+   the held order; a notice only when it predates the read and is covered.
+4. `chatOwnerToken(chaId)`: `editChat` and the plugin `withChatsLoaded` refuse to continue into a
+   character whose chats were replaced (even under the same ids) while they loaded.
+5. `requestChatData` pins and loads its chat before tool discovery and the plugin hooks, through the
+   provider and the after-request hooks. The plugin host's pre-load checks (`contextMember`) treat an
+   unloaded member as present.
+6. `getCurrentLorebookEntries` is async and loads its chat first (its local and chat-module lore).
+7. `loadLoreBookV3Prompt` pins its chat for the whole activation; `importLoreBook` loads its captured
+   chat again after the file dialog.
+8. The branch action writes the folder and the copy name in the chat's own character and selects the
+   branch there by id (no `changeChatTo(0)` on whatever is selected).
+9. `requestServer` refuses before the POST when a captured chat is gone after the flush.
+10. The selected-chat load has a request token and the owner lifetime: only the latest request
+    reports, and a load that ended without the chat shows "not available" with a retry.
+11. The held revisions are grouped per character in one pass (`heldChatRevisionsByCharacter`).
+
+The first re-check found six more holes, all fixed:
+
+- A chat baseline records its owner, and `applyChatResult` drops a result whose owner changed,
+  centrally for `editChat` and every other baseline consumer.
+- The owner token is carried through:
+  - the plugin lore getter, `parseRisuChat`, and `sendChat`;
+  - the local lore import and the lore activation (its variable and CBS callbacks refuse a changed
+    owner, and the result is dropped);
+  - the branch action;
+  - the request path: `withRequestChat` in `request.ts`, and the transport's checks before the POST.
+- Tool discovery and tool calls follow the request's chat (`getTools(chatRef)`,
+  `callTool(..., chatRef)`, down to `getModuleMcps(chatRef)`), not the selection. A request that
+  names only a plugin context uses that context's chat. `runLLMModel` runs inside `withRequestChat`.
+- The branch selects its result only while its character's selection did not change
+  (`chatSelectionVersion`).
+- Retrying the selected chat's load joins a load still running instead of orphaning its report.
+- A `cbs` callback that names another chat loads it, pinned, for the parse.
+
+The second re-check found two more, both fixed:
+
+- **A request keeps its chat's identity to the end.** `requestChatData` records the chat's owner
+  (`arg.chatOwner`) when it begins. The tool discovery, every before- and after-request hook, the
+  reply, the transport (before the POST), and every event callback and tool record check it, and
+  refuse a chat replaced meanwhile. A plugin hook's context carries its chat's owner too
+  (`PluginCallContext.owner`), and the host functions refuse a replaced chat.
+- **MCP tool listing and calls work on their own clients.** `syncMCPs` answers the clients of the
+  call's chat and leases them while they are used. An initialization for another chat no longer
+  destroys a client in use (it is destroyed when its last consumer ends), and no call reads another
+  chat's client set from the shared registry.
+
+The third re-check found two last gaps in the request path, both fixed. The fourth closed the
+challenge.
+
+- **Callbacks.** An MCP or CBS callback's answer is refused once the request's chat is gone or
+  replaced, also after the work (a tool that ran is not undone; its answer is not accepted).
+- **Results.** `withRequestChat` accepts a result only while its chat is the one the request began
+  with; it covers the direct `runLLMModel` route and plugin providers. An accepted stream is wrapped
+  (`guardStream`): it checks the identity on every chunk and at its end, and keeps the chat pinned
+  until it ends, fails, or is cancelled.
+- **The transport** refuses result and stream events for a replaced chat.
+- **Retries.** Every attempt starts with the identity check, a retry after its wait included.
+
+### Deviations, 9b
+
+- **Point 13: chat selection is immediate, not load-then-select.** A load never selects. The latest
+  selection is the selection, and no input reaches the chat selected before. The chat screen shows
+  the loading state instead of the previous chat.
+
+### Measurements, 9b
+
+These are production builds in headless Chrome, against the 9a build (`9cf80cdb`), two runs each,
+on the final tree (after the challenge fixes).
+
+`util/playwright/measureChats.mjs` (it gained the cold switch: each of 28 other 20-message chats
+once, until its chat screen shows):
+
+| Workload                                   | Baseline (`9cf80cdb`) | This slice     |
+| ------------------------------------------ | --------------------- | -------------- |
+| Boot until the sidebar shows (median of 3) | 513 / 520 ms          | 513 / 517 ms   |
+| JS heap after a collection                 | 13.1 / 13.2 MB        | 12.3 / 12.3 MB |
+| Switch to the 2,000-message chat (loaded)  | 37.3 / 38.7 ms        | 39.8 / 38.9 ms |
+| Switch to a 20-message chat (loaded)       | 31.1 / 30.6 ms        | 32.5 / 31.2 ms |
+| Cold switch until the chat shows           | 26.2 / 26.0 ms        | 40.2 / 40.4 ms |
+| Frame interval while streaming (p95)       | 16.7 / 16.7 ms        | 16.7 / 16.8 ms |
+| Long tasks while streaming                 | 0 / 0                 | 0 / 0          |
+| Select the 30-chat character               | 26.2 / 27.5 ms        | 27.8 / 26.7 ms |
+
+The cold switch now includes the chat's read (a local round trip); the screen shows the loading
+state meanwhile.
+
+`util/playwright/measureCharacters.mjs`:
+
+| Workload                         | Baseline (`9cf80cdb`) | This slice       |
+| -------------------------------- | --------------------- | ---------------- |
+| Select the big character         | 35.3 / 34.4 ms        | 33.6 / 36.5 ms   |
+| Select a small character         | 7.1 / 8.2 ms          | 9.0 / 7.8 ms     |
+| A keystroke into the description | 10.0 / 10.5 ms        | 10.0 / 10.8 ms   |
+| Lorebook drag, 300 entries       | 118.9 / 103.9 ms      | 103.1 / 104.8 ms |
+
+A first version scanned every held character on each selection's trim and made character
+selection 12 ms slower; the loaded-chat set removed it.
+
+### Review, 9b
+
+The review found no problem and judged the immediate selection (deviation, point 13) right. The
+adapter's harness boots still read whole chats, so the new store tests boot from summaries. The
+review added:
+
+- `src/ts/storage/tests/chatLazyLoading.test.ts`: the summary boot, immediate selection and its
+  retry, list-field writes on summaries, loading and its fences (an older read, the busy overlay,
+  owner replacement), and eviction with every exclusion.
+- `src/ts/storage/tests/resourceSyncLazyChats.test.ts`: the save loop and change feed over
+  summaries (refresh through the summary list, convergence of a busy unloaded chat, the own-save
+  echo's cost, detached reads and the dataset export beyond the cap, `editChat`).
+- `src/ts/process/request/tests/requestChat.test.ts`: `withRequestChat` and the guarded stream.
+- `src/ts/process/mcp/tests/mcpLeases.test.ts`: the per-call MCP client leases.
+- `e2e/lazyChats.spec.ts`: the summary boot, cold switches, the eight-chat cap, a rename and a send
+  beside unloaded chats, two clients converging, the MCP history host, the dataset export, and the
+  HypaV3 modal across a cold switch.
+- Cases in `hostApiChats.test.ts` (unloaded getters, `setChar` after an eviction, owner replacement
+  during a load), `transport.test.ts` (an unloaded `cbs` target, replacement during the flush, a
+  late MCP answer, a stream after a replacement), and `serverCommands.test.ts` (the job pins and
+  loads).
+
+The reviewer drove a production build in the browser: no chat read at home; the heap at 12.3 MB at
+home, 18.5 MB with the 2,000-message chat shown, and 18.0 MB after ten cold switches had evicted it;
+the loading state under injected latency; the error with a working retry; the branch view reading
+its 21 unloaded chats in one request and releasing them; bookmarks; a send beside an unloaded chat
+reading no other chat; and two tabs converging on renames through summary reads. All passed with no
+page error.
+
+Recorded, not fixed:
+
+- `exportLoreBook("local")` still dereferences the selected chat while it loads; the `try`/`catch`
+  turns it into an error alert.
+- This tab's own save of an unloaded chat's list field costs one summary-list read of its character.
+- A loaded idle chat with a notice is read whole before it can be evicted.
+- The job channel's `hydrations` retention (plan review point 14) stays deferred.

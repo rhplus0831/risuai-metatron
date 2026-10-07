@@ -405,15 +405,18 @@
             </button>
         </div>
     {/if}
-    <span class="text-textcolor">{language.authorNote} <Help key="chatNote" /></span>
-    <TextAreaInput
-        margin="both"
-        autocomplete="off"
-        bind:value={() => currentChat.note, (note) => setCurrentChatMeta({ note })}
-        highlight
-        placeholder={getAuthorNoteDefaultText()}
-    />
-    <span class="text-textcolor2 mb-6 text-sm">{tokens.localNote} {language.tokens}</span>
+    <!-- The chat's fields wait while the selected chat loads. -->
+    {#if currentChat}
+        <span class="text-textcolor">{language.authorNote} <Help key="chatNote" /></span>
+        <TextAreaInput
+            margin="both"
+            autocomplete="off"
+            bind:value={() => currentChat.note, (note) => setCurrentChatMeta({ note })}
+            highlight
+            placeholder={getAuthorNoteDefaultText()}
+        />
+        <span class="text-textcolor2 mb-6 text-sm">{tokens.localNote} {language.tokens}</span>
+    {/if}
 
     <Toggles chara={currentCharacter} noContainer />
 
@@ -1503,7 +1506,11 @@
         {#if settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2}
             <Button
                 onclick={() => {
-                    if (!selectedChat()?.hypaV2Data) {
+                    const chat = selectedChat();
+                    if (!chat) {
+                        return;
+                    }
+                    if (!chat.hypaV2Data) {
                         setCurrentChatMeta({ hypaV2Data: { lastMainChunkID: 0, mainChunks: [], chunks: [] } });
                     }
                     showHypaV2Alert();
@@ -1521,7 +1528,7 @@
             >
                 {language.hypaMemoryV3Modal}
             </Button>
-        {:else if (currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || currentCharacter.supaMemory}
+        {:else if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || currentCharacter.supaMemory)}
             <span class="text-textcolor mt-4">{language.SuperMemory}</span>
             <TextAreaInput
                 margin="both"
@@ -1551,7 +1558,7 @@
             {language.convertToModule}
         </Button>
     {:else}
-        {#if (currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || currentCharacter.supaMemory}
+        {#if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || currentCharacter.supaMemory)}
             <span class="text-textcolor mt-4">{language.SuperMemory}</span>
             <TextAreaInput
                 margin="both"

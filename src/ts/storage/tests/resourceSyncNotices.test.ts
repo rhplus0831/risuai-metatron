@@ -220,10 +220,14 @@ describe("a chat another tab announced", () => {
         }
         expect(readsOf(fake)).toBe(reads);
         // Short timers that were not cancelled (each notice's `schedule(50)` replaces the chat work
-        // listener's `schedule(500)` before it fires): at most one cycle per notice, no polling.
+        // listener's `schedule(500)` before it fires): at most one cycle per notice, no polling. The
+        // chat module's trim after a cycle (`scheduleTrim`, Phase 6 slice 9b) is not a save timer: it
+        // reads nothing, so it is told apart by its callback and left out of the count.
         const cleared = new Set(clears.mock.calls.map(([handle]) => handle));
+        const isTrim = (callback: unknown) => String(callback).includes("trimLoadedChats");
         const short = timeouts.mock.calls.filter(
-            ([, d], i) => typeof d === "number" && d <= 500 && !cleared.has(timeouts.mock.results[i]?.value),
+            ([callback, d], i) =>
+                typeof d === "number" && d <= 500 && !isTrim(callback) && !cleared.has(timeouts.mock.results[i]?.value),
         ).length;
         expect(short).toBeLessThanOrEqual(4);
         fake.lock!.endJob("T");

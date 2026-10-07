@@ -1,5 +1,5 @@
 // First: module effects elsewhere (`stores.svelte`) read `selectedChat()` while this module may still be loading.
-import { selection } from "./selection.svelte";
+import { onCharacterSelectionChanged, selection } from "./selection.svelte";
 import { settings } from "./settingsViews.svelte";
 import { untrack } from "svelte";
 import { v4 as uuidv4 } from "uuid";
@@ -9,6 +9,7 @@ import type {
     ChatOrderRecord,
     ChatOrderResult,
     ChatRecord,
+    ChatSummary,
     MessageAnchor,
 } from "../../../shared/chats.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
@@ -24,13 +25,17 @@ import { readRefs } from "./resourceClient";
 /**
  * The chat mutation module (Phase 2 of `docs/plan/PLAN.md`). Chats are server resources of their own
  * (metadata plus one row per message, addressed by `Message.chatId`; each character's chat order is a
- * record of its own). This module holds them (Phase 6 slice 9a): per character, its chat ids in order
- * (the membership) and its loaded chats by id, reactive, outside the character records. It is the
- * only code that writes them: every call updates the held chats (the mirror) synchronously and
- * queues an operation that the save loop (`resourceSync.svelte.ts`) sends in its next batch. Boot
- * loads every chat (`assembleChats`); readers use `chatList`, `selectedChat`, `findChat`, and the
- * loading functions, and the facade's `DBState.db.characters[].chats`/`chatPage` is a view built
- * here (`setCharacterChatView`) for the readers still on the aggregate until `aggregate-removal`.
+ * record of its own). This module holds them (Phase 6 slice 9): per character, its chat ids in order
+ * (the membership), each chat either loaded (the whole chat) or as its summary (the list fields),
+ * reactive, outside the character records. It is the only code that writes them: every call updates
+ * the held chats (the mirror) synchronously and queues an operation that the save loop
+ * (`resourceSync.svelte.ts`) sends in its next batch. Boot reads summaries only (`assembleChats`); a
+ * chat is loaded on demand (`ensureChatLoaded`, `loadChats`, the selected chat when it is selected),
+ * kept loaded while it is pinned or busy, and evicted beyond `MAX_LOADED_CHATS` idle loaded chats
+ * (least recently used first). Readers use `chatList`, `chatEntry`, `selectedChat`, `findChat`, and
+ * the loading functions, and the facade's `DBState.db.characters[].chats`/`chatPage` is a view of the
+ * loaded chats built here (`setCharacterChatView`) for the readers still on the aggregate until
+ * `aggregate-removal`.
  *
  * - Addressing is by `ChatRef` (`chaId`, `chatId`) and message id, never by index.
  * - Per chat, work is unsent (`pending`) or in flight (`inflight`, immutable until the save loop
@@ -190,8 +195,17 @@ export const streamingState = $state({
     mode: undefined as Chat["activeStreamingDisplayOptimizationMode"],
 });
 
-/** One character's chats: the ids in order (its membership) and the loaded chats by id (`slot` keys). */
-type HeldChats = { ids: string[]; chats: Record<string, Chat> };
+/** What a chat list shows of a chat (`ChatListEntry` without the id): its summary while it is not loaded. */
+type ChatEntryMeta = { name: string; folderId?: string; bindedPersona?: string; fmIndex: number };
+
+/**
+ * One character's chats: the ids in order (its membership), the loaded chats by id, and the summaries
+ * of the chats that are not loaded (`slot` keys). Every member is in exactly one of the two.
+ */
+type HeldChats = { ids: string[]; chats: Record<string, Chat>; summaries: Record<string, ChatEntryMeta> };
+
+/** One member as `setChatList` takes it: loaded (`chat`) or as its summary (`meta`). */
+type ChatEntry = { id: string; chat?: Chat; meta?: ChatEntryMeta };
 
 /**
  * The key of an id in the held dictionaries (`held`, `chosen`, `HeldChats.chats`): prefixed, so an
@@ -201,21 +215,56 @@ type HeldChats = { ids: string[]; chats: Record<string, Chat> };
 const slot = (id: string) => `#${id}`;
 
 /**
- * The chats this module holds, per `chaId` (reactive). In 9a every member is loaded and every loaded
- * chat is a member. The membership changes only through this module's membership writes (create,
- * delete, reorder, a remote chat or collection); a load never adds a chat to a list.
+ * The chats this module holds, per `chaId` (reactive). The membership changes only through this
+ * module's membership writes (create, delete, reorder, a remote chat or collection); a load never adds
+ * a chat to a list, and a server copy never loads a chat (only a load does).
  */
 const held: Record<string, HeldChats> = $state({});
 
 /** The selected chat id per character (this tab; reactive). */
 const chosen: Record<string, string> = $state({});
+/** Per character, bumped by every change of its selected chat (`chatSelectionVersion`). */
+const selectionVersions = new Map<string, number>();
+
+/** Sets a character's selected chat, bumping its selection version. */
+function choose(chaId: string, id: string) {
+    chosen[slot(chaId)] = id;
+    selectionVersions.set(chaId, (selectionVersions.get(chaId) ?? 0) + 1);
+}
 
 /**
- * Pins per character (`pinChats`): a pinned character's chats stay loaded while a consumer works.
- * Each lifetime of a character's held chats has its own counter, so a release from before a reset
- * never takes a later pin.
+ * How many times a character's selected chat changed in this tab (not reactive): an action that
+ * selects a result after an await compares it, so a newer selection is kept (also A, then B, then A).
+ */
+export function chatSelectionVersion(chaId: string): number {
+    return selectionVersions.get(chaId) ?? 0;
+}
+
+/**
+ * Pins per character (`pinChats`, keyed by `chaId`) and per chat (`pinChat`, keyed by `keyOf`): a
+ * pinned chat, or every chat of a pinned character, is never evicted while a consumer works. Each
+ * lifetime of a character's held chats has its own counters, so a release from before a reset never
+ * takes a later pin.
  */
 const pins = new Map<string, { count: number }>();
+
+/** How many idle loaded chats a tab keeps (`trimLoadedChats`); busy, pinned, and selected ones do not count. */
+export const MAX_LOADED_CHATS = 8;
+/**
+ * The keys of the loaded chats (kept by the list helpers below), so a trim with few loaded chats
+ * costs nothing. A key here whose chat is no longer loaded is skipped by the trim.
+ */
+const loadedKeys = new Set<string>();
+/** Per chat key: when it was last loaded, selected, or found loaded by `ensureChatLoaded` (eviction order). */
+const lastUse = new Map<string, number>();
+let useCounter = 0;
+let trimTimer: ReturnType<typeof setTimeout> | null = null;
+/** The loads of unloaded chats in flight, per chat key, with the owner lifetime they were issued in. */
+const loading = new Map<string, { lifetime: string; promise: Promise<DeepReadonly<Chat> | undefined> }>();
+/** How many times a load reads a chat again when the server answers older than the held revision. */
+const MAX_LOAD_READS = 3;
+/** Chats per read request of a load (well inside the server's per-request cap). */
+const LOAD_CHUNK = 500;
 
 /**
  * Per character, the lifetime of its held chats: advanced whenever they are installed, forgotten, or
@@ -233,6 +282,15 @@ function renewLifetime(chaId: string) {
 
 function lifetimeOf(chaId: string): string {
     return `${assemblyEpoch}/${lifetimes.get(chaId) ?? 0}`;
+}
+
+/**
+ * A token of the current lifetime of a character's held chats: it changes when they are installed
+ * (an add or a replacement), forgotten, or replaced by a boot assembly. An operation that captures it
+ * before an await and finds it changed afterwards works on another owner, even under the same ids.
+ */
+export function chatOwnerToken(chaId: string): string {
+    return lifetimeOf(chaId);
 }
 
 /** Registers the save loop's wake-up; called when new chat work is queued. */
@@ -297,7 +355,7 @@ function requireCharacter(chaId: string): AnyCharacter {
 
 /** The held chats of a character, created empty for a write. */
 function holdingOf(chaId: string): HeldChats {
-    held[slot(chaId)] ??= { ids: [], chats: {} };
+    held[slot(chaId)] ??= { ids: [], chats: {}, summaries: {} };
     return held[slot(chaId)];
 }
 
@@ -316,7 +374,7 @@ function isMember(ref: ChatRef): boolean {
     return holdingAt(ref.chaId)?.ids.includes(ref.chatId) ?? false;
 }
 
-/** A character's member chats in order, writable here only (every member is loaded in 9a). */
+/** A character's loaded member chats in order, writable here only (unloaded members are left out). */
 function chatsOf(chaId: string): Chat[] {
     const holding = holdingAt(chaId);
     if (!holding) {
@@ -330,15 +388,67 @@ function heldChat(ref: ChatRef): Chat | undefined {
     return holdingAt(ref.chaId)?.chats[slot(ref.chatId)];
 }
 
+/** Whether a member chat is loaded (its whole chat is held, not only its summary). */
+function isLoaded(ref: ChatRef): boolean {
+    return heldChat(ref) !== undefined;
+}
+
+/** Whether every member chat of a character is loaded (true when it holds none). */
+export function chatsLoaded(chaId: string): boolean {
+    const holding = holdingAt(chaId);
+    return !holding || holding.ids.every((id) => holding.chats[slot(id)] !== undefined);
+}
+
+/** The list fields of a chat or of a summary (the server's summary rule: `name` "", `fmIndex` -1). */
+function metaOf(source: {
+    name?: unknown;
+    folderId?: unknown;
+    bindedPersona?: unknown;
+    fmIndex?: unknown;
+}): ChatEntryMeta {
+    const meta: ChatEntryMeta = {
+        name: typeof source.name === "string" ? source.name : "",
+        fmIndex: typeof source.fmIndex === "number" ? source.fmIndex : -1,
+    };
+    if (typeof source.folderId === "string") {
+        meta.folderId = source.folderId;
+    }
+    if (typeof source.bindedPersona === "string") {
+        meta.bindedPersona = source.bindedPersona;
+    }
+    return meta;
+}
+
+/** A member as an entry (loaded or summary), or undefined when it is not a member. */
+function entryAt(chaId: string, id: string): ChatEntry | undefined {
+    const holding = holdingAt(chaId);
+    if (!holding?.ids.includes(id)) {
+        return undefined;
+    }
+    const chat = holding.chats[slot(id)];
+    return chat ? { id, chat } : { id, meta: holding.summaries[slot(id)] ?? metaOf({}) };
+}
+
 /** Puts a chat into a character's list at `index` (loaded and a member); returns the held copy. */
 function insertChat(chaId: string, index: number, chat: Chat): Chat {
     const holding = holdingOf(chaId);
+    loadedKeys.add(keyOf(chaId, chat.id!));
     holding.chats[slot(chat.id!)] = chat;
+    delete holding.summaries[slot(chat.id!)];
     holding.ids.splice(index, 0, chat.id!);
     return holding.chats[slot(chat.id!)];
 }
 
-/** Takes a chat out of a character's list and unloads it. */
+/** Puts a chat into a character's list at `index` as its summary (not loaded). */
+function insertSummary(chaId: string, index: number, id: string, meta: ChatEntryMeta) {
+    const holding = holdingOf(chaId);
+    loadedKeys.delete(keyOf(chaId, id));
+    holding.summaries[slot(id)] = meta;
+    delete holding.chats[slot(id)];
+    holding.ids.splice(index, 0, id);
+}
+
+/** Takes a chat out of a character's list (loaded or not). */
 function removeChat(chaId: string, chatId: string) {
     const holding = holdingAt(chaId);
     if (!holding) {
@@ -348,18 +458,43 @@ function removeChat(chaId: string, chatId: string) {
     if (index !== -1) {
         holding.ids.splice(index, 1);
     }
+    loadedKeys.delete(keyOf(chaId, chatId));
     delete holding.chats[slot(chatId)];
+    delete holding.summaries[slot(chatId)];
 }
 
-/** Replaces a character's whole list (membership, order, and loaded chats) with `chats`. */
-function setChatList(chaId: string, chats: readonly Chat[]) {
-    const holding = holdingOf(chaId);
-    const next: Record<string, Chat> = {};
-    for (const chat of chats) {
-        next[slot(chat.id!)] = chat;
+/** Drops everything held for a character (its list, loaded chats, and summaries). */
+function dropHeld(chaId: string) {
+    for (const id of holdingAt(chaId)?.ids ?? []) {
+        loadedKeys.delete(keyOf(chaId, id));
     }
-    holding.chats = next;
-    holding.ids = chats.map((chat) => chat.id!);
+    delete held[slot(chaId)];
+}
+
+/** Replaces a character's whole list (membership, order, loaded chats, and summaries) with `entries`. */
+function setChatList(chaId: string, entries: readonly ChatEntry[]) {
+    const holding = holdingOf(chaId);
+    for (const id of holding.ids) {
+        loadedKeys.delete(keyOf(chaId, id));
+    }
+    const chats: Record<string, Chat> = {};
+    const summaries: Record<string, ChatEntryMeta> = {};
+    for (const entry of entries) {
+        if (entry.chat) {
+            chats[slot(entry.id)] = entry.chat;
+            loadedKeys.add(keyOf(chaId, entry.id));
+        } else {
+            summaries[slot(entry.id)] = entry.meta ?? metaOf({});
+        }
+    }
+    holding.chats = chats;
+    holding.summaries = summaries;
+    holding.ids = entries.map((entry) => entry.id);
+}
+
+/** Loaded chats as list entries. */
+function loadedEntries(chats: readonly Chat[]): ChatEntry[] {
+    return chats.map((chat) => ({ id: chat.id!, chat }));
 }
 
 /** The loaded chat; read-only (change it through this module). Tracked when read reactively. */
@@ -400,7 +535,10 @@ export function selectedChatIndex(chaId: string): number {
     return id === null ? 0 : Math.max(0, holdingAt(chaId)!.ids.indexOf(id));
 }
 
-/** The ref of the selected character's selected chat, or null (at home, or before its chats are held). */
+/**
+ * The ref of the selected character's selected chat, or null (at home, or before its chats are held).
+ * It names the chat also while that chat is still loading (`selectedChat()` is null then).
+ */
 export function currentChatRef(): ChatRef | null {
     const chaId = selection.characterId;
     const chatId = chaId === null ? null : selectedChatId(chaId);
@@ -408,8 +546,8 @@ export function currentChatRef(): ChatRef | null {
 }
 
 /**
- * The selected character's selected chat, or null at home (or while a character's chats are not
- * held yet; a fully initialized character always has one). Reactive.
+ * The selected character's selected chat, or null at home and while it loads (`selectedChatLoad`);
+ * the selected chat is never evicted. Reactive.
  */
 export function selectedChat(): DeepReadonly<Chat> | null {
     const ref = currentChatRef();
@@ -418,14 +556,17 @@ export function selectedChat(): DeepReadonly<Chat> | null {
 
 /**
  * A detached legacy copy of a character for the plugin and hook boundaries: `copy` (a chat-free
- * plain copy) with the character's held chats as plain copies in order and `chatPage`, the index of
- * `chatId` when it is listed, else of the selected chat. The loaded chats must be complete (9a: boot
- * loads them; 9b: a caller pins and awaits `loadChats` first).
+ * plain copy) with the character's chats as plain copies in order and `chatPage`, the index of
+ * `chatId` when it is listed, else of the selected chat. Every chat must be loaded (the caller pins
+ * and awaits `loadChats` first); throws otherwise, so a copy is never missing a chat.
  */
 export function withChatsCopy<T extends { chaId: string }>(
     copy: T,
     chatId?: string,
 ): T & { chats: Chat[]; chatPage: number } {
+    if (!chatsLoaded(copy.chaId)) {
+        throw new Error(`The chats of ${copy.chaId} are not loaded`);
+    }
     const chats = clone<Chat[]>($state.snapshot(chatsOf(copy.chaId)) as Chat[]);
     const listed = chatId === undefined ? -1 : chats.findIndex((chat) => chat.id === chatId);
     return { ...copy, chats, chatPage: listed !== -1 ? listed : selectedChatIndex(copy.chaId) };
@@ -434,14 +575,22 @@ export function withChatsCopy<T extends { chaId: string }>(
 /**
  * A character in the legacy shape the shared CBS evaluator reads (until `aggregate-removal`): a live
  * record already answers `chats`/`chatPage` (the facade view), any other object with a `chaId` gets
- * a shallow copy carrying the held chats (read-only by contract) and the selected chat's index.
+ * a shallow copy carrying the same view: its loaded chats (read-only by contract) and the selected
+ * chat's index among them (`compatChatPage`). The shared readers find a chat by its ref's id or as
+ * `chats[chatPage]`; an unloaded chat is not found, never another one.
  */
 export function withCompatChats<T extends object>(char: T): T & { chats: readonly Chat[]; chatPage: number } {
     const fields = char as { chaId?: unknown; chats?: unknown };
     if (Array.isArray(fields.chats) || typeof fields.chaId !== "string") {
         return char as T & { chats: readonly Chat[]; chatPage: number };
     }
-    return { ...char, chats: chatsOf(fields.chaId), chatPage: selectedChatIndex(fields.chaId) };
+    return { ...char, chats: chatsOf(fields.chaId), chatPage: compatChatPage(fields.chaId) };
+}
+
+/** The selected chat's index among a character's loaded chats (the facade view's `chatPage`); -1 when it is not loaded. */
+function compatChatPage(chaId: string): number {
+    const id = selectedChatId(chaId);
+    return id === null ? -1 : chatsOf(chaId).findIndex((chat) => chat.id === id);
 }
 
 /** How many chats a character has (its list's length; reactive over the membership only). */
@@ -460,20 +609,26 @@ export type ChatListEntry = {
 
 /**
  * A character's chats as list entries, in order (reactive over the listed fields and the
- * membership only, so a streamed message does not recompute it). In 9a they come from the loaded
- * chats; a summary is never a `Chat`.
+ * membership only, so a streamed message does not recompute it): from the loaded chat, or from the
+ * summary of a chat that is not loaded. A summary is never a `Chat`.
  */
 export function chatList(chaId: string): ChatListEntry[] {
-    return chatsOf(chaId).map((chat) => {
-        const entry: ChatListEntry = { id: chat.id!, name: chat.name ?? "", fmIndex: chat.fmIndex ?? -1 };
-        if (chat.folderId !== undefined) {
-            entry.folderId = chat.folderId;
-        }
-        if (chat.bindedPersona !== undefined) {
-            entry.bindedPersona = chat.bindedPersona;
-        }
-        return entry;
-    });
+    const holding = holdingAt(chaId);
+    if (!holding) {
+        return [];
+    }
+    return holding.ids.map((id) => listEntry(holding, id));
+}
+
+/** A member's list entry, loaded or not, or undefined when it is not a member (reactive like `chatList`). */
+export function chatEntry(ref: ChatRef): ChatListEntry | undefined {
+    const holding = holdingAt(ref.chaId);
+    return holding?.ids.includes(ref.chatId) ? listEntry(holding, ref.chatId) : undefined;
+}
+
+function listEntry(holding: HeldChats, id: string): ChatListEntry {
+    const chat = holding.chats[slot(id)];
+    return { id, ...(chat ? metaOf(chat) : (holding.summaries[slot(id)] ?? metaOf({}))) };
 }
 
 /** A chat as sent: a plain copy without the client-only streaming flags. */
@@ -728,7 +883,8 @@ export function endServerJob(jobId: string) {
  * when its revision is at least the held one and the chat has no local work (pending, in flight,
  * deferred, quarantined, refused for a generating message); otherwise the chat is marked for an
  * idle refresh. A chat the mirror lacks, or one this client has not seen on
- * the server, is not hydrated. Nothing is queued, discarded, or settled, and no notice is shown.
+ * the server, is not hydrated; a member that is not loaded takes the copy's revision and summary only
+ * (a server copy never loads a chat). Nothing is queued, discarded, or settled, and no notice is shown.
  *
  * `job` (a job's chat event): its `streaming` messages are still generating, each with the newest
  * chunk the copy holds; a streamed text with a higher `seq` is put back on its message, and its lock
@@ -836,7 +992,10 @@ export function hydrateChat(
     return outcome === "applied";
 }
 
-/** "applied"; "busy" (current, but local work keeps the mirror's copy: marked stale); "old" (older, another epoch, or unknown). */
+/**
+ * "applied" (a loaded chat replaced, or an unloaded member's summary and revision taken); "busy"
+ * (current, but local work keeps the mirror's copy: marked stale); "old" (older, another epoch, or unknown).
+ */
 function applyChatHydration(server: {
     characterId: string;
     id: string;
@@ -847,7 +1006,7 @@ function applyChatHydration(server: {
     const ref = { chaId: server.characterId, chatId: server.id };
     const character = findCharacter(server.characterId);
     const heldRevision = chatRevisions.get(key);
-    if (!character || !heldChat(ref) || heldRevision === undefined) {
+    if (!character || !isMember(ref) || heldRevision === undefined) {
         return "old";
     }
     const order = compareRevision(server.revision, heldRevision);
@@ -858,7 +1017,11 @@ function applyChatHydration(server: {
         staleChats.add(key);
         return "busy";
     }
-    holdingOf(server.characterId).chats[slot(server.id)] = clone<Chat>(server.data);
+    if (isLoaded(ref)) {
+        holdingOf(server.characterId).chats[slot(server.id)] = clone<Chat>(server.data);
+    } else {
+        holdingOf(server.characterId).summaries[slot(server.id)] = metaOf(server.data);
+    }
     holdChatRevision(key, server.revision);
     staleChats.delete(key);
     changed(key);
@@ -1132,7 +1295,12 @@ export function loadSelectionPreference() {
     }
 }
 
-/** Selects a chat of a character by id or by its index in the list (nothing when it names none). */
+/**
+ * Selects a chat of a character by id or by its index in the list (nothing when it names none). The
+ * selection is immediate, loaded or not: a selected chat that is not loaded yet is loaded now
+ * (`selectedChat()` is null meanwhile and `selectedChatLoad` reports it), so a slow load never
+ * selects anything and the latest selection is always the selection.
+ */
 export function selectChat(chaId: string, idOrIndex: string | number) {
     if (!findCharacter(chaId)) {
         return;
@@ -1142,21 +1310,109 @@ export function selectChat(chaId: string, idOrIndex: string | number) {
     if (id === undefined) {
         return;
     }
-    chosen[slot(chaId)] = id;
+    choose(chaId, id);
     writeSelectionPreference(chaId, id);
+    if (untrack(() => selection.characterId) === chaId) {
+        loadSelectedChat();
+    }
 }
 
 /**
  * Keeps a character's selected chat a member after its membership changed: a chosen chat that left
- * falls back to the first chat (the stored preference is kept). A reorder keeps the chosen id.
+ * falls back to the first chat (the stored preference is kept). A reorder keeps the chosen id. The
+ * selected character's new selected chat is loaded when it is not.
  */
 function syncSelection(chaId: string) {
     const ids = holdingAt(chaId)?.ids ?? [];
     const id = untrack(() => chosen[slot(chaId)]);
     if (ids.length > 0 && (id === undefined || !ids.includes(id))) {
-        chosen[slot(chaId)] = ids[0];
+        choose(chaId, ids[0]);
+        if (untrack(() => selection.characterId) === chaId) {
+            loadSelectedChat();
+        }
     }
 }
+
+/**
+ * The selected chat's load (the chat screen's loading state): the chat key and owner lifetime it is
+ * for, its request token, and the error of a load that ended without the chat (null while it runs).
+ * Reactive.
+ */
+const selectedLoad = $state({ key: "", owner: "", token: 0, error: null as string | null });
+let selectedLoadToken = 0;
+
+/**
+ * Loads the selected chat when it is not loaded (a character or chat selection, a membership
+ * fallback), and marks it as just used. Only the latest request reports its end: a failed load, or
+ * one that ended without the chat (it is gone, or kept back), is shown by `selectedChatLoad` until a
+ * retry or another selection.
+ */
+function loadSelectedChat() {
+    const ref = untrack(() => currentChatRef());
+    scheduleTrim();
+    if (!ref) {
+        return;
+    }
+    const key = keyOf(ref.chaId, ref.chatId);
+    touch(key);
+    if (untrack(() => isLoaded(ref))) {
+        return;
+    }
+    const owner = lifetimeOf(ref.chaId);
+    if (selectedLoad.key === key && selectedLoad.owner === owner && loading.get(key)?.lifetime === owner) {
+        // This chat's load is already running for the screen: its request reports its end.
+        selectedLoad.error = null;
+        return;
+    }
+    selectedLoadToken += 1;
+    const token = selectedLoadToken;
+    selectedLoad.key = key;
+    selectedLoad.owner = owner;
+    selectedLoad.token = token;
+    selectedLoad.error = null;
+    const finish = (error: string | null) => {
+        if (selectedLoad.token === token) {
+            selectedLoad.error = error;
+        }
+    };
+    ensureChatLoaded(ref).then(
+        (chat) => {
+            const now = untrack(() => currentChatRef());
+            if (!chat && now?.chaId === ref.chaId && now.chatId === ref.chatId) {
+                finish(language.chatUnavailable);
+            }
+        },
+        (error: unknown) => {
+            console.error("[Chat] The selected chat could not be loaded", error);
+            finish(error instanceof Error ? error.message : String(error));
+        },
+    );
+}
+
+/**
+ * The selected chat's loading state while it is not loaded: `{ error: null }` while its load runs,
+ * `{ error }` after a load that failed or ended without it (`retrySelectedChatLoad` tries again);
+ * null when it is loaded or nothing is selected. Reactive.
+ */
+export function selectedChatLoad(): { error: string | null } | null {
+    const ref = currentChatRef();
+    if (!ref || isLoaded(ref)) {
+        return null;
+    }
+    const current = selectedLoad.key === keyOf(ref.chaId, ref.chatId) && selectedLoad.owner === lifetimeOf(ref.chaId);
+    return { error: current ? selectedLoad.error : null };
+}
+
+/**
+ * Loads the selected chat again after a failed load. A load still running for it is joined (its
+ * request reports its end), never replaced.
+ */
+export function retrySelectedChatLoad() {
+    loadSelectedChat();
+}
+
+// A character selection (or home) loads that character's selected chat only (and may evict others).
+onCharacterSelectionChanged(() => loadSelectedChat());
 
 // ---------------------------------------------------------------------------------------------
 // Messages and metadata
@@ -1269,16 +1525,48 @@ const SERVER_META_DEFAULTS: Readonly<Record<string, () => unknown>> = {
 };
 
 /**
+ * The chat fields a chat list writes (`ChatListEntry`'s): `setChatMeta` changes them also in a chat
+ * that is not loaded (its summary), with the type the summary holds.
+ */
+const SUMMARY_FIELD_TYPES: Readonly<Record<string, "string" | "number">> = {
+    name: "string",
+    folderId: "string",
+    bindedPersona: "string",
+    fmIndex: "number",
+};
+
+/**
  * Sets and removes chat fields (not `id`, `message`, or the streaming flags). Values equal to the
  * current ones are skipped, so a component can commit its whole editing copy without echo. A field the
  * server defaults (`SERVER_META_DEFAULTS`) is set to its default instead of removed or set to `null`.
+ * A chat that is not loaded takes changes of its list fields only (`SUMMARY_FIELD_TYPES`: its summary
+ * changes and the same op is queued); any other field needs it loaded. The whole change is checked
+ * before anything changes.
  */
 export function setChatMeta(
     ref: ChatRef,
     set: Partial<DeepReadonly<Chat>> | Record<string, unknown>,
     unset: readonly string[] = [],
 ) {
-    const chat = requireChat(ref) as unknown as Record<string, unknown>;
+    const loaded = findCharacter(ref.chaId) ? heldChat(ref) : undefined;
+    let summary: ChatEntryMeta | undefined;
+    if (!loaded) {
+        summary =
+            findCharacter(ref.chaId) && isMember(ref) ? holdingAt(ref.chaId)!.summaries[slot(ref.chatId)] : undefined;
+        if (!summary) {
+            throw new Error(`No chat ${ref.chatId} in character ${ref.chaId}`);
+        }
+        for (const [key, value] of [...Object.entries(set), ...unset.map((key) => [key, undefined] as const)]) {
+            const type = SUMMARY_FIELD_TYPES[key];
+            if (!Object.hasOwn(SUMMARY_FIELD_TYPES, key)) {
+                throw new Error(`The chat is not loaded; setChatMeta cannot change ${key} now`);
+            }
+            if (value !== undefined && value !== null && typeof value !== type) {
+                throw new Error(`setChatMeta needs a ${type} ${key}`);
+            }
+        }
+    }
+    const chat = (loaded ?? summary) as unknown as Record<string, unknown>;
     const changes: Record<string, unknown> = {};
     const requested: Record<string, unknown> = { ...set };
     for (const key of unset) {
@@ -1361,8 +1649,12 @@ export function replaceChat(ref: ChatRef, input: DeepReadonly<Chat>) {
     enqueue(ref, { op: "replace", chat: projectChat(chat) });
 }
 
-/** What a hook started from: a detached copy of the chat and the chat's version then. */
-export type ChatBaseline = { ref: ChatRef; chat: Chat; version: number };
+/**
+ * What a hook started from: a detached copy of the chat, the chat's version then, and its owner's
+ * lifetime (`chatOwnerToken`; a result is never applied to a chat whose character's chats were
+ * replaced meanwhile, even under the same ids).
+ */
+export type ChatBaseline = { ref: ChatRef; chat: Chat; version: number; owner?: string };
 
 /** Captures a chat before a hook works on a copy of it (for `applyChatResult`). */
 export function captureChatBaseline(ref: ChatRef): ChatBaseline {
@@ -1370,6 +1662,7 @@ export function captureChatBaseline(ref: ChatRef): ChatBaseline {
         ref,
         chat: projectChat(requireChat(ref)),
         version: versions.get(keyOf(ref.chaId, ref.chatId)) ?? 0,
+        owner: lifetimeOf(ref.chaId),
     };
 }
 
@@ -1388,6 +1681,10 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     const { ref } = baseline;
     const current = heldChat(ref);
     if (!current) {
+        return;
+    }
+    if (baseline.owner !== undefined && baseline.owner !== lifetimeOf(ref.chaId)) {
+        console.warn("[Chat] A change to a chat whose character's chats were replaced meanwhile is dropped");
         return;
     }
     const next = clone<Chat>(result);
@@ -1498,6 +1795,10 @@ export function reconcileCharacterChats(chaId: string, incoming: readonly DeepRe
     if (!character || !Array.isArray(incoming)) {
         return;
     }
+    if (!chatsLoaded(chaId)) {
+        // The caller pins and loads them first (`loadChats`); a chat diffed against a summary would be lost.
+        throw new Error(`The chats of ${chaId} are not loaded`);
+    }
     const chats = clone<Chat[]>(incoming).filter((chat) => chat && typeof chat === "object");
     const seen = new Set<string>();
     for (const chat of chats) {
@@ -1540,8 +1841,11 @@ export function reconcileCharacterChats(chaId: string, incoming: readonly DeepRe
 // ---------------------------------------------------------------------------------------------
 // Boot
 
-/** Records what the server holds (boot read), before anything queues work. */
-export function seedChats(chats: readonly ChatRecord[], orders: readonly ChatOrderRecord[]) {
+/** Records what the server holds (boot read: chats or their summaries), before anything queues work. */
+export function seedChats(
+    chats: readonly { characterId: string; id: string; revision: string }[],
+    orders: readonly ChatOrderRecord[],
+) {
     chatRevisions.clear();
     orderRevisions.clear();
     staleChats.clear();
@@ -1559,35 +1863,53 @@ export function seedChats(chats: readonly ChatRecord[], orders: readonly ChatOrd
  * order misses (each reported). The boot assembly's rule, also for detached reads.
  */
 export function orderChats(chaId: string, chats: readonly ChatRecord[], ids: readonly string[]): Chat[] {
-    const available = new Map(chats.map((record) => [record.id, record.data]));
-    const ordered: Chat[] = [];
+    return orderRecords(chaId, chats, ids).map((record) => record.data);
+}
+
+/** `orderChats` over any records with an id (full chats or summaries). */
+function orderRecords<T extends { id: string }>(chaId: string, records: readonly T[], ids: readonly string[]): T[] {
+    const available = new Map(records.map((record) => [record.id, record]));
+    const ordered: T[] = [];
     for (const id of ids) {
-        const chat = available.get(id);
-        if (chat) {
-            ordered.push(chat);
+        const record = available.get(id);
+        if (record) {
+            ordered.push(record);
             available.delete(id);
         } else {
             console.error(`[Chat] The chat order of ${chaId} names a missing chat ${id}`);
         }
     }
-    for (const chat of available.values()) {
-        console.error(`[Chat] Chat ${chat.id} of ${chaId} is missing from its chat order`);
-        ordered.push(chat);
+    for (const record of available.values()) {
+        console.error(`[Chat] Chat ${record.id} of ${chaId} is missing from its chat order`);
+        ordered.push(record);
     }
     return ordered;
+}
+
+/** A chat of a server read: a whole chat (`ChatRecord`) or its summary (`ChatSummary`). */
+type ListedChat = ChatRecord | ChatSummary;
+
+function listedData(record: ListedChat): Chat | undefined {
+    return "data" in record && record.data ? record.data : undefined;
+}
+
+/** A listed chat's list fields (from the chat, or the summary's own fields). */
+function listedMeta(record: ListedChat): ChatEntryMeta {
+    return metaOf(listedData(record) ?? (record as ChatSummary));
 }
 
 /**
  * Holds every character's chats in their server order (the boot read), replacing whatever was held:
  * `characters` are the characters the boot read returned (only their `chaId` is read; chats of
- * other characters are not held).
+ * other characters are not held). A summary is held as an unloaded chat (the boot reads summaries);
+ * a whole chat is held loaded.
  */
 export function assembleChats(
     characters: readonly ({ chaId: string } | null | undefined)[],
-    chats: readonly ChatRecord[],
+    chats: readonly ListedChat[],
     orders: readonly ChatOrderRecord[],
 ) {
-    const byCharacter = new Map<string, ChatRecord[]>();
+    const byCharacter = new Map<string, ListedChat[]>();
     for (const record of chats) {
         let list = byCharacter.get(record.characterId);
         if (!list) {
@@ -1600,14 +1922,25 @@ export function assembleChats(
     for (const key of Object.keys(held)) {
         delete held[key];
     }
+    loadedKeys.clear();
     pins.clear();
+    lastUse.clear();
+    loading.clear();
+    selectedLoad.key = "";
+    selectedLoad.token = 0;
     assemblyEpoch += 1;
     for (const character of characters) {
         if (!character) {
             continue;
         }
         const chaId = character.chaId;
-        setChatList(chaId, orderChats(chaId, byCharacter.get(chaId) ?? [], orderOf.get(chaId) ?? []));
+        setChatList(
+            chaId,
+            orderRecords(chaId, byCharacter.get(chaId) ?? [], orderOf.get(chaId) ?? []).map((record) => {
+                const data = listedData(record);
+                return data ? { id: record.id, chat: data } : { id: record.id, meta: listedMeta(record) };
+            }),
+        );
     }
     mutationToken += 1;
 }
@@ -1647,7 +1980,8 @@ export function hasChatWork(canSaveCharacter: (id: string) => boolean = () => tr
             (id) => canSaveCharacter(id) && !isOrderQuarantined(id) && orderMembershipReady(id),
         ) ||
         deferredReloads().length > 0 ||
-        idleChatRefreshes().length > 0
+        idleChatRefreshes().length > 0 ||
+        idleSummaryRefreshes().length > 0
     );
 }
 
@@ -1743,8 +2077,8 @@ function prepareCharacterChats(chats: Chat[], character: { firstMsgIndex?: unkno
  */
 export function installCharacterChats(chaId: string, chats: Chat[], character: { firstMsgIndex?: unknown }) {
     renewLifetime(chaId);
-    pins.delete(chaId);
-    setChatList(chaId, prepareCharacterChats(chats, character));
+    dropLoadState(chaId);
+    setChatList(chaId, loadedEntries(prepareCharacterChats(chats, character)));
     mutationToken += 1;
     syncSelection(chaId);
 }
@@ -1755,10 +2089,23 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
  * `forgetCharacter` settles its chat work when the character's deletion is saved.
  */
 export function forgetCharacterChats(chaId: string) {
-    delete held[slot(chaId)];
+    dropHeld(chaId);
     delete chosen[slot(chaId)];
-    pins.delete(chaId);
+    dropLoadState(chaId);
     renewLifetime(chaId);
+}
+
+/** Drops a character's pins (character and chat pins), recency stamps, and loads in flight (a reset of its chats). */
+function dropLoadState(chaId: string) {
+    const prefix = `${chaId}\u0000`;
+    pins.delete(chaId);
+    for (const map of [pins, lastUse, loading] as Map<string, unknown>[]) {
+        for (const key of [...map.keys()]) {
+            if (key.startsWith(prefix)) {
+                map.delete(key);
+            }
+        }
+    }
 }
 
 /**
@@ -1828,9 +2175,9 @@ export function forgetCharacter(chaId: string) {
     pendingOrders.delete(chaId);
     orderRevisions.delete(chaId);
     quarantinedOrders.delete(chaId);
-    delete held[slot(chaId)];
+    dropHeld(chaId);
     delete chosen[slot(chaId)];
-    pins.delete(chaId);
+    dropLoadState(chaId);
     renewLifetime(chaId);
 }
 
@@ -2071,9 +2418,13 @@ export function ackChatWork(
                 chatRevisions.delete(group.key);
                 staleChats.delete(group.key);
                 noticedChats.delete(group.key);
-            } else if (!result.stale || !chatRevisions.has(group.key)) {
+            } else if (
+                (!result.stale || !chatRevisions.has(group.key)) &&
+                (compareRevision(result.revision, chatRevisions.get(group.key) ?? result.revision) ?? 1) >= 0
+            ) {
                 // A group applied on an older revision leaves the older base: this client has not
-                // seen every change up to the new revision.
+                // seen every change up to the new revision. A newer revision held already (a load
+                // installed a later read while the group was in flight) is not moved back.
                 holdChatRevision(group.key, result.revision);
             }
             if (result.stale && result.revision !== null) {
@@ -2360,7 +2711,11 @@ export function acceptRemoteChat(server: RemoteChat, seq = 0) {
     applyRemoteChat(server);
 }
 
-/** Applies a server copy without settling or discarding any work (callers establish eligibility). */
+/**
+ * Applies a server copy without settling or discarding any work (callers establish eligibility). A
+ * loaded chat takes the copy; a member that is not loaded, or a chat new to the list, takes its
+ * summary only (a server copy never loads a chat).
+ */
 function applyRemoteChat(server: RemoteChat) {
     const key = keyOf(server.characterId, server.id);
     staleChats.delete(key);
@@ -2369,9 +2724,11 @@ function applyRemoteChat(server: RemoteChat) {
         if (server.revision === null || !server.data) {
             removeChat(server.characterId, server.id);
         } else if (!isMember(ref)) {
-            insertChat(server.characterId, memberIds(server.characterId).length, server.data);
-        } else {
+            insertSummary(server.characterId, memberIds(server.characterId).length, server.id, metaOf(server.data));
+        } else if (isLoaded(ref)) {
             holdingOf(server.characterId).chats[slot(server.id)] = server.data;
+        } else {
+            holdingOf(server.characterId).summaries[slot(server.id)] = metaOf(server.data);
         }
         changed(key);
         ensureChat(server.characterId);
@@ -2397,15 +2754,107 @@ function canRefreshChat(ref: ChatRef): boolean {
     );
 }
 
-/** Stale and noticed chats eligible for a read inside the save cycle, never alongside a batch. */
-export function idleChatRefreshes(): ChatRef[] {
+/** The stale and noticed chats as refs. */
+function refreshMarks(): ChatRef[] {
     dropAnsweredNotices();
-    return [...new Set([...staleChats, ...noticedChats.keys()])]
-        .map((key) => {
-            const [chaId, chatId] = key.split("\u0000");
-            return { chaId, chatId };
-        })
-        .filter(canRefreshChat);
+    return [...new Set([...staleChats, ...noticedChats.keys()])].map((key) => {
+        const [chaId, chatId] = key.split("\u0000");
+        return { chaId, chatId };
+    });
+}
+
+/** Whether a refresh mark is of a member that is not loaded (refreshed through its character's summaries). */
+function isUnloadedMember(ref: ChatRef): boolean {
+    return isMember(ref) && !isLoaded(ref);
+}
+
+/**
+ * Stale and noticed chats eligible for a whole-chat read inside the save cycle, never alongside a
+ * batch: loaded ones (and ones no longer listed). A member that is not loaded is refreshed through
+ * its character's summary list instead (`idleSummaryRefreshes`).
+ */
+export function idleChatRefreshes(): ChatRef[] {
+    return refreshMarks().filter((ref) => canRefreshChat(ref) && !isUnloadedMember(ref));
+}
+
+/**
+ * The characters whose summary list is to be read inside the save cycle: they have a stale or noticed
+ * member that is not loaded and is idle here, and no order work (`canApplyRemoteCollection`). The
+ * list is applied by `applyRemoteCollection`, then `settleSummaryRefresh` ends those marks.
+ */
+export function idleSummaryRefreshes(): string[] {
+    const ids = new Set<string>();
+    for (const ref of refreshMarks()) {
+        if (
+            isUnloadedMember(ref) &&
+            canRefreshChat(ref) &&
+            findCharacter(ref.chaId) &&
+            canApplyRemoteCollection(ref.chaId)
+        ) {
+            ids.add(ref.chaId);
+        }
+    }
+    return [...ids];
+}
+
+/** The notice sequences of the refresh-marked chats of `chaIds`, taken when their summary lists are read. */
+export function summaryRefreshNotices(chaIds: readonly string[]): Map<string, number> {
+    const wanted = new Set(chaIds);
+    const notices = new Map<string, number>();
+    for (const [key, notice] of noticedChats) {
+        if (wanted.has(key.split("\u0000")[0])) {
+            notices.set(key, notice.seq);
+        }
+    }
+    return notices;
+}
+
+/**
+ * Ends the refresh marks of a character's idle unloaded members that its summary list, read after
+ * those marks (`notices`: each mark's notice sequence when the read was issued) and applied, answers:
+ * a member the list shows at or below its held revision (the list's newer summaries were adopted), or
+ * one the list no longer has (its removal, or the list's last-chat rule, settles it; a replacement
+ * comes with its own notice). A list older than the held order answers nothing; a notice that arrived
+ * during the read, or announces a revision the held one does not cover, keeps its mark.
+ */
+export function settleSummaryRefresh(
+    collection: { characterId: string; order: ChatOrderRecord | null; chats: readonly ListedChat[] },
+    notices: ReadonlyMap<string, number>,
+) {
+    const chaId = collection.characterId;
+    const heldOrder = orderRevisions.get(chaId);
+    if (
+        collection.order &&
+        heldOrder !== undefined &&
+        (compareRevision(collection.order.revision, heldOrder) ?? 0) < 0
+    ) {
+        return;
+    }
+    const byId = new Map(collection.chats.map((chat) => [chat.id, chat]));
+    for (const id of memberIds(chaId)) {
+        const ref = { chaId, chatId: id };
+        const key = keyOf(chaId, id);
+        if (!isUnloadedMember(ref) || !canRefreshChat(ref) || (!staleChats.has(key) && !noticedChats.has(key))) {
+            continue;
+        }
+        const record = byId.get(id);
+        const heldRevision = chatRevisions.get(key);
+        const covers = (revision: string) =>
+            heldRevision !== undefined && (compareRevision(revision, heldRevision) ?? 1) <= 0;
+        if (record && !covers(record.revision)) {
+            continue;
+        }
+        staleChats.delete(key);
+        const notice = noticedChats.get(key);
+        if (
+            notice &&
+            notice.seq <= (notices.get(key) ?? 0) &&
+            (notice.revision === null || !record || covers(notice.revision))
+        ) {
+            noticedChats.delete(key);
+        }
+    }
+    scheduleTrim();
 }
 
 /** The sequence of a chat's latest notice (0 without one), taken before its read for `finishIdleChatRefresh`. */
@@ -2483,8 +2932,16 @@ function removeRemoteChat(chaId: string, chatId: string) {
 
 /** The chat revisions this client holds for a character's chats (a collection read's deletion fence). */
 export function heldChatRevisionsOf(chaId: string): Map<string, string> {
-    const prefix = `${chaId}\u0000`;
-    return new Map([...chatRevisions].filter(([key]) => key.startsWith(prefix)));
+    return heldChatRevisionsByCharacter([chaId]).get(chaId)!;
+}
+
+/** `heldChatRevisionsOf` for several characters, in one pass over the held revisions. */
+export function heldChatRevisionsByCharacter(chaIds: readonly string[]): Map<string, Map<string, string>> {
+    const byCharacter = new Map(chaIds.map((chaId) => [chaId, new Map<string, string>()]));
+    for (const [key, revision] of chatRevisions) {
+        byCharacter.get(key.slice(0, key.indexOf("\u0000")))?.set(key, revision);
+    }
+    return byCharacter;
 }
 
 /** A queued or in-flight delete of this chat (the mirror no longer shows it). */
@@ -2527,7 +2984,9 @@ function dropAnsweredNotices() {
  * block, deferral, or quarantine; `idleChatRefreshes`); a notice at or below the held revision is
  * dropped (this tab's own save, or a job's chat event that applied it first). A chat the mirror does
  * not hold, of a character it holds, is a new chat: `"collection"` asks for the character's chat list
- * (`applyRemoteCollection`). Nothing is written and nothing is discarded.
+ * (`applyRemoteCollection`). A member that is not loaded is noticed too and also answers
+ * `"collection"`: its summary comes with that list (never a whole-chat read). Nothing is written and
+ * nothing is discarded.
  */
 export function noteRemoteChat(ref: ChatRef, revision: string | null): "noticed" | "collection" | "ignored" {
     const key = keyOf(ref.chaId, ref.chatId);
@@ -2548,7 +3007,7 @@ export function noteRemoteChat(ref: ChatRef, revision: string | null): "noticed"
     noticeSeq += 1;
     noticedChats.set(key, { seq: noticeSeq, revision });
     notifyWork();
-    return "noticed";
+    return isLoaded(ref) ? "noticed" : "collection";
 }
 
 /** The chat-order revision this client holds for a character, or null (read only). */
@@ -2577,19 +3036,22 @@ export function canApplyRemoteCollection(chaId: string): boolean {
 /**
  * Applies a character's chat list from a live update (another writer created, deleted, or reordered
  * its chats), never discarding local work: callers check `canApplyRemoteCollection` first, and an
- * older order than the held one is ignored. A chat with unsent or in-flight work, a running
- * generation, a deferral, or a quarantine keeps its local copy; a chat deleted here and not yet on
- * the server stays out; a local chat not on the server yet stays (after the server's); an idle local
- * chat the server no longer has is removed, only while its held revision is the one in `issued` (the
- * revisions held when the list was read). A chat's notice is dropped only when the adopted copy
- * covers it. Nothing is queued. Returns false when the character's order work is busy or a removal
- * was fenced (the caller reads the list again later).
+ * older order than the held one is ignored. The list's chats are whole chats or summaries (the save
+ * loop reads summaries). A chat with unsent or in-flight work, a running generation, a deferral, or a
+ * quarantine keeps its local copy; a chat deleted here and not yet on the server stays out; a local
+ * chat not on the server yet stays (after the server's); an idle local chat the server no longer has
+ * is removed, only while its held revision is the one in `issued` (the revisions held when the list
+ * was read). A newer server chat that is not loaded here (or new to the list) takes the summary and
+ * revision; a loaded one takes a whole chat when the list has it, else keeps its copy and held
+ * revision and is marked stale (the next cycle reads it whole). A chat's notice is dropped only when
+ * the adopted state covers it. Nothing is queued. Returns false when the character's order work is
+ * busy or a removal was fenced (the caller reads the list again later).
  */
 export function applyRemoteCollection(
     collection: {
         characterId: string;
         order: ChatOrderRecord | null;
-        chats: readonly ChatRecord[];
+        chats: readonly ListedChat[];
     },
     issued?: ReadonlyMap<string, string>,
 ): boolean {
@@ -2605,10 +3067,11 @@ export function applyRemoteCollection(
         return true;
     }
     const byId = new Map(collection.chats.map((chat) => [chat.id, chat]));
-    const local = new Map(chatsOf(chaId).map((chat) => [chat.id!, chat]));
-    const next: Chat[] = [];
+    const localIds = memberIds(chaId);
+    const next: ChatEntry[] = [];
     const placed = new Set<string>();
     const adopted: { key: string; revision: string }[] = [];
+    const outdated: string[] = [];
     for (const id of collection.order.ids) {
         const record = byId.get(id);
         if (!record || placed.has(id)) {
@@ -2616,7 +3079,7 @@ export function applyRemoteCollection(
         }
         placed.add(id);
         const key = keyOf(chaId, id);
-        const mine = local.get(id);
+        const mine = entryAt(chaId, id);
         const heldRevision = chatRevisions.get(key);
         if (!mine && hasUnsentDelete(key)) {
             // Deleted here, not yet on the server: stays out of the mirror (its delete settles it).
@@ -2630,18 +3093,25 @@ export function applyRemoteCollection(
             next.push(mine);
             continue;
         }
-        next.push(record.data);
+        const data = listedData(record);
+        if (mine?.chat && !data) {
+            // A newer summary of a loaded chat: the copy is not replaced by less than a whole chat.
+            next.push(mine);
+            outdated.push(key);
+            continue;
+        }
+        next.push(mine?.chat && data ? { id, chat: data } : { id, meta: listedMeta(record) });
         adopted.push({ key, revision: record.revision });
     }
     const removed: string[] = [];
-    for (const [id, chat] of local) {
+    for (const id of localIds) {
         if (placed.has(id)) {
             continue;
         }
         const key = keyOf(chaId, id);
         if (!chatRevisions.has(key) || !canRefreshChat({ chaId, chatId: id })) {
             // Not on the server yet, or busy here: kept; its own save (or a conflict) settles it.
-            next.push(chat);
+            next.push(entryAt(chaId, id)!);
             continue;
         }
         if (issued && issued.get(key) !== chatRevisions.get(key)) {
@@ -2655,7 +3125,7 @@ export function applyRemoteCollection(
         // the list is left as it is rather than creating a chat here, which would be a write. A
         // character with no chats on either side (another writer created it without one) has its
         // empty order held, so the chat this client gives it can be saved.
-        if (local.size === 0) {
+        if (localIds.length === 0) {
             orderRevisions.set(chaId, collection.order.revision);
         }
         return true;
@@ -2667,6 +3137,9 @@ export function applyRemoteCollection(
         settleNotice(key, revision);
         changed(key);
     }
+    for (const key of outdated) {
+        staleChats.add(key);
+    }
     for (const key of removed) {
         chatRevisions.delete(key);
         staleChats.delete(key);
@@ -2677,20 +3150,26 @@ export function applyRemoteCollection(
     mutationToken += 1;
     syncSelection(chaId);
     remoteListener?.({ chaId, chatId: "" });
+    if (outdated.length > 0) {
+        notifyWork();
+    }
     return true;
 }
 
 /**
  * Replaces a character's chat list with the server's (an order conflict, a chat another tab deleted,
- * or a character the mirror learns about): the server order and chats. A chat with unsent or
- * in-flight work or a running generation keeps its local copy; a local create the server already
- * holds counts as landed; a never-sent local chat stays (after the server's); a local chat the
- * server no longer has is dropped with its work, unless a generation runs in it (its reload waits).
+ * or a character the mirror learns about): the server order and chats (whole chats or summaries). A
+ * chat with unsent or in-flight work or a running generation keeps its local copy; a local create the
+ * server already holds counts as landed; a never-sent local chat stays (after the server's); a local
+ * chat the server no longer has is dropped with its work, unless a generation runs in it (its reload
+ * waits). An idle chat takes the server's state: a whole chat when it is loaded and the list has one,
+ * the summary and revision when it is not loaded (or new to the list); a loaded chat the list gives
+ * only a newer summary of keeps its copy and held revision and is marked stale (read whole next).
  */
 export function acceptRemoteCollection(collection: {
     characterId: string;
     order: ChatOrderRecord | null;
-    chats: readonly ChatRecord[];
+    chats: readonly ListedChat[];
 }) {
     const chaId = collection.characterId;
     const character = findCharacter(chaId);
@@ -2704,9 +3183,10 @@ export function acceptRemoteCollection(collection: {
     }
     orderRevisions.set(chaId, collection.order.revision);
     const byId = new Map(collection.chats.map((chat) => [chat.id, chat]));
-    const local = new Map(chatsOf(chaId).map((chat) => [chat.id!, chat]));
-    const next: Chat[] = [];
+    const localIds = memberIds(chaId);
+    const next: ChatEntry[] = [];
     const placed = new Set<string>();
+    let outdated = false;
     for (const id of collection.order.ids) {
         const record = byId.get(id);
         if (!record || placed.has(id)) {
@@ -2714,7 +3194,7 @@ export function acceptRemoteCollection(collection: {
         }
         placed.add(id);
         const key = keyOf(chaId, id);
-        const mine = local.get(id);
+        const mine = entryAt(chaId, id);
         const entry = pending.get(key);
         const busy = !canRefreshChat({ chaId, chatId: id });
         if (entry?.resend || entry?.create) {
@@ -2732,30 +3212,42 @@ export function acceptRemoteCollection(collection: {
             // chat changed.
             continue;
         }
+        const data = listedData(record);
+        const heldRevision = chatRevisions.get(key);
         if (mine && busy) {
             next.push(mine);
-            if (!chatRevisions.has(key)) {
+            if (heldRevision === undefined) {
                 holdChatRevision(key, record.revision);
             }
+        } else if (mine?.chat && !data) {
+            next.push(mine);
+            if (heldRevision === undefined) {
+                holdChatRevision(key, record.revision);
+            } else if ((compareRevision(record.revision, heldRevision) ?? 1) !== 0) {
+                // Not replaced by less than a whole chat: read whole in the next cycle.
+                staleChats.add(key);
+                outdated = true;
+            }
         } else {
-            next.push(record.data);
+            next.push(mine?.chat && data ? { id, chat: data } : { id, meta: listedMeta(record) });
             holdChatRevision(key, record.revision);
             staleChats.delete(key);
             changed(key);
         }
     }
-    for (const [id, chat] of local) {
+    for (const id of localIds) {
         if (placed.has(id)) {
             continue;
         }
         const key = keyOf(chaId, id);
         const entry = pending.get(key);
+        const mine = entryAt(chaId, id)!;
         if (quarantined.has(key) || entry?.create || entry?.resend || inflight.get(key)?.ops[0]?.op === "create") {
             // Not on the server yet (never sent, or a create whose attempt was rolled back or is
             // unresolved): it stays and its create goes out.
-            next.push(chat);
+            next.push(mine);
         } else if (isChatGenerating({ chaId, chatId: id })) {
-            next.push(chat);
+            next.push(mine);
             deferred.add(key);
         } else {
             discardChatWork(key, 0);
@@ -2765,7 +3257,7 @@ export function acceptRemoteCollection(collection: {
     }
     setChatList(chaId, next);
     mutationToken += 1;
-    if (next.some((chat) => !chatRevisions.has(keyOf(chaId, chat.id!)) && !quarantined.has(keyOf(chaId, chat.id!)))) {
+    if (next.some((chat) => !chatRevisions.has(keyOf(chaId, chat.id)) && !quarantined.has(keyOf(chaId, chat.id)))) {
         // Local chats still to be created were placed after the server's; a reorder sent after
         // their creates makes the server's order match the mirror.
         pendingOrders.set(chaId, nextSeq());
@@ -2773,71 +3265,273 @@ export function acceptRemoteCollection(collection: {
     ensureChat(chaId);
     syncSelection(chaId);
     remoteListener?.({ chaId, chatId: "" });
+    if (outdated) {
+        notifyWork();
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
-// Loading (Phase 6 slice 9a: boot loads every chat; slice 9b loads on demand and evicts)
+// Loading and eviction (Phase 6 slice 9b: chats load on demand; idle loaded chats are evicted)
+
+/** Whether a chat has local work or a protection that keeps its local copy as it is. */
+function isBusy(key: string): boolean {
+    return pending.has(key) || inflight.has(key) || quarantined.has(key) || deferred.has(key) || jobBlocked.has(key);
+}
+
+/** Marks a chat as just used (the eviction order). */
+function touch(key: string) {
+    useCounter += 1;
+    lastUse.set(key, useCounter);
+}
 
 /**
- * Reads a chat from the server and adopts it under the idle refresh's safeguards (`adoptChatRead`):
- * a chat with local work, a generation, a deferral, a quarantine, or a retry block keeps its copy,
- * a read older than the held revision changes nothing, a deletion applies only while the revision
- * held when the read was issued is still held, and a notice that arrived during the read keeps its
- * mark. A chat that is not in its character's list is never appended: the character's list is read
- * and applied instead (`applyRemoteCollection`, which leaves a list with order work alone). Resolves
- * to the loaded chat, or `undefined` when there is none; a failed read rejects.
+ * Reads a chat from the server and adopts it. A loaded chat is refreshed under the idle refresh's
+ * safeguards (`adoptChatRead`): a chat with local work, a generation, a deferral, a quarantine, or a
+ * retry block keeps its copy, a read older than the held revision changes nothing, a deletion applies
+ * only while the revision held when the read was issued is still held, and a notice that arrived
+ * during the read keeps its mark. A member that is not loaded is loaded (`readUnloaded`). A chat that
+ * is not in its character's list is never appended: the character's summary list is read and applied
+ * (`applyRemoteCollection`, which leaves a list with order work alone), then the chat is loaded if it
+ * is listed now. Every step is fenced on the owner's lifetime: a load issued before its character's
+ * chats were reset resolves to `undefined`. Resolves to the loaded chat, or `undefined` when there is
+ * none; a failed read rejects.
  */
 export async function loadChat(ref: ChatRef): Promise<DeepReadonly<Chat> | undefined> {
-    const notice = chatNoticeSeq(ref);
-    const issued = heldChatRevision(ref);
-    // The owner's lifetime when the read is issued: a read never applies to a later incarnation.
     const lifetime = lifetimeOf(ref.chaId);
     if (!isMember(ref)) {
-        const revisions = heldChatRevisionsOf(ref.chaId);
-        const read = await readRefs([], { chatCollections: [ref.chaId] });
-        const collection = read.chatCollections?.find((entry) => entry.characterId === ref.chaId);
-        if (collection && findCharacter(ref.chaId) && lifetimeOf(ref.chaId) === lifetime) {
-            applyRemoteCollection(collection, revisions);
+        await readSummaryList(ref.chaId, lifetime);
+        if (lifetimeOf(ref.chaId) !== lifetime || !isMember(ref)) {
+            return undefined;
         }
-        return heldChat(ref);
+        return heldChat(ref) ?? (await loadUnloaded(ref, lifetime));
     }
+    if (!isLoaded(ref)) {
+        return await loadUnloaded(ref, lifetime);
+    }
+    const notice = chatNoticeSeq(ref);
+    const issued = heldChatRevision(ref);
     const read = await readRefs([], { chats: [{ characterId: ref.chaId, id: ref.chatId }] });
     const server = read.chats?.find((chat) => chat.characterId === ref.chaId && chat.id === ref.chatId);
-    if (server && findCharacter(ref.chaId) && isMember(ref) && lifetimeOf(ref.chaId) === lifetime) {
-        adoptChatRead(server as RemoteChat, notice, issued);
+    if (lifetimeOf(ref.chaId) !== lifetime) {
+        return undefined;
+    }
+    if (server && findCharacter(ref.chaId) && isMember(ref)) {
+        if (isLoaded(ref)) {
+            adoptChatRead(server as RemoteChat, notice, issued);
+        } else {
+            // Evicted during the read: loaded again as an unloaded chat is.
+            return await loadUnloaded(ref, lifetime);
+        }
     }
     return heldChat(ref);
 }
 
+/** Reads a character's summary list and applies it as a live update (fenced on the owner's lifetime). */
+async function readSummaryList(chaId: string, lifetime: string) {
+    const revisions = heldChatRevisionsOf(chaId);
+    const read = await readRefs([], { chatSummaryCollections: [chaId] });
+    const collection = read.chatSummaryCollections?.find((entry) => entry.characterId === chaId);
+    if (collection && findCharacter(chaId) && lifetimeOf(chaId) === lifetime) {
+        applyRemoteCollection(collection, revisions);
+    }
+}
+
+/** Loads one unloaded member, sharing a load of the same chat in flight in the same owner lifetime. */
+function loadUnloaded(ref: ChatRef, lifetime: string): Promise<DeepReadonly<Chat> | undefined> {
+    const key = keyOf(ref.chaId, ref.chatId);
+    const running = loading.get(key);
+    if (running && running.lifetime === lifetime) {
+        return running.promise;
+    }
+    const promise = (async () => {
+        try {
+            await readUnloaded(ref.chaId, [ref.chatId], lifetime);
+        } finally {
+            if (loading.get(key)?.promise === promise) {
+                loading.delete(key);
+            }
+        }
+        return lifetimeOf(ref.chaId) === lifetime ? heldChat(ref) : undefined;
+    })();
+    loading.set(key, { lifetime, promise });
+    return promise;
+}
+
 /**
- * A chat of its character's list, loaded: at once when it is (always in 9a), else through
- * `loadChat`. A chat that is not in the list (deleted, or not known here yet) resolves to
- * `undefined` without a read: the list's membership comes from its own reads.
+ * Reads unloaded members of a character (`LOAD_CHUNK` per request) and installs them (`installRead`).
+ * A read older than the held revision is read again, at most `MAX_LOAD_READS` times, then the load
+ * fails (rejects). A chat the server reports gone is removed under the issued-revision fence, and the
+ * character's summary list is read so a replacement is found. Stops when the owner's lifetime changed.
+ */
+async function readUnloaded(chaId: string, ids: readonly string[], lifetime: string) {
+    let wanted = [...ids];
+    for (let attempt = 0; attempt < MAX_LOAD_READS && wanted.length > 0; attempt++) {
+        const issued = new Map(wanted.map((id) => [id, chatRevisions.get(keyOf(chaId, id)) ?? null]));
+        const records = new Map<string, RemoteChat>();
+        for (let start = 0; start < wanted.length; start += LOAD_CHUNK) {
+            const read = await readRefs([], {
+                chats: wanted.slice(start, start + LOAD_CHUNK).map((id) => ({ characterId: chaId, id })),
+            });
+            if (lifetimeOf(chaId) !== lifetime) {
+                return;
+            }
+            for (const chat of read.chats ?? []) {
+                if (chat.characterId === chaId) {
+                    records.set(chat.id, chat as RemoteChat);
+                }
+            }
+        }
+        if (!findCharacter(chaId)) {
+            return;
+        }
+        const retry: string[] = [];
+        let gone = false;
+        for (const id of wanted) {
+            const outcome = installRead(chaId, id, records.get(id), issued.get(id) ?? null);
+            if (outcome === "retry") {
+                retry.push(id);
+            } else if (outcome === "gone") {
+                gone = true;
+            }
+        }
+        if (gone) {
+            await readSummaryList(chaId, lifetime);
+            if (lifetimeOf(chaId) !== lifetime) {
+                return;
+            }
+        }
+        wanted = retry.filter((id) => isUnloadedMember({ chaId, chatId: id }));
+    }
+    if (wanted.length > 0) {
+        throw new Error("The chat could not be loaded: the server kept answering an older copy");
+    }
+}
+
+/**
+ * Installs a read of an unloaded member: "installed"; "skip" (no longer an unloaded member, or busy
+ * with a deletion pending here); "gone" (removed: the server no longer has it); "retry" (the read is
+ * older than the held revision, or an overtaken deletion). A chat with local work keeps its list
+ * fields: an unloaded chat's summary is the local truth of those fields, laid over the read.
+ */
+function installRead(
+    chaId: string,
+    id: string,
+    server: RemoteChat | undefined,
+    issued: string | null,
+): "installed" | "skip" | "gone" | "retry" {
+    const ref = { chaId, chatId: id };
+    const key = keyOf(chaId, id);
+    if (!isUnloadedMember(ref)) {
+        return "skip";
+    }
+    if (!server) {
+        return "retry";
+    }
+    const heldRevision = chatRevisions.get(key);
+    if (server.revision === null || !server.data) {
+        if ((heldRevision ?? null) !== issued) {
+            return "retry";
+        }
+        if (isBusy(key)) {
+            return "skip";
+        }
+        noticedChats.delete(key);
+        removeRemoteChat(chaId, id);
+        return "gone";
+    }
+    if (heldRevision !== undefined && (compareRevision(server.revision, heldRevision) ?? -1) < 0) {
+        return "retry";
+    }
+    const chat = clone<Chat>(server.data);
+    const holding = holdingOf(chaId);
+    const busy = isBusy(key);
+    if (busy) {
+        const summary = holding.summaries[slot(id)] ?? metaOf({});
+        const fields = chat as unknown as Record<string, unknown>;
+        for (const field of Object.keys(SUMMARY_FIELD_TYPES)) {
+            const value = (summary as Record<string, unknown>)[field];
+            if (value === undefined) {
+                delete fields[field];
+            } else {
+                fields[field] = value;
+            }
+        }
+        // The copy is not all the server's at this revision (its list fields are ours): read whole
+        // again once the local work settles, whatever the acknowledgement says.
+        staleChats.add(key);
+    } else {
+        staleChats.delete(key);
+    }
+    holding.chats[slot(id)] = chat;
+    delete holding.summaries[slot(id)];
+    loadedKeys.add(key);
+    holdChatRevision(key, server.revision);
+    if (!busy) {
+        settleNotice(key, server.revision);
+    }
+    changed(key);
+    touch(key);
+    scheduleTrim();
+    return "installed";
+}
+
+/**
+ * A chat of its character's list, loaded: at once when it is (and marked as just used), else through
+ * `loadChat`. A chat that is not in the list (deleted, or not known here yet) resolves to `undefined`
+ * without a read: the list's membership comes from its own reads. Pin the chat (`pinChat`) to keep
+ * it loaded across a later await.
  */
 export async function ensureChatLoaded(ref: ChatRef): Promise<DeepReadonly<Chat> | undefined> {
     if (!isMember(ref)) {
         return undefined;
     }
-    return heldChat(ref) ?? (await loadChat(ref));
+    const chat = heldChat(ref);
+    if (chat) {
+        touch(keyOf(ref.chaId, ref.chatId));
+        return chat;
+    }
+    return await loadUnloaded(ref, lifetimeOf(ref.chaId));
 }
 
 /**
- * A character's chats in order, every one loaded. In 9a every listed chat is loaded at boot, so this
- * resolves at once with the current local list (it does not refresh it from the server).
+ * A character's chats in order, every one loaded: the unloaded members are read (pinned while this
+ * works, `LOAD_CHUNK` per request), again while the list changes meanwhile (at most
+ * `MAX_LOAD_READS` rounds). Rejects when they could not all be loaded; resolves to an empty list when
+ * the character's chats were reset meanwhile. Pin the character (`pinChats`) first to keep them
+ * loaded after it resolves.
  */
 export async function loadChats(chaId: string): Promise<readonly DeepReadonly<Chat>[]> {
-    return chatsOf(chaId);
+    const lifetime = lifetimeOf(chaId);
+    const release = pinChats(chaId);
+    try {
+        for (let round = 0; round < MAX_LOAD_READS; round++) {
+            if (lifetimeOf(chaId) !== lifetime) {
+                return [];
+            }
+            const missing = memberIds(chaId).filter((id) => !isLoaded({ chaId, chatId: id }));
+            if (missing.length === 0) {
+                return chatsOf(chaId);
+            }
+            await readUnloaded(chaId, missing, lifetime);
+        }
+        if (lifetimeOf(chaId) !== lifetime) {
+            return [];
+        }
+        if (!chatsLoaded(chaId)) {
+            throw new Error("The chats of this character could not be loaded");
+        }
+        return chatsOf(chaId);
+    } finally {
+        release();
+    }
 }
 
-/**
- * Pins a character's chats (they stay loaded while a consumer that needs the whole set works);
- * call it before awaiting a load. Returns the release (idempotent).
- */
-export function pinChats(chaId: string): () => void {
-    let counter = pins.get(chaId);
+/** Takes a pin under `key` (a `chaId`, or a chat's `keyOf`); the release is idempotent and schedules a trim. */
+function pinKey(key: string): () => void {
+    let counter = pins.get(key);
     if (!counter) {
         counter = { count: 0 };
-        pins.set(chaId, counter);
+        pins.set(key, counter);
     }
     const pinned = counter;
     pinned.count += 1;
@@ -2848,10 +3542,24 @@ export function pinChats(chaId: string): () => void {
         }
         released = true;
         pinned.count -= 1;
-        if (pinned.count <= 0 && pins.get(chaId) === pinned) {
-            pins.delete(chaId);
+        if (pinned.count <= 0 && pins.get(key) === pinned) {
+            pins.delete(key);
         }
+        scheduleTrim();
     };
+}
+
+/**
+ * Pins a character's chats (none of its loaded chats is evicted while a consumer that needs the whole
+ * set works); call it before awaiting a load. Returns the release (idempotent).
+ */
+export function pinChats(chaId: string): () => void {
+    return pinKey(chaId);
+}
+
+/** Pins one chat (it is not evicted while a consumer works with it); call it before awaiting its load. */
+export function pinChat(ref: ChatRef): () => void {
+    return pinKey(keyOf(ref.chaId, ref.chatId));
 }
 
 /** Whether a consumer pinned a character's chats (`pinChats`). */
@@ -2859,14 +3567,81 @@ export function isChatPinned(chaId: string): boolean {
     return (pins.get(chaId)?.count ?? 0) > 0;
 }
 
+/** Whether a loaded chat may be evicted (`trimLoadedChats`). */
+function isEvictable(ref: ChatRef, current: ChatRef | null): boolean {
+    const key = keyOf(ref.chaId, ref.chatId);
+    return (
+        chatRevisions.has(key) &&
+        !(current !== null && current.chaId === ref.chaId && current.chatId === ref.chatId) &&
+        (pins.get(ref.chaId)?.count ?? 0) === 0 &&
+        (pins.get(key)?.count ?? 0) === 0 &&
+        !isBusy(key) &&
+        !isChatGenerating(ref) &&
+        !staleChats.has(key) &&
+        !noticedChats.has(key) &&
+        !(streamingState.chaId === ref.chaId && streamingState.chatId === ref.chatId)
+    );
+}
+
+/**
+ * Evicts the least recently used idle loaded chats beyond `MAX_LOADED_CHATS`: each is kept as its
+ * summary, with its revision and version. Never the selected chat, a pinned one (or one of a pinned
+ * character), one with local work or a protection, a generating one, one waiting for a refresh, or
+ * one not saved yet. Nothing is written.
+ */
+export function trimLoadedChats() {
+    if (loadedKeys.size <= MAX_LOADED_CHATS) {
+        return;
+    }
+    untrack(() => {
+        const current = currentChatRef();
+        const candidates: { chaId: string; id: string; use: number }[] = [];
+        for (const key of [...loadedKeys]) {
+            const [chaId, id] = key.split("\u0000");
+            const ref = { chaId, chatId: id };
+            if (!heldChat(ref) || !isMember(ref)) {
+                loadedKeys.delete(key);
+                continue;
+            }
+            if (isEvictable(ref, current) && findCharacter(chaId)) {
+                candidates.push({ chaId, id, use: lastUse.get(key) ?? 0 });
+            }
+        }
+        if (candidates.length <= MAX_LOADED_CHATS) {
+            return;
+        }
+        candidates.sort((a, b) => a.use - b.use);
+        for (const { chaId, id } of candidates.slice(0, candidates.length - MAX_LOADED_CHATS)) {
+            const holding = holdingAt(chaId)!;
+            holding.summaries[slot(id)] = metaOf(holding.chats[slot(id)]);
+            delete holding.chats[slot(id)];
+            loadedKeys.delete(keyOf(chaId, id));
+        }
+        mutationToken += 1;
+    });
+}
+
+/** Schedules `trimLoadedChats` once, after the current task (a caller reading right after a release still finds its chat). */
+export function scheduleTrim() {
+    if (trimTimer !== null) {
+        return;
+    }
+    trimTimer = setTimeout(() => {
+        trimTimer = null;
+        trimLoadedChats();
+    }, 0);
+}
+
 /**
  * The facade view of a character's chats (`DBState.db.characters[i].chats`/`chatPage`) for the
  * readers left on the aggregate until `aggregate-removal` (the shared CBS host and evaluator): the
- * held chats in order and the selected chat's index. Read-only by contract; not enforced.
+ * loaded chats in order and the selected chat's index among them (-1 when it is not loaded). Those
+ * readers find a chat by its ref's id or the selected one; an unloaded chat is not found. Read-only
+ * by contract; not enforced.
  */
 setCharacterChatView({
     chats: (chaId) => chatsOf(chaId),
-    chatPage: (chaId) => selectedChatIndex(chaId),
+    chatPage: (chaId) => compatChatPage(chaId),
 });
 
 /** Deferred chats whose server job has ended: their reload can run. */

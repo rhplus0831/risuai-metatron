@@ -176,9 +176,12 @@ async function boot(options: { secret?: boolean } = {}) {
 
     const db = () => stores.DBState.db as any;
     const character = (id = "c") => db().characters.find((entry: any) => entry.chaId === id);
-    const chatIds = (id = "c") => character(id).chats.map((entry: any) => entry.id);
-    // The chat module's own read (Phase 6 slice 9a): the facade's `chats` builds a fresh list on
-    // every read, which a check over a thousand chats would rebuild once per chat.
+    // The membership (Phase 6 slice 9b): a chat another writer created is listed as a summary until it
+    // is loaded, so the facade (the loaded chats only) is not the list.
+    const chatIds = (id = "c") => chatModule.chatList(id).map((entry) => entry.id);
+    // The chat module's own read of a loaded chat (Phase 6 slice 9a): the facade's `chats` builds a
+    // fresh list on every read, which a check over a thousand chats would rebuild once per chat. A
+    // case reading a chat that arrived as a summary loads it first (`ensureChatLoaded`).
     const texts = (chaId: string, chatId: string) =>
         chatModule.findChat({ chaId, chatId })!.message.map((message: any) => message.data);
     return {
@@ -418,7 +421,7 @@ describe("records another writer committed", () => {
 
 describe("characters another writer created or deleted", () => {
     it("inserts a new character with its chats, without a write", async () => {
-        const { fake, character, chatIds, texts } = await boot();
+        const { fake, chat, character, chatIds, texts } = await boot();
         fake.store.applyChanges({
             ops: [{ kind: characterKind(fake), id: "n", baseRevision: null, data: { chaId: "n", name: "N" } }],
             chats: [create("n", "q", [m("y", "Y")])],
@@ -426,6 +429,9 @@ describe("characters another writer created or deleted", () => {
         await settle(fake);
         expect(character("n").name).toBe("N");
         expect(chatIds("n")).toEqual(["q"]);
+        // The new character's chat arrived as a summary (Phase 6 slice 9b): loaded to read its messages.
+        expect(chat.findChat({ chaId: "n", chatId: "q" })).toBeUndefined();
+        await chat.ensureChatLoaded({ chaId: "n", chatId: "q" });
         expect(texts("n", "q")).toEqual(["Y"]);
         expect(fake.batchCount()).toBe(0);
         noNotice();
@@ -559,7 +565,7 @@ describe("characters another writer created or deleted", () => {
     });
 
     it("refreshes a chat edited while its new character's first read was out (finding 1)", async () => {
-        const { fake, texts, intercept } = await boot();
+        const { fake, chat, texts, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         fake.store.applyChanges({
             ops: [{ kind: characterKind(fake), id: "e", baseRevision: null, data: { chaId: "e", name: "E" } }],
@@ -578,6 +584,11 @@ describe("characters another writer created or deleted", () => {
         ]);
         intercept.release!();
         await settle(fake);
+        // The chat arrived as a summary (Phase 6 slice 9b): the notice that reached the tab while the
+        // read was out refreshed its summary (held at the server's revision), without loading it.
+        expect(chat.findChat({ chaId: "e", chatId: "e1" })).toBeUndefined();
+        expect(chat.heldChatRevision({ chaId: "e", chatId: "e1" })).toBe(fake.chat("e", "e1")!.revision);
+        await chat.ensureChatLoaded({ chaId: "e", chatId: "e1" });
         expect(texts("e", "e1")).toEqual(["second"]);
         expect(fake.batchCount()).toBe(0);
     });
@@ -877,11 +888,16 @@ describe("work that waits", () => {
     });
 
     it("reads at most 1,000 announced chats per request and reaches every one", async () => {
-        const { fake, live, flushFeed, character, texts } = await boot();
+        const { fake, chat, live, flushFeed, chatIds, texts } = await boot();
         const ids = Array.from({ length: 1001 }, (_, index) => `n${index}`);
         fake.store.applyChanges({ chats: ids.map((id) => create("d", id, [m(`${id}-m`, "old")])) });
         await settle(fake);
-        expect(character("d").chats).toHaveLength(1002);
+        expect(chatIds("d")).toHaveLength(1002);
+        // The announced chats are read whole only while they are loaded (an unloaded one is refreshed
+        // through its character's summary list, Phase 6 slice 9b): loaded here, and pinned so the
+        // trim keeps them, as a reader of a thousand chats would hold them.
+        const release = chat.pinChats("d");
+        await chat.loadChats("d");
         fake.requests.length = 0;
         live.paused = true;
         fake.store.applyChanges({
@@ -902,12 +918,14 @@ describe("work that waits", () => {
         expect(sizes.reduce((sum, size) => sum + size, 0)).toBe(1001);
         expect(ids.every((id) => texts("d", id)[0] === "new")).toBe(true);
         expect(fake.batchCount()).toBe(0);
-    });
+        release();
+        // A thousand chats inserted, loaded, and refreshed: over the default budget under the suite's load.
+    }, 20_000);
 });
 
 describe("the reconcile after a `hello`", () => {
     it("reads every record that differs, drops a removed one, and reads nothing when nothing differs", async () => {
-        const { fake, sync, live, db, character, chatIds } = await boot();
+        const { fake, sync, live, db, character, chatIds, texts } = await boot();
         live.paused = true;
         editUi(fake, { zoomsize: 175 });
         fake.store.delete(characterKind(fake), "d", fake.record("characters", "d")!.revision);
@@ -928,7 +946,7 @@ describe("the reconcile after a `hello`", () => {
         expect(db().zoomsize).toBe(175);
         expect(character("d")).toBeUndefined();
         expect(chatIds()).toEqual(["k", "j", "z"]);
-        expect(character().chats[0].message[0].data).toBe("A9");
+        expect(texts("c", "k")[0]).toBe("A9");
         expect(fake.batchCount()).toBe(0);
         noNotice();
         const before = reads(fake);

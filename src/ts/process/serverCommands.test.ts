@@ -35,7 +35,10 @@ const stubs = vi.hoisted(() => ({
     notices: vi.fn<() => number>(() => 0),
     /** `watchForRestore`: whether a restore replaced the data (a job ended by `maintenance` waits on it). */
     restored: vi.fn<() => Promise<boolean>>(async () => false),
-    findChat: vi.fn(() => ({})),
+    /** `ensureChatLoaded`: the target chat, loaded (Phase 6 slice 9b); `undefined` for a chat that is not listed. */
+    load: vi.fn<() => Promise<unknown>>(async () => ({})),
+    /** `pinChat`: a release per pin, so the runner's pin/release pairs run as the real ones do. */
+    pin: vi.fn(() => vi.fn()),
     held: vi.fn<() => string | null>(() => "e:1:1"),
     bound: vi.fn<() => { id: string } | null>(() => null),
 }));
@@ -81,7 +84,11 @@ vi.mock("../network/generationJobs", () => ({
     releaseGenerationJob: stubs.release,
     savedGenerationJobIds: stubs.saved,
 }));
-vi.mock("../storage/chatStore.svelte", () => ({ findChat: stubs.findChat, heldChatRevision: stubs.held }));
+vi.mock("../storage/chatStore.svelte", () => ({
+    ensureChatLoaded: stubs.load,
+    heldChatRevision: stubs.held,
+    pinChat: stubs.pin,
+}));
 vi.mock("../storage/resourceClient", () => ({ getResourceEpoch: () => EPOCH, ResourceRequestError: RequestError }));
 vi.mock("../storage/database.svelte", () => ({ getDatabase: () => ({}) }));
 vi.mock("../storage/forwarding.svelte", () => ({
@@ -117,6 +124,8 @@ beforeEach(async () => {
     stubs.create.mockReset();
     stubs.saved.mockReset().mockReturnValue([]);
     stubs.held.mockReset().mockReturnValue("e:1:1");
+    stubs.load.mockReset().mockResolvedValue({});
+    stubs.pin.mockReset().mockImplementation(() => vi.fn());
     stubs.bound.mockReset().mockReturnValue(null);
     stubs.flush.mockReset().mockResolvedValue({ discarded: [] });
     stubs.notices.mockReset().mockReturnValue(0);
@@ -328,7 +337,7 @@ describe("runServerButton", () => {
         await commands.runServerButton(char, "go", ref);
         stubs.flush.mockRejectedValueOnce(new Error("offline"));
         await commands.runServerButton(char, "go", ref);
-        stubs.findChat.mockReturnValueOnce(undefined as never);
+        stubs.load.mockResolvedValueOnce(undefined);
         await commands.runServerButton(char, "go", ref);
         stubs.held.mockReturnValueOnce(null);
         await commands.runServerButton(char, "go", ref);
@@ -416,7 +425,7 @@ describe("runServerManualTrigger", () => {
         outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
         stubs.flush.mockRejectedValueOnce(new Error("offline"));
         outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
-        stubs.findChat.mockReturnValueOnce(undefined as never);
+        stubs.load.mockResolvedValueOnce(undefined);
         outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
         stubs.held.mockReturnValueOnce(null);
         outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
@@ -721,5 +730,100 @@ describe("`/multisend` follow-ups of a command job (slice 11b)", () => {
         expect(followUpStubs.runMultisend).toHaveBeenCalledWith({ chaId: "c", chatId: "k" }, false, ["x"]);
         expect(console.error).toHaveBeenCalledWith("[Generation]", expect.any(Error));
         expect(stubs.release).not.toHaveBeenCalled();
+    });
+});
+
+// Phase 6 slice 9b: the job's chat is pinned from the start and loaded after the flush, before the
+// job is created (a failed load alerts and runs nothing); a followed job's chat is pinned once it is
+// known and loaded before the follow attaches (retried like a status read; a load that keeps failing
+// makes the job lost); the follow-ups take their own pin. Every exit releases the pin once.
+describe("the job's chat (Phase 6 slice 9b)", () => {
+    const char = { chaId: "c", type: "character" } as never;
+    /** Whether every pin taken so far was released exactly once. */
+    const pinsBalanced = () =>
+        stubs.pin.mock.results.every((result) => (result.value as ReturnType<typeof vi.fn>).mock.calls.length === 1);
+    const order = (fn: { mock: { invocationCallOrder: number[] } }, index = 0) => fn.mock.invocationCallOrder[index];
+    const settle = async () => {
+        for (let round = 0; round < 8; round += 1) {
+            await flush();
+        }
+    };
+
+    it("pins the target before the flush, loads it after the flush and before the create, holds the pin while the job runs, and releases it once on every exit", async () => {
+        stubs.create.mockResolvedValue("j");
+        const run = commands.runServerButton(char, "go", ref);
+        await flush();
+        expect(stubs.pin).toHaveBeenCalledWith(ref);
+        expect(order(stubs.pin)).toBeLessThan(order(stubs.flush));
+        expect(stubs.load).toHaveBeenCalledWith(ref);
+        expect(order(stubs.load)).toBeGreaterThan(order(stubs.flush));
+        expect(order(stubs.load)).toBeLessThan(order(stubs.create));
+        // Held while the job runs (the runner's pin and the follow's).
+        expect(pinsBalanced()).toBe(false);
+        endWith(follows()[0], done);
+        await run;
+        expect(pinsBalanced()).toBe(true);
+
+        // A failed load: alerted, nothing created, the pin released.
+        stubs.load.mockRejectedValueOnce(new Error("offline"));
+        await commands.runServerButton(char, "go", ref);
+        expect(stubs.create).toHaveBeenCalledTimes(1);
+        expect(stubs.alertError).toHaveBeenLastCalledWith(expect.stringMatching(/could not be loaded.*offline/));
+        expect(pinsBalanced()).toBe(true);
+        // A refused flush and a target that is not listed: nothing created, the pin released.
+        stubs.flush.mockRejectedValueOnce(new Error("offline"));
+        await commands.runServerButton(char, "go", ref);
+        stubs.load.mockResolvedValueOnce(undefined);
+        await commands.runServerButton(char, "go", ref);
+        expect(stubs.create).toHaveBeenCalledTimes(1);
+        expect(stubs.pin).toHaveBeenCalledTimes(5);
+        expect(pinsBalanced()).toBe(true);
+    });
+
+    it("followJobToEnd loads the job's chat before attaching, retrying a failed load; a load that keeps failing, or a chat that is not listed, releases the job as lost", async () => {
+        stubs.load.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({});
+        const end = commands.followJobToEnd("j", ref);
+        await settle();
+        expect(stubs.load).toHaveBeenCalledTimes(2);
+        expect(follows()).toHaveLength(1);
+        // Pinned before the load, loaded before the attach.
+        expect(order(stubs.pin)).toBeLessThan(order(stubs.load));
+        endWith(follows()[0], done);
+        expect(await end).toEqual(done);
+        expect(stubs.release).not.toHaveBeenCalled();
+        expect(pinsBalanced()).toBe(true);
+
+        stubs.load.mockReset().mockRejectedValue(new Error("offline"));
+        expect(await commands.followJobToEnd("j2", ref)).toBe("lost");
+        expect(stubs.load).toHaveBeenCalledTimes(5);
+        expect(follows()).toHaveLength(1);
+        expect(stubs.release).toHaveBeenCalledWith("j2");
+        expect(stubs.alertError).toHaveBeenCalledTimes(1);
+        expect(stubs.alertError.mock.calls[0][0]).toMatch(/lost/);
+        expect(pinsBalanced()).toBe(true);
+
+        stubs.load.mockReset().mockResolvedValue(undefined);
+        expect(await commands.followJobToEnd("j3", ref)).toBe("lost");
+        expect(stubs.load).toHaveBeenCalledTimes(1);
+        expect(stubs.release).toHaveBeenCalledWith("j3");
+        expect(pinsBalanced()).toBe(true);
+    });
+
+    it("a job discovered at boot pins its chat once the status names it; the follow-ups take their own pin, released after they ran", async () => {
+        stubs.read.mockResolvedValue(status);
+        followUpStubs.runMultisend.mockReset().mockResolvedValue(true);
+        const end = commands.followJobToEnd("j");
+        await settle();
+        expect(stubs.pin).toHaveBeenCalledTimes(1);
+        expect(stubs.pin).toHaveBeenCalledWith({ chaId: "c", chatId: "k" });
+        expect(order(stubs.read)).toBeLessThan(order(stubs.pin));
+        expect(stubs.load).toHaveBeenCalledWith({ chaId: "c", chatId: "k" });
+        endWith(follows()[0], { ...done, followUps: [{ clear: false, parts: ["x"] }] });
+        await end;
+        await settle();
+        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(1);
+        // The follow's pin and the follow-ups' pin, both released.
+        expect(stubs.pin).toHaveBeenCalledTimes(2);
+        expect(pinsBalanced()).toBe(true);
     });
 });

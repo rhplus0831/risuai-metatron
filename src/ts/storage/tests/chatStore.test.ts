@@ -6,6 +6,13 @@ import { StoreBackedServer } from "./storeBackedServer";
 // generation lock, conflict recovery, and the three-way `applyChatResult`. The save loop is driven by
 // hand here (`take` → `store.applyChanges` → `ack`); `resourceSyncChats.test.ts` runs it for real.
 
+/** The server of the running test, for the chat module's own reads (a load of a chat held as its summary). */
+const { serverHolder } = vi.hoisted(() => ({ serverHolder: { current: null as any } }));
+
+vi.mock("../nodeStorage", () => ({
+    authFetch: (path: string, init?: RequestInit) => serverHolder.current.fetch(path, init),
+    getNodeServerProxyAuth: async () => "signed-token",
+}));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),
@@ -37,6 +44,7 @@ const texts = (chat: { message: readonly { data: string }[] } | undefined) =>
 async function boot(server?: StoreBackedServer) {
     vi.resetModules();
     server ??= await StoreBackedServer.create();
+    serverHolder.current = server;
     const characters = server.kind("characters");
     if (!server.record("characters", "c")) {
         server.store.applyChanges({
@@ -475,10 +483,16 @@ describe("conflict recovery", () => {
             },
         ]);
         chat.deleteChat(ref);
-        expect(character().chats.map((entry: any) => entry.id)).toEqual(["j"]);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["j"]);
         recover(take());
-        expect(character().chats.map((entry: any) => entry.id)).toEqual(["k", "j"]);
+        // The recovered list brings `k` back as its summary (Phase 6 slice 9b): listed at its server
+        // position, in the facade (the loaded chats) only once it is loaded.
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
+        expect(character().chats.map((entry: any) => entry.id)).toEqual(["j"]);
         expect(server.order("c")!.ids).toEqual(["k", "j"]);
+        expect(chat.findChat(ref)).toBeUndefined();
+        await chat.ensureChatLoaded(ref);
+        expect(character().chats.map((entry: any) => entry.id)).toEqual(["k", "j"]);
         expect(texts(chat.findChat(ref))).toEqual(["A", "remote edit", "C"]);
         expect(chat.chatDiscardsSince(0)).toEqual(["c/k"]);
         expect(chat.hasChatWork()).toBe(false);
@@ -502,9 +516,11 @@ describe("conflict recovery", () => {
         expect(() => apply(reorder)).toThrow(server.errors.ResourceBatchConflictError);
         const { conflicts } = recover(reorder);
         expect(conflicts).toEqual([{ kind: "chatOrder", characterId: "c", revision: expect.any(String) }]);
-        // The collection read brings the other tab's chat in; the server order stands.
-        expect(character().chats.map((entry: any) => entry.id)).toEqual(server.order("c")!.ids);
-        expect(character().chats.map((entry: any) => entry.id)).toEqual(["k", "local", "r"]);
+        // The collection read brings the other tab's chat in (as its summary, Phase 6 slice 9b); the
+        // server order stands.
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(server.order("c")!.ids);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "local", "r"]);
+        expect(character().chats.map((entry: any) => entry.id)).toEqual(["k", "local"]);
         expect(chat.hasChatWork()).toBe(false);
     });
 });
