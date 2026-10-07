@@ -1,8 +1,10 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { configDefaults, defineConfig } from "vitest/config";
+import { lucideImports } from "./vitest.lucideImports";
 
 export default defineConfig({
-    plugins: [svelte()],
+    // `lucideImports` keeps each test from importing every icon (see the file).
+    plugins: [lucideImports(), svelte()],
     resolve: {
         alias: {
             src: "/src",
