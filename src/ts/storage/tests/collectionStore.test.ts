@@ -464,3 +464,109 @@ describe("character order, plugins, and OAuth entries", () => {
         ]);
     });
 });
+
+describe("named credentials (docs/plan/shared-api-keys.md)", () => {
+    const keyPath = (id: string) => ({ kind: "entry" as const, field: "credentials" as const, id });
+
+    it("adds metadata only, takes its key through the credential route, and a delete removes both but leaves the bindings", async () => {
+        const { sync, collectionStore, record, settings, fake, mirrorText } = await boot();
+        const secrets = await import("../llmSecrets.svelte");
+        const work = collectionStore.addCredential({ name: "Work", type: "openai" });
+        const sa = collectionStore.addCredential({
+            name: "SA",
+            type: "vertex",
+            clientEmail: "sa@example.test",
+            projectId: "proj-2",
+        });
+        secrets.setSecret(keyPath(work), "sk-named-SENTINEL");
+        collectionStore.setModelCredential("gpt-5.5", work);
+        await sync.flushResources();
+        expect(record("credentials")).toEqual([
+            { id: work, name: "Work", type: "openai" },
+            { id: sa, name: "SA", type: "vertex", clientEmail: "sa@example.test", projectId: "proj-2" },
+        ]);
+        expect(fake.secretRequests().map((request: any) => request.path)).toEqual([
+            `/api/llm-secrets/credentials/~${work}/key`,
+        ]);
+        expect(record("llmSecrets").credentials).toEqual({ [work]: { key: "sk-named-SENTINEL" } });
+        expect(JSON.stringify(fake.batchBodies())).not.toContain("sk-named-SENTINEL");
+        expect(mirrorText()).not.toContain("sk-named-SENTINEL");
+
+        expect(collectionStore.deleteCredential(work)).toBe(true);
+        expect(collectionStore.deleteCredential("missing-id")).toBe(false);
+        await sync.flushResources();
+        expect(record("credentials").map((entry: any) => entry.id)).toEqual([sa]);
+        expect(record("llmSecrets").credentials).toEqual({});
+        // The binding stays: the server refuses its requests, and the UI shows it as missing.
+        expect(record("providers").modelCredentials).toEqual({ "gpt-5.5": work });
+        expect(settings.providers.modelCredentials).toEqual({ "gpt-5.5": work });
+    });
+
+    it("updates a name and the Vertex fields, removes an optional field with undefined, and refuses a type change", async () => {
+        const { sync, collectionStore, record, refused, validation } = await boot();
+        const sa = collectionStore.addCredential({ name: "SA", type: "vertex", clientEmail: "a@x.test" });
+        const work = collectionStore.addCredential({ name: "Work", type: "anthropic" });
+        expect(collectionStore.updateCredential(sa, { name: "Service", projectId: "p", clientEmail: undefined })).toBe(
+            true,
+        );
+        expect(collectionStore.updateCredential(work, { name: "Job", type: "anthropic" })).toBe(true);
+        expect(collectionStore.updateCredential("missing-id", { name: "x" })).toBe(false);
+        await sync.flushResources();
+        expect(record("credentials")).toEqual([
+            { id: sa, name: "Service", type: "vertex", projectId: "p" },
+            { id: work, name: "Job", type: "anthropic" },
+        ]);
+        const invalid = validation.MutationValidationError;
+        await refused(() => collectionStore.updateCredential(work, { type: "openai" }), invalid);
+        await refused(() => collectionStore.updateCredential(work, { clientEmail: "a@x.test" }), invalid);
+        await refused(() => collectionStore.updateCredential(work, { key: "sk-leak" }), invalid);
+        await refused(() => collectionStore.updateCredential(work, { name: 1 }), invalid);
+        await refused(() => collectionStore.updateCredential(sa, { projectId: null }), invalid);
+    });
+
+    it("refuses a new credential with a key, an unknown type or field, or a non-string name or Vertex field", async () => {
+        const { collectionStore, refused, validation } = await boot();
+        const invalid = validation.MutationValidationError;
+        await refused(() => collectionStore.addCredential({ name: "A", type: "openai", key: "sk-leak" }), invalid);
+        await refused(() => collectionStore.addCredential({ name: "A", type: "aws" }), invalid);
+        await refused(() => collectionStore.addCredential({ name: "A", type: "openai", extra: 1 }), invalid);
+        await refused(() => collectionStore.addCredential({ name: 1, type: "openai" }), invalid);
+        await refused(() => collectionStore.addCredential({ name: "A", type: "vertex", clientEmail: 1 }), invalid);
+        await refused(() => collectionStore.addCredential(null), invalid);
+    });
+
+    it("sets and removes the three bindings, never storing null or an empty id, and keeps __proto__ an ordinary model id", async () => {
+        const { sync, collectionStore, record, settings, refused, validation } = await boot();
+        settings.customModels.push({ id: "xcustom:::a", internalId: "a", name: "A" } as any);
+        const [m1, m2] = settings.modelPresets.map((preset: any) => preset.id);
+        collectionStore.setModelCredential("gpt-5.5", "cred-1");
+        collectionStore.setModelCredential("__proto__", "cred-2");
+        expect(collectionStore.setCustomModelCredential("xcustom:::a", "cred-1")).toBe(true);
+        expect(collectionStore.setCustomModelCredential("xcustom:::gone", "cred-1")).toBe(false);
+        // An inactive model preset too.
+        expect(collectionStore.setProxyCredential(m2, "cred-3")).toBe(true);
+        expect(collectionStore.setProxyCredential("gone", "cred-3")).toBe(false);
+        await sync.flushResources();
+        const bindings = record("providers").modelCredentials;
+        expect(Object.keys(bindings)).toEqual(["gpt-5.5", "__proto__"]);
+        expect(Object.getOwnPropertyDescriptor(bindings, "__proto__")?.value).toBe("cred-2");
+        expect(record("customModels")[0].credentialId).toBe("cred-1");
+        expect(record("modelPresets").map((preset: any) => [preset.id, preset.proxyCredentialId])).toEqual([
+            [m1, undefined],
+            [m2, "cred-3"],
+        ]);
+
+        collectionStore.setModelCredential("gpt-5.5", null);
+        collectionStore.setCustomModelCredential("xcustom:::a", null);
+        collectionStore.setProxyCredential(m2, null);
+        await sync.flushResources();
+        expect(Object.keys(record("providers").modelCredentials)).toEqual(["__proto__"]);
+        expect(Object.hasOwn(record("customModels")[0], "credentialId")).toBe(false);
+        expect(record("modelPresets").every((preset: any) => !Object.hasOwn(preset, "proxyCredentialId"))).toBe(true);
+
+        const invalid = validation.MutationValidationError;
+        await refused(() => collectionStore.setModelCredential("gpt-5.5", ""), invalid);
+        await refused(() => collectionStore.setCustomModelCredential("xcustom:::a", ""), invalid);
+        await refused(() => collectionStore.setProxyCredential(m1, ""), invalid);
+    });
+});

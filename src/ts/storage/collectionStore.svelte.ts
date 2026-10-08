@@ -8,7 +8,14 @@ import {
 } from "./settingsViews.svelte";
 import { untrack } from "svelte";
 import { v4 } from "uuid";
-import type { Database, RisuPersona } from "../../../shared/database.ts";
+import {
+    CREDENTIAL_TYPES,
+    type Credential,
+    type CredentialType,
+    type Database,
+    type RisuPersona,
+} from "../../../shared/database.ts";
+import { isRecordId } from "../../../shared/ids.ts";
 import { ModuleShapeError, normalizeModule, type RisuModule } from "../../../shared/modules.ts";
 import type { RisuPlugin } from "../../../shared/plugins.ts";
 import { normalizePersonas, PERSONA_DEFAULTS } from "../../../shared/personas.ts";
@@ -36,6 +43,7 @@ import {
 } from "./mutationValidation";
 import { batchRecordWrites } from "./records.svelte";
 import { selection } from "./selection.svelte";
+import { deleteEntrySecret } from "./llmSecrets.svelte";
 
 /**
  * The mutations of the settings sections, the small collections, presets, modules, and plugins
@@ -409,4 +417,147 @@ export function addModelPreset(preset: unknown): string {
     const id = newPresetId();
     settings.modelPresets.push(normalizeModelPreset(detach(preset), { id }));
     return id;
+}
+
+/** Adds named credential metadata under a fresh record id. Set its key separately through `setSecret`. */
+export function addCredential(input: unknown): string {
+    requireObject("credential", input);
+    requireJsonData("credential", input);
+    for (const field of Object.keys(input)) {
+        if (!["name", "type", "clientEmail", "projectId"].includes(field)) {
+            throw new MutationValidationError(field, "not a credential metadata field");
+        }
+    }
+    if (typeof input.name !== "string") {
+        throw new MutationValidationError("name", "expected a string");
+    }
+    if (!(CREDENTIAL_TYPES as readonly unknown[]).includes(input.type)) {
+        throw new MutationValidationError("type", "expected a known credential type");
+    }
+    if (input.type === "vertex") {
+        for (const field of ["clientEmail", "projectId"]) {
+            if (input[field] !== undefined && typeof input[field] !== "string") {
+                throw new MutationValidationError(field, "expected a string");
+            }
+        }
+    }
+    const metadata = detach(input);
+    const id = newPresetId();
+    const entry: Credential =
+        metadata.type === "vertex"
+            ? {
+                  id,
+                  name: metadata.name as string,
+                  type: "vertex",
+                  ...(metadata.clientEmail !== undefined ? { clientEmail: metadata.clientEmail as string } : {}),
+                  ...(metadata.projectId !== undefined ? { projectId: metadata.projectId as string } : {}),
+              }
+            : { id, name: metadata.name as string, type: metadata.type as Exclude<CredentialType, "vertex"> };
+    settings.credentials.push(entry);
+    return id;
+}
+
+/** Updates a credential's metadata (`undefined` removes optional Vertex fields); its type is fixed. */
+export function updateCredential(id: string, patch: Record<string, unknown>): boolean {
+    requireObject("patch", patch);
+    requireJsonData("patch", patch);
+    const index = settings.credentials.findIndex((entry) => entry.id === id);
+    if (index === -1) {
+        return false;
+    }
+    const record = settings.credentials[index];
+    const prepared = detachPatch(patch, (field, value) => {
+        if (field === "type") {
+            if (value !== record.type) {
+                throw new MutationValidationError(field, "a credential's type cannot be changed");
+            }
+        } else if (field === "name") {
+            if (typeof value !== "string") {
+                throw new MutationValidationError(field, "expected a string");
+            }
+        } else if (field === "clientEmail" || field === "projectId") {
+            if (record.type !== "vertex") {
+                throw new MutationValidationError(field, "only a Vertex credential has this field");
+            }
+            if (value !== undefined && typeof value !== "string") {
+                throw new MutationValidationError(field, "expected a string");
+            }
+        } else {
+            throw new MutationValidationError(field, "not an editable credential metadata field");
+        }
+    }).filter(([field]) => field !== "type");
+    batchRecordWrites(() => {
+        const next = writeEntries(record as unknown as Record<string, unknown>, prepared);
+        if (next) {
+            settings.credentials[index] = next as Credential;
+        }
+    });
+    return true;
+}
+
+/** Removes the record and queues its secret cleanup; bindings deliberately remain dangling. */
+export function deleteCredential(id: string): boolean {
+    const index = settings.credentials.findIndex((entry) => entry.id === id);
+    if (index === -1) {
+        return false;
+    }
+    settings.credentials.splice(index, 1);
+    deleteEntrySecret("credentials", id);
+    return true;
+}
+
+function checkCredentialId(credentialId: string | null) {
+    if (credentialId !== null && !isRecordId(credentialId)) {
+        throw new MutationValidationError("credentialId", "expected a non-empty credential id or null");
+    }
+}
+
+/** Sets a global model binding as an own map property; `null` removes it synchronously. */
+export function setModelCredential(modelId: string, credentialId: string | null): void {
+    if (typeof modelId !== "string") {
+        throw new MutationValidationError("modelId", "expected a string");
+    }
+    checkCredentialId(credentialId);
+    const bindings = Object.fromEntries(Object.entries(settings.providers.modelCredentials));
+    if (credentialId === null) {
+        delete bindings[modelId];
+    } else {
+        Object.defineProperty(bindings, modelId, {
+            value: credentialId,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+        });
+    }
+    settings.providers.modelCredentials = bindings;
+}
+
+/** Sets the custom model's binding; `null` deletes the optional field. Returns whether it exists. */
+export function setCustomModelCredential(modelId: string, credentialId: string | null): boolean {
+    checkCredentialId(credentialId);
+    const record = settings.customModels.find((model) => model.id === modelId);
+    if (!record) {
+        return false;
+    }
+    if (credentialId === null) {
+        delete record.credentialId;
+    } else {
+        record.credentialId = credentialId;
+    }
+    return true;
+}
+
+/** Sets the named model preset's proxy binding synchronously; `null` deletes the optional field. */
+export function setProxyCredential(modelPresetId: string, credentialId: string | null): boolean {
+    checkCredentialId(credentialId);
+    const record = settings.modelPresets.find((preset) => preset.id === modelPresetId);
+    if (!record) {
+        return false;
+    }
+    if (credentialId === null) {
+        delete record.proxyCredentialId;
+    } else {
+        record.proxyCredentialId = credentialId;
+    }
+    return true;
 }

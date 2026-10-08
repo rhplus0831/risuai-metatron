@@ -128,6 +128,7 @@ const COMPONENT_REMOVED_KEYS = [
     "translatorPresets",
     "translatorPresetId",
     "customModels",
+    "credentials",
     "mcpURLs",
     "authRefreshes",
 ];
