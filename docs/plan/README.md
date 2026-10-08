@@ -12,6 +12,8 @@ Active planning and implementation:
 
 - [Split Preset](split-preset.md): split the bot preset into model and prompt
   presets (done; per-chat selection is the open follow-up).
+- [Shared API Keys](shared-api-keys.md): move LLM credentials into a named key
+  list that each model binds to (planned).
 
 ## Archived
 
