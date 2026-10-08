@@ -1,4 +1,5 @@
-import type { Database } from "../../../../shared/database.ts";
+import { CREDENTIAL_TYPES, type Credential, type CredentialType, type Database } from "../../../../shared/database.ts";
+import { isRecordId } from "../../../../shared/ids.ts";
 import { defaultHotkeys } from "../../../../shared/hotkeys.ts";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import type { CollectionResource } from "../../../../shared/resources.ts";
@@ -81,9 +82,46 @@ export function normalizeCustomModels(input: unknown): Database["customModels"] 
     if (!entries.every((entry) => typeof entry.id === "string" && typeof entry.internalId === "string")) {
         throw new ResourceValidationError("customModels entries need string id and internalId");
     }
+    if (entries.some((entry) => Object.hasOwn(entry, "credentialId") && typeof entry.credentialId !== "string")) {
+        throw new ResourceValidationError("customModels.credentialId must be a string when present");
+    }
     // A model's key is an `llmSecrets` credential (`customModels.<id>.key`), never stored here: one
     // in the data (an older client or record) is dropped, not kept readable.
     return plainClone(entries).map(({ key: _key, ...entry }) => entry) as unknown as Database["customModels"];
+}
+
+/** Named credential metadata only; the key is a write-only `llmSecrets.credentials` entry. */
+export function normalizeCredentials(input: unknown): Database["credentials"] {
+    if (input === undefined) {
+        return [];
+    }
+    const entries = requireArrayOfObjects(input, "credentials");
+    const seen = new Set<string>();
+    return entries.map((entry): Credential => {
+        if (
+            !isRecordId(entry.id) ||
+            typeof entry.name !== "string" ||
+            !(CREDENTIAL_TYPES as readonly unknown[]).includes(entry.type)
+        ) {
+            throw new ResourceValidationError("credentials entries need a record id, string name and known type");
+        }
+        if (seen.has(entry.id)) {
+            throw new ResourceValidationError("credentials entries must have unique ids");
+        }
+        seen.add(entry.id);
+        if (entry.type === "vertex") {
+            if (Object.hasOwn(entry, "clientEmail") && typeof entry.clientEmail !== "string") {
+                throw new ResourceValidationError("credentials.clientEmail must be a string when present for vertex");
+            }
+            return {
+                id: entry.id,
+                name: entry.name,
+                type: "vertex",
+                ...(Object.hasOwn(entry, "clientEmail") ? { clientEmail: entry.clientEmail as string } : {}),
+            };
+        }
+        return { id: entry.id, name: entry.name, type: entry.type as Exclude<CredentialType, "vertex"> };
+    });
 }
 
 /** `enabledModules`: module ids. */

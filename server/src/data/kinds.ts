@@ -3,6 +3,7 @@ import { isAssetStorageKey } from "../routes/storage.ts";
 import {
     normalizeAuthRefreshes,
     normalizeCharacterOrder,
+    normalizeCredentials,
     normalizeCustomModels,
     normalizeEnabledModules,
     normalizeGlobalChatVariables,
@@ -217,6 +218,7 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
     settingsKind(RESOURCE_KIND.translatorPresets, normalizeTranslatorPresets),
     settingsKind(RESOURCE_KIND.hypaV3Presets, normalizeHypaV3Presets),
     settingsKind(RESOURCE_KIND.customModels, normalizeCustomModels),
+    settingsKind(RESOURCE_KIND.credentials, normalizeCredentials),
     settingsKind(RESOURCE_KIND.enabledModules, normalizeEnabledModules),
     settingsKind(RESOURCE_KIND.statics, normalizeStatics),
     settingsKind(RESOURCE_KIND.modelPresets, normalizeModelPresetCollection),

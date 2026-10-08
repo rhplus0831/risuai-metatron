@@ -44,6 +44,7 @@ function bootDefaults(section: SectionKind): Record<string, unknown> {
         record.modelPresets = {};
         // Phase 5 slice 7b: each custom model's key, by model id.
         record.customModels = {};
+        record.credentials = {};
     }
     return record;
 }
@@ -208,6 +209,23 @@ describe("providers", () => {
         expectIdempotent(normalizeProviders, { seperateParameters: { memory: {} }, fallbackModels: { model: ["a"] } });
     });
 
+    it("keeps the model-to-credential bindings as own string entries, `{}` for a wrong kind, and rejects a non-string binding", () => {
+        expect(normalizeProviders(undefined).modelCredentials).toEqual({});
+        expect(normalizeProviders({ modelCredentials: [] }).modelCredentials).toEqual({});
+        expect(normalizeProviders({ modelCredentials: null }).modelCredentials).toEqual({});
+        const input = JSON.parse('{"modelCredentials":{"gpt-4o":"c1","__proto__":"c2"}}');
+        const out = normalizeProviders(input);
+        expect(Object.getPrototypeOf(out.modelCredentials)).toBe(Object.prototype);
+        expect(Object.keys(out.modelCredentials)).toEqual(["gpt-4o", "__proto__"]);
+        expect(Object.getOwnPropertyDescriptor(out.modelCredentials, "__proto__")?.value).toBe("c2");
+        expectIdempotent(normalizeProviders as Normalizer, input);
+        for (const value of [1, null, { id: "c1" }]) {
+            expect(() => normalizeProviders({ modelCredentials: { "gpt-4o": value } }), JSON.stringify(value)).toThrow(
+                new ResourceValidationError("providers.modelCredentials must map model ids to credential id strings"),
+            );
+        }
+    });
+
     it("keeps the fresh-boot constants that setDatabase derived from other fields", () => {
         const out = normalizeProviders(undefined);
         expect(out).toMatchObject({ ollamaModelSource: "local", ollamaCloudModel: "", loreBookToken: 8000 });
@@ -255,6 +273,24 @@ describe("llmSecrets", () => {
         // The stored text carries the entries, and the second normalization is the same text.
         expect(serialize(out).text).toContain('"__proto__":{"proxyKey":"p"}');
         expectIdempotent(normalizeLlmSecrets as Normalizer, input);
+    });
+
+    it("keeps the named credential map with only `key` per entry, as own keys, `{}` when absent, and rejects any other shape", () => {
+        expect(normalizeLlmSecrets(undefined).credentials).toEqual({});
+        const input = JSON.parse('{"credentials":{"c1":{"key":"k","extra":1},"__proto__":{"key":"p"}}}');
+        const out = normalizeLlmSecrets(input);
+        expect(Object.keys(out.credentials)).toEqual(["c1", "__proto__"]);
+        expect(out.credentials.c1).toEqual({ key: "k" });
+        expect(Object.getOwnPropertyDescriptor(out.credentials, "__proto__")?.value).toEqual({ key: "p" });
+        expectIdempotent(normalizeLlmSecrets as Normalizer, input);
+        expect(() => normalizeLlmSecrets({ credentials: [] })).toThrow(
+            new ResourceValidationError("llmSecrets.credentials must be an object"),
+        );
+        for (const credentials of [{ "": { key: "k" } }, { c1: { key: 1 } }, { c1: "k" }, { c1: null }]) {
+            expect(() => normalizeLlmSecrets({ credentials }), JSON.stringify(credentials)).toThrow(
+                new ResourceValidationError("llmSecrets.credentials must map credential ids to { key: string }"),
+            );
+        }
     });
 
     it("rejects a modelPresets map that is not an object of `{ proxyKey: string }` by non-empty ids", () => {

@@ -30,9 +30,9 @@ export const SECRET_MAP_FIELDS = ["OaiCompAPIKeys"] as const;
 
 /**
  * The per-record maps, each named after the settings collection whose records own its entries:
- * `modelPresets.<modelPresetId>.proxyKey`, `customModels.<modelId>.key`.
+ * `modelPresets.<modelPresetId>.proxyKey`, `customModels.<modelId>.key`, `credentials.<credentialId>.key`.
  */
-export const SECRET_ENTRY_MAPS = { modelPresets: "proxyKey", customModels: "key" } as const;
+export const SECRET_ENTRY_MAPS = { modelPresets: "proxyKey", customModels: "key", credentials: "key" } as const;
 
 export type FlatSecretField = (typeof FLAT_SECRET_FIELDS)[number];
 export type NestedSecretField = keyof typeof NESTED_SECRET_FIELDS;
@@ -274,6 +274,7 @@ export type MaskedLlmSecrets = Record<string, unknown> & {
     OaiCompAPIKeys: Record<string, MaskedLeaf>;
     modelPresets: Record<string, { proxyKey: MaskedLeaf }>;
     customModels: Record<string, { key: MaskedLeaf }>;
+    credentials: Record<string, { key: MaskedLeaf }>;
 };
 
 /** What a client reads: every credential replaced by its masked leaf, the readable siblings as they are. */

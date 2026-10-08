@@ -45,6 +45,7 @@ export const RESOURCE_KIND = {
     translatorPresets: "translatorPresets",
     hypaV3Presets: "hypaV3Presets",
     customModels: "customModels",
+    credentials: "credentials",
     enabledModules: "enabledModules",
     statics: "statics",
     modelPresets: "modelPresets",
@@ -228,6 +229,8 @@ export type LlmSecretsResource = SectionResource<"llmSecrets"> & {
     modelPresets: Record<string, { proxyKey: string }>;
     /** Each custom model's key, by model id (moved from `customModels[].key`, Phase 5 slice 7b). */
     customModels: Record<string, { key: string }>;
+    /** Named credential values, by credential record id. */
+    credentials: Record<string, { key: string }>;
 };
 
 type SelectableCollection = keyof typeof COLLECTION_SELECTION_FIELDS;

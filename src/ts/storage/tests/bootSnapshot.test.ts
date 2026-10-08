@@ -223,6 +223,7 @@ describe("the boot snapshot of a fresh store against the fresh-boot fixture", ()
                 "localStopStrings",
                 "promptPreprocess",
                 "promptTemplate",
+                "proxyCredentialId",
                 "proxyRequestModel",
             ]);
         } finally {

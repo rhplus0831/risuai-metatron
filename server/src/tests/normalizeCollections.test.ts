@@ -8,6 +8,7 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
     normalizeAuthRefreshes,
     normalizeCharacterOrder,
+    normalizeCredentials,
     normalizeCustomModels,
     normalizeEnabledModules,
     normalizeGlobalChatVariables,
@@ -129,6 +130,56 @@ describe("plain list and map collections", () => {
             normalizeCustomModels,
             [{ id: 1, internalId: "b" }],
             "customModels entries need string id and internalId",
+        );
+    });
+
+    it("credentials: metadata only (the key is dropped), a client email only on a Vertex key, unique record ids, a known type", () => {
+        expect(normalizeCredentials(undefined)).toEqual([]);
+        expect(
+            normalizeCredentials([
+                { id: "c1", name: "Work", type: "anthropic", key: "secret", clientEmail: "x@example.test", extra: 1 },
+                { id: "c2", name: "", type: "custom" },
+                { id: "c3", name: "SA", type: "vertex", clientEmail: "sa@example.test", key: "pem" },
+                { id: "c4", name: "SA without email", type: "vertex" },
+            ]),
+        ).toEqual([
+            { id: "c1", name: "Work", type: "anthropic" },
+            { id: "c2", name: "", type: "custom" },
+            { id: "c3", name: "SA", type: "vertex", clientEmail: "sa@example.test" },
+            { id: "c4", name: "SA without email", type: "vertex" },
+        ]);
+        for (const input of [{}, null, [1], [null]]) {
+            rejects(normalizeCredentials, input, "credentials must be an array of objects");
+        }
+        const shape = "credentials entries need a record id, string name and known type";
+        rejects(normalizeCredentials, [{ id: "", name: "n", type: "openai" }], shape);
+        rejects(normalizeCredentials, [{ id: 1, name: "n", type: "openai" }], shape);
+        rejects(normalizeCredentials, [{ id: "c1", type: "openai" }], shape);
+        rejects(normalizeCredentials, [{ id: "c1", name: "n", type: "aws" }], shape);
+        rejects(normalizeCredentials, [{ id: "c1", name: "n" }], shape);
+        rejects(
+            normalizeCredentials,
+            [
+                { id: "c1", name: "a", type: "openai" },
+                { id: "c1", name: "b", type: "custom" },
+            ],
+            "credentials entries must have unique ids",
+        );
+        rejects(
+            normalizeCredentials,
+            [{ id: "c1", name: "n", type: "vertex", clientEmail: 1 }],
+            "credentials.clientEmail must be a string when present for vertex",
+        );
+    });
+
+    it("customModels: a credential binding is a string when present", () => {
+        const model = { id: "xcustom:::a", internalId: "b" };
+        expect(normalizeCustomModels([{ ...model, credentialId: "c1" }])).toEqual([{ ...model, credentialId: "c1" }]);
+        expect(normalizeCustomModels([model])).toEqual([model]);
+        rejects(
+            normalizeCustomModels,
+            [{ ...model, credentialId: 1 }],
+            "customModels.credentialId must be a string when present",
         );
     });
 

@@ -40,6 +40,7 @@ export type SectionKind = (typeof SECTION_KIND)[keyof typeof SECTION_KIND];
 export const SECTION_FIELDS = {
     /** Provider and request settings outside the presets. */
     providers: [
+        "modelCredentials",
         "loreBookToken",
         "additionalPrompt",
         "descriptionPrefix",
@@ -312,6 +313,7 @@ export const COLLECTION_KIND = {
     translatorPresets: "translatorPresets",
     hypaV3Presets: "hypaV3Presets",
     customModels: "customModels",
+    credentials: "credentials",
     enabledModules: "enabledModules",
     statics: "statics",
     modelPresets: "modelPresets",
@@ -331,6 +333,7 @@ export const COLLECTION_FIELDS = {
     translatorPresets: "translatorPresets",
     hypaV3Presets: "hypaV3Presets",
     customModels: "customModels",
+    credentials: "credentials",
     enabledModules: "enabledModules",
     statics: "statics",
     modelPresets: "modelPresets",

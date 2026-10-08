@@ -1,5 +1,6 @@
 import { LLMFormat } from "../../../../shared/llm.ts";
 import type { SectionResource } from "../../../../shared/resources.ts";
+import { ResourceValidationError } from "../resourceStore.ts";
 import { normalizeSection, type SectionSpec } from "./shared.ts";
 
 /**
@@ -10,6 +11,7 @@ import { normalizeSection, type SectionSpec } from "./shared.ts";
  * fresh-boot constants now (a fresh store shows the same values).
  */
 const spec: SectionSpec<"providers"> = {
+    modelCredentials: ["object", {}],
     loreBookToken: ["number", 8000],
     additionalPrompt: ["string", "The assistant must act as {{char}}. user is {{user}}."],
     descriptionPrefix: ["string", "description of {{char}}: "],
@@ -70,5 +72,11 @@ const spec: SectionSpec<"providers"> = {
 
 export function normalizeProviders(input: unknown): SectionResource<"providers"> {
     const record = normalizeSection("providers", spec, input);
+    const bindings = Object.entries(record.modelCredentials as Record<string, unknown>);
+    if (bindings.some(([, value]) => typeof value !== "string")) {
+        throw new ResourceValidationError("providers.modelCredentials must map model ids to credential id strings");
+    }
+    // Own properties only: model ids such as `__proto__` remain ordinary keys.
+    record.modelCredentials = Object.fromEntries(bindings);
     return record as SectionResource<"providers">;
 }

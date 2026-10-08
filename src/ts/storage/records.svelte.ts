@@ -22,7 +22,7 @@ import { writeEntries } from "./mutationValidation";
 
 /**
  * The settings records (Phase 6 slice 4, `settings-ownership`): the source of truth of the five
- * sections, the twelve settings collections, and `presets`, `modules`, `plugins`, `pluginStorage`
+ * sections, the settings collections, and `presets`, `modules`, `plugins`, `pluginStorage`
  * (all singletons). Each record is a deep write-through record, the pattern the Phase 6 spike chose
  * and the owner confirmed at Stop A (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/
  * spike-projection-bindings.md`, "Verdict"): `trackedRecord(kind)` is a JS `Proxy` over the record's
@@ -58,10 +58,10 @@ import { writeEntries } from "./mutationValidation";
  *   in a `.svelte.ts` file to a check that reads through the wrapper's traps).
  * - Credentials never enter a record: on `llmSecrets` every credential path is routed to `setSecret`
  *   / `clearSecret` or refused (the record holds the mirror form, `mirrorFields`); a model preset's
- *   `proxyKey` and a custom model's `key` likewise (`SECRET_ENTRY_MAPS`), on a leaf write and on any
- *   element or list written whole (a non-empty one is routed with the element's id, a blank or absent
- *   one changes nothing, a leaf assignment of `""` clears). Every value is validated before either the
- *   record or the credential queue changes.
+ *   `proxyKey`, a custom model's `key`, and a named credential's `key` likewise
+ *   (`SECRET_ENTRY_MAPS`), on a leaf write and on any element or list written whole (a non-empty one
+ *   is routed with the element's id, a blank or absent one changes nothing, a leaf assignment of `""`
+ *   clears). Every value is validated before either the record or the credential queue changes.
  * - A read never writes, and nothing is wrapped while its record is absent (`hasRecord`).
  */
 
@@ -588,9 +588,11 @@ function assertNoLlmCredential(value: unknown) {
 //     is what the mirror reads, so `{ ...db.google, projectId }` never clears the key), any other
 //     leaf value refuses the whole write;
 //   - `OaiCompAPIKeys.<id>` (and a whole `OaiCompAPIKeys` map, entry by entry): as a flat credential;
-//   - the entry maps (`modelPresets`, `customModels`) are not in this record: a write of them is refused;
+//   - the entry maps (`modelPresets`, `customModels`, `credentials`) are not in this record: a write of
+//     them is refused;
 //   - `delete` of any credential path is refused (use `clearSecret`).
-// - `modelPresets[].proxyKey` and `customModels[].key` (`SECRET_ENTRY_MAPS`): see `prepareEntryCredentials`.
+// - `modelPresets[].proxyKey`, `customModels[].key`, `credentials[].key` (`SECRET_ENTRY_MAPS`): see
+//   `prepareEntryCredentials`.
 
 class CredentialRefusedError extends TypeError {
     constructor(message: string) {
@@ -726,7 +728,7 @@ function llmSecretDelete(container: string | null, field: string) {
 }
 
 /**
- * The entry credential rule for a value written into `modelPresets` or `customModels`
+ * The entry credential rule for a value written into `modelPresets`, `customModels`, or `credentials`
  * (`SECRET_ENTRY_MAPS`; other kinds pass through): `value` is the whole list (`listLevel`) or one
  * whole element (`elementLevel`). An element's non-empty string credential is routed with its string `id` and left
  * out of what is stored; a blank or absent one is left out and changes nothing; a non-string one, or
@@ -1327,7 +1329,7 @@ function refuseChaIdChange(target: Record<string, unknown>, value: unknown, what
     }
 }
 
-/** Whether `node` is the list of an entry-credential kind (`modelPresets`, `customModels`). */
+/** Whether `node` is the list of an entry-credential kind (`modelPresets`, `customModels`, `credentials`). */
 const isEntryList = (node: TrackedNode) => node.parent === null && Object.hasOwn(entryLeaf, node.kind);
 /** Whether `node` is an element of that list. */
 const isEntryElement = (node: TrackedNode) => node.parent !== null && isEntryList(node.parent);
@@ -1410,7 +1412,7 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
 /**
  * A mutator call's arguments as the native method gets them: the values it inserts (`push`,
  * `unshift`, `splice`'s items, `fill`'s value) prepared and unwrapped, every other argument as it is.
- * On a credential list (`modelPresets`, `customModels`) the inserted credentials are validated together
+ * On a credential list (`modelPresets`, `customModels`, `credentials`) the inserted credentials are validated together
  * against the list the call leaves (exactly one owner each), `fill` and `copyWithin` refuse a
  * credential (they duplicate elements), and `route` routes them once the method succeeded.
  */

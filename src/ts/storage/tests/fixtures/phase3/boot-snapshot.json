@@ -538,6 +538,8 @@
   "seperateModelsForAxModels": false,
   "seperateModels": { "memory": "", "emotion": "", "translate": "", "otherAx": "" },
   "customModels": [],
+  "credentials": [],
+  "modelCredentials": {},
   "modelPresets": [
     {
       "id": "fixture-model-preset",

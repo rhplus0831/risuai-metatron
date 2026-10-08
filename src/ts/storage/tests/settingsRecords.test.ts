@@ -245,6 +245,31 @@ describe("entry credentials over the save loop", () => {
         // The tab holds none of them (the root snapshot and the character list).
         expect(mirrorText()).not.toContain(SECRET);
     });
+
+    it("route a named credential's key to its credential route and store only its metadata", async () => {
+        const { fake, sync, settings, record, mirrorText } = await boot();
+        const SECRET = "sk-named-SENTINEL";
+        settings.credentials.push({ id: "c1", name: "Work", type: "openai", key: `${SECRET}-push` } as any);
+        settings.credentials = [
+            ...settings.credentials,
+            { id: "c2", name: "SA", type: "vertex", clientEmail: "sa@example.test", key: `${SECRET}-list` } as any,
+        ];
+        await sync.flushResources();
+        expect(JSON.stringify(fake.batchBodies())).not.toContain(SECRET);
+        expect(record("credentials")).toEqual([
+            { id: "c1", name: "Work", type: "openai" },
+            { id: "c2", name: "SA", type: "vertex", clientEmail: "sa@example.test" },
+        ]);
+        expect(fake.secretRequests().map((request: any) => request.path)).toEqual([
+            "/api/llm-secrets/credentials/~c1/key",
+            "/api/llm-secrets/credentials/~c2/key",
+        ]);
+        expect((fake.record("llmSecrets", "main")!.data as any).credentials).toEqual({
+            c1: { key: `${SECRET}-push` },
+            c2: { key: `${SECRET}-list` },
+        });
+        expect(mirrorText()).not.toContain(SECRET);
+    });
 });
 
 describe("server copies of presets and personas", () => {

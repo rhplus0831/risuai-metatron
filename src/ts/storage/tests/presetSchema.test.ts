@@ -111,6 +111,7 @@ describe("PRESET_DEFAULTS", () => {
             "localStopStrings",
             "promptPreprocess",
             "promptTemplate",
+            "proxyCredentialId",
             "proxyRequestModel",
         ]);
     });
@@ -371,6 +372,7 @@ describe("normalizeModelPreset", () => {
         // The unset model fields stay absent, as in the prompt preset.
         expect(MODEL_PRESET_FIELDS.filter((field) => PRESET_DEFAULTS[field] === undefined).sort()).toEqual([
             "koboldURL",
+            "proxyCredentialId",
             "proxyRequestModel",
         ]);
     });
@@ -635,6 +637,7 @@ describe("field-to-resource partition", () => {
                 "forceReplaceUrl",
                 "customProxyRequestModel",
                 "proxyRequestModel",
+                "proxyCredentialId",
                 "customAPIFormat",
                 "textgenWebUIStreamURL",
                 "textgenWebUIBlockingURL",
@@ -676,15 +679,15 @@ describe("field-to-resource partition", () => {
         ] as const) {
             expect(presetFieldOwner(field), field).toBe("prompt");
         }
-        expect(MODEL_PRESET_FIELDS).toHaveLength(29);
-        expect(PROMPT_PRESET_FIELDS).toHaveLength(PRESET_FIELDS.length - 29 - 2);
+        expect(MODEL_PRESET_FIELDS).toHaveLength(30);
+        expect(PROMPT_PRESET_FIELDS).toHaveLength(PRESET_FIELDS.length - 30 - 2);
     });
 
-    it("derives the forwarded lists from the two owners: 45 prompt keys, 29 model keys, proxyKey, 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
+    it("derives the forwarded lists from the two owners: 45 prompt keys, 30 model keys, proxyKey, 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
         expect(FORWARDED_PRESET_KEYS).toEqual(PROMPT_PRESET_FIELDS.map((field) => presetToRootName[field] ?? field));
         expect(FORWARDED_PRESET_KEYS).toHaveLength(45);
         expect(FORWARDED_MODEL_PRESET_KEYS).toEqual([...MODEL_PRESET_FIELDS]);
-        expect(FORWARDED_MODEL_PRESET_KEYS).toHaveLength(29);
+        expect(FORWARDED_MODEL_PRESET_KEYS).toHaveLength(30);
         // The aliases appear under their root names, never their preset names (all three are prompt fields).
         expect(FORWARDED_PRESET_KEYS).toEqual(
             expect.arrayContaining(["NAIsettings", "reasoningEffort", "presetRegex"]),
@@ -714,7 +717,7 @@ describe("field-to-resource partition", () => {
             ...PERSONA_ROOT_KEYS,
             ...SELECTION_KEYS,
         ]);
-        expect(FORWARDED_ROOT_KEYS).toHaveLength(45 + 29 + 1 + 4 + 3);
+        expect(FORWARDED_ROOT_KEYS).toHaveLength(45 + 30 + 1 + 4 + 3);
     });
 
     it("forwardPresetRoots writes every forwarded preset key from its owner, with the owner's defaults, and nothing else", () => {
@@ -772,10 +775,10 @@ describe("field-to-resource partition", () => {
         expect(COLLECTION_FIELDS.statics).toBe("statics");
     });
 
-    it("lists five sections and thirteen collections, two of them with a selection field, modelPresets among them", () => {
+    it("lists five sections and fourteen collections, two of them with a selection field, modelPresets among them", () => {
         expect(Object.keys(SECTION_KIND)).toHaveLength(5);
         expect(Object.keys(SECTION_FIELDS).sort()).toEqual(Object.keys(SECTION_KIND).sort());
-        expect(Object.keys(COLLECTION_KIND)).toHaveLength(13);
+        expect(Object.keys(COLLECTION_KIND)).toHaveLength(14);
         expect(Object.keys(COLLECTION_FIELDS).sort()).toEqual(Object.keys(COLLECTION_KIND).sort());
         expect(COLLECTION_KIND.modelPresets).toBe("modelPresets");
         expect(COLLECTION_FIELDS.modelPresets).toBe("modelPresets");

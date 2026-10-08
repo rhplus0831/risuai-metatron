@@ -396,6 +396,7 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             settings.characterOrder.push("z");
             settings.authRefreshes.push({ url: "u2", tokenUrl: "t2", refreshToken: "r2", clientId: "c2" } as any);
             settings.customModels.push({ id: "m2", internalId: "i2", name: "M2" } as any);
+            settings.credentials.push({ id: "key-1", name: "Key", type: "custom" });
             settings.enabledModules.push("mod2");
             settings.statics.messages += 1;
             settings.globalscript.push({ comment: "s2", type: "editoutput", in: "c", out: "d", flag: "" });

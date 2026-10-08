@@ -423,6 +423,24 @@ const CASES: KindCase[] = [
         refused: "customModels entries need string id and internalId",
     },
     {
+        kind: "credentials",
+        fresh: [],
+        // A key's value is an `llmSecrets` credential, and only a Vertex key keeps its client email.
+        write: [
+            { id: "c1", name: "Work", type: "openai", key: "secret-named-key", clientEmail: "dropped@example.test" },
+            { id: "c2", name: "Service", type: "vertex", clientEmail: "sa@example.test" },
+        ],
+        stored: [
+            { id: "c1", name: "Work", type: "openai" },
+            { id: "c2", name: "Service", type: "vertex", clientEmail: "sa@example.test" },
+        ],
+        forbidden: ["secret-named-key", "dropped@example.test"],
+        update: [],
+        updated: [],
+        invalid: [{ id: "c1", name: "Unknown", type: "aws" }],
+        refused: "credentials entries need a record id, string name and known type",
+    },
+    {
         kind: "enabledModules",
         fresh: [],
         write: ["m1"],

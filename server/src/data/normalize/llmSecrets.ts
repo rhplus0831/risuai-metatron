@@ -6,7 +6,8 @@ import { isPlainObject, normalizeSection, requireObject, type SectionSpec } from
 /**
  * The `llmSecrets` section: the LLM credentials under their `Database` names, plus `modelPresets`,
  * each model preset's `proxyKey` keyed by model preset id, and `customModels`, each custom model's
- * `key` keyed by model id (an entry of a deleted preset or model is harmless and is removed with it).
+ * `key` keyed by model id, and `credentials`, named keys by record id (an entry of a deleted owner
+ * is harmless and is removed with it).
  * The former per-prompt-preset `presets` map is not read, so the normalizer drops it. Write-only
  * for clients (Phase 5 slice 7b): `shared/llmSecrets.ts`.
  */
@@ -58,10 +59,20 @@ export function normalizeLlmSecrets(input: unknown): LlmSecretsResource {
             customModels.push([id, { key: entry.key }]);
         }
     }
+    const credentials: [string, { key: string }][] = [];
+    if (source.credentials !== undefined) {
+        for (const [id, entry] of Object.entries(requireObject(source.credentials, "llmSecrets.credentials"))) {
+            if (!isRecordId(id) || !isPlainObject(entry) || typeof entry.key !== "string") {
+                throw new ResourceValidationError("llmSecrets.credentials must map credential ids to { key: string }");
+            }
+            credentials.push([id, { key: entry.key }]);
+        }
+    }
     // `fromEntries` defines own properties, so an id such as `__proto__` stays an ordinary key.
     return {
         ...record,
         modelPresets: Object.fromEntries(modelPresets),
         customModels: Object.fromEntries(customModels),
+        credentials: Object.fromEntries(credentials),
     } as LlmSecretsResource;
 }

@@ -28,6 +28,28 @@ import type { triggerscript } from "./triggers.ts";
 
 export type StreamingDisplayOptimizationMode = "off" | "balanced" | "strong";
 
+/** The named LLM credential types, shared with the server's collection normalizer. */
+export const CREDENTIAL_TYPES = [
+    "openai",
+    "anthropic",
+    "bedrock",
+    "google",
+    "vertex",
+    "openrouter",
+    "nanogpt",
+    "mistral",
+    "cohere",
+    "ollama",
+    "novelai",
+    "custom",
+] as const;
+export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
+
+/** Readable credential metadata; its value is in `llmSecrets.credentials.<id>.key`. */
+export type Credential = { id: string; name: string } & (
+    { type: "vertex"; clientEmail?: string } | { type: Exclude<CredentialType, "vertex">; clientEmail?: never }
+);
+
 export interface DynamicOutput {
     autoAdjustSchema: boolean;
     dynamicMessages: boolean;
@@ -41,6 +63,7 @@ export interface DynamicOutput {
 /** A custom model (`CustomModelsSettings.svelte`); its key is a write-only `llmSecrets` credential. */
 export interface CustomModel {
     id: string;
+    credentialId?: string;
     internalId: string;
     url: string;
     format: LLMFormat;
@@ -66,6 +89,7 @@ export interface Database {
     apiType: string;
     openAIKey: string;
     proxyKey: string;
+    proxyCredentialId?: string;
     mainPrompt: string;
     jailbreak: string;
     globalNote: string;
@@ -441,6 +465,9 @@ export interface Database {
     fallbackWhenBlankResponse: boolean;
     /** The custom models; each one's key is in `llmSecrets.customModels.<id>.key` (Phase 5 slice 7b). */
     customModels: CustomModel[];
+    credentials: Credential[];
+    /** Catalogue model ids bound to named credentials; absent bindings use the existing defaults. */
+    modelCredentials: Record<string, string>;
     igpPrompt: string;
     useTokenizerCaching: boolean;
     showMenuHypaMemoryModal: boolean;
@@ -813,6 +840,7 @@ export interface botPreset {
     name?: string;
     apiType?: string;
     openAIKey?: string;
+    proxyCredentialId?: string;
     localNetworkMode?: boolean;
     localNetworkTimeoutSec?: number;
     mainPrompt: string;
@@ -951,7 +979,7 @@ export type ModelPreset = { id: string; name: string } & Required<
         | "fallbackWhenBlankResponse"
     >
 > &
-    Pick<botPreset, "koboldURL" | "proxyRequestModel">;
+    Pick<botPreset, "koboldURL" | "proxyRequestModel" | "proxyCredentialId">;
 
 interface hordeConfig {
     apiKey: string;

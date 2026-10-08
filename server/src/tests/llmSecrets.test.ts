@@ -42,6 +42,7 @@ const flat = (field: FlatSecretField): SecretPath => ({ kind: "flat", field });
 const preset = (id: string): SecretPath => ({ kind: "entry", field: "modelPresets", id });
 const model = (id: string): SecretPath => ({ kind: "entry", field: "customModels", id });
 const oai = (id: string): SecretPath => ({ kind: "map", field: "OaiCompAPIKeys", id });
+const credential = (id: string): SecretPath => ({ kind: "entry", field: "credentials", id });
 
 /** The masked record as a client reads it (`GET /api/resources/llmSecrets/main`). */
 async function read(s: ResourceTestClient): Promise<Masked> {
@@ -201,6 +202,7 @@ describe("the write rule of a plain resource write", () => {
             ["the OaiCompAPIKeys map, even empty", { ...siblings, OaiCompAPIKeys: {} }],
             ["the modelPresets map", { ...siblings, modelPresets: { p1: { proxyKey: "VALUE-SENTINEL-3" } } }],
             ["the customModels map, even empty", { ...siblings, customModels: {} }],
+            ["the credentials map", { ...siblings, credentials: { c1: { key: "VALUE-SENTINEL-4" } } }],
         ];
         for (const [what, data] of carrying) {
             const res = await putRecord(s, data);
@@ -338,11 +340,15 @@ describe("the secret routes", () => {
         await setSecret(s, preset("p1"), "pk-1");
         await setSecret(s, oai("https://a.test"), "ok-1");
         await setSecret(s, model("m1"), "mk-1");
+        await setSecret(s, credential("c1"), "ck-named-SENTINEL-3333");
+        expect(encodeSecretPath(credential("c1"))).toBe("credentials/~c1/key");
         expect((await read(s)).data).toMatchObject({
             modelPresets: { p1: { proxyKey: { set: true, hint: "" } } },
             OaiCompAPIKeys: { "https://a.test": { set: true, hint: "" } },
             customModels: { m1: { key: { set: true, hint: "" } } },
+            credentials: { c1: { key: { set: true, hint: "3333" } } },
         });
+        expect(JSON.stringify((await read(s)).data)).not.toContain("ck-named");
         await setSecret(s, preset("p1"), "");
         expect((await read(s)).data.modelPresets).toEqual({});
         const { revision } = await read(s);
@@ -358,6 +364,9 @@ describe("the secret routes", () => {
         expect(stored.OaiCompAPIKeys).toEqual({});
         expect(stored.modelPresets).toEqual({});
         expect(stored.customModels).toEqual({ m1: { key: "mk-1" } });
+        expect(stored.credentials).toEqual({ c1: { key: "ck-named-SENTINEL-3333" } });
+        await setSecret(s, credential("c1"), "");
+        expect((await storedRecord(s))!.credentials).toEqual({});
         // The nested leaves and the vertex token are credentials too.
         await setSecret(s, { kind: "nested", field: "google" }, "g");
         await setSecret(s, flat("vertexAccessToken"), "vt");
