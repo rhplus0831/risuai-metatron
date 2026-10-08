@@ -1,6 +1,7 @@
 # Shared API Keys Plan
 
-Status: planned. Move LLM credentials out of the model information into a
+Status: done (slices 1–5); named keys for the auxiliary operations are the
+open follow-up. Move LLM credentials out of the model information into a
 list of named keys, and let each model choose which key it sends. Two goals:
 
 - the same provider with different keys (Claude Opus on one key, the
@@ -236,6 +237,45 @@ mismatch.
 5. Docs: `llm-requests.md` (the slot table, the resolver, `Known Hazards`
    for the auxiliary operations), `persistence.md` (the new kind and entry
    map), `settings-i18n.md` (the page), and `STRUCTURE.md` D1/P2 anchors.
+
+## As built
+
+Commits: `ca821177` (schema), `389805fe` (a NanoGPT fix found on the way),
+`97b0d618` (server), `e2354fd3` (client storage), `418b9cb1` (UI), and this
+docs change. Where the result differs from the sections above:
+
+- **NanoGPT first.** The Messages and Legacy formats sent the Claude and the
+  OpenAI key to Anthropic and OpenAI. They were fixed to go to NanoGPT with
+  `nanogptKey` before the server slice (`389805fe`), so every NanoGPT format
+  has one `nanogpt` slot. The Responses subscription route did not exist and
+  was dropped too.
+- **The slot table** gained a row the plan missed: an as-is or keyless
+  DeepSeek/DeepInfra OpenAI-format model reads `openAIKey`, so it is the
+  `openai` slot.
+- **`keyIdentifier` keys** are resolved in the adapters, not in
+  `requestChatDataMain`: `openAI/shared.ts` `getOpenAIRequestKey` takes
+  `arg.key`, else the model's own `OaiCompAPIKeys` entry or `""`. A direct
+  adapter call must never fall through to `openAIKey`.
+- **Vertex keys carry `projectId`.** The Vertex URL used the global
+  `google.projectId`, so a service account from another project could not
+  work. The credential's non-empty `projectId` now wins.
+- **One shared decision.** Slice 3 moved the binding rules into
+  `shared/llm/credentialBinding.ts` `resolveCredentialBinding`, used by both
+  the server resolver and the tab readers.
+- **The settings report** drops `credentials` (the names are personal) and
+  keeps `modelCredentials` (ids only). The backup and the plugin
+  `getDatabase` needed no change.
+- **No settings-search entry.** `getFullSettingsData` has no UI consumer.
+- **The readers tolerate a missing collection.** An absent `credentials` list
+  or `modelCredentials` map reads as empty, so a settings page never fails on
+  it.
+- **Mancer, NovelList, and Horde** keep their plain "API Key" labels: they
+  have no slot, so their key is not a "default".
+
+Open follow-up: let the `/proxy2` auxiliary operations (TTS, DALL-E,
+Whisper, embeddings, model discovery, the NanoGPT account calls) and
+`getFreeOpenRouterModels` use a bound key. Today they read the default keys
+(`llm-requests.md` "Known Hazards").
 
 ## Tests
 
