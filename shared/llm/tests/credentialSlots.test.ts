@@ -53,8 +53,8 @@ describe("credentialSlotOf", () => {
             expect(slot).toMatchObject({ slot: "nanogpt", binding: "global", accepts: ["nanogpt", "custom"] });
             return slot!.defaultDescription;
         });
-        // What the adapters read today: the Messages adapter takes the Claude key, Legacy the OpenAI key.
-        expect(defaults).toEqual(["nanogptKey", "nanogptKey", "claudeAPIKey", "openAIKey"]);
+        // Every NanoGPT adapter defaults to the NanoGPT key.
+        expect(defaults).toEqual(["nanogptKey", "nanogptKey", "nanogptKey", "nanogptKey"]);
     });
 
     it("gives every catalogue model of a keyed provider its provider's slot", () => {

@@ -19,8 +19,9 @@ import { createTransport } from "../llm/transport.ts";
 // alerts, Claude observer registrations, logs), for OpenAI-compatible (buffered, streaming, a JSON
 // schema, a tool round trip, a failure, a preview), a custom model, Mistral, the legacy instruct
 // format, the auxiliary and sub models, the Responses API, Anthropic (buffered, streaming), Bedrock
-// (SigV4), Google (buffered, streaming, a preview, a tool round trip), Vertex, and a request
-// without a selected character.
+// (SigV4), Google (buffered, streaming, a preview, a tool round trip), Vertex, NanoGPT's Messages,
+// Legacy, and Responses formats (endpoint, key, request model, provider), and a request without a
+// selected character. The NanoGPT cases are not part of the oracle capture below.
 //
 // Phase 6 slice 11: this was the Phase 5 slice 7a parity gate
 // (`src/ts/process/request/tests/serverParity.test.ts`), which ran the pre-cutover browser adapters
@@ -151,6 +152,8 @@ type Scenario = {
     /** The remembered tool calls the prompt's markers name. */
     known?: Record<string, ToolCallRecord>;
     toolAnswer?: { type: "text"; text: string }[];
+    /** A format per model id, over the catalogue's (the `nanogpt` entry is Chat in the catalogue). */
+    formats?: Record<string, LLMFormat>;
     upstream: (call: Upstream) => CannedResponse;
 };
 
@@ -228,12 +231,15 @@ async function run(scenario: Scenario): Promise<Recorded> {
             return new Response(canned.body, { status: canned.status, headers: canned.headers ?? {} });
         }) as typeof fetch,
     });
-    const getModelInfo = (id: string) =>
-        resolveModelInfo(id, {
+    const getModelInfo = (id: string) => {
+        const info = resolveModelInfo(id, {
             enableCustomFlags: db.enableCustomFlags,
             customFlags: db.customFlags,
             customModels: db.customModels,
         });
+        const format = scenario.formats?.[id];
+        return format === undefined ? info : { ...info, format };
+    };
     const ctx: RequestContext = {
         db: db as never,
         selectedCharacterName: loaded.selectedCharacterName,
@@ -416,6 +422,36 @@ const ROLL_DICE: ToolDescriptor = {
     description: "roll",
     inputSchema: { type: "object", properties: { sides: { type: "number" } } },
 };
+
+const NANOGPT_KEY = "nanogpt-SENTINEL-8888";
+const NANOGPT_MODEL = "nano/model-1";
+/** One `nanogpt` request in `format`, with the NanoGPT key and request model and the provider settings given. */
+const nanogpt = (format: LLMFormat, providers: Record<string, unknown>, answer: CannedResponse) =>
+    run({
+        settings: {
+            preset: { aiModel: "nanogpt" },
+            providers: { nanogptRequestModel: NANOGPT_MODEL, ...providers },
+            secrets: { nanogptKey: NANOGPT_KEY },
+        },
+        formats: { nanogpt: format },
+        arg: prompt(),
+        upstream: () => answer,
+    });
+/** Each upstream call's URL, headers, and body model. */
+const sent = (recorded: Recorded) =>
+    recorded.calls.map((call) => ({
+        url: call.url,
+        headers: call.headers,
+        model: (call.body as { model?: unknown }).model,
+    }));
+/** No other provider's key (all present in the settings) reaches a NanoGPT request. */
+function expectNoForeignKeys(runs: Recorded[]) {
+    const wire = JSON.stringify(runs.map((recorded) => [recorded.calls, recorded.observer]));
+    expect(wire).toContain(NANOGPT_KEY);
+    for (const key of [SECRETS.claudeAPIKey, SECRETS.openAIKey, SECRETS.proxyKey]) {
+        expect(wire).not.toContain(key);
+    }
+}
 
 beforeEach(() => {
     vi.useFakeTimers({ now: new Date("2026-10-01T12:00:00Z"), toFake: ["Date"] });
@@ -1304,6 +1340,84 @@ describe("the server provider adapters", () => {
                 { call: { id: "fc-1", name: "rollDice", arg: { sides: 6 } }, response: [{ type: "text", text: "4" }] },
             ],
         });
+    });
+
+    it("NanoGPT Messages: the one Messages endpoint (the subscription flag has none), the NanoGPT key, request model, and provider, and no batch", async () => {
+        const answer = json({ content: [{ type: "text", text: "nano says" }] });
+        const runs = [
+            // `claudeBatching` would post to `<url>/batches`, which NanoGPT does not have.
+            await nanogpt(LLMFormat.NanoGPTMessages, { claudeBatching: true }, answer),
+            await nanogpt(LLMFormat.NanoGPTMessages, { nanogptProvider: "prov-a" }, answer),
+            await nanogpt(
+                LLMFormat.NanoGPTMessages,
+                { nanogptProvider: "prov-a", nanogptUseSubscriptionEndpoint: true },
+                answer,
+            ),
+        ];
+        const headers = { "x-api-key": NANOGPT_KEY, "anthropic-version": "2023-06-01", accept: "application/json" };
+        const url = "https://nano-gpt.com/api/v1/messages";
+        expect(runs.map(sent)).toEqual([
+            [{ url, headers, model: NANOGPT_MODEL }],
+            [{ url, headers: { ...headers, "x-provider": "prov-a" }, model: NANOGPT_MODEL }],
+            [{ url, headers: { ...headers, "x-provider": "prov-a" }, model: NANOGPT_MODEL }],
+        ]);
+        for (const recorded of runs) {
+            expect(recorded.result).toEqual({ type: "success", result: "nano says" });
+        }
+        expectNoForeignKeys(runs);
+    });
+
+    it("NanoGPT Legacy: the completions endpoint or its subscription twin, the NanoGPT key, request model, and provider", async () => {
+        const answer = json({ choices: [{ text: "nano instructed" }] });
+        const runs = [
+            await nanogpt(LLMFormat.NanoGPTLegacy, {}, answer),
+            await nanogpt(LLMFormat.NanoGPTLegacy, { nanogptProvider: "prov-b" }, answer),
+            await nanogpt(LLMFormat.NanoGPTLegacy, { nanogptUseSubscriptionEndpoint: true }, answer),
+            await nanogpt(
+                LLMFormat.NanoGPTLegacy,
+                { nanogptProvider: "prov-b", nanogptUseSubscriptionEndpoint: true },
+                answer,
+            ),
+        ];
+        const headers = { authorization: `Bearer ${NANOGPT_KEY}` };
+        const url = "https://nano-gpt.com/api/v1/completions";
+        const subscriptionUrl = "https://nano-gpt.com/api/subscription/v1/completions";
+        expect(runs.map(sent)).toEqual([
+            [{ url, headers, model: NANOGPT_MODEL }],
+            [{ url, headers: { ...headers, "x-provider": "prov-b" }, model: NANOGPT_MODEL }],
+            [{ url: subscriptionUrl, headers, model: NANOGPT_MODEL }],
+            [{ url: subscriptionUrl, headers: { ...headers, "x-provider": "prov-b" }, model: NANOGPT_MODEL }],
+        ]);
+        for (const recorded of runs) {
+            expect(recorded.result).toEqual({ type: "success", result: "nano instructed" });
+        }
+        expectNoForeignKeys(runs);
+    });
+
+    it("NanoGPT Responses: the one Responses endpoint, also under the subscription flag (NanoGPT has no subscription Responses route)", async () => {
+        const answer = json({
+            status: "completed",
+            output: [{ type: "message", content: [{ type: "output_text", text: "nano responded" }] }],
+        });
+        const runs = [
+            await nanogpt(LLMFormat.NanoGPTResponses, { nanogptProvider: "prov-c" }, answer),
+            await nanogpt(
+                LLMFormat.NanoGPTResponses,
+                { nanogptProvider: "prov-c", nanogptUseSubscriptionEndpoint: true },
+                answer,
+            ),
+        ];
+        const headers = { authorization: `Bearer ${NANOGPT_KEY}` };
+        const url = "https://nano-gpt.com/api/v1/responses";
+        expect(runs.map(sent)).toEqual([
+            [{ url, headers: { ...headers, "x-provider": "prov-c" }, model: NANOGPT_MODEL }],
+            // The Responses adapter drops the provider under the subscription flag (unchanged).
+            [{ url, headers, model: NANOGPT_MODEL }],
+        ]);
+        for (const recorded of runs) {
+            expect(recorded.result).toEqual({ type: "success", result: "nano responded" });
+        }
+        expectNoForeignKeys(runs);
     });
 
     it("a request without a selected character: the template and the prompt read no name", async () => {

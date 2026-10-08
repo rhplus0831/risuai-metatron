@@ -4,6 +4,7 @@ import { Sha256 } from "@aws-crypto/sha256-js";
 import { HttpRequest } from "@smithy/protocol-http";
 import { SignatureV4 } from "@smithy/signature-v4";
 import { LLMFlags, LLMFormat } from "../../../shared/llm.ts";
+import { NANOGPT_MESSAGES_ENDPOINT } from "../../../shared/llm/providers/nanogpt.ts";
 import type { MultiModal } from "../../../shared/openai.ts";
 import { textifyReadableStream } from "./transport.ts";
 import { replaceAsync, simplifySchema, sleep } from "./util.ts";
@@ -71,9 +72,11 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
     const db = arg.ctx.db;
     const aiModel = arg.aiModel;
     const useStreaming = arg.useStreaming;
+    const nanogpt = aiModel === "nanogpt";
     const ollamaCloudAnthropic = aiModel === "ollama-cloud";
-    let replacerURL = arg.customURL ?? "https://api.anthropic.com/v1/messages";
-    let apiKey = arg.key || (aiModel === "reverse_proxy" ? db.proxyKey : db.claudeAPIKey);
+    // NanoGPT does not expose a subscription Messages endpoint.
+    let replacerURL = nanogpt ? NANOGPT_MESSAGES_ENDPOINT : (arg.customURL ?? "https://api.anthropic.com/v1/messages");
+    let apiKey = arg.key || (nanogpt ? db.nanogptKey : aiModel === "reverse_proxy" ? db.proxyKey : db.claudeAPIKey);
     const maxTokens = arg.maxTokens;
     if (aiModel === "reverse_proxy" && db.autofillRequestUrl) {
         if (replacerURL.endsWith("v1")) {
@@ -358,7 +361,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
 
     let body = applyParameters(
         {
-            model: arg.modelInfo.internalID,
+            model: nanogpt ? db.nanogptRequestModel || arg.modelInfo.internalID : arg.modelInfo.internalID,
             messages: finalChat,
             system: systemPrompt.trim(),
             max_tokens: maxTokens,
@@ -572,6 +575,10 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
         delete headers["x-api-key"];
     }
 
+    if (nanogpt && db.nanogptProvider) {
+        headers["X-Provider"] = db.nanogptProvider;
+    }
+
     if (db.usePlainFetch) {
         headers["anthropic-dangerous-direct-browser-access"] = "true";
     }
@@ -615,7 +622,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
         };
     }
 
-    if (db.claudeBatching && !ollamaCloudAnthropic) {
+    if (db.claudeBatching && !ollamaCloudAnthropic && !nanogpt) {
         if (body.stream !== undefined) {
             delete body.stream;
         }

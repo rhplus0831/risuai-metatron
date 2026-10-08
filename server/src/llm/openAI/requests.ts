@@ -2,6 +2,10 @@
 // tokenizer, tool seam, and CBS parser are the request context's (`arg.ctx`).
 import { messages as language } from "../messages.ts";
 import { LLMFlags, LLMFormat, LLMProvider } from "../../../../shared/llm.ts";
+import {
+    NANOGPT_LEGACY_ENDPOINT,
+    NANOGPT_SUBSCRIPTION_LEGACY_ENDPOINT,
+} from "../../../../shared/llm/providers/nanogpt.ts";
 import { getFreeOpenRouterModels } from "../openrouter.ts";
 import { textifyReadableStream } from "../transport.ts";
 import { simplifySchema } from "../util.ts";
@@ -937,6 +941,7 @@ export async function requestHTTPOpenAI(
 export async function requestOpenAILegacyInstruct(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const formated = arg.formated;
     const db = arg.ctx.db;
+    const nanogpt = arg.aiModel === "nanogpt";
     const maxTokens = arg.maxTokens;
     const temperature = arg.temperature;
     const prompt =
@@ -979,7 +984,7 @@ export async function requestOpenAILegacyInstruct(arg: RequestDataArgumentExtend
     }
 
     let body: any = {
-        model: "gpt-3.5-turbo-instruct",
+        model: nanogpt ? db.nanogptRequestModel || arg.modelInfo.internalID : "gpt-3.5-turbo-instruct",
         prompt: prompt,
         max_tokens: maxTokens,
         temperature: temperature,
@@ -991,12 +996,21 @@ export async function requestOpenAILegacyInstruct(arg: RequestDataArgumentExtend
 
     let headers: any = {
         "Content-Type": "application/json",
-        Authorization: "Bearer " + (arg.key ?? db.openAIKey),
+        Authorization: "Bearer " + (arg.key ?? (nanogpt ? db.nanogptKey : db.openAIKey)),
     };
+
+    if (nanogpt && db.nanogptProvider) {
+        headers["X-Provider"] = db.nanogptProvider;
+    }
 
     body = applyAdditionalParameters(body, headers, getAdditionalParameters(arg.ctx.db, arg.aiModel));
 
-    const response = await arg.ctx.transport.fetchBuffered(arg.customURL ?? "https://api.openai.com/v1/completions", {
+    const requestURL = nanogpt
+        ? db.nanogptUseSubscriptionEndpoint
+            ? NANOGPT_SUBSCRIPTION_LEGACY_ENDPOINT
+            : NANOGPT_LEGACY_ENDPOINT
+        : (arg.customURL ?? "https://api.openai.com/v1/completions");
+    const response = await arg.ctx.transport.fetchBuffered(requestURL, {
         body: body,
         headers: headers,
         chatId: arg.chatId,

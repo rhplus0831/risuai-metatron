@@ -3,10 +3,7 @@ import { messages as language } from "../messages.ts";
 import { LLMFlags } from "../../../../shared/llm.ts";
 import { textifyReadableStream } from "../transport.ts";
 import { simplifySchema } from "../util.ts";
-import {
-    NANOGPT_RESPONSES_ENDPOINT,
-    NANOGPT_SUBSCRIPTION_RESPONSES_ENDPOINT,
-} from "../../../../shared/llm/providers/nanogpt.ts";
+import { NANOGPT_RESPONSES_ENDPOINT } from "../../../../shared/llm/providers/nanogpt.ts";
 
 import { extractJSON, getOpenAIJSONSchema } from "../jsonSchema.ts";
 import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "../request.ts";
@@ -182,12 +179,9 @@ async function buildResponseInputItems(arg: RequestDataArgumentExtended): Promis
 function getResponsesRequestURL(arg: RequestDataArgumentExtended): { requestURL: string; risuIdentify: boolean } {
     const db = arg.ctx.db;
     const aiModel = arg.aiModel;
+    // NanoGPT does not expose a subscription Responses endpoint.
     let requestURL =
-        aiModel === "nanogpt"
-            ? db.nanogptUseSubscriptionEndpoint
-                ? NANOGPT_SUBSCRIPTION_RESPONSES_ENDPOINT
-                : NANOGPT_RESPONSES_ENDPOINT
-            : (arg.customURL ?? "https://api.openai.com/v1/responses");
+        aiModel === "nanogpt" ? NANOGPT_RESPONSES_ENDPOINT : (arg.customURL ?? "https://api.openai.com/v1/responses");
     if (arg.modelInfo?.endpoint) {
         requestURL = arg.modelInfo.endpoint;
     }

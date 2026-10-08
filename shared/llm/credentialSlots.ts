@@ -39,8 +39,8 @@ function slot(
 
 /**
  * Credential metadata for the client and the future server resolver. Keep the defaults aligned
- * with the adapters: NanoGPT Messages and Legacy currently read the Anthropic and OpenAI keys,
- * respectively. This describes routing only; it neither resolves a binding nor changes a request.
+ * with the adapters: every NanoGPT format reads the NanoGPT key by default. This describes routing
+ * only; it neither resolves a binding nor changes a request.
  */
 export function credentialSlotOf(
     modelId: string,
@@ -62,13 +62,7 @@ export function credentialSlotOf(
         return slot("openrouter", "global", ["openrouter", "custom"], "openrouterKey");
     }
     if (modelId === "nanogpt") {
-        const defaultKey =
-            modelInfo.format === LLMFormat.NanoGPTMessages
-                ? "claudeAPIKey"
-                : modelInfo.format === LLMFormat.NanoGPTLegacy
-                  ? "openAIKey"
-                  : "nanogptKey";
-        return slot("nanogpt", "global", ["nanogpt", "custom"], defaultKey);
+        return slot("nanogpt", "global", ["nanogpt", "custom"], "nanogptKey");
     }
     if (modelId === "ollama-cloud") {
         return slot("ollama", "global", ["ollama", "custom"], "ollamaApiKey");
