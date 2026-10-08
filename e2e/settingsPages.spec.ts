@@ -27,6 +27,7 @@ function trackBatches(page: Page): string[][] {
 
 const PAGES: [number, string][] = [
     [1, "model"],
+    [17, "api keys"],
     [16, "prompt"],
     [13, "prompt template"],
     [12, "persona"],

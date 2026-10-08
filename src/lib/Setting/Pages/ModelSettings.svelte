@@ -11,6 +11,7 @@
     import { PlusIcon, TrashIcon, ListIcon } from "@lucide/svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import SecretInput from "src/lib/UI/GUI/SecretInput.svelte";
+    import CredentialSelect from "src/lib/UI/GUI/CredentialSelect.svelte";
     import { isSecretSet, secretVersion } from "src/ts/storage/llmSecrets.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
@@ -146,23 +147,25 @@
 
 <span class="text-textcolor mt-4">{language.model} <Help key="model" /></span>
 <ModelList bind:value={activeModelPreset.aiModel} />
+<CredentialSelect modelId={activeModelPreset.aiModel} />
 
 <span class="text-textcolor mt-2">{language.submodel} <Help key="submodel" /></span>
 <ModelList bind:value={activeModelPreset.subModel} />
+<CredentialSelect modelId={activeModelPreset.subModel} />
 
 <SettingRenderer items={modelParameterItems} {modelInfo} {subModelInfo} />
 <Check bind:check={activeModelPreset.outputImageModal} name={language.outputImageModal} className="mt-2" />
 
 {#if modelInfo.provider === LLMProvider.GoogleCloud || subModelInfo.provider === LLMProvider.GoogleCloud}
-    <span class="text-textcolor">GoogleAI API Key</span>
+    <span class="text-textcolor">{language.sharedApiKeys.defaultProviderKey(language.sharedApiKeys.types.google)}</span>
     <SecretInput path={{ kind: "nested", field: "google" }} marginBottom />
 {/if}
 {#if modelInfo.provider === LLMProvider.VertexAI || subModelInfo.provider === LLMProvider.VertexAI}
-    <span class="text-textcolor">Project ID</span>
+    <span class="text-textcolor">{language.sharedApiKeys.projectId}</span>
     <TextInput marginBottom={true} size={"sm"} placeholder="..." bind:value={settings.llmSecrets.google.projectId} />
-    <span class="text-textcolor">Vertex Client Email</span>
+    <span class="text-textcolor">{language.sharedApiKeys.clientEmail}</span>
     <TextInput marginBottom={true} size={"sm"} placeholder="..." bind:value={settings.llmSecrets.vertexClientEmail} />
-    <span class="text-textcolor">Vertex Private Key</span>
+    <span class="text-textcolor">{language.sharedApiKeys.defaultProviderKey(language.sharedApiKeys.types.vertex)}</span>
     <SecretInput path={{ kind: "flat", field: "vertexPrivateKey" }} marginBottom />
     <span class="text-textcolor">Region</span>
     <SelectInput
@@ -185,15 +188,21 @@
     <SecretInput path={{ kind: "flat", field: "mancerHeader" }} marginBottom />
 {/if}
 {#if modelInfo.provider === LLMProvider.Anthropic || subModelInfo.provider === LLMProvider.Anthropic || modelInfo.provider === LLMProvider.AWS || subModelInfo.provider === LLMProvider.AWS}
-    <span class="text-textcolor">Claude {language.apiKey}</span>
+    <span class="text-textcolor"
+        >{language.sharedApiKeys.defaultProviderKey(
+            `${language.sharedApiKeys.types.anthropic} / ${language.sharedApiKeys.types.bedrock}`,
+        )}</span
+    >
     <SecretInput path={{ kind: "flat", field: "claudeAPIKey" }} marginBottom />
 {/if}
 {#if modelInfo.provider === LLMProvider.Mistral || subModelInfo.provider === LLMProvider.Mistral}
-    <span class="text-textcolor">Mistral {language.apiKey}</span>
+    <span class="text-textcolor">{language.sharedApiKeys.defaultProviderKey(language.sharedApiKeys.types.mistral)}</span
+    >
     <SecretInput path={{ kind: "flat", field: "mistralKey" }} marginBottom />
 {/if}
 {#if modelInfo.provider === LLMProvider.NovelAI || subModelInfo.provider === LLMProvider.NovelAI}
-    <span class="text-textcolor">NovelAI Bearer Token</span>
+    <span class="text-textcolor">{language.sharedApiKeys.defaultProviderKey(language.sharedApiKeys.types.novelai)}</span
+    >
     <SecretInput path={{ kind: "nested", field: "novelai" }} />
 {/if}
 {#if activeModelPreset.aiModel === "reverse_proxy" || activeModelPreset.subModel === "reverse_proxy"}
@@ -204,11 +213,14 @@
         bind:value={activeModelPreset.forceReplaceUrl}
         placeholder="https//..."
     />
-    <span class="text-textcolor mt-4"> {language.proxyAPIKey}</span>
+    <div class="mt-4">
+        <CredentialSelect modelId="reverse_proxy" bindingTarget="modelPreset" />
+    </div>
+    <span class="text-textcolor">{language.sharedApiKeys.defaultProxyKey}</span>
     <SecretInput
         path={{ kind: "entry", field: "modelPresets", id: activeModelPreset.id ?? "" }}
         marginBottom
-        placeholder="leave it blank if it hasn't password"
+        placeholder={language.sharedApiKeys.proxyKeyPlaceholder}
     />
     <span class="text-textcolor mt-4"> {language.proxyRequestModel}</span>
     <TextInput
@@ -233,7 +245,9 @@
     </SelectInput>
 {/if}
 {#if modelInfo.provider === LLMProvider.Cohere || subModelInfo.provider === LLMProvider.Cohere}
-    <span class="text-textcolor mt-4">Cohere {language.apiKey}</span>
+    <span class="text-textcolor mt-4"
+        >{language.sharedApiKeys.defaultProviderKey(language.sharedApiKeys.types.cohere)}</span
+    >
     <SecretInput path={{ kind: "flat", field: "cohereAPIKey" }} marginBottom />
 {/if}
 {#if usesOllamaLocal || usesOllamaCloud}
@@ -279,7 +293,9 @@
             {/await}
         {/if}
 
-        <span class="text-textcolor mt-4">Ollama {language.apiKey}</span>
+        <span class="text-textcolor mt-4"
+            >{language.sharedApiKeys.defaultProviderKey(language.sharedApiKeys.types.ollama)}</span
+        >
         <SecretInput path={{ kind: "flat", field: "ollamaApiKey" }} marginBottom />
 
         <span class="text-textcolor mt-4">Ollama {language.format}</span>
@@ -327,7 +343,9 @@
     {/if}
 {/if}
 {#if activeModelPreset.aiModel === "nanogpt" || activeModelPreset.subModel === "nanogpt"}
-    <span class="text-textcolor mt-4">NanoGPT {language.apiKey}</span>
+    <span class="text-textcolor mt-4"
+        >{language.sharedApiKeys.defaultProviderKey(language.sharedApiKeys.types.nanogpt)}</span
+    >
     <SecretInput path={{ kind: "flat", field: "nanogptKey" }} marginBottom />
 
     <NanoGPTDashboard keySet={isSecretSet(NANOGPT_KEY)} keyVersion={secretVersion(NANOGPT_KEY)} />
@@ -389,7 +407,9 @@
     {/if}
 {/if}
 {#if activeModelPreset.aiModel === "openrouter" || activeModelPreset.subModel === "openrouter"}
-    <span class="text-textcolor mt-4">OpenRouter {language.apiKey}</span>
+    <span class="text-textcolor mt-4"
+        >{language.sharedApiKeys.defaultProviderKey(language.sharedApiKeys.types.openrouter)}</span
+    >
     <SecretInput path={{ kind: "flat", field: "openrouterKey" }} marginBottom />
 
     <span class="text-textcolor mt-4">OpenRouter {language.model}</span>
@@ -416,17 +436,19 @@
     </SelectInput>
 {/if}
 {#if modelInfo.provider === LLMProvider.OpenAI || subModelInfo.provider === LLMProvider.OpenAI}
-    <span class="text-textcolor">OpenAI {language.apiKey} <Help key="oaiapikey" /></span>
+    <span class="text-textcolor"
+        >{language.sharedApiKeys.defaultProviderKey(language.sharedApiKeys.types.openai)} <Help key="oaiapikey" /></span
+    >
     <SecretInput path={{ kind: "flat", field: "openAIKey" }} marginBottom placeholder="sk-XXXXXXXXXXXXXXXXXXXX" />
 {/if}
 
 {#if modelInfo.keyIdentifier}
-    <span class="text-textcolor">{modelInfo.name} {language.apiKey}</span>
+    <span class="text-textcolor">{language.sharedApiKeys.defaultProviderKey(modelInfo.name)}</span>
     <SecretInput path={{ kind: "map", field: "OaiCompAPIKeys", id: modelInfo.keyIdentifier }} marginBottom />
 {/if}
 
 {#if subModelInfo.keyIdentifier && subModelInfo.keyIdentifier !== modelInfo.keyIdentifier}
-    <span class="text-textcolor">{subModelInfo.name} {language.apiKey}</span>
+    <span class="text-textcolor">{language.sharedApiKeys.defaultProviderKey(subModelInfo.name)}</span>
     <SecretInput path={{ kind: "map", field: "OaiCompAPIKeys", id: subModelInfo.keyIdentifier }} marginBottom />
 {/if}
 
@@ -504,6 +526,9 @@
             {i + 1}
         </span>
         <ModelList bind:value={activeModelPreset.fallbackModels[arg][i]} blankable />
+        {#if model}
+            <CredentialSelect modelId={model} compact />
+        {/if}
     {/each}
     <div class="flex gap-2">
         <button

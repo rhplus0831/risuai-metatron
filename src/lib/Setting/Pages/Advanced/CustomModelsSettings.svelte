@@ -11,6 +11,7 @@
     import type { LLMFlags, LLMFormat, LLMTokenizer } from "src/ts/model/types";
     import { v4 } from "uuid";
     import SecretInput from "src/lib/UI/GUI/SecretInput.svelte";
+    import CredentialSelect from "src/lib/UI/GUI/CredentialSelect.svelte";
     import { deleteEntrySecret } from "src/ts/storage/llmSecrets.svelte";
 
     let openedModels = $state(new Set<string>());
@@ -165,8 +166,13 @@
                         <OptionInput value="17">AWSBedrockClaude</OptionInput>
                         <OptionInput value="18">OpenAIResponseAPI</OptionInput>
                     </SelectInput>
-                    <span class="text-textcolor">{language.proxyAPIKey}</span>
-                    <SecretInput path={{ kind: "entry", field: "customModels", id: model.id }} />
+                    <div class="mt-2">
+                        <CredentialSelect modelId={model.id} bindingTarget="customModel" />
+                    </div>
+                    {#if model.credentialId === undefined}
+                        <span class="text-textcolor">{language.sharedApiKeys.defaults.customModel}</span>
+                        <SecretInput path={{ kind: "entry", field: "customModels", id: model.id }} />
+                    {/if}
                     <span class="text-textcolor">{language.additionalParams}</span>
                     <TextAreaInput
                         bind:value={settings.customModels[index].params}

@@ -15,11 +15,13 @@
         KeyboardIcon,
         CpuIcon,
         ScrollTextIcon,
+        KeyRoundIcon,
     } from "@lucide/svelte";
     import { language } from "src/lang";
     import DisplaySettings from "./Pages/DisplaySettings.svelte";
     import UserSettings from "./Pages/UserSettings.svelte";
     import ModelSettings from "./Pages/ModelSettings.svelte";
+    import ApiKeysSettings from "./Pages/ApiKeysSettings.svelte";
     import PromptPresetSettings from "./Pages/PromptPresetSettings.svelte";
     import OtherBotSettings from "./Pages/OtherBotSettings.svelte";
     import PluginSettings from "./Pages/PluginSettings.svelte";
@@ -27,6 +29,7 @@
     import {
         additionalSettingsMenu,
         MODEL_SETTINGS_MENU,
+        API_KEYS_SETTINGS_MENU,
         PROMPT_SETTINGS_MENU,
         SettingsMenuIndex,
         settingsOpen,
@@ -67,6 +70,17 @@
                 >
                     <CpuIcon />
                     <span>{language.model}</span>
+                </button>
+                <button
+                    class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === API_KEYS_SETTINGS_MENU}
+                    class:text-textcolor2={$SettingsMenuIndex !== API_KEYS_SETTINGS_MENU}
+                    onclick={() => {
+                        $SettingsMenuIndex = API_KEYS_SETTINGS_MENU;
+                    }}
+                >
+                    <KeyRoundIcon />
+                    <span>{language.apiKeys}</span>
                 </button>
                 <button
                     class="flex gap-2 items-center hover:text-textcolor"
@@ -233,6 +247,8 @@
                         <UserSettings />
                     {:else if $SettingsMenuIndex === MODEL_SETTINGS_MENU}
                         <ModelSettings />
+                    {:else if $SettingsMenuIndex === API_KEYS_SETTINGS_MENU}
+                        <ApiKeysSettings />
                     {:else if $SettingsMenuIndex === PROMPT_SETTINGS_MENU}
                         <PromptPresetSettings
                             goPromptTemplate={() => {

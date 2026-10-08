@@ -62,8 +62,8 @@
             · {language.secretSaving}
         {/if}
     </span>
-    <form class="flex gap-2 items-center" onsubmit={submit}>
-        <TextInput {size} hideText fullwidth bind:value={draft} {placeholder} />
+    <form class="flex flex-wrap gap-2 items-center" onsubmit={submit}>
+        <TextInput {size} hideText fullwidth className="min-w-0 flex-1 basis-32" bind:value={draft} {placeholder} />
         <Button size="sm" styled="outlined" onclick={() => submit()}>{language.secretReplace}</Button>
         {#if status.set}
             <Button size="sm" styled="danger" onclick={clear}>{language.secretClear}</Button>

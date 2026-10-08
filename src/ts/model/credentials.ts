@@ -19,13 +19,13 @@ export function credentialFor(modelId: string, scope?: PresetScope): ModelCreden
         modelId,
         modelInfo,
         {
-            modelCredentials: settings.providers.modelCredentials,
-            customModels: settings.customModels,
+            modelCredentials: settings.providers.modelCredentials ?? {},
+            customModels: settings.customModels ?? [],
             proxyCredentialId: (scope
                 ? scopedPresetRoot(scope, "proxyCredentialId")
                 : activeModelPreset.proxyCredentialId) as string | undefined,
         },
-        Object.fromEntries(settings.credentials.map((record) => [record.id, record])),
+        Object.fromEntries((settings.credentials ?? []).map((record) => [record.id, record])),
         (record) => secretStatus({ kind: "entry", field: "credentials", id: record.id }).set,
     );
     if (binding.kind === "default") {
@@ -46,7 +46,7 @@ export function credentialFor(modelId: string, scope?: PresetScope): ModelCreden
 /** Select options in collection order; a model with no slot has no options. */
 export function credentialsAccepted(modelId: string): Credential[] {
     const slot = credentialSlotOf(modelId, getModelInfo(modelId));
-    return slot ? settings.credentials.filter((record) => slot.accepts.includes(record.type)) : [];
+    return slot ? (settings.credentials ?? []).filter((record) => slot.accepts.includes(record.type)) : [];
 }
 
 export type CredentialUsage = {
@@ -58,17 +58,17 @@ export type CredentialUsage = {
 /** Every stored binding naming this id, including ignored global entries and inactive model presets. */
 export function credentialsUsing(credentialId: string): CredentialUsage[] {
     const uses: CredentialUsage[] = [];
-    for (const [modelId, binding] of Object.entries(settings.providers.modelCredentials)) {
+    for (const [modelId, binding] of Object.entries(settings.providers.modelCredentials ?? {})) {
         if (binding === credentialId) {
             uses.push({ kind: "model", id: modelId, name: getModelInfo(modelId).name });
         }
     }
-    for (const model of settings.customModels) {
+    for (const model of settings.customModels ?? []) {
         if (Object.hasOwn(model, "credentialId") && model.credentialId === credentialId) {
             uses.push({ kind: "customModel", id: model.id, name: model.name });
         }
     }
-    for (const preset of settings.modelPresets) {
+    for (const preset of settings.modelPresets ?? []) {
         if (Object.hasOwn(preset, "proxyCredentialId") && preset.proxyCredentialId === credentialId) {
             uses.push({ kind: "modelPreset", id: preset.id, name: preset.name });
         }
