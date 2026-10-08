@@ -1,4 +1,4 @@
-import type { CustomModel, Database } from "../../../shared/database.ts";
+import type { Credential, CredentialType, CustomModel, Database } from "../../../shared/database.ts";
 import { LLMFlags, type LLMModel } from "../../../shared/llm.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import { PERSONA_DEFAULTS } from "../../../shared/personas.ts";
@@ -24,7 +24,7 @@ type PresetRootField = Extract<RootOf<Exclude<PresetField, "name" | "image">>, k
  * What the server request layer reads of the database: the `providers` and `llmSecrets` sections,
  * the request's prompt and model preset fields under their root names (as the forwarding layer
  * serves them), the model preset's `proxyKey`, the request persona's name and prompt,
- * `ui.autoSuggestPrefix`, and `customModels`.
+ * `ui.autoSuggestPrefix`, `customModels`, and the named credentials.
  */
 export type RequestDb = Pick<
     Database,
@@ -32,6 +32,11 @@ export type RequestDb = Pick<
 > & {
     /** The custom models, each with its key from `llmSecrets.customModels` (`""` for none). */
     customModels: (CustomModel & { key: string })[];
+    /** Server-only named credentials, including their display names for refusal messages. */
+    credentials: Record<
+        string,
+        { name: string; type: CredentialType; key: string; clientEmail?: string; projectId?: string }
+    >;
     /**
      * A job's plugin provider models (slice 11b): the descriptors its tab registered when it created
      * the job (`hooks.providers`), by which `pluginmodel:::<name>` resolves. Never stored.
@@ -93,14 +98,14 @@ export function loadRequestDb(
         { kind: kind(RESOURCE_KIND.llmSecrets), id: SINGLETON_RESOURCE_ID },
         { kind: kind(RESOURCE_KIND.ui), id: SINGLETON_RESOURCE_ID },
         { kind: kind(RESOURCE_KIND.customModels), id: SINGLETON_RESOURCE_ID },
+        { kind: kind(RESOURCE_KIND.credentials), id: SINGLETON_RESOURCE_ID },
         { kind: kind(RESOURCE_KIND.presets), id: SINGLETON_RESOURCE_ID },
         { kind: kind(RESOURCE_KIND.modelPresets), id: SINGLETON_RESOURCE_ID },
         { kind: kind(RESOURCE_KIND.personas), id: SINGLETON_RESOURCE_ID },
         ...characterIds.map((id) => ({ kind: kind(RESOURCE_KIND.characters), id })),
     ]);
-    const [providers, llmSecrets, ui, customModels, presets, modelPresets, personas, ...characters] = read.items.map(
-        (item) => item.data as any,
-    );
+    const [providers, llmSecrets, ui, customModels, credentials, presets, modelPresets, personas, ...characters] =
+        read.items.map((item) => item.data as any);
     if (!providers || !llmSecrets || !ui || !customModels || !presets || !modelPresets || !personas) {
         throw new Error("The server has no settings records yet");
     }
@@ -145,6 +150,22 @@ export function loadRequestDb(
         const entry = Object.prototype.hasOwnProperty.call(modelKeys, model.id) ? modelKeys[model.id] : undefined;
         return { ...model, key: typeof entry?.key === "string" ? entry.key : "" };
     });
+    const credentialKeys = (llmSecrets.credentials ?? {}) as Record<string, { key?: unknown }>;
+    db.credentials = Object.fromEntries(
+        ((credentials ?? []) as Credential[]).map((credential) => {
+            const entry = Object.hasOwn(credentialKeys, credential.id) ? credentialKeys[credential.id] : undefined;
+            return [
+                credential.id,
+                {
+                    name: credential.name,
+                    type: credential.type,
+                    key: typeof entry?.key === "string" ? entry.key : "",
+                    ...(credential.clientEmail !== undefined ? { clientEmail: credential.clientEmail } : {}),
+                    ...(credential.projectId !== undefined ? { projectId: credential.projectId } : {}),
+                },
+            ];
+        }),
+    );
 
     const nameOf = (id: string | null): string | null => {
         if (!id) {

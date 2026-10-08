@@ -47,7 +47,8 @@ export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
 
 /** Readable credential metadata; its value is in `llmSecrets.credentials.<id>.key`. */
 export type Credential = { id: string; name: string } & (
-    { type: "vertex"; clientEmail?: string } | { type: Exclude<CredentialType, "vertex">; clientEmail?: never }
+    | { type: "vertex"; clientEmail?: string; projectId?: string }
+    | { type: Exclude<CredentialType, "vertex">; clientEmail?: never; projectId?: never }
 );
 
 export interface DynamicOutput {

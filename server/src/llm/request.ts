@@ -17,6 +17,7 @@ import type {
 } from "../../../shared/llm/request.ts";
 import { applyChatTemplate } from "./chatTemplate.ts";
 import type { RequestContext } from "./context.ts";
+import { resolveCredential } from "./credentials.ts";
 import { messages as language } from "./messages.ts";
 import { NovelAIBadWordIds, stringlizeNAIChat } from "./nai.ts";
 import { requestClaude } from "./anthropic.ts";
@@ -44,6 +45,7 @@ export interface RequestDataArgumentExtended extends RequestArgs {
     customURL?: string;
     mode: ModelModeExtended;
     key?: string;
+    vertexCredential?: { clientEmail: string; privateKey: string; projectId?: string };
     additionalOutput?: string;
     saveSignatures?: boolean;
     // The client fields the adapters read but the body does not carry.
@@ -369,6 +371,24 @@ export async function requestChatDataMain(
         const found = db.customModels.find((m) => m.id === targ.aiModel);
         targ.customURL = found?.url;
         targ.key = found?.key;
+    }
+
+    const credential = resolveCredential(db, targ.aiModel, targ.modelInfo);
+    switch (credential.kind) {
+        case "refused":
+            return { type: "fail", result: credential.message, noRetry: true };
+        case "key":
+            targ.key = credential.key;
+            break;
+        case "vertex":
+            targ.vertexCredential = {
+                clientEmail: credential.clientEmail,
+                privateKey: credential.privateKey,
+                ...(credential.projectId !== undefined ? { projectId: credential.projectId } : {}),
+            };
+            break;
+        case "default":
+            break;
     }
 
     const format = targ.modelInfo.format;
@@ -1113,21 +1133,21 @@ async function requestOllama(arg: RequestDataArgumentExtended): Promise<requestD
 
     if (isCloud && requestFormat === LLMFormat.OpenAICompatible) {
         arg.customURL = "https://ollama.com/v1/chat/completions";
-        arg.key = db.ollamaApiKey;
+        arg.key ??= db.ollamaApiKey;
         arg.modelInfo.internalID = ollamaModel;
         return requestOpenAI(arg);
     }
 
     if (isCloud && requestFormat === LLMFormat.OpenAIResponseAPI) {
         arg.customURL = "https://ollama.com/v1/responses";
-        arg.key = db.ollamaApiKey;
+        arg.key ??= db.ollamaApiKey;
         arg.modelInfo.internalID = ollamaModel;
         return requestOpenAIResponseAPI(arg);
     }
 
     if (isCloud && requestFormat === LLMFormat.Anthropic) {
         arg.customURL = "https://ollama.com/v1/messages";
-        arg.key = db.ollamaApiKey;
+        arg.key ??= db.ollamaApiKey;
         arg.modelInfo = {
             ...arg.modelInfo,
             internalID: ollamaModel,
@@ -1146,8 +1166,8 @@ async function requestOllama(arg: RequestDataArgumentExtended): Promise<requestD
         }
     }
 
-    let customHeaders: Record<string, string> =
-        isCloud && db.ollamaApiKey ? { Authorization: "Bearer " + db.ollamaApiKey } : {};
+    const apiKey = arg.key ?? db.ollamaApiKey;
+    let customHeaders: Record<string, string> = isCloud && apiKey ? { Authorization: "Bearer " + apiKey } : {};
 
     let requestBody: any = {
         model: ollamaModel,

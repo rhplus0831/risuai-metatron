@@ -133,19 +133,27 @@ describe("plain list and map collections", () => {
         );
     });
 
-    it("credentials: metadata only (the key is dropped), a client email only on a Vertex key, unique record ids, a known type", () => {
+    it("credentials: metadata only (the key is dropped), a client email and project only on a Vertex key, unique record ids, a known type", () => {
         expect(normalizeCredentials(undefined)).toEqual([]);
         expect(
             normalizeCredentials([
-                { id: "c1", name: "Work", type: "anthropic", key: "secret", clientEmail: "x@example.test", extra: 1 },
+                {
+                    id: "c1",
+                    name: "Work",
+                    type: "anthropic",
+                    key: "secret",
+                    clientEmail: "x@example.test",
+                    projectId: "p",
+                    extra: 1,
+                },
                 { id: "c2", name: "", type: "custom" },
-                { id: "c3", name: "SA", type: "vertex", clientEmail: "sa@example.test", key: "pem" },
+                { id: "c3", name: "SA", type: "vertex", clientEmail: "sa@example.test", projectId: "p", key: "pem" },
                 { id: "c4", name: "SA without email", type: "vertex" },
             ]),
         ).toEqual([
             { id: "c1", name: "Work", type: "anthropic" },
             { id: "c2", name: "", type: "custom" },
-            { id: "c3", name: "SA", type: "vertex", clientEmail: "sa@example.test" },
+            { id: "c3", name: "SA", type: "vertex", clientEmail: "sa@example.test", projectId: "p" },
             { id: "c4", name: "SA without email", type: "vertex" },
         ]);
         for (const input of [{}, null, [1], [null]]) {
@@ -169,6 +177,11 @@ describe("plain list and map collections", () => {
             normalizeCredentials,
             [{ id: "c1", name: "n", type: "vertex", clientEmail: 1 }],
             "credentials.clientEmail must be a string when present for vertex",
+        );
+        rejects(
+            normalizeCredentials,
+            [{ id: "c1", name: "n", type: "vertex", projectId: 1 }],
+            "credentials.projectId must be a string when present for vertex",
         );
     });
 

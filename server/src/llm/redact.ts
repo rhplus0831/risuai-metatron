@@ -7,7 +7,8 @@ import type { RequestDb } from "./settings.ts";
  *
  * - Every credential value of the request (the `llmSecrets` keys, `google.accessToken`,
  *   `hordeConfig.apiKey`, `novelai.token`, `vertexPrivateKey`, `vertexAccessToken`, each
- *   `OaiCompAPIKeys` value, the preset's `proxyKey`, every `customModels[].key`, the parts of a
+ *   `OaiCompAPIKeys` value, the preset's `proxyKey`, every `customModels[].key`, every named
+ *   credential's key and client email, the parts of a
  *   Bedrock `accessKeyId:secretAccessKey:region` credential, and each Vertex token handed out) is
  *   replaced by `[redacted]` wherever it occurs in a string, also in its JSON-escaped and
  *   URL-encoded forms; every non-empty value, however short. The readable siblings (`google.projectId`, `hordeConfig.model`, `hordeConfig.softPrompt`,
@@ -87,6 +88,14 @@ export function collectSecrets(db: Partial<RequestDb>): string[] {
             secrets.push(model.key);
             // A custom Bedrock model carries the composite credential as its key.
             secrets.push(...model.key.split(":"));
+        }
+    }
+    for (const credential of Object.values(db.credentials ?? {})) {
+        if (typeof credential?.key === "string") {
+            secrets.push(credential.key, ...credential.key.split(":"));
+        }
+        if (typeof credential?.clientEmail === "string") {
+            secrets.push(credential.clientEmail);
         }
     }
     if (typeof db.claudeAPIKey === "string") {

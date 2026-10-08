@@ -412,7 +412,7 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
         body.generation_config.mediaResolution = "MEDIA_RESOLUTION_MEDIUM";
     }
 
-    const PROJECT_ID = db.google.projectId;
+    const PROJECT_ID = arg.vertexCredential?.projectId || db.google.projectId;
     const REGION = db.vertexRegion;
 
     const isVertexGlobalOnlyModel = (modelId: string) => {
@@ -424,7 +424,11 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
     if (arg.modelInfo.format === LLMFormat.VertexAIGemini) {
         // The client reused the token it had stored until its expiry; the server keeps it in memory
         // (`vertexToken.ts`), so a token is generated on the first Vertex request after a restart.
-        if (!db.vertexClientEmail || !db.vertexPrivateKey) {
+        const { clientEmail, privateKey } = arg.vertexCredential ?? {
+            clientEmail: db.vertexClientEmail,
+            privateKey: db.vertexPrivateKey,
+        };
+        if (!clientEmail || !privateKey) {
             arg.ctx.alertError(
                 "Vertex AI authentication information is missing or incomplete. Please check your settings.",
             );
@@ -433,8 +437,7 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
                 result: "Vertex AI authentication information is missing or incomplete. Please check your settings.",
             };
         }
-        headers["Authorization"] =
-            "Bearer " + (await arg.ctx.vertexAccessToken(db.vertexClientEmail, db.vertexPrivateKey));
+        headers["Authorization"] = "Bearer " + (await arg.ctx.vertexAccessToken(clientEmail, privateKey));
     }
 
     if (db.jsonSchemaEnabled || arg.schema) {

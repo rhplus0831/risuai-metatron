@@ -21,7 +21,8 @@ import { createTransport } from "../llm/transport.ts";
 // format, the auxiliary and sub models, the Responses API, Anthropic (buffered, streaming), Bedrock
 // (SigV4), Google (buffered, streaming, a preview, a tool round trip), Vertex, NanoGPT's Messages,
 // Legacy, and Responses formats (endpoint, key, request model, provider), and a request without a
-// selected character. The NanoGPT cases are not part of the oracle capture below.
+// selected character. The NanoGPT cases and the named credential cases
+// (`docs/plan/shared-api-keys.md`) are not part of the oracle capture below.
 //
 // Phase 6 slice 11: this was the Phase 5 slice 7a parity gate
 // (`src/ts/process/request/tests/serverParity.test.ts`), which ran the pre-cutover browser adapters
@@ -49,6 +50,9 @@ vi.mock("node:crypto", async (importOriginal) => {
     return { ...actual, default: { ...actual, randomUUID }, randomUUID };
 });
 
+/** The service accounts the Vertex token cache was asked for, in order. */
+const vertexLogins: [string, string][] = [];
+
 type Upstream = { url: string; method: string; headers: Record<string, string>; body: unknown };
 type CannedResponse = { status: number; headers?: Record<string, string>; body: string };
 
@@ -73,6 +77,8 @@ type Settings = {
     providers?: Record<string, unknown>;
     secrets?: Record<string, unknown>;
     customModels?: unknown[];
+    /** The named credentials' readable records (their keys go in `secrets.credentials`). */
+    credentials?: unknown[];
     selectedCharacterName?: string | null;
 };
 
@@ -89,6 +95,7 @@ function settings(overrides: Settings = {}) {
         }),
         ui: { autoSuggestPrefix: "" },
         customModels: overrides.customModels ?? [],
+        credentials: overrides.credentials ?? [],
         // `overrides.preset` may mix both owners' fields: each normalizer keeps its own
         // (`docs/plan/split-preset.md`), so the prompt preset `p` and the model preset `m` split it.
         presets: normalizePresets([{ id: "p", name: "p", maxResponse: 300, temperature: 70, ...overrides.preset }]),
@@ -205,6 +212,7 @@ async function run(scenario: Scenario): Promise<Recorded> {
     const observer: unknown[] = [];
     const known = new Map(Object.entries(scenario.known ?? {}));
     ids.next = 0;
+    vertexLogins.length = 0;
     const controller = new AbortController();
     const transport = createTransport({
         signal: controller.signal,
@@ -283,7 +291,10 @@ async function run(scenario: Scenario): Promise<Recorded> {
         intercept: async (body) => body,
         supportsInlayImage: () => getModelInfo(db.aiModel).flags.includes(LLMFlags.hasImageInput),
         getModelInfo,
-        vertexAccessToken: async () => SECRETS.vertexToken,
+        vertexAccessToken: async (clientEmail, privateKey) => {
+            vertexLogins.push([clientEmail, privateKey]);
+            return SECRETS.vertexToken;
+        },
         registerClaudeObserver: (arg) => observer.push(JSON.parse(JSON.stringify(arg))),
     };
     const response = await requestChatDataMain(
@@ -1449,5 +1460,318 @@ describe("the server provider adapters", () => {
             result: { type: "success", result: "translated" },
             logs: [PROVIDER],
         });
+    });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Named credentials (`docs/plan/shared-api-keys.md`): a binding replaces the model's default key, a
+// model without one keeps it, and a binding that cannot be honored refuses the request.
+
+const NAMED = {
+    work: "sk-named-work-SENTINEL-8888",
+    home: "sk-named-home-SENTINEL-9999",
+    bedrock: "AKIANAMED:named-bedrock-SENTINEL-1212:us-west-2",
+    vertexKey: "-----BEGIN PRIVATE KEY-----\nnamed\n-----END PRIVATE KEY-----",
+};
+
+/** The `credentials` records and their keys, as `Settings` fields. */
+function named(entries: { id: string; type: string; key?: string; clientEmail?: string; projectId?: string }[]) {
+    return {
+        credentials: entries.map(({ key: _key, ...record }) => ({ name: `Key ${record.id}`, ...record })),
+        credentialKeys: Object.fromEntries(
+            entries.filter((entry) => entry.key !== undefined).map((entry) => [entry.id, { key: entry.key }]),
+        ),
+    };
+}
+
+/** Settings with named credentials and the model-to-credential bindings merged in. */
+function withNamed(
+    base: Settings,
+    entries: Parameters<typeof named>[0],
+    modelCredentials: Record<string, string> = {},
+): Settings {
+    const { credentials, credentialKeys } = named(entries);
+    return {
+        ...base,
+        credentials,
+        providers: { ...base.providers, modelCredentials },
+        secrets: { ...base.secrets, credentials: credentialKeys },
+    };
+}
+
+const headersOf = (recorded: Recorded) => recorded.calls.map((call) => call.headers);
+const wireOf = (recorded: Recorded) => JSON.stringify([recorded.calls, recorded.observer]);
+const claudeAnswer = () => json({ content: [{ type: "text", text: "from claude" }] });
+
+describe("named credentials", () => {
+    it("a catalogue model's global binding replaces its default key, and an unbound model keeps the default", async () => {
+        const bound = await run({
+            settings: withNamed({ preset: { aiModel: "gpt-5.5" } }, [{ id: "work", type: "openai", key: NAMED.work }], {
+                "gpt-5.5": "work",
+            }),
+            arg: prompt(),
+            upstream: () => chat("bound"),
+        });
+        expect(bound.calls.map((call) => [call.url, call.headers.authorization])).toEqual([
+            ["https://api.openai.com/v1/chat/completions", `Bearer ${NAMED.work}`],
+        ]);
+        expect(wireOf(bound)).not.toContain(SECRETS.openAIKey);
+        expect(bound.result).toMatchObject({ type: "success", result: "bound" });
+
+        // A binding for another model leaves this one on its default key.
+        const unbound = await run({
+            settings: withNamed({ preset: { aiModel: "gpt-5.5" } }, [{ id: "work", type: "openai", key: NAMED.work }], {
+                "gpt-5.4": "work",
+            }),
+            arg: prompt(),
+            upstream: () => chat("default"),
+        });
+        expect(headersOf(unbound).map((headers) => headers.authorization)).toEqual([`Bearer ${SECRETS.openAIKey}`]);
+        expect(wireOf(unbound)).not.toContain(NAMED.work);
+    });
+
+    it("two Anthropic models on one model preset send two different keys", async () => {
+        const settings = withNamed(
+            { preset: { aiModel: "claude-sonnet-4-5-20250929", subModel: "claude-opus-4-6" } },
+            [
+                { id: "work", type: "anthropic", key: NAMED.work },
+                { id: "home", type: "custom", key: NAMED.home },
+            ],
+            { "claude-sonnet-4-5-20250929": "work", "claude-opus-4-6": "home" },
+        );
+        const main = await run({ settings, arg: prompt(), upstream: claudeAnswer });
+        const sub = await run({ settings, arg: prompt(), mode: "submodel", upstream: claudeAnswer });
+        expect(headersOf(main).map((headers) => headers["x-api-key"])).toEqual([NAMED.work]);
+        expect(headersOf(sub).map((headers) => headers["x-api-key"])).toEqual([NAMED.home]);
+        expect((main.calls[0].body as { model: string }).model).toBe("claude-sonnet-4-5-20250929");
+        expect((sub.calls[0].body as { model: string }).model).toBe("claude-opus-4-6");
+        for (const recorded of [main, sub]) {
+            expect(wireOf(recorded)).not.toContain(SECRETS.claudeAPIKey);
+        }
+    });
+
+    it("two custom models share one key on their records, over their own keys; a global entry for them is ignored", async () => {
+        const customModel = (id: string, credentialId?: string) => ({
+            id,
+            name: id,
+            internalId: `${id}-internal`,
+            url: "https://custom.test/v1/chat/completions",
+            format: LLMFormat.OpenAICompatible,
+            flags: [LLMFlags.hasFullSystemPrompt],
+            tokenizer: 0,
+            params: "",
+            ...(credentialId ? { credentialId } : {}),
+        });
+        const base = (aiModel: string): Settings => ({
+            preset: { aiModel },
+            secrets: {
+                customModels: {
+                    "xcustom:::a": { key: "own-key-a" },
+                    "xcustom:::b": { key: "own-key-b" },
+                    "xcustom:::c": { key: "own-key-c" },
+                },
+            },
+            customModels: [
+                customModel("xcustom:::a", "shared"),
+                customModel("xcustom:::b", "shared"),
+                customModel("xcustom:::c"),
+            ],
+        });
+        const entries = [
+            { id: "shared", type: "custom", key: NAMED.work },
+            { id: "other", type: "custom", key: NAMED.home },
+        ];
+        const runs = await Promise.all(
+            ["xcustom:::a", "xcustom:::b", "xcustom:::c"].map((aiModel) =>
+                run({
+                    settings: withNamed(base(aiModel), entries, { "xcustom:::c": "other" }),
+                    arg: prompt(),
+                    upstream: () => chat("custom"),
+                }),
+            ),
+        );
+        expect(runs.map((recorded) => headersOf(recorded)[0].authorization)).toEqual([
+            `Bearer ${NAMED.work}`,
+            `Bearer ${NAMED.work}`,
+            // `c` has no `credentialId`: its own key, not the global `modelCredentials` entry.
+            "Bearer own-key-c",
+        ]);
+        expect(runs.map((recorded) => recorded.calls[0].url)).toEqual(
+            Array(3).fill("https://custom.test/v1/chat/completions"),
+        );
+    });
+
+    it("a reverse proxy binds on its model preset, over the preset's proxyKey; a global entry for it is ignored", async () => {
+        const entries = [
+            { id: "work", type: "custom", key: NAMED.work },
+            { id: "home", type: "custom", key: NAMED.home },
+        ];
+        const bound = await run({
+            settings: withNamed({ preset: { proxyCredentialId: "work" } }, entries, { reverse_proxy: "home" }),
+            arg: prompt(),
+            upstream: () => chat("proxied"),
+        });
+        expect(bound.calls.map((call) => [call.url, call.headers.authorization])).toEqual([
+            [PROVIDER, `Bearer ${NAMED.work}`],
+        ]);
+        expect(wireOf(bound)).not.toContain(SECRETS.proxyKey);
+
+        const unbound = await run({
+            settings: withNamed({}, entries, { reverse_proxy: "home" }),
+            arg: prompt(),
+            upstream: () => chat("proxied"),
+        });
+        expect(headersOf(unbound).map((headers) => headers.authorization)).toEqual([`Bearer ${SECRETS.proxyKey}`]);
+    });
+
+    it("a keyIdentifier model takes a bound key, else its OaiCompAPIKeys entry, and never falls back to the OpenAI key", async () => {
+        const deepseek = (settings: Settings) =>
+            run({
+                settings: { ...settings, preset: { aiModel: "deepseek-v4-flash" } },
+                arg: prompt(),
+                upstream: () => chat("deep"),
+            });
+        const bound = await deepseek(
+            withNamed(
+                { secrets: { OaiCompAPIKeys: { deepseek: "ds-stored" } } },
+                [{ id: "work", type: "custom", key: NAMED.work }],
+                { "deepseek-v4-flash": "work" },
+            ),
+        );
+        const stored = await deepseek({ secrets: { OaiCompAPIKeys: { deepseek: "ds-stored" } } });
+        const missing = await deepseek({});
+        expect([bound, stored, missing].map((recorded) => headersOf(recorded)[0].authorization)).toEqual([
+            `Bearer ${NAMED.work}`,
+            "Bearer ds-stored",
+            // No entry: an empty key, never another provider's.
+            "Bearer ",
+        ]);
+        for (const recorded of [bound, stored, missing]) {
+            expect(recorded.calls[0].url).toBe("https://api.deepseek.com/beta/chat/completions");
+            expect(wireOf(recorded)).not.toContain(SECRETS.openAIKey);
+        }
+    });
+
+    it("Ollama cloud sends a bound key to ollama.com instead of the stored Ollama key", async () => {
+        const recorded = await run({
+            settings: withNamed(
+                {
+                    preset: { aiModel: "ollama-cloud" },
+                    providers: { ollamaRequestFormat: LLMFormat.OpenAICompatible, ollamaCloudModel: "gpt-oss:120b" },
+                    secrets: { ollamaApiKey: "ollama-stored" },
+                },
+                [{ id: "work", type: "ollama", key: NAMED.work }],
+                { "ollama-cloud": "work" },
+            ),
+            arg: prompt(),
+            upstream: () => chat("cloud"),
+        });
+        expect(recorded.calls.map((call) => [call.url, call.headers.authorization])).toEqual([
+            ["https://ollama.com/v1/chat/completions", `Bearer ${NAMED.work}`],
+        ]);
+        expect(wireOf(recorded)).not.toContain("ollama-stored");
+    });
+
+    it("Bedrock signs with a bound composite key and takes its region", async () => {
+        const recorded = await run({
+            settings: withNamed(
+                { preset: { aiModel: "anthropic.claude-opus-4-6-v1" }, secrets: { claudeAPIKey: SECRETS.bedrock } },
+                [{ id: "aws", type: "bedrock", key: NAMED.bedrock }],
+                { "anthropic.claude-opus-4-6-v1": "aws" },
+            ),
+            arg: { ...prompt(), useStreaming: false },
+            upstream: () => json({ content: [{ type: "text", text: "from bedrock" }] }),
+        });
+        expect(recorded.calls).toHaveLength(1);
+        expect(recorded.calls[0].url).toBe(
+            "https://bedrock-runtime.us-west-2.amazonaws.com/model/global.anthropic.claude-opus-4-6-v1/invoke",
+        );
+        expect(recorded.calls[0].headers.authorization).toMatch(
+            /^AWS4-HMAC-SHA256 Credential=AKIANAMED\/20261001\/us-west-2\//,
+        );
+        expect(wireOf(recorded)).not.toContain("AKIAEXAMPLE");
+        expect(wireOf(recorded)).not.toContain("named-bedrock-SENTINEL");
+    });
+
+    it("Vertex logs in with a bound service account and sends to its project, else to the global project", async () => {
+        const vertex = (projectId?: string) =>
+            run({
+                settings: withNamed(
+                    {
+                        preset: { aiModel: "gemini-2.5-flash-vertex" },
+                        providers: { vertexRegion: "us-central1" },
+                        secrets: {
+                            vertexClientEmail: "svc@proj.iam.gserviceaccount.com",
+                            vertexPrivateKey: "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----",
+                        },
+                    },
+                    [
+                        {
+                            id: "sa",
+                            type: "vertex",
+                            key: NAMED.vertexKey,
+                            clientEmail: "named@proj-2.iam.gserviceaccount.com",
+                            ...(projectId ? { projectId } : {}),
+                        },
+                    ],
+                    { "gemini-2.5-flash-vertex": "sa" },
+                ),
+                arg: { ...prompt(), useStreaming: false },
+                upstream: () => json({ candidates: [{ content: { parts: [{ text: "vertex says" }] } }] }),
+            });
+        const own = await vertex("proj-2");
+        expect(vertexLogins).toEqual([["named@proj-2.iam.gserviceaccount.com", NAMED.vertexKey]]);
+        expect(own.calls.map((call) => [call.url, call.headers.authorization])).toEqual([
+            [
+                "https://us-central1-aiplatform.googleapis.com/v1/projects/proj-2/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent",
+                `Bearer ${SECRETS.vertexToken}`,
+            ],
+        ]);
+        const global = await vertex();
+        expect(vertexLogins).toEqual([["named@proj-2.iam.gserviceaccount.com", NAMED.vertexKey]]);
+        expect(global.calls[0].url).toContain("/projects/proj-1/");
+    });
+
+    it("refuses a binding it cannot honor, without an upstream call, a retry, or the default key", async () => {
+        const refusal = async (settings: Settings) => {
+            const recorded = await run({ settings, arg: prompt(), upstream: () => chat("must not run") });
+            expect(recorded.calls).toEqual([]);
+            const result = recorded.result as { type: string; noRetry?: boolean; result: string };
+            expect(result).toMatchObject({ type: "fail", noRetry: true });
+            for (const secret of [...Object.values(NAMED), SECRETS.openAIKey, SECRETS.claudeAPIKey]) {
+                expect(result.result).not.toContain(secret);
+            }
+            return result.result;
+        };
+        const gpt = { preset: { aiModel: "gpt-5.5" } };
+        expect(await refusal(withNamed(gpt, [], { "gpt-5.5": "gone" }))).toContain("no longer exists");
+        expect(await refusal(withNamed(gpt, [{ id: "work", type: "openai" }], { "gpt-5.5": "work" }))).toContain(
+            "has no key",
+        );
+        expect(
+            await refusal(withNamed(gpt, [{ id: "work", type: "anthropic", key: NAMED.work }], { "gpt-5.5": "work" })),
+        ).toContain("not accepted");
+        expect(
+            await refusal(
+                withNamed(
+                    { preset: { aiModel: "gemini-2.5-flash-vertex" } },
+                    [{ id: "sa", type: "vertex", key: NAMED.vertexKey }],
+                    { "gemini-2.5-flash-vertex": "sa" },
+                ),
+            ),
+        ).toContain("no client email");
+        expect(
+            await refusal(
+                withNamed({ preset: { aiModel: "mancer" } }, [{ id: "work", type: "custom", key: NAMED.work }], {
+                    mancer: "work",
+                }),
+            ),
+        ).toContain("does not accept");
+        // The message names the model and the credential, never its key.
+        expect(
+            await refusal(withNamed(gpt, [{ id: "work", type: "anthropic", key: NAMED.work }], { "gpt-5.5": "work" })),
+        ).toMatch(/gpt-5\.5.*Key work/);
+        // A reverse proxy and a custom model refuse the same way.
+        await refusal(withNamed({ preset: { proxyCredentialId: "gone" } }, []));
     });
 });

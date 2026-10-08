@@ -113,11 +113,15 @@ export function normalizeCredentials(input: unknown): Database["credentials"] {
             if (Object.hasOwn(entry, "clientEmail") && typeof entry.clientEmail !== "string") {
                 throw new ResourceValidationError("credentials.clientEmail must be a string when present for vertex");
             }
+            if (Object.hasOwn(entry, "projectId") && typeof entry.projectId !== "string") {
+                throw new ResourceValidationError("credentials.projectId must be a string when present for vertex");
+            }
             return {
                 id: entry.id,
                 name: entry.name,
                 type: "vertex",
                 ...(Object.hasOwn(entry, "clientEmail") ? { clientEmail: entry.clientEmail as string } : {}),
+                ...(Object.hasOwn(entry, "projectId") ? { projectId: entry.projectId as string } : {}),
             };
         }
         return { id: entry.id, name: entry.name, type: entry.type as Exclude<CredentialType, "vertex"> };

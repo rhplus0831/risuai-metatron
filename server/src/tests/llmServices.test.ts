@@ -80,6 +80,37 @@ describe("the redactor", () => {
         expect(createRedactor([]).carries("anything")).toBe(false);
     });
 
+    it("collects every named credential's key, its colon-separated parts, and its client email, but not its name or project", () => {
+        const secrets = collectSecrets({
+            credentials: {
+                a: { name: "Work", type: "bedrock", key: "AKIANAMED:named-secret:eu-west-1" },
+                b: {
+                    name: "SA",
+                    type: "vertex",
+                    key: "named-pem",
+                    clientEmail: "named@sa.test",
+                    projectId: "named-project",
+                },
+            },
+        } as never);
+        expect(secrets).toEqual(
+            expect.arrayContaining([
+                "AKIANAMED:named-secret:eu-west-1",
+                "AKIANAMED",
+                "named-secret",
+                "eu-west-1",
+                "named-pem",
+                "named@sa.test",
+            ]),
+        );
+        expect(secrets).not.toContain("Work");
+        expect(secrets).not.toContain("named-project");
+        const redactor = createRedactor(secrets);
+        expect(redactor.text("upstream said: bad key named-secret for named@sa.test")).toBe(
+            `upstream said: bad key ${REDACTED} for ${REDACTED}`,
+        );
+    });
+
     it("collects every credential leaf of a request, the Bedrock key's parts, and no readable sibling", () => {
         const secrets = collectSecrets({
             openAIKey: "oai",

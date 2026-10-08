@@ -17,7 +17,7 @@ import { applyAdditionalParameters, applyParameters, getAdditionalParameters } f
 
 import type { Contents, OpenAIChatExtra, OpenAIChatFull, ToolCall } from "./types.ts";
 
-import { getLocalNetworkRequestOptions, type LocalNetworkRequestOptions } from "./shared.ts";
+import { getLocalNetworkRequestOptions, getOpenAIRequestKey, type LocalNetworkRequestOptions } from "./shared.ts";
 export { requestOpenAIResponseAPI, __testResponsesAPI } from "./responses.ts";
 
 function isOfficialOpenAIURL(url: string): boolean {
@@ -581,20 +581,19 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
     let headers: Record<string, string> = {
         Authorization:
             "Bearer " +
-            (arg.key ??
-                (aiModel === "nanogpt"
+            getOpenAIRequestKey(
+                arg,
+                aiModel === "nanogpt"
                     ? db.nanogptKey
                     : aiModel === "reverse_proxy"
                       ? db.proxyKey
                       : aiModel === "openrouter"
                         ? db.openrouterKey
-                        : db.openAIKey)),
+                        : db.openAIKey,
+            ),
         "Content-Type": "application/json",
     };
 
-    if (arg.modelInfo?.keyIdentifier) {
-        headers["Authorization"] = "Bearer " + db.OaiCompAPIKeys[arg.modelInfo.keyIdentifier];
-    }
     if (aiModel === "openrouter") {
         headers["X-Title"] = "RisuAI";
         headers["HTTP-Referer"] = "https://risuai.xyz";
@@ -996,7 +995,7 @@ export async function requestOpenAILegacyInstruct(arg: RequestDataArgumentExtend
 
     let headers: any = {
         "Content-Type": "application/json",
-        Authorization: "Bearer " + (arg.key ?? (nanogpt ? db.nanogptKey : db.openAIKey)),
+        Authorization: "Bearer " + getOpenAIRequestKey(arg, nanogpt ? db.nanogptKey : db.openAIKey),
     };
 
     if (nanogpt && db.nanogptProvider) {

@@ -37,17 +37,19 @@ key is sent to.**
 
 ## Data model
 
-| What                  | Where                                                             | Readable by the tab                     |
-| --------------------- | ----------------------------------------------------------------- | --------------------------------------- |
-| The key list          | new collection `credentials` (`COLLECTION_KIND.credentials`)      | yes: `{ id, name, type, clientEmail? }` |
-| Each key's value      | `llmSecrets.credentials.<id>.key` (a `SECRET_ENTRY_MAPS` entry)   | no (masked leaf)                        |
-| Catalogue model → key | `providers.modelCredentials: { [modelId]: credentialId }`         | yes (ids only)                          |
-| Custom model → key    | `CustomModel.credentialId?: string`                               | yes                                     |
-| Reverse proxy → key   | model preset `proxyCredentialId?: string` (`MODEL_PRESET_FIELDS`) | yes                                     |
+| What                  | Where                                                             | Readable by the tab                                 |
+| --------------------- | ----------------------------------------------------------------- | --------------------------------------------------- |
+| The key list          | new collection `credentials` (`COLLECTION_KIND.credentials`)      | yes: `{ id, name, type, clientEmail?, projectId? }` |
+| Each key's value      | `llmSecrets.credentials.<id>.key` (a `SECRET_ENTRY_MAPS` entry)   | no (masked leaf)                                    |
+| Catalogue model → key | `providers.modelCredentials: { [modelId]: credentialId }`         | yes (ids only)                                      |
+| Custom model → key    | `CustomModel.credentialId?: string`                               | yes                                                 |
+| Reverse proxy → key   | model preset `proxyCredentialId?: string` (`MODEL_PRESET_FIELDS`) | yes                                                 |
 
 - `Credential` (`shared/database.ts`): `id` (a record id, `isRecordId`),
-  `name`, `type: CredentialType`, and `clientEmail` for `vertex` only (the
-  email is not a secret; the private key is the `key` leaf).
+  `name`, `type: CredentialType`, and `clientEmail` and `projectId` for
+  `vertex` only (neither is a secret; the private key is the `key` leaf). A
+  Vertex key's non-empty `projectId` replaces the global `google.projectId`
+  in its request URL, so a service account from another project works.
 - `CredentialType`: `openai`, `anthropic`, `bedrock`, `google`, `vertex`,
   `openrouter`, `nanogpt`, `mistral`, `cohere`, `ollama`, `novelai`, `custom`.
   `custom` is a plain bearer string accepted wherever a single string key is.
@@ -101,7 +103,7 @@ mismatch.
 ## Server
 
 - `server/src/llm/settings.ts` `loadRequestDb`: add
-  `db.credentials: Record<id, { type, key, clientEmail? }>` from the
+  `db.credentials: Record<id, { name, type, key, clientEmail?, projectId? }>` from the
   `credentials` collection merged with `llmSecrets.credentials`, the way
   `customModels` gets its keys. Add `modelCredentials` from `providers`
   (already copied if it is in `SECTION_FIELDS.providers`) and
@@ -112,7 +114,7 @@ mismatch.
   `resolveCredential(db, aiModel, modelInfo, modelPresetBinding)`. It returns
   one of:
   - `{ kind: "default" }`: no binding, so the adapter reads what it reads today;
-  - `{ kind: "key", key }` or `{ kind: "vertex", clientEmail, privateKey }`;
+  - `{ kind: "key", key }` or `{ kind: "vertex", clientEmail, privateKey, projectId? }`;
   - `{ kind: "refused", reason }`: unknown id, empty key, a type the slot does
     not accept, or a binding on a "none" slot.
 - `requestChatDataMain` (`server/src/llm/request.ts`, next to the
@@ -144,7 +146,8 @@ mismatch.
 - `server/src/data/normalize/`:
   - `collections.ts` `normalizeCredentials`: entries need a record id, a
     string `name`, and a known `type`; `key` is dropped, as in
-    `normalizeCustomModels`; `clientEmail` is kept only for `vertex`.
+    `normalizeCustomModels`; `clientEmail` and `projectId` are kept only for
+    `vertex`.
   - `llmSecrets.ts`: read `credentials` like `customModels`
     (`{ key: string }` by record id).
   - `providers.ts`: `modelCredentials: ["object", {}]`, values must be

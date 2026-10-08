@@ -1,5 +1,19 @@
 import { isLocalNetworkUrl } from "../../../../shared/localNetwork.ts";
+import type { RequestDataArgumentExtended } from "../request.ts";
 import type { RequestDb } from "../settings.ts";
+
+/** A provider-specific key never falls through to another provider's default, even on direct calls. */
+export function getOpenAIRequestKey(arg: RequestDataArgumentExtended, defaultKey: string): string {
+    if (arg.key != null) {
+        return arg.key;
+    }
+    const keyIdentifier = arg.modelInfo?.keyIdentifier;
+    if (keyIdentifier) {
+        const keys = arg.ctx.db.OaiCompAPIKeys ?? {};
+        return Object.hasOwn(keys, keyIdentifier) ? (keys[keyIdentifier] ?? "") : "";
+    }
+    return defaultKey;
+}
 
 export interface LocalNetworkRequestOptions {
     networkRoute?: "auto" | "local_network";

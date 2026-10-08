@@ -21,7 +21,7 @@ import type {
     ResponseItem,
     ResponseOutputItem,
 } from "./types.ts";
-import { getLocalNetworkRequestOptions, type LocalNetworkRequestOptions } from "./shared.ts";
+import { getLocalNetworkRequestOptions, getOpenAIRequestKey, type LocalNetworkRequestOptions } from "./shared.ts";
 
 function responseTextContentToString(content: any): string {
     if (typeof content === "string") {
@@ -239,14 +239,13 @@ function buildResponsesHeaders(arg: RequestDataArgumentExtended, risuIdentify: b
     const headers: Record<string, string> = {
         Authorization:
             "Bearer " +
-            (arg.key ??
-                (aiModel === "nanogpt" ? db.nanogptKey : aiModel === "reverse_proxy" ? db.proxyKey : db.openAIKey)),
+            getOpenAIRequestKey(
+                arg,
+                aiModel === "nanogpt" ? db.nanogptKey : aiModel === "reverse_proxy" ? db.proxyKey : db.openAIKey,
+            ),
         "Content-Type": "application/json",
     };
 
-    if (arg.modelInfo?.keyIdentifier) {
-        headers["Authorization"] = "Bearer " + db.OaiCompAPIKeys[arg.modelInfo.keyIdentifier];
-    }
     if (risuIdentify) {
         headers["X-Proxy-Risu"] = "RisuAI";
     }
