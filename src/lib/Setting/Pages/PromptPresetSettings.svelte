@@ -28,7 +28,6 @@
     import RegexList from "src/lib/SideBars/Scripts/RegexList.svelte";
     import SettingRenderer from "../SettingRenderer.svelte";
     import { allBasicParameterItems } from "src/ts/setting/botSettingsParamsData";
-    import SeparateParametersSection from "./SeparateParametersSection.svelte";
 
     /**
      * The prompt preset's page (`docs/plan/split-preset.md`, slice 4): the selected prompt preset's
@@ -343,9 +342,6 @@
     {#if activeModelPreset.aiModel.startsWith("openrouter")}
         <OpenrouterSettings />
     {/if}
-
-    <!-- Separate Parameters - handled by custom component -->
-    <SeparateParametersSection />
 {/if}
 
 {#if submenu === 3 || submenu === -1}

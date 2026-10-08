@@ -469,7 +469,6 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
                     "temperature",
                 ],
                 {},
-                arg.mode,
                 {
                     modelId: arg.aiModel,
                 },
@@ -972,7 +971,6 @@ async function requestKobold(arg: RequestDataArgumentExtended): Promise<requestD
         {
             repetition_penalty: "rep_pen",
         },
-        arg.mode,
         {
             modelId: arg.aiModel,
         },
@@ -1304,7 +1302,6 @@ async function requestCohere(arg: RequestDataArgumentExtended): Promise<requestD
             top_k: "k",
             top_p: "p",
         },
-        arg.mode,
         {
             modelId: arg.aiModel,
         },

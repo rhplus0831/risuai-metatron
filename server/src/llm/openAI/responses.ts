@@ -371,7 +371,6 @@ async function buildResponsesBody(arg: RequestDataArgumentExtended): Promise<Rec
             reasoning_effort: "reasoning.effort",
             verbosity: "text.verbosity",
         },
-        arg.mode,
         {
             modelId: arg.modelInfo.id,
         },

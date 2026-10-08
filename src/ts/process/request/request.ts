@@ -618,7 +618,6 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
                           "temperature",
                       ],
                       {},
-                      arg.mode,
                       {
                           modelId: arg.aiModel,
                       },

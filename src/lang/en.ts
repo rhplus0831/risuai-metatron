@@ -1283,8 +1283,6 @@ export const languageEnglish = {
     predictedOutput: "Predicted Output",
     systemContentReplacement: "System Content Replacement",
     systemRoleReplacement: "System Role Replacement",
-    seperateParameters: "Separate Parameters",
-    seperateParametersEnabled: "Enable Separate Parameters",
     summarizationPrompt: "Summarization Prompt",
     reSummarizationPrompt: "Re-Summarizaion Prompt",
     translatorPrompt: "Translation Prompt",

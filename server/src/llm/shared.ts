@@ -124,7 +124,6 @@ export function applyParameters(
     data: Record<string, any>,
     parameters: LLMParameter[],
     rename: Partial<Record<LLMParameter, string>>,
-    modelMode: ModelModeExtended,
     arg: {
         ignoreTopKIfZero?: boolean;
         modelId: string;
@@ -165,87 +164,6 @@ export function applyParameters(
 
     function getVerbosity(verbosity: number) {
         return ["low", "medium", "high"][verbosity] ?? "medium";
-    }
-
-    if (db.seperateParametersEnabled && modelMode !== "model") {
-        let sepParams: any = db.seperateParameters[modelMode as keyof typeof db.seperateParameters];
-        if (modelMode === "submodel") {
-            sepParams = db.seperateParameters["otherAx"];
-        }
-
-        for (const parameter of parameters) {
-            let value: number | string = 0;
-            if (isReasoningCapabilityParameter(parameter)) {
-                continue;
-            }
-            if (parameter === "top_k" && arg.ignoreTopKIfZero && sepParams[parameter] === 0) {
-                continue;
-            }
-
-            switch (parameter) {
-                case "temperature": {
-                    value = sepParams.temperature === -1000 ? -1000 : sepParams.temperature / 100;
-                    break;
-                }
-                case "top_k": {
-                    value = sepParams.top_k;
-                    break;
-                }
-                case "repetition_penalty": {
-                    value = sepParams.repetition_penalty;
-                    break;
-                }
-                case "min_p": {
-                    value = sepParams.min_p;
-                    break;
-                }
-                case "top_a": {
-                    value = sepParams.top_a;
-                    break;
-                }
-                case "top_p": {
-                    value = sepParams.top_p;
-                    break;
-                }
-                case "thinking_tokens": {
-                    value = sepParams.thinking_tokens;
-                    break;
-                }
-                case "frequency_penalty": {
-                    value = sepParams.frequency_penalty === -1000 ? -1000 : sepParams.frequency_penalty / 100;
-                    break;
-                }
-                case "presence_penalty": {
-                    value = sepParams.presence_penalty === -1000 ? -1000 : sepParams.presence_penalty / 100;
-                    break;
-                }
-                case "reasoning_effort": {
-                    value = getEffort(
-                        sepParams.reasoning_effort,
-                        reasoningDisabledEffort,
-                        supportsXHighReasoning,
-                        reasoningMinEffort,
-                    );
-                    break;
-                }
-                case "verbosity": {
-                    value = getVerbosity(sepParams.verbosity);
-                    break;
-                }
-            }
-
-            if (
-                value === -1000 ||
-                value === undefined ||
-                value === null ||
-                (typeof value === "number" && isNaN(value))
-            ) {
-                continue;
-            }
-
-            data = setObjectValue(data, rename[parameter] ?? parameter, value);
-        }
-        return data;
     }
 
     for (const parameter of parameters) {

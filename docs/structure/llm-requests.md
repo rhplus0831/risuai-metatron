@@ -59,7 +59,7 @@
   - `auxOps.ts`: the `/proxy2` auxiliary operations (`self-host-server.md`): the media, memory, model discovery, account, and count calls the tab makes with a stored key (`global-api.md` `auxFetch`).
 - `request/shared.ts`:
   - `ModelModeExtended` = `model|submodel|memory|emotion|otherAx|translate`.
-  - `applyParameters`: global parameters, or per-mode `seperateParameters` when enabled.
+  - `applyParameters`: the preset's parameters, for every mode (the per-role `seperateParameters` were removed; the fields stay unread).
   - `getAdditionalParameters`/`applyAdditionalParameters`: user body/header overrides.
 - `request/additionalParams.ts`: relaxed JSON parser.
 - `process/webllm.ts`: MLC WebLLM engine, used by Hypa summarization.
@@ -94,7 +94,7 @@
 
 - `db` fields:
   - Model choice (the model preset's): `aiModel`, `subModel`, `seperateModels`, `seperateModelsForAxModels`, `fallbackModels`.
-  - Custom models and parameters: `customModels`, `customFlags`, `additionalParams`, `seperateParameters`.
+  - Custom models and parameters: `customModels`, `customFlags`, `additionalParams`.
   - Keys and URLs per provider.
   - Provider settings: OpenRouter, NanoGPT, and Ollama fields.
   - `dynamicModelRegistry`.

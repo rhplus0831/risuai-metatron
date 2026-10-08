@@ -1179,8 +1179,6 @@ export const languageGerman = {
     predictedOutput: "Vorhergesagte Ausgabe",
     systemContentReplacement: "Systeminhalt ersetzen",
     systemRoleReplacement: "Systemrolle ersetzen",
-    seperateParameters: "Parameter trennen",
-    seperateParametersEnabled: "Parameter trennen aktivieren",
     summarizationPrompt: "Zusammenfassungsanweisung",
     reSummarizationPrompt: "Wiederholte Zusammenfassungsanweisung",
     translatorPrompt: "Übersetzungsanweisung",

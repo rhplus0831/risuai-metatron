@@ -1155,8 +1155,6 @@ export const languageVietnamese = {
     predictedOutput: "Đầu ra dự đoán",
     systemContentReplacement: "Thay thế nội dung hệ thống",
     systemRoleReplacement: "Thay thế vai trò hệ thống",
-    seperateParameters: "Tham số riêng biệt",
-    seperateParametersEnabled: "Bật tham số riêng biệt",
     summarizationPrompt: "Lời nhắc tóm tắt",
     reSummarizationPrompt: "Lời nhắc tóm tắt lại",
     translatorPrompt: "Lời nhắc dịch",

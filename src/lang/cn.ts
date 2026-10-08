@@ -1095,8 +1095,6 @@ export const languageChinese = {
     predictedOutput: "预测输出",
     systemContentReplacement: "替换系统内容",
     systemRoleReplacement: "替换系统角色",
-    seperateParameters: "分离参数",
-    seperateParametersEnabled: "激活分离参数",
     summarizationPrompt: "摘要提示词",
     reSummarizationPrompt: "重新摘要提示词",
     translatorPrompt: "翻译提示词",

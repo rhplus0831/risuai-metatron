@@ -1192,8 +1192,6 @@ export const languageChineseTraditional = {
     predictedOutput: "預測輸出",
     systemContentReplacement: "system 內容替代格式",
     systemRoleReplacement: "system 身分替代值",
-    seperateParameters: "獨立參數設定",
-    seperateParametersEnabled: "啟用獨立參數設定",
     summarizationPrompt: "摘要提示詞",
     reSummarizationPrompt: "重新摘要提示詞",
     translatorPrompt: "翻譯提示詞",

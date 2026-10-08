@@ -54,7 +54,7 @@ Others:
 - `BookmarkList.svelte`, `ChatList.svelte`, `GithubStars.svelte`, `Help.svelte`, `SavePopupIcon.svelte`.
 - `PopupEditor.svelte`: Monaco popup.
 - `WelcomeRisu.svelte`: first-run wizard.
-- `QuickSettingsGUI.svelte`, `AllSeperateParameters.svelte`: see `settings-i18n.md`.
+- `QuickSettingsGUI.svelte`: see `settings-i18n.md`.
 
 GUI primitives (`src/lib/UI/GUI/*`):
 

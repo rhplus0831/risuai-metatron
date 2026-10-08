@@ -7,14 +7,14 @@
   - settings navigation and pages,
   - the Model and Prompt pages and their preset lists (model and prompt presets), switching, import, and export,
   - the prompt template editor and prompt diff,
-  - separate-parameter editors, quick settings,
+  - quick settings,
   - language files and switching.
 - Paths:
   - `src/ts/setting/*`
   - `src/lib/Setting/**`, except `Pages/Module/`, `PersonaSettings.svelte`, `listedPersona.svelte`, `Advanced/SettingsExportButtons.svelte`, `Advanced/CustomModelsSettings.svelte`, `PluginSettings.svelte`, `GlobalRegex.svelte`
   - `src/lang/*`
   - `src/lib/UI/PromptDataItem.svelte`
-  - `src/lib/Others/{PromptDiffModal,AllSeperateParameters,QuickSettingsGUI}.svelte`
+  - `src/lib/Others/{PromptDiffModal,QuickSettingsGUI}.svelte`
 - Not here:
   - DB defaults and migration rules → `persistence.md`.
   - The prompt item runtime → `chat-pipeline.md`.
@@ -48,11 +48,11 @@ Components (`src/lib/Setting/`):
 
 Pages, by kind:
 
-| Kind        | Pages                                                                                                                                                                                                                                                                                                                                                                                |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Declarative | `AccessibilitySettings`, `AdvancedSettings`, `ChatFormatSettings`, `LanguageSettings`                                                                                                                                                                                                                                                                                                |
-| Hybrid      | `DisplaySettings`; `ModelSettings` (the model preset: model, provider and credentials, `modelParameterItems`, chat format, aux and fallback models, system replacement, additional parameters, custom flags, tools); `PromptPresetSettings` (the prompt preset: parameters tab renders `allBasicParameterItems`, prompt and others tabs handwritten)                                 |
-| Handwritten | `OtherBotSettings` (image generation, TTS, memory/Hypa, backends), `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `SeparateParametersSection`, `ClaudeThinkingSeparateParams`, `HotkeySettings`, `UserSettings`, `CustomGUISettingMenu`, `ThanksPage`, `Communities`, `GlobalLoreBookSettings`, `Display/*`, `Language/TranslatorPresetSettings`, `Model/AuxModelSelectors` |
+| Kind        | Pages                                                                                                                                                                                                                                                                                                                                                |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Declarative | `AccessibilitySettings`, `AdvancedSettings`, `ChatFormatSettings`, `LanguageSettings`                                                                                                                                                                                                                                                                |
+| Hybrid      | `DisplaySettings`; `ModelSettings` (the model preset: model, provider and credentials, `modelParameterItems`, chat format, aux and fallback models, system replacement, additional parameters, custom flags, tools); `PromptPresetSettings` (the prompt preset: parameters tab renders `allBasicParameterItems`, prompt and others tabs handwritten) |
+| Handwritten | `OtherBotSettings` (image generation, TTS, memory/Hypa, backends), `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `HotkeySettings`, `UserSettings`, `CustomGUISettingMenu`, `ThanksPage`, `Communities`, `GlobalLoreBookSettings`, `Display/*`, `Language/TranslatorPresetSettings`, `Model/AuxModelSelectors`                              |
 
 - `botpreset.svelte`: the preset list, by `kind`. `prompt` (`openPresetList`): select (`changeToPreset`), reorder, copy, add from the OAI2 template, rename, delete, import (`importPreset`), export (`downloadPreset`), diff (`PromptDiffModal`), and the Ctrl+1..9 numbers. `model` (`openModelPresetList`): select (`changeToModelPreset`), reorder, copy (`copyModelPreset`, with its `proxyKey` entry), add (`addModelPreset`), rename, and delete (`removeModelPreset`, never the last one). `App.svelte` mounts one per store. Each page's header names its selected preset and opens its list.
 - `lorepreset.svelte`: global lore-book list.
@@ -61,7 +61,6 @@ Prompt and parameter editors:
 
 - `UI/PromptDataItem.svelte`: edits one `PromptItem`.
 - `Others/PromptDiffModal.svelte`: diffs the prompt templates of saved presets. Preferences are stored in `db.promptDiffPrefs`.
-- `Others/AllSeperateParameters.svelte`: separate-parameter editor.
 
 Languages (`src/lang/`):
 
@@ -89,7 +88,7 @@ Languages (`src/lang/`):
   - `activePreset.<field>`: the selected prompt preset under its own field names (`name`, `image`, and `PROMPT_PRESET_FIELDS`: `NAISettings`, `reasonEffort`, `regex`, ...); `activeModelPreset.<field>`: the selected model preset (`name`, `MODEL_PRESET_FIELDS`). Both with the selection rules of `persistence.md` ("The selected preset and persona"): a read resolves the selection (the first preset when it names none) and a missing value reads as a fresh copy of its default, so a change inside that copy saves nothing; a write goes to the preset selected now or is dropped. `activePersona.<field>` likewise (`name`, `icon`, `note`, `personaPrompt`, `largePortrait`). Both follow the selection: a handler that awaits captures `activePreset.id` first, and `currentPresetRecord()`/`currentPersonaRecord()` return the record itself (or `undefined`);
   - `selectedLoreBookPage()` with `selectLoreBookPage` (the page this client shows), `readSettingsRoot`/`writeSettingsRoot` for a root name (the registry, `NullableTextColorToggle`'s dynamic field).
 - Every other settings reader and writer in the tab (the chat screens, sidebars, first-run wizard, playground, the client process helpers, the plugin host's setting getters, `characterStore`'s HypaV3 toggle, and the mutation modules `collectionStore`/`pluginStorageStore`) uses the same views. A reader that falls back to the selection (`activePreset.id`, `activePersona.id`) keeps a captured context's ids first. The parser's CBS hosts, the plugin host's database API, `collectionStore`'s `updateSettings`, the snapshot consumers (`snapshots.svelte.ts`), the boot installation, the preset functions (`presets.svelte.ts`), and resource sync read the records too.
-- The prompt preset (`botPreset`) captures prompts, `promptTemplate`, `promptSettings`, sampling and reasoning parameters, and separate parameters; the model preset (`ModelPreset`) captures model/provider, endpoints, compatibility flags, chat format, tools, `maxContext`, auxiliary models, and fallbacks.
+- The prompt preset (`botPreset`) captures prompts, `promptTemplate`, `promptSettings`, sampling and reasoning parameters; the model preset (`ModelPreset`) captures model/provider, endpoints, compatibility flags, chat format, tools, `maxContext`, auxiliary models, and fallbacks.
 - `language` is replaced on switch, so components that read it at module initialization keep stale strings.
 - UI stores: `settingsOpen`, `SettingsMenuIndex`, `QuickSettings` (index 0 the Model page, 3 the Prompt page, 1 other bots, 2 modules), `CustomGUISettingMenuStore`, `openPresetList`, `openModelPresetList`.
 
@@ -105,7 +104,7 @@ Languages (`src/lang/`):
 - `SettingSelect`/`SettingSegmented` reset a value whose option becomes hidden. `SettingSegmented` takes the same value sources as the other wrappers.
 - A preset-owned field must be added to `botPreset` and `PRESET_DEFAULTS` in `shared/presets.ts` (the canonical list `normalizePreset` uses; a model field also to `MODEL_PRESET_FIELDS` and the `ModelPreset` type), edited on its owner's page (`ModelSettings` or `PromptPresetSettings`), and never be a secret: credentials belong in the `llmSecrets` section (`proxyKey` per model preset in its `modelPresets` map, a custom model's `key` in its `customModels` map), and `downloadPreset` blanks the endpoint fields. A credential field is edited with `src/lib/UI/GUI/SecretInput.svelte` (`path` a `shared/llmSecrets.ts` `SecretPath`): it shows the stored key's status (set with its last four characters, not set, saving), replaces it on Enter or the button (once; the field empties), and clears it; the draft is dropped when the path changes. Never `bind:` an LLM credential field (an `llmSecrets` credential, a preset's `proxyKey`, a custom model's `key`): it reads `""`. The forwarding layer serves `proxyKey` as a flat field of the selected model preset; `activeModelPreset` does not serve it. The auxiliary credentials of the `secrets` section are ordinary readable fields, bound like any other (`settings.secrets.<field>`).
 - Preserve misspelled keys: `PresensePenalty`, `seperateParameters`, `seperateModels`, `JinjaTemplate`.
-- `seperateParameters.overrides` (per-model parameters, edited only by the removed Easy Panel) stays in the preset and `providers` shape for saved data and preset files; nothing reads it.
+- `seperateParametersEnabled` and `seperateParameters` (the removed per-role parameters, with `overrides`, the per-model parameters of the removed Easy Panel) stay in the preset and `providers` shape for saved data and preset files; nothing reads or edits them.
 - Prompt edits must keep the `PromptItem` discriminated shape and reassign arrays after splicing. `normalizePromptTemplate` (`shared/presets.ts`) handles imports.
 - `select` option `labelKey` has no fallback label. Missing locale keys fall back to English only because `changeLanguage` merges.
 - `changeToPreset(id)` with an id that is not in `settings.presets` does nothing: no selection change, no preset written.

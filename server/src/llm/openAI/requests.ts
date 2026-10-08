@@ -289,7 +289,6 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
                 },
                 ["temperature", "presence_penalty", "frequency_penalty", "top_p"],
                 {},
-                arg.mode,
                 {
                     modelId: arg.modelInfo.id,
                 },
@@ -480,7 +479,6 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
         body,
         arg.modelInfo.parameters,
         {},
-        arg.mode,
         {
             modelId: arg.modelInfo.id,
         },

@@ -1163,8 +1163,6 @@ export const languageSpanish = {
     predictedOutput: "Salida Predicha",
     systemContentReplacement: "Reemplazo de Contenido del Sistema",
     systemRoleReplacement: "Reemplazo de Rol del Sistema",
-    seperateParameters: "Parámetros Separados",
-    seperateParametersEnabled: "Habilitar Parámetros Separados",
     summarizationPrompt: "Prompt de Resumen",
     reSummarizationPrompt: "Prompt de Re-Resumen",
     translatorPrompt: "Prompt de Traducción",

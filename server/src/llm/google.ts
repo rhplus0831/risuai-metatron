@@ -342,7 +342,6 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
                 thinking_tokens: "thinkingBudget",
                 reasoning_effort: "thinkingConfig.thinkingLevel",
             },
-            arg.mode,
             {
                 ignoreTopKIfZero: true,
                 modelId: arg.modelInfo.id,

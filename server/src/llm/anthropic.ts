@@ -368,7 +368,6 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
         {
             thinking_tokens: "thinking.budget_tokens",
         },
-        arg.mode,
         {
             modelId: arg.modelInfo.id,
         },

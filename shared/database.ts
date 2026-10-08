@@ -363,6 +363,7 @@ export interface Database {
     vertexAccessToken: string;
     vertexAccessTokenExpires: number;
     vertexRegion: string;
+    /** The removed per-role parameters: kept for saved data and preset files, never read. */
     seperateParametersEnabled: boolean;
     seperateParameters: {
         memory: SeparateParameters;
@@ -869,6 +870,7 @@ export interface botPreset {
     extractJson?: string;
     groupTemplate?: string;
     groupOtherBotRole?: string;
+    /** The removed per-role parameters: kept for saved data and preset files, never read. */
     seperateParametersEnabled?: boolean;
     seperateParameters?: {
         memory: SeparateParameters;

@@ -1175,8 +1175,6 @@ export const languageKorean = {
     predictedOutput: "출력 예측",
     systemContentReplacement: "시스템 포맷 교체",
     systemRoleReplacement: "시스템 역할 교체",
-    seperateParameters: "파라미터 분리",
-    seperateParametersEnabled: "파라미터 분리 활성화",
     summarizationPrompt: "요약 프롬프트",
     reSummarizationPrompt: "재요약 프롬프트",
     translatorPrompt: "번역 프롬프트",
