@@ -5,6 +5,7 @@
         settingsOpen,
         sideBarStore,
         openPresetList,
+        openModelPresetList,
         openPersonaList,
         CustomGUISettingMenuStore,
         loadedStore,
@@ -276,6 +277,14 @@
         <Botpreset
             close={() => {
                 $openPresetList = false;
+            }}
+        />
+    {/if}
+    {#if $openModelPresetList}
+        <Botpreset
+            kind="model"
+            close={() => {
+                $openModelPresetList = false;
             }}
         />
     {/if}

@@ -31,10 +31,17 @@ export const settingsOpen = writable(false);
 export const gridOpenStore = writable(false);
 export const botMakerMode = writable(false);
 export const moduleBackgroundEmbedding = writable("");
+/** The prompt preset list (`botpreset.svelte`, kind `prompt`). */
 export const openPresetList = writable(false);
+/** The model preset list (`botpreset.svelte`, kind `model`). */
+export const openModelPresetList = writable(false);
 export const openPersonaList = writable(false);
 export const bookmarkListOpen = writable(false);
 export const SettingsMenuIndex = writable(-1);
+/** The settings page of the model preset (`ModelSettings.svelte`). */
+export const MODEL_SETTINGS_MENU = 1;
+/** The settings page of the prompt preset (`PromptPresetSettings.svelte`); its template editor is menu 13. */
+export const PROMPT_SETTINGS_MENU = 16;
 export const ReloadGUIPointer = writable(0);
 export const ReloadChatPointer = writable({} as Record<number, number>);
 export const ScrollToMessageStore = $state({ value: -1 });

@@ -110,7 +110,7 @@ MCP:
 ## Coupling
 
 - Plugins depend on `database.svelte.ts`, `globalFetch`/`fetchNative`, assets, `transformClient.ts`, model types, `ttsHooks`, theme functions, UI stores, alerts, `pluginmcp`.
-- Plugin consumers: `bootstrap.ts`, `PluginSettings.svelte`, `globalApi.svelte.ts`, `modellist.ts` (`customV3ProviderMetaStore`). Hook-registry (`pluginHooks.ts`) consumers: `BotSettings.svelte` (custom providers), `request.ts`, `transformClient.ts`, `jobChannel.ts` (a job's callbacks), `generationJobs.ts` (`registeredHooks`), `tokenizer.ts`.
+- Plugin consumers: `bootstrap.ts`, `PluginSettings.svelte`, `globalApi.svelte.ts`, `modellist.ts` (`customV3ProviderMetaStore`). Hook-registry (`pluginHooks.ts`) consumers: `ModelSettings.svelte` (custom providers), `request.ts`, `transformClient.ts`, `jobChannel.ts` (a job's callbacks), `generationJobs.ts` (`registeredHooks`), `tokenizer.ts`.
 - MCP consumers: `request.ts` and the provider adapters, `PlaygroundMCP.svelte`, `IrisModal.svelte`/`iris.ts`.
 
 ## Invariants

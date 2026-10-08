@@ -5,6 +5,7 @@ import { accessibilitySettingsItems } from "./accessibilitySettingsData";
 import { advancedSettingsItems } from "./advancedSettingsData";
 import {
     basicParameterItems,
+    modelParameterItems,
     modelSpecificParameterItems,
     penaltyParameterItems,
     samplingParameterItems,
@@ -89,6 +90,7 @@ export function checkCondition(item: SettingItem, ctx: SettingContext): boolean 
 export function getFullSettingsData(searchTerm = "") {
     const full = accessibilitySettingsItems.concat(
         advancedSettingsItems,
+        modelParameterItems,
         basicParameterItems,
         seedSetting,
         samplingParameterItems,

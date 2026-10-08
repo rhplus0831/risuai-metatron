@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
-    import { ArrowLeft, PlusIcon, TrashIcon } from "@lucide/svelte";
+    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { ArrowLeft, PlusIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import PromptDataItem from "src/lib/UI/PromptDataItem.svelte";
     import { tokenizePreset, type PromptItem } from "src/ts/process/prompt";
@@ -13,11 +13,8 @@
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
-    import Accordion from "src/lib/UI/Accordion.svelte";
-    import ModelList from "src/lib/UI/ModelList.svelte";
     import { onDestroy, onMount } from "svelte";
     import { defaultAutoSuggestPrompt } from "../../../ts/storage/defaultPrompts";
-    import AuxModelSelectors from "./Model/AuxModelSelectors.svelte";
 
     let sorted = 0;
     let warns: string[] = $state([]);
@@ -289,7 +286,6 @@
     />
     <Check bind:check={activePreset.promptSettings.utilOverride} name={language.utilOverride} className="mt-4" />
     <Check bind:check={activePreset.jsonSchemaEnabled} name={language.enableJsonSchema} className="mt-4" />
-    <Check bind:check={activeModelPreset.outputImageModal} name={language.outputImageModal} className="mt-4" />
 
     <Check bind:check={activePreset.strictJsonSchema} name={language.strictJsonSchema} className="mt-4" />
 
@@ -325,73 +321,10 @@
         placeholder={`<{{char}}\'s Message>\n{{slot}}\n</{{char}}\'s Message>`}
         bind:value={activePreset.groupTemplate}
     />
-    <span class="text-textcolor mt-4">{language.systemContentReplacement} <Help key="systemContentReplacement" /></span>
-    <TextAreaInput bind:value={activeModelPreset.systemContentReplacement} />
-    <span class="text-textcolor mt-4">{language.systemRoleReplacement} <Help key="systemRoleReplacement" /></span>
-    <SelectInput bind:value={activeModelPreset.systemRoleReplacement}>
-        <OptionInput value="user">User</OptionInput>
-        <OptionInput value="assistant">assistant</OptionInput>
-    </SelectInput>
     {#if activePreset.jsonSchemaEnabled}
         <span class="text-textcolor mt-4">{language.jsonSchema} <Help key="jsonSchema" /></span>
         <TextAreaInput bind:value={activePreset.jsonSchema} />
         <span class="text-textcolor mt-4">{language.extractJson} <Help key="extractJson" /></span>
         <TextInput bind:value={activePreset.extractJson} />
     {/if}
-
-    {#if !settings.ui.auxModelUnderModelSettings}
-        <AuxModelSelectors />
-    {/if}
-
-    {#snippet fallbackModelList(arg: "model" | "memory" | "translate" | "emotion" | "otherAx")}
-        {#each activeModelPreset.fallbackModels[arg] as model, i}
-            <span class="text-textcolor mt-4">
-                {language.model}
-                {i + 1}
-            </span>
-            <ModelList bind:value={activeModelPreset.fallbackModels[arg][i]} blankable />
-        {/each}
-        <div class="flex gap-2">
-            <button
-                class="bg-selected text-textcolor p-2 rounded-md"
-                onclick={() => {
-                    let value = activeModelPreset.fallbackModels[arg] ?? [];
-                    value.push("");
-                    activeModelPreset.fallbackModels[arg] = value;
-                }}><PlusIcon /></button
-            >
-            <button
-                class="bg-red-500 text-white p-2 rounded-md"
-                onclick={() => {
-                    let value = activeModelPreset.fallbackModels[arg] ?? [];
-                    value.pop();
-                    activeModelPreset.fallbackModels[arg] = value;
-                }}><TrashIcon /></button
-            >
-        </div>
-    {/snippet}
-
-    <Accordion name={language.fallbackModel} styled>
-        <Check
-            bind:check={activeModelPreset.fallbackWhenBlankResponse}
-            name={language.fallbackWhenBlankResponse}
-            className="mt-4"
-        />
-
-        <Accordion name={language.model} styled>
-            {@render fallbackModelList("model")}
-        </Accordion>
-        <Accordion name={"Memory"} styled>
-            {@render fallbackModelList("memory")}
-        </Accordion>
-        <Accordion name={"Translations"} styled>
-            {@render fallbackModelList("translate")}
-        </Accordion>
-        <Accordion name={"Emotion"} styled>
-            {@render fallbackModelList("emotion")}
-        </Accordion>
-        <Accordion name={"OtherAx"} styled>
-            {@render fallbackModelList("otherAx")}
-        </Accordion>
-    </Accordion>
 {/if}

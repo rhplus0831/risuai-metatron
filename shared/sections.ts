@@ -262,7 +262,6 @@ export const SECTION_FIELDS = {
         "guiHTML",
         "notification",
         "assetMaxDifference",
-        "auxModelUnderModelSettings",
         "menuSideBar",
         "showSavingIcon",
         "showPromptComparison",
@@ -433,6 +432,7 @@ export const DROPPED_FIELDS = [
     "hypaV3Settings",
     "formatversion",
     "realmDirectOpen",
+    "auxModelUnderModelSettings",
 ] as const satisfies readonly (keyof Database)[];
 
 /** The Phase 1 collection fields (`presets`, `modules`, `plugins`, `pluginStorage`, `characters`). */

@@ -1,6 +1,6 @@
 # Split Preset Plan
 
-Status: slices 1–3 implemented; slices 4–6 open. Split the single bot preset (`botPreset`, the
+Status: done (slices 1–6); per-chat selection is the open follow-up. Split the single bot preset (`botPreset`, the
 `presets` collection) into a **model preset** and a **prompt preset** that are
 selected independently. A later step lets each chat pick its own pair.
 
@@ -165,6 +165,16 @@ promptPreset)` in `shared/`) replaces the two `FORWARDED_PRESET_KEYS` loops in
 - `botpreset.svelte` takes a kind (`model` | `prompt`), or a sibling list
   component is added for model presets. Ctrl+1..9 and `presetChain` stay on
   prompt presets.
+- As built: `ModelSettings.svelte` (menu `MODEL_SETTINGS_MENU`, 1) and
+  `PromptPresetSettings.svelte` (`PROMPT_SETTINGS_MENU`, 16) replace
+  `BotSettings.svelte`; `botpreset.svelte` takes the kind (the model list
+  opens through `openModelPresetList`). Beyond the list above, the Model page
+  also took `maxContext` (`modelParameterItems`), `outputImageModal`, and the
+  system content/role replacement from the prompt template editor, and the
+  NovelAI adventure/append-name toggles moved to the Prompt page's NovelAI
+  parameters. The aux models always show on the Model page, so the
+  `auxModelUnderModelSettings` toggle is dropped (`DROPPED_FIELDS`). Quick
+  settings show both pages.
 
 ## Import / export
 

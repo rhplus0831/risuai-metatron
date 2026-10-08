@@ -26,7 +26,8 @@ function trackBatches(page: Page): string[][] {
 }
 
 const PAGES: [number, string][] = [
-    [1, "chat bot"],
+    [1, "model"],
+    [16, "prompt"],
     [13, "prompt template"],
     [12, "persona"],
     [2, "other bots"],
@@ -70,7 +71,7 @@ test("every settings page mounts through the records without an error or a write
         const { settings, activePreset } = await import("/src/ts/storage/settingsViews.svelte.ts");
         settings.ui.didFirstSetup = true;
         settings.ui.useLegacyGUI = true;
-        // The prompt template page edits the selected preset's template (Bot Settings turns it on).
+        // The prompt template page edits the selected prompt preset's template (the Prompt page turns it on).
         activePreset.promptTemplate = [
             { type: "plain", text: "Main prompt", role: "system", type2: "main" },
             { type: "chat", rangeStart: 0, rangeEnd: "end" },

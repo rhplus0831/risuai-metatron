@@ -1,8 +1,17 @@
 <script lang="ts">
-    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { settings, activePreset, activeModelPreset } from "src/ts/storage/settingsViews.svelte";
     import { alertConfirm, alertError } from "../../ts/alert";
     import { language } from "../../lang";
-    import { changeToPreset, copyPreset, downloadPreset, importPreset } from "../../ts/storage/presets.svelte";
+    import {
+        changeToModelPreset,
+        changeToPreset,
+        copyModelPreset,
+        copyPreset,
+        downloadPreset,
+        importPreset,
+        removeModelPreset,
+    } from "../../ts/storage/presets.svelte";
+    import { addModelPreset } from "../../ts/storage/collectionStore.svelte";
     import {
         CopyIcon,
         Share2Icon,
@@ -15,7 +24,7 @@
     } from "@lucide/svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import { prebuiltPresets } from "src/ts/process/templates/templates";
-    import { normalizePreset } from "../../../shared/presets.ts";
+    import { MODEL_PRESET_DEFAULT_NAME, normalizePreset } from "../../../shared/presets.ts";
     import PromptDiffModal from "../Others/PromptDiffModal.svelte";
     import { RISU_PRESET_DRAG_TYPE } from "src/ts/dragTypes";
     import { moveRecordListItem } from "src/ts/storage/records.svelte";
@@ -26,11 +35,74 @@
 
     interface Props {
         close?: any;
+        /** Which presets the list shows: the prompt presets (`settings.presets`) or the model presets. */
+        kind?: "prompt" | "model";
     }
 
-    let { close = () => {} }: Props = $props();
+    let { close = () => {}, kind = "prompt" }: Props = $props();
+    const isPrompt = $derived(kind === "prompt");
+    /** The listed records: name and id for both kinds, `image` only on a prompt preset. */
+    const presets = $derived<{ id: string; name?: string; image?: string }[]>(
+        isPrompt ? settings.presets : settings.modelPresets,
+    );
     // Read once per render, not once per row (the selected index searched the list for every row).
-    const selectedPresetId = $derived(activePreset.id);
+    const selectedPresetId = $derived(isPrompt ? activePreset.id : activeModelPreset.id);
+
+    function selectListed(id: string) {
+        if (isPrompt) {
+            changeToPreset(id);
+        } else {
+            changeToModelPreset(id);
+        }
+    }
+
+    function copyListed(id: string) {
+        if (isPrompt) {
+            copyPreset(id);
+        } else {
+            copyModelPreset(id);
+        }
+    }
+
+    function addListed() {
+        if (isPrompt) {
+            settings.presets.push(normalizePreset({ ...prebuiltPresets.OAI2, name: `New Preset` }));
+        } else {
+            addModelPreset({ name: MODEL_PRESET_DEFAULT_NAME });
+        }
+    }
+
+    /** Removes preset `id` after the dialog; the list can change meanwhile, so it acts by id. */
+    async function removeListed(id: string, name: string) {
+        if (presets.length === 1) {
+            alertError(language.errors.onlyOneChat);
+            return;
+        }
+        const d = await alertConfirm(`${language.removeConfirm}${name}`);
+        if (!d) {
+            return;
+        }
+        if (!isPrompt) {
+            if (!removeModelPreset(id)) {
+                alertError(language.errors.onlyOneChat);
+            }
+            return;
+        }
+        const botPresets = settings.presets;
+        const index = botPresets.findIndex((entry) => entry.id === id);
+        if (index === -1) {
+            return;
+        }
+        if (botPresets.length === 1) {
+            alertError(language.errors.onlyOneChat);
+            return;
+        }
+        if (activePreset.id === id) {
+            const next = botPresets.find((entry) => entry.id !== id);
+            changeToPreset(next.id);
+        }
+        botPresets.splice(index, 1);
+    }
 
     let showDiffModal = $state(false);
     let selectedDiffPreset = $state<number | null>(null);
@@ -39,13 +111,12 @@
 
     function movePreset(fromIndex: number, toIndex: number) {
         if (fromIndex === toIndex) return;
-        if (fromIndex < 0 || toIndex < 0 || fromIndex >= settings.presets.length || toIndex > settings.presets.length)
-            return;
+        if (fromIndex < 0 || toIndex < 0 || fromIndex >= presets.length || toIndex > presets.length) return;
 
         const adjustedToIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
         // One write of the presets record (Phase 6 slice 4: a reorder past a frame budget through the
         // record's wrappers). The selection is by id, so a reorder leaves it on the same preset.
-        moveRecordListItem(settings.presets, fromIndex, adjustedToIndex);
+        moveRecordListItem(isPrompt ? settings.presets : settings.modelPresets, fromIndex, adjustedToIndex);
     }
 
     function isPresetDrag(e: DragEvent) {
@@ -100,14 +171,14 @@
 <div class="absolute w-full h-full z-40 bg-black/50 flex justify-center items-center">
     <div class="bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl w-124 max-h-full overflow-y-auto">
         <div class="flex items-center text-textcolor mb-4">
-            <h2 class="mt-0 mb-0">{language.presets}</h2>
+            <h2 class="mt-0 mb-0">{isPrompt ? language.promptPresets : language.modelPresets}</h2>
             <div class="grow flex justify-end">
                 <button class="text-textcolor2 hover:text-green-500 mr-2 cursor-pointer items-center" onclick={close}>
                     <XIcon size={24} />
                 </button>
             </div>
         </div>
-        {#each settings.presets as preset, i}
+        {#each presets as preset, i}
             <div
                 class="w-full transition-all duration-200"
                 class:h-0.5={!isDragging || dragOverIndex !== i}
@@ -137,7 +208,7 @@
             <button
                 onclick={() => {
                     if (!editMode) {
-                        changeToPreset(preset.id);
+                        selectListed(preset.id);
                         close();
                     }
                 }}
@@ -191,12 +262,16 @@
                 }}
             >
                 {#if editMode}
-                    <TextInput bind:value={settings.presets[i].name} placeholder="string" padding={false} />
+                    <TextInput
+                        bind:value={() => preset.name, (value) => (preset.name = value)}
+                        placeholder="string"
+                        padding={false}
+                    />
                 {:else}
-                    {#if i < 9}
+                    {#if isPrompt && i < 9}
                         <span class="w-2 text-center mr-2 text-textcolor2">{i + 1}</span>
                     {/if}
-                    {#if preset.image}
+                    {#if isPrompt && preset.image}
                         <img
                             src={preset.image}
                             alt="icon"
@@ -207,7 +282,7 @@
                     <span>{preset.name}</span>
                 {/if}
                 <div class="grow flex justify-end">
-                    {#if settings.ui.showPromptComparison}
+                    {#if isPrompt && settings.ui.showPromptComparison}
                         <div
                             class="{selectedDiffPreset === i
                                 ? 'text-green-500'
@@ -233,7 +308,7 @@
                         tabindex="0"
                         onclick={(e) => {
                             e.stopPropagation();
-                            copyPreset(preset.id);
+                            copyListed(preset.id);
                         }}
                         onkeydown={(e) => {
                             if (e.key === "Enter" && e.currentTarget instanceof HTMLElement) {
@@ -243,52 +318,31 @@
                     >
                         <CopyIcon size={18} />
                     </div>
-                    <div
-                        class="text-textcolor2 hover:text-green-500 cursor-pointer mr-2"
-                        role="button"
-                        tabindex="0"
-                        onclick={async (e) => {
-                            e.stopPropagation();
-                            downloadPreset(preset.id, "risupreset");
-                        }}
-                        onkeydown={(e) => {
-                            if (e.key === "Enter" && e.currentTarget instanceof HTMLElement) {
-                                e.currentTarget.click();
-                            }
-                        }}
-                    >
-                        <Share2Icon size={18} />
-                    </div>
+                    {#if isPrompt}
+                        <div
+                            class="text-textcolor2 hover:text-green-500 cursor-pointer mr-2"
+                            role="button"
+                            tabindex="0"
+                            onclick={async (e) => {
+                                e.stopPropagation();
+                                downloadPreset(preset.id, "risupreset");
+                            }}
+                            onkeydown={(e) => {
+                                if (e.key === "Enter" && e.currentTarget instanceof HTMLElement) {
+                                    e.currentTarget.click();
+                                }
+                            }}
+                        >
+                            <Share2Icon size={18} />
+                        </div>
+                    {/if}
                     <div
                         class="text-textcolor2 hover:text-green-500 cursor-pointer"
                         role="button"
                         tabindex="0"
                         onclick={async (e) => {
                             e.stopPropagation();
-                            if (settings.presets.length === 1) {
-                                alertError(language.errors.onlyOneChat);
-                                return;
-                            }
-                            // The list can change while the dialog is open: act on this preset by id.
-                            const { id, name } = preset;
-                            const d = await alertConfirm(`${language.removeConfirm}${name}`);
-                            if (!d) {
-                                return;
-                            }
-                            const botPresets = settings.presets;
-                            const index = botPresets.findIndex((entry) => entry.id === id);
-                            if (index === -1) {
-                                return;
-                            }
-                            if (botPresets.length === 1) {
-                                alertError(language.errors.onlyOneChat);
-                                return;
-                            }
-                            if (activePreset.id === id) {
-                                const next = botPresets.find((entry) => entry.id !== id);
-                                changeToPreset(next.id);
-                            }
-                            botPresets.splice(index, 1);
+                            await removeListed(preset.id, preset.name);
                         }}
                         onkeydown={(e) => {
                             if (e.key === "Enter" && e.currentTarget instanceof HTMLElement) {
@@ -304,10 +358,10 @@
 
         <div
             class="w-full transition-all duration-200"
-            class:h-0.5={!isDragging || dragOverIndex !== settings.presets.length}
-            class:h-1={isDragging && dragOverIndex === settings.presets.length}
-            class:bg-blue-500={isDragging && dragOverIndex === settings.presets.length}
-            class:shadow-lg={isDragging && dragOverIndex === settings.presets.length}
+            class:h-0.5={!isDragging || dragOverIndex !== presets.length}
+            class:h-1={isDragging && dragOverIndex === presets.length}
+            class:bg-blue-500={isDragging && dragOverIndex === presets.length}
+            class:shadow-lg={isDragging && dragOverIndex === presets.length}
             class:hover:bg-gray-600={!isDragging}
             role="listitem"
             ondragover={(e) => {
@@ -317,13 +371,13 @@
                 e.preventDefault();
                 e.stopPropagation();
                 e.dataTransfer.dropEffect = "move";
-                dragOverIndex = settings.presets.length;
+                dragOverIndex = presets.length;
             }}
             ondragleave={(e) => {
                 dragOverIndex = -1;
             }}
             ondrop={(e) => {
-                handlePresetDrop(settings.presets.length, e);
+                handlePresetDrop(presets.length, e);
                 dragOverIndex = -1;
             }}
         ></div>
@@ -332,22 +386,21 @@
             <button
                 class="text-textcolor2 hover:text-green-500 cursor-pointer mr-1"
                 onclick={() => {
-                    let botPresets = settings.presets;
-                    botPresets.push(normalizePreset({ ...prebuiltPresets.OAI2, name: `New Preset` }));
-
-                    settings.presets = botPresets;
+                    addListed();
                 }}
             >
                 <PlusIcon />
             </button>
-            <button
-                class="text-textcolor2 hover:text-green-500 mr-2 cursor-pointer"
-                onclick={() => {
-                    importPreset();
-                }}
-            >
-                <HardDriveUploadIcon size={18} />
-            </button>
+            {#if isPrompt}
+                <button
+                    class="text-textcolor2 hover:text-green-500 mr-2 cursor-pointer"
+                    onclick={() => {
+                        importPreset();
+                    }}
+                >
+                    <HardDriveUploadIcon size={18} />
+                </button>
+            {/if}
             <button
                 class="text-textcolor2 hover:text-green-500 cursor-pointer"
                 onclick={() => {
@@ -357,7 +410,9 @@
                 <PencilIcon size={18} />
             </button>
         </div>
-        <span class="text-textcolor2 text-sm">{language.quickPreset}</span>
+        {#if isPrompt}
+            <span class="text-textcolor2 text-sm">{language.quickPreset}</span>
+        {/if}
     </div>
 </div>
 

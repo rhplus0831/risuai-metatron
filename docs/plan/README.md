@@ -11,7 +11,7 @@ When no plans are active, keep the list below set to `None`.
 Active planning and implementation:
 
 - [Split Preset](split-preset.md): split the bot preset into model and prompt
-  presets (draft).
+  presets (done; per-chat selection is the open follow-up).
 
 ## Archived
 

@@ -75,7 +75,7 @@ v2 layout:
 - The tab's script entry points (`serverCommands.ts`, `transformClient.ts`) depend on the job channel, the chat module, and the save adapter's flush.
 - UI owners:
   - Character regex and triggers: `CharConfig.svelte`.
-  - `presetRegex`: `BotSettings.svelte`.
+  - `presetRegex`: `PromptPresetSettings.svelte`.
   - Module regex and triggers: `ModuleMenu.svelte`.
 
 ## Invariants

@@ -34,7 +34,7 @@ const presets = (page: Page): Promise<PresetView> =>
 const select = (page: Page, id: string) =>
     page.evaluate(async (presetId) => {
         const { changeToPreset } = await import("/src/ts/storage/presets.svelte.ts");
-        changeToPreset(presetId, false);
+        changeToPreset(presetId);
     }, id);
 
 async function reload(page: Page, baseURL: string) {
@@ -58,7 +58,7 @@ async function seedPresets(page: Page): Promise<[string, string]> {
     return [ids[0], ids[1]];
 }
 
-test("an edit in Bot Settings followed by a hotkey switch while the input has focus lands in the preset that was selected", async ({
+test("an edit on the Prompt page followed by a hotkey switch while the input has focus lands in the preset that was selected", async ({
     page,
     baseURL,
 }) => {
@@ -72,7 +72,7 @@ test("an edit in Bot Settings followed by a hotkey switch while the input has fo
     await page.evaluate(async () => {
         const stores = await import("/src/ts/stores.svelte.ts");
         stores.settingsOpen.set(true);
-        stores.SettingsMenuIndex.set(1);
+        stores.SettingsMenuIndex.set(stores.PROMPT_SETTINGS_MENU);
     });
     // The declarative `SettingNumber` of Max Response Size: the label span, then its input.
     const input = page

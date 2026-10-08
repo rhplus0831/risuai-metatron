@@ -28,7 +28,7 @@ import {
     VirtualWriter,
 } from "./globalApi.svelte";
 import { compressImage, getImageType } from "./media";
-import { SettingsMenuIndex, settingsOpen } from "./stores.svelte";
+import { PROMPT_SETTINGS_MENU, SettingsMenuIndex, settingsOpen } from "./stores.svelte";
 import {
     addCharacter,
     type AnyClientCharacter,
@@ -396,7 +396,7 @@ export async function characterURLImport() {
             name: "imported.risupreset",
             data: importData,
         });
-        SettingsMenuIndex.set(1);
+        SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
         settingsOpen.set(true);
         return;
     }
@@ -437,7 +437,7 @@ export async function characterURLImport() {
             name: "shared.risup",
             data: preset,
         });
-        SettingsMenuIndex.set(1);
+        SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
         settingsOpen.set(true);
     }
     if ("launchQueue" in window) {
@@ -470,7 +470,7 @@ export async function characterURLImport() {
                 name: name,
                 data: data,
             });
-            SettingsMenuIndex.set(1);
+            SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
             settingsOpen.set(true);
             alertNormal(language.successImport);
             return;

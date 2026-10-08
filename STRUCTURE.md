@@ -7,7 +7,7 @@ no standalone browser build (the client without the server shows only a notice),
 they drift. Grep the identifier instead.
 
 Last full audited: 2026-09-27.
-Last scoped updated: 2026-10-07 (Phase 6 closeout: the thin client, live updates, lazy chats, no whole-database object; the plan archived).
+Last scoped updated: 2026-10-08 (the split preset: model and prompt presets, selected independently, with their own settings pages).
 
 ## Agent Read Protocol
 
@@ -84,8 +84,9 @@ Data and persistence (details: `docs/structure/persistence.md`)
   collection field gets its default and migration in its server normalizer
   (`server/src/data/normalize/`), never on the client: the client's projection must equal the
   server's normalized text. The flat preset and persona fields (`FORWARDED_ROOT_KEYS`) are served
-  by `activePreset`/`activePersona` and by root name (`readSettingsRoot`/`writeSettingsRoot`) from
-  the selected preset or persona (`settingsViews.svelte.ts`); write them synchronously (a value
+  by `activePreset` (the prompt preset), `activeModelPreset` (the model preset), and `activePersona`,
+  and by root name (`readSettingsRoot`/`writeSettingsRoot`) from the selected preset that owns the
+  field or the selected persona (`settingsViews.svelte.ts`); write them synchronously (a value
   copied back from an `$effect` can land after a switch). The boot installs the records as the
   server sent them (`initializeRecords`) and does not normalize. Chat and message fields
   are the exception: they are stored as the client sends them (the server normalizer in
@@ -179,7 +180,7 @@ Release
 | Plugin API (v3 iframe sandbox), plugin providers/hooks, MCP tools                                                                    | `docs/structure/plugins-mcp.md`          |
 | Character cards import/export, characters/groups CRUD, modules, personas, lorebook editor UI                                         | `docs/structure/characters-modules.md`   |
 | Chat screen components, sidebar, GUI primitives, popups/portals, theme/colors                                                        | `docs/structure/ui-theming.md`           |
-| Settings pages, declarative settings registry, bot presets, prompt template editor, i18n                                             | `docs/structure/settings-i18n.md`        |
+| Settings pages, declarative settings registry, model and prompt presets, prompt template editor, i18n                                | `docs/structure/settings-i18n.md`        |
 | TTS, image generation, translation, media compression, playground tools                                                              | `docs/structure/media-aux.md`            |
 | Local backups, Realm hub browse, settings report export                                                                              | `docs/structure/backup-sync-hub.md`      |
 | Self-host server (Hono on Node) routes/auth/storage/proxies, generation jobs, prompt assembly, the Lua/trigger/regex runtime, Docker | `docs/structure/self-host-server.md`     |
@@ -231,7 +232,7 @@ targeted path to read them.
 | Trigger v2 (`triggerscript`)           | Event-driven effect lists; v2 is a flat array with `indent` blocks and a header sentinel at index 0               | scripts-triggers   |
 | Module (`RisuModule`, `.risum`)        | Bundle of lorebook/regex/trigger/assets/MCP, enabled globally, per chat, per character, or via a persona          | characters-modules |
 | Persona                                | User identity (name/icon/prompt), optionally with an embedded module                                              | characters-modules |
-| Bot preset (`.risup`)                  | Serializable subset of model/prompt settings (`botPreset`)                                                        | settings-i18n      |
+| Prompt / model preset (`.risup`)       | Prompt preset (`botPreset`, `.risup`) and model preset (`ModelPreset`, no file), selected independently           | settings-i18n      |
 | Inlay                                  | Image/media stored on the server (`inlays` resource + asset) and referenced in chat text as `{{inlay::id}}`       | chat-pipeline      |
 | Asset                                  | Card media stored as `assets/<hash>.<ext>` through `saveAsset`, referenced by path                                | global-api         |
 | SupaMemory / HypaV2 / HypaV3 / Hanurai | Long-term memory and summarization algorithms                                                                     | memory             |
@@ -278,5 +279,5 @@ Do not extend these without first confirming intent.
 - `Known Hazards` lists observed but unfixed defects. When you fix one, remove its entry.
 - Name identifiers, not line numbers.
 - `db.<field>` names a persisted `Database` field (`shared/database.ts`) by its flat name: the tab reads
-  it through the settings views (`readSettingsRoot`, `settings.<section>.<field>`, `activePreset`),
+  it through the settings views (`readSettingsRoot`, `settings.<section>.<field>`, `activePreset`, `activeModelPreset`),
   the server through its job's database projection.

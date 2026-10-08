@@ -87,7 +87,6 @@ const spec: SectionSpec<"ui"> = {
     guiHTML: ["string"],
     notification: ["boolean"],
     assetMaxDifference: ["number", 4],
-    auxModelUnderModelSettings: ["boolean"],
     menuSideBar: ["boolean"],
     showSavingIcon: ["boolean", false],
     showPromptComparison: ["boolean", false],

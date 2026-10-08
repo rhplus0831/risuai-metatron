@@ -1,7 +1,8 @@
 /**
  * Bot Settings - Parameters Tab Data
  *
- * Data-driven definition for BotSettings Parameters tab (submenu === 1).
+ * Data-driven definition for the Prompt page's Parameters tab (`PromptPresetSettings.svelte`, submenu 1)
+ * and the Model page's model parameters (`modelParameterItems`).
  * Contains standard parameter settings like context size, temperature, etc.
  */
 
@@ -12,14 +13,6 @@ import { LLMFlags } from "../model/types";
  * Basic parameter settings that are always visible
  */
 export const basicParameterItems: SettingItem[] = [
-    {
-        id: "params.maxContext",
-        type: "number",
-        labelKey: "maxContextSize",
-        bindKey: "maxContext",
-        options: { min: 0 },
-        keywords: ["context", "size", "token", "limit"],
-    },
     {
         id: "params.maxResponse",
         type: "number",
@@ -332,8 +325,23 @@ export const modelSpecificParameterItems: SettingItem[] = [
 ];
 
 /**
+ * The model preset's parameters, on the Model page (`ModelSettings.svelte`): the context size
+ * belongs to the model preset (`docs/plan/split-preset.md`).
+ */
+export const modelParameterItems: SettingItem[] = [
+    {
+        id: "params.maxContext",
+        type: "number",
+        labelKey: "maxContextSize",
+        bindKey: "maxContext",
+        options: { min: 0 },
+        keywords: ["context", "size", "token", "limit"],
+    },
+];
+
+/**
  * All basic parameter items combined for Parameters tab
- * Order: maxContext, maxResponse, seed, thinkingType, thinkingTokens, adaptiveThinkingEffort, temperature, topK, minP, topA, repetitionPenalty, reasoningEffort, verbosity, topP, frequencyPenalty, presencePenalty
+ * Order: maxResponse, seed, thinkingType, thinkingTokens, adaptiveThinkingEffort, temperature, topK, minP, topA, repetitionPenalty, reasoningEffort, verbosity, topP, frequencyPenalty, presencePenalty
  */
 export const allBasicParameterItems: SettingItem[] = [
     // Basic settings (always shown)

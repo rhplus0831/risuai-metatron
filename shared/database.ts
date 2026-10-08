@@ -382,7 +382,7 @@ export interface Database {
     legacyMediaFindings?: boolean;
     geminiStream?: boolean;
     assetMaxDifference: number;
-    auxModelUnderModelSettings: boolean;
+    auxModelUnderModelSettings: boolean; // legacy
     menuSideBar: boolean;
     showSavingIcon: boolean;
     presetRegex: customscript[];

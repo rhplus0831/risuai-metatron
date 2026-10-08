@@ -130,7 +130,7 @@ Cold storage (removed):
 
 - Cold storage was removed without a migration. Data it had offloaded (browser OPFS `coldstorage_<uuid>.json`, Node `coldstorage/<uuid>`) is no longer read, and those files are left on disk.
 - Old saves may still hold skeleton characters with a stale `coldstorage` field and chats whose only message is a `COLDSTORAGE<uuid>` pointer. They load as ordinary characters and chats.
-- Deleting the selected preset or persona selects the first remaining one; deleting another keeps the selection, and a reorder keeps the selected id (`botpreset.svelte`, `PersonaSettings.svelte`).
+- Deleting the selected preset or persona selects the first remaining one; deleting another keeps the selection, and a reorder keeps the selected id (`botpreset.svelte` for both preset kinds, `removeModelPreset`, `PersonaSettings.svelte`).
 
 ## State
 

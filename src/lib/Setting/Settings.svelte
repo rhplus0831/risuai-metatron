@@ -4,7 +4,6 @@
         AccessibilityIcon,
         ActivityIcon,
         PackageIcon,
-        BotIcon,
         BoxIcon,
         CodeIcon,
         ContactIcon,
@@ -14,15 +13,24 @@
         UserIcon,
         CircleXIcon,
         KeyboardIcon,
+        CpuIcon,
+        ScrollTextIcon,
     } from "@lucide/svelte";
     import { language } from "src/lang";
     import DisplaySettings from "./Pages/DisplaySettings.svelte";
     import UserSettings from "./Pages/UserSettings.svelte";
-    import BotSettings from "./Pages/BotSettings.svelte";
+    import ModelSettings from "./Pages/ModelSettings.svelte";
+    import PromptPresetSettings from "./Pages/PromptPresetSettings.svelte";
     import OtherBotSettings from "./Pages/OtherBotSettings.svelte";
     import PluginSettings from "./Pages/PluginSettings.svelte";
     import AdvancedSettings from "./Pages/AdvancedSettings.svelte";
-    import { additionalSettingsMenu, SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
+    import {
+        additionalSettingsMenu,
+        MODEL_SETTINGS_MENU,
+        PROMPT_SETTINGS_MENU,
+        SettingsMenuIndex,
+        settingsOpen,
+    } from "src/ts/stores.svelte";
     import Communities from "./Pages/Communities.svelte";
     import GlobalLoreBookSettings from "./Pages/GlobalLoreBookSettings.svelte";
     import Lorepreset from "./lorepreset.svelte";
@@ -38,7 +46,7 @@
 
     let openLoreList = $state(false);
     if (window.innerWidth >= 900 && $SettingsMenuIndex === -1) {
-        $SettingsMenuIndex = 1;
+        $SettingsMenuIndex = MODEL_SETTINGS_MENU;
     }
 </script>
 
@@ -51,14 +59,25 @@
             >
                 <button
                     class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === 1 || $SettingsMenuIndex === 13}
-                    class:text-textcolor2={$SettingsMenuIndex !== 1 && $SettingsMenuIndex !== 13}
+                    class:text-textcolor={$SettingsMenuIndex === MODEL_SETTINGS_MENU}
+                    class:text-textcolor2={$SettingsMenuIndex !== MODEL_SETTINGS_MENU}
                     onclick={() => {
-                        $SettingsMenuIndex = 1;
+                        $SettingsMenuIndex = MODEL_SETTINGS_MENU;
                     }}
                 >
-                    <BotIcon />
-                    <span>{language.chatBot}</span>
+                    <CpuIcon />
+                    <span>{language.model}</span>
+                </button>
+                <button
+                    class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === PROMPT_SETTINGS_MENU || $SettingsMenuIndex === 13}
+                    class:text-textcolor2={$SettingsMenuIndex !== PROMPT_SETTINGS_MENU && $SettingsMenuIndex !== 13}
+                    onclick={() => {
+                        $SettingsMenuIndex = PROMPT_SETTINGS_MENU;
+                    }}
+                >
+                    <ScrollTextIcon />
+                    <span>{language.prompt}</span>
                 </button>
                 <button
                     class="flex gap-2 items-center hover:text-textcolor"
@@ -212,8 +231,10 @@
                 >
                     {#if $SettingsMenuIndex === 0}
                         <UserSettings />
-                    {:else if $SettingsMenuIndex === 1}
-                        <BotSettings
+                    {:else if $SettingsMenuIndex === MODEL_SETTINGS_MENU}
+                        <ModelSettings />
+                    {:else if $SettingsMenuIndex === PROMPT_SETTINGS_MENU}
+                        <PromptPresetSettings
                             goPromptTemplate={() => {
                                 $SettingsMenuIndex = 13;
                             }}
@@ -243,7 +264,7 @@
                     {:else if $SettingsMenuIndex === 13}
                         <PromptSettings
                             onGoBack={() => {
-                                $SettingsMenuIndex = 1;
+                                $SettingsMenuIndex = PROMPT_SETTINGS_MENU;
                             }}
                         />
                     {:else if $SettingsMenuIndex === 15 && window.innerWidth >= 768}

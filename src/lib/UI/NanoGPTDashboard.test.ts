@@ -6,7 +6,7 @@ import { reactiveProps } from "./tests/reactiveProps.svelte";
 // Phase 5 slice 7b (`request-layer-and-llm-secrets.md`): the NanoGPT dashboard no longer receives
 // the key; it depends on whether one is stored and on the key's version. An answer still on its way
 // when the key is cleared, replaced, or the dashboard leaves must not write the subscription state
-// (`BotSettings` resets it when the key is cleared; the chat requests pick their endpoint by it).
+// (`ModelSettings` resets it when the key is cleared; the chat requests pick their endpoint by it).
 
 const { nano } = vi.hoisted(() => ({
     nano: { balance: vi.fn(), subscription: vi.fn() },
@@ -63,7 +63,7 @@ describe("NanoGPTDashboard", () => {
         expect(nano.subscription).toHaveBeenCalledTimes(1);
         expect(target.textContent).toContain("nanoGPTLoadingAccountInfo");
 
-        // The key is cleared while the first answer is on its way: `BotSettings` resets the state,
+        // The key is cleared while the first answer is on its way: `ModelSettings` resets the state,
         // and the late answer must not undo that.
         props.keySet = false;
         settings.providers.nanogptSubscriptionState = "";
