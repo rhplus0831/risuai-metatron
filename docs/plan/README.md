@@ -20,8 +20,8 @@ Active planning and implementation:
   so each auxiliary model has its own key and endpoint (done; the `submodel`
   slot and the remaining global provider toggles are the open follow-ups).
 - [URL Routes](url-routes.md): give each screen a history-mode address kept in
-  sync with the existing stores, with closes going back in history (slices 1–3
-  done).
+  sync with the existing stores, with closes going back in history (slices 1–5
+  done; the manual checks, H1's among them, are open).
 
 ## Archived
 

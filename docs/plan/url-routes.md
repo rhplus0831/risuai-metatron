@@ -2,11 +2,15 @@
 
 Status: slices 1–2 done (2026-10-09), slice 3 done on the untracked-back
 history model and the accepted risks (2026-10-10), slice 4 built with its
-unit tests (2026-10-10; the manual checks are pending, H1's on Chrome
-desktop, Android Chrome, and the Android PWA among them). Give each screen
-an address. The browser's history then follows what the user sees: reload
-keeps the screen, the browser and mobile back buttons work, and a screen
-can be linked.
+unit tests and slice 5 (the docs) done (2026-10-10). Open: the manual
+checks under Tests, H1's on Chrome desktop, Android Chrome, and the
+Android PWA among them; the plan closes when they pass (or H1's fallback
+is decided). `docs/structure/app-shell.md` now describes the shipped
+router.
+
+Give each screen an address. The browser's history then follows what the
+user sees: reload keeps the screen, the browser and mobile back buttons
+work, and a screen can be linked.
 
 The stores stay the state. A new router keeps the URL and the history in
 sync with them in both directions. The `{#if}` chains in `App.svelte` and
