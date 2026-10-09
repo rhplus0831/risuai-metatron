@@ -38,11 +38,11 @@ export const openModelPresetList = writable(false);
 export const openPersonaList = writable(false);
 export const bookmarkListOpen = writable(false);
 export const SettingsMenuIndex = writable(-1);
-/** The settings page of the model preset (`ModelSettings.svelte`). */
+/** The Model menu's Preset tab: the model preset (`ModelSettings.svelte`). */
 export const MODEL_SETTINGS_MENU = 1;
-/** The shared API key list and bindings (`ApiKeysSettings.svelte`). */
+/** The Model menu's API Keys tab: the provider default keys, the named keys, and their bindings (`ApiKeysSettings.svelte`). */
 export const API_KEYS_SETTINGS_MENU = 17;
-/** The shared model profile list and editor (`ModelProfilesSettings.svelte`). */
+/** The Model menu's Connections tab: the model profile list and editor (`ModelProfilesSettings.svelte`). */
 export const MODEL_PROFILES_SETTINGS_MENU = 18;
 /** The settings page of the prompt preset (`PromptPresetSettings.svelte`); its template editor is menu 13. */
 export const PROMPT_SETTINGS_MENU = 16;

@@ -74,7 +74,8 @@ Confirmed 2026-10-09:
 Confirmed 2026-10-09. The rest of the plan refers to them by label.
 
 - **O1. Names.** Code: `ModelProfile`, collection `modelProfiles`
-  (`RESOURCE_KIND.modelProfiles`). UI: "모델 정보" / "Model profiles".
+  (`RESOURCE_KIND.modelProfiles`). UI: "연결" / "Connections" (first shipped
+  as "모델 정보" / "Model profiles"; see As built).
 - **O2. What "no key chosen" means.** A profile has an optional
   `credentialId` and no secret of its own. With no `credentialId`, the request sends the slot's flat default
   (`openAIKey`, `claudeAPIKey`, `OaiCompAPIKeys.<id>`, ...), exactly as an
@@ -367,9 +368,16 @@ Choices the plan left open, as implemented:
   refusal warns `[Settings] Refused ...` and returns `false`.
 - `deleteModelProfile` keeps the last profile, as `removeModelPreset` keeps
   the last model preset; the server normalizer would materialize one anyway.
-- The profile page is `MODEL_PROFILES_SETTINGS_MENU` (18), between Model and
-  API Keys; the profile editor binds to a profile by id, so a profile in no
-  slot is editable.
+- The profile page is `MODEL_PROFILES_SETTINGS_MENU` (18); the profile editor
+  binds to a profile by id, so a profile in no slot is editable.
+- UI regroup (2026-10-09, after the slices): the profiles are shown as
+  "연결" / "Connections", so the name no longer repeats "Model". The sidebar
+  has one Model entry with three tabs (`Model/ModelMenuTabs.svelte`): Preset
+  (menu 1, the slots), Connections (menu 18), and API Keys (menu 17). The
+  flat default key inputs and the Vertex default key's client email and
+  project id moved from the Preset tab to the API Keys tab
+  (`Model/ProviderDefaultKeys.svelte`), so every key is on one tab; the
+  Vertex region stays on the Preset tab.
 - Adapters with a flat default read it through `defaultCredentialKey`
   (`server/src/llm/credentials.ts`), which answers `""` for a custom model
   and the reverse proxy.

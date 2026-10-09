@@ -15,7 +15,6 @@
         KeyboardIcon,
         CpuIcon,
         ScrollTextIcon,
-        KeyRoundIcon,
     } from "@lucide/svelte";
     import { language } from "src/lang";
     import DisplaySettings from "./Pages/DisplaySettings.svelte";
@@ -50,6 +49,12 @@
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
 
     let openLoreList = $state(false);
+    // The Model entry covers its three tabs (`Model/ModelMenuTabs.svelte`).
+    const modelMenuSelected = $derived(
+        $SettingsMenuIndex === MODEL_SETTINGS_MENU ||
+            $SettingsMenuIndex === MODEL_PROFILES_SETTINGS_MENU ||
+            $SettingsMenuIndex === API_KEYS_SETTINGS_MENU,
+    );
     if (window.innerWidth >= 900 && $SettingsMenuIndex === -1) {
         $SettingsMenuIndex = MODEL_SETTINGS_MENU;
     }
@@ -64,36 +69,14 @@
             >
                 <button
                     class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === MODEL_SETTINGS_MENU}
-                    class:text-textcolor2={$SettingsMenuIndex !== MODEL_SETTINGS_MENU}
+                    class:text-textcolor={modelMenuSelected}
+                    class:text-textcolor2={!modelMenuSelected}
                     onclick={() => {
                         $SettingsMenuIndex = MODEL_SETTINGS_MENU;
                     }}
                 >
                     <CpuIcon />
                     <span>{language.model}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === MODEL_PROFILES_SETTINGS_MENU}
-                    class:text-textcolor2={$SettingsMenuIndex !== MODEL_PROFILES_SETTINGS_MENU}
-                    onclick={() => {
-                        $SettingsMenuIndex = MODEL_PROFILES_SETTINGS_MENU;
-                    }}
-                >
-                    <CpuIcon />
-                    <span>{language.modelProfiles.title}</span>
-                </button>
-                <button
-                    class="flex gap-2 items-center hover:text-textcolor"
-                    class:text-textcolor={$SettingsMenuIndex === API_KEYS_SETTINGS_MENU}
-                    class:text-textcolor2={$SettingsMenuIndex !== API_KEYS_SETTINGS_MENU}
-                    onclick={() => {
-                        $SettingsMenuIndex = API_KEYS_SETTINGS_MENU;
-                    }}
-                >
-                    <KeyRoundIcon />
-                    <span>{language.apiKeys}</span>
                 </button>
                 <button
                     class="flex gap-2 items-center hover:text-textcolor"

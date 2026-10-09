@@ -53,6 +53,8 @@ model preset holds only its slots and toggle (`mainSlot`/`subSlot` naming profil
 `auxSlots: {}`), the new `modelProfiles` collection holds the one default profile with the values
 the root copy captured for the moved fields, and `providers.modelCredentials` is gone. The captured
 root keeps `apiType` and `proxyKey`, now dropped fields, as it keeps `hypaMemoryKey`.
+The Model menu regroup (2026-10-09) renamed the default profile by hand: `MODEL_PROFILE_DEFAULT_NAME`
+is "New Connection" (was "New Model Profile"), as profiles are shown as connections.
 
 Re-running the script overwrites all three files. Across captures, the snapshot's ids and the
 `.risup` bytes differ while the decoded presets are equal, so compare decoded presets, never bytes.

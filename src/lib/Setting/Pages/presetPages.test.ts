@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // (`ModelSettings.svelte`, the selected model preset) and the Prompt page
 // (`PromptPresetSettings.svelte`, the selected prompt preset). Each page names its preset and opens
 // its own list, and an edit on one page lands in that page's preset only. With the model profiles
-// (`docs/plan/model-profiles.md`), the Model page picks a profile per slot and the Model profiles page
+// (`docs/plan/model-profiles.md`), the Model menu's Preset tab picks a profile per slot and its Connections tab
 // (`ModelProfilesSettings.svelte`) edits the profiles themselves.
 
 vi.mock("src/ts/alert", () => ({
@@ -36,7 +36,15 @@ import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/
 import { settings, activePreset, activeMainProfile } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
-import { openModelPresetList, openPresetList } from "src/ts/stores.svelte";
+import {
+    API_KEYS_SETTINGS_MENU,
+    MODEL_PROFILES_SETTINGS_MENU,
+    MODEL_SETTINGS_MENU,
+    openModelPresetList,
+    openPresetList,
+    SettingsMenuIndex,
+    settingsOpen,
+} from "src/ts/stores.svelte";
 import ModelProfilesSettings from "./ModelProfilesSettings.svelte";
 import ModelSettings from "./ModelSettings.svelte";
 import PromptPresetSettings from "./PromptPresetSettings.svelte";
@@ -102,7 +110,7 @@ describe("the Model page", () => {
         expect(get(openModelPresetList)).toBe(true);
         expect(get(openPresetList)).toBe(false);
 
-        // The context size is the profile's, edited on the Model profiles page.
+        // The context size is the profile's, edited on the Connections tab.
         const numbers = [...page.querySelectorAll<HTMLInputElement>("input[type=number]")].map((input) => input.value);
         expect(numbers).not.toContain("9000");
 
@@ -114,9 +122,53 @@ describe("the Model page", () => {
         expect(settings.modelPresets[0].subSlot).toEqual({ profileId: "echo" });
         expect(activeMainProfile.maxContext).toBe(5000);
     });
+
+    // The Model menu's tabs (`Model/ModelMenuTabs.svelte`) switch the settings screen by menu index.
+    function tab(page: HTMLElement, label: string) {
+        return [...page.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")].find(
+            (button) => button.textContent?.trim() === label,
+        )!;
+    }
+
+    it("switches the settings screen between its Preset, Connections, and API Keys tabs", () => {
+        SettingsMenuIndex.set(MODEL_SETTINGS_MENU);
+        settingsOpen.set(true);
+        const page = render(ModelSettings);
+        expect(tab(page, "Preset").getAttribute("aria-pressed")).toBe("true");
+
+        tab(page, "Connections").click();
+        flushSync();
+        expect(get(SettingsMenuIndex)).toBe(MODEL_PROFILES_SETTINGS_MENU);
+        tab(page, "API Keys").click();
+        flushSync();
+        expect(get(SettingsMenuIndex)).toBe(API_KEYS_SETTINGS_MENU);
+        expect(tab(page, "API Keys").getAttribute("aria-pressed")).toBe("true");
+    });
+
+    it("opens the settings screen at a tab from the quick settings panel, which shows only the Preset tab", () => {
+        SettingsMenuIndex.set(-1);
+        settingsOpen.set(false);
+        const target = document.createElement("div");
+        document.body.appendChild(target);
+        mounted.push(mount(ModelSettings, { target, props: { quick: true } }));
+        flushSync();
+        expect(tab(target, "Preset").getAttribute("aria-pressed")).toBe("true");
+
+        tab(target, "Preset").click();
+        flushSync();
+        expect(get(settingsOpen)).toBe(false);
+        expect(get(SettingsMenuIndex)).toBe(-1);
+
+        tab(target, "API Keys").click();
+        flushSync();
+        expect(get(settingsOpen)).toBe(true);
+        expect(get(SettingsMenuIndex)).toBe(API_KEYS_SETTINGS_MENU);
+        // The panel keeps showing the preset.
+        expect(tab(target, "Preset").getAttribute("aria-pressed")).toBe("true");
+    });
 });
 
-describe("the Model profiles page", () => {
+describe("the Connections tab", () => {
     it("edits the selected profile's context size, also for a profile no slot uses", () => {
         const page = render(ModelProfilesSettings);
         page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();

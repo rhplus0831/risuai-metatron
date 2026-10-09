@@ -1958,9 +1958,9 @@ describe("model profiles", () => {
             [],
         );
         const upstream = () => chat("must not run");
-        expect(failure(await run({ settings, arg: prompt(), upstream }))).toContain("model profile no longer exists");
+        expect(failure(await run({ settings, arg: prompt(), upstream }))).toContain("connection no longer exists");
         expect(failure(await run({ settings, arg: prompt(), mode: "otherAx", upstream }))).toContain(
-            "model profile no longer exists",
+            "connection no longer exists",
         );
         const keyless = failure(await run({ settings, arg: prompt(), mode: "submodel", upstream }));
         expect(keyless).toContain("credential no longer exists");
@@ -2014,7 +2014,7 @@ describe("model profiles", () => {
             arg: { ...prompt(), staticModel: "xcustom:::m1" },
             upstream: () => chat("c"),
         });
-        expect(failure(custom)).toContain("without a model profile");
+        expect(failure(custom)).toContain("without a connection");
     });
 
     it("sends a bare auxiliary slot with the flat default key and default options, and refuses one that needs a profile", async () => {
@@ -2048,6 +2048,6 @@ describe("model profiles", () => {
         });
         expect(wireOf(memory)).not.toContain(SECRETS.proxyKey);
         const translate = await run({ settings, arg: prompt(), mode: "translate", upstream: () => chat("x") });
-        expect(failure(translate)).toContain('"openrouter" without a model profile');
+        expect(failure(translate)).toContain('"openrouter" without a connection');
     });
 });

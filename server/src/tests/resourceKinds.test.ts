@@ -297,7 +297,7 @@ const CASES: KindCase[] = [
     {
         kind: "modelProfiles",
         // Materialized with one default profile (`docs/plan/model-profiles.md`, O4).
-        fresh: [expect.objectContaining({ id: "default", name: "New Model Profile", modelId: anyString() })],
+        fresh: [expect.objectContaining({ id: "default", name: "New Connection", modelId: anyString() })],
         // The profile fields only: a prompt field, a slot, and an inline key are dropped (O2), a
         // wrong kind takes its default.
         write: [

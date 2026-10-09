@@ -7,7 +7,7 @@ no standalone browser build (the client without the server shows only a notice),
 they drift. Grep the identifier instead.
 
 Last full audited: 2026-09-27.
-Last scoped updated: 2026-10-08 (the named API keys: a `credentials` list each model binds to, resolved on the server, with the API Keys page; before that, the split preset).
+Last scoped updated: 2026-10-09 (the Model menu's Preset / Connections / API Keys tabs; before that, the model profiles and the named API keys).
 
 ## Agent Read Protocol
 

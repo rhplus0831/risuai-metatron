@@ -956,22 +956,23 @@ export const languageEnglish = {
     chatAssumed: "",
     proxyAPIKey: "Key/Password",
     apiKeys: "API Keys",
+    modelPresetTab: "Preset",
     modelProfiles: {
-        title: "Model profiles",
+        title: "Connections",
         description:
-            "Profiles choose a model, a named key, and connection options. Model presets choose a profile for each slot.",
-        add: "Add profile",
-        copy: "Copy profile",
-        delete: "Delete profile",
-        newName: "New Model Profile",
+            "A connection sets the model, a named key, and the URL and compatibility options. The Preset tab chooses a connection for each slot.",
+        add: "Add connection",
+        copy: "Copy connection",
+        delete: "Delete connection",
+        newName: "New Connection",
         copyName: (name: string) => `${name} Copy`,
-        keepOne: "Keep at least one model profile.",
+        keepOne: "Keep at least one connection.",
         profileLabel: (name: string, model: string) => `${name} — ${model}`,
-        missingProfile: (id: string) => `Missing profile (${id})`,
-        missingSlotHint: "This slot's profile was deleted. Choose another profile before sending a request.",
-        noProfile: (model: string) => `No profile (${model})`,
-        createFromBare: "Create profile for this model",
-        useSubProfile: "Use submodel profile",
+        missingProfile: (id: string) => `Missing connection (${id})`,
+        missingSlotHint: "This slot's connection was deleted. Choose another connection before sending a request.",
+        noProfile: (model: string) => `No connection (${model})`,
+        createFromBare: "Create a connection for this model",
+        useSubProfile: "Use the submodel's connection",
         auxModes: {
             memory: "Memory",
             translate: "Translations",
@@ -980,13 +981,13 @@ export const languageEnglish = {
         },
         deleteConfirm: (name: string, uses: string) =>
             uses
-                ? `Delete profile "${name}"?\n\nUsed by these model presets:\n${uses}\n\nTheir slots will remain missing and requests will be refused until another profile is chosen.`
-                : `Delete profile "${name}"?`,
-        missingRequest: (mode: string) => `Requests are refused because the ${mode} slot's model profile is missing.`,
-        requiredRequest: (model: string) => `Requests are refused because model "${model}" needs a model profile.`,
+                ? `Delete connection "${name}"?\n\nUsed by these model presets:\n${uses}\n\nTheir slots will show the connection as missing and requests will be refused until another connection is chosen.`
+                : `Delete connection "${name}"?`,
+        missingRequest: (mode: string) => `Requests are refused because the ${mode} slot's connection is missing.`,
+        requiredRequest: (model: string) => `Requests are refused because model "${model}" needs a connection.`,
         defaultKeys: "Default provider keys",
         defaultKeysHint:
-            "Profiles without a named key use these defaults. Custom models and reverse proxies send no key unless a named key is chosen.",
+            "Connections without a named key use these defaults. Custom models and reverse proxies send no key unless a named key is chosen.",
         localNetworkMode: "Local network mode",
         localNetworkTimeoutSec: "Local network timeout (seconds)",
         vertexRegion: "Vertex region",
@@ -995,14 +996,14 @@ export const languageEnglish = {
     },
     sharedApiKeys: {
         description:
-            "Manage named keys and choose which key each model profile uses. Unbound profiles use the provider default; custom models and reverse proxies send no key.",
+            "Manage the provider default keys and named keys. Each connection can choose a named key; connections without one use the provider default, except custom models and reverse proxies, which send no key.",
         addKey: "Add key",
         deleteKey: "Delete key",
         unnamedKey: "Unnamed key",
         missingKey: "Missing key",
         noKeys: "No shared keys yet. Add a key, then paste its value into the new row.",
         bindings: "Key bindings",
-        noBindings: "No model profiles have a named key selected.",
+        noBindings: "No connections have a named key selected.",
         removeBinding: "Use default key",
         clientEmail: "Vertex client email",
         projectId: "Project ID",
@@ -1015,11 +1016,11 @@ export const languageEnglish = {
         defaultOption: (label: string) => `Default (${label})`,
         deleteConfirm: (name: string, uses: string) =>
             uses
-                ? `Delete key "${name}"?\n\nUsed by:\n${uses}\n\nRequests from these profiles will be refused until another key is chosen.`
+                ? `Delete key "${name}"?\n\nUsed by:\n${uses}\n\nRequests from these connections will be refused until another key is chosen.`
                 : `Delete key "${name}"?`,
         usageLabel: (kind: string, name: string) => `${kind}: ${name}`,
         usageKinds: {
-            modelProfile: "Model profile",
+            modelProfile: "Connection",
         },
         types: {
             openai: "OpenAI",
@@ -1053,11 +1054,11 @@ export const languageEnglish = {
         },
         refused: {
             missing: "Requests are refused because the selected key is missing. Choose another key or the default.",
-            empty: "Requests are refused because the selected key has no value. Set its value on the API Keys page.",
+            empty: "Requests are refused because the selected key has no value. Set its value in Model > API Keys.",
             typeMismatch:
                 "Requests are refused because this key's type is incompatible with the model. Choose a compatible key.",
             vertexEmailMissing:
-                "Requests are refused because the selected Vertex key has no client email. Add it on the API Keys page.",
+                "Requests are refused because the selected Vertex key has no client email. Add it in Model > API Keys.",
             unsupportedModel:
                 "Requests are refused because this model does not support shared keys. Remove its binding to use the default.",
         },

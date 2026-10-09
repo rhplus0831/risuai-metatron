@@ -15,6 +15,8 @@
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import SecretInput from "src/lib/UI/GUI/SecretInput.svelte";
+    import ModelMenuTabs from "./Model/ModelMenuTabs.svelte";
+    import ProviderDefaultKeys from "./Model/ProviderDefaultKeys.svelte";
     import { tick } from "svelte";
 
     let name = $state("");
@@ -66,8 +68,10 @@
     }
 </script>
 
-<h2 class="mb-2 text-2xl font-bold mt-2">{language.apiKeys}</h2>
+<ModelMenuTabs />
 <p class="text-textcolor2 text-sm mb-4">{language.sharedApiKeys.description}</p>
+
+<ProviderDefaultKeys />
 
 <div class="flex flex-col gap-4 min-w-0" bind:this={keyList}>
     {#each credentials as credential (credential.id)}

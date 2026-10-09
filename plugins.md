@@ -766,7 +766,7 @@ How `setDatabase`/`setDatabaseLite` apply what you hand back:
 - `characters`: characters you changed are updated, new ones are added at the end, and characters you left out are removed (not while one is generating a reply). The list order you hand back does not reorder the characters; use `characterOrder` for the sidebar order.
 - `plugins`: `setDatabase` asks the user to confirm each plugin that is new or changed and installs the confirmed ones; plugins you left out stay installed. `setDatabaseLite` replaces the installed list without asking.
 - `characterOrder` and `selectedPersona` are applied after the other keys, whatever order they have in your object.
-- Prompt settings (`temperature`, `maxResponse`, `frequencyPenalty`, `PresensePenalty`, ...) belong to the selected prompt preset. Model roots use the selected model preset and its profiles as described below. Inside a hook both use the presets captured when the hook's run started (see Character Operations).
+- Prompt settings (`temperature`, `maxResponse`, `frequencyPenalty`, `PresensePenalty`, ...) belong to the selected prompt preset. Model roots use the selected model preset and its profiles (the `modelProfiles` records, shown in the app as connections under Model > Connections) as described below. Inside a hook both use the presets captured when the hook's run started (see Character Operations).
 
 `maxContext` reads the main slot's profile's context limit, or the schema default when that profile is missing. Writing it changes that profile, including for every other preset using it. The same value is a no-op; a changed value is refused when the main profile is missing. `seperateModelsForAxModels` reads and sets the model preset's auxiliary-model toggle.
 

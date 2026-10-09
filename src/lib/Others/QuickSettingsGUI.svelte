@@ -44,7 +44,7 @@
 
 <div class="py-6 px-4 flex flex-col text-textcolor overflow-y-auto relative rs-setting-cont-5">
     {#if QuickSettings.index === 0}
-        <ModelSettings />
+        <ModelSettings quick />
     {:else if QuickSettings.index === 3}
         <PromptPresetSettings />
     {:else if QuickSettings.index === 1}

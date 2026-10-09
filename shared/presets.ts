@@ -585,8 +585,8 @@ const profileRecordFields: readonly PresetField[] = ["name", ...MODEL_PROFILE_FI
 /** A new model preset's name (the shared `name` default is the prompt preset's). */
 export const MODEL_PRESET_DEFAULT_NAME = "New Model Preset";
 
-/** A new model profile's name (the shared `name` default is the prompt preset's). */
-export const MODEL_PROFILE_DEFAULT_NAME = "New Model Profile";
+/** A new model profile's name (shown as a connection; the shared `name` default is the prompt preset's). */
+export const MODEL_PROFILE_DEFAULT_NAME = "New Connection";
 
 /**
  * A normalized copy of a prompt preset (`normalizeFields` over `name`, `image`, and

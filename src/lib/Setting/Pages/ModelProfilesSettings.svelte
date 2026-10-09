@@ -11,6 +11,7 @@
         presetsUsingModelProfile,
     } from "src/ts/storage/collectionStore.svelte";
     import ModelProfileEditor from "./Model/ModelProfileEditor.svelte";
+    import ModelMenuTabs from "./Model/ModelMenuTabs.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
 
@@ -39,7 +40,7 @@
     }
 </script>
 
-<h2 class="mb-2 text-2xl font-bold mt-2">{language.modelProfiles.title}</h2>
+<ModelMenuTabs />
 <p class="text-textcolor2 text-sm mb-4">{language.modelProfiles.description}</p>
 
 <div class="flex flex-col gap-2 mb-4 p-3 rounded-md border border-darkborderc">

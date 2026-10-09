@@ -2,11 +2,11 @@ import { expect, test, type Page } from "@playwright/test";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
 // `docs/plan/shared-api-keys.md`, slice 4, with the binding on the model profile
-// (`docs/plan/model-profiles.md`): the API Keys page and the key select of a profile, through the
-// real server. A key is added on the page and its value set through its write-only field; the Model
-// profiles page binds it to the main slot's profile; the binding shows on the API Keys page and both
-// survive a reload; deleting the key (after a confirm that names its use) leaves the binding
-// dangling, shown as missing with the refusal on the Model profiles page. No key value ever reaches
+// (`docs/plan/model-profiles.md`): the Model menu's API Keys tab and the key select of a profile
+// (shown as a connection), through the real server. A key is added on the tab and its value set
+// through its write-only field; the Connections tab binds it to the main slot's profile; the binding
+// shows on the API Keys tab and both survive a reload; deleting the key (after a confirm that names
+// its use) leaves the binding dangling, shown as missing with the refusal on the Connections tab. No key value ever reaches
 // a settings batch.
 
 const API_KEYS_MENU = 17;
@@ -86,7 +86,7 @@ test("a named key is added, bound to a model profile, survives a reload, and a d
     await settle(page);
     const content = page.locator(".rs-setting-cont-4");
 
-    // Add a key on the API Keys page, then paste its value into the new row.
+    // Add a key on the API Keys tab, then paste its value into the new row.
     await openSettings(page, API_KEYS_MENU);
     await expect(content.getByText("No shared keys yet.", { exact: false })).toBeVisible();
     await content.locator("#new-credential-name").fill("Work key");
@@ -104,7 +104,7 @@ test("a named key is added, bound to a model profile, survives a reload, and a d
     const profileId = current.mainProfileId;
     expect(current.aiModel).toBe("gpt-5.5");
 
-    // Bind it to the main slot's profile (the only one, selected) on the Model profiles page.
+    // Bind it to the main slot's profile (the only one, selected) on the Connections tab.
     await openSettings(page, MODEL_PROFILES_MENU);
     const select = content
         .locator("select")
@@ -117,7 +117,7 @@ test("a named key is added, bound to a model profile, survives a reload, and a d
     expect((await state(page)).bindings).toEqual({ [profileId]: keyId });
     await shot(page, "model-bound");
 
-    // The binding shows on the API Keys page.
+    // The binding shows on the API Keys tab.
     await openSettings(page, API_KEYS_MENU);
     const bindingRow = content.locator("div.border", { hasText: "Use default key" });
     await expect(bindingRow).toHaveCount(1);
@@ -136,7 +136,7 @@ test("a named key is added, bound to a model profile, survives a reload, and a d
     await openSettings(page, API_KEYS_MENU);
     await content.locator("[data-credential-id]").getByRole("button", { name: "Delete key", exact: true }).click();
     await expect(page.getByText("Used by:", { exact: false })).toBeVisible();
-    await expect(page.getByText(/Model profile: /)).toBeVisible();
+    await expect(page.getByText(/Connection: /)).toBeVisible();
     await page.getByRole("button", { name: "YES", exact: true }).click();
     await settle(page);
     current = await state(page);
