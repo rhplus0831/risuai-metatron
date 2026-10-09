@@ -1,6 +1,8 @@
 # URL Routes Plan
 
-Status: slices 1–2 done (2026-10-09); slice 3 is next. Give each screen an address. The browser's
+Status: slices 1–2 done (2026-10-09). Slice 3 is to be redone on the
+untracked-back history model and the accepted risks (2026-10-10); the
+uncommitted slice 3 code predates them. Give each screen an address. The browser's
 history then follows what the user sees: reload keeps the screen, the
 browser and mobile back buttons work, and a screen can be linked.
 
@@ -40,10 +42,12 @@ Confirmed 2026-10-09:
 3. **History mode** (`/settings/model`, not `#/settings/model`). The server
    serves the client for the route paths (Server).
 4. **Closing goes back in history.** Closing settings or the character
-   grid, or going up from a sub-page, calls `history.back()` (or `go(-n)`).
-   It does not push the screen underneath again. So the in-app close button
-   and the browser's back button do the same thing, and opening and closing
-   settings repeatedly does not grow the history.
+   grid, or going up from a sub-page, goes back in history instead of
+   pushing the screen underneath again. So the in-app close button and the
+   browser's back button do the same thing, and opening and closing
+   settings repeatedly does not grow the history. Only where the router can
+   confirm the entry it goes back to (decision 8); otherwise the close
+   replaces the current entry.
 5. **A settings page opened directly gets a root entry inserted under it.**
    When a settings or grid URL is the first entry (a typed link, a
    bookmark, a new tab), the router puts `/` under it, so closing goes back
@@ -57,6 +61,16 @@ Confirmed 2026-10-09:
 7. **Overlays are not routes.** Alerts, popups, modals (HypaV3, the preset
    and persona lists, Realm info), the side panel (`CharConfigSubMenu`,
    `botMakerMode`), and the sidebar's open state stay out of the URL.
+
+Confirmed 2026-10-10:
+
+8. **The router does not track its own back.** A back the router starts is
+   handled like the user pressing the back button: whatever entry it lands
+   on is applied to the stores. The router keeps no pending state, waits
+   for nothing, and uses no timer. The browser gives no reliable way to tell
+   the router's own traversal from another one, or to know that an entry
+   still exists (Accepted risks), so the limits this leaves are accepted
+   and listed instead of engineered around.
 
 ## Routes
 
@@ -131,6 +145,14 @@ Confirmed 2026-10-09 as proposed. The rest of the plan refers to them by label.
   - Back: any navigation whose target is the URL of the app entry directly
     beneath the current one. This covers the playground's back arrow, the
     prompt template's back button, and the mobile settings page → list.
+    Only while the browser still holds that entry (confirmed 2026-10-09):
+    browsers cap the session history and drop the oldest entries, so an
+    entry the router remembers can be gone. Then the navigation is a push,
+    or the replace R1 and R4 call for. "Holds" means the Navigation API
+    lists the entry directly beneath as an entry of this document whose URL
+    is readable and equals the target (2026-10-10). The check is a hint, not
+    a guarantee (A2). Without the Navigation API the router cannot check,
+    so it never goes back (A4).
   - Layer close is its own rule (History model).
 - **R2. The router reads changes from the state, not from the caller.** The
   sync effect compares the route before and after a settled change and
@@ -154,6 +176,66 @@ Confirmed 2026-10-09 as proposed. The rest of the plan refers to them by label.
   `characterURLImport` code switches from `pushState` and assigning
   `location.hash` to `replaceState`. Route URLs carry no query parameters.
 
+## Accepted risks
+
+Confirmed 2026-10-10. The browser does not let a page delete entries,
+change any entry but the current one, learn the whole tab history, or
+learn reliably that an entry was dropped at the session history cap (the
+Navigation API lists only the same-origin run around the current entry;
+Chromium removes capped entries from that list late, Firefox and Safari do
+not report them). The router is built on what remains and accepts the
+limits below.
+
+What the router guarantees:
+
+- **G1. It never waits.** No state blocks a history write, and no timer
+  runs. A navigation that never completes leaves nothing pending.
+- **G2. It never loops.** A back that does nothing is not retried; the next
+  history step comes only from the next store change or browser
+  navigation.
+- **G3. It never leaves the app on its own.** It traverses only to an entry
+  the Navigation API lists as an entry of this document whose URL is the
+  route it expects. Without the Navigation API it never traverses.
+- **G4. The stores stay the state, and the URL catches up.** After any
+  limit below, the URL names the stores' screen again by the next settled
+  store change at the latest. A limit never leaves a wrong screen that a
+  click cannot fix, never writes data beyond what applying a route already
+  writes (`ensureChat`), and never hides the app behind an empty screen.
+
+The limits it accepts:
+
+- **A1. A click during a traversal can be undone.** The landing of a back
+  (the router's or the user's) is applied to the stores. A store change
+  made between the start of the back and its landing (usually within a
+  frame) is replaced by the landed screen.
+- **A2. A back can silently do nothing.** The entry beneath can be dropped
+  between the check and the traversal (the cap; Chromium's list lags it).
+  The stores already show the target, so the screen is right, but the URL
+  stays one step behind until the next store change. That stale entry stays
+  in the history.
+- **A3. Simultaneous navigations have no defined winner.** When the user's
+  back or forward, another script's `pushState`/`replaceState`, an address
+  bar fragment change, and a router write or traversal overlap, the screen
+  ends as the last applied event says; both intents are not preserved.
+  Another script's `pushState`/`replaceState` is not observed at all (it
+  fires no `popstate`); the router overwrites it at the next store change.
+- **A4. Without the Navigation API (iOS before 26.2, older Firefox) the
+  router never goes back.** Base routes push or replace, and a layer close
+  replaces the layer entry with the base route. The history then grows,
+  and a back press after closing a layer shows the screen that was under
+  it again (an entry with the same screen).
+- **A5. The history is only as deep as the browser keeps it.** The oldest
+  entries disappear at the cap (50 in Chromium and Firefox, 100 in WebKit).
+- **A6. The router's own landing is applied again.** Applying the route the
+  stores already show repeats `applyRoute`'s writes with the same values;
+  `selectCharacter` with the selected id notifies no listener.
+- **A7. Entries pushed without a user activation can be skipped by the
+  browser's back button** (H1).
+
+Review standard: a finding that falls within A1–A7 and stays within G1–G4
+is reported as `minor`. A finding is `blocking` when it breaks G1–G4 or
+shows an effect larger than the limit describes.
+
 ## History model
 
 Each entry the app creates has this state:
@@ -161,68 +243,83 @@ Each entry the app creates has this state:
 ```ts
 type RouteState = {
   v: 1;
-  /** URLs of the app's entries below this one, oldest first, capped at 50. */
-  below: string[];
   /** For a layer entry: how many entries above its base route (1 = directly on it); 0 for a base route. */
   layerDepth: number;
-  /** A base route chosen while the layer was open (R6). */
-  nextBase?: string;
+  /** For a layer entry (slice 4): the base route under it, applied first on a reload. */
+  base?: string;
 };
 ```
 
-`history.state` survives a reload, so the router knows what is underneath
-even after a reload.
+`history.state` survives a reload. What is underneath comes only from the
+Navigation API (`navigation.entries()` around `currentEntry`), as a hint
+checked right before a traversal; the router keeps no record of its own
+(a record by URL, then by entry id, was tried in slice 3 and named entries
+the browser had dropped).
 
 - **Boot (replaces `selectCharacter(null)` at the end of `loadData`).** The
   router starts after `loadedStore` is set and the plugins have loaded.
   - The entry has `v: 1` (a reload, or back/forward from outside the app):
-    apply it. For a layer entry, apply the base route
-    `below[below.length - layerDepth]` first, then the layer, so pages
-    that read the selected character see the right one.
+    apply it. For a layer entry, apply its `base` first, then the layer, so
+    pages that read the selected character see the right one.
   - The entry has no state, and the URL is a base route: write the state
     with `replaceState` and apply the URL.
   - The entry has no state, and the URL is a layer: replace the entry with
     `/` and push the layer over it (decision 5; when to do this: H1). Then
     apply `/` and the layer.
   - Anything else: replace with `/` (R4).
-- **Applying a URL** sets the stores and the selection inside an `applying`
-  guard, so the sync effect does not echo the change back as a new entry.
+- **Applying a URL** (boot and every `popstate`) sets the stores, then
+  replaces the entry with the stores' route. That replace carries every
+  correction of R4 and writes the canonical path without a query or hash.
   For a chat it calls `selectChat` before `selectCharacter`, so the
-  selection loads the requested chat rather than the previous one. Check
-  this order against `onCharacterSelected` in slice 3.
+  selection loads the requested chat rather than the previous one.
 - **The sync effect** (`$effect.root`) watches the route derived from the
   stores. A change that settles (several setters run in one handler: the
   sidebar's `reseter()`, `selectCharacter(null)`, then
-  `PlaygroundStore.set(0)`) produces one history step, chosen by R1.
-- **Closing a layer** (settings off, grid off) calls
-  `history.go(-layerDepth)`. The `popstate` that follows applies the base
-  route.
-- **R6. The base route changes while a layer is open.** For example, a
-  character picked in the grid (the grid stays open), or the Home hotkey
-  pressed in settings. The new base route is written to the current
-  entry's `nextBase`. When the layer closes, the router goes back as usual.
-  On that `popstate` it replaces the base entry with `nextBase` and
-  applies `nextBase` instead of the old base, so the old screen never
-  flashes.
-- **Pending traversal.** Between a `back`/`go(-n)` call and its `popstate`,
-  the sync effect waits. After the `popstate`, the router compares the
-  stores with the entry it landed on. If something changed in between (a
-  fast second click), that difference is pushed or replaced by R1.
+  `PlaygroundStore.set(0)`) produces one history step, chosen by R1:
+  nothing when the URL already shows it; R4's replace when the entry's
+  character is gone; a back when the target is the confirmed entry beneath;
+  R1's chat-switch replace; else a push.
+- **A back** (decision 8): the router reads the entry directly beneath from
+  the Navigation API (an entry of this document, `url` readable and equal
+  to the target) and calls `navigation.traverseTo(key)`, ignoring its
+  promises. Nothing else changes: the stores already show the target, and
+  the landing's `popstate` is applied like any other (A1, A6). A traversal
+  that does nothing leaves the URL behind (A2).
+- **Every `popstate` is applied.** The router does not ask who started the
+  traversal.
+- **Closing a layer** (settings off, grid off; slice 4). When the
+  Navigation API lists the entry `layerDepth` below as an entry of this
+  document whose URL is the layer's `base`, the router traverses to it.
+  Otherwise (the entry is gone, it is another document's, or there is no
+  Navigation API) it replaces the layer entry with the base route and
+  `layerDepth: 0`. Another entry of the same layer can still remain below
+  (the mobile settings list under a page), so a later back can reach it.
+- **R6. The base route changes while a layer is open** (revised
+  2026-10-10). For example, a character picked in the grid (the grid stays
+  open), or the Home hotkey pressed in settings. The layer entry's `base`
+  is replaced with the new base route. Closing the layer then finds a
+  different URL beneath (the old base), so it does not go back: it
+  replaces the layer entry with the new base route. A back would land on
+  the old base and be applied over the new one. The old base stays in the
+  history beneath.
 - **`popstate` from outside the scheme** (no `v: 1`) is treated like a boot
   entry without state.
 - **The settings list on mobile.** On a screen narrower than 700 px, the
   list (`/settings`, depth 1) and a page (`/settings/:page`, depth 2) are
   separate entries.
   - The close button on a page sets index `-1`. That target is the entry
-    beneath, so the router goes back.
-  - The list's close button closes the layer with `go(-2)` from a page or
-    `go(-1)` from the list.
+    beneath, so the router goes back (R1).
+  - The list's close button closes the layer by the rule above, from depth
+    2 on a page or depth 1 on the list.
   - Escape and the settings hotkey (`hotkey.ts`) set `settingsOpen` to
     false and close the same way.
 
-A small `HistoryPort` interface (`state`, `url`, `push`, `replace`, `go`,
-and a `popstate` subscription) wraps `window.history`, so the unit tests
-can run a fake history with asynchronous `popstate`.
+A small `HistoryPort` interface wraps the browser so the unit tests can run
+a fake: `path` and `state` (read live), `push`, `replace`, `entryBelow(n)`
+(the Navigation API entry `n` below as `{ key, path }` when it is an entry
+of this document with a readable URL, else null; always null without the
+Navigation API), `traverse(key)` (fire and forget), and a `popstate`
+subscription.
 
 ## Server
 
@@ -257,12 +354,40 @@ can run a fake history with asynchronous `popstate`.
 - `src/ts/settingsMenu.ts` (slice 1): the named `SettingsMenuIndex` values,
   moved out of `stores.svelte.ts` (which re-exports them) so the route table
   does not import the store graph.
-- `src/ts/router/router.svelte.ts`: `startRouter()` (boot), the sync
-  effect, the `popstate` handler, `HistoryPort`, and the pending-traversal
-  logic. It reads the writable stores through `fromStore`.
+- `src/ts/router/router.svelte.ts` (slice 3): `startRouter()` (boot), the
+  sync effect, the `popstate` handler, and `HistoryPort`. It reads the
+  writable stores through `fromStore`. Kept from the first slice 3 build:
+  - `routeOfState` derives the base route: a selected character is its chat
+    (`§playground` is the playground chat), else the playground value
+    (`0` is home or realm by `OpenRealmStore`; a value without a slug is the
+    menu).
+  - `applyRoute` sets every store a route depends on (the playground value
+    and `OpenRealmStore` too), calls `ensureChat` like `changeChar`, and
+    does not wait for a running generation (as the character hotkeys).
+    A missing character applies home (R4), the playground chat's too.
+  - R4's correction of a removed character: when that left nothing
+    selected, the stores go home first (the playground value and the realm
+    flag are cleared too), and the entry is replaced. A correction can
+    leave two adjacent entries with the same URL; that is preferred to
+    keeping the removed character's entry.
+  - The playground value 2 with nothing selected (the Home hotkey from the
+    playground chat clears only the selection, which left an empty screen)
+    is set to 1, the menu its URL names, before the route is written.
+  - Until slice 4, a layer URL applies home and is replaced with `/`, and an
+    open layer does not change the URL.
+  - Redo for decision 8: drop the pending traversal, the ownership tokens,
+    and the `navigate` listener; build the two `HistoryPort`s without
+    spreading an object with getters (the first build froze `path` and
+    `state` that way); create the port after the started guard and remove
+    every listener on stop.
 - `src/ts/bootstrap.ts`: the end of `loadData` calls `startRouter()` instead
   of `selectCharacter(null)`.
-- `src/ts/characterCards.ts`: R5.
+- `src/ts/characterCards.ts`: R5. The hash is read when
+  `characterURLImport` starts (it runs before the router, but reads the
+  hash after an `await` when a `?charahub=` link is present); the consumed
+  `?realm=`, `?charahub=`, and `#import=` are removed with `replaceState`.
+  The other link fragments (`#import_module=`, `#share_character`, ...)
+  were never removed; the router's first write drops them now.
 - `src/ts/storage/selection.svelte.ts`: update the comments ("a reload
   starts at home"). The behavior stays: the selection is not stored, and
   the URL restores it.
@@ -295,9 +420,9 @@ can run a fake history with asynchronous `popstate`.
   - Pushes made in click handlers carry an activation. Pushes made after a
     long `await` may not (for example `changeChar` after the add-character
     alert). Watch for those during manual checks.
-- **H2. `history.go` is asynchronous.** Every navigation decision during a
-  pending traversal has to be deferred (History model). A missed case
-  shows up as a duplicate entry or a screen that flashes.
+- **H2. Traversals are asynchronous and untracked.** Between a back and its
+  landing, store changes and other navigations can interleave; the router
+  accepts the outcome (A1, A3) instead of tracking the traversal.
 - **H3. Reload now lands inside a chat.** Boot code that assumed home at
   first paint must handle a selected character: the `onCharacterSelected`
   listeners and the chat load at boot. A deleted chat id falls back as in
@@ -305,6 +430,12 @@ can run a fake history with asynchronous `popstate`.
 - **H4. Two tabs.** Each tab has its own URL and selection, as today.
   `writeSelectionPreference` (the per-character last chat in
   `localStorage`) is unchanged. A chat in the URL wins over it.
+- **H5. Session history cap and the Navigation API.** Browsers keep a
+  limited number of entries per tab and drop the oldest (A2, A5). Check by
+  hand: the Navigation API on Safari 26.2 and later (reported as partial),
+  that `entries()` and `traverseTo` behave as the History model expects;
+  and that without the Navigation API base routes push and a layer close
+  replaces (A4).
 
 ## Slices
 
@@ -315,8 +446,9 @@ can run a fake history with asynchronous `popstate`.
    get the HTML with `__NODE__`, while `/api/...` misses and unknown paths
    return 404.
 3. **Router, base routes.** The history model without layers: boot,
-   `popstate`, the sync effect, R1 and R4, and R5. Bootstrap starts the
-   router. Unit tests use the fake `HistoryPort`.
+   `popstate`, the sync effect, R1 and R4, and R5, on decision 8 and the
+   accepted risks. Bootstrap starts the router. Unit tests use the fake
+   `HistoryPort`.
 4. **Layers.** Settings and the grid, `layerDepth`, the root insertion
    (with H1's activation deferral), R6, and the mobile settings list. Unit
    tests, then the manual checks.
@@ -329,9 +461,11 @@ can run a fake history with asynchronous `popstate`.
 
 - Unit tests:
   - `routes.test.ts`: the route table.
-  - `router.test.ts`: with the fake history, every R1 transition, a layer
-    close by depth, R6, the pending traversal under a quick second click,
-    boot with and without state, and the corrections.
+  - `router.test.ts`: with the fake history, every R1 transition, a back
+    only to a confirmed entry and never without the Navigation API, every
+    `popstate` applied, a back that does nothing not retried (G2) and the
+    URL caught up at the next change (G4), a layer close by depth and its
+    replace fallback, R6, boot with and without state, and the corrections.
 - Server: `server/src/tests/` gets the prefix route test.
 - Manual, in Chrome desktop, Android Chrome, the Android PWA, and iOS
   Safari:
@@ -344,4 +478,6 @@ can run a fake history with asynchronous `popstate`.
   - pick a character in the grid, then close the grid;
   - a URL with a deleted character;
   - the `?realm=` and `#import=` links, which leave no extra history
-    entry.
+    entry;
+  - a session past the cap (60+ character switches), then back and the
+    in-app navigation: no hang, the URL catches up (G1, G4).
