@@ -20,8 +20,9 @@ export interface Selection {
     /** The index of the shown global lorebook page. */
     loreBookPage: number;
     /**
-     * The selected character's `chaId`, `null` for home. Per tab and never stored: a reload starts at
-     * home. It always names a character in the list (a removed one makes it `null`).
+     * The selected character's `chaId`, `null` for home. Per tab and never stored here: the URL holds it,
+     * so a reload restores it (the router, `router/router.svelte.ts`). It always names a character in
+     * the list (a removed one makes it `null`).
      */
     characterId: string | null;
 }

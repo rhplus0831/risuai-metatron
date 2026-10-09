@@ -304,7 +304,8 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
 export const getRealmInfo = async (realmPath: string) => {
     const url = new URL(location.href);
     url.searchParams.delete("realm");
-    window.history.pushState(null, "", url.toString());
+    // Replaced, not pushed: a consumed link parameter is no history entry (`docs/plan/url-routes.md` R5).
+    window.history.replaceState(window.history.state, "", url.toString());
 
     const res = await fetch(`${hubURL}/hub/info/${realmPath}`);
     if (res.status !== 200) {
@@ -317,6 +318,8 @@ export const getRealmInfo = async (realmPath: string) => {
 export const showRealmInfoStore: Writable<null | hubType> = writable(null);
 
 export async function characterURLImport() {
+    // Read now: the router (started later in `loadData`) writes URLs without a query or hash.
+    const hash = location.hash;
     const realmPath = new URLSearchParams(location.search).get("realm");
     try {
         if (realmPath) {
@@ -330,7 +333,7 @@ export async function characterURLImport() {
             alertWait("Loading from Chub...");
             const url = new URL(location.href);
             url.searchParams.delete("charahub");
-            window.history.pushState(null, "", url.toString());
+            window.history.replaceState(window.history.state, "", url.toString());
             const chara = await fetch("https://api.chub.ai/api/characters/download", {
                 method: "POST",
                 body: JSON.stringify({
@@ -353,9 +356,8 @@ export async function characterURLImport() {
         return null;
     }
 
-    const hash = location.hash;
     if (hash.startsWith("#import=")) {
-        location.hash = "";
+        window.history.replaceState(window.history.state, "", location.pathname + location.search);
         const url = hash.replace("#import=", "");
         try {
             const res = await fetch(url, {

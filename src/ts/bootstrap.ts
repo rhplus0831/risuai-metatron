@@ -4,7 +4,8 @@ import { get } from "svelte/store";
 import { COLLECTION_KIND, COLLECTION_SELECTION_FIELDS, SECTION_FIELDS, SECTION_KIND } from "../../shared/sections.ts";
 import { mirrorFields, setMaskedSecrets } from "./storage/llmSecrets.svelte";
 import type { MaskedLlmSecrets } from "../../shared/llmSecrets.ts";
-import { loadSelection, selectCharacter } from "./storage/selection.svelte";
+import { loadSelection } from "./storage/selection.svelte";
+import { startRouter } from "./router/router.svelte";
 import { botMakerMode, loadedStore, LoadingStatusState } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./alert";
@@ -113,7 +114,8 @@ export async function loadData() {
                 botMakerMode.set(true);
             }
             loadedStore.set(true);
-            selectCharacter(null);
+            // The URL picks the screen (a reload keeps it); from here on the history follows the stores.
+            startRouter();
             // A server job of this tab that a reload interrupted (a Lua button, Phase 5 slice 8a)
             // is attached again; nothing is sent when the tab has none.
             void import("./process/serverCommands")

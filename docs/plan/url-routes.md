@@ -1,10 +1,10 @@
 # URL Routes Plan
 
-Status: slices 1–2 done (2026-10-09). Slice 3 is to be redone on the
-untracked-back history model and the accepted risks (2026-10-10); the
-uncommitted slice 3 code predates them. Give each screen an address. The browser's
-history then follows what the user sees: reload keeps the screen, the
-browser and mobile back buttons work, and a screen can be linked.
+Status: slices 1–2 done (2026-10-09), slice 3 done on the untracked-back
+history model and the accepted risks (2026-10-10). Give each screen an
+address. The browser's history then follows what the user sees: reload
+keeps the screen, the browser and mobile back buttons work, and a screen
+can be linked.
 
 The stores stay the state. A new router keeps the URL and the history in
 sync with them in both directions. The `{#if}` chains in `App.svelte` and
@@ -375,11 +375,18 @@ subscription.
     is set to 1, the menu its URL names, before the route is written.
   - Until slice 4, a layer URL applies home and is replaced with `/`, and an
     open layer does not change the URL.
-  - Redo for decision 8: drop the pending traversal, the ownership tokens,
-    and the `navigate` listener; build the two `HistoryPort`s without
-    spreading an object with getters (the first build froze `path` and
-    `state` that way); create the port after the started guard and remove
-    every listener on stop.
+  - Rebuilt for decision 8 (2026-10-10): no pending traversal, no
+    ownership token, no `navigate` listener. One `browserHistory` object
+    with its own live `path` and `state` getters (the first build spread an
+    object with getters and froze them); without the Navigation API its
+    `entryBelow` is always null, so it never goes back (A4). `traverse`
+    ignores both `traverseTo` promises. The port is created after the
+    started guard, and the stop removes the `popstate` listener.
+  - The sync effect depends on the formatted route, not on the stores it
+    reads: a store change that keeps the route (a chat list reordered or
+    updated from another tab, the playground value 2 set to 1) takes no
+    step. Otherwise, while the URL is behind a back, each such change would
+    start the same back again.
 - `src/ts/bootstrap.ts`: the end of `loadData` calls `startRouter()` instead
   of `selectCharacter(null)`.
 - `src/ts/characterCards.ts`: R5. The hash is read when
