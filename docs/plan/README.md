@@ -15,6 +15,10 @@ Active planning and implementation:
 - [Shared API Keys](shared-api-keys.md): move LLM credentials into a named key
   list that each model binds to (done; named keys for the auxiliary
   operations are the open follow-up).
+- [Model Profiles](model-profiles.md): split the model preset into model
+  profiles (model, key, connection options) and the slots that pick them,
+  so each auxiliary model has its own key and endpoint (planned; decisions
+  confirmed).
 
 ## Archived
 
