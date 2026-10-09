@@ -53,6 +53,34 @@ describe("GET / and /index.html", () => {
         expect((await app.request("/does-not-exist")).status).toBe(404);
         expect((await app.request("/index.html", { method: "POST" })).status).toBe(404);
     });
+
+    // A reload or a link on a screen route (`shared/routes.ts`) must land on the client with the flag.
+    it("serves the flagged client for the client's screen routes and nothing else", async () => {
+        const { app } = freshServer();
+        for (const url of [
+            "/chat/c1/chat-1",
+            "/chat/%C2%A7playground/a%2Fb",
+            "/settings",
+            "/settings/model/",
+            "/playground/tokenizer?x=1",
+            "/realm",
+            "/characters",
+        ]) {
+            const res = await app.request(url);
+            expect(res.status, url).toBe(200);
+            expect(res.headers.get("content-type"), url).toMatch(/^text\/html/);
+            const html = await res.text();
+            expect(html.match(/__NODE__/g), url).toHaveLength(1);
+        }
+        expect((await app.request("/settings/model", { method: "HEAD" })).status).toBe(200);
+
+        for (const url of ["/chat.js", "/settingsX", "/api/missing", "/assets/missing.js"]) {
+            expect((await app.request(url)).status, url).toBe(404);
+        }
+        expect((await app.request("/settings/model", { method: "POST" })).status).toBe(404);
+        // The routes registered after the fallback still answer.
+        expect((await app.request("/api/test_auth")).status).toBe(200);
+    });
 });
 
 describe("auth routes", () => {

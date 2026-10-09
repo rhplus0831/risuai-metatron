@@ -39,6 +39,7 @@ import { registerResourceRoutes } from "./routes/resources.ts";
 import { registerStorageRoutes } from "./routes/storage.ts";
 import { createScriptWorkerPool } from "./scripts/workerPool.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
+import { isClientRoutePath } from "../../shared/routes.ts";
 import type { AppEnv } from "./types.ts";
 
 const MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -278,6 +279,10 @@ export function createServerContext(options: {
     };
     app.get("/", serveIndex);
     app.get("/index.html", serveIndex);
+    // The client's screen routes (`shared/routes.ts`) get the client too, so a reload or a link lands
+    // on that screen. Every path under those five first segments gets it (the client rejects one that
+    // names no screen); any other unknown path or asset miss stays a 404.
+    app.get("*", (c, next) => (isClientRoutePath(c.req.path) ? serveIndex(c) : next()));
 
     app.get("*", serveStatic({ root: distPath }));
 

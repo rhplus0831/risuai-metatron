@@ -1,6 +1,6 @@
 # URL Routes Plan
 
-Status: planned (2026-10-09). Give each screen an address. The browser's
+Status: slices 1–2 done (2026-10-09); slice 3 is next. Give each screen an address. The browser's
 history then follows what the user sees: reload keeps the screen, the
 browser and mobile back buttons work, and a screen can be linked.
 
@@ -81,31 +81,29 @@ underneath: the history entry's state does (History model).
 
 Settings slugs (`SettingsMenuIndex`):
 
-| Slug              | Index | Page                     |
-| ----------------- | ----- | ------------------------ |
-| `model`           | 1     | `ModelSettings`          |
-| `connections`     | 18    | `ModelProfilesSettings`  |
-| `api-keys`        | 17    | `ApiKeysSettings`        |
-| `prompt`          | 16    | `PromptPresetSettings`   |
-| `prompt-template` | 13    | `PromptSettings`         |
-| `persona`         | 12    | `PersonaSettings`        |
-| `bot`             | 2     | `OtherBotSettings`       |
-| `display`         | 3     | `DisplaySettings`        |
-| `language`        | 10    | `LanguageSettings`       |
-| `accessibility`   | 11    | `AccessibilitySettings`  |
-| `modules`         | 14    | `ModuleSettings`         |
-| `plugins`         | 4     | `PluginSettings`         |
-| `user`            | 0     | `UserSettings`           |
-| `hotkeys`         | 15    | `HotkeySettings`         |
-| `advanced`        | 6     | `AdvancedSettings`       |
-| `thanks`          | 77    | `ThanksPage`             |
-| `communities`     | 7     | `Communities`            |
-| `lorebook`        | 8     | `GlobalLoreBookSettings` |
-| `regex`           | 9     | `GlobalRegex`            |
+| Slug              | Index | Page                    |
+| ----------------- | ----- | ----------------------- |
+| `model`           | 1     | `ModelSettings`         |
+| `connections`     | 18    | `ModelProfilesSettings` |
+| `api-keys`        | 17    | `ApiKeysSettings`       |
+| `prompt`          | 16    | `PromptPresetSettings`  |
+| `prompt-template` | 13    | `PromptSettings`        |
+| `persona`         | 12    | `PersonaSettings`       |
+| `bot`             | 2     | `OtherBotSettings`      |
+| `display`         | 3     | `DisplaySettings`       |
+| `language`        | 10    | `LanguageSettings`      |
+| `accessibility`   | 11    | `AccessibilitySettings` |
+| `modules`         | 14    | `ModuleSettings`        |
+| `plugins`         | 4     | `PluginSettings`        |
+| `user`            | 0     | `UserSettings`          |
+| `hotkeys`         | 15    | `HotkeySettings`        |
+| `advanced`        | 6     | `AdvancedSettings`      |
+| `thanks`          | 77    | `ThanksPage`            |
 
-Indices 7, 8, and 9 have no menu entry in `Settings.svelte`. Before slice 1,
-check whether anything still opens them. Drop the slugs of the pages that
-nothing opens.
+Indices 7 (`Communities`), 8 (`GlobalLoreBookSettings`), and 9
+(`GlobalRegex`) get no slug: `Settings.svelte` still renders them, but
+nothing sets those indices (checked in slice 1). An index without a slug
+has no route (`settingsPageOf` returns null).
 
 Playground slugs (`PlaygroundStore`): `embedding` 3, `tokenizer` 4,
 `syntax` 5, `jinja` 6, `image-gen` 7, `parser` 8, `subtitle` 9,
@@ -228,12 +226,14 @@ can run a fake history with asynchronous `popstate`.
 
 ## Server
 
-- `shared/routes.ts`: the route prefixes (`/chat/`, `/playground`, `/realm`,
-  `/characters`, `/settings`). There is no DOM type, as `shared/` requires.
-  The client's route table and the server read them from here.
-- `server/src/app.ts`: register `serveIndex` for those prefixes next to
-  `app.get("/")`. List the prefixes, not a catch-all, so unknown paths and
-  `/api` misses still return 404 and asset misses do not get HTML. The
+- `shared/routes.ts`: `CLIENT_ROUTE_SEGMENTS` (the first path segments
+  `chat`, `playground`, `realm`, `characters`, `settings`) and
+  `isClientRoutePath`. There is no DOM type, as `shared/` requires.
+- `server/src/app.ts`: a `GET *` handler next to `app.get("/")` serves
+  `serveIndex` when `isClientRoutePath` matches and passes the request on
+  otherwise. Every path under those five segments gets the client (the
+  client rejects one that names no screen); any other unknown path, an
+  `/api` miss, or an asset miss still returns 404. The
   `__NODE__` injection is unchanged. The route paths are unauthenticated,
   like `/`.
 - `public/` has no `chat`, `settings`, `playground`, `realm`, or
@@ -248,8 +248,15 @@ can run a fake history with asynchronous `popstate`.
 
 ## Client
 
-- `src/ts/router/routes.ts`: the slug tables, `formatRoute(state) → path`,
-  and `parseRoute(path) → route | null`. Pure functions.
+- `src/ts/router/routes.ts` (slice 1): the slug tables (`SETTINGS_PAGES`,
+  `PLAYGROUND_TOOLS`), the `Route` union, `formatRoute(route) → path`,
+  `parseRoute(path) → Route | null`, and `settingsPageOf`/`playgroundToolOf`
+  (store value → slug). Pure functions. Mapping the stores to a `Route` (for
+  example the `§playground` character with playground `2` to
+  `playgroundChat`) is the router's job in slice 3.
+- `src/ts/settingsMenu.ts` (slice 1): the named `SettingsMenuIndex` values,
+  moved out of `stores.svelte.ts` (which re-exports them) so the route table
+  does not import the store graph.
 - `src/ts/router/router.svelte.ts`: `startRouter()` (boot), the sync
   effect, the `popstate` handler, `HistoryPort`, and the pending-traversal
   logic. It reads the writable stores through `fromStore`.

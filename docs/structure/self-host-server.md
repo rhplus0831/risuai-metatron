@@ -82,7 +82,7 @@ Registration order in `createServerContext`:
 
 1. `onError` (`HTTPException` responses pass through; maintenance and a closed resource store answer 503 with `Retry-After`; other errors are a 500 `Internal Server Error`). Shutdown admission middleware runs before body parsing, tracks resource handlers (`/api/resources` and `/api/llm-secrets`), refuses new resource, credential, and backup requests with 503, and adds `Connection: close` to every response during shutdown.
 2. `bodyLimit` (100 MiB, 413 `{error:"Request body too large"}`), skipped only for `POST /api/backups/import`, which streams its body to disk under its own cap.
-3. `GET /` and `GET /index.html` (one shared handler).
+3. `GET /` and `GET /index.html` (one shared handler), then the same handler for the client's screen routes: a `GET *` handler serves it when `isClientRoutePath` (`shared/routes.ts`: first segment `chat`, `playground`, `realm`, `characters`, or `settings`) matches and passes every other path on (`docs/plan/url-routes.md`).
 4. `serveStatic` for every other GET/HEAD.
 5. The routes below.
 
@@ -138,7 +138,7 @@ Boot:
 
 Client detection:
 
-1. `GET /` and `GET /index.html` inject `__NODE__`, which makes `isNodeServer` true in the client. Without it the client shows only the `NodeServerRequired` notice, so no route may serve `index.html` raw.
+1. `GET /`, `GET /index.html`, and the client route paths inject `__NODE__`, which makes `isNodeServer` true in the client. Without it the client shows only the `NodeServerRequired` notice, so no route may serve `index.html` raw.
 2. The client always uses this server (`storage/assetClient.ts` for assets, `storage/serverAuth.ts` for auth).
 
 Development (`pnpm dev`):
