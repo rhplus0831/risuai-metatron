@@ -17,8 +17,8 @@ Active planning and implementation:
   operations are the open follow-up).
 - [Model Profiles](model-profiles.md): split the model preset into model
   profiles (model, key, connection options) and the slots that pick them,
-  so each auxiliary model has its own key and endpoint (planned; decisions
-  confirmed).
+  so each auxiliary model has its own key and endpoint (done; the `submodel`
+  slot and the remaining global provider toggles are the open follow-ups).
 
 ## Archived
 

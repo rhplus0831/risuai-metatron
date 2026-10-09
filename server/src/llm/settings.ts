@@ -1,10 +1,10 @@
-import type { Credential, CredentialType, CustomModel, Database } from "../../../shared/database.ts";
+import type { Credential, CredentialType, Database, ModelPreset } from "../../../shared/database.ts";
 import { LLMFlags, type LLMModel } from "../../../shared/llm.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import { PERSONA_DEFAULTS } from "../../../shared/personas.ts";
-import { PERSONA_ROOT_ALIASES, type PresetField } from "../../../shared/presets.ts";
+import { PERSONA_ROOT_ALIASES, type PromptPresetField } from "../../../shared/presets.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
-import { forwardPresetRoots, SECTION_FIELDS } from "../../../shared/sections.ts";
+import { FORWARDED_MODEL_PRESET_KEYS, forwardPresetRoots, SECTION_FIELDS } from "../../../shared/sections.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import type { TokenCountScope } from "../prompt/tokens.ts";
@@ -18,20 +18,28 @@ type RootOf<F> = F extends "NAISettings"
       : F extends "regex"
         ? "presetRegex"
         : F;
-type PresetRootField = Extract<RootOf<Exclude<PresetField, "name" | "image">>, keyof Database>;
+type PresetRootField =
+    Extract<RootOf<PromptPresetField>, keyof Database> | (typeof FORWARDED_MODEL_PRESET_KEYS)[number];
 
 /**
  * What the server request layer reads of the database: the `providers` and `llmSecrets` sections,
- * the request's prompt and model preset fields under their root names (as the forwarding layer
- * serves them), the model preset's `proxyKey`, the request persona's name and prompt,
- * `ui.autoSuggestPrefix`, `customModels`, and the named credentials.
+ * the request's prompt and derived model/profile roots, the request persona's name and prompt,
+ * `ui.autoSuggestPrefix`, custom model definitions, and the named credentials. The selected model
+ * preset and profile collection are captured with these roots for request-local slot resolution.
  */
 export type RequestDb = Pick<
     Database,
-    ProvidersField | LlmSecretsField | PresetRootField | "proxyKey" | "username" | "personaPrompt" | "autoSuggestPrefix"
+    | ProvidersField
+    | LlmSecretsField
+    | PresetRootField
+    | "username"
+    | "personaPrompt"
+    | "autoSuggestPrefix"
+    | "customModels"
+    | "modelProfiles"
 > & {
-    /** The custom models, each with its key from `llmSecrets.customModels` (`""` for none). */
-    customModels: (CustomModel & { key: string })[];
+    /** The selected model preset; profile ids remain tagged until the slot is resolved. */
+    modelPreset: ModelPreset;
     /** Server-only named credentials, including their display names for refusal messages. */
     credentials: Record<
         string,
@@ -101,19 +109,30 @@ export function loadRequestDb(
         { kind: kind(RESOURCE_KIND.credentials), id: SINGLETON_RESOURCE_ID },
         { kind: kind(RESOURCE_KIND.presets), id: SINGLETON_RESOURCE_ID },
         { kind: kind(RESOURCE_KIND.modelPresets), id: SINGLETON_RESOURCE_ID },
+        { kind: kind(RESOURCE_KIND.modelProfiles), id: SINGLETON_RESOURCE_ID },
         { kind: kind(RESOURCE_KIND.personas), id: SINGLETON_RESOURCE_ID },
         ...characterIds.map((id) => ({ kind: kind(RESOURCE_KIND.characters), id })),
     ]);
-    const [providers, llmSecrets, ui, customModels, credentials, presets, modelPresets, personas, ...characters] =
-        read.items.map((item) => item.data as any);
-    if (!providers || !llmSecrets || !ui || !customModels || !presets || !modelPresets || !personas) {
+    const [
+        providers,
+        llmSecrets,
+        ui,
+        customModels,
+        credentials,
+        presets,
+        modelPresets,
+        modelProfiles,
+        personas,
+        ...characters
+    ] = read.items.map((item) => item.data as any);
+    if (!providers || !llmSecrets || !ui || !customModels || !presets || !modelPresets || !modelProfiles || !personas) {
         throw new Error("The server has no settings records yet");
     }
     const preset = (presets as Record<string, unknown>[]).find((record) => record?.id === ids.presetId);
     if (!preset) {
         throw new RequestTargetGoneError("preset");
     }
-    const modelPreset = (modelPresets as Record<string, unknown>[]).find((record) => record?.id === ids.modelPresetId);
+    const modelPreset = (modelPresets as ModelPreset[]).find((record) => record?.id === ids.modelPresetId);
     if (!modelPreset) {
         throw new RequestTargetGoneError("model preset");
     }
@@ -138,18 +157,15 @@ export function loadRequestDb(
             db[field] = llmSecrets[field];
         }
     }
-    forwardPresetRoots(db, preset, modelPreset);
-    db.proxyKey = (llmSecrets.modelPresets?.[modelPreset.id as string]?.proxyKey as string | undefined) ?? "";
+    db.modelPreset = modelPreset;
+    db.modelProfiles = modelProfiles;
+    forwardPresetRoots(db, preset, modelPreset, modelProfiles);
     for (const rootKey of ["username", "personaPrompt"] as const) {
         const value = persona[PERSONA_ROOT_ALIASES[rootKey]];
         db[rootKey] = typeof value === "string" ? value : PERSONA_DEFAULTS[PERSONA_ROOT_ALIASES[rootKey]];
     }
     db.autoSuggestPrefix = ui.autoSuggestPrefix;
-    const modelKeys = (llmSecrets.customModels ?? {}) as Record<string, { key?: unknown }>;
-    db.customModels = (customModels as CustomModel[]).map((model) => {
-        const entry = Object.prototype.hasOwnProperty.call(modelKeys, model.id) ? modelKeys[model.id] : undefined;
-        return { ...model, key: typeof entry?.key === "string" ? entry.key : "" };
-    });
+    db.customModels = customModels;
     const credentialKeys = (llmSecrets.credentials ?? {}) as Record<string, { key?: unknown }>;
     db.credentials = Object.fromEntries(
         ((credentials ?? []) as Credential[]).map((credential) => {

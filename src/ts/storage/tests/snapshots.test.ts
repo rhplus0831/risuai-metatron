@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Phase 6 slice 10 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/aggregate-removal.md`):
 // the snapshot builders (`snapshots.svelte.ts`) that serve the legacy whole-database shape now that
 // the aggregate is gone. Each answers a fresh plain object built from the records: `rootSnapshot`
-// (every root name as an own key, `undefined` kept, `proxyKey` blank, the three selection indexes),
+// (every root name as an own key, `undefined` kept, no `proxyKey` since the model profiles removed it,
+// the three selection indexes),
 // `buildDatabaseSubset` (the plugin `getDatabase`: the 23 allowed keys, the characters with their
 // chats, the persona index, a hook's preset for the preset keys, an own `__proto__` storage key kept
 // as data), `buildSettingsReport` (the bug-report export: the removal list the component carried
 // before the slice, every `llmSecrets` field, and every key named like a credential, with `meta`),
-// and `buildBackupInventory` (chat-free character asset fields and the five settings). The oracle
+// and `buildBackupInventory` (chat-free character asset fields and the five settings). The model
+// fields of the fixture live in the model presets' main profiles (`docs/plan/model-profiles.md`). The oracle
 // for the report is the removed component's own filter, written out here, applied to the root
 // snapshot; the builders are checked to be detached (a write into a result changes and queues
 // nothing) and untracked (a read inside a `$derived` repairs a stale selection without throwing).
@@ -43,13 +45,13 @@ vi.mock("../serverAuth", () => ({
 }));
 
 import { SECTION_FIELDS } from "../../../../shared/sections.ts";
-import { plainClone } from "../../../../shared/presets.ts";
+import { normalizeModelPresets, normalizeModelProfiles, plainClone } from "../../../../shared/presets.ts";
 import { characterList } from "../characterStore.svelte";
 import { findChat } from "../chatStore.svelte";
 import { resetRecords, setRecordWriteListener } from "../records.svelte";
 import { selection, selectLoreBookPage, selectPersona, selectPreset } from "../selection.svelte";
 import {
-    activeModelPreset,
+    activeMainProfile,
     activePreset,
     hasModelPreset,
     hasPreset,
@@ -106,8 +108,10 @@ const COMPONENT_REMOVED_KEYS = [
     "modules",
     "enabledModules",
     "botPresets",
-    // The model presets go with the prompt presets (`docs/plan/split-preset.md`).
+    // The model presets go with the prompt presets (`docs/plan/split-preset.md`), and the model
+    // profiles with them, as they hold URLs (`docs/plan/model-profiles.md`, "Import / export").
     "modelPresets",
+    "modelProfiles",
     "characterOrder",
     "webUiUrl",
     "characterOrder",
@@ -171,9 +175,18 @@ function fixture(): AnyRecord {
             },
         ],
         botPresets: [
-            { id: "a", name: "A", temperature: 40, maxContext: 1234, moduleIntergration: "mod-a" },
-            { id: "b", name: "B", temperature: 60, maxContext: 5678 },
+            { id: "a", name: "A", temperature: 40, moduleIntergration: "mod-a" },
+            { id: "b", name: "B", temperature: 60 },
         ],
+        // The model presets of the same ids; their main slots name the profiles `pa` and `pb`.
+        modelPresets: normalizeModelPresets([
+            { id: "a", name: "A", mainSlot: { profileId: "pa" }, subSlot: { profileId: "pa" } },
+            { id: "b", name: "B", mainSlot: { profileId: "pb" }, subSlot: { profileId: "pb" } },
+        ]),
+        modelProfiles: normalizeModelProfiles([
+            { id: "pa", name: "PA", modelId: "model-a", maxContext: 1234 },
+            { id: "pb", name: "PB", modelId: "model-b", maxContext: 5678 },
+        ]),
         personas: [
             { id: "p1", name: "Ann", icon: "icon-ann", personaPrompt: "pp1", note: "" },
             { id: "p2", name: "Bob", icon: "icon-bob", personaPrompt: "pp2", note: "" },
@@ -217,7 +230,7 @@ afterEach(() => {
 });
 
 describe("rootSnapshot", () => {
-    it("holds every root name as an own key (an unset one as undefined), proxyKey blank, and the three selection indexes", () => {
+    it("holds every root name as an own key (an unset one as undefined), no proxyKey, and the three selection indexes", () => {
         boot();
         const snapshot = rootSnapshot();
         for (const key of SETTINGS_ROOT_KEYS) {
@@ -230,7 +243,7 @@ describe("rootSnapshot", () => {
             expect(Object.hasOwn(snapshot, key), key).toBe(true);
             expect(snapshot[key], key).toBeUndefined();
         }
-        expect(snapshot.proxyKey).toBe("");
+        expect(Object.hasOwn(snapshot, "proxyKey")).toBe(false);
         expect(snapshot.botPresetsId).toBe(0);
         expect(snapshot.selectedPersona).toBe(0);
         expect(snapshot.loreBookPage).toBe(0);
@@ -332,7 +345,7 @@ describe("buildDatabaseSubset (the plugin getDatabase)", () => {
         expect(selection.presetId).toBe("a");
         expect(selection.modelPresetId).toBe("a");
         expect(activePreset.temperature).toBe(40);
-        expect(activeModelPreset.maxContext).toBe(1234);
+        expect(activeMainProfile.maxContext).toBe(1234);
         // A preset that is gone (the caller refuses it first, `hasPreset`/`hasModelPreset`): no
         // fallback to another preset of either kind.
         expect(hasPreset("gone")).toBe(false);

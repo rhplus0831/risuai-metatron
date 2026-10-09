@@ -1,4 +1,4 @@
-import { activeModelPreset, settings as appSettings, activePreset } from "../../storage/settingsViews.svelte";
+import { resolveModelSlot, settings as appSettings, activePreset } from "../../storage/settingsViews.svelte";
 import { type memoryVector, HypaProcesser, similarity } from "./hypamemory";
 import { isContextModel, getContextProvider } from "./contextualEmbedding";
 import { TaskRateLimiter } from "./taskRateLimiter";
@@ -1491,7 +1491,7 @@ export async function summarize(
 
     // API
     if (settings.summarizationModel === "subModel") {
-        console.log(logPrefix, `Using ax model ${activeModelPreset.subModel} for summarization.`);
+        console.log(logPrefix, `Using ax model ${resolveModelSlot("memory").modelId ?? ""} for summarization.`);
 
         const response = await requestChatData(
             {

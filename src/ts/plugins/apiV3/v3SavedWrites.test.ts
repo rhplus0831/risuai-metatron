@@ -214,8 +214,13 @@ describe("the other setters land in their owners' records", () => {
     });
 
     it("a forwarded key reaches the selected preset of its owner's record and no other", async () => {
-        const { api, sync, record, selection } = await boot();
-        // `temperature` is the prompt preset's, `maxContext` the model preset's (`docs/plan/split-preset.md`).
+        const { api, sync, record, selection, collectionStore } = await boot();
+        // `temperature` is the prompt preset's, `maxContext` the selected model preset's main profile's
+        // (`docs/plan/split-preset.md`, `docs/plan/model-profiles.md` O8). The other model preset gets
+        // a main profile of its own, so the two do not share the written record.
+        const otherModelId = record("modelPresets").find((preset: any) => preset.id !== selection.modelPresetId).id;
+        const otherProfileId = collectionStore.addModelProfile({ name: "Other" });
+        collectionStore.setMainModelSlot(otherModelId, otherProfileId);
         await api.setDatabase({ temperature: 77 });
         await api.setDatabaseLite({ maxContext: 4321 });
         await sync.flushResources();
@@ -227,10 +232,14 @@ describe("the other setters land in their owners' records", () => {
         expect(other.temperature).not.toBe(77);
         const modelPresets = record("modelPresets");
         const selectedModel = modelPresets.find((preset: any) => preset.id === selection.modelPresetId);
-        const otherModel = modelPresets.find((preset: any) => preset.id !== selection.modelPresetId);
-        expect(selectedModel).toMatchObject({ maxContext: 4321 });
+        expect(selectedModel).not.toHaveProperty("maxContext");
         expect(selectedModel).not.toHaveProperty("temperature");
-        expect(otherModel.maxContext).not.toBe(4321);
+        const profiles = record("modelProfiles");
+        const selectedProfile = profiles.find((profile: any) => profile.id === selectedModel.mainSlot.profileId);
+        const otherProfile = profiles.find((profile: any) => profile.id === otherProfileId);
+        expect(selectedProfile).toMatchObject({ maxContext: 4321 });
+        expect(selectedProfile).not.toHaveProperty("temperature");
+        expect(otherProfile.maxContext).not.toBe(4321);
     });
 
     it("an explicit characterOrder sent before the characters it names is the saved order", async () => {

@@ -1,11 +1,13 @@
-import type { Database } from "./database.ts";
+import type { Database, ModelPreset, ModelProfile, ModelSlot } from "./database.ts";
 import {
-    MODEL_PRESET_FIELDS,
+    MODEL_PROFILE_FIELDS,
     PERSONA_ROOT_ALIASES,
     PRESET_ROOT_ALIASES,
     presetFieldValue,
+    plainClone,
     PROMPT_PRESET_FIELDS,
     type PresetField,
+    type ModelProfileField,
 } from "./presets.ts";
 
 /**
@@ -20,10 +22,9 @@ import {
  * - `FORWARDED_ROOT_KEYS`: the fields of the removed `root` resource (the working copies before
  *   Phase 3), not stored under their own names. The client's views serve them under those names
  *   (`src/ts/storage/settingsViews.svelte.ts`: the prompt fields from the selected prompt preset,
- *   the model fields from the selected model preset, the persona fields from the selected persona);
- *   `proxyKey` is the selected model preset's `llmSecrets.modelPresets` entry, and the three
- *   selection indexes come from the per-client selection store. The two auto-suggest fields are `ui`
- *   fields, not forwarded.
+ *   the model ids from the selected model preset's slots, the profile fields from its main profile,
+ *   the persona fields from the selected persona); the three selection indexes come from the
+ *   per-client selection store. The two auto-suggest fields are `ui` fields, not forwarded.
  * - `DROPPED_FIELDS`: no longer persisted (no reader, write-only, migrated, or legacy mirrors).
  */
 
@@ -40,7 +41,6 @@ export type SectionKind = (typeof SECTION_KIND)[keyof typeof SECTION_KIND];
 export const SECTION_FIELDS = {
     /** Provider and request settings outside the presets. */
     providers: [
-        "modelCredentials",
         "loreBookToken",
         "additionalPrompt",
         "descriptionPrefix",
@@ -49,9 +49,6 @@ export const SECTION_FIELDS = {
         "usePlainFetch",
         "openrouterMiddleOut",
         "openrouterFallback",
-        "nanogptRequestModel",
-        "nanogptRequestModelName",
-        "nanogptProvider",
         "nanogptUseSubscriptionEndpoint",
         "nanogptSubscriptionState",
         "autofillRequestUrl",
@@ -63,19 +60,10 @@ export const SECTION_FIELDS = {
         "genTime",
         "additionalParams",
         "applyAdditionalParamsToAll",
-        "ollamaURL",
-        "ollamaModel",
-        "ollamaModelSource",
-        "ollamaInputMode",
-        "ollamaRequestFormat",
-        "ollamaModelName",
-        "ollamaCloudModel",
-        "ollamaCloudModelName",
         "ollamaThinkingMode",
         "autoContinueChat",
         "autoContinueMinTokens",
         "removeIncompleteResponse",
-        "customTokenizer",
         "useTokenizerCaching",
         "OAIPrediction",
         "vertexRegion",
@@ -98,7 +86,7 @@ export const SECTION_FIELDS = {
         "saveSignatures",
         "presetChain",
     ],
-    /** LLM provider credentials (Decision 6). Client-readable until Phase 5 makes the section write-only; it also holds each model preset's `proxyKey` by model preset id (`modelPresets`). */
+    /** Write-only LLM provider defaults; named-key values live in the `credentials` entry map. */
     llmSecrets: [
         "openAIKey",
         "claudeAPIKey",
@@ -317,6 +305,7 @@ export const COLLECTION_KIND = {
     enabledModules: "enabledModules",
     statics: "statics",
     modelPresets: "modelPresets",
+    modelProfiles: "modelProfiles",
 } as const;
 
 export type CollectionKind = (typeof COLLECTION_KIND)[keyof typeof COLLECTION_KIND];
@@ -337,6 +326,7 @@ export const COLLECTION_FIELDS = {
     enabledModules: "enabledModules",
     statics: "statics",
     modelPresets: "modelPresets",
+    modelProfiles: "modelProfiles",
 } as const satisfies Record<CollectionKind, keyof Database>;
 
 /**
@@ -361,31 +351,98 @@ export const FORWARDED_PRESET_KEYS = PROMPT_PRESET_FIELDS.map(
     (field) => (presetRootNames[field] ?? field) as keyof Database,
 );
 
-/**
- * Root fields that mirror the selected model preset one to one: every `MODEL_PRESET_FIELDS` field
- * (none has a root alias). `proxyKey` is forwarded too, to that model preset's
- * `llmSecrets.modelPresets` entry (`FORWARDED_ROOT_KEYS`).
- */
-export const FORWARDED_MODEL_PRESET_KEYS = MODEL_PRESET_FIELDS.map(
-    (field) => (presetRootNames[field] ?? field) as keyof Database,
+/** Profile options with legacy root names; record metadata and credential bindings stay on profiles. */
+export const MODEL_PROFILE_ROOT_FIELDS = MODEL_PROFILE_FIELDS.filter(
+    (field): field is Exclude<ModelProfileField, "modelId" | "credentialId"> =>
+        field !== "modelId" && field !== "credentialId",
 );
 
 /**
- * Writes every forwarded preset field into `target` under its root name, as the client's views serve
- * them: the prompt fields from `promptPreset`, the model fields from `modelPreset`
- * (`presetFieldValue`'s defaults). The server's job projection and request settings both build their
- * preset roots with it, so the two cannot drift.
+ * Derived model roots: slot model ids and the auxiliary toggle from the preset, and every profile
+ * option (including NanoGPT, Ollama, and tokenizer fields) from its main profile. Slots and profile
+ * metadata are never forwarded under their stored names.
+ */
+export const FORWARDED_MODEL_PRESET_KEYS = [
+    "aiModel",
+    "subModel",
+    "seperateModels",
+    "seperateModelsForAxModels",
+    ...MODEL_PROFILE_ROOT_FIELDS,
+] as const satisfies readonly (keyof Database)[];
+
+export type ModelPresetRootKey = (typeof FORWARDED_MODEL_PRESET_KEYS)[number];
+
+/**
+ * A detached overlay of profile options, or their schema defaults when no profile is supplied.
+ * Both root forwarding and request-local contexts use this, so a bare slot never inherits the
+ * main profile's URL, flags, or templates, and adapters cannot mutate a captured profile's containers.
+ */
+export function forwardProfileRoots(target: Record<string, unknown>, profile: ModelProfile | undefined): void {
+    for (const field of MODEL_PROFILE_ROOT_FIELDS) {
+        target[field] = plainClone(presetFieldValue(profile as unknown as Record<string, unknown> | undefined, field));
+    }
+}
+
+/** A stored slot's model id for legacy roots, without request-time auxiliary fallback. */
+export function modelIdOfSlot(slot: ModelSlot | undefined, profiles: readonly ModelProfile[]): string {
+    if (!slot) {
+        return "";
+    }
+    return "modelId" in slot
+        ? slot.modelId
+        : (profiles.find((profile) => profile.id === slot.profileId)?.modelId ?? "");
+}
+
+/**
+ * One derived model root, shared by server projections and the tab's live views. Profile containers
+ * remain live here so a nested view write reaches its record; a snapshot caller copies the value.
+ */
+export function modelPresetRootValue(
+    modelPreset: ModelPreset | undefined,
+    profiles: readonly ModelProfile[],
+    rootKey: ModelPresetRootKey,
+): unknown {
+    switch (rootKey) {
+        case "aiModel":
+            return modelIdOfSlot(modelPreset?.mainSlot, profiles);
+        case "subModel":
+            return modelIdOfSlot(modelPreset?.subSlot, profiles);
+        case "seperateModels":
+            return Object.fromEntries(
+                (["memory", "translate", "emotion", "otherAx"] as const).map((mode) => [
+                    mode,
+                    modelIdOfSlot(modelPreset?.auxSlots?.[mode], profiles),
+                ]),
+            );
+        case "seperateModelsForAxModels":
+            return presetFieldValue(
+                modelPreset as unknown as Record<string, unknown> | undefined,
+                "seperateModelsForAxModels",
+            );
+        default: {
+            const profile = profiles.find((entry) => entry.id === modelPreset?.mainSlot?.profileId);
+            return presetFieldValue(profile as unknown as Record<string, unknown> | undefined, rootKey);
+        }
+    }
+}
+
+/**
+ * The legacy roots for the selected records: prompt fields, the preset's slot model ids and
+ * auxiliary toggle, and its main profile's options (`presetFieldValue`'s defaults when missing).
+ * A dangling or unset slot reads as an empty model id; auxiliary roots describe the stored choices
+ * regardless of the toggle. The server's job projection and request settings share these rules.
  */
 export function forwardPresetRoots(
     target: Record<string, unknown>,
     promptPreset: Record<string, unknown>,
-    modelPreset: Record<string, unknown>,
+    modelPreset: ModelPreset,
+    profiles: readonly ModelProfile[],
 ) {
     for (const rootKey of FORWARDED_PRESET_KEYS) {
         target[rootKey] = presetFieldValue(promptPreset, (presetFieldOfRoot[rootKey] ?? rootKey) as PresetField);
     }
     for (const rootKey of FORWARDED_MODEL_PRESET_KEYS) {
-        target[rootKey] = presetFieldValue(modelPreset, (presetFieldOfRoot[rootKey] ?? rootKey) as PresetField);
+        target[rootKey] = plainClone(modelPresetRootValue(modelPreset, profiles, rootKey));
     }
 }
 
@@ -406,13 +463,19 @@ export const SELECTION_KEYS = [
 export const FORWARDED_ROOT_KEYS: readonly (keyof Database)[] = [
     ...FORWARDED_PRESET_KEYS,
     ...FORWARDED_MODEL_PRESET_KEYS,
-    "proxyKey",
     ...PERSONA_ROOT_KEYS,
     ...SELECTION_KEYS,
 ];
 
-/** Fields no longer persisted; the assembly never produces them. */
+/**
+ * Fields no longer persisted or forwarded, including retired inline keys and the legacy binding
+ * name removed from `Database`. Never list the same root twice in the partition.
+ */
 export const DROPPED_FIELDS = [
+    "apiType",
+    "modelCredentials",
+    "proxyCredentialId",
+    "proxyKey",
     "saveTime",
     "lastPatchNoteCheckVersion",
     "hubServerType",
@@ -436,7 +499,7 @@ export const DROPPED_FIELDS = [
     "formatversion",
     "realmDirectOpen",
     "auxModelUnderModelSettings",
-] as const satisfies readonly (keyof Database)[];
+] as const satisfies readonly (keyof Database | "modelCredentials")[];
 
 /** The Phase 1 collection fields (`presets`, `modules`, `plugins`, `pluginStorage`, `characters`). */
 export const PHASE1_FIELDS = [

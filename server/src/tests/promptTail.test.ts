@@ -128,7 +128,6 @@ const SECTION_OF: Record<string, string> = {
     removeIncompleteResponse: "providers",
     igpPrompt: "providers",
     inlayErrorResponse: "providers",
-    customTokenizer: "providers",
     ttsAutoSpeech: "memoryTranslateMedia",
     emotionPrompt2: "memoryTranslateMedia",
     emotionProcesser: "memoryTranslateMedia",
@@ -404,28 +403,36 @@ beforeAll(async () => {
     ).epoch;
     const presets = await single("presets");
     const modelPresets = await single("modelPresets");
+    const modelProfiles = await single("modelProfiles");
     const personas = await single("personas");
     presetId = presets.data[0].id;
     modelPresetId = modelPresets.data[0].id;
     personaId = personas.data[0].id;
-    // The selected model preset: a reverse proxy to the fake provider for the main and the auxiliary
-    // model; the selected prompt preset holds the prompt (`docs/plan/split-preset.md`).
+    // The selected model preset's main and sub slots use one profile: a reverse proxy to the fake
+    // provider; the selected prompt preset holds the prompt (`docs/plan/model-profiles.md`).
+    const profileId = modelProfiles.data[0].id;
     const seededPresets = await batch({
         ops: [
+            {
+                kind: "modelProfiles",
+                id: "main",
+                baseRevision: modelProfiles.revision,
+                data: [
+                    {
+                        ...modelProfiles.data[0],
+                        modelId: "reverse_proxy",
+                        maxContext: 4000,
+                        forceReplaceUrl: providerUrl,
+                        customProxyRequestModel: "m",
+                        customTokenizer: "tik",
+                    },
+                ],
+            },
             {
                 kind: "modelPresets",
                 id: "main",
                 baseRevision: modelPresets.revision,
-                data: [
-                    {
-                        ...modelPresets.data[0],
-                        aiModel: "reverse_proxy",
-                        subModel: "reverse_proxy",
-                        maxContext: 4000,
-                        forceReplaceUrl: providerUrl,
-                        customProxyRequestModel: "m",
-                    },
-                ],
+                data: [{ ...modelPresets.data[0], mainSlot: { profileId }, subSlot: { profileId } }],
             },
             {
                 kind: "presets",
@@ -458,7 +465,6 @@ beforeAll(async () => {
     expect(inlay.status, JSON.stringify(inlay.body)).toBe(200);
     await patchSettings({
         ...DEFAULT_SETTINGS,
-        customTokenizer: "tik",
         hypaModel: "custom",
         hypaCustomSettings: { url: embedderUrl, key: "embed-key", model: "emb" },
     });

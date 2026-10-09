@@ -108,6 +108,7 @@ async function startProvider() {
 }
 
 let client: ResourceTestClient;
+const PROXY_CREDENTIAL_ID = "proxy-key";
 
 async function seed() {
     client = await createResourceTestClient();
@@ -120,24 +121,29 @@ async function seed() {
     };
     const presets = await read("presets");
     const modelPresets = await read("modelPresets");
+    const modelProfiles = await read("modelProfiles");
     const personas = await read("personas");
     const presetId = presets.data[0].id as string;
     const modelPresetId = modelPresets.data[0].id as string;
     const personaId = personas.data[0].id as string;
-    // The model preset reaches the upstream (`docs/plan/split-preset.md`); the prompt preset stays default.
-    modelPresets.data[0] = {
-        ...modelPresets.data[0],
-        aiModel: "reverse_proxy",
+    // The default model preset's main slot names the default profile, which reaches the upstream
+    // with a named key (`docs/plan/model-profiles.md`); the prompt preset stays default.
+    expect(modelPresets.data[0].mainSlot).toEqual({ profileId: modelProfiles.data[0].id });
+    modelProfiles.data[0] = {
+        ...modelProfiles.data[0],
+        modelId: "reverse_proxy",
+        credentialId: PROXY_CREDENTIAL_ID,
         forceReplaceUrl: `${upstream.url}/v1/chat/completions`,
         customProxyRequestModel: "mock-model",
         customAPIFormat: 0,
     };
-    await write("modelPresets", modelPresets.data);
+    await write("modelProfiles", modelProfiles.data);
+    await write("credentials", [{ id: PROXY_CREDENTIAL_ID, name: "Proxy", type: "custom" }]);
     // The credentials go through `/api/llm-secrets/*` (Phase 5 slice 7b): the record is write-only.
     await writeSecret({ kind: "flat", field: "openAIKey" }, SECRET.openai);
     await writeSecret({ kind: "flat", field: "supaMemoryKey" }, SECRET.memory);
     await writeSecret({ kind: "nested", field: "google" }, SECRET.google);
-    await writeSecret({ kind: "entry", field: "modelPresets", id: modelPresetId }, SECRET.proxy);
+    await writeSecret({ kind: "entry", field: "credentials", id: PROXY_CREDENTIAL_ID }, SECRET.proxy);
     return { presetId, modelPresetId, personaId };
 }
 

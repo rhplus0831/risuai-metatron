@@ -1,12 +1,6 @@
-import type { Credential, CustomModel } from "../database.ts";
+import type { Credential, ModelProfile } from "../database.ts";
 import type { LLMModel } from "../llm.ts";
 import { credentialSlotOf } from "./credentialSlots.ts";
-
-export type CredentialBindingSources = {
-    modelCredentials?: Readonly<Record<string, string>>;
-    customModels: readonly Pick<CustomModel, "id" | "credentialId">[];
-    proxyCredentialId?: string;
-};
 
 /** The common metadata of tab records and server records (which also hold a plaintext key). */
 export type CredentialBindingRecord = Pick<Credential, "name" | "type" | "clientEmail" | "projectId">;
@@ -30,26 +24,12 @@ function ownBinding(record: unknown, field: string): string | undefined {
 export function resolveCredentialBinding<T extends CredentialBindingRecord>(
     modelId: string,
     modelInfo: Pick<LLMModel, "provider" | "format" | "keyIdentifier">,
-    sources: CredentialBindingSources,
+    profile: Pick<ModelProfile, "credentialId"> | undefined,
     credentials: Readonly<Record<string, T>>,
     hasKey: (credential: T) => boolean,
 ): CredentialBinding<T> {
     const slot = credentialSlotOf(modelId, modelInfo);
-    let binding: string | undefined;
-    switch (slot?.binding) {
-        case "customModel":
-            binding = ownBinding(
-                sources.customModels.find((model) => model.id === modelId),
-                "credentialId",
-            );
-            break;
-        case "modelPreset":
-            binding = ownBinding(sources, "proxyCredentialId");
-            break;
-        default:
-            binding = ownBinding(sources.modelCredentials, modelId);
-            break;
-    }
+    const binding = ownBinding(profile, "credentialId");
     if (binding === undefined) {
         return { kind: "default" };
     }

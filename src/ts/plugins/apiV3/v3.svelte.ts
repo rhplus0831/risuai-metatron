@@ -1,5 +1,5 @@
 import { selectedCharacter, characterList, characterSnapshot } from "../../storage/characterStore.svelte";
-import { activeModelPreset, settings, activePreset } from "../../storage/settingsViews.svelte";
+import { settings, activePreset } from "../../storage/settingsViews.svelte";
 import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
 import {
     customProviderStore,
@@ -42,7 +42,7 @@ import {
 } from "src/ts/storage/pluginStorageStore.svelte";
 import { selectPersona, selectedIndex } from "src/ts/storage/selection.svelte";
 import { batchRecordWrites } from "src/ts/storage/records.svelte";
-import { forwardedPresetField, missingPresetTarget } from "src/ts/storage/settingsViews.svelte";
+import { isForwardedPresetRoot, missingPresetTarget } from "src/ts/storage/settingsViews.svelte";
 import { buildDatabaseSubset } from "src/ts/storage/snapshots.svelte";
 import {
     currentContext,
@@ -96,7 +96,7 @@ import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat, doingChat } from "src/ts/process/index.svelte";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
-import { getModelInfo } from "src/ts/model/modellist";
+import { getModelInfoForMode } from "src/ts/model/modellist";
 import type { ModelModeExtended } from "src/ts/process/request/shared";
 import type { RegexScriptMode as ScriptMode } from "../../../../shared/scripts/regex.ts";
 import { requestChatDataMain, withRequestChat } from "src/ts/process/request/request";
@@ -1054,7 +1054,7 @@ function selectPersonaAt(index: unknown) {
  * Applies one key of a plugin's database object through the mutation that owns it: the collections
  * (`characters`, `personas`, `modules`, `enabledModules`, `characterOrder`, `plugins`,
  * `pluginCustomStorage`), the persona selection, the settings keys of `allowedDbKeys` (a section
- * field, or a forwarded field of the selected preset), and any other key into the top level of
+ * field, or a forwarded preset/profile root), and any other key into the top level of
  * `pluginCustomStorage`. `plugins` is the list to install: the full setter passes the plugins the
  * user confirmed (added or updated by name), the lite one the whole list (replaced).
  */
@@ -1090,6 +1090,8 @@ function applyPluginKey(
             return selectPersonaAt(value);
     }
     if (allowedDbKeys.includes(key)) {
+        // Validation stays in the mutation module; model roots then use `writeModelRoot` with this
+        // captured scope, including its unchanged-value check before matching profiles.
         updateSettings({ [key]: value }, { presetId: context?.presetId, modelPresetId: context?.modelPresetId });
     } else {
         setPluginCustomValue(key, value);
@@ -1112,7 +1114,7 @@ function applyPluginDatabase(
     if (context) {
         const missing = missingPresetTarget(
             context,
-            Object.keys(newDb).filter((key) => allowedDbKeys.includes(key) && forwardedPresetField(key) !== undefined),
+            Object.keys(newDb).filter((key) => allowedDbKeys.includes(key) && isForwardedPresetRoot(key)),
         );
         if (missing !== undefined) {
             throw new PluginTargetGoneError(missing);
@@ -2063,7 +2065,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 throw new Error("A chat is already in progress");
             }
 
-            if (getModelInfo(activeModelPreset.aiModel).id.startsWith("pluginmodel:::")) {
+            if (getModelInfoForMode("model", context ?? undefined).id.startsWith("pluginmodel:::")) {
                 // Executing plugin provider is block because it can be used for loopholes for ipc right now.
                 throw new Error("Sending chat with plugin-based model is currently blocked");
             }

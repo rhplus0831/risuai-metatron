@@ -21,6 +21,7 @@
     import DisplaySettings from "./Pages/DisplaySettings.svelte";
     import UserSettings from "./Pages/UserSettings.svelte";
     import ModelSettings from "./Pages/ModelSettings.svelte";
+    import ModelProfilesSettings from "./Pages/ModelProfilesSettings.svelte";
     import ApiKeysSettings from "./Pages/ApiKeysSettings.svelte";
     import PromptPresetSettings from "./Pages/PromptPresetSettings.svelte";
     import OtherBotSettings from "./Pages/OtherBotSettings.svelte";
@@ -30,6 +31,7 @@
         additionalSettingsMenu,
         MODEL_SETTINGS_MENU,
         API_KEYS_SETTINGS_MENU,
+        MODEL_PROFILES_SETTINGS_MENU,
         PROMPT_SETTINGS_MENU,
         SettingsMenuIndex,
         settingsOpen,
@@ -70,6 +72,17 @@
                 >
                     <CpuIcon />
                     <span>{language.model}</span>
+                </button>
+                <button
+                    class="flex gap-2 items-center hover:text-textcolor"
+                    class:text-textcolor={$SettingsMenuIndex === MODEL_PROFILES_SETTINGS_MENU}
+                    class:text-textcolor2={$SettingsMenuIndex !== MODEL_PROFILES_SETTINGS_MENU}
+                    onclick={() => {
+                        $SettingsMenuIndex = MODEL_PROFILES_SETTINGS_MENU;
+                    }}
+                >
+                    <CpuIcon />
+                    <span>{language.modelProfiles.title}</span>
                 </button>
                 <button
                     class="flex gap-2 items-center hover:text-textcolor"
@@ -247,6 +260,8 @@
                         <UserSettings />
                     {:else if $SettingsMenuIndex === MODEL_SETTINGS_MENU}
                         <ModelSettings />
+                    {:else if $SettingsMenuIndex === MODEL_PROFILES_SETTINGS_MENU}
+                        <ModelProfilesSettings />
                     {:else if $SettingsMenuIndex === API_KEYS_SETTINGS_MENU}
                         <ApiKeysSettings />
                     {:else if $SettingsMenuIndex === PROMPT_SETTINGS_MENU}

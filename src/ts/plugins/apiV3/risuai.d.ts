@@ -388,7 +388,11 @@ interface DatabaseSubset {
     temperature?: number;
     /** Ask before removing messages */
     askRemoval?: boolean;
-    /** Maximum context tokens */
+    /**
+     * Maximum context tokens from the main slot's profile (the schema default if it is missing).
+     * Writing changes that profile for every preset using it. The same value is a no-op;
+     * a changed value is refused when the main profile is missing.
+     */
     maxContext?: number;
     /** Maximum response tokens */
     maxResponse?: number;
@@ -402,9 +406,20 @@ interface DatabaseSubset {
     textTheme?: string;
     /** Line height setting */
     lineHeight?: number;
-    /** Use separate models for auxiliary models */
+    /** The model preset's auxiliary-model toggle; writing sets the toggle. */
     seperateModelsForAxModels?: boolean;
-    /** Separate model configurations */
+    /**
+     * Auxiliary model IDs derived from the slots, never profile IDs. An unset slot or missing
+     * profile reads as "". Each supplied mode is written with these rules, in order:
+     * 1. The value currently read: no change, even with duplicate model IDs or a missing profile.
+     * 2. "": clear the slot.
+     * 3. Exactly one profile with that model ID: select it.
+     * 4. No matching profile: use a bare model-ID slot, unless the definition needs a profile.
+     * 5. Several matching profiles: refuse the write.
+     * Definitions needing a profile: reverse_proxy, openrouter, nanogpt, ollama-hosted,
+     * ollama-cloud, ooba, mancer, kobold, custom, and any xcustom::: ID.
+     * A refused mode keeps its old value with a console warning; other modes and keys still apply.
+     */
     seperateModels?: {
         memory: string;
         emotion: string;
@@ -1511,12 +1526,15 @@ interface RisuaiPluginAPI {
      * `selectedPersona` is an index into `personas` (applied after `personas` when both are given)
      * and changes only this client's selection; `personas` is normalized (never empty, every entry
      * with an id and string name, icon, personaPrompt, and note).
+     * Model roots follow the slot/profile rules in DatabaseSubset. Inside a hook they use its
+     * captured model preset. A refused key warns and keeps its old value; other keys still apply.
      * @param db - DatabaseSubset object to save
      */
     setDatabaseLite(db: DatabaseSubset): Promise<void>;
 
     /**
      * Sets the database (full save with sync)
+     * Model roots and per-key refusals follow the same rules as setDatabaseLite().
      * @param db - DatabaseSubset object to save
      */
     setDatabase(db: DatabaseSubset): Promise<void>;

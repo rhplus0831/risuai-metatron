@@ -1,15 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
-// `docs/plan/shared-api-keys.md`, slice 4: the API Keys page and the key select next to a model,
-// through the real server. A key is added on the page and its value set through its write-only
-// field; the Model page binds it to the main model; the binding shows on the API Keys page and both
+// `docs/plan/shared-api-keys.md`, slice 4, with the binding on the model profile
+// (`docs/plan/model-profiles.md`): the API Keys page and the key select of a profile, through the
+// real server. A key is added on the page and its value set through its write-only field; the Model
+// profiles page binds it to the main slot's profile; the binding shows on the API Keys page and both
 // survive a reload; deleting the key (after a confirm that names its use) leaves the binding
-// dangling, shown as missing with the refusal on the Model page. No key value ever reaches a
-// settings batch.
+// dangling, shown as missing with the refusal on the Model profiles page. No key value ever reaches
+// a settings batch.
 
 const API_KEYS_MENU = 17;
-const MODEL_MENU = 1;
+const MODEL_PROFILES_MENU = 18;
 const KEY_VALUE = "sk-e2e-named-SENTINEL-4242";
 const SHOTS = process.env.RISU_E2E_SHOTS;
 
@@ -26,13 +27,19 @@ const openSettings = (page: Page, index: number) =>
 /** The settings the test checks, read through the views. */
 const state = (page: Page) =>
     page.evaluate(async () => {
-        const { settings, activeModelPreset } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        const { settings, activeMainProfile } = await import("/src/ts/storage/settingsViews.svelte.ts");
         const { secretStatus } = await import("/src/ts/storage/llmSecrets.svelte.ts");
         const credentials = JSON.parse(JSON.stringify(settings.credentials));
         return {
             credentials,
-            bindings: JSON.parse(JSON.stringify(settings.providers.modelCredentials)),
-            aiModel: activeModelPreset.aiModel,
+            /** Each profile's key binding, by profile id. */
+            bindings: Object.fromEntries(
+                settings.modelProfiles
+                    .filter((profile) => profile.credentialId !== undefined)
+                    .map((profile) => [profile.id, profile.credentialId]),
+            ),
+            mainProfileId: activeMainProfile.id as string,
+            aiModel: activeMainProfile.modelId,
             keySet: credentials.map(
                 (credential: { id: string }) =>
                     secretStatus({ kind: "entry", field: "credentials", id: credential.id }).set,
@@ -55,7 +62,7 @@ async function shot(page: Page, name: string) {
     await page.setViewportSize({ width: 1280, height: 900 });
 }
 
-test("a named key is added, bound to a model, survives a reload, and a deleted key leaves a missing binding", async ({
+test("a named key is added, bound to a model profile, survives a reload, and a deleted key leaves a missing binding", async ({
     page,
     baseURL,
 }) => {
@@ -72,9 +79,9 @@ test("a named key is added, bound to a model, survives a reload, and a deleted k
     await openApp(page, baseURL!);
     await settle(page);
     await page.evaluate(async () => {
-        const { settings, activeModelPreset } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        const { settings, activeMainProfile } = await import("/src/ts/storage/settingsViews.svelte.ts");
         settings.ui.didFirstSetup = true;
-        activeModelPreset.aiModel = "gpt-5.5";
+        activeMainProfile.modelId = "gpt-5.5";
     });
     await settle(page);
     const content = page.locator(".rs-setting-cont-4");
@@ -94,9 +101,11 @@ test("a named key is added, bound to a model, survives a reload, and a deleted k
     expect(current.credentials).toEqual([{ id: expect.any(String), name: "Work key", type: "openai" }]);
     expect(current.keySet).toEqual([true]);
     const keyId = current.credentials[0].id as string;
+    const profileId = current.mainProfileId;
+    expect(current.aiModel).toBe("gpt-5.5");
 
-    // Bind it to the main model on the Model page.
-    await openSettings(page, MODEL_MENU);
+    // Bind it to the main slot's profile (the only one, selected) on the Model profiles page.
+    await openSettings(page, MODEL_PROFILES_MENU);
     const select = content
         .locator("select")
         .filter({ has: page.locator('option:text-is("Work key")') })
@@ -105,7 +114,7 @@ test("a named key is added, bound to a model, survives a reload, and a deleted k
     await expect(select.locator("option").first()).toHaveText("Default (OpenAI key)");
     await select.selectOption(keyId);
     await settle(page);
-    expect((await state(page)).bindings).toEqual({ "gpt-5.5": keyId });
+    expect((await state(page)).bindings).toEqual({ [profileId]: keyId });
     await shot(page, "model-bound");
 
     // The binding shows on the API Keys page.
@@ -120,22 +129,22 @@ test("a named key is added, bound to a model, survives a reload, and a deleted k
     await openApp(page, baseURL!);
     await settle(page);
     current = await state(page);
-    expect(current.bindings).toEqual({ "gpt-5.5": keyId });
+    expect(current.bindings).toEqual({ [profileId]: keyId });
     expect(current.keySet).toEqual([true]);
 
-    // Deleting asks first and names the model that uses the key.
+    // Deleting asks first and names the profile that uses the key.
     await openSettings(page, API_KEYS_MENU);
     await content.locator("[data-credential-id]").getByRole("button", { name: "Delete key", exact: true }).click();
     await expect(page.getByText("Used by:", { exact: false })).toBeVisible();
-    await expect(page.getByText(/Model: /)).toBeVisible();
+    await expect(page.getByText(/Model profile: /)).toBeVisible();
     await page.getByRole("button", { name: "YES", exact: true }).click();
     await settle(page);
     current = await state(page);
     expect(current.credentials).toEqual([]);
     // The binding stays, and is shown as missing on both pages.
-    expect(current.bindings).toEqual({ "gpt-5.5": keyId });
+    expect(current.bindings).toEqual({ [profileId]: keyId });
     await expect(content.locator("div.border", { hasText: "Use default key" })).toContainText("Missing key");
-    await openSettings(page, MODEL_MENU);
+    await openSettings(page, MODEL_PROFILES_MENU);
     await expect(content.getByText("the selected key is missing", { exact: false }).first()).toBeVisible();
     await shot(page, "model-missing");
 

@@ -127,10 +127,12 @@ beforeAll(async () => {
         ).json()) as any
     ).epoch;
 
-    // The preset on the mock provider for both the main and the aux model; a second persona the
-    // chats can bind, with a prompt CBS parses; the embeddings on the mock embedding server.
+    // One profile on the mock provider for both the main and the aux model's slot; a second persona
+    // the chats can bind, with a prompt CBS parses; the embeddings on the mock embedding server.
     const presets = await single("presets");
     const modelPresets = await single("modelPresets");
+    const modelProfiles = await single("modelProfiles");
+    const profileId = modelProfiles.data[0].id;
     const personas = await single("personas");
     const memorySettings = await single("memoryTranslateMedia");
     const secrets = await single("secrets");
@@ -144,19 +146,26 @@ beforeAll(async () => {
         body: JSON.stringify({
             ops: [
                 {
+                    kind: "modelProfiles",
+                    id: "main",
+                    baseRevision: modelProfiles.revision,
+                    data: modelProfiles.data.map((profile: any, index: number) =>
+                        index === 0
+                            ? {
+                                  ...profile,
+                                  modelId: "reverse_proxy",
+                                  forceReplaceUrl: providerUrl,
+                                  customProxyRequestModel: "mock",
+                              }
+                            : profile,
+                    ),
+                },
+                {
                     kind: "modelPresets",
                     id: "main",
                     baseRevision: modelPresets.revision,
                     data: modelPresets.data.map((preset: any, index: number) =>
-                        index === 0
-                            ? {
-                                  ...preset,
-                                  aiModel: "reverse_proxy",
-                                  subModel: "reverse_proxy",
-                                  forceReplaceUrl: providerUrl,
-                                  customProxyRequestModel: "mock",
-                              }
-                            : preset,
+                        index === 0 ? { ...preset, mainSlot: { profileId }, subSlot: { profileId } } : preset,
                     ),
                 },
                 {

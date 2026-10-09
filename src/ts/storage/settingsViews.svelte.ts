@@ -1,13 +1,31 @@
 import { untrack } from "svelte";
-import type { botPreset, Database, ModelPreset, RisuPersona } from "../../../shared/database.ts";
+import isEqual from "lodash/isEqual";
+import type {
+    AuxModelMode,
+    botPreset,
+    Database,
+    ModelPreset,
+    ModelProfile,
+    ModelSlot,
+    RisuPersona,
+} from "../../../shared/database.ts";
+import {
+    definitionNeedsProfile,
+    resolveSlotProfile,
+    type SlotProfileResolution,
+} from "../../../shared/llm/modelSlots.ts";
+import type { ModelModeExtended } from "../../../shared/llm/request.ts";
 import {
     MODEL_PRESET_FIELDS,
+    MODEL_PROFILE_FIELDS,
+    MODEL_PROFILE_DEFAULT_NAME,
     PERSONA_ROOT_ALIASES,
     PRESET_ROOT_ALIASES,
-    presetFieldOwner,
     presetFieldValue,
+    plainClone,
     PROMPT_PRESET_FIELDS,
     type ModelPresetField,
+    type ModelProfileField,
     type PresetField,
     type PromptPresetField,
 } from "../../../shared/presets.ts";
@@ -18,13 +36,18 @@ import {
     COLLECTION_SELECTION_FIELDS,
     FORWARDED_MODEL_PRESET_KEYS,
     FORWARDED_PRESET_KEYS,
+    MODEL_PROFILE_ROOT_FIELDS,
+    modelIdOfSlot,
+    modelPresetRootValue,
     SECTION_FIELDS,
     SECTION_KIND,
     type CollectionKind,
     type SectionKind,
+    type ModelPresetRootKey,
 } from "../../../shared/sections.ts";
-import { replaceRecord, trackedRecord, writeRecordField, type RecordKind } from "./records.svelte";
+import { batchRecordWrites, replaceRecord, trackedRecord, writeRecordField, type RecordKind } from "./records.svelte";
 import { selectLoreBookPage, selectModelPreset, selectPersona, selectPreset, selection } from "./selection.svelte";
+import { isJsonData } from "./mutationValidation";
 
 /**
  * The settings record views (Phase 6 slice 6): what a settings reader binds to (the whole-database
@@ -50,10 +73,11 @@ import { selectLoreBookPage, selectModelPreset, selectPersona, selectPreset, sel
  * - `activePersona.<field>`: the selected persona, likewise (`name`, `icon`, `note`,
  *   `personaPrompt` with `PERSONA_DEFAULTS`, `largePortrait` as stored).
  *
- * Every getter looks its record up when it runs (nothing is captured), so templates and `$derived`
- * track the record reads; every setter runs untracked. The LLM credentials stay off these views: a
- * model preset's `proxyKey` is written through `llmSecrets.svelte.ts` (its secret path), and an
- * `llmSecrets` credential written to a section field is routed or refused by the records. The auxiliary credentials of the `secrets`
+ * Profile views resolve a slot's profile by id; missing and bare slots serve schema defaults and
+ * refuse changed writes. Every getter looks its record up when it runs (nothing is captured), so
+ * templates and `$derived` track the record reads; every setter runs untracked. LLM key values stay
+ * off these views: an `llmSecrets` credential written to a section field is routed or refused by
+ * the records. The auxiliary credentials of the `secrets`
  * section are ordinary readable fields (`settings.secrets.<field>`), bound like any other.
  */
 
@@ -79,6 +103,7 @@ export type ActivePresetField = "name" | "image" | PromptPresetField;
 export type ActivePreset = Pick<botPreset, ActivePresetField> & { readonly id: string | undefined };
 export type ActiveModelPresetField = "name" | ModelPresetField;
 export type ActiveModelPreset = Pick<ModelPreset, ActiveModelPresetField> & { readonly id: string | undefined };
+export type ModelProfileView = Pick<ModelProfile, "name" | ModelProfileField> & { readonly id: string | undefined };
 /** A captured pair of presets (a plugin hook's, a request's): the prompt preset and the model preset. */
 export type PresetScope = { readonly presetId: string; readonly modelPresetId: string };
 export type ActivePersonaField = "name" | "icon" | "note" | "personaPrompt" | "largePortrait";
@@ -96,7 +121,7 @@ export type ActivePersona = Pick<RisuPersona, ActivePersonaField> & { readonly i
 //   next record when the selection changes.
 
 type PresetRecord = Record<string, unknown> & { id: string };
-type ModelPresetRecord = Record<string, unknown> & { id: string };
+type ModelPresetRecord = ModelPreset & Record<string, unknown>;
 type PersonaRecord = Record<string, unknown> & { id: string };
 
 function presetList(): PresetRecord[] {
@@ -129,6 +154,31 @@ function modelPresetList(): ModelPresetRecord[] {
 
 function findModelPreset(id: string): ModelPresetRecord | undefined {
     return modelPresetList().find((preset) => preset?.id === id);
+}
+
+function modelProfileList(): ModelProfile[] {
+    const list = trackedRecord<ModelProfile[]>("modelProfiles");
+    return Array.isArray(list) ? list : [];
+}
+
+/** A slot's live profile wrapper; a bare, unset, or dangling slot has no profile. */
+export function modelProfileRecordForSlot(slot: ModelSlot | undefined): ModelProfile | undefined {
+    return slot && "profileId" in slot
+        ? modelProfileList().find((profile) => profile.id === slot.profileId)
+        : undefined;
+}
+
+/** Shared request routing over the selected or captured model preset; never redirects a captured id. */
+export function resolveModelSlot(
+    mode: ModelModeExtended,
+    scope?: PresetScope,
+    staticModel?: string,
+): SlotProfileResolution {
+    const preset = scope ? findModelPreset(scope.modelPresetId) : resolveModelPreset();
+    if (!preset) {
+        throw new PresetTargetGoneError("model preset");
+    }
+    return resolveSlotProfile(preset, modelProfileList(), mode, staticModel);
 }
 
 /** The selected model preset: the one `selection.modelPresetId` names, else the first, which becomes the selection. */
@@ -221,15 +271,164 @@ export function reconcileSelection() {
     });
 }
 
-const forwardedPresetKeys = new Set<string>([...FORWARDED_PRESET_KEYS, ...FORWARDED_MODEL_PRESET_KEYS]);
+const forwardedPresetKeys = new Set<string>(FORWARDED_PRESET_KEYS);
+const modelRootKeys = new Set<string>(FORWARDED_MODEL_PRESET_KEYS);
+const profileRootKeys = new Set<string>(MODEL_PROFILE_ROOT_FIELDS);
+const auxModes: readonly AuxModelMode[] = ["memory", "translate", "emotion", "otherAx"];
 const presetFieldOfRoot: Record<string, string> = PRESET_ROOT_ALIASES;
 
+/** A legacy root derived from model slots or their main profile. */
+export function isModelPresetRootKey(rootKey: string): rootKey is ModelPresetRootKey {
+    return modelRootKeys.has(rootKey);
+}
+
+/** A prompt or model/profile root, including model ids that are no longer stored schema fields. */
+export function isForwardedPresetRoot(rootKey: string): boolean {
+    return forwardedPresetKeys.has(rootKey) || modelRootKeys.has(rootKey);
+}
+
 /**
- * The preset field a root name mirrors (`PRESET_ROOT_ALIASES`), of either preset (`presetFieldOwner`
- * says which), or `undefined` for a root name that is not a forwarded preset field.
+ * The schema field a forwarded root mirrors, including profile options. Derived model ids and
+ * auxiliary model ids have no stored schema field and return undefined.
  */
 export function forwardedPresetField(rootKey: string): PresetField | undefined {
+    if (profileRootKeys.has(rootKey) || rootKey === "seperateModelsForAxModels") {
+        return rootKey as PresetField;
+    }
     return forwardedPresetKeys.has(rootKey) ? ((presetFieldOfRoot[rootKey] ?? rootKey) as PresetField) : undefined;
+}
+
+function readModelRoot(rootKey: ModelPresetRootKey, scope?: Pick<PresetScope, "modelPresetId">): unknown {
+    const preset = scope ? findModelPreset(scope.modelPresetId) : resolveModelPreset();
+    return modelPresetRootValue(preset, modelProfileList(), rootKey);
+}
+
+function refuseModelRoot(rootKey: string, reason: string): false {
+    console.warn(`[Settings] Refused ${rootKey}; the previous value was kept: ${reason}`);
+    return false;
+}
+
+/**
+ * Applies one legacy model-root write (Model Profiles O8), to the selected or captured preset.
+ * Same values never re-match a slot. Auxiliary modes may clear or go bare; main/sub require one
+ * matching profile. Refusals warn, keep the old value, and return false without throwing, so other
+ * keys still apply. A whole `seperateModels` object applies its supplied modes independently.
+ */
+export function writeModelRoot(
+    rootKey: ModelPresetRootKey | `seperateModels.${AuxModelMode}`,
+    value: unknown,
+    scope?: Pick<PresetScope, "modelPresetId">,
+): boolean {
+    return untrack(() => {
+        if (!modelRootKeys.has(rootKey) && !rootKey.startsWith("seperateModels.")) {
+            return refuseModelRoot(rootKey, "not a model root field");
+        }
+        const preset = findModelPreset(scope?.modelPresetId ?? selection.modelPresetId);
+        const profiles = modelProfileList();
+        if (rootKey === "seperateModels") {
+            if (!value || typeof value !== "object" || Array.isArray(value)) {
+                return refuseModelRoot(rootKey, "expected an object of auxiliary model ids");
+            }
+            let accepted = true;
+            batchRecordWrites(() => {
+                for (const [mode, modelId] of Object.entries(value)) {
+                    if (!auxModes.includes(mode as AuxModelMode)) {
+                        accepted = refuseModelRoot(`${rootKey}.${mode}`, "not an auxiliary model mode");
+                    } else if (!writeModelRoot(`seperateModels.${mode as AuxModelMode}`, modelId, scope)) {
+                        accepted = false;
+                    }
+                }
+            });
+            return accepted;
+        }
+        if (rootKey.startsWith("seperateModels.")) {
+            const mode = rootKey.slice("seperateModels.".length) as AuxModelMode;
+            if (!auxModes.includes(mode)) {
+                return refuseModelRoot(rootKey, "not an auxiliary model mode");
+            }
+            const current = modelIdOfSlot(preset?.auxSlots?.[mode], profiles);
+            if (Object.is(value, current)) {
+                return true;
+            }
+            if (typeof value !== "string") {
+                return refuseModelRoot(rootKey, "expected a model id string");
+            }
+            if (!preset) {
+                return refuseModelRoot(rootKey, "the model preset no longer exists");
+            }
+            if (value === "") {
+                if (preset.auxSlots?.[mode] !== undefined) {
+                    delete preset.auxSlots[mode];
+                }
+                return true;
+            }
+            const matches = profiles.filter((profile) => profile.modelId === value);
+            if (matches.length === 1) {
+                preset.auxSlots ??= {};
+                preset.auxSlots[mode] = { profileId: matches[0].id };
+                return true;
+            }
+            if (matches.length === 0) {
+                if (definitionNeedsProfile(value)) {
+                    return refuseModelRoot(rootKey, "this model definition requires a profile");
+                }
+                preset.auxSlots ??= {};
+                preset.auxSlots[mode] = { modelId: value };
+                return true;
+            }
+            return refuseModelRoot(rootKey, "several profiles use that model id");
+        }
+        const current = modelPresetRootValue(preset, profiles, rootKey as ModelPresetRootKey);
+        if (isEqual(value, current)) {
+            return true;
+        }
+        if (!preset) {
+            return refuseModelRoot(rootKey, "the model preset no longer exists");
+        }
+        if (rootKey === "aiModel" || rootKey === "subModel") {
+            if (typeof value !== "string") {
+                return refuseModelRoot(rootKey, "expected a model id string");
+            }
+            const matches = profiles.filter((profile) => profile.modelId === value);
+            if (matches.length !== 1) {
+                return refuseModelRoot(rootKey, "the model id must name exactly one profile");
+            }
+            preset[rootKey === "aiModel" ? "mainSlot" : "subSlot"] = { profileId: matches[0].id };
+            return true;
+        }
+        if (rootKey === "seperateModelsForAxModels") {
+            if (typeof value !== "boolean") {
+                return refuseModelRoot(rootKey, "expected a boolean");
+            }
+            preset.seperateModelsForAxModels = value;
+            return true;
+        }
+        const profile = modelProfileRecordForSlot(preset.mainSlot);
+        if (!profile) {
+            return refuseModelRoot(rootKey, "the main model profile no longer exists");
+        }
+        if (!isJsonData(value, true)) {
+            return refuseModelRoot(rootKey, "expected JSON data");
+        }
+        (profile as unknown as Record<string, unknown>)[rootKey] = plainClone(value);
+        return true;
+    });
+}
+
+function seperateModelsView(scope?: Pick<PresetScope, "modelPresetId">): Database["seperateModels"] {
+    const view = {};
+    for (const mode of auxModes) {
+        defineView(
+            view,
+            mode,
+            () => {
+                const preset = scope ? findModelPreset(scope.modelPresetId) : resolveModelPreset();
+                return modelIdOfSlot(preset?.auxSlots?.[mode], modelProfileList());
+            },
+            (value) => writeModelRoot(`seperateModels.${mode}`, value, scope),
+        );
+    }
+    return Object.freeze(view) as Database["seperateModels"];
 }
 
 /** Whether a prompt preset with `id` exists (untracked). */
@@ -242,19 +441,16 @@ export function hasModelPreset(id: string): boolean {
     return untrack(() => findModelPreset(id)) !== undefined;
 }
 
-/** The record of `scope` that owns the forwarded root name `rootKey` (untracked), with its field. */
+/** A forwarded prompt root's record and field (untracked); model/profile roots use the shared derived reader. */
 function scopedPresetRecord(
     scope: PresetScope,
     rootKey: string,
 ): { field: PresetField; record: Record<string, unknown> | undefined } | undefined {
-    const field = forwardedPresetField(rootKey);
-    if (field === undefined) {
+    if (!forwardedPresetKeys.has(rootKey)) {
         return undefined;
     }
-    const record = untrack(() =>
-        presetFieldOwner(field) === "model" ? findModelPreset(scope.modelPresetId) : findPreset(scope.presetId),
-    );
-    return { field, record };
+    const field = (presetFieldOfRoot[rootKey] ?? rootKey) as PromptPresetField;
+    return { field, record: untrack(() => findPreset(scope.presetId)) };
 }
 
 /**
@@ -267,9 +463,15 @@ export function missingPresetTarget(
     rootKeys: readonly string[],
 ): "preset" | "model preset" | undefined {
     for (const rootKey of rootKeys) {
+        if (modelRootKeys.has(rootKey)) {
+            if (untrack(() => findModelPreset(scope.modelPresetId)) === undefined) {
+                return "model preset";
+            }
+            continue;
+        }
         const found = scopedPresetRecord(scope, rootKey);
         if (found !== undefined && found.record === undefined) {
-            return presetFieldOwner(found.field) === "model" ? "model preset" : "preset";
+            return "preset";
         }
     }
     return undefined;
@@ -303,6 +505,9 @@ export class PresetTargetGoneError extends Error {
  * `undefined` when the name is not a preset field or its preset is gone.
  */
 export function readPresetFieldOf(scope: PresetScope, rootKey: string): unknown {
+    if (isModelPresetRootKey(rootKey)) {
+        return findModelPreset(scope.modelPresetId) === undefined ? undefined : readModelRoot(rootKey, scope);
+    }
     const found = scopedPresetRecord(scope, rootKey);
     return found === undefined || found.record === undefined ? undefined : presetFieldValue(found.record, found.field);
 }
@@ -314,6 +519,9 @@ export function readPresetFieldOf(scope: PresetScope, rootKey: string): unknown 
  * or the name is not a preset field; never redirects.
  */
 export function writePresetField(scope: PresetScope, rootKey: string, value: unknown): boolean {
+    if (isModelPresetRootKey(rootKey)) {
+        return writeModelRoot(rootKey, value, scope);
+    }
     const found = scopedPresetRecord(scope, rootKey);
     if (found === undefined || found.record === undefined) {
         return false;
@@ -437,6 +645,60 @@ export const activeModelPreset: ActiveModelPreset = buildPresetView<ActiveModelP
     () => findModelPreset(selection.modelPresetId),
 );
 
+/**
+ * A live profile view for an explicit slot or a slot getter (the active main/sub views). Its id
+ * stays a profile id, and no missing profile is redirected. Defaults are read-only copies until
+ * the whole field is assigned; changed writes on a missing or bare slot warn and are dropped.
+ */
+export function profileForSlot(
+    slot: ModelSlot | undefined | (() => ModelSlot | undefined),
+    forWrite: () => ModelSlot | undefined = () => (typeof slot === "function" ? slot() : slot),
+): ModelProfileView {
+    const resolve = () => modelProfileRecordForSlot(typeof slot === "function" ? slot() : slot);
+    const view = {};
+    for (const field of ["name", ...MODEL_PROFILE_FIELDS] as const) {
+        const valueOf = (record: ModelProfile | undefined) =>
+            field === "name" && record?.name === undefined
+                ? MODEL_PROFILE_DEFAULT_NAME
+                : presetFieldValue(record as unknown as Record<string, unknown> | undefined, field);
+        defineView(
+            view,
+            field,
+            () => valueOf(resolve()),
+            (value) => {
+                // Resolve writes before a read can repair the selection; never compare with a fallback profile.
+                const record = modelProfileRecordForSlot(forWrite());
+                if (isEqual(value, valueOf(record))) {
+                    return;
+                }
+                if (!record) {
+                    refuseModelRoot(field, "the model profile no longer exists");
+                    return;
+                }
+                if (!isJsonData(value, true)) {
+                    refuseModelRoot(field, "expected JSON data");
+                    return;
+                }
+                (record as unknown as Record<string, unknown>)[field] = plainClone(value);
+            },
+        );
+    }
+    defineView(view, "id", () => resolve()?.id);
+    return Object.freeze(view) as ModelProfileView;
+}
+
+/** The main profile of the selected model preset, with no write fallback when its preset is gone. */
+export const activeMainProfile = profileForSlot(
+    () => currentModelPresetRecord()?.mainSlot,
+    () => modelPresetRecordForWrite()?.mainSlot,
+);
+
+/** The sub profile of the selected model preset, likewise. */
+export const activeSubProfile = profileForSlot(
+    () => currentModelPresetRecord()?.subSlot,
+    () => modelPresetRecordForWrite()?.subSlot,
+);
+
 function buildActivePersona(): ActivePersona {
     const view = {};
     const fields: readonly ActivePersonaField[] = ["name", "icon", "note", "personaPrompt", "largePortrait"];
@@ -500,8 +762,8 @@ export function selectedLoreBookPage(): number {
 // ---------------------------------------------------------------------------------------------
 // Root names (the settings registry's `bindKey`/`bindPath`, a dynamic field name)
 
-/** The preset fields served under root names: every field of either preset but `name` and `image`. */
-type ForwardedPresetField = PromptPresetField | ModelPresetField;
+/** The prompt preset fields served under root names, excluding its record fields. */
+type ForwardedPresetField = PromptPresetField;
 type PresetAliasRoot = keyof typeof PRESET_ROOT_ALIASES;
 /** Their root names (`FORWARDED_PRESET_KEYS`, which is typed `keyof Database`): the aliases' roots for theirs. */
 type ForwardedPresetRootKey =
@@ -514,6 +776,7 @@ type ForwardedPresetRootKey =
 export type SettingsRootKey =
     | (typeof SECTION_FIELDS)[SectionKind][number]
     | ForwardedPresetRootKey
+    | ModelPresetRootKey
     | keyof typeof PERSONA_ROOT_ALIASES
     | (typeof COLLECTION_FIELDS)[CollectionKind]
     | (typeof COLLECTION_SELECTION_FIELDS)[SelectableKind]
@@ -542,10 +805,18 @@ function buildRootRoutes(): ReadonlyMap<string, RootRoute> {
             field: presetAliases[rootKey] ?? rootKey,
         });
     }
-    for (const rootKey of FORWARDED_MODEL_PRESET_KEYS as readonly string[]) {
+    const modelRoots = {};
+    const auxView = seperateModelsView();
+    for (const rootKey of FORWARDED_MODEL_PRESET_KEYS) {
+        defineView(
+            modelRoots,
+            rootKey,
+            () => (rootKey === "seperateModels" ? auxView : readModelRoot(rootKey)),
+            (value) => writeModelRoot(rootKey, value),
+        );
         routes.set(rootKey, {
-            target: () => activeModelPreset as unknown as Record<string, unknown>,
-            field: presetAliases[rootKey] ?? rootKey,
+            target: () => modelRoots,
+            field: rootKey,
         });
     }
     for (const [rootKey, field] of Object.entries(PERSONA_ROOT_ALIASES)) {
@@ -606,12 +877,18 @@ export function readSettingsRoot(key: SettingsRootKey | string): unknown {
  * refused, never redirected to the selection (the server refuses it by its ids alike).
  */
 export function scopedPresetRoot(scope: PresetScope | undefined, rootKey: SettingsRootKey): unknown {
+    if (scope && isModelPresetRootKey(rootKey)) {
+        if (!findModelPreset(scope.modelPresetId)) {
+            throw new PresetTargetGoneError("model preset");
+        }
+        return rootKey === "seperateModels" ? seperateModelsView(scope) : readModelRoot(rootKey, scope);
+    }
     const found = scope === undefined ? undefined : scopedPresetRecord(scope, rootKey);
     if (found === undefined) {
         return readSettingsRoot(rootKey);
     }
     if (found.record === undefined) {
-        throw new PresetTargetGoneError(presetFieldOwner(found.field) === "model" ? "model preset" : "preset");
+        throw new PresetTargetGoneError("preset");
     }
     return presetFieldValue(found.record, found.field);
 }

@@ -258,28 +258,20 @@ function singleConflict(error: unknown, kind: string, id: string): unknown {
 
 /**
  * One credential write of the write-only `llmSecrets` record (Phase 5 slice 7b): a set (`value`;
- * empty clears) or a preset copy, on the record's `baseRevision`. Answers the new revision and the
+ * empty clears), on the record's `baseRevision`. Answers the new revision and the
  * masked record; a stale revision throws `ResourceConflictError`.
  */
 export async function sendSecretRequest(
-    request: { kind: "put"; path: string; value: string } | { kind: "copy"; from: string; to: string },
+    request: { kind: "put"; path: string; value: string },
     baseRevision: string,
 ): Promise<{ revision: string; data: unknown }> {
-    const init =
-        request.kind === "put"
-            ? {
-                  method: "PUT",
-                  headers: jsonHeaders,
-                  body: JSON.stringify({ value: request.value, baseRevision }),
-                  mutation: true,
-              }
-            : {
-                  method: "POST",
-                  headers: jsonHeaders,
-                  body: JSON.stringify({ from: request.from, to: request.to, baseRevision }),
-                  mutation: true,
-              };
-    const path = request.kind === "put" ? `/api/llm-secrets/${request.path}` : "/api/llm-secrets/modelPresets/copy";
+    const init = {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify({ value: request.value, baseRevision }),
+        mutation: true,
+    };
+    const path = `/api/llm-secrets/${request.path}`;
     try {
         return checkedEpoch(await sendJson<{ epoch?: string; revision: string; data: unknown }>(path, init));
     } catch (error) {

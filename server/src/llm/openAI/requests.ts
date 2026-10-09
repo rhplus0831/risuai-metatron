@@ -7,6 +7,7 @@ import {
     NANOGPT_SUBSCRIPTION_LEGACY_ENDPOINT,
 } from "../../../../shared/llm/providers/nanogpt.ts";
 import { getFreeOpenRouterModels } from "../openrouter.ts";
+import { defaultCredentialKey } from "../credentials.ts";
 import { textifyReadableStream } from "../transport.ts";
 import { simplifySchema } from "../util.ts";
 
@@ -299,7 +300,7 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
                 arg.ctx.db,
             ),
             headers: {
-                Authorization: "Bearer " + (arg.key ?? db.mistralKey),
+                Authorization: "Bearer " + (arg.key ?? defaultCredentialKey(aiModel, db.mistralKey)),
             },
             abortSignal: arg.abortSignal,
             chatId: arg.chatId,
@@ -583,13 +584,7 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
             "Bearer " +
             getOpenAIRequestKey(
                 arg,
-                aiModel === "nanogpt"
-                    ? db.nanogptKey
-                    : aiModel === "reverse_proxy"
-                      ? db.proxyKey
-                      : aiModel === "openrouter"
-                        ? db.openrouterKey
-                        : db.openAIKey,
+                aiModel === "nanogpt" ? db.nanogptKey : aiModel === "openrouter" ? db.openrouterKey : db.openAIKey,
             ),
         "Content-Type": "application/json",
     };

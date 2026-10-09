@@ -5,7 +5,7 @@
 // browser makes no request to the provider's origin and sends no stored credential anywhere but the
 // settings writes.
 //
-// Slice 7b (write-only `llmSecrets`): the sentinel proxy key is typed into the settings page's
+// Slice 7b (write-only `llmSecrets`): the sentinel named key is typed into the settings page's
 // credential input, and the send right after it reaches the provider with that key. Only the
 // `PUT /api/llm-secrets/*` request carries the key, no response does, the mirror holds `""`, and
 // after a reload the status reads "set" with the key's last characters.
@@ -129,10 +129,11 @@ try {
         const dbm = await import("/src/ts/storage/presets.svelte.ts");
         const templates = await import("/shared/presetTemplates.ts");
         dbm.applyPresetTemplate(templates.prebuiltPresets.OAI2);
-        views.writeSettingsRoot("aiModel", "reverse_proxy");
-        views.writeSettingsRoot("subModel", "reverse_proxy");
-        views.writeSettingsRoot("forceReplaceUrl", arg.providerURL + "/v1/chat/completions");
-        views.writeSettingsRoot("customProxyRequestModel", "mock-model");
+        const mutations = await import("/src/ts/storage/collectionStore.svelte.ts");
+        const { applyModelFixtureSettings } = await import("/util/playwright/modelProfiles.browser.mjs");
+        applyModelFixtureSettings({ aiModel: "reverse_proxy", subModel: "reverse_proxy", forceReplaceUrl: arg.providerURL + "/v1/chat/completions", customProxyRequestModel: "mock-model" });
+        const credentialId = mutations.addCredential({ name: "Transport key", type: "custom" });
+        mutations.setProfileCredential(views.activeModelPreset.mainSlot.profileId, credentialId);
         views.writeSettingsRoot("useStreaming", false);
         const char = characters.createBlankChar();
         char.name = "Mock Character";
@@ -143,20 +144,20 @@ try {
         selection.selectCharacter(chaId);
         const chatId = chatStore.selectedChatId(chaId);
         await sync.flushResources();
-        return { chaId, chatId };
+        return { chaId, chatId, credentialId };
         `,
         { providerURL, sentinel: SENTINEL },
     );
     check("seeded a character and a chat", !!seeded.chaId && !!seeded.chatId, seeded);
     browserRequests.length = 0;
 
-    // The key, typed into the settings page's proxy key input (Enter replaces it).
+    // The key, typed into the API Keys page's named-key input (Enter replaces it).
     await page.evaluate(async () => {
         const stores = await import("/src/ts/stores.svelte.ts");
         stores.settingsOpen.set(true);
-        stores.SettingsMenuIndex.set(1);
+        stores.SettingsMenuIndex.set(stores.API_KEYS_SETTINGS_MENU);
     });
-    const keyInput = page.getByPlaceholder("leave it blank if it hasn't password");
+    const keyInput = page.locator(`[data-credential-id="${seeded.credentialId}"] input[type="password"]`);
     await keyInput.waitFor({ timeout: 10000 });
     await keyInput.fill(SENTINEL);
     await keyInput.press("Enter");
@@ -299,12 +300,12 @@ try {
     const mirror = await evaluate(`
         const secrets = await import("/src/ts/storage/llmSecrets.svelte.ts");
         const snapshots = await import("/src/ts/storage/snapshots.svelte.ts");
-        const id = views.currentPresetRecord()?.id;
-        return { proxyKey: snapshots.rootSnapshot().proxyKey, status: secrets.secretStatus({ kind: "entry", field: "presets", id }) };
+        const id = views.settings.modelProfiles.find((profile) => profile.id === views.activeModelPreset.mainSlot.profileId)?.credentialId;
+        return { hasProxyKey: Object.hasOwn(snapshots.rootSnapshot(), "proxyKey"), status: secrets.secretStatus({ kind: "entry", field: "credentials", id }) };
     `);
     check(
-        'mirror: proxyKey reads "" and the status is set with the last four characters',
-        mirror.proxyKey === "" &&
+        "mirror: no proxyKey root and the named-key status is set with the last four characters",
+        !mirror.hasProxyKey &&
             mirror.status?.set === true &&
             mirror.status?.hint === SENTINEL.slice(-4) &&
             !mirror.status?.pending,
@@ -324,9 +325,11 @@ try {
     await page.evaluate(async () => {
         const stores = await import("/src/ts/stores.svelte.ts");
         stores.settingsOpen.set(true);
-        stores.SettingsMenuIndex.set(1);
+        stores.SettingsMenuIndex.set(stores.API_KEYS_SETTINGS_MENU);
     });
-    await page.getByPlaceholder("leave it blank if it hasn't password").waitFor({ timeout: 10000 });
+    await page
+        .locator(`[data-credential-id="${seeded.credentialId}"] input[type="password"]`)
+        .waitFor({ timeout: 10000 });
     const statusText = await page.evaluate(() => document.body.innerText);
     check(
         "reload: the settings page shows the key as set with its hint",

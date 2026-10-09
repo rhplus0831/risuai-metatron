@@ -295,16 +295,22 @@ beforeAll(async () => {
     presetId = presets.data[0].id;
     modelPresetId = (await single("modelPresets")).data[0].id;
     personaId = personas.data[0].id;
-    // The model preset: a reverse proxy to the fake provider (`docs/plan/split-preset.md`).
-    await patchSingleton("modelPresets", (data: any[]) => [
+    // The model preset's main and sub slots use one profile: a reverse proxy to the fake provider
+    // (`docs/plan/model-profiles.md`).
+    const profileId = (await single("modelProfiles")).data[0].id;
+    await patchSingleton("modelProfiles", (data: any[]) => [
         {
             ...data[0],
-            aiModel: "reverse_proxy",
-            subModel: "reverse_proxy",
+            modelId: "reverse_proxy",
             maxContext: 4000,
             forceReplaceUrl: providerUrl,
             customProxyRequestModel: "m",
+            customTokenizer: "tik",
         },
+        ...data.slice(1),
+    ]);
+    await patchSingleton("modelPresets", (data: any[]) => [
+        { ...data[0], mainSlot: { profileId }, subSlot: { profileId } },
         ...data.slice(1),
     ]);
     await patchSingleton("presets", (data: any[]) => [
@@ -318,7 +324,7 @@ beforeAll(async () => {
         },
         ...data.slice(1),
     ]);
-    await patchProviders({ useStreaming: false, customTokenizer: "tik", inlayErrorResponse: false });
+    await patchProviders({ useStreaming: false, inlayErrorResponse: false });
 }, SLOW);
 
 afterAll(async () => {

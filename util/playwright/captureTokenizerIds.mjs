@@ -78,11 +78,11 @@ try {
                 out[family][name] = await record((t) => tk.encodeWithTokenizer(t, type), name);
         }
         writeSettingsRoot("useTokenizerCaching", false);
-        writeSettingsRoot("aiModel", "openrouter");
-        writeSettingsRoot("customTokenizer", "tik");
+        const { applyModelFixtureSettings } = await import("/util/playwright/modelProfiles.browser.mjs");
+        applyModelFixtureSettings({ aiModel: "openrouter", customTokenizer: "tik" });
         out.o200k_base = {};
         for (const name of Object.keys(texts)) out.o200k_base[name] = await record((t) => tk.encode(t), name);
-        writeSettingsRoot("aiModel", "gemini-2.5-flash-image");
+        applyModelFixtureSettings({ aiModel: "gemini-2.5-flash-image" });
         writeSettingsRoot("googleClaudeTokenizing", true);
         out.gemmaSentencePiece = {};
         for (const name of Object.keys(texts)) out.gemmaSentencePiece[name] = await record((t) => tk.encode(t), name);

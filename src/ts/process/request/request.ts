@@ -1,17 +1,20 @@
 import { type ClientCharacter, selectedCharacter } from "../../storage/characterStore.svelte";
 import {
     settings,
-    activeModelPreset,
+    activeMainProfile,
+    resolveModelSlot,
     activePreset,
     missingScopeTarget,
     scopedPresetRoot,
 } from "../../storage/settingsViews.svelte";
+import { plainClone, presetFieldValue } from "../../../../shared/presets.ts";
+import { credentialFor } from "../../model/credentials";
 import { language } from "../../../lang";
 import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/modellist";
 import { risuEscape, risuUnescape } from "../../parser/parser.svelte";
 import { capturePluginContext, invokeHook, type PluginCallContext } from "../../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../../plugins/pluginHooks";
-import { type character, type Database } from "../../storage/database.svelte";
+import { type character, type ModelProfile } from "../../storage/database.svelte";
 import { type ChatRef, chatEntry, chatOwnerToken, ensureChatLoaded, pinChat } from "../../storage/chatStore.svelte";
 import { sleep } from "../../util";
 import type { OpenAIChat } from "../index.svelte";
@@ -72,6 +75,8 @@ export interface RequestDataArgumentExtended extends requestDataArgument {
     multiGen?: boolean;
     abortSignal?: AbortSignal;
     modelInfo?: LLMModel;
+    /** Detached slot profile; undefined uses schema defaults for a bare/static request. */
+    modelProfile?: ModelProfile;
     customURL?: string;
     mode?: ModelModeExtended;
     key?: string;
@@ -378,7 +383,11 @@ async function requestPinnedChatData(
     }
 }
 
-export function reformater(formated: OpenAIChat[], modelInfo: LLMModel | LLMFlags[]) {
+export function reformater(
+    formated: OpenAIChat[],
+    modelInfo: LLMModel | LLMFlags[],
+    profile: Pick<ModelProfile, "systemContentReplacement" | "systemRoleReplacement"> = activeMainProfile,
+) {
     const flags = Array.isArray(modelInfo) ? modelInfo : modelInfo.flags;
 
     let systemPrompt: OpenAIChat | null = null;
@@ -397,10 +406,10 @@ export function reformater(formated: OpenAIChat[], modelInfo: LLMModel | LLMFlag
 
         for (let i = 0; i < formated.length; i++) {
             if (formated[i].role === "system") {
-                formated[i].content = activeModelPreset.systemContentReplacement
-                    ? activeModelPreset.systemContentReplacement.replace("{{slot}}", formated[i].content)
+                formated[i].content = profile.systemContentReplacement
+                    ? profile.systemContentReplacement.replace("{{slot}}", formated[i].content)
                     : `system: ${formated[i].content}`;
-                formated[i].role = activeModelPreset.systemRoleReplacement || "user";
+                formated[i].role = profile.systemRoleReplacement || "user";
             }
         }
     }
@@ -477,17 +486,26 @@ export async function requestChatDataMain(
     if (presetGone) {
         return presetGone;
     }
-    targ.aiModel = arg.staticModel
-        ? arg.staticModel
-        : (scopedPresetRoot(scope, model === "model" ? "aiModel" : "subModel") as string);
-    targ.modelInfo = getModelInfo(targ.aiModel, scope);
-    if (scopedPresetRoot(scope, "seperateModelsForAxModels") && !arg.staticModel) {
-        const seperateModels = scopedPresetRoot(scope, "seperateModels") as Database["seperateModels"];
-        if (seperateModels?.[model as keyof Database["seperateModels"]]) {
-            targ.aiModel = seperateModels[model as keyof Database["seperateModels"]];
-            targ.modelInfo = getModelInfo(targ.aiModel, scope);
-        }
+    const resolved = resolveModelSlot(model, scope, arg.staticModel);
+    if (resolved.kind === "refused") {
+        return {
+            type: "fail",
+            noRetry: true,
+            result:
+                resolved.reason === "missingProfile"
+                    ? language.modelProfiles.missingRequest(
+                          model === "model"
+                              ? language.model
+                              : model === "submodel"
+                                ? language.submodel
+                                : language.modelProfiles.auxModes[model],
+                      )
+                    : language.modelProfiles.requiredRequest(resolved.modelId!),
+        };
     }
+    targ.aiModel = resolved.modelId;
+    targ.modelProfile = resolved.kind === "profile" ? plainClone(resolved.profile) : undefined;
+    targ.modelInfo = safeStructuredClone(getModelInfo(targ.aiModel, scope, targ.modelProfile ?? null));
 
     if (arg.blockPlugins && targ.modelInfo.id.startsWith("pluginmodel:::")) {
         return {
@@ -500,6 +518,11 @@ export async function requestChatDataMain(
     // (`POST /api/llm/request`), which reads the settings and credentials itself.
     if (targ.modelInfo.format !== LLMFormat.Plugin && targ.modelInfo.format !== LLMFormat.WebLLM) {
         return requestServer(original, model, abortSignal, targ.modelInfo);
+    }
+
+    const credential = credentialFor(targ.modelProfile, targ.aiModel);
+    if (credential.state === "refused") {
+        return { type: "fail", noRetry: true, result: language.sharedApiKeys.refused[credential.reason] };
     }
 
     targ.formated = safeStructuredClone(arg.formated);
@@ -515,15 +538,16 @@ export async function requestChatDataMain(
     targ.abortSignal = abortSignal;
     targ.mode = model;
     targ.extractJson = arg.extractJson ?? (scopedPresetRoot(scope, "extractJson") as string);
-    if (targ.aiModel.startsWith("xcustom:::")) {
-        // (Not reached: an `xcustom:::` model goes to the server, which holds its key.)
-        const found = settings.customModels.find((m) => m.id === targ.aiModel);
-        targ.customURL = found?.url;
-    }
 
     const format = targ.modelInfo.format;
 
-    targ.formated = reformater(targ.formated, targ.modelInfo);
+    targ.formated = reformater(targ.formated, targ.modelInfo, {
+        systemContentReplacement: presetFieldValue(targ.modelProfile, "systemContentReplacement") as string,
+        systemRoleReplacement: presetFieldValue(
+            targ.modelProfile,
+            "systemRoleReplacement",
+        ) as ModelProfile["systemRoleReplacement"],
+    });
 
     switch (format) {
         case LLMFormat.Plugin:
@@ -546,7 +570,7 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
         const maxTokens = arg.maxTokens;
         const model = isV3Model
             ? arg.aiModel.replace("pluginmodel:::", "")
-            : (scopedPresetRoot(arg.pluginContext, "currentPluginProvider") as string);
+            : (presetFieldValue(arg.modelProfile, "currentPluginProvider") as string);
         const providerFunction = pluginHooks.providers.get(model);
 
         if (arg.previewBody) {
@@ -629,7 +653,9 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
         console.error(error);
         return {
             type: "fail",
-            result: `Plugin Error from ${activeModelPreset.currentPluginProvider}: ` + JSON.stringify(error),
+            result:
+                `Plugin Error from ${presetFieldValue(arg.modelProfile, "currentPluginProvider")}: ` +
+                JSON.stringify(error),
             model: responseModel,
         };
     }
@@ -642,7 +668,7 @@ async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestD
     const maxTokens = arg.maxTokens;
     const temperature = arg.temperature;
     const realModel = aiModel.split(":::")[1];
-    const prompt = applyChatTemplate(formated);
+    const prompt = applyChatTemplate(formated, { profile: arg.modelProfile ?? null });
 
     if (arg.previewBody) {
         return {
@@ -652,13 +678,14 @@ async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestD
             }),
         };
     }
+    const ooba = scopedPresetRoot(arg.pluginContext, "ooba") as typeof activePreset.ooba;
     const transformersParams = {
         temperature: temperature,
         max_new_tokens: maxTokens,
-        top_k: activePreset.ooba.top_k,
-        top_p: activePreset.ooba.top_p,
-        repetition_penalty: activePreset.ooba.repetition_penalty,
-        typical_p: activePreset.ooba.typical_p,
+        top_k: ooba.top_k,
+        top_p: ooba.top_p,
+        repetition_penalty: ooba.repetition_penalty,
+        typical_p: ooba.typical_p,
     } as any;
 
     const finalParams = applyAdditionalParameters(transformersParams, {}, getAdditionalParameters(arg.aiModel));

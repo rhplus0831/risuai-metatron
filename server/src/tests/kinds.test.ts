@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
-import { PRESET_DEFAULTS } from "../../../shared/presets.ts";
+import { DEFAULT_MODEL_PROFILE_ID, MODEL_PROFILE_DEFAULT_NAME, PRESET_DEFAULTS } from "../../../shared/presets.ts";
 import type { botPreset } from "../../../shared/database.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import { ResourceValidationError } from "../data/resourceStore.ts";
@@ -30,6 +30,7 @@ const phase3Kinds = [
     "enabledModules",
     "statics",
     "modelPresets",
+    "modelProfiles",
 ];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const rejects = (name: string, id: string, input: unknown, message: string) => {
@@ -98,9 +99,30 @@ describe("default normalizers", () => {
         expect(modelPresets.map((p) => p.name)).toEqual(["m", "New Model Preset"]);
         for (const preset of modelPresets) {
             expect(preset.id).toMatch(UUID);
-            expect(preset).toMatchObject({ maxContext: PRESET_DEFAULTS.maxContext, aiModel: PRESET_DEFAULTS.aiModel });
+            // A model preset holds only the slot choices (`docs/plan/model-profiles.md`).
+            expect(preset).toMatchObject({
+                mainSlot: { profileId: DEFAULT_MODEL_PROFILE_ID },
+                subSlot: { profileId: DEFAULT_MODEL_PROFILE_ID },
+                auxSlots: {},
+                seperateModelsForAxModels: false,
+            });
             expect(Object.hasOwn(preset, "temperature")).toBe(false);
+            expect(Object.hasOwn(preset, "maxContext")).toBe(false);
         }
+        const modelProfiles = kind("modelProfiles").normalize([{ name: "p" }, {}], { id: "main" }) as Record<
+            string,
+            unknown
+        >[];
+        expect(modelProfiles.map((p) => p.name)).toEqual(["p", MODEL_PROFILE_DEFAULT_NAME]);
+        for (const profile of modelProfiles) {
+            expect(profile.id).toMatch(UUID);
+            expect(profile).toMatchObject({ maxContext: PRESET_DEFAULTS.maxContext, modelId: PRESET_DEFAULTS.modelId });
+            expect(Object.hasOwn(profile, "temperature")).toBe(false);
+            expect(Object.hasOwn(profile, "mainSlot")).toBe(false);
+        }
+        expect(kind("modelProfiles").normalize([], { id: "main" })).toMatchObject([
+            { id: DEFAULT_MODEL_PROFILE_ID, name: MODEL_PROFILE_DEFAULT_NAME },
+        ]);
         expect(kind("presets").normalize([], { id: "main" })).toMatchObject([
             { id: expect.stringMatching(UUID), name, temperature },
         ]);

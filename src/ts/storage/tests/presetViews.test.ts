@@ -12,17 +12,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // aliases through `readSettingsRoot`/`writeSettingsRoot`), tracked reads and untracked writes, the
 // resolution after a collection replacement, the fallback after a removal (a read repairs the
 // selection, a write is dropped and never redirected), the missing and `null` value rules (a read
-// never writes), the legacy flat snapshot (`rootSnapshot`: `proxyKey` blank, the selection indexes),
+// never writes), the legacy flat snapshot (`rootSnapshot`: the selection indexes),
 // the index shims (`selectedPresetIndex`, `selectedLoreBookPage`), and the preset actions
 // (`presets.svelte.ts`) that changed with the layer (`changeToPreset`, `applyPresetTemplate`,
 // `copyPreset`, `importPreset`), and since the preset split (`docs/plan/split-preset.md`) the model
 // preset's own: `activeModelPreset` over the `modelPresets` collection, `changeToModelPreset`,
 // `copyModelPreset`, `removeModelPreset`, with the two selections independent of each other. Since
-// Phase 5 slice 7b (`request-layer-and-llm-secrets.md`) `llmSecrets` is write-only: a model preset's
-// `proxyKey` is never a record field, the snapshot reads it as `""`, and its writes and the model
-// preset copy queue credential writes (`llmSecretState.queue`); an imported file's `proxyKey` is
-// ignored. The cases about the accessors themselves (their descriptors, the idempotent install,
-// `setDatabaseLite`, the index setters' input checks) were retired with the aggregate.
+// the model profiles (`docs/plan/model-profiles.md`) the model preset holds the slot choices, and the
+// profile fields (`maxContext`, ...) are served by `activeMainProfile` from the main slot's profile
+// and at root; `proxyKey` is removed (O2): it is no root name, a write of it to a model preset or a
+// profile is refused, nothing copies or cleans up a per-preset key, and an imported file's
+// `proxyKey` is ignored. The cases about the accessors themselves (their descriptors, the idempotent
+// install, `setDatabaseLite`, the index setters' input checks) were retired with the aggregate.
 
 await vi.hoisted(async () => {
     const { Buffer: BufferPolyfill } = await import("buffer");
@@ -48,11 +49,12 @@ import {
     importPreset,
     removeModelPreset,
 } from "../presets.svelte";
-import { llmSecretState, secretOpTarget, secretStatus, setMaskedSecrets, setSecret } from "../llmSecrets.svelte";
-import { maskLlmSecrets, type SecretPath } from "../../../../shared/llmSecrets.ts";
-import { initializeRecords, resetRecords, takeRecordFields } from "../records.svelte";
+import { llmSecretState, setMaskedSecrets } from "../llmSecrets.svelte";
+import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
+import { CredentialRefusedError, initializeRecords, resetRecords, takeRecordFields } from "../records.svelte";
 import { selection, selectLoreBookPage, selectModelPreset, selectPreset } from "../selection.svelte";
 import {
+    activeMainProfile,
     activeModelPreset,
     activePreset,
     currentModelPresetRecord,
@@ -69,6 +71,7 @@ import {
 import { rootSnapshot } from "../snapshots.svelte";
 import {
     normalizeModelPresets,
+    normalizeModelProfiles,
     normalizePresets,
     PRESET_DEFAULTS,
     PRESET_ROOT_ALIASES,
@@ -81,28 +84,37 @@ type AnyView = Record<string, any>;
 
 const preset$ = activePreset as unknown as AnyView;
 const modelPreset$ = activeModelPreset as unknown as AnyView;
+const mainProfile$ = activeMainProfile as unknown as AnyView;
 /** The views under a loose type, for the fixture-shaped writes below. */
 const settings$ = settings as unknown as AnyView;
 const presets = () => settings.presets as unknown as AnyView[];
 const modelPresets = () => settings.modelPresets as unknown as AnyView[];
+const modelProfiles = () => settings.modelProfiles as unknown as AnyView[];
 const preset = (id: string) => presets().find((entry) => entry.id === id);
 const modelPreset = (id: string) => modelPresets().find((entry) => entry.id === id);
+const profile = (id: string) => modelProfiles().find((entry) => entry.id === id);
 const text = (value: unknown) => JSON.stringify(plainClone(value));
-const presetPath = (id: string): SecretPath => ({ kind: "entry", field: "modelPresets", id });
 /** The queued credential writes, in order. */
 const queued = () => llmSecretState.queue.map((op) => op.request);
+
+/** Each model preset's auxiliary model ids: bare slots (`{ modelId }`), read back as those ids. */
+const auxIdsA = { memory: "am", emotion: "ae", translate: "at", otherAx: "ao" };
+const auxIdsB = { memory: "bm", emotion: "be", translate: "bt", otherAx: "bo" };
+const bareSlots = (ids: Record<string, string>) =>
+    Object.fromEntries(Object.entries(ids).map(([mode, modelId]) => [mode, { modelId }]));
 
 function presetA() {
     return {
         id: "a",
         name: "A",
         temperature: 80,
-        maxContext: 4000,
         maxResponse: 500,
         NAISettings: { starter: "starter-a" },
         reasonEffort: 1,
         regex: [{ comment: "ra", type: "editinput", in: "x", out: "y", flag: "" }],
-        seperateModels: { memory: "am", emotion: "ae", translate: "at", otherAx: "ao" },
+        mainSlot: { profileId: "pa" },
+        subSlot: { profileId: "pa" },
+        auxSlots: bareSlots(auxIdsA),
         seperateModelsForAxModels: true,
         seperateParameters: { memory: { temperature: 1 }, emotion: {}, translate: {}, otherAx: {}, overrides: {} },
     };
@@ -113,23 +125,33 @@ function presetB() {
         id: "b",
         name: "B",
         temperature: 50,
-        maxContext: 5000,
         maxResponse: 555,
         NAISettings: { starter: "starter-b" },
         reasonEffort: 2,
         regex: [],
-        seperateModels: { memory: "bm", emotion: "be", translate: "bt", otherAx: "bo" },
+        mainSlot: { profileId: "pb" },
+        subSlot: { profileId: "pb" },
+        auxSlots: bareSlots(auxIdsB),
         seperateModelsForAxModels: false,
         seperateParameters: { memory: {}, emotion: { temperature: 2 }, translate: {}, otherAx: {}, overrides: {} },
     };
 }
 
+/** The main (and sub) profiles of the model presets `a` and `b`. */
+function profiles() {
+    return [
+        { id: "pa", name: "PA", modelId: "model-a", maxContext: 4000 },
+        { id: "pb", name: "PB", modelId: "model-b", maxContext: 5000 },
+    ];
+}
+
 /**
  * Installs the records from a legacy-shaped save with the given presets and root fields, as boot
- * installs them, and resolves the selections. The presets go in canonical (`normalizePresets` and
- * `normalizeModelPresets`, what the server stores): the two fixture presets `a` and `b` are split by
- * owner into the prompt presets `a`/`b` and the model presets `a`/`b` (the removed boot backstop did
- * the normalization for a fixture before).
+ * installs them, and resolves the selections. The presets go in canonical (`normalizePresets`,
+ * `normalizeModelPresets`, and `normalizeModelProfiles`, what the server stores): the two fixture
+ * presets `a` and `b` are split by owner into the prompt presets `a`/`b` and the model presets
+ * `a`/`b`, whose slots name the profiles `pa`/`pb` (the removed boot backstop did the normalization
+ * for a fixture before).
  */
 function boot(extra: Record<string, unknown> = {}) {
     initializeRecords(
@@ -137,6 +159,7 @@ function boot(extra: Record<string, unknown> = {}) {
             characters: [],
             botPresets: normalizePresets([presetA(), presetB()]),
             modelPresets: normalizeModelPresets([presetA(), presetB()]),
+            modelProfiles: normalizeModelProfiles(profiles()),
             ...extra,
         }),
     );
@@ -164,11 +187,13 @@ describe("installation", () => {
         expect(snapshot.temperature).toBe(80);
         expect(snapshot.NAIsettings).toMatchObject({ starter: "starter-a", cfg_scale: 1 });
         expect(snapshot.reasoningEffort).toBe(1);
-        // The model fields come from the selected model preset (`a`).
+        // The model roots come from the selected model preset (`a`): its slots' model ids and its main
+        // profile's fields.
+        expect(snapshot.aiModel).toBe("model-a");
         expect(snapshot.maxContext).toBe(4000);
-        expect(snapshot.seperateModels).toEqual({ memory: "am", emotion: "ae", translate: "at", otherAx: "ao" });
+        expect(snapshot.seperateModels).toEqual(auxIdsA);
         expect(snapshot.botPresetsId).toBe(0);
-        expect(snapshot.proxyKey).toBe("");
+        expect(Object.hasOwn(snapshot, "proxyKey")).toBe(false);
         expect(snapshot.loreBookPage).toBe(0);
         // The snapshot is plain data: no view travels.
         expect(Object.getOwnPropertyDescriptor(snapshot, "temperature")).toHaveProperty("value", 80);
@@ -183,8 +208,10 @@ describe("installation", () => {
         // A write right after boot, before any read, has a record to go to.
         preset$.temperature = 12;
         expect(preset("a").temperature).toBe(12);
-        modelPreset$.maxContext = 4100;
-        expect(modelPreset("a").maxContext).toBe(4100);
+        modelPreset$.seperateModelsForAxModels = false;
+        expect(modelPreset("a").seperateModelsForAxModels).toBe(false);
+        mainProfile$.maxContext = 4100;
+        expect(profile("pa").maxContext).toBe(4100);
     });
 });
 
@@ -313,84 +340,86 @@ describe("missing and null values", () => {
         record.min_p = null;
         const before = text(record);
         const modelRecord = modelPreset("a");
-        delete modelRecord.subModel;
-        modelRecord.maxContext = null;
-        modelRecord.seperateModels = null;
+        delete modelRecord.subSlot;
+        modelRecord.auxSlots = null;
         const modelBefore = text(modelRecord);
+        const profileRecord = profile("pa");
+        delete profileRecord.forceReplaceUrl;
+        profileRecord.maxContext = null;
+        profileRecord.customFlags = null;
+        const profileBefore = text(profileRecord);
 
         expect(preset$.maxResponse).toBe(PRESET_DEFAULTS.maxResponse);
         expect(preset$.ooba).toEqual(defaultOoba);
         expect(preset$.ooba).not.toBe(preset$.ooba);
         expect(preset$.promptTemplate).toBeNull();
         expect(preset$.min_p).toBeNull();
-        // The model view reads with the same rules over its own record.
-        expect(modelPreset$.subModel).toBe(PRESET_DEFAULTS.subModel);
-        expect(modelPreset$.maxContext).toBeNull();
-        expect(modelPreset$.seperateModels).toEqual(PRESET_DEFAULTS.seperateModels);
-        expect(modelPreset$.seperateModels).not.toBe(modelPreset$.seperateModels);
+        // The model preset and profile views read with the same rules over their own records.
+        expect(modelPreset$.subSlot).toEqual(PRESET_DEFAULTS.subSlot);
+        expect(modelPreset$.auxSlots).toEqual(PRESET_DEFAULTS.auxSlots);
+        expect(modelPreset$.auxSlots).not.toBe(modelPreset$.auxSlots);
+        expect(mainProfile$.forceReplaceUrl).toBe(PRESET_DEFAULTS.forceReplaceUrl);
+        expect(mainProfile$.maxContext).toBeNull();
+        expect(mainProfile$.customFlags).toEqual(PRESET_DEFAULTS.customFlags);
+        expect(mainProfile$.customFlags).not.toBe(mainProfile$.customFlags);
 
         // Neither the reads nor a snapshot of every root name materialized anything in the record.
         rootSnapshot();
         JSON.stringify(settings.presets);
         JSON.stringify(settings.modelPresets);
+        JSON.stringify(settings.modelProfiles);
         expect(text(record)).toBe(before);
         expect(text(modelRecord)).toBe(modelBefore);
+        expect(text(profileRecord)).toBe(profileBefore);
         expect(record.ooba).toBeNull();
         expect(Object.hasOwn(record, "maxResponse")).toBe(false);
 
         // An edit does land: the setter writes the record.
         preset$.ooba = { ...defaultOoba, formating: { ...defaultOoba.formating, header: "h" } };
         expect(record.ooba.formating.header).toBe("h");
-        modelPreset$.maxContext = 4001;
-        expect(modelRecord.maxContext).toBe(4001);
+        mainProfile$.maxContext = 4001;
+        expect(profileRecord.maxContext).toBe(4001);
         expect(Object.hasOwn(record, "maxContext")).toBe(false);
+        expect(Object.hasOwn(modelRecord, "maxContext")).toBe(false);
     });
 });
 
-describe("proxyKey", () => {
-    it('the snapshot reads "" and the selected model preset\'s credential is queued through its secret path; an empty write queues a clear; the record has no proxyKey field', () => {
+describe("proxyKey (removed, Model Profiles O2)", () => {
+    it("is no root name of the snapshot, and a proxyKey written to a model preset or a model profile is refused: nothing is queued or stored", () => {
         boot();
-        expect(rootSnapshot().proxyKey).toBe("");
-        setSecret(presetPath(currentModelPresetRecord()!.id), "pk-a");
-        expect(queued()).toEqual([{ kind: "put", path: presetPath("a"), value: "pk-a" }]);
-        expect(secretStatus(presetPath("a"))).toEqual({ set: true, hint: "", pending: true });
-        // Slice 7: `proxyKey` is not a preset field, so the write never lands on the record.
+        expect(Object.hasOwn(rootSnapshot(), "proxyKey")).toBe(false);
+        expect(() => {
+            modelPreset("a").proxyKey = "pk-a";
+        }).toThrow(CredentialRefusedError);
+        expect(() => {
+            profile("pa").proxyKey = "pk-a";
+        }).toThrow(CredentialRefusedError);
+        expect(queued()).toEqual([]);
         expect(Object.hasOwn(modelPreset("a"), "proxyKey")).toBe(false);
-        // Write-only (Phase 5 slice 7b): the tab never holds the key, so the snapshot stays "".
-        expect(rootSnapshot().proxyKey).toBe("");
-
-        // The key follows the model preset selection, not the prompt preset's.
-        changeToPreset("b");
-        expect(currentModelPresetRecord()!.id).toBe("a");
-        changeToModelPreset("b");
-        expect(rootSnapshot().proxyKey).toBe("");
-        setSecret(presetPath(currentModelPresetRecord()!.id), "pk-b");
-        expect(secretStatus(presetPath("b")).set).toBe(true);
-        setSecret(presetPath(currentModelPresetRecord()!.id), "");
-        expect(queued().slice(1)).toEqual([
-            { kind: "put", path: presetPath("b"), value: "pk-b" },
-            { kind: "put", path: presetPath("b"), value: "" },
-        ]);
-        expect(secretStatus(presetPath("b"))).toEqual({ set: false, hint: "", pending: true });
-        expect(secretStatus(presetPath("a")).set).toBe(true);
-        expect(Object.hasOwn(modelPreset("b"), "proxyKey")).toBe(false);
+        expect(Object.hasOwn(profile("pa"), "proxyKey")).toBe(false);
         expect(JSON.stringify(settings.modelPresets)).not.toContain("pk-");
+        expect(JSON.stringify(settings.modelProfiles)).not.toContain("pk-");
         expect(JSON.stringify(settings.presets)).not.toContain("pk-");
     });
 
-    it("copyModelPreset queues a server-side copy of the entry; copyPreset and importPreset queue nothing, and a file's proxyKey is ignored", async () => {
+    it("copyModelPreset copies the slot choices and queues nothing; copyPreset and importPreset queue nothing, and a file's proxyKey is ignored", async () => {
         boot();
-        setSecret(presetPath("a"), "pk-a");
         const copyId = copyModelPreset("a")!;
         const copy = modelPreset(copyId);
         expect(copy.name).toBe("A Copy");
         expect(copy.id).not.toBe("a");
-        expect(copy).toMatchObject({ maxContext: 4000, aiModel: PRESET_DEFAULTS.aiModel });
+        expect(copy).toMatchObject({
+            mainSlot: { profileId: "pa" },
+            subSlot: { profileId: "pa" },
+            auxSlots: bareSlots(auxIdsA),
+            seperateModelsForAxModels: true,
+        });
         expect(Object.hasOwn(copy, "proxyKey")).toBe(false);
         expect(Object.hasOwn(copy, "temperature")).toBe(false);
-        expect(queued().at(-1)).toEqual({ kind: "copy", from: "a", to: copy.id });
-        // The copy reads its source as it stands in the queue: set, pending.
-        expect(secretStatus(presetPath(copy.id))).toEqual({ set: true, hint: "", pending: true });
+        expect(Object.hasOwn(copy, "maxContext")).toBe(false);
+        // The copy names the same shared profiles; no profile and no key is copied.
+        expect(modelProfiles()).toHaveLength(2);
+        expect(queued()).toEqual([]);
         expect(copyModelPreset("nope")).toBeUndefined();
 
         // A prompt preset copy carries no credential.
@@ -398,7 +427,7 @@ describe("proxyKey", () => {
         const promptCopy = presets()[2];
         expect(promptCopy.name).toBe("A Copy");
         expect(Object.hasOwn(promptCopy, "aiModel")).toBe(false);
-        expect(queued()).toHaveLength(2);
+        expect(queued()).toEqual([]);
 
         await importPreset({
             name: "hand.json",
@@ -411,13 +440,9 @@ describe("proxyKey", () => {
         // The file's credential and model fields are ignored (`docs/plan/split-preset.md`).
         expect(Object.hasOwn(imported, "proxyKey")).toBe(false);
         expect(Object.hasOwn(imported, "aiModel")).toBe(false);
-        expect(queued()).toHaveLength(2);
+        expect(queued()).toEqual([]);
         expect(modelPresets()).toHaveLength(3);
-        expect(
-            queued()
-                .map((request) => (secretOpTarget(request) as { id: string }).id)
-                .sort(),
-        ).toEqual(["a", copy.id].sort());
+        expect(JSON.stringify(modelProfiles())).not.toContain("file-model");
     });
 });
 
@@ -461,17 +486,18 @@ describe("the selection indexes", () => {
 describe("changeToPreset, changeToModelPreset, and applyPresetTemplate", () => {
     it("changeToPreset switches the prompt selection only: the model preset and its fields stay, and nothing is copied", () => {
         boot();
-        const before = [text(preset("a")), text(preset("b")), text(modelPreset("a")), text(modelPreset("b"))];
+        const all = () => [preset("a"), preset("b"), modelPreset("a"), modelPreset("b"), ...modelProfiles()].map(text);
+        const before = all();
         changeToPreset("b");
         expect(selection.presetId).toBe("b");
         expect(selection.modelPresetId).toBe("a");
         expect(preset$.temperature).toBe(50);
         expect(preset$.NAISettings.starter).toBe("starter-b");
-        expect(modelPreset$.maxContext).toBe(4000);
-        expect(modelPreset$.seperateModels).toEqual(presetA().seperateModels);
+        expect(mainProfile$.maxContext).toBe(4000);
+        expect(readSettingsRoot("seperateModels")).toEqual(auxIdsA);
         expect(rootSnapshot()).toMatchObject({ temperature: 50, maxContext: 4000, botPresetsId: 1 });
         // Nothing was written anywhere: a switch is a selection change.
-        expect([text(preset("a")), text(preset("b")), text(modelPreset("a")), text(modelPreset("b"))]).toEqual(before);
+        expect(all()).toEqual(before);
         // An unknown id changes nothing.
         changeToPreset("nope");
         expect(selection.presetId).toBe("b");
@@ -483,16 +509,22 @@ describe("changeToPreset, changeToModelPreset, and applyPresetTemplate", () => {
         expect(selection.modelPresetId).toBe("b");
         expect(selection.presetId).toBe("a");
         expect(modelPreset$.id).toBe("b");
-        expect(modelPreset$.maxContext).toBe(5000);
-        expect(modelPreset$.seperateModels).toEqual(presetB().seperateModels);
+        expect(mainProfile$.id).toBe("pb");
+        expect(mainProfile$.maxContext).toBe(5000);
+        expect(readSettingsRoot("seperateModels")).toEqual(auxIdsB);
         expect(modelPreset$.seperateModelsForAxModels).toBe(false);
         expect(preset$.temperature).toBe(80);
         expect(rootSnapshot()).toMatchObject({ temperature: 80, maxContext: 5000 });
-        // A write lands in the selected model preset, never the prompt preset or the other model preset.
-        modelPreset$.maxContext = 5100;
-        expect(modelPreset("b").maxContext).toBe(5100);
-        expect(modelPreset("a").maxContext).toBe(4000);
+        // A write lands in the selected model preset (or its main profile), never the prompt preset,
+        // the other model preset, or its profile.
+        modelPreset$.auxSlots = { memory: { modelId: "bm2" } };
+        expect(modelPreset("b").auxSlots).toEqual({ memory: { modelId: "bm2" } });
+        expect(modelPreset("a").auxSlots).toEqual(bareSlots(auxIdsA));
+        mainProfile$.maxContext = 5100;
+        expect(profile("pb").maxContext).toBe(5100);
+        expect(profile("pa").maxContext).toBe(4000);
         expect(Object.hasOwn(preset("a"), "maxContext")).toBe(false);
+        expect(Object.hasOwn(preset("a"), "auxSlots")).toBe(false);
         // The four combinations are reachable.
         changeToPreset("b");
         expect([selection.presetId, selection.modelPresetId]).toEqual(["b", "b"]);
@@ -509,37 +541,43 @@ describe("changeToPreset, changeToModelPreset, and applyPresetTemplate", () => {
         modelPresets().splice(1, 1);
         expect(selection.modelPresetId).toBe("b");
         expect(modelPresetRecordForWrite()).toBeUndefined();
-        const before = text(modelPreset("a"));
-        modelPreset$.maxContext = 1;
-        expect(text(modelPreset("a"))).toBe(before);
-        expect(modelPreset$.maxContext).toBe(4000);
+        const before = [text(modelPreset("a")), text(profile("pa")), text(profile("pb"))];
+        modelPreset$.seperateModelsForAxModels = false;
+        mainProfile$.maxContext = 1;
+        expect([text(modelPreset("a")), text(profile("pa")), text(profile("pb"))]).toEqual(before);
+        expect(selection.modelPresetId).toBe("b");
+        expect(modelPreset$.seperateModelsForAxModels).toBe(true);
+        expect(mainProfile$.maxContext).toBe(4000);
         expect(selection.modelPresetId).toBe("a");
-        modelPreset$.maxContext = 2;
-        expect(modelPreset("a").maxContext).toBe(2);
+        modelPreset$.seperateModelsForAxModels = false;
+        expect(modelPreset("a").seperateModelsForAxModels).toBe(false);
+        mainProfile$.maxContext = 2;
+        expect(profile("pa").maxContext).toBe(2);
     });
 
-    it("removeModelPreset removes the record and queues its credential cleanup, moves the selection off it, and never removes the last one", () => {
+    it("removeModelPreset removes the record, moves the selection off it, queues nothing, and never removes the last one", () => {
         boot();
         changeToModelPreset("b");
         expect(removeModelPreset("nope")).toBe(false);
         expect(removeModelPreset("b")).toBe(true);
         expect(modelPresets().map((entry) => entry.id)).toEqual(["a"]);
         expect(selection.modelPresetId).toBe("a");
-        expect(queued().at(-1)).toEqual({ kind: "cleanup", path: presetPath("b") });
-        expect(secretStatus(presetPath("b"))).toEqual({ set: false, hint: "", pending: true });
+        // No per-preset key exists to clean up (O2), and the shared profiles stay.
+        expect(queued()).toEqual([]);
+        expect(modelProfiles().map((entry) => entry.id)).toEqual(["pa", "pb"]);
         // The prompt presets are untouched.
         expect(presets().map((entry) => entry.id)).toEqual(["a", "b"]);
         expect(selection.presetId).toBe("a");
         // The last model preset stays: a selection always needs a record.
         expect(removeModelPreset("a")).toBe(false);
         expect(modelPresets()).toHaveLength(1);
-        expect(queued()).toHaveLength(1);
+        expect(queued()).toEqual([]);
     });
 
-    it("applyPresetTemplate replaces the selected prompt preset's settings, keeps its id, name, and image, and leaves the model preset alone", () => {
+    it("applyPresetTemplate replaces the selected prompt preset's settings, keeps its id, name, and image, and leaves the model preset and its profiles alone", () => {
         boot();
         preset("a").image = "data:image/jpeg;base64,x";
-        const modelBefore = text(modelPreset("a"));
+        const modelBefore = [text(modelPreset("a")), text(profile("pa"))];
         applyPresetTemplate({
             ...PRESET_DEFAULTS,
             name: "Template",
@@ -559,8 +597,9 @@ describe("changeToPreset, changeToModelPreset, and applyPresetTemplate", () => {
         // The template's model fields are dropped: the prompt preset stores none, the model preset is unchanged.
         expect(Object.hasOwn(applied, "seperateModels")).toBe(false);
         expect(Object.hasOwn(applied, "aiModel")).toBe(false);
-        expect(text(modelPreset("a"))).toBe(modelBefore);
-        expect(modelPreset$.seperateModels).toEqual(presetA().seperateModels);
+        expect([text(modelPreset("a")), text(profile("pa"))]).toEqual(modelBefore);
+        expect(readSettingsRoot("seperateModels")).toEqual(auxIdsA);
+        expect(readSettingsRoot("aiModel")).toBe("model-a");
         expect(preset("b").temperature).toBe(50);
     });
 });

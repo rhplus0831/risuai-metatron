@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { resolveModelSlot, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { fade, fly } from "svelte/transition";
     import { onMount } from "svelte";
     import IrisImage from "../../etc/Airisu.webp";
@@ -79,10 +79,15 @@
     let userInputEl = $state<HTMLInputElement | null>(null);
 
     let isUnsupportedModel = $derived.by(() => {
-        const currentModel =
-            (activeModelPreset.seperateModelsForAxModels ? activeModelPreset.seperateModels.otherAx : "") ||
-            activeModelPreset.subModel;
-        const modelInfo = getModelInfo(currentModel);
+        const resolved = resolveModelSlot("otherAx");
+        if (resolved.kind === "refused") {
+            return true;
+        }
+        const modelInfo = getModelInfo(
+            resolved.modelId,
+            undefined,
+            resolved.kind === "profile" ? resolved.profile : null,
+        );
         return !(
             modelInfo.format === LLMFormat.Anthropic ||
             modelInfo.format === LLMFormat.OpenAICompatible ||

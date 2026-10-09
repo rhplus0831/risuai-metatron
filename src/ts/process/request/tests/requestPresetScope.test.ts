@@ -6,12 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // preset (the plugin context's pair) is gone: up front (`requestChatData`, `requestChatDataMain`,
 // which the plugin LLM API calls directly), before every attempt, and after the
 // `replacerbeforeRequest` hooks, without calling the provider. While both exist, the provider and
-// the model flags come from the captured model preset, whatever is selected.
+// the model flags come from the captured model preset's main profile (`docs/plan/model-profiles.md`),
+// whatever is selected.
 
 const stubs = vi.hoisted(() => ({
     readRefs: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
     getTools: vi.fn<(...args: unknown[]) => Promise<unknown[]>>(),
-    getModelInfo: vi.fn<(id: string, scope?: unknown) => unknown>(),
+    getModelInfo: vi.fn<(id: string, scope?: unknown, profile?: unknown) => unknown>(),
     requestServer: vi.fn(),
     hooks: {
         replacerbeforeRequest: new Set<(formated: unknown, mode: string) => Promise<unknown>>(),
@@ -44,7 +45,10 @@ vi.mock("src/ts/process/templates/chatTemplate", () => ({ applyChatTemplate: vi.
 vi.mock("src/ts/process/stringlize", () => ({ unstringlizeChat: vi.fn() }));
 vi.mock("src/ts/model/modellist", async () => {
     const types = await import("src/ts/model/types");
-    return { ...types, getModelInfo: (id: string, scope?: unknown) => stubs.getModelInfo(id, scope) };
+    return {
+        ...types,
+        getModelInfo: (id: string, scope?: unknown, profile?: unknown) => stubs.getModelInfo(id, scope, profile),
+    };
 });
 vi.mock("src/ts/process/request/shared", () => ({
     applyAdditionalParameters: vi.fn(),
@@ -62,16 +66,17 @@ vi.mock("src/ts/process/modules", () => ({
 import { LLMFlags, LLMFormat } from "src/ts/model/types";
 import { trackedRecord } from "src/ts/storage/records.svelte";
 import { selectModelPreset, selectPreset, selection } from "src/ts/storage/selection.svelte";
-import { installFlatDatabase, modelPresetOf } from "src/ts/storage/tests/installFlatDatabase";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
+import { normalizeModelPreset, normalizeModelProfile } from "../../../../../shared/presets";
 import { requestChatData, requestChatDataMain } from "../request";
 
 const MODEL_PRESET_GONE = "The model preset this request runs with no longer exists";
 const PRESET_GONE = "The preset this request runs with no longer exists";
 
 /**
- * Prompt presets `pp-1`/`pp-2` and model presets `mp-1`/`mp-2`, each model preset on the legacy
- * plugin model `custom` through its own provider (`prov-1`/`prov-2`). The request captures the
- * `1` pair; the `2` pair is selected.
+ * Prompt presets `pp-1`/`pp-2` and model presets `mp-1`/`mp-2`, each model preset's main profile
+ * (`prof-1`/`prof-2`) on the legacy plugin model `custom` through its own provider
+ * (`prov-1`/`prov-2`). The request captures the `1` pair; the `2` pair is selected.
  */
 function boot() {
     installFlatDatabase({
@@ -81,8 +86,12 @@ function boot() {
             { id: "pp-2", name: "PP 2" },
         ],
         modelPresets: [
-            modelPresetOf({ id: "mp-1", name: "MP 1", aiModel: "custom", currentPluginProvider: "prov-1" }),
-            modelPresetOf({ id: "mp-2", name: "MP 2", aiModel: "custom", currentPluginProvider: "prov-2" }),
+            normalizeModelPreset({ name: "MP 1", mainSlot: { profileId: "prof-1" } }, { id: "mp-1" }),
+            normalizeModelPreset({ name: "MP 2", mainSlot: { profileId: "prof-2" } }, { id: "mp-2" }),
+        ],
+        modelProfiles: [
+            normalizeModelProfile({ id: "prof-1", name: "Prof 1", modelId: "custom", currentPluginProvider: "prov-1" }),
+            normalizeModelProfile({ id: "prof-2", name: "Prof 2", modelId: "custom", currentPluginProvider: "prov-2" }),
         ],
         personas: [{ id: "p1", name: "U" }],
         useStreaming: false,
@@ -140,7 +149,7 @@ afterEach(() => {
 });
 
 describe("a tab-run request's captured presets", () => {
-    it("runs the provider and the model flags of the captured model preset, whatever is selected", async () => {
+    it("runs the provider and the model flags of the captured model preset's main profile, whatever is selected", async () => {
         expect(await requestChatData(argOf(), "model")).toEqual({
             type: "success",
             result: "from prov-1",
@@ -149,7 +158,11 @@ describe("a tab-run request's captured presets", () => {
         expect(provider1).toHaveBeenCalledTimes(1);
         expect(provider2).not.toHaveBeenCalled();
         expect(stubs.requestServer).not.toHaveBeenCalled();
-        expect(stubs.getModelInfo).toHaveBeenCalledWith("custom", captured());
+        expect(stubs.getModelInfo).toHaveBeenCalledWith(
+            "custom",
+            captured(),
+            expect.objectContaining({ id: "prof-1", currentPluginProvider: "prov-1" }),
+        );
         expect(selection.presetId).toBe("pp-2");
         expect(selection.modelPresetId).toBe("mp-2");
     });

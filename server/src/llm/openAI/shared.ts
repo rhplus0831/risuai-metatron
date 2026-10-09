@@ -1,4 +1,6 @@
 import { isLocalNetworkUrl } from "../../../../shared/localNetwork.ts";
+import { credentialSlotOf } from "../../../../shared/llm/credentialSlots.ts";
+import { defaultCredentialKey } from "../credentials.ts";
 import type { RequestDataArgumentExtended } from "../request.ts";
 import type { RequestDb } from "../settings.ts";
 
@@ -8,11 +10,11 @@ export function getOpenAIRequestKey(arg: RequestDataArgumentExtended, defaultKey
         return arg.key;
     }
     const keyIdentifier = arg.modelInfo?.keyIdentifier;
-    if (keyIdentifier) {
+    if (keyIdentifier && credentialSlotOf(arg.aiModel ?? "", arg.modelInfo)?.slot === "keyIdentifier") {
         const keys = arg.ctx.db.OaiCompAPIKeys ?? {};
         return Object.hasOwn(keys, keyIdentifier) ? (keys[keyIdentifier] ?? "") : "";
     }
-    return defaultKey;
+    return defaultCredentialKey(arg.aiModel, defaultKey);
 }
 
 export interface LocalNetworkRequestOptions {

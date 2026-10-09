@@ -4,6 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import type { InlaySignature } from "../../../shared/llm/request.ts";
+import { defaultCredentialKey } from "./credentials.ts";
 import { textifyReadableStream } from "./transport.ts";
 import { simplifySchema } from "./util.ts";
 import { extractJSON, getGeneralJSONSchema } from "./jsonSchema.ts";
@@ -425,8 +426,8 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
         // The client reused the token it had stored until its expiry; the server keeps it in memory
         // (`vertexToken.ts`), so a token is generated on the first Vertex request after a restart.
         const { clientEmail, privateKey } = arg.vertexCredential ?? {
-            clientEmail: db.vertexClientEmail,
-            privateKey: db.vertexPrivateKey,
+            clientEmail: defaultCredentialKey(arg.aiModel, db.vertexClientEmail),
+            privateKey: defaultCredentialKey(arg.aiModel, db.vertexPrivateKey),
         };
         if (!clientEmail || !privateKey) {
             arg.ctx.alertError(
@@ -449,7 +450,7 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
     }
 
     let url = "";
-    let apiKey = arg.key || db.google.accessToken;
+    let apiKey = arg.key ?? defaultCredentialKey(arg.aiModel, db.google.accessToken);
 
     if (arg.customURL) {
         let baseURL = arg.customURL;

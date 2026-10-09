@@ -63,19 +63,28 @@ afterEach(() => {
 
 describe("updateSettings", () => {
     it("writes a forwarded key into the selected preset of its owner by id, and with presetId or modelPresetId into that preset after a switch", async () => {
-        const { sync, collectionStore, presets, selection, record, settings, activePreset, activeModelPreset } =
+        const { sync, collectionStore, presets, selection, record, settings, settingsViews, activePreset } =
             await boot();
         const [p1, p2] = settings.presets.map((preset: any) => preset.id);
         const [m1, m2] = settings.modelPresets.map((preset: any) => preset.id);
+        // `maxContext` is a profile field written into the main slot's profile
+        // (`docs/plan/model-profiles.md`): give m2 its own main profile so each owner is distinct.
+        const [f1] = settings.modelProfiles.map((profile: any) => profile.id);
+        const f2 = collectionStore.addModelProfile({ name: "F2" });
+        expect(collectionStore.setMainModelSlot(m2, f2)).toBe(true);
+        const profile = (id: string): any => settings.modelProfiles.find((entry: any) => entry.id === id);
+        const activeMainProfile = settingsViews.activeMainProfile;
         expect(selection.presetId).toBe(p1);
         expect(selection.modelPresetId).toBe(m1);
-        // `temperature` is the prompt preset's, `maxContext` the model preset's (`docs/plan/split-preset.md`).
+        // `temperature` is the prompt preset's (`docs/plan/split-preset.md`).
         collectionStore.updateSettings({ temperature: 5, maxContext: 1234 });
         expect(activePreset.temperature).toBe(5);
-        expect(activeModelPreset.maxContext).toBe(1234);
+        expect(activeMainProfile.maxContext).toBe(1234);
+        expect(profile(f1).maxContext).toBe(1234);
         expect(settings.presets[1].temperature).not.toBe(5);
-        expect(settings.modelPresets[1].maxContext).not.toBe(1234);
+        expect(profile(f2).maxContext).not.toBe(1234);
         expect(settings.presets.every((preset: any) => !("maxContext" in preset))).toBe(true);
+        expect(settings.modelPresets.every((preset: any) => !("maxContext" in preset))).toBe(true);
         // A caller that captured p1/m1 before an await writes there although p2/m2 are selected now.
         presets.changeToPreset(p2);
         presets.changeToModelPreset(m2);
@@ -83,13 +92,13 @@ describe("updateSettings", () => {
         expect(selection.modelPresetId).toBe(m2);
         collectionStore.updateSettings({ temperature: 9, maxContext: 1999 }, { presetId: p1, modelPresetId: m1 });
         expect(settings.presets[0].temperature).toBe(9);
-        expect(settings.modelPresets[0].maxContext).toBe(1999);
+        expect(profile(f1).maxContext).toBe(1999);
         expect(activePreset.temperature).not.toBe(9);
-        expect(activeModelPreset.maxContext).not.toBe(1999);
+        expect(activeMainProfile.maxContext).not.toBe(1999);
         // Each id names its own owner: a captured prompt preset with the selected model preset.
         collectionStore.updateSettings({ temperature: 2, maxContext: 2222 }, { presetId: p1 });
         expect(settings.presets[0].temperature).toBe(2);
-        expect(settings.modelPresets[1].maxContext).toBe(2222);
+        expect(profile(f2).maxContext).toBe(2222);
         collectionStore.updateSettings({ temperature: 3 });
         expect(settings.presets[1].temperature).toBe(3);
         await sync.flushResources();
@@ -98,10 +107,11 @@ describe("updateSettings", () => {
             [p1, 2],
             [p2, 3],
         ]);
-        expect(record("modelPresets").map((preset: any) => [preset.id, preset.maxContext])).toEqual([
-            [m1, 1999],
-            [m2, 2222],
+        expect(record("modelProfiles").map((entry: any) => [entry.id, entry.maxContext])).toEqual([
+            [f1, 1999],
+            [f2, 2222],
         ]);
+        expect(record("modelPresets").every((preset: any) => !("maxContext" in preset))).toBe(true);
     });
 
     it("writes a former keep-on-switch key into its owning preset and section keys into their sections, including absent optional fields", async () => {
@@ -149,7 +159,7 @@ describe("updateSettings", () => {
     });
 
     it("validates a mixed patch before any write, and throws MutationTargetGoneError for a stale preset id", async () => {
-        const { sync, collectionStore, refused, validation, record, activePreset, activeModelPreset } = await boot();
+        const { sync, collectionStore, refused, validation, record, activePreset, settingsViews } = await boot();
         await refused(
             () => collectionStore.updateSettings({ maxContext: 999, temperature: "hot" }),
             validation.MutationValidationError,
@@ -173,7 +183,8 @@ describe("updateSettings", () => {
         collectionStore.updateSettings({ theme: "only" }, { presetId: "nope" });
         await sync.flushResources();
         expect(record("ui").theme).toBe("only");
-        expect(activeModelPreset.maxContext).not.toBe(999);
+        // `maxContext` is the main slot's profile's (`docs/plan/model-profiles.md`).
+        expect(settingsViews.activeMainProfile.maxContext).not.toBe(999);
     });
 
     it("refuses credentials, persona and selection keys, unknown keys, wrong kinds, and non-data values", async () => {
@@ -478,8 +489,9 @@ describe("named credentials (docs/plan/shared-api-keys.md)", () => {
             clientEmail: "sa@example.test",
             projectId: "proj-2",
         });
+        const [profileId] = settings.modelProfiles.map((profile: any) => profile.id);
         secrets.setSecret(keyPath(work), "sk-named-SENTINEL");
-        collectionStore.setModelCredential("gpt-5.5", work);
+        expect(collectionStore.setProfileCredential(profileId, work)).toBe(true);
         await sync.flushResources();
         expect(record("credentials")).toEqual([
             { id: work, name: "Work", type: "openai" },
@@ -498,8 +510,8 @@ describe("named credentials (docs/plan/shared-api-keys.md)", () => {
         expect(record("credentials").map((entry: any) => entry.id)).toEqual([sa]);
         expect(record("llmSecrets").credentials).toEqual({});
         // The binding stays: the server refuses its requests, and the UI shows it as missing.
-        expect(record("providers").modelCredentials).toEqual({ "gpt-5.5": work });
-        expect(settings.providers.modelCredentials).toEqual({ "gpt-5.5": work });
+        expect(record("modelProfiles").find((profile: any) => profile.id === profileId).credentialId).toBe(work);
+        expect(settings.modelProfiles.find((profile: any) => profile.id === profileId)!.credentialId).toBe(work);
     });
 
     it("updates a name and the Vertex fields, removes an optional field with undefined, and refuses a type change", async () => {
@@ -535,38 +547,32 @@ describe("named credentials (docs/plan/shared-api-keys.md)", () => {
         await refused(() => collectionStore.addCredential(null), invalid);
     });
 
-    it("sets and removes the three bindings, never storing null or an empty id, and keeps __proto__ an ordinary model id", async () => {
+    it("sets and removes a profile's binding synchronously, never storing null or an empty id", async () => {
+        // `setProfileCredential` replaces the three former bindings (`docs/plan/model-profiles.md`).
         const { sync, collectionStore, record, settings, refused, validation } = await boot();
-        settings.customModels.push({ id: "xcustom:::a", internalId: "a", name: "A" } as any);
-        const [m1, m2] = settings.modelPresets.map((preset: any) => preset.id);
-        collectionStore.setModelCredential("gpt-5.5", "cred-1");
-        collectionStore.setModelCredential("__proto__", "cred-2");
-        expect(collectionStore.setCustomModelCredential("xcustom:::a", "cred-1")).toBe(true);
-        expect(collectionStore.setCustomModelCredential("xcustom:::gone", "cred-1")).toBe(false);
-        // An inactive model preset too.
-        expect(collectionStore.setProxyCredential(m2, "cred-3")).toBe(true);
-        expect(collectionStore.setProxyCredential("gone", "cred-3")).toBe(false);
+        const [f1] = settings.modelProfiles.map((profile: any) => profile.id);
+        // A profile no slot uses too.
+        const f2 = collectionStore.addModelProfile({ name: "F2", modelId: "xcustom:::a" });
+        const profile = (id: string): any => settings.modelProfiles.find((entry: any) => entry.id === id);
+        // A credential id that names no credential yet may be bound (it refuses when used).
+        expect(collectionStore.setProfileCredential(f1, "cred-1")).toBe(true);
+        expect(profile(f1).credentialId).toBe("cred-1");
+        expect(collectionStore.setProfileCredential(f2, "cred-3")).toBe(true);
+        expect(collectionStore.setProfileCredential("gone", "cred-3")).toBe(false);
         await sync.flushResources();
-        const bindings = record("providers").modelCredentials;
-        expect(Object.keys(bindings)).toEqual(["gpt-5.5", "__proto__"]);
-        expect(Object.getOwnPropertyDescriptor(bindings, "__proto__")?.value).toBe("cred-2");
-        expect(record("customModels")[0].credentialId).toBe("cred-1");
-        expect(record("modelPresets").map((preset: any) => [preset.id, preset.proxyCredentialId])).toEqual([
-            [m1, undefined],
-            [m2, "cred-3"],
+        expect(record("modelProfiles").map((entry: any) => [entry.id, entry.credentialId])).toEqual([
+            [f1, "cred-1"],
+            [f2, "cred-3"],
         ]);
 
-        collectionStore.setModelCredential("gpt-5.5", null);
-        collectionStore.setCustomModelCredential("xcustom:::a", null);
-        collectionStore.setProxyCredential(m2, null);
+        collectionStore.setProfileCredential(f1, null);
+        expect(Object.hasOwn(profile(f1), "credentialId")).toBe(false);
         await sync.flushResources();
-        expect(Object.keys(record("providers").modelCredentials)).toEqual(["__proto__"]);
-        expect(Object.hasOwn(record("customModels")[0], "credentialId")).toBe(false);
-        expect(record("modelPresets").every((preset: any) => !Object.hasOwn(preset, "proxyCredentialId"))).toBe(true);
+        expect(Object.hasOwn(record("modelProfiles")[0], "credentialId")).toBe(false);
+        expect(record("modelProfiles")[1].credentialId).toBe("cred-3");
 
         const invalid = validation.MutationValidationError;
-        await refused(() => collectionStore.setModelCredential("gpt-5.5", ""), invalid);
-        await refused(() => collectionStore.setCustomModelCredential("xcustom:::a", ""), invalid);
-        await refused(() => collectionStore.setProxyCredential(m1, ""), invalid);
+        await refused(() => collectionStore.setProfileCredential(f1, ""), invalid);
+        await refused(() => collectionStore.setProfileCredential(f2, ""), invalid);
     });
 });

@@ -643,7 +643,6 @@ const TOKEN_CONFIGS = [
                     name: `Baseline ${name}`,
                     internalId: `baseline-${name}`,
                     url: "http://localhost:1/never",
-                    key: "",
                     format: 0,
                     flags: [],
                     tokenizer,
@@ -773,33 +772,36 @@ const seedScript = `(() => {
 /** The in-page module set every step uses; `applySettings` writes plain fields on the mirror (preset fields through the accessors). */
 const pageLib = `
     const stores = await import("/src/ts/stores.svelte.ts");
-    const dbm = await import("/src/ts/storage/database.svelte.ts");
+    const dbm = await import("/src/ts/storage/presets.svelte.ts");
+    const views = await import("/src/ts/storage/settingsViews.svelte.ts");
+    const selection = await import("/src/ts/storage/selection.svelte.ts");
+    const { applyModelFixtureSettings } = await import("/util/playwright/modelProfiles.browser.mjs");
     const characterStore = await import("/src/ts/storage/characterStore.svelte.ts");
     const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
     const proc = await import("/src/ts/process/index.svelte.ts");
     const parser = await import("/src/ts/parser/parser.svelte.ts");
-    const scripts = await import("/src/ts/process/scripts.ts");
+    const transforms = await import("/src/ts/parser/transformClient.ts");
     const hooks = await import("/src/ts/plugins/pluginHooks.ts");
     const lorebook = await import("/src/ts/process/lorebook.svelte.ts");
     const tk = await import("/src/ts/tokenizer.ts");
     const templates = await import("/src/ts/process/templates/chatTemplate.ts");
     const modellist = await import("/src/ts/model/modellist.ts");
     const presets = await import("/shared/presets.ts");
-    const DBState = stores.DBState;
+    // The capture's legacy reads stay model ids; model configuration writes select explicit profiles.
+    const DBState = { db: new Proxy({}, {
+        get(_, key) {
+            if (key === "characters") return characterStore.characterList();
+            if (key === "botPresetsId") return views.selectedPresetIndex();
+            return views.readSettingsRoot(key);
+        },
+        set(_, key, value) { views.writeSettingsRoot(key, value); return true; },
+    }) };
     const clone = (v) => JSON.parse(JSON.stringify(v));
-    const applySettings = (settings) => {
-        for (const [key, value] of Object.entries(settings)) {
-            try {
-                DBState.db[key] = clone(value);
-            } catch (error) {
-                throw new Error("applySettings(" + key + "): " + (error instanceof Error ? error.stack : String(error)));
-            }
-        }
-    };
+    const applySettings = (configuration) => applyModelFixtureSettings(clone(configuration));
     const selectCharacter = (chaId, chatId) => {
         const index = DBState.db.characters.findIndex((c) => c?.chaId === chaId);
         if (index === -1) throw new Error("no character " + chaId);
-        stores.selectedCharID.set(index);
+        selection.selectCharacter(chaId);
         chatStore.selectChat(chaId, chatId);
         const ref = { chaId, chatId };
         if (!chatStore.findChat(ref)) throw new Error("no chat " + chatId);
@@ -931,7 +933,7 @@ try {
                 window.__risuReseed();
                 result.back = await parser.ParseMarkdown(data, char, "back", idx, cbsConditions);
                 window.__risuReseed();
-                result.editprocess = await scripts.processScript(char, data, "editprocess", cbsConditions, ref);
+                result.editprocess = await transforms.serverProcessScript(char, data, "editprocess", idx, cbsConditions, transforms.captureTransform(ref), "text");
                 return result;
             };
             out.greeting = await one(char.firstMessage, -1, { firstmsg: true, chatRole: "char" });

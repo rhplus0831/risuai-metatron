@@ -32,7 +32,7 @@ let notified: RecordKind[] = [];
 
 const text = (kind: RecordKind) => JSON.stringify(recordData(kind));
 const queued = () => llmSecretState.queue.map((op) => op.request);
-const entry = (field: "modelPresets" | "customModels", id: string, value: string) => ({
+const entry = (field: "credentials", id: string, value: string) => ({
     kind: "put",
     path: { kind: "entry", field, id },
     value,
@@ -123,152 +123,175 @@ describe("array mutators (challenge point 1)", () => {
 
 describe("entry credentials (challenge point 2, re-check 1 points 1 and 2)", () => {
     it("routes a credential inserted through push, unshift, and splice, and never stores it", () => {
-        initializeRecords({ customModels: [{ id: "a", name: "A" }] });
-        const models = trackedRecord<any[]>("customModels")!;
-        models.push({ id: "b", name: "B", key: "kb" });
-        models.unshift({ id: "c", name: "C", key: "kc" });
-        models.splice(1, 0, { id: "d", name: "D", key: "kd" });
-        expect(JSON.parse(text("customModels"))).toEqual([
+        initializeRecords({ credentials: [{ id: "a", name: "A" }] });
+        const credentials = trackedRecord<any[]>("credentials")!;
+        credentials.push({ id: "b", name: "B", key: "kb" });
+        credentials.unshift({ id: "c", name: "C", key: "kc" });
+        credentials.splice(1, 0, { id: "d", name: "D", key: "kd" });
+        expect(JSON.parse(text("credentials"))).toEqual([
             { id: "c", name: "C" },
             { id: "d", name: "D" },
             { id: "a", name: "A" },
             { id: "b", name: "B" },
         ]);
-        expect(text("customModels")).not.toContain("kb");
+        expect(text("credentials")).not.toContain("kb");
         expect(queued()).toEqual([
-            entry("customModels", "b", "kb"),
-            entry("customModels", "c", "kc"),
-            entry("customModels", "d", "kd"),
+            entry("credentials", "b", "kb"),
+            entry("credentials", "c", "kc"),
+            entry("credentials", "d", "kd"),
         ]);
-        expect(new Set(notified)).toEqual(new Set(["customModels"]));
+        expect(new Set(notified)).toEqual(new Set(["credentials"]));
     });
 
     it("refuses an insertion whose credential would not have exactly one owner, and a credential-bearing fill", () => {
-        initializeRecords({ customModels: [{ id: "a", name: "A" }] });
-        const models = trackedRecord<any[]>("customModels")!;
+        initializeRecords({ credentials: [{ id: "a", name: "A" }] });
+        const credentials = trackedRecord<any[]>("credentials")!;
         refused(
-            "customModels",
-            () => models.push({ id: "same", key: "one" }, { id: "same", key: "two" }),
+            "credentials",
+            () => credentials.push({ id: "same", key: "one" }, { id: "same", key: "two" }),
             CredentialRefusedError,
         );
         // A credentialless element with the same id already in the list.
-        refused("customModels", () => models.push({ id: "a", key: "secret" }), CredentialRefusedError);
+        refused("credentials", () => credentials.push({ id: "a", key: "secret" }), CredentialRefusedError);
         // A zero-length fill stores nothing, so its credential has no owner.
-        refused("customModels", () => models.fill({ id: "orphan", key: "secret" }, 0, 0), CredentialRefusedError);
-        refused("customModels", () => models.fill({ id: "f", key: "secret" }), CredentialRefusedError);
+        refused("credentials", () => credentials.fill({ id: "orphan", key: "secret" }, 0, 0), CredentialRefusedError);
+        refused("credentials", () => credentials.fill({ id: "f", key: "secret" }), CredentialRefusedError);
         // A replacement of the only owner is fine: the splice leaves exactly one "a".
-        models.splice(0, 1, { id: "a", name: "A2", key: "ka" });
-        expect(JSON.parse(text("customModels"))).toEqual([{ id: "a", name: "A2" }]);
-        expect(queued()).toEqual([entry("customModels", "a", "ka")]);
+        credentials.splice(0, 1, { id: "a", name: "A2", key: "ka" });
+        expect(JSON.parse(text("credentials"))).toEqual([{ id: "a", name: "A2" }]);
+        expect(queued()).toEqual([entry("credentials", "a", "ka")]);
     });
 
     it("refuses object splice indexes before anything changes, and accepts null as native splice does", () => {
-        initializeRecords({ customModels: [{ id: "a" }, { id: "b" }] });
-        const models = trackedRecord<any[]>("customModels")!;
+        initializeRecords({ credentials: [{ id: "a" }, { id: "b" }] });
+        const credentials = trackedRecord<any[]>("credentials")!;
         let calls = 0;
         const start = { valueOf: () => (calls++ === 0 ? 0 : 1) };
-        refused("customModels", () => models.splice(start as any, 1, { id: "a", key: "secret" }), TypeError);
-        refused("customModels", () => models.splice(0, { valueOf: () => 1 } as any), TypeError);
-        models.splice(null as any, 0, { id: "n", key: "kn" });
-        expect(JSON.parse(text("customModels")).map((model: any) => model.id)).toEqual(["n", "a", "b"]);
-        expect(queued()).toEqual([entry("customModels", "n", "kn")]);
+        refused("credentials", () => credentials.splice(start as any, 1, { id: "a", key: "secret" }), TypeError);
+        refused("credentials", () => credentials.splice(0, { valueOf: () => 1 } as any), TypeError);
+        credentials.splice(null as any, 0, { id: "n", key: "kn" });
+        expect(JSON.parse(text("credentials")).map((credential: any) => credential.id)).toEqual(["n", "a", "b"]);
+        expect(queued()).toEqual([entry("credentials", "n", "kn")]);
     });
 
     it("routes an element replacement's credential, keeps the stored one for a blank or absent one, and refuses a duplicate owner", () => {
         initializeRecords({
-            customModels: [
+            credentials: [
                 { id: "a", name: "A" },
                 { id: "b", name: "B" },
             ],
         });
-        const models = trackedRecord<any[]>("customModels")!;
-        models[0] = { id: "a", name: "A2", key: "ka" };
+        const credentials = trackedRecord<any[]>("credentials")!;
+        credentials[0] = { id: "a", name: "A2", key: "ka" };
         // An aggregate read-modify-write never clears: blank and absent change nothing.
-        models[1] = { ...JSON.parse(JSON.stringify(models[1])), name: "B2", key: "" };
-        models[1] = { id: "b", name: "B3" };
-        expect(JSON.parse(text("customModels"))).toEqual([
+        credentials[1] = { ...JSON.parse(JSON.stringify(credentials[1])), name: "B2", key: "" };
+        credentials[1] = { id: "b", name: "B3" };
+        expect(JSON.parse(text("credentials"))).toEqual([
             { id: "a", name: "A2" },
             { id: "b", name: "B3" },
         ]);
-        expect(queued()).toEqual([entry("customModels", "a", "ka")]);
+        expect(queued()).toEqual([entry("credentials", "a", "ka")]);
         // Replacing "b" by an element named "a" would give "a" two owners.
-        refused("customModels", () => (models[1] = { id: "a", key: "again" }), CredentialRefusedError);
-        refused("customModels", () => (models[0] = { id: "a", key: 5 }), CredentialRefusedError);
-        refused("customModels", () => (models[0] = { name: "no id", key: "k" }), CredentialRefusedError);
+        refused("credentials", () => (credentials[1] = { id: "a", key: "again" }), CredentialRefusedError);
+        refused("credentials", () => (credentials[0] = { id: "a", key: 5 }), CredentialRefusedError);
+        refused("credentials", () => (credentials[0] = { name: "no id", key: "k" }), CredentialRefusedError);
     });
 
     it("routes a direct leaf write (an empty one clears) and refuses a non-string, a missing id, a duplicate owner, and a delete", () => {
-        initializeRecords({ customModels: [{ id: "a", name: "A" }, { name: "no id" }] });
-        const models = trackedRecord<any[]>("customModels")!;
-        models[0].key = "ka";
-        models[0].key = "";
-        expect(JSON.parse(text("customModels"))[0]).toEqual({ id: "a", name: "A" });
-        expect(queued()).toEqual([entry("customModels", "a", "ka"), entry("customModels", "a", "")]);
-        refused("customModels", () => (models[0].key = 5), CredentialRefusedError);
-        refused("customModels", () => (models[1].key = "k"), CredentialRefusedError);
-        refused("customModels", () => delete models[0].key, CredentialRefusedError);
-        // Custom model ids are not made unique: a credential on a shared id is refused, set or clear.
-        applyRaw("customModels", [{ id: "d" }, { id: "d" }]);
-        refused("customModels", () => (models[0].key = "secret"), CredentialRefusedError);
-        refused("customModels", () => (models[0].key = ""), CredentialRefusedError);
+        initializeRecords({ credentials: [{ id: "a", name: "A" }, { name: "no id" }] });
+        const credentials = trackedRecord<any[]>("credentials")!;
+        credentials[0].key = "ka";
+        credentials[0].key = "";
+        expect(JSON.parse(text("credentials"))[0]).toEqual({ id: "a", name: "A" });
+        expect(queued()).toEqual([entry("credentials", "a", "ka"), entry("credentials", "a", "")]);
+        refused("credentials", () => (credentials[0].key = 5), CredentialRefusedError);
+        refused("credentials", () => (credentials[1].key = "k"), CredentialRefusedError);
+        refused("credentials", () => delete credentials[0].key, CredentialRefusedError);
+        // Credential ids are not re-checked for uniqueness on a server copy: a credential on a shared
+        // id is refused, set or clear.
+        applyRaw("credentials", [{ id: "d" }, { id: "d" }]);
+        refused("credentials", () => (credentials[0].key = "secret"), CredentialRefusedError);
+        refused("credentials", () => (credentials[0].key = ""), CredentialRefusedError);
     });
 
     it("prepares a whole-list replacement: credentials routed and stripped, ambiguous owners refused", () => {
-        initializeRecords({ customModels: [] });
-        replaceRecord("customModels", [
+        initializeRecords({ credentials: [] });
+        replaceRecord("credentials", [
             { id: "a", key: "ka" },
             { id: "b", key: "" },
         ]);
-        expect(JSON.parse(text("customModels"))).toEqual([{ id: "a" }, { id: "b" }]);
-        expect(queued()).toEqual([entry("customModels", "a", "ka")]);
-        expect(notified).toEqual(["customModels"]);
-        refused("customModels", () => replaceRecord("customModels", [{ id: "x", key: "k" }, { id: "x" }]));
-        refused("customModels", () => replaceRecord("customModels", [{ key: "k" }]));
+        expect(JSON.parse(text("credentials"))).toEqual([{ id: "a" }, { id: "b" }]);
+        expect(queued()).toEqual([entry("credentials", "a", "ka")]);
+        expect(notified).toEqual(["credentials"]);
+        refused("credentials", () => replaceRecord("credentials", [{ id: "x", key: "k" }, { id: "x" }]));
+        refused("credentials", () => replaceRecord("credentials", [{ key: "k" }]));
     });
 
-    it("applies the same rules to a model preset's proxyKey, and treats a prompt preset's as plain data", () => {
-        initializeRecords({ modelPresets: [{ id: "m1", name: "M1" }], presets: [{ id: "p1", name: "P1" }] });
+    it("refuses the removed inline secrets (a custom model's key, a model preset's or profile's proxyKey), and treats a prompt preset's as plain data", () => {
+        // Model Profiles O2 (`docs/plan/model-profiles.md`): a profile names a credential instead,
+        // so these fields are no longer routed and must never become record data.
+        initializeRecords({
+            customModels: [{ id: "c1", name: "C1" }],
+            modelPresets: [{ id: "m1", name: "M1" }],
+            modelProfiles: [{ id: "f1", name: "F1", modelId: "gpt" }],
+            presets: [{ id: "p1", name: "P1" }],
+        });
+        const customModels = trackedRecord<any[]>("customModels")!;
         const modelPresets = trackedRecord<any[]>("modelPresets")!;
-        modelPresets[0].proxyKey = "k1";
-        modelPresets.push({ id: "m2", name: "M2", proxyKey: "k2" });
-        replaceRecordList(modelPresets, [modelPresets[0], modelPresets[1], { id: "m3", name: "M3", proxyKey: "k3" }]);
+        const modelProfiles = trackedRecord<any[]>("modelProfiles")!;
+        refused("customModels", () => (customModels[0].key = "k"), CredentialRefusedError);
+        refused("customModels", () => customModels.push({ id: "c2", key: "k" }), CredentialRefusedError);
+        refused("customModels", () => (customModels[0] = { id: "c1", key: "k" }), CredentialRefusedError);
+        refused("customModels", () => replaceRecord("customModels", [{ id: "c1", key: "k" }]), CredentialRefusedError);
+        refused("modelPresets", () => (modelPresets[0].proxyKey = "k1"), CredentialRefusedError);
+        refused(
+            "modelPresets",
+            () => modelPresets.push({ id: "m2", name: "M2", proxyKey: "k2" }),
+            CredentialRefusedError,
+        );
+        refused(
+            "modelPresets",
+            () => replaceRecordList(modelPresets, [modelPresets[0], { id: "m3", name: "M3", proxyKey: "k3" }]),
+            CredentialRefusedError,
+        );
+        refused("modelProfiles", () => (modelProfiles[0].key = "k"), CredentialRefusedError);
+        refused("modelProfiles", () => (modelProfiles[0].proxyKey = "k"), CredentialRefusedError);
+        refused(
+            "modelProfiles",
+            () => modelProfiles.push({ id: "f2", modelId: "gpt", proxyKey: "k" }),
+            CredentialRefusedError,
+        );
         expect(text("modelPresets")).not.toContain("proxyKey");
-        expect(queued()).toEqual([
-            entry("modelPresets", "m1", "k1"),
-            entry("modelPresets", "m2", "k2"),
-            entry("modelPresets", "m3", "k3"),
-        ]);
-        refused("modelPresets", () => delete modelPresets[0].proxyKey, CredentialRefusedError);
         // The prompt preset owns no credential since the split (`docs/plan/split-preset.md`): a
         // `proxyKey` written there is an ordinary field the server normalizer drops, not a routed secret.
         const presets = trackedRecord<any[]>("presets")!;
         presets[0].proxyKey = "plain";
         expect(JSON.parse(text("presets"))[0].proxyKey).toBe("plain");
-        expect(queued()).toHaveLength(3);
+        expect(queued()).toEqual([]);
     });
 });
 
 describe("descriptor writes (challenge point 3)", () => {
     it("refuses an unsupported descriptor before routing or storing, and routes a plain data property", () => {
-        initializeRecords({ customModels: [{ id: "a" }], ui: { zoomsize: 1 } });
-        const model = trackedRecord<any[]>("customModels")![0];
+        initializeRecords({ credentials: [{ id: "a" }], ui: { zoomsize: 1 } });
+        const credential = trackedRecord<any[]>("credentials")![0];
         const ui = trackedRecord<any>("ui")!;
         refused(
-            "customModels",
-            () => Object.defineProperty(model, "key", { value: "secret", configurable: false }),
+            "credentials",
+            () => Object.defineProperty(credential, "key", { value: "secret", configurable: false }),
             TypeError,
         );
         refused(
-            "customModels",
-            () => Object.defineProperty(model, "key", { value: "secret", writable: false }),
+            "credentials",
+            () => Object.defineProperty(credential, "key", { value: "secret", writable: false }),
             TypeError,
         );
-        refused("customModels", () => Object.defineProperty(model, "key", { get: () => "secret" }), TypeError);
+        refused("credentials", () => Object.defineProperty(credential, "key", { get: () => "secret" }), TypeError);
         refused("ui", () => Object.defineProperty(ui, "zoomsize", { value: 2, enumerable: false }), TypeError);
-        Object.defineProperty(model, "key", { value: "ka", writable: true, enumerable: true, configurable: true });
+        Object.defineProperty(credential, "key", { value: "ka", writable: true, enumerable: true, configurable: true });
         Object.defineProperty(ui, "zoomsize", { value: 2, writable: true, enumerable: true, configurable: true });
-        expect(JSON.parse(text("customModels"))).toEqual([{ id: "a" }]);
-        expect(queued()).toEqual([entry("customModels", "a", "ka")]);
+        expect(JSON.parse(text("credentials"))).toEqual([{ id: "a" }]);
+        expect(queued()).toEqual([entry("credentials", "a", "ka")]);
         expect(JSON.parse(text("ui"))).toEqual({ zoomsize: 2 });
     });
 });
@@ -308,6 +331,7 @@ describe("the llmSecrets record (challenge point 4, re-check 1 point 4)", () => 
         refused("llmSecrets", () => (secrets.openAIKey = 5), CredentialRefusedError);
         refused("llmSecrets", () => (secrets.google = "tok"), CredentialRefusedError);
         refused("llmSecrets", () => (secrets.modelPresets = {}), CredentialRefusedError);
+        refused("llmSecrets", () => (secrets.customModels = {}), CredentialRefusedError);
         refused("llmSecrets", () => delete secrets.openAIKey, CredentialRefusedError);
         refused("llmSecrets", () => delete secrets.google.accessToken, CredentialRefusedError);
     });
@@ -321,6 +345,7 @@ describe("the llmSecrets record (challenge point 4, re-check 1 point 4)", () => 
             { ...mirror(), OaiCompAPIKeys: "secret" },
             { ...mirror(), OaiCompAPIKeys: { m: "secret" } },
             { ...mirror(), modelPresets: {} },
+            { ...mirror(), customModels: {} },
             [],
         ]) {
             refused("llmSecrets", () => replaceRecord("llmSecrets", value), CredentialRefusedError);

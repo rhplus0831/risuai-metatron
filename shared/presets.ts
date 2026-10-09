@@ -1,4 +1,4 @@
-import type { AINsettings, botPreset, ModelPreset, OobaSettings } from "./database.ts";
+import type { AINsettings, botPreset, ModelPreset, ModelProfile, ModelSlot, OobaSettings } from "./database.ts";
 import { isRecordId, newId } from "./ids.ts";
 import { LLMFormat } from "./llm.ts";
 import {
@@ -11,21 +11,20 @@ import type { PromptItem } from "./prompt.ts";
 import { isPlainObject, type ValueKind, valueKindOf } from "./valueKinds.ts";
 
 /**
- * The canonical preset schema (Phase 3, Decision 3 of `docs/plan/PLAN.md`; split into the prompt
- * and the model preset by `docs/plan/split-preset.md`), used by the client (importers, the views)
- * and the server normalizers.
+ * The canonical schema for prompt presets, model presets, and model profiles
+ * (`docs/plan/model-profiles.md`), used by the client (importers, the views) and server normalizers.
  *
- * `PRESET_DEFAULTS` is the one table of every preset-schema field, keyed by its preset name, with
- * its fresh-boot default as recorded in `src/ts/storage/tests/fixtures/phase3/boot-snapshot.json`.
+ * `PRESET_DEFAULTS` is the one table of every schema field, keyed by its record name, with its
+ * fresh-boot default. The profile fields retain the former preset and provider defaults.
  * Each field has one owner: the model preset (`MODEL_PRESET_FIELDS`, the `modelPresets` collection)
- * or the prompt preset (`PROMPT_PRESET_FIELDS`, the `presets` record); `name` is both records' own
- * (`PRESET_RECORD_FIELDS`), and `image` the prompt preset's. The defaults, kinds, and null rules are
- * shared, so `presetFieldValue` serves either record. A deliberate default change updates this
- * object and that maintained fixture together. The values originated from the `setDatabase` root
- * defaults, not `presetTemplate` (they differ for `maxResponse` and the two textgen URLs).
+ * or profile (`MODEL_PROFILE_FIELDS`), or the prompt preset (`PROMPT_PRESET_FIELDS`, the `presets`
+ * record); `name` is every record's own (`PRESET_RECORD_FIELDS`), and `image` the prompt preset's.
+ * The defaults, kinds, and null rules are shared, so `presetFieldValue` serves every record.
+ * The values originated from the `setDatabase` root defaults, not `presetTemplate` (they differ
+ * for `maxResponse` and the two textgen URLs).
  * `undefined` means the field has no default and stays absent. Not preset fields: `openAIKey` (one
- * global secret), `proxyKey` (the model preset's `llmSecrets.modelPresets` entry),
- * `forceReplaceUrl2` (no reader), `autoSuggestPrefix` and `autoSuggestClean` (`ui` fields).
+ * global secret), `proxyKey` (removed), `forceReplaceUrl2` (no reader), `autoSuggestPrefix` and
+ * `autoSuggestClean` (`ui` fields).
  */
 
 export const defaultAIN: AINsettings = {
@@ -91,18 +90,32 @@ export function plainClone<T>(value: T): T {
     return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T);
 }
 
-type PresetDefaults = { [K in Exclude<keyof botPreset, PresetOnlyExcluded>]-?: botPreset[K] | null | undefined };
+type PresetSchema = Omit<botPreset, PresetOnlyExcluded> &
+    Omit<ModelPreset, "id" | "name"> &
+    Omit<ModelProfile, "id" | "name">;
+type PresetDefaults = { [K in keyof Required<PresetSchema>]: PresetSchema[K] | null | undefined };
 /**
- * Not preset fields: the id, the two LLM credentials (`openAIKey` is a global `llmSecrets` field;
- * `proxyKey` lives in `llmSecrets.modelPresets` by model preset id), and fields that were never saved
- * per preset.
+ * Legacy import-only fields: credentials, the removed `apiType` and proxy binding, the model ids
+ * now derived from slots, and fields that were never saved per preset. They have no schema default.
  */
 type PresetOnlyExcluded =
-    "id" | "openAIKey" | "proxyKey" | "forceReplaceUrl2" | "autoSuggestPrefix" | "autoSuggestClean";
+    | "id"
+    | "openAIKey"
+    | "proxyKey"
+    | "proxyCredentialId"
+    | "apiType"
+    | "aiModel"
+    | "subModel"
+    | "seperateModels"
+    | "forceReplaceUrl2"
+    | "autoSuggestPrefix"
+    | "autoSuggestClean";
+
+/** The materialized default profile; a default model preset names it in both required slots. */
+export const DEFAULT_MODEL_PROFILE_ID = "default";
 
 export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     name: "New Preset",
-    apiType: "gemini-3-flash-preview",
     localNetworkMode: false,
     localNetworkTimeoutSec: 600,
     mainPrompt: defaultMainPrompt,
@@ -114,8 +127,7 @@ export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     frequencyPenalty: 70,
     PresensePenalty: 70,
     formatingOrder: defaultFormatingOrder,
-    aiModel: "gemini-3-flash-preview",
-    subModel: "gemini-3-flash-preview",
+    modelId: "gemini-3-flash-preview",
     currentPluginProvider: "",
     textgenWebUIStreamURL: "wss://localhost/api/",
     textgenWebUIBlockingURL: "https://localhost/api/",
@@ -127,7 +139,7 @@ export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     ainconfig: defaultAIN,
     openrouterRequestModel: "openai/gpt-3.5-turbo",
     proxyRequestModel: undefined,
-    proxyCredentialId: undefined,
+    credentialId: undefined,
     NAISettings: { ...prebuiltNAIpresets, cfg_scale: 1, mirostat_tau: 0, mirostat_lr: 1 },
     autoSuggestPrompt: defaultAutoSuggestPrompt,
     promptTemplate: undefined,
@@ -180,30 +192,53 @@ export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     deepseekReasoningEffort: "high",
     outputImageModal: false,
     seperateModelsForAxModels: false,
-    seperateModels: { memory: "", emotion: "", translate: "", otherAx: "" },
+    mainSlot: { profileId: DEFAULT_MODEL_PROFILE_ID },
+    subSlot: { profileId: DEFAULT_MODEL_PROFILE_ID },
+    auxSlots: {},
     modelTools: [],
+    nanogptRequestModel: "",
+    nanogptRequestModelName: "",
+    nanogptProvider: "",
+    ollamaURL: "",
+    ollamaModel: "",
+    ollamaModelName: "",
+    ollamaModelSource: "local",
+    ollamaInputMode: "manual",
+    ollamaRequestFormat: LLMFormat.Ollama,
+    ollamaCloudModel: "",
+    ollamaCloudModelName: "",
+    customTokenizer: "tik",
     verbosity: 1,
     dynamicOutput: null,
 };
 
 export type PresetField = keyof PresetDefaults;
 
-/** Every preset-schema field (both owners), by its preset name. */
+/** Every schema field (all three owners), by its record name. */
 export const PRESET_FIELDS = Object.keys(PRESET_DEFAULTS) as readonly PresetField[];
 
 /**
- * The fields the model preset owns (`docs/plan/split-preset.md`, "Field partition"): what selects
- * and reaches the model. Stored in the `modelPresets` collection, never in a prompt preset.
+ * The model preset's slot choices. Each slot container is one object-kind schema field, with
+ * tag validation in `normalizeFields`; defaults and kinds stay in this table, without flattening
+ * the four auxiliary modes into additional fields.
  */
 export const MODEL_PRESET_FIELDS = [
-    "aiModel",
-    "subModel",
-    "apiType",
+    "mainSlot",
+    "subSlot",
+    "auxSlots",
+    "seperateModelsForAxModels",
+] as const satisfies readonly PresetField[];
+
+export type ModelPresetField = (typeof MODEL_PRESET_FIELDS)[number];
+
+/** The profile's definition, key binding, connection, routing, compatibility, and capacity. */
+export const MODEL_PROFILE_FIELDS = [
+    "modelId",
+    "credentialId",
     "currentPluginProvider",
     "forceReplaceUrl",
     "customProxyRequestModel",
     "proxyRequestModel",
-    "proxyCredentialId",
     "customAPIFormat",
     "textgenWebUIStreamURL",
     "textgenWebUIBlockingURL",
@@ -222,31 +257,51 @@ export const MODEL_PRESET_FIELDS = [
     "outputImageModal",
     "modelTools",
     "maxContext",
-    "seperateModelsForAxModels",
-    "seperateModels",
+    "nanogptRequestModel",
+    "nanogptRequestModelName",
+    "nanogptProvider",
+    "ollamaURL",
+    "ollamaModel",
+    "ollamaModelName",
+    "ollamaModelSource",
+    "ollamaInputMode",
+    "ollamaRequestFormat",
+    "ollamaCloudModel",
+    "ollamaCloudModelName",
+    "customTokenizer",
 ] as const satisfies readonly PresetField[];
 
-export type ModelPresetField = (typeof MODEL_PRESET_FIELDS)[number];
+export type ModelProfileField = (typeof MODEL_PROFILE_FIELDS)[number];
 
-/** The fields both preset records hold for themselves (never forwarded to a root name). */
+/** The fields records hold for themselves (`image` is only on the prompt preset). */
 export const PRESET_RECORD_FIELDS = ["name", "image"] as const satisfies readonly PresetField[];
 
 /** The fields the prompt preset owns: every other schema field (the prompt, sampling, reasoning). */
-export type PromptPresetField = Exclude<PresetField, ModelPresetField | (typeof PRESET_RECORD_FIELDS)[number]>;
+export type PromptPresetField = Exclude<
+    PresetField,
+    ModelPresetField | ModelProfileField | (typeof PRESET_RECORD_FIELDS)[number]
+>;
 
 const modelFieldSet = new Set<string>(MODEL_PRESET_FIELDS);
+const profileFieldSet = new Set<string>(MODEL_PROFILE_FIELDS);
 const recordFieldSet = new Set<string>(PRESET_RECORD_FIELDS);
 
 function isPromptPresetField(field: PresetField): field is PromptPresetField {
-    return !modelFieldSet.has(field) && !recordFieldSet.has(field);
+    return !modelFieldSet.has(field) && !profileFieldSet.has(field) && !recordFieldSet.has(field);
 }
 
 /** The prompt preset's fields, in `PRESET_DEFAULTS` order. */
 export const PROMPT_PRESET_FIELDS: readonly PromptPresetField[] = PRESET_FIELDS.filter(isPromptPresetField);
 
 /** Which record owns a preset-schema field (`undefined` for `name`/`image`, which each record has). */
-export function presetFieldOwner(field: PresetField): "model" | "prompt" | undefined {
-    return modelFieldSet.has(field) ? "model" : recordFieldSet.has(field) ? undefined : "prompt";
+export function presetFieldOwner(field: PresetField): "model" | "profile" | "prompt" | undefined {
+    return modelFieldSet.has(field)
+        ? "model"
+        : profileFieldSet.has(field)
+          ? "profile"
+          : recordFieldSet.has(field)
+            ? undefined
+            : "prompt";
 }
 
 /** Kinds of the fields whose default does not show one (no default, or a `null` default). */
@@ -254,7 +309,7 @@ const kindsWithoutDefault: Partial<Record<PresetField, ValueKind>> = {
     promptPreprocess: "boolean",
     koboldURL: "string",
     proxyRequestModel: "string",
-    proxyCredentialId: "string",
+    credentialId: "string",
     promptTemplate: "array",
     localStopStrings: "array",
     thinkingTokens: "number",
@@ -422,6 +477,34 @@ function migratePresetContainers(record: Record<string, unknown>): void {
     }
 }
 
+/** A single non-empty, explicit tag; mixed tags and extra keys cannot change a slot's meaning. */
+function normalizeModelSlot(value: unknown): ModelSlot | undefined {
+    if (!isPlainObject(value) || Object.keys(value).length !== 1) {
+        return undefined;
+    }
+    if (Object.hasOwn(value, "profileId") && isRecordId(value.profileId)) {
+        return { profileId: value.profileId };
+    }
+    if (Object.hasOwn(value, "modelId") && isRecordId(value.modelId)) {
+        return { modelId: value.modelId };
+    }
+    return undefined;
+}
+
+/** Only the four auxiliary modes are stored; an invalid or missing entry uses the sub slot. */
+function normalizeAuxSlots(value: unknown): ModelPreset["auxSlots"] {
+    const slots: ModelPreset["auxSlots"] = {};
+    if (isPlainObject(value)) {
+        for (const mode of ["memory", "translate", "emotion", "otherAx"] as const) {
+            const slot = Object.hasOwn(value, mode) ? normalizeModelSlot(value[mode]) : undefined;
+            if (slot) {
+                slots[mode] = slot;
+            }
+        }
+    }
+    return slots;
+}
+
 /**
  * A normalized copy of `source`'s `fields`: each missing one (absent or `undefined`) or one of the
  * wrong JSON kind (`PRESET_FIELD_KINDS`; a number where an object belongs) filled with its default,
@@ -435,6 +518,15 @@ function migratePresetContainers(record: Record<string, unknown>): void {
 function normalizeFields(source: Record<string, unknown>, fields: readonly PresetField[], id: string) {
     const record: Record<string, unknown> = { id };
     for (const field of fields) {
+        if (field === "mainSlot" || field === "subSlot") {
+            const slot = normalizeModelSlot(source[field]);
+            record[field] = slot && "profileId" in slot ? slot : plainClone(PRESET_DEFAULTS[field]);
+            continue;
+        }
+        if (field === "auxSlots") {
+            record[field] = normalizeAuxSlots(source[field]);
+            continue;
+        }
         const value = field === "openrouterProvider" ? migrateOpenrouterProvider(source[field]) : source[field];
         if (
             (value === null && nullableFields.has(field)) ||
@@ -488,9 +580,13 @@ function normalizeFields(source: Record<string, unknown>, fields: readonly Prese
 
 const promptRecordFields: readonly PresetField[] = [...PRESET_RECORD_FIELDS, ...PROMPT_PRESET_FIELDS];
 const modelRecordFields: readonly PresetField[] = ["name", ...MODEL_PRESET_FIELDS];
+const profileRecordFields: readonly PresetField[] = ["name", ...MODEL_PROFILE_FIELDS];
 
 /** A new model preset's name (the shared `name` default is the prompt preset's). */
 export const MODEL_PRESET_DEFAULT_NAME = "New Model Preset";
+
+/** A new model profile's name (the shared `name` default is the prompt preset's). */
+export const MODEL_PROFILE_DEFAULT_NAME = "New Model Profile";
 
 /**
  * A normalized copy of a prompt preset (`normalizeFields` over `name`, `image`, and
@@ -517,9 +613,9 @@ export function normalizePresets(input: unknown): botPreset[] {
 
 /**
  * A normalized copy of a model preset (`normalizeFields` over `name` and `MODEL_PRESET_FIELDS`;
- * `name` defaults to `MODEL_PRESET_DEFAULT_NAME`): every other field is dropped, and a credential is
- * never stored (`proxyKey` is the `llmSecrets.modelPresets` entry). Same input and id rules as
- * `normalizePreset`.
+ * `name` defaults to `MODEL_PRESET_DEFAULT_NAME`): every other field is dropped, with no migration
+ * of old model ids, connection options, or credentials. Main and sub require a profile tag;
+ * auxiliary slots allow either tag. Same input and id rules as `normalizePreset`.
  */
 export function normalizeModelPreset(input: unknown, options: { id?: string } = {}): ModelPreset {
     const source = isPlainObject(input) ? input : {};
@@ -534,6 +630,26 @@ export function normalizeModelPreset(input: unknown, options: { id?: string } = 
 /** The normalized model preset collection, with the same rules as `normalizePresets`. */
 export function normalizeModelPresets(input: unknown): ModelPreset[] {
     return normalizeList(input, normalizeModelPreset, {});
+}
+
+/**
+ * A normalized model profile with the schema's field defaults and an optional string key binding.
+ * Neither the model definition nor the credential's existence is checked here: dangling bindings
+ * refuse when used. Same input and id rules as `normalizePreset`; no secret is stored.
+ */
+export function normalizeModelProfile(input: unknown, options: { id?: string } = {}): ModelProfile {
+    const source = isPlainObject(input) ? input : {};
+    const id = options.id ?? (isRecordId(source.id) ? source.id : newPresetId());
+    const record = normalizeFields(source, profileRecordFields, id);
+    if (typeof source.name !== "string") {
+        record.name = MODEL_PROFILE_DEFAULT_NAME;
+    }
+    return record as unknown as ModelProfile;
+}
+
+/** Unique profile ids, with one materialized default profile for a non-array or empty list. */
+export function normalizeModelProfiles(input: unknown): ModelProfile[] {
+    return normalizeList(input, normalizeModelProfile, { id: DEFAULT_MODEL_PROFILE_ID });
 }
 
 function normalizeList<T extends { id: string }>(input: unknown, normalize: (entry: unknown) => T, empty: object): T[] {

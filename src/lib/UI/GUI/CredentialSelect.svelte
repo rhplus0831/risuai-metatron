@@ -1,49 +1,29 @@
 <script lang="ts">
     import { language } from "src/lang";
     import { credentialFor, credentialsAccepted } from "src/ts/model/credentials";
-    import {
-        setCustomModelCredential,
-        setModelCredential,
-        setProxyCredential,
-    } from "src/ts/storage/collectionStore.svelte";
-    import { activeModelPreset, type PresetScope } from "src/ts/storage/settingsViews.svelte";
-    import type { CredentialSlot } from "../../../../shared/llm/credentialSlots.ts";
+    import { setProfileCredential } from "src/ts/storage/collectionStore.svelte";
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import Button from "./Button.svelte";
     import OptionInput from "./OptionInput.svelte";
     import SelectInput from "./SelectInput.svelte";
 
     interface Props {
-        modelId: string;
-        scope?: PresetScope;
-        /** The slot owns the target; this also names the target when an unsupported binding is removed. */
-        bindingTarget?: CredentialSlot["binding"];
+        profileId: string;
         compact?: boolean;
     }
 
-    let { modelId, scope, bindingTarget = "global", compact = false }: Props = $props();
-    const decision = $derived(credentialFor(modelId, scope));
-    const target = $derived(decision.slot?.binding ?? bindingTarget);
-    const options = $derived(credentialsAccepted(modelId));
+    let { profileId, compact = false }: Props = $props();
+    const profile = $derived(settings.modelProfiles.find((entry) => entry.id === profileId));
+    const decision = $derived(credentialFor(profile));
+    const options = $derived(credentialsAccepted(profile?.modelId ?? ""));
     const selected = $derived(decision.state === "default" ? "" : decision.credentialId);
 
     function choose(value: string) {
-        const id = value === "" ? null : value;
-        switch (target) {
-            case "customModel":
-                setCustomModelCredential(modelId, id);
-                break;
-            case "modelPreset": {
-                const presetId = scope?.modelPresetId ?? activeModelPreset.id;
-                if (presetId) setProxyCredential(presetId, id);
-                break;
-            }
-            default:
-                setModelCredential(modelId, id);
-        }
+        setProfileCredential(profileId, value === "" ? null : value);
     }
 </script>
 
-{#if decision.slot || decision.state !== "default"}
+{#if profile && (decision.slot || decision.state !== "default")}
     <div class="flex min-w-0 flex-col gap-1" class:mb-2={!compact}>
         {#if decision.slot}
             <span class="text-textcolor2 text-xs">{language.apiKey}</span>

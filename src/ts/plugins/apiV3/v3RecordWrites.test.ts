@@ -67,8 +67,9 @@ vi.mock("src/ts/util", async (importOriginal) => ({
 
 import { recordData, setRecordWriteListener } from "src/ts/storage/records.svelte";
 import { selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
-import { activeModelPreset, activePreset, settings } from "src/ts/storage/settingsViews.svelte";
+import { activeMainProfile, activePreset, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
+import { DEFAULT_MODEL_PROFILE_ID, normalizeModelProfile } from "../../../../shared/presets";
 import { executePluginV3 } from "./v3.svelte";
 
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
@@ -88,6 +89,8 @@ beforeEach(async () => {
         plugins: [],
         modules: [],
         botPresets: [{ id: "p", name: "P", temperature: 1 }],
+        // The default profile the installed model preset's main slot names (`docs/plan/model-profiles.md`).
+        modelProfiles: [normalizeModelProfile({}, { id: DEFAULT_MODEL_PROFILE_ID })],
         personas: [personaA],
         theme: "",
         lineHeight: 1,
@@ -124,12 +127,13 @@ describe("the plugin database setters over the settings records", () => {
                 otherKey: 2,
                 personas: [personaA, { id: "b", name: "B", icon: "", personaPrompt: "", note: "" }],
             });
-            // `maxContext` is the model preset's (`docs/plan/split-preset.md`): one more record, once.
-            expect(notified.sort()).toEqual(["modelPresets", "personas", "pluginStorage", "presets", "ui"]);
+            // `maxContext` is the model preset's main profile's (`docs/plan/model-profiles.md` O8): one
+            // more record, once.
+            expect(notified.sort()).toEqual(["modelProfiles", "personas", "pluginStorage", "presets", "ui"]);
             expect(settings.ui.theme).toBe("waifu");
             expect(settings.ui.lineHeight).toBe(2);
             expect(activePreset.temperature).toBe(7);
-            expect(activeModelPreset.maxContext).toBe(4096);
+            expect(activeMainProfile.maxContext).toBe(4096);
             expect(plain(settings.pluginStorage)).toEqual({ customKey: { a: 1 }, otherKey: 2 });
             expect(settings.personas).toHaveLength(2);
             expect(plain(recordData("modules"))).toEqual(modulesBefore);

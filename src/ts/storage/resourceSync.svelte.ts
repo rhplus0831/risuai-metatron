@@ -1038,13 +1038,11 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
             saving.state = true;
             try {
                 const reply = await sendSecretRequest(
-                    op.request.kind === "copy"
-                        ? op.request
-                        : {
-                              kind: "put",
-                              path: encodeSecretPath(op.request.path),
-                              value: op.request.kind === "put" ? op.request.value : "",
-                          },
+                    {
+                        kind: "put",
+                        path: encodeSecretPath(op.request.path),
+                        value: op.request.kind === "put" ? op.request.value : "",
+                    },
                     base,
                 );
                 removeSecretOp(op.id);

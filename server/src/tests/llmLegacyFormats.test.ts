@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LlmRequestBody, LlmRequestEvent } from "../../../shared/llm/request.ts";
 import { normalizePersonas } from "../../../shared/personas.ts";
-import { normalizeModelPresets, normalizePresets } from "../../../shared/presets.ts";
+import { normalizeModelPresets, normalizeModelProfiles, normalizePresets } from "../../../shared/presets.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeProviders } from "../data/normalize/providers.ts";
@@ -39,9 +39,13 @@ function harness(
         }),
         ui: { autoSuggestPrefix: "" },
         customModels: [],
-        // `preset` mixes both owners' fields; each normalizer keeps its own (`docs/plan/split-preset.md`).
+        // `preset` mixes the prompt preset's fields and the profile's (`aiModel` is its `modelId`);
+        // each normalizer keeps its own (`docs/plan/split-preset.md`, `docs/plan/model-profiles.md`).
         presets: normalizePresets([{ id: "p", name: "p", maxResponse: 250, temperature: 60, ...preset }]),
-        modelPresets: normalizeModelPresets([{ id: "m", name: "m", ...preset }]),
+        modelProfiles: normalizeModelProfiles([{ id: "main", name: "main", ...preset, modelId: preset.aiModel }]),
+        modelPresets: normalizeModelPresets([
+            { id: "m", name: "m", mainSlot: { profileId: "main" }, subSlot: { profileId: "main" } },
+        ]),
         personas: normalizePersonas([{ id: "u", name: "Uma" }]),
     };
     const characters: Record<string, unknown> = { c: { chaId: "c", name: "Cara" } };

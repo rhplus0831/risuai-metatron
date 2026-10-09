@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultColorScheme } from "../../../shared/colorScheme.ts";
+import { normalizeModelProfile } from "../../../shared/presets.ts";
 import { SECTION_FIELDS, type SectionKind } from "../../../shared/sections.ts";
 import { valueKindOf } from "../../../shared/valueKinds.ts";
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
@@ -41,9 +42,8 @@ function bootDefaults(section: SectionKind): Record<string, unknown> {
         }
     }
     if (section === "llmSecrets") {
-        record.modelPresets = {};
-        // Phase 5 slice 7b: each custom model's key, by model id.
-        record.customModels = {};
+        // The named keys by credential id; the per-model-preset and per-custom-model maps are
+        // retired (`docs/plan/model-profiles.md`, O2).
         record.credentials = {};
     }
     return record;
@@ -209,26 +209,43 @@ describe("providers", () => {
         expectIdempotent(normalizeProviders, { seperateParameters: { memory: {} }, fallbackModels: { model: ["a"] } });
     });
 
-    it("keeps the model-to-credential bindings as own string entries, `{}` for a wrong kind, and rejects a non-string binding", () => {
-        expect(normalizeProviders(undefined).modelCredentials).toEqual({});
-        expect(normalizeProviders({ modelCredentials: [] }).modelCredentials).toEqual({});
-        expect(normalizeProviders({ modelCredentials: null }).modelCredentials).toEqual({});
-        const input = JSON.parse('{"modelCredentials":{"gpt-4o":"c1","__proto__":"c2"}}');
-        const out = normalizeProviders(input);
-        expect(Object.getPrototypeOf(out.modelCredentials)).toBe(Object.prototype);
-        expect(Object.keys(out.modelCredentials)).toEqual(["gpt-4o", "__proto__"]);
-        expect(Object.getOwnPropertyDescriptor(out.modelCredentials, "__proto__")?.value).toBe("c2");
-        expectIdempotent(normalizeProviders as Normalizer, input);
-        for (const value of [1, null, { id: "c1" }]) {
-            expect(() => normalizeProviders({ modelCredentials: { "gpt-4o": value } }), JSON.stringify(value)).toThrow(
-                new ResourceValidationError("providers.modelCredentials must map model ids to credential id strings"),
-            );
+    it("drops a stored model-to-credential map and the profile fields (O7), of any kind", () => {
+        // `docs/plan/model-profiles.md`, product decision 3 and O7: the profile owns the key and
+        // the upstream model and URL of a generic definition.
+        const profileFields = [
+            "nanogptRequestModel",
+            "nanogptRequestModelName",
+            "nanogptProvider",
+            "ollamaURL",
+            "ollamaModel",
+            "ollamaModelName",
+            "ollamaModelSource",
+            "ollamaInputMode",
+            "ollamaRequestFormat",
+            "ollamaCloudModel",
+            "ollamaCloudModelName",
+            "customTokenizer",
+        ];
+        const fresh = normalizeProviders(undefined);
+        for (const modelCredentials of [{ "gpt-4o": "c1" }, { "gpt-4o": 1 }, [], null]) {
+            const stored = {
+                ...Object.fromEntries(profileFields.map((field) => [field, "stored"])),
+                modelCredentials,
+            };
+            const out = normalizeProviders(stored);
+            expect(out, JSON.stringify(modelCredentials)).toEqual(fresh);
+            expect(serialize(out).text).not.toContain("c1");
+        }
+        for (const field of ["modelCredentials", ...profileFields]) {
+            expect(Object.hasOwn(fresh, field), field).toBe(false);
+            expect(SECTION_FIELDS.providers as readonly string[], field).not.toContain(field);
         }
     });
 
     it("keeps the fresh-boot constants that setDatabase derived from other fields", () => {
-        const out = normalizeProviders(undefined);
-        expect(out).toMatchObject({ ollamaModelSource: "local", ollamaCloudModel: "", loreBookToken: 8000 });
+        expect(normalizeProviders(undefined)).toMatchObject({ loreBookToken: 8000 });
+        // The two Ollama constants moved with the other O7 fields to the profile's defaults.
+        expect(normalizeModelProfile({})).toMatchObject({ ollamaModelSource: "local", ollamaCloudModel: "" });
     });
 });
 
@@ -255,24 +272,27 @@ describe("llmSecrets", () => {
         expect(normalizeLlmSecrets({ vertexAccessTokenExpires: 42 }).vertexAccessTokenExpires).toBe(42);
     });
 
-    it("keeps the per-model-preset proxyKey map with only `proxyKey` per entry, as own keys, `{}` when absent, and drops the former `presets` map", () => {
-        expect(normalizeLlmSecrets(undefined).modelPresets).toEqual({});
-        expect(normalizeLlmSecrets({}).modelPresets).toEqual({});
+    it("drops the retired per-model-preset and per-custom-model key maps and the former `presets` map, well-formed or not", () => {
+        // `docs/plan/model-profiles.md`, O2: the named keys are the one place that stores LLM keys.
+        expect(Object.hasOwn(normalizeLlmSecrets(undefined), "modelPresets")).toBe(false);
+        expect(Object.hasOwn(normalizeLlmSecrets(undefined), "customModels")).toBe(false);
         const input = JSON.parse(
-            '{"modelPresets":{"a":{"proxyKey":"k","extra":1},"__proto__":{"proxyKey":"p"},"constructor":{"proxyKey":"c"}},"presets":{"old":{"proxyKey":"gone"}}}',
+            '{"modelPresets":{"a":{"proxyKey":"k-preset"},"__proto__":{"proxyKey":"p-preset"}},"customModels":{"xcustom:::a":{"key":"k-custom"}},"presets":{"old":{"proxyKey":"gone"}},"credentials":{"c1":{"key":"k-named"}}}',
         );
         const out = normalizeLlmSecrets(input);
-        expect(Object.getPrototypeOf(out.modelPresets)).toBe(Object.prototype);
-        expect(Object.keys(out.modelPresets)).toEqual(["a", "__proto__", "constructor"]);
-        expect(out.modelPresets.a).toEqual({ proxyKey: "k" });
-        expect(Object.getOwnPropertyDescriptor(out.modelPresets, "__proto__")?.value).toEqual({ proxyKey: "p" });
-        expect(Object.getOwnPropertyDescriptor(out.modelPresets, "constructor")?.value).toEqual({ proxyKey: "c" });
-        // The pre-split per-prompt-preset map is not read: the credential is gone, not carried over.
-        expect(Object.hasOwn(out, "presets")).toBe(false);
-        expect(serialize(out).text).not.toContain("gone");
-        // The stored text carries the entries, and the second normalization is the same text.
-        expect(serialize(out).text).toContain('"__proto__":{"proxyKey":"p"}');
+        for (const field of ["modelPresets", "customModels", "presets"]) {
+            expect(Object.hasOwn(out, field), field).toBe(false);
+        }
+        expect(out.credentials).toEqual({ c1: { key: "k-named" } });
+        for (const value of ["k-preset", "p-preset", "k-custom", "gone"]) {
+            expect(serialize(out).text, value).not.toContain(value);
+        }
         expectIdempotent(normalizeLlmSecrets as Normalizer, input);
+        // A malformed retired map is dropped too, never refused: it no longer has a shape to check.
+        for (const legacy of [[], null, "k", { "": { proxyKey: "k" } }, { a: { proxyKey: 1 } }, { a: null }]) {
+            const dropped = normalizeLlmSecrets({ modelPresets: legacy, customModels: legacy });
+            expect(dropped, JSON.stringify(legacy)).toEqual(normalizeLlmSecrets(undefined));
+        }
     });
 
     it("keeps the named credential map with only `key` per entry, as own keys, `{}` when absent, and rejects any other shape", () => {
@@ -291,22 +311,6 @@ describe("llmSecrets", () => {
                 new ResourceValidationError("llmSecrets.credentials must map credential ids to { key: string }"),
             );
         }
-    });
-
-    it("rejects a modelPresets map that is not an object of `{ proxyKey: string }` by non-empty ids", () => {
-        const rejects = (modelPresets: unknown, message: string) =>
-            expect(() => normalizeLlmSecrets({ modelPresets }), JSON.stringify(modelPresets)).toThrow(
-                new ResourceValidationError(message),
-            );
-        rejects([], "llmSecrets.modelPresets must be an object");
-        rejects(null, "llmSecrets.modelPresets must be an object");
-        rejects("k", "llmSecrets.modelPresets must be an object");
-        const entries = "llmSecrets.modelPresets must map model preset ids to { proxyKey: string }";
-        rejects({ "": { proxyKey: "k" } }, entries);
-        rejects({ a: { proxyKey: 1 } }, entries);
-        rejects({ a: {} }, entries);
-        rejects({ a: "k" }, entries);
-        rejects({ a: null }, entries);
     });
 });
 

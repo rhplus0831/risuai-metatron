@@ -29,10 +29,10 @@ export const NESTED_SECRET_FIELDS = {
 export const SECRET_MAP_FIELDS = ["OaiCompAPIKeys"] as const;
 
 /**
- * The per-record maps, each named after the settings collection whose records own its entries:
- * `modelPresets.<modelPresetId>.proxyKey`, `customModels.<modelId>.key`, `credentials.<credentialId>.key`.
+ * Named credential values, owned by the `credentials` collection. Profiles and definitions have
+ * no secret of their own (Model Profiles O2).
  */
-export const SECRET_ENTRY_MAPS = { modelPresets: "proxyKey", customModels: "key", credentials: "key" } as const;
+export const SECRET_ENTRY_MAPS = { credentials: "key" } as const;
 
 export type FlatSecretField = (typeof FLAT_SECRET_FIELDS)[number];
 export type NestedSecretField = keyof typeof NESTED_SECRET_FIELDS;
@@ -272,8 +272,6 @@ export function withStoredSecrets(data: Record<string, unknown>, stored: Record<
 
 export type MaskedLlmSecrets = Record<string, unknown> & {
     OaiCompAPIKeys: Record<string, MaskedLeaf>;
-    modelPresets: Record<string, { proxyKey: MaskedLeaf }>;
-    customModels: Record<string, { key: MaskedLeaf }>;
     credentials: Record<string, { key: MaskedLeaf }>;
 };
 
@@ -281,6 +279,10 @@ export type MaskedLlmSecrets = Record<string, unknown> & {
 export function maskLlmSecrets(record: Record<string, any>): MaskedLlmSecrets {
     const masked: Record<string, unknown> = {};
     for (const [field, value] of Object.entries(record)) {
+        // An old stored record must not expose retired keys through the readable-sibling branch.
+        if (field === "modelPresets" || field === "customModels" || field === "proxyKey") {
+            continue;
+        }
         if ((FLAT_SECRET_FIELDS as readonly string[]).includes(field)) {
             masked[field] = maskedLeaf(value);
         } else if (hasOwn(NESTED_SECRET_FIELDS, field)) {
@@ -360,7 +362,11 @@ export function maskedSecret(masked: Record<string, any> | null | undefined, pat
 export function llmSecretSiblings(record: Record<string, any>, fields: readonly string[]): Record<string, unknown> {
     const siblings: Record<string, unknown> = {};
     for (const field of fields) {
-        if ((FLAT_SECRET_FIELDS as readonly string[]).includes(field) || field === "OaiCompAPIKeys") {
+        if (
+            (FLAT_SECRET_FIELDS as readonly string[]).includes(field) ||
+            field === "OaiCompAPIKeys" ||
+            hasOwn(SECRET_ENTRY_MAPS, field)
+        ) {
             continue;
         }
         if (hasOwn(NESTED_SECRET_FIELDS, field)) {

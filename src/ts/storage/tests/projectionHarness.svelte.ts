@@ -1525,7 +1525,9 @@ export function mountFacade(candidate: Candidate, characterIds: readonly string[
     // still resolves the selection), a write goes to the selected preset's `llmSecrets` entry
     // through `setSecret` (a blank or non-string value clears it), resolved untracked. The spike
     // predates the preset split: its one presets record stands in for the model preset that owns the
-    // entry (`docs/plan/split-preset.md`), so the path names the `modelPresets` map.
+    // entry (`docs/plan/split-preset.md`), so the path names the `modelPresets` map. Production has
+    // no such map since Model Profiles O2 (`docs/plan/model-profiles.md`); the spike keeps its
+    // historical model, so the path is cast (the queue it reaches is never sent here).
     defineAccessor(
         raw,
         "proxyKey",
@@ -1542,7 +1544,7 @@ export function mountFacade(candidate: Candidate, characterIds: readonly string[
                     return;
                 }
                 routeSecret(
-                    { kind: "entry", field: "modelPresets", id: preset.id },
+                    { kind: "entry", field: "modelPresets", id: preset.id } as unknown as SecretPath,
                     typeof value === "string" ? value : "",
                 );
             });

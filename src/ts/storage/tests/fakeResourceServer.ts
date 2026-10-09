@@ -2,10 +2,8 @@ import {
     carriesSecretPath,
     maskLlmSecrets,
     parseSecretPath,
-    readSecret,
     withStoredSecrets,
     writeSecret,
-    type SecretPath,
 } from "../../../../shared/llmSecrets.ts";
 import { RESOURCE_EPOCH_HEADER, type ResourceConflict } from "../../../../shared/resources.ts";
 
@@ -289,20 +287,6 @@ export class FakeResourceServer {
                 this.delete(kind, id);
                 return Response.json({ success: true, epoch: this.epoch });
             }
-        }
-        if (url.pathname === "/api/llm-secrets/modelPresets/copy" && method === "POST") {
-            const mismatch = assertEpoch();
-            if (mismatch) {
-                return mismatch;
-            }
-            if (typeof body?.from !== "string" || typeof body?.to !== "string" || !body.from || !body.to) {
-                return Response.json({ error: "Body must be { from, to, baseRevision }" }, { status: 400 });
-            }
-            const from: SecretPath = { kind: "entry", field: "modelPresets", id: body.from };
-            const to: SecretPath = { kind: "entry", field: "modelPresets", id: body.to };
-            return this.writeSecretRoute(body.baseRevision, (record) =>
-                writeSecret(record, to, readSecret(record, from)),
-            );
         }
         if (url.pathname.startsWith("/api/llm-secrets/") && (method === "PUT" || method === "DELETE")) {
             const mismatch = assertEpoch();

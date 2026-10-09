@@ -61,10 +61,9 @@ export interface DynamicOutput {
     dynamicRequest: boolean;
 }
 
-/** A custom model (`CustomModelsSettings.svelte`); its key is a write-only `llmSecrets` credential. */
+/** A custom model definition (`CustomModelsSettings.svelte`); profiles choose its credentials. */
 export interface CustomModel {
     id: string;
-    credentialId?: string;
     internalId: string;
     url: string;
     format: LLMFormat;
@@ -139,8 +138,10 @@ export interface Database {
     /** The prompt presets (`presets` resource); the selected one per client is `botPresetsId`. */
     botPresets: botPreset[];
     botPresetsId: number;
-    /** The model presets (`modelPresets` collection, `docs/plan/split-preset.md`), selected per client. */
+    /** The model presets (`modelPresets` collection), selected per client. */
     modelPresets: ModelPreset[];
+    /** Model definitions with connection options and named-key bindings, shared by every preset. */
+    modelProfiles: ModelProfile[];
     sdProvider: string;
     webUiUrl: string;
     sdSteps: number;
@@ -456,11 +457,9 @@ export interface Database {
     };
     modelTools: string[];
     hotkeys: Hotkey[];
-    /** The custom models; each one's key is in `llmSecrets.customModels.<id>.key` (Phase 5 slice 7b). */
+    /** The custom model definitions; credentials belong to the profiles that use them. */
     customModels: CustomModel[];
     credentials: Credential[];
-    /** Catalogue model ids bound to named credentials; absent bindings use the existing defaults. */
-    modelCredentials: Record<string, string>;
     igpPrompt: string;
     useTokenizerCaching: boolean;
     showMenuHypaMemoryModal: boolean;
@@ -825,7 +824,7 @@ export interface groupChat {
 /**
  * A prompt preset (the `presets` resource; `docs/plan/split-preset.md`). It stores only the
  * prompt-owned fields (`PROMPT_PRESET_FIELDS`) and `name`/`image`; the model fields below
- * (`MODEL_PRESET_FIELDS`) are read only from old files and imports, and `normalizePreset` drops them.
+ * are read only from old files and imports, and `normalizePreset` drops them.
  */
 export interface botPreset {
     /** Assigned at creation (`normalizePreset`, `shared/presets.ts`); stripped from `.risup` exports. */
@@ -927,17 +926,25 @@ export interface botPreset {
     dynamicOutput?: DynamicOutput;
 }
 
-/**
- * A model preset (the `modelPresets` collection; `docs/plan/split-preset.md`): what selects and
- * reaches the model (`MODEL_PRESET_FIELDS`), with the `botPreset` field types. Its `proxyKey` is the
- * write-only `llmSecrets.modelPresets.<id>.proxyKey` entry, never stored here.
- */
-export type ModelPreset = { id: string; name: string } & Required<
+export type AuxModelMode = "memory" | "translate" | "emotion" | "otherAx";
+
+/** A slot states whether it names a profile or a bare definition; ids are never guessed apart. */
+export type ModelSlot = { profileId: string } | { modelId: string };
+
+/** Which profiles a preset uses (`docs/plan/model-profiles.md`); auxiliary slots may be bare. */
+export type ModelPreset = {
+    id: string;
+    name: string;
+    mainSlot: { profileId: string };
+    subSlot: { profileId: string };
+    auxSlots: Partial<Record<AuxModelMode, ModelSlot>>;
+    seperateModelsForAxModels: boolean;
+};
+
+/** One way to use a model definition. The optional binding names a credential, never its value. */
+export type ModelProfile = { id: string; name: string; modelId: string; credentialId?: string } & Required<
     Pick<
         botPreset,
-        | "aiModel"
-        | "subModel"
-        | "apiType"
         | "currentPluginProvider"
         | "forceReplaceUrl"
         | "customProxyRequestModel"
@@ -958,11 +965,24 @@ export type ModelPreset = { id: string; name: string } & Required<
         | "outputImageModal"
         | "modelTools"
         | "maxContext"
-        | "seperateModelsForAxModels"
-        | "seperateModels"
     >
 > &
-    Pick<botPreset, "koboldURL" | "proxyRequestModel" | "proxyCredentialId">;
+    Pick<botPreset, "koboldURL" | "proxyRequestModel"> &
+    Pick<
+        Database,
+        | "nanogptRequestModel"
+        | "nanogptRequestModelName"
+        | "nanogptProvider"
+        | "ollamaURL"
+        | "ollamaModel"
+        | "ollamaModelName"
+        | "ollamaModelSource"
+        | "ollamaInputMode"
+        | "ollamaRequestFormat"
+        | "ollamaCloudModel"
+        | "ollamaCloudModelName"
+        | "customTokenizer"
+    >;
 
 interface hordeConfig {
     apiKey: string;

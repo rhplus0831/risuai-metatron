@@ -1,13 +1,21 @@
 <script lang="ts">
-    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { activeMainProfile, settings, type ModelProfileView } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
 
-    import ChatFormatSettings from "./ChatFormatSettings.svelte";
     import OpenrouterProviderList from "src/lib/UI/OpenrouterProviderList.svelte";
     import { PlusIcon, TrashIcon } from "@lucide/svelte";
     import { getOpenRouterProviders } from "src/ts/model/openrouter";
+
+    interface Props {
+        profile?: ModelProfileView;
+    }
+    let { profile = activeMainProfile }: Props = $props();
+    const provider = $derived(profile.openrouterProvider ?? { order: [], only: [], ignore: [] });
+    function setProviders(field: "order" | "only" | "ignore", values: string[]) {
+        profile.openrouterProvider = { ...provider, [field]: values };
+    }
 </script>
 
 <Accordion name={`OpenRouter ${language.settings}`} styled>
@@ -18,7 +26,7 @@
         <Check bind:check={settings.providers.openrouterMiddleOut} name={language.openRouterMiddleOut} />
     </div>
     <div class="flex items-center mb-4">
-        <Check bind:check={activeModelPreset.useInstructPrompt} name={language.useInstructPrompt} />
+        <Check bind:check={profile.useInstructPrompt} name={language.useInstructPrompt} />
     </div>
     {#await getOpenRouterProviders()}
         <Accordion name={language.openRouterProviderOrder} help="openRouterProviderOrder" styled>
@@ -32,13 +40,20 @@
         </Accordion>
     {:then openRouterProviders}
         <Accordion name={language.openRouterProviderOrder} help="openRouterProviderOrder" styled>
-            {#each activeModelPreset.openrouterProvider.order as _, i}
+            {#each provider.order as _, i}
                 <span class="text-textcolor mt-4">
                     {language.provider}
                     {i + 1}
                 </span>
                 <OpenrouterProviderList
-                    bind:value={activeModelPreset.openrouterProvider.order[i]}
+                    bind:value={
+                        () => provider.order[i],
+                        (value) =>
+                            setProviders(
+                                "order",
+                                provider.order.map((entry, index) => (index === i ? value : entry)),
+                            )
+                    }
                     options={openRouterProviders}
                 />
             {/each}
@@ -46,30 +61,33 @@
                 <button
                     class="bg-selected text-textcolor p-2 rounded-md"
                     onclick={() => {
-                        let value = activeModelPreset.openrouterProvider.order ?? [];
-                        value.push("");
-                        activeModelPreset.openrouterProvider.order = value;
+                        setProviders("order", [...provider.order, ""]);
                     }}><PlusIcon /></button
                 >
                 <button
                     class="bg-red-500 text-white p-2 rounded-md"
                     onclick={() => {
-                        let value = activeModelPreset.openrouterProvider.order ?? [];
-                        value.pop();
-                        activeModelPreset.openrouterProvider.order = value;
+                        setProviders("order", provider.order.slice(0, -1));
                     }}><TrashIcon /></button
                 >
             </div>
         </Accordion>
 
         <Accordion name={language.openRouterProviderOnly} help="openRouterProviderOnly" styled>
-            {#each activeModelPreset.openrouterProvider.only as model, i}
+            {#each provider.only as model, i}
                 <span class="text-textcolor mt-4">
                     {language.provider}
                     {i + 1}
                 </span>
                 <OpenrouterProviderList
-                    bind:value={activeModelPreset.openrouterProvider.only[i]}
+                    bind:value={
+                        () => provider.only[i],
+                        (value) =>
+                            setProviders(
+                                "only",
+                                provider.only.map((entry, index) => (index === i ? value : entry)),
+                            )
+                    }
                     options={openRouterProviders}
                 />
             {/each}
@@ -77,30 +95,33 @@
                 <button
                     class="bg-selected text-textcolor p-2 rounded-md"
                     onclick={() => {
-                        let value = activeModelPreset.openrouterProvider.only ?? [];
-                        value.push("");
-                        activeModelPreset.openrouterProvider.only = value;
+                        setProviders("only", [...provider.only, ""]);
                     }}><PlusIcon /></button
                 >
                 <button
                     class="bg-red-500 text-white p-2 rounded-md"
                     onclick={() => {
-                        let value = activeModelPreset.openrouterProvider.only ?? [];
-                        value.pop();
-                        activeModelPreset.openrouterProvider.only = value;
+                        setProviders("only", provider.only.slice(0, -1));
                     }}><TrashIcon /></button
                 >
             </div>
         </Accordion>
 
         <Accordion name={language.openRouterProviderIgnore} help="openRouterProviderIgnore" styled>
-            {#each activeModelPreset.openrouterProvider.ignore as model, i}
+            {#each provider.ignore as model, i}
                 <span class="text-textcolor mt-4">
                     {language.provider}
                     {i + 1}
                 </span>
                 <OpenrouterProviderList
-                    bind:value={activeModelPreset.openrouterProvider.ignore[i]}
+                    bind:value={
+                        () => provider.ignore[i],
+                        (value) =>
+                            setProviders(
+                                "ignore",
+                                provider.ignore.map((entry, index) => (index === i ? value : entry)),
+                            )
+                    }
                     options={openRouterProviders}
                 />
             {/each}
@@ -108,24 +129,16 @@
                 <button
                     class="bg-selected text-textcolor p-2 rounded-md"
                     onclick={() => {
-                        let value = activeModelPreset.openrouterProvider.ignore ?? [];
-                        value.push("");
-                        activeModelPreset.openrouterProvider.ignore = value;
+                        setProviders("ignore", [...provider.ignore, ""]);
                     }}><PlusIcon /></button
                 >
                 <button
                     class="bg-red-500 text-white p-2 rounded-md"
                     onclick={() => {
-                        let value = activeModelPreset.openrouterProvider.ignore ?? [];
-                        value.pop();
-                        activeModelPreset.openrouterProvider.ignore = value;
+                        setProviders("ignore", provider.ignore.slice(0, -1));
                     }}><TrashIcon /></button
                 >
             </div>
         </Accordion>
     {/await}
-
-    {#if activeModelPreset.useInstructPrompt}
-        <ChatFormatSettings />
-    {/if}
 </Accordion>

@@ -34,14 +34,16 @@ import { selectChat } from "../../storage/chatStore.svelte";
 import { selectCharacterAt, selectModelPreset, selectPersona, selectPreset } from "../../storage/selection.svelte";
 import { settings } from "../../storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "../../storage/tests/installFlatDatabase";
+import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 
 /**
  * The tab's database, installed in the records (as the removed `setDatabaseLite` installed one;
  * there is no whole-database object since Phase 6 slice 10): the parser reads the settings through
  * the record views (Phase 6 slice 7), the selected character through the character store (slice 8)
  * and its chat through the chat module (slice 9a), with the presets and persona selected by id. The
- * prompt presets `p-ctx`/`p-sel` carry the prompt fields; the model presets of the same ids
- * (`installFlatDatabase` splits them off) the model fields `aiModel` and `maxContext`.
+ * prompt presets `p-ctx`/`p-sel` carry the prompt fields; the model presets of the same ids name
+ * main profiles (`docs/plan/model-profiles.md`) whose model id and `maxContext` the parser reads as
+ * the roots `aiModel` and `maxContext`.
  */
 function database(selected: { preset: string; modelPreset?: string; persona: string }) {
     const raw = {
@@ -49,19 +51,23 @@ function database(selected: { preset: string; modelPreset?: string; persona: str
             {
                 id: "p-ctx",
                 name: "Context",
-                aiModel: "ctx-model",
-                maxContext: 1111,
                 templateDefaultVariables: "",
                 mainPrompt: "ctx main",
             },
             {
                 id: "p-sel",
                 name: "Selected",
-                aiModel: "sel-model",
-                maxContext: 2222,
                 templateDefaultVariables: "",
                 mainPrompt: "sel main",
             },
+        ],
+        modelPresets: [
+            normalizeModelPreset({ name: "Context", mainSlot: { profileId: "m-ctx" } }, { id: "p-ctx" }),
+            normalizeModelPreset({ name: "Selected", mainSlot: { profileId: "m-sel" } }, { id: "p-sel" }),
+        ],
+        modelProfiles: [
+            normalizeModelProfile({ id: "m-ctx", name: "Context", modelId: "ctx-model", maxContext: 1111 }),
+            normalizeModelProfile({ id: "m-sel", name: "Selected", modelId: "sel-model", maxContext: 2222 }),
         ],
         personas: [
             { id: "u-ctx", name: "Ctx Persona", personaPrompt: "the context persona" },
@@ -103,7 +109,7 @@ describe("risuChatParserScoped", () => {
         expect(risuChatParserScoped(input, {}, scope)).toBe("Ctx Persona|the context persona|ctx-model|1111|Cara");
         // The same scope after the selection moved elsewhere: still the context's records.
         database({ preset: "p-sel", persona: "u-sel" });
-        settings.modelPresets[1].aiModel = "sel-model-2";
+        settings.modelProfiles[1].modelId = "sel-model-2";
         expect(risuChatParserScoped(input, {}, scope)).toBe("Ctx Persona|the context persona|ctx-model|1111|Cara");
         // A scope naming the selected records reads them, live (an edit after the capture is seen).
         settings.personas[1].name = "Sel Persona 2";

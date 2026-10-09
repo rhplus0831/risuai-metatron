@@ -2,6 +2,7 @@ import type {
     Chat,
     Database,
     ModelPreset,
+    ModelProfile,
     RisuPersona,
     botPreset,
     character,
@@ -33,7 +34,8 @@ import { GenerationRunnerError } from "./generationJobs.ts";
  * - frozen identity and configuration: `db` (the database projection the CBS evaluator and lore
  *   activation read, assembled as the client's `assembleDatabase` and forwarding layer serve it for
  *   the job's prompt and model presets and personas, with every credential field `""` as in the
- *   client's mirror), the two presets and the personas, and `request` (the request layer's own settings, credentials included).
+ *   client's mirror), the two presets, the profiles and the personas, and `request` (the request
+ *   layer's own settings, credentials included).
  *   Settings changed while the job runs do not reach it;
  * - the live overlay: the job's chat and the characters, which `refreshChat` and `refreshCharacter`
  *   read again after the job's own writes and after a callback that may have written.
@@ -50,6 +52,8 @@ export type JobScope = {
     promptPreset: botPreset;
     /** The job's model preset (`context.modelPresetId`). */
     modelPreset: ModelPreset;
+    /** Captured model profiles, shared by the job's main and auxiliary requests. */
+    modelProfiles: ModelProfile[];
     /** The chat's bound persona, else the selected one (`getUserName()`). */
     effectivePersona: RisuPersona;
     /** The tab's selected persona (the forwarded `db.username`). */
@@ -155,14 +159,10 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
     const effectivePersona = personaById(context.personaId);
     const selectedPersona = personaById(context.selectedPersonaId ?? context.personaId);
 
-    // The forwarding layer's view for this job: the two presets' fields under their root names, the
+    const modelProfiles = db.modelProfiles as ModelProfile[];
+    // The forwarding layer's view for this job: the prompt and derived model/profile roots, the
     // selected persona's fields, and the selection indexes.
-    forwardPresetRoots(
-        db,
-        preset as unknown as Record<string, unknown>,
-        modelPreset as unknown as Record<string, unknown>,
-    );
-    db.proxyKey = "";
+    forwardPresetRoots(db, preset as unknown as Record<string, unknown>, modelPreset, modelProfiles);
     db.botPresetsId = Math.max(
         0,
         presets.findIndex((record) => record?.id === preset.id),
@@ -211,6 +211,7 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
         revisions,
         promptPreset: preset,
         modelPreset,
+        modelProfiles,
         effectivePersona,
         selectedPersona,
         request,

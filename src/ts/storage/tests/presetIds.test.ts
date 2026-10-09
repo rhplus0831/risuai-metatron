@@ -14,7 +14,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // `downloadPreset` take ids. The actions live in `presets.svelte.ts`. Since the preset split
 // (`docs/plan/split-preset.md`) the stored prompt preset and the `.risup` export carry the prompt
 // fields only, and a fixture's model fields live in the model preset of the same id
-// (`installFlatDatabase`). The step-0 fixtures (`fixtures/phase3/*.risup`, captured before any
+// (`installFlatDatabase`); since the model profiles (`docs/plan/model-profiles.md`) that model
+// preset names its profiles by slot, and the connection fields (`maxContext`) live on the profiles. The step-0 fixtures (`fixtures/phase3/*.risup`, captured before any
 // Phase 3 change) pin the `.risup` reader contract: an import followed by an export decodes to the
 // fixture preset's prompt fields apart from `id` (Astra challenge point 1
 // found `seperateModels` gained a default here before the keep-on-switch rule).
@@ -72,10 +73,18 @@ import type { botPreset, Database } from "../database.svelte";
 import { changeToModelPreset, changeToPreset, copyPreset, downloadPreset, importPreset } from "../presets.svelte";
 import { selection, selectModelPreset, selectPreset } from "../selection.svelte";
 import { llmSecretState } from "../llmSecrets.svelte";
-import { activeModelPreset, activePreset, selectedPresetIndex, settings } from "../settingsViews.svelte";
+import {
+    activeMainProfile,
+    activeModelPreset,
+    activePreset,
+    readSettingsRoot,
+    selectedPresetIndex,
+    settings,
+} from "../settingsViews.svelte";
 import { installFlatDatabase } from "./installFlatDatabase";
 import {
     normalizeModelPresets,
+    normalizeModelProfiles,
     normalizePresets,
     normalizePromptTemplate,
     plainClone,
@@ -107,9 +116,10 @@ function ownKeys(value: object): string[] {
 /**
  * Installs a legacy save into the records, its presets normalized by the shared normalizers as the
  * server normalizes what it serves (the boot's backstop is gone since slice 10): the prompt presets
- * and the model presets of the same ids from the same fixture entries (each keeps its own fields); a
- * save without presets gets the one default preset of each kind, and the installation selects the
- * first of each.
+ * and the model presets of the same ids from the same fixture entries (each keeps its own fields),
+ * and the model profiles (`modelProfiles`); a save without presets or profiles gets the one default
+ * record of each kind (the default model preset's slots name the default profile), and the
+ * installation selects the first preset of each kind.
  */
 function bootWith(extra: Record<string, unknown> = {}) {
     installFlatDatabase({
@@ -117,6 +127,7 @@ function bootWith(extra: Record<string, unknown> = {}) {
         ...extra,
         botPresets: normalizePresets(plainClone(extra.botPresets)),
         modelPresets: normalizeModelPresets(plainClone(extra.botPresets)),
+        modelProfiles: normalizeModelProfiles(plainClone(extra.modelProfiles)),
     } as unknown as Database);
 }
 
@@ -144,7 +155,7 @@ describe("the selected preset over a normalized list", () => {
                     min_p: null,
                     top_a: null,
                     repetition_penalty: null,
-                    seperateModels: null,
+                    auxSlots: null,
                 },
                 { id: "omitted", name: "omitted" },
             ],
@@ -158,9 +169,9 @@ describe("the selected preset over a normalized list", () => {
         expect(omitted.repetition_penalty).toBe(1);
         // A model field never lands in a prompt preset; the `null` marker of the old keep-on-switch
         // copy is the model preset's default now.
-        expect(Object.hasOwn(nulls, "seperateModels")).toBe(false);
-        expect(settings.modelPresets.find((preset) => preset.id === "nulls")!.seperateModels).toEqual(
-            PRESET_DEFAULTS.seperateModels,
+        expect(Object.hasOwn(nulls, "auxSlots")).toBe(false);
+        expect(settings.modelPresets.find((preset) => preset.id === "nulls")!.auxSlots).toEqual(
+            PRESET_DEFAULTS.auxSlots,
         );
 
         // After a switch the forwarded reads serve the selected preset: an explicit null of a nullable
@@ -170,7 +181,8 @@ describe("the selected preset over a normalized list", () => {
         changeToModelPreset("nulls");
         expect(activePreset.min_p).toBeNull();
         expect(activePreset.repetition_penalty).toBeNull();
-        expect(activeModelPreset.seperateModels).toEqual({ memory: "", emotion: "", translate: "", otherAx: "" });
+        expect(activeModelPreset.auxSlots).toEqual({});
+        expect(readSettingsRoot("seperateModels")).toEqual({ memory: "", emotion: "", translate: "", otherAx: "" });
         changeToPreset("omitted");
         expect(activePreset.min_p).toBe(0);
         expect(activePreset.repetition_penalty).toBe(1);
@@ -179,15 +191,20 @@ describe("the selected preset over a normalized list", () => {
     it("keeps ids, values, and the selections across an edit, and a later switch of either kind lands on the right preset", () => {
         bootWith({
             botPresets: [
-                { id: "first", name: "first", temperature: 10, maxContext: 1000 },
-                { id: "second", name: "second", temperature: 20, maxContext: 2000 },
-                { id: "third", name: "third", temperature: 30, maxContext: 3000 },
+                { id: "first", name: "first", temperature: 10, mainSlot: { profileId: "p1" } },
+                { id: "second", name: "second", temperature: 20, mainSlot: { profileId: "p2" } },
+                { id: "third", name: "third", temperature: 30, mainSlot: { profileId: "p3" } },
+            ],
+            modelProfiles: [
+                { id: "p1", name: "p1", maxContext: 1000 },
+                { id: "p2", name: "p2", maxContext: 2000 },
+                { id: "p3", name: "p3", maxContext: 3000 },
             ],
         });
         changeToPreset("second");
         changeToModelPreset("second");
         expect(activePreset.temperature).toBe(20);
-        expect(activeModelPreset.maxContext).toBe(2000);
+        expect(activeMainProfile.maxContext).toBe(2000);
 
         // A section write beside the presets (what a plugin `setDatabase` of an allowed key does
         // through the views now) touches neither the list nor the selection.
@@ -196,30 +213,33 @@ describe("the selected preset over a normalized list", () => {
         expect(settings.presets.map((preset) => preset.id)).toEqual(["first", "second", "third"]);
         expect(settings.presets.map((preset) => preset.temperature)).toEqual([10, 20, 30]);
         expect(settings.modelPresets.map((preset) => preset.id)).toEqual(["first", "second", "third"]);
-        expect(settings.modelPresets.map((preset) => preset.maxContext)).toEqual([1000, 2000, 3000]);
+        expect(settings.modelPresets.map((preset) => preset.mainSlot.profileId)).toEqual(["p1", "p2", "p3"]);
+        expect(settings.modelProfiles.map((profile) => profile.maxContext)).toEqual([1000, 2000, 3000]);
         expect(settings.presets.every((preset) => !Object.hasOwn(preset, "maxContext"))).toBe(true);
+        expect(settings.modelPresets.every((preset) => !Object.hasOwn(preset, "maxContext"))).toBe(true);
         expect(selectedPresetIndex()).toBe(1);
         expect(settings.ui.theme).toBe("plugin-theme");
 
-        // An edit of a forwarded field lands in the selected preset of its owner under its id.
+        // An edit of a forwarded field lands in its owner under its id: the selected prompt preset, or
+        // the selected model preset's main profile.
         activePreset.temperature = 25;
-        activeModelPreset.maxContext = 2500;
+        activeMainProfile.maxContext = 2500;
         expect(settings.presets[1].id).toBe("second");
         expect(settings.presets[1].temperature).toBe(25);
         expect(settings.presets[0].temperature).toBe(10);
         expect(settings.presets[2].temperature).toBe(30);
-        expect(settings.modelPresets.map((preset) => preset.maxContext)).toEqual([1000, 2500, 3000]);
+        expect(settings.modelProfiles.map((profile) => profile.maxContext)).toEqual([1000, 2500, 3000]);
 
         // A prompt switch keeps the edit in preset 1 and reads preset 2; the model preset stays.
         activePreset.temperature = 26;
         changeToPreset("third");
         expect(selectedPresetIndex()).toBe(2);
         expect(activePreset.temperature).toBe(30);
-        expect(activeModelPreset.maxContext).toBe(2500);
+        expect(activeMainProfile.maxContext).toBe(2500);
         expect(settings.presets[1].temperature).toBe(26);
         // A model switch reads the other model preset and leaves the prompt selection.
         changeToModelPreset("third");
-        expect(activeModelPreset.maxContext).toBe(3000);
+        expect(activeMainProfile.maxContext).toBe(3000);
         expect(activePreset.temperature).toBe(30);
         expect(selection.presetId).toBe("third");
         expect(settings.presets.map((preset) => preset.id)).toEqual(["first", "second", "third"]);

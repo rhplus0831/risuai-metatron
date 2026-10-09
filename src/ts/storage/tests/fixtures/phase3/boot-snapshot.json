@@ -537,14 +537,21 @@
   "seperateModels": { "memory": "", "emotion": "", "translate": "", "otherAx": "" },
   "customModels": [],
   "credentials": [],
-  "modelCredentials": {},
   "modelPresets": [
     {
       "id": "fixture-model-preset",
       "name": "New Model Preset",
-      "aiModel": "gemini-3-flash-preview",
-      "subModel": "gemini-3-flash-preview",
-      "apiType": "gemini-3-flash-preview",
+      "mainSlot": { "profileId": "default" },
+      "subSlot": { "profileId": "default" },
+      "auxSlots": {},
+      "seperateModelsForAxModels": false
+    }
+  ],
+  "modelProfiles": [
+    {
+      "id": "default",
+      "name": "New Model Profile",
+      "modelId": "gemini-3-flash-preview",
       "currentPluginProvider": "",
       "forceReplaceUrl": "",
       "customProxyRequestModel": "",
@@ -565,8 +572,18 @@
       "outputImageModal": false,
       "modelTools": [],
       "maxContext": 4000,
-      "seperateModelsForAxModels": false,
-      "seperateModels": { "memory": "", "emotion": "", "translate": "", "otherAx": "" }
+      "nanogptRequestModel": "",
+      "nanogptRequestModelName": "",
+      "nanogptProvider": "",
+      "ollamaURL": "",
+      "ollamaModel": "",
+      "ollamaModelName": "",
+      "ollamaModelSource": "local",
+      "ollamaInputMode": "manual",
+      "ollamaRequestFormat": 15,
+      "ollamaCloudModel": "",
+      "ollamaCloudModelName": "",
+      "customTokenizer": "tik"
     }
   ],
   "authRefreshes": [],

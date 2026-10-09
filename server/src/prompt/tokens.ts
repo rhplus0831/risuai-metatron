@@ -18,15 +18,16 @@ import type { Tokenizers } from "./tokenizers/index.ts";
 export const TOKEN_CACHE_SIZE = 1500;
 
 export type TokenCountScope = {
-    /** The selected preset's `aiModel` and `currentPluginProvider`. */
+    /** The main slot's derived `aiModel` and its profile's `currentPluginProvider`. */
     aiModel: string;
     currentPluginProvider: string;
     /** The catalogue entry of `aiModel`: its family, and the model id Google counts with. */
     model: { tokenizer: LLMTokenizer; internalID?: string };
     /** The legacy plugin provider's declared `tokenizer` option, or `"none"`. */
     pluginTokenizer: string;
-    /** The `providers` section. */
+    /** The main profile's tokenizer override (`openrouter` and `reverse_proxy`). */
     customTokenizer: string;
+    /** Global provider behavior. */
     googleClaudeTokenizing: boolean;
     useTokenizerCaching: boolean;
     /** `llmSecrets.google.accessToken`, for `googleClaudeTokenizing`. */

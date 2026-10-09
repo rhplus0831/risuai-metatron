@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import { resolveCredentialBinding, type CredentialBindingRecord } from "../credentialBinding.ts";
 import { resolveModelInfo } from "../models.ts";
 
-// `docs/plan/shared-api-keys.md`, decision 3: the one binding decision the tab and the server share.
+// `docs/plan/shared-api-keys.md`, decision 3, with the binding on the model profile
+// (`docs/plan/model-profiles.md`): the one binding decision the tab and the server share.
 // An absent binding selects the default; any binding that cannot be honored refuses, first failure
 // first, and never falls back.
 
@@ -17,48 +18,47 @@ const records: Record<string, Record_> = {
     shared: { name: "Shared", type: "custom", key: "k" },
 };
 const hasKey = (record: Record_) => record.key !== "";
-const decide = (modelId: string, sources: Partial<Parameters<typeof resolveCredentialBinding>[2]>) =>
+const decide = (modelId: string, profile?: Parameters<typeof resolveCredentialBinding>[2]) =>
     resolveCredentialBinding(
         modelId,
         resolveModelInfo(modelId.startsWith("xcustom:::") ? "x" : modelId),
-        { customModels: [], ...sources },
+        profile,
         records,
         hasKey,
     );
 
 describe("resolveCredentialBinding", () => {
-    it("selects the default without a binding, or with one stored where this model does not read", () => {
+    it("selects the default with no profile or a profile without a binding", () => {
+        expect(decide("gpt-5.5")).toEqual({ kind: "default" });
         expect(decide("gpt-5.5", {})).toEqual({ kind: "default" });
-        expect(decide("gpt-5.5", { modelCredentials: { "gpt-5.4": "work" } })).toEqual({ kind: "default" });
-        // A custom model and the reverse proxy ignore the global map.
-        expect(decide("xcustom:::a", { modelCredentials: { "xcustom:::a": "work" } })).toEqual({ kind: "default" });
-        expect(decide("reverse_proxy", { modelCredentials: { reverse_proxy: "work" } })).toEqual({ kind: "default" });
+        expect(decide("xcustom:::a", {})).toEqual({ kind: "default" });
         // An inherited property is not a binding.
-        expect(decide("toString", { modelCredentials: {} })).toEqual({ kind: "default" });
+        expect(decide("gpt-5.5", Object.create({ credentialId: "work" }))).toEqual({ kind: "default" });
     });
 
-    it("binds through the slot's own source", () => {
-        expect(decide("gpt-5.5", { modelCredentials: { "gpt-5.5": "work" } })).toEqual({
+    it("binds the profile's credential for every slot, the custom model and reverse proxy included", () => {
+        expect(decide("gpt-5.5", { credentialId: "work" })).toEqual({
             kind: "bound",
             credentialId: "work",
             record: records.work,
         });
-        expect(decide("xcustom:::a", { customModels: [{ id: "xcustom:::a", credentialId: "shared" }] })).toMatchObject({
+        expect(decide("xcustom:::a", { credentialId: "shared" })).toMatchObject({
             kind: "bound",
             credentialId: "shared",
         });
-        expect(decide("reverse_proxy", { proxyCredentialId: "claude" })).toMatchObject({
+        expect(decide("reverse_proxy", { credentialId: "claude" })).toMatchObject({
             kind: "bound",
             credentialId: "claude",
         });
-        expect(
-            decide("gemini-2.5-flash-vertex", { modelCredentials: { "gemini-2.5-flash-vertex": "sa" } }),
-        ).toMatchObject({ kind: "bound", record: records.sa });
+        expect(decide("gemini-2.5-flash-vertex", { credentialId: "sa" })).toMatchObject({
+            kind: "bound",
+            record: records.sa,
+        });
     });
 
     it("refuses with the first failing reason, in order", () => {
         const reason = (modelId: string, credentialId: string) => {
-            const result = decide(modelId, { modelCredentials: { [modelId]: credentialId } });
+            const result = decide(modelId, { credentialId });
             return result.kind === "refused" ? [result.reason, result.record?.name] : result.kind;
         };
         // A model without a slot refuses even a binding to a missing key.

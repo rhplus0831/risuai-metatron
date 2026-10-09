@@ -18,6 +18,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // their refusal of every other name, `selectedLoreBookPage`, and the registry functions over the
 // real context: every registry item's binding read and written through the views, `getValue`/
 // `bindPath`/`bindKey` precedence, a `bindPath` into a `null` container, and the custom quote items.
+// Since the model profiles (`docs/plan/model-profiles.md`) `activeModelPreset` serves the slot
+// fields, `activeMainProfile`/`activeSubProfile` the slots' profiles, and the model root names are
+// derived: `aiModel`/`subModel`/`seperateModels` the slots' model ids, the profile fields the main
+// profile's.
 
 await vi.hoisted(async () => {
     const { Buffer: BufferPolyfill } = await import("buffer");
@@ -56,7 +60,9 @@ import { installFlatDatabase } from "./installFlatDatabase";
 import {
     ACTIVE_MODEL_PRESET_FIELDS,
     ACTIVE_PRESET_FIELDS,
+    activeMainProfile,
     activeModelPreset,
+    activeSubProfile,
     activePersona,
     activePreset,
     currentModelPresetRecord,
@@ -80,6 +86,7 @@ import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
 import { PERSONA_DEFAULTS } from "../../../../shared/personas.ts";
 import {
     MODEL_PRESET_FIELDS,
+    MODEL_PROFILE_FIELDS,
     PERSONA_ROOT_ALIASES,
     PRESET_DEFAULTS,
     PRESET_ROOT_ALIASES,
@@ -92,6 +99,7 @@ import {
     COLLECTION_SELECTION_FIELDS,
     FORWARDED_MODEL_PRESET_KEYS,
     FORWARDED_PRESET_KEYS,
+    MODEL_PROFILE_ROOT_FIELDS,
     PERSONA_ROOT_KEYS,
     SECTION_FIELDS,
     SECTION_KIND,
@@ -106,11 +114,13 @@ type AnyView = Record<string, any>;
 const record = (kind: string) => recordData<any>(kind as RecordKind);
 const preset = (id: string) => trackedRecord<any[]>("presets")!.find((entry) => entry.id === id);
 const modelPreset = (id: string) => trackedRecord<any[]>("modelPresets")!.find((entry) => entry.id === id);
+const profile = (id: string) => trackedRecord<any[]>("modelProfiles")!.find((entry) => entry.id === id);
 const persona = (id: string) => trackedRecord<any[]>("personas")!.find((entry) => entry.id === id);
 const text = (value: unknown) => JSON.stringify(plainClone(value));
 const queued = () => llmSecretState.queue.map((op) => op.request);
 const preset$ = activePreset as unknown as AnyView;
 const modelPreset$ = activeModelPreset as unknown as AnyView;
+const mainProfile$ = activeMainProfile as unknown as AnyView;
 const persona$ = activePersona as unknown as AnyView;
 const views = settings as unknown as Record<string, AnyView>;
 
@@ -126,7 +136,26 @@ const sectionOfField = new Map<string, SectionKind>(
     ),
 );
 const forwardedPresetKeys = new Set<string>(FORWARDED_PRESET_KEYS as string[]);
-const forwardedModelPresetKeys = new Set<string>(FORWARDED_MODEL_PRESET_KEYS as string[]);
+const forwardedModelPresetKeys = new Set<string>(FORWARDED_MODEL_PRESET_KEYS as readonly string[]);
+const AUX_MODES = ["memory", "translate", "emotion", "otherAx"] as const;
+
+/** The selected model preset record (the one `selection.modelPresetId` names, else the first). */
+function selectedModelPreset(): any {
+    return modelPreset(selection.modelPresetId) ?? trackedRecord<any[]>("modelPresets")?.[0];
+}
+
+/** A record's field, or a copy of its `PRESET_DEFAULTS` value when the record lacks it. */
+function fieldOf(owner: any, field: string): unknown {
+    return owner !== undefined && Object.hasOwn(owner, field)
+        ? owner[field]
+        : plainClone((PRESET_DEFAULTS as Record<string, unknown>)[field]);
+}
+
+/** A slot's profile record: a bare, unset, or dangling slot has none. */
+const profileOfSlot = (slot: any) => (slot && "profileId" in slot ? profile(slot.profileId) : undefined);
+/** A slot's model id: a bare slot's own, a profile's `modelId`, "" for an unset or dangling slot. */
+const modelIdOfSlot = (slot: any): string =>
+    !slot ? "" : "modelId" in slot ? slot.modelId : (profileOfSlot(slot)?.modelId ?? "");
 const phase1Kinds: Record<string, string> = {
     botPresets: "presets",
     modules: "modules",
@@ -155,11 +184,19 @@ function root(key: string): unknown {
             : plainClone((PRESET_DEFAULTS as Record<string, unknown>)[field]);
     }
     if (forwardedModelPresetKeys.has(key)) {
-        // A model field: the selected model preset's (`docs/plan/split-preset.md`), same rules.
-        const selected = modelPreset(selection.modelPresetId) ?? trackedRecord<any[]>("modelPresets")?.[0];
-        return selected !== undefined && Object.hasOwn(selected, key)
-            ? selected[key]
-            : plainClone((PRESET_DEFAULTS as Record<string, unknown>)[key]);
+        // A model root (`docs/plan/model-profiles.md`, "Compatibility"): the selected model preset's
+        // slots' model ids and toggle, and its main profile's fields, same rules.
+        const selected = selectedModelPreset();
+        if (key === "aiModel") {
+            return modelIdOfSlot(selected?.mainSlot);
+        }
+        if (key === "subModel") {
+            return modelIdOfSlot(selected?.subSlot);
+        }
+        if (key === "seperateModels") {
+            return Object.fromEntries(AUX_MODES.map((mode) => [mode, modelIdOfSlot(selected?.auxSlots?.[mode])]));
+        }
+        return fieldOf(key === "seperateModelsForAxModels" ? selected : profileOfSlot(selected?.mainSlot), key);
     }
     if (Object.hasOwn(personaFieldOfRoot, key)) {
         const field = personaFieldOfRoot[key];
@@ -187,7 +224,7 @@ function root(key: string): unknown {
 const ROOT_KEYS: string[] = [
     ...(Object.values(SECTION_KIND) as SectionKind[]).flatMap((section) => [...SECTION_FIELDS[section]]),
     ...(FORWARDED_PRESET_KEYS as string[]),
-    ...(FORWARDED_MODEL_PRESET_KEYS as string[]),
+    ...(FORWARDED_MODEL_PRESET_KEYS as readonly string[]),
     ...PERSONA_ROOT_KEYS,
     ...Object.values(COLLECTION_FIELDS),
     ...Object.values(COLLECTION_SELECTION_FIELDS),
@@ -231,10 +268,48 @@ function presetB() {
     };
 }
 
+/**
+ * The model presets `a` and `b` (the same ids as the prompt presets): their main slots name the
+ * profiles `pa` and `pb`, their sub slots the profile `sub`. The profiles are stored sparse, so a
+ * field they lack reads its default.
+ */
+function modelPresets() {
+    return [
+        {
+            id: "a",
+            name: "A",
+            mainSlot: { profileId: "pa" },
+            subSlot: { profileId: "sub" },
+            auxSlots: {},
+            seperateModelsForAxModels: false,
+        },
+        {
+            id: "b",
+            name: "B",
+            mainSlot: { profileId: "pb" },
+            subSlot: { profileId: "sub" },
+            auxSlots: {},
+            seperateModelsForAxModels: false,
+        },
+    ];
+}
+
+function modelProfiles() {
+    return [
+        { id: "pa", name: "PA", modelId: "model-a", maxContext: 4000, localNetworkMode: false },
+        { id: "pb", name: "PB", modelId: "model-b", maxContext: 5000, localNetworkMode: true },
+        { id: "sub", name: "Sub", modelId: "model-sub" },
+    ];
+}
+
 function boot(extra: Record<string, unknown> = {}) {
     installFlatDatabase({
         characters: [],
+        // The prompt records keep the legacy model fields of the fixture presets (nothing is
+        // normalized at install); the model fields live in the model presets and profiles.
         botPresets: [presetA(), presetB()],
+        modelPresets: modelPresets(),
+        modelProfiles: modelProfiles(),
         personas: [
             { id: "p1", name: "Ann", icon: "icon-1", note: "n1", personaPrompt: "pp1", largePortrait: true },
             { id: "p2", name: "Bob", icon: "", note: "", personaPrompt: "pp2" },
@@ -267,6 +342,7 @@ function realCtx(): SettingContext {
         settings,
         preset: activePreset,
         modelPreset: activeModelPreset,
+        modelProfile: activeMainProfile,
         persona: activePersona,
         modelInfo: undefined,
         subModelInfo: undefined,
@@ -321,9 +397,9 @@ describe("activePreset", () => {
         expect(activePreset.id).toBe("a");
         expect(activePreset.name).toBe("A");
         expect(activePreset.image).toBe("img-a");
-        // The model fields are the model preset's (`docs/plan/split-preset.md`), and proxyKey is a
-        // credential (never served).
-        for (const field of [...MODEL_PRESET_FIELDS, "proxyKey"]) {
+        // The model fields are the model preset's and the profile's (`docs/plan/model-profiles.md`), and
+        // proxyKey is a removed credential (never served).
+        for (const field of [...MODEL_PRESET_FIELDS, ...MODEL_PROFILE_FIELDS, "proxyKey"]) {
             expect(field in activePreset, field).toBe(false);
         }
         expect(
@@ -454,60 +530,103 @@ describe("activePreset", () => {
 });
 
 describe("activeModelPreset", () => {
-    it("reads every model field it serves as the record holds it under its root name (its default when missing), and the record's own name; never a prompt field or image", () => {
+    it("reads every slot field it serves as the record holds it (its default when missing), and the record's own name; the main and sub profile views read their profiles' fields; never a prompt field or image", () => {
         for (const field of ACTIVE_MODEL_PRESET_FIELDS) {
             if (field === "name") {
                 continue;
             }
             expect(presetFieldOwner(field), field).toBe("model");
-            expect(modelPreset$[field], field).toEqual(root(field));
+            expect(modelPreset$[field], field).toEqual(fieldOf(selectedModelPreset(), field));
+        }
+        // The profile fields at root are the main profile's.
+        for (const field of MODEL_PROFILE_ROOT_FIELDS) {
+            expect(mainProfile$[field], field).toEqual(root(field));
         }
         expect(activeModelPreset.id).toBe("a");
         expect(activeModelPreset.name).toBe("A");
-        expect(activeModelPreset.aiModel).toBe("model-a");
-        expect(activeModelPreset.maxContext).toBe(4000);
-        expect(activeModelPreset.localNetworkMode).toBe(false);
-        // A missing model field reads its default; the prompt fields, `image`, and `proxyKey` are not served.
-        expect(activeModelPreset.subModel).toBe(PRESET_DEFAULTS.subModel);
-        for (const field of ["temperature", "mainPrompt", "image", "proxyKey", "seperateParameters"]) {
+        expect(activeModelPreset.mainSlot).toEqual({ profileId: "pa" });
+        expect(activeMainProfile.id).toBe("pa");
+        expect(activeMainProfile.modelId).toBe("model-a");
+        expect(readSettingsRoot("aiModel")).toBe("model-a");
+        expect(activeMainProfile.maxContext).toBe(4000);
+        expect(activeMainProfile.localNetworkMode).toBe(false);
+        // A missing profile field reads its default; the sub slot's profile has its own view.
+        expect(activeMainProfile.forceReplaceUrl).toBe(PRESET_DEFAULTS.forceReplaceUrl);
+        expect(activeSubProfile.id).toBe("sub");
+        expect(activeSubProfile.modelId).toBe("model-sub");
+        expect(activeSubProfile.maxContext).toBe(PRESET_DEFAULTS.maxContext);
+        expect(readSettingsRoot("subModel")).toBe("model-sub");
+        // The prompt fields, `image`, `proxyKey`, and the profile fields are not served by the model
+        // preset view; the profile view serves no slot or prompt field.
+        for (const field of [
+            "temperature",
+            "mainPrompt",
+            "image",
+            "proxyKey",
+            "seperateParameters",
+            "aiModel",
+            "maxContext",
+        ]) {
             expect(field in activeModelPreset, field).toBe(false);
+        }
+        for (const field of ["temperature", "image", "proxyKey", "mainSlot", "seperateModelsForAxModels"]) {
+            expect(field in activeMainProfile, field).toBe(false);
         }
         expect(currentModelPresetRecord()).toBe(modelPreset("a"));
     });
 
-    it("writes the selected model preset by its own field names, leaving the other model preset and the prompt presets alone, and follows a model switch only", () => {
+    it("writes the selected model preset by its own field names and its main profile through the profile view, leaving the other model preset, the other profiles, and the prompt presets alone, and follows a model switch only", () => {
         notified = [];
-        activeModelPreset.maxContext = 4100;
-        activeModelPreset.aiModel = "model-a2";
-        expect(modelPreset("a")).toMatchObject({ maxContext: 4100, aiModel: "model-a2" });
-        expect(modelPreset("b")).toMatchObject({ maxContext: 5000, aiModel: "model-b" });
+        activeModelPreset.seperateModelsForAxModels = true;
+        activeModelPreset.auxSlots = { memory: { profileId: "pb" } };
+        activeMainProfile.maxContext = 4100;
+        expect(modelPreset("a")).toMatchObject({
+            seperateModelsForAxModels: true,
+            auxSlots: { memory: { profileId: "pb" } },
+        });
+        expect(modelPreset("b")).toMatchObject({ seperateModelsForAxModels: false, auxSlots: {} });
+        expect(profile("pa").maxContext).toBe(4100);
+        expect(profile("pb").maxContext).toBe(5000);
+        expect(Object.hasOwn(profile("sub"), "maxContext")).toBe(false);
         // The fixture's prompt record still carries the raw legacy values (nothing is normalized at
-        // install): the view neither reads nor writes them there.
+        // install): the views neither read nor write them there.
         expect(preset("a")).toMatchObject({ maxContext: 4000, aiModel: "model-a" });
-        expect(new Set(notified)).toEqual(new Set(["modelPresets"]));
+        expect(new Set(notified)).toEqual(new Set(["modelPresets", "modelProfiles"]));
         expect(root("maxContext")).toBe(4100);
-        expect(readSettingsRoot("aiModel")).toBe("model-a2");
+        expect(readSettingsRoot("seperateModels")).toEqual({
+            memory: "model-b",
+            translate: "",
+            emotion: "",
+            otherAx: "",
+        });
         // A prompt switch leaves the model preset; a model switch leaves the prompt preset.
         changeToPreset("b");
         expect(activeModelPreset.id).toBe("a");
-        expect(activeModelPreset.maxContext).toBe(4100);
+        expect(activeMainProfile.maxContext).toBe(4100);
         expect(activePreset.id).toBe("b");
         changeToModelPreset("b");
         expect(activeModelPreset.id).toBe("b");
-        expect(activeModelPreset.maxContext).toBe(5000);
+        expect(activeMainProfile.maxContext).toBe(5000);
         expect(activePreset.id).toBe("b");
         expect(activePreset.temperature).toBe(50);
-        // `writeSettingsRoot` routes a model root name to the selected model preset.
+        // `writeSettingsRoot` routes a profile root name to the selected model preset's main profile.
         writeSettingsRoot("localNetworkTimeoutSec", 42);
-        expect(modelPreset("b").localNetworkTimeoutSec).toBe(42);
+        expect(profile("pb").localNetworkTimeoutSec).toBe(42);
         expect(Object.hasOwn(preset("b"), "localNetworkTimeoutSec")).toBe(false);
+        expect(Object.hasOwn(modelPreset("b"), "localNetworkTimeoutSec")).toBe(false);
         expect(readSettingsRoot("localNetworkTimeoutSec")).toBe(42);
+        // `aiModel` is a model id: a root write naming exactly one profile points the selected model
+        // preset's main slot at it (Model Profiles O8).
+        writeSettingsRoot("aiModel", "model-sub");
+        expect(modelPreset("b").mainSlot).toEqual({ profileId: "sub" });
+        expect(modelPreset("a").mainSlot).toEqual({ profileId: "pa" });
+        expect(readSettingsRoot("aiModel")).toBe("model-sub");
     });
 
     it("tracks its reads and resolves its writes untracked, and falls back to the first model preset on a read when the selected one is gone", () => {
-        const probe = createProbe(() => activeModelPreset.maxContext);
+        const probe = createProbe(() => activeMainProfile.maxContext);
         expect(probe.seen).toEqual([4000]);
-        modelPreset("a").maxContext = 4001;
+        profile("pa").maxContext = 4001;
         flushSync();
         expect(probe.seen).toEqual([4000, 4001]);
         changeToModelPreset("b");
@@ -519,20 +638,20 @@ describe("activeModelPreset", () => {
         expect(probe.seen).toEqual([4000, 4001, 5000]);
 
         const writer = createWriterEffect(() => {
-            activeModelPreset.maxContext = 9100;
+            activeMainProfile.maxContext = 9100;
         });
         expect(writer.runs()).toBe(1);
-        expect(modelPreset("b").maxContext).toBe(9100);
+        expect(profile("pb").maxContext).toBe(9100);
         changeToModelPreset("a");
         flushSync();
         expect(writer.runs()).toBe(1);
-        expect(modelPreset("a").maxContext).toBe(4001);
+        expect(profile("pa").maxContext).toBe(4001);
         writer.dispose();
         probe.dispose();
 
         trackedRecord<any[]>("modelPresets")!.splice(0, 1);
         expect(selection.modelPresetId).toBe("a");
-        expect(evaluateInDerived(() => activeModelPreset.maxContext)).toBe(9100);
+        expect(evaluateInDerived(() => activeMainProfile.maxContext)).toBe(9100);
         expect(selection.modelPresetId).toBe("b");
         selectModelPreset("gone");
         expect(evaluateInDerived(() => activeModelPreset.id)).toBe("b");
@@ -776,9 +895,9 @@ describe("scopedPresetRoot (a request's captured pair)", () => {
         expect(scopedPresetRoot({ presetId: "a", modelPresetId: "b" }, "temperature")).toBe(80);
         expect(scopedPresetRoot(undefined, "temperature")).toBe(50);
         expect(scopedPresetRoot(undefined, "aiModel")).toBe("model-b");
-        // A field the captured record lacks reads its default, not the selection's value.
-        delete modelPreset("a").localNetworkTimeoutSec;
-        modelPreset("b").localNetworkTimeoutSec = 999;
+        // A field the captured pair's main profile lacks reads its default, not the selection's value.
+        delete profile("pa").localNetworkTimeoutSec;
+        profile("pb").localNetworkTimeoutSec = 999;
         expect(scopedPresetRoot(captured, "localNetworkTimeoutSec")).toBe(PRESET_DEFAULTS.localNetworkTimeoutSec);
         // Nothing moved the selections.
         expect(selection.presetId).toBe("b");
@@ -860,8 +979,9 @@ describe("the registry over the views", () => {
             expect(recordRead(item), item.id).toEqual(value);
             expect(getSettingValue(item, ctx), item.id).toEqual(value);
         }
-        // Every preset-bound write went to the selected preset, none to the other.
+        // Every preset-bound write went to the selected preset (or its main profile), none to the other.
         expect(preset("b")).toMatchObject({ temperature: 50, maxContext: 5000, maxResponse: 555 });
+        expect(profile("pb")).toMatchObject({ maxContext: 5000, localNetworkMode: true });
     });
 
     it("value precedence: getValue, then bindPath, then bindKey; onChange once per write with the value and the context", () => {
@@ -930,7 +1050,7 @@ describe("the registry over the views", () => {
         expect(quotes.some((item) => item.condition!(ctx))).toBe(false);
     });
 
-    it("a model-dependent condition reads the selected model preset through ctx.modelPreset and follows a model switch, not a prompt switch", () => {
+    it("a model-dependent condition reads the selected model preset's main profile through ctx.modelProfile and follows a model switch, not a prompt switch", () => {
         const ctx = realCtx();
         const timeout = getFullSettingsData().find((item) => item.bindKey === "localNetworkTimeoutSec")!;
         expect(timeout.condition!(ctx)).toBe(false);
@@ -938,10 +1058,11 @@ describe("the registry over the views", () => {
         expect(timeout.condition!(ctx)).toBe(false);
         changeToModelPreset("b");
         expect(timeout.condition!(ctx)).toBe(true);
-        // The registry writes a model key into the selected model preset by its root name.
+        // The registry writes a profile key into the selected model preset's main profile by its root name.
         setSettingValue({ ...timeout, onChange: undefined }, 123, ctx);
-        expect(modelPreset("b").localNetworkTimeoutSec).toBe(123);
+        expect(profile("pb").localNetworkTimeoutSec).toBe(123);
         expect(Object.hasOwn(preset("b"), "localNetworkTimeoutSec")).toBe(false);
+        expect(Object.hasOwn(modelPreset("b"), "localNetworkTimeoutSec")).toBe(false);
     });
 
     it("a registry read inside a $derived repairs a missing selection without throwing", () => {

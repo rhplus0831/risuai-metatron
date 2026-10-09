@@ -57,8 +57,7 @@ import { writeEntries } from "./mutationValidation";
  * - Writes and replacements run untracked; comparisons use `Object.is` (in dev, Svelte compiles `===`
  *   in a `.svelte.ts` file to a check that reads through the wrapper's traps).
  * - Credentials never enter a record: on `llmSecrets` every credential path is routed to `setSecret`
- *   / `clearSecret` or refused (the record holds the mirror form, `mirrorFields`); a model preset's
- *   `proxyKey`, a custom model's `key`, and a named credential's `key` likewise
+ *   / `clearSecret` or refused (the record holds the mirror form, `mirrorFields`); a named credential's `key` likewise
  *   (`SECRET_ENTRY_MAPS`), on a leaf write and on any element or list written whole (a non-empty one
  *   is routed with the element's id, a blank or absent one changes nothing, a leaf assignment of `""`
  *   clears). Every value is validated before either the record or the credential queue changes.
@@ -543,6 +542,11 @@ function assertNoLlmCredential(value: unknown) {
         throw new CredentialRefusedError("llmSecrets must be an object");
     }
     const record = unwrapPlain(value) as Record<string, unknown>;
+    for (const field of removedSecretMaps) {
+        if (Object.hasOwn(record, field)) {
+            throw new CredentialRefusedError(`${field}: this credential map is no longer supported`);
+        }
+    }
     const blank = (entry: unknown) => entry === undefined || entry === null || entry === "";
     for (const field of flatSecretFields) {
         if (!blank(record[field])) {
@@ -588,10 +592,10 @@ function assertNoLlmCredential(value: unknown) {
 //     is what the mirror reads, so `{ ...db.google, projectId }` never clears the key), any other
 //     leaf value refuses the whole write;
 //   - `OaiCompAPIKeys.<id>` (and a whole `OaiCompAPIKeys` map, entry by entry): as a flat credential;
-//   - the entry maps (`modelPresets`, `customModels`, `credentials`) are not in this record: a write of
+//   - the entry map (`credentials`) are not in this record: a write of
 //     them is refused;
 //   - `delete` of any credential path is refused (use `clearSecret`).
-// - `modelPresets[].proxyKey`, `customModels[].key`, `credentials[].key` (`SECRET_ENTRY_MAPS`): see
+// - `credentials[].key` (`SECRET_ENTRY_MAPS`): see
 //   `prepareEntryCredentials`.
 
 class CredentialRefusedError extends TypeError {
@@ -605,6 +609,19 @@ export { CredentialRefusedError };
 const flatSecretFields = new Set<string>(FLAT_SECRET_FIELDS);
 const nestedSecretLeaf: Record<string, string> = NESTED_SECRET_FIELDS;
 const entryLeaf: Record<string, string> = SECRET_ENTRY_MAPS;
+// Removed inline keys are refused, so an old caller cannot turn a former secret into record data.
+const removedEntrySecrets: Readonly<Record<string, readonly string[]>> = {
+    customModels: ["key"],
+    modelPresets: ["proxyKey"],
+    modelProfiles: ["key", "proxyKey"],
+};
+const removedSecretMaps = new Set(["customModels", "modelPresets"]);
+
+function refuseRemovedEntrySecret(kind: TrackedKind, field: string) {
+    if (removedEntrySecrets[kind]?.includes(field)) {
+        throw new CredentialRefusedError(`${kind}.${field}: choose a named key on a model profile instead`);
+    }
+}
 
 function routeSecret(path: SecretPath, value: string) {
     if (value === "") {
@@ -639,6 +656,9 @@ function llmSecretWrite(
     value: unknown,
 ): { value: unknown; route: () => void } | typeof NOT_STORED {
     if (container === null) {
+        if (removedSecretMaps.has(field)) {
+            throw new CredentialRefusedError(`${field}: this credential map is no longer supported`);
+        }
         if (flatSecretFields.has(field)) {
             const secret = credentialValue(value, field);
             routeSecret({ kind: "flat", field: field as FlatSecretField }, secret);
@@ -728,8 +748,8 @@ function llmSecretDelete(container: string | null, field: string) {
 }
 
 /**
- * The entry credential rule for a value written into `modelPresets`, `customModels`, or `credentials`
- * (`SECRET_ENTRY_MAPS`; other kinds pass through): `value` is the whole list (`listLevel`) or one
+ * The entry credential rule for a value written into `credentials`
+ * (`SECRET_ENTRY_MAPS`; removed inline secrets are refused, other kinds pass through): `value` is the whole list (`listLevel`) or one
  * whole element (`elementLevel`). An element's non-empty string credential is routed with its string `id` and left
  * out of what is stored; a blank or absent one is left out and changes nothing; a non-string one, or
  * a credential on an element without a string id, refuses the whole write. Nothing is routed until
@@ -742,6 +762,20 @@ function prepareEntryCredentials(
     listLevel: boolean,
     elementLevel = false,
 ): { value: unknown; route: () => void; owners: string[] } {
+    const checkRemoved = (entry: unknown) => {
+        if (isObject(entry) && !Array.isArray(entry)) {
+            for (const field of Object.keys(entry)) {
+                refuseRemovedEntrySecret(kind, field);
+            }
+        }
+    };
+    if (Object.hasOwn(removedEntrySecrets, kind)) {
+        if (listLevel && (Array.isArray(value) || isRecordWrapper(value))) {
+            Array.from(value as ArrayLike<unknown>).forEach(checkRemoved);
+        } else if (elementLevel) {
+            checkRemoved(value);
+        }
+    }
     const leaf = Object.hasOwn(entryLeaf, kind) ? entryLeaf[kind] : undefined;
     if (leaf === undefined) {
         return { value, route: () => {}, owners: [] };
@@ -1136,7 +1170,7 @@ function createChild(parentNode: TrackedNode, step: Step, value: object): Tracke
  * repeat ids after a re-import), uses object and path identity.
  * - `presets` (the record): `normalizePresets` (`shared/presets.ts`);
  * - `personas` (the record): `normalizePersonas` (`shared/personas.ts`);
- * - `modelPresets` (the record): `normalizeModelPresets` (`shared/presets.ts`);
+ * - `modelPresets` / `modelProfiles`: their shared normalizers (`shared/presets.ts`);
  * - `translatorPresets.items`, `hypaV3Presets.items`: `selectableList`
  *   (`server/src/data/normalize/collections.ts`).
  */
@@ -1144,6 +1178,7 @@ const BY_ID_FIELDS: readonly { kind: TrackedKind; field: string | null; id?: str
     { kind: "presets", field: null },
     { kind: COLLECTION_KIND.personas, field: null },
     { kind: COLLECTION_KIND.modelPresets, field: null },
+    { kind: COLLECTION_KIND.modelProfiles, field: null },
     { kind: COLLECTION_KIND.translatorPresets, field: "items" },
     { kind: COLLECTION_KIND.hypaV3Presets, field: "items" },
     // The character list: `chaId`, unique by construction (`initializeRecords`, the list operations).
@@ -1329,8 +1364,9 @@ function refuseChaIdChange(target: Record<string, unknown>, value: unknown, what
     }
 }
 
-/** Whether `node` is the list of an entry-credential kind (`modelPresets`, `customModels`, `credentials`). */
-const isEntryList = (node: TrackedNode) => node.parent === null && Object.hasOwn(entryLeaf, node.kind);
+/** Lists whose inserted entries must route named keys or refuse removed inline secrets. */
+const isEntryList = (node: TrackedNode) =>
+    node.parent === null && (Object.hasOwn(entryLeaf, node.kind) || Object.hasOwn(removedEntrySecrets, node.kind));
 /** Whether `node` is an element of that list. */
 const isEntryElement = (node: TrackedNode) => node.parent !== null && isEntryList(node.parent);
 
@@ -1361,6 +1397,9 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
             return true;
         }
     }
+    if (isEntryElement(node)) {
+        refuseRemovedEntrySecret(node.kind, prop);
+    }
     let incoming = value;
     let route: () => void = () => {};
     const container = llmContainer(node);
@@ -1377,7 +1416,7 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
         if (typeof id !== "string" || id === "") {
             throw new CredentialRefusedError(`${node.kind}.${prop}: its owner has no id`);
         }
-        // The id must name this element only (custom model ids are not made unique).
+        // The id must name this element only.
         assertCredentialOwners(node.kind, [id], Array.from(untrack(() => resolve(node.parent!)) as unknown[]));
         routeSecret(
             { kind: "entry", field: node.kind as SecretEntryMap, id },
@@ -1412,7 +1451,7 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
 /**
  * A mutator call's arguments as the native method gets them: the values it inserts (`push`,
  * `unshift`, `splice`'s items, `fill`'s value) prepared and unwrapped, every other argument as it is.
- * On a credential list (`modelPresets`, `customModels`, `credentials`) the inserted credentials are validated together
+ * On a credential list (`credentials`) the inserted credentials are validated together
  * against the list the call leaves (exactly one owner each), `fill` and `copyWithin` refuse a
  * credential (they duplicate elements), and `route` routes them once the method succeeded.
  */

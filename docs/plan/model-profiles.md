@@ -1,7 +1,7 @@
 # Model Profiles Plan
 
-Status: planned (every decision confirmed 2026-10-09; slice 1 not
-started). Split the model preset into **model profiles** (which model, with
+Status: done (slices 1–6, 2026-10-09); the `submodel` slot and the
+remaining global provider toggles (O7) are the open follow-ups. Split the model preset into **model profiles** (which model, with
 which key, reached how) and the **model preset** (which profile each slot
 uses). The auxiliary model separation (`seperateModelsForAxModels`)
 becomes a per-slot profile choice, so each auxiliary model gets its own key,
@@ -343,6 +343,36 @@ readers see model ids, never profile ids:
    `media-aux.md` (`AuxModelSelectors`), `persistence.md` (the kind),
    `settings-i18n.md` (the page), and `STRUCTURE.md` anchors. Mark Shared API
    Keys decision 1 as superseded.
+
+## As built
+
+Choices the plan left open, as implemented:
+
+- Slot keys: `mainSlot` and `subSlot` (`{ profileId }`) and `auxSlots`
+  (`Partial<Record<AuxModelMode, { profileId } | { modelId }>>`). A missing
+  or malformed main or sub slot normalizes to the default profile's id,
+  `DEFAULT_MODEL_PROFILE_ID` (`"default"`), which the materialized default
+  profile carries.
+- `resolveSlotProfile` and `definitionNeedsProfile` live in
+  `shared/llm/modelSlots.ts`; the tab wraps the resolver as
+  `resolveModelSlot` (`settingsViews.svelte.ts`). The derived roots come from
+  one function, `modelPresetRootValue` (`shared/sections.ts`), which both
+  `forwardPresetRoots` and the tab's views use, and the server's request
+  overlay is `forwardProfileRoots`.
+- The O8 rules live in `writeModelRoot` (`settingsViews.svelte.ts`), which
+  every root write goes through, the plugin setters included. A root write of
+  `aiModel` or `subModel` (the onboarding, old callers) follows the same
+  shape: the value read is no change, exactly one profile with that model id
+  is selected, anything else is refused (main and sub never go bare). A
+  refusal warns `[Settings] Refused ...` and returns `false`.
+- `deleteModelProfile` keeps the last profile, as `removeModelPreset` keeps
+  the last model preset; the server normalizer would materialize one anyway.
+- The profile page is `MODEL_PROFILES_SETTINGS_MENU` (18), between Model and
+  API Keys; the profile editor binds to a profile by id, so a profile in no
+  slot is editable.
+- Adapters with a flat default read it through `defaultCredentialKey`
+  (`server/src/llm/credentials.ts`), which answers `""` for a custom model
+  and the reverse proxy.
 
 ## Tests
 

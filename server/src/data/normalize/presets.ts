@@ -1,5 +1,5 @@
-import type { botPreset, ModelPreset } from "../../../../shared/database.ts";
-import { normalizeModelPresets, normalizePresets } from "../../../../shared/presets.ts";
+import type { botPreset, ModelPreset, ModelProfile } from "../../../../shared/database.ts";
+import { normalizeModelPresets, normalizeModelProfiles, normalizePresets } from "../../../../shared/presets.ts";
 import { requireArrayOfObjects } from "./shared.ts";
 
 /**
@@ -18,4 +18,9 @@ export function normalizePresetCollection(input: unknown): botPreset[] {
  */
 export function normalizeModelPresetCollection(input: unknown): ModelPreset[] {
     return normalizeModelPresets(input === undefined ? [] : requireArrayOfObjects(input, "modelPresets"));
+}
+
+/** Shared model profiles: defaults, unique ids, and one materialized default profile; never empty. */
+export function normalizeModelProfileCollection(input: unknown): ModelProfile[] {
+    return normalizeModelProfiles(input === undefined ? [] : requireArrayOfObjects(input, "modelProfiles"));
 }

@@ -7,6 +7,7 @@
 
 import type {
     ActiveModelPreset,
+    ModelProfileView,
     ActivePersona,
     ActivePreset,
     SettingsRootKey,
@@ -23,8 +24,10 @@ export interface SettingContext {
     settings: SettingsViews;
     /** The selected prompt preset, by its own field names. */
     preset: ActivePreset;
-    /** The selected model preset (`docs/plan/split-preset.md`), by its own field names. */
+    /** The selected model preset, by its own slot fields. */
     modelPreset: ActiveModelPreset;
+    /** The main slot's profile, with schema defaults for a missing profile. */
+    modelProfile: ModelProfileView;
     /** The selected persona. */
     persona: ActivePersona;
     modelInfo: LLMModel;

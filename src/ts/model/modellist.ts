@@ -1,5 +1,6 @@
 import {
-    activeModelPreset,
+    activeMainProfile,
+    resolveModelSlot,
     settings,
     activePreset,
     scopedPresetRoot,
@@ -17,6 +18,9 @@ import {
     GPT5XHighParameters,
 } from "./types";
 import { BASE_LLM_MODELS, resolveModelInfo } from "../../../shared/llm/models.ts";
+import type { ModelProfile } from "../../../shared/database.ts";
+import type { ModelModeExtended } from "../../../shared/llm/request.ts";
+import { presetFieldValue } from "../../../shared/presets.ts";
 import { auxFetch } from "../network/auxFetch";
 import { isSecretSet } from "../storage/llmSecrets.svelte";
 import { customV3ProviderMetaStore } from "../plugins/apiV3/v3.svelte";
@@ -209,19 +213,29 @@ export async function registerModelDynamic() {
 globalThis.registerModelDynamic = registerModelDynamic;
 
 /**
- * The model `id` with the custom flags of `scope`'s model preset (a request's captured pair, so the
- * flags match the model preset whose id the request carries), else of the selected one.
+ * A definition with the main profile's flags (the captured pair when supplied), or an explicit
+ * profile's flags. Null means no profile and uses schema defaults, never the active main profile.
  */
-export function getModelInfo(id?: string | null, scope?: PresetScope): LLMModel {
+export function getModelInfo(id?: string | null, scope?: PresetScope, profile?: ModelProfile | null): LLMModel {
+    const field = (name: "enableCustomFlags" | "customFlags") =>
+        profile === undefined
+            ? scope
+                ? scopedPresetRoot(scope, name)
+                : activeMainProfile[name]
+            : presetFieldValue((profile ?? undefined) as unknown as Record<string, unknown> | undefined, name);
     return resolveModelInfo(id, {
-        enableCustomFlags: (scope
-            ? scopedPresetRoot(scope, "enableCustomFlags")
-            : activeModelPreset.enableCustomFlags) as boolean,
-        customFlags: (scope ? scopedPresetRoot(scope, "customFlags") : activeModelPreset.customFlags) as LLMFlags[],
+        enableCustomFlags: field("enableCustomFlags") as boolean,
+        customFlags: field("customFlags") as LLMFlags[],
         customModels: settings.customModels,
         extraModels: LLMModels,
         pluginModels: customV3ProviderMetaStore,
     });
+}
+
+/** Catalogue metadata for a mode, using the same profile routing as requests on both runtimes. */
+export function getModelInfoForMode(mode: ModelModeExtended, scope?: PresetScope): LLMModel {
+    const resolved = resolveModelSlot(mode, scope);
+    return getModelInfo(resolved.modelId ?? "", scope, resolved.kind === "profile" ? resolved.profile : null);
 }
 
 interface GetModelListGroup {

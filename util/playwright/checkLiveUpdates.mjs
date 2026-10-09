@@ -1,3 +1,4 @@
+import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for Phase 6 slice 2 (live updates, Stop A's two-tab matrix on the flat mirror):
 // two tabs of one browser (A1, A2) and a second browser (B) against one dev stack. Writes made in a
 // tab, and through the routes as another device would, reach the other tabs without a reload,
@@ -163,6 +164,8 @@ try {
     const ui = await single("ui");
     epoch = ui.epoch ?? epoch;
     const presets = await single("presets");
+    const modelPresets = await single("modelPresets");
+    const modelProfiles = await single("modelProfiles");
     const providers = await single("providers");
     const preset = {
         ...presets.data[0],
@@ -177,13 +180,19 @@ try {
     const second = { ...preset, id: randomUUID(), name: "Preset Two", temperature: 30 };
     let seeded = await batch({
         ops: [
+            ...modelFixtureOps({ ...preset, customTokenizer: "tik" }, modelPresets, modelProfiles),
             { kind: "ui", id: "main", baseRevision: ui.revision, data: { ...ui.data, didFirstSetup: true } },
-            { kind: "presets", id: "main", baseRevision: presets.revision, data: [preset, second] },
+            {
+                kind: "presets",
+                id: "main",
+                baseRevision: presets.revision,
+                data: [promptFixture(preset), promptFixture(second)],
+            },
             {
                 kind: "providers",
                 id: "main",
                 baseRevision: providers.revision,
-                data: { ...providers.data, useStreaming: true, customTokenizer: "tik" },
+                data: { ...providers.data, useStreaming: true },
             },
         ],
     });

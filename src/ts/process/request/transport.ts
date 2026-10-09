@@ -28,7 +28,7 @@ import {
 import { RESOURCE_EPOCH_HEADER } from "../../../../shared/resources.ts";
 import { alertError } from "src/ts/alert";
 import { appendFetchLog } from "src/ts/globalApi.svelte";
-import { getModelInfo, isDynamicModel, LLMFlags, type LLMModel } from "src/ts/model/modellist";
+import { getModelInfoForMode, isDynamicModel, LLMFlags, type LLMModel } from "src/ts/model/modellist";
 import { activeChannelCall } from "src/ts/network/channelCallSource";
 import { generationClientId } from "src/ts/network/generationJobs";
 import { risuChatParserScoped } from "src/ts/parser/parser.svelte";
@@ -143,7 +143,7 @@ export async function requestServer(
     // The main model and tokenizer of the model preset whose id the request carries.
     const aiModel = (scopedPresetRoot(presetScope, "aiModel") as string | undefined) ?? "";
     const currentPluginProvider = (scopedPresetRoot(presetScope, "currentPluginProvider") as string | undefined) ?? "";
-    const mainModel = getModelInfo(aiModel, presetScope);
+    const mainModel = getModelInfoForMode("model", presetScope);
     const args: Record<string, unknown> = {};
     for (const key of REQUEST_ARG_KEYS) {
         if (arg[key] !== undefined) {
@@ -170,7 +170,7 @@ export async function requestServer(
                 modelTokenizer: mainModel.tokenizer,
                 ...(mainModel.internalID !== undefined ? { modelInternalID: mainModel.internalID } : {}),
                 pluginTokenizer: pluginHooks.providerOptions.get(currentPluginProvider)?.tokenizer ?? "none",
-                customTokenizer: settings.providers.customTokenizer ?? "",
+                customTokenizer: (scopedPresetRoot(presetScope, "customTokenizer") as string | undefined) ?? "",
                 googleClaudeTokenizing: !!settings.providers.googleClaudeTokenizing,
                 useTokenizerCaching: !!settings.providers.useTokenizerCaching,
             },

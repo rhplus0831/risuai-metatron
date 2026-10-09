@@ -4,6 +4,10 @@ export const messages = {
     errors: {
         unknownModel: "Error: Unknown model selected",
         httpError: "Error: error in request:",
+        modelProfileMissing: (mode: string) =>
+            `Cannot request mode "${mode}": the selected model profile no longer exists.`,
+        modelProfileRequired: (model: string) =>
+            `Cannot request model "${model}" without a model profile: this definition requires connection options or a named-key choice.`,
         credentialRefused: (model: string, name: string | undefined, reason: string) =>
             `Cannot request model "${model}"${name === undefined ? "" : ` with credential "${name}"`}: ${reason}`,
         credentialMissing: "The bound credential no longer exists.",

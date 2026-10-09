@@ -1,3 +1,4 @@
+import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for Phase 5 Stop D (and the cutover's matrix): the parts of the server matrix the
 // slice checks do not cover, against a mock provider (an OpenAI-compatible SSE stream; a non-streamed request is a memory summary) and a mock
 // image service (OpenAI-compatible images): a send and a reroll, a group send (one reply per active
@@ -229,6 +230,8 @@ try {
     epoch = ui.epoch ?? epoch;
     const order = await single("characterOrder");
     const presets = await single("presets");
+    const modelPresets = await single("modelPresets");
+    const modelProfiles = await single("modelProfiles");
     const providers = await single("providers");
     const media = await single("memoryTranslateMedia");
     const secrets = await single("secrets");
@@ -289,18 +292,19 @@ try {
         method: "POST",
         body: JSON.stringify({
             ops: [
+                ...modelFixtureOps({ ...preset, customTokenizer: "tik" }, modelPresets, modelProfiles),
                 { kind: "ui", id: "main", baseRevision: ui.revision, data: { ...ui.data, didFirstSetup: true } },
                 {
                     kind: "presets",
                     id: "main",
                     baseRevision: presets.revision,
-                    data: [preset, ...presets.data.slice(1)],
+                    data: [promptFixture(preset), ...presets.data.slice(1)],
                 },
                 {
                     kind: "providers",
                     id: "main",
                     baseRevision: providers.revision,
-                    data: { ...providers.data, useStreaming: true, customTokenizer: "tik" },
+                    data: { ...providers.data, useStreaming: true },
                 },
                 {
                     kind: "memoryTranslateMedia",

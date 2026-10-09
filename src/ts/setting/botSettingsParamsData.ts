@@ -32,9 +32,7 @@ export const seedSetting: SettingItem = {
     labelKey: "seed",
     bindKey: "generationSeed",
     condition: (ctx) =>
-        ctx.modelPreset.aiModel.startsWith("gpt") ||
-        ctx.modelPreset.aiModel === "reverse_proxy" ||
-        ctx.modelPreset.aiModel === "openrouter",
+        ctx.modelInfo.id.startsWith("gpt") || ctx.modelInfo.id === "reverse_proxy" || ctx.modelInfo.id === "openrouter",
     keywords: ["seed", "random", "deterministic"],
 };
 
@@ -325,15 +323,18 @@ export const modelSpecificParameterItems: SettingItem[] = [
 ];
 
 /**
- * The model preset's parameters, on the Model page (`ModelSettings.svelte`): the context size
- * belongs to the model preset (`docs/plan/split-preset.md`).
+ * The model profile's parameters, on the Model page (`ModelSettings.svelte`): the context size
+ * belongs to the model profile (`docs/plan/split-preset.md`).
  */
 export const modelParameterItems: SettingItem[] = [
     {
         id: "params.maxContext",
         type: "number",
         labelKey: "maxContextSize",
-        bindKey: "maxContext",
+        getValue: (ctx) => ctx.modelProfile.maxContext,
+        setValue: (value, ctx) => {
+            ctx.modelProfile.maxContext = value;
+        },
         options: { min: 0 },
         keywords: ["context", "size", "token", "limit"],
     },

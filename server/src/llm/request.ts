@@ -6,6 +6,8 @@
 // `getUserName`, `risuChatParser`, ...) are the request context's (`arg.ctx`).
 import { Ollama } from "ollama";
 import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
+import { resolveSlotProfile } from "../../../shared/llm/modelSlots.ts";
+import { forwardProfileRoots } from "../../../shared/sections.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type {
     BufferedResponse,
@@ -17,7 +19,7 @@ import type {
 } from "../../../shared/llm/request.ts";
 import { applyChatTemplate } from "./chatTemplate.ts";
 import type { RequestContext } from "./context.ts";
-import { resolveCredential } from "./credentials.ts";
+import { defaultCredentialKey, resolveCredential } from "./credentials.ts";
 import { messages as language } from "./messages.ts";
 import { NovelAIBadWordIds, stringlizeNAIChat } from "./nai.ts";
 import { requestClaude } from "./anthropic.ts";
@@ -311,8 +313,9 @@ export function reformater(
 }
 
 /**
- * `requestChatDataMain` on the server: the model of `mode` (or `arg.staticModel`), the argument
- * defaults, the reverse-proxy and custom-model overrides, `reformater`, then the format's function.
+ * `requestChatDataMain` on the server: shared slot resolution, a request-local profile overlay,
+ * argument defaults, reverse-proxy/custom-model overrides, `reformater`, then the format's function.
+ * Missing or required profiles refuse before dispatch; the job's captured settings stay unchanged.
  * `Plugin` (a plugin provider model) is called in the job's tab through `ctx.pluginProvider`, and
  * `WebLLM` (a local Transformers.js model) runs on the server (`ctx.localGeneration`): both for a
  * job's request only; a tab runs them itself and its transport never sends them. A tab's dynamic
@@ -323,8 +326,29 @@ export async function requestChatDataMain(
     model: ModelModeExtended,
     ctx: RequestContext,
 ): Promise<requestDataResponse> {
-    const db = ctx.db;
-    const aiModel = arg.staticModel ? arg.staticModel : model === "model" ? db.aiModel : db.subModel;
+    const resolved = resolveSlotProfile(ctx.db.modelPreset, ctx.db.modelProfiles, model, arg.staticModel);
+    if (resolved.kind === "refused") {
+        return {
+            type: "fail",
+            result:
+                resolved.reason === "missingProfile"
+                    ? language.errors.modelProfileMissing(model)
+                    : language.errors.modelProfileRequired(resolved.modelId!),
+            noRetry: true,
+        };
+    }
+    const profile = resolved.kind === "profile" ? resolved.profile : undefined;
+    const db = { ...ctx.db, aiModel: resolved.modelId };
+    forwardProfileRoots(db, profile);
+    const getModelInfo = ctx.getModelInfo;
+    ctx = {
+        ...ctx,
+        db,
+        // Dynamic and plugin descriptors keep the context's resolution rules. Clone the result
+        // before adapters change its format, internal id, or flags, including a captured plugin model.
+        getModelInfo: (id) => structuredClone(getModelInfo(id, db)),
+    };
+    const aiModel = resolved.modelId;
     const targ: RequestDataArgumentExtended = {
         ...arg,
         ctx,
@@ -332,12 +356,6 @@ export async function requestChatDataMain(
         modelInfo: ctx.getModelInfo(aiModel),
         mode: model,
     };
-    if (db.seperateModelsForAxModels && !arg.staticModel) {
-        if (db.seperateModels[model as keyof typeof db.seperateModels]) {
-            targ.aiModel = db.seperateModels[model as keyof typeof db.seperateModels];
-            targ.modelInfo = ctx.getModelInfo(targ.aiModel);
-        }
-    }
 
     if (
         (targ.modelInfo.format === LLMFormat.Plugin && (!ctx.pluginProvider || targ.aiModel.startsWith("dynamic_"))) ||
@@ -365,15 +383,13 @@ export async function requestChatDataMain(
         targ.modelInfo.internalID = db.customProxyRequestModel;
         targ.modelInfo.format = db.customAPIFormat;
         targ.customURL = db.forceReplaceUrl;
-        targ.key = db.proxyKey;
     }
     if (targ.aiModel.startsWith("xcustom:::")) {
         const found = db.customModels.find((m) => m.id === targ.aiModel);
         targ.customURL = found?.url;
-        targ.key = found?.key;
     }
 
-    const credential = resolveCredential(db, targ.aiModel, targ.modelInfo);
+    const credential = resolveCredential(db, targ.aiModel, targ.modelInfo, profile);
     switch (credential.kind) {
         case "refused":
             return { type: "fail", result: credential.message, noRetry: true };
@@ -677,7 +693,7 @@ async function requestNovelAI(arg: RequestDataArgumentExtended): Promise<request
     };
 
     let headers = {
-        Authorization: "Bearer " + (arg.key ?? db.novelai.token),
+        Authorization: "Bearer " + (arg.key ?? defaultCredentialKey(aiModel, db.novelai.token)),
     };
 
     body = applyAdditionalParameters(body, headers, getAdditionalParameters(arg.ctx.db, aiModel));
@@ -748,7 +764,7 @@ async function requestOobaLegacy(arg: RequestDataArgumentExtended): Promise<requ
         aiModel === "textgen_webui"
             ? {}
             : {
-                  "X-API-KEY": db.mancerHeader,
+                  "X-API-KEY": arg.key ?? defaultCredentialKey(aiModel, db.mancerHeader),
               };
 
     bodyTemplate = applyAdditionalParameters(bodyTemplate, headers, getAdditionalParameters(arg.ctx.db, aiModel));
@@ -1048,7 +1064,7 @@ async function requestNovelList(arg: RequestDataArgumentExtended): Promise<reque
     const temperature = arg.temperature;
     const biasString = arg.biasString;
     const aiModel = arg.aiModel;
-    const auth_key = db.novellistAPI;
+    const auth_key = arg.key ?? defaultCredentialKey(aiModel, db.novellistAPI);
     const api_server_url = "https://api.tringpt.com/";
     const logit_bias: string[] = [];
     const logit_bias_values: string[] = [];
@@ -1133,21 +1149,21 @@ async function requestOllama(arg: RequestDataArgumentExtended): Promise<requestD
 
     if (isCloud && requestFormat === LLMFormat.OpenAICompatible) {
         arg.customURL = "https://ollama.com/v1/chat/completions";
-        arg.key ??= db.ollamaApiKey;
+        arg.key ??= defaultCredentialKey(arg.aiModel, db.ollamaApiKey);
         arg.modelInfo.internalID = ollamaModel;
         return requestOpenAI(arg);
     }
 
     if (isCloud && requestFormat === LLMFormat.OpenAIResponseAPI) {
         arg.customURL = "https://ollama.com/v1/responses";
-        arg.key ??= db.ollamaApiKey;
+        arg.key ??= defaultCredentialKey(arg.aiModel, db.ollamaApiKey);
         arg.modelInfo.internalID = ollamaModel;
         return requestOpenAIResponseAPI(arg);
     }
 
     if (isCloud && requestFormat === LLMFormat.Anthropic) {
         arg.customURL = "https://ollama.com/v1/messages";
-        arg.key ??= db.ollamaApiKey;
+        arg.key ??= defaultCredentialKey(arg.aiModel, db.ollamaApiKey);
         arg.modelInfo = {
             ...arg.modelInfo,
             internalID: ollamaModel,
@@ -1166,7 +1182,7 @@ async function requestOllama(arg: RequestDataArgumentExtended): Promise<requestD
         }
     }
 
-    const apiKey = arg.key ?? db.ollamaApiKey;
+    const apiKey = arg.key ?? defaultCredentialKey(arg.aiModel, db.ollamaApiKey);
     let customHeaders: Record<string, string> = isCloud && apiKey ? { Authorization: "Bearer " + apiKey } : {};
 
     let requestBody: any = {
@@ -1341,7 +1357,7 @@ async function requestCohere(arg: RequestDataArgumentExtended): Promise<requestD
     }
 
     let headers: Record<string, string> = {
-        Authorization: "Bearer " + (arg.key ?? db.cohereAPIKey),
+        Authorization: "Bearer " + (arg.key ?? defaultCredentialKey(aiModel, db.cohereAPIKey)),
         "Content-Type": "application/json",
     };
 
@@ -1431,6 +1447,7 @@ async function requestHorde(arg: RequestDataArgumentExtended): Promise<requestDa
     if (db.hordeConfig.apiKey.length > 2) {
         apiKey = db.hordeConfig.apiKey;
     }
+    apiKey = arg.key ?? defaultCredentialKey(aiModel, apiKey);
 
     let headers: Record<string, string> = {
         "content-type": "application/json",

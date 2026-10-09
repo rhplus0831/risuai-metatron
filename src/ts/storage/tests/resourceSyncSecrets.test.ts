@@ -8,7 +8,7 @@ import { materialize, serverNormalizer } from "./serverKinds";
 // Phase 5 slice 7b (`request-layer-and-llm-secrets.md`): the credential write queue of the save
 // adapter (`resourceSync.svelte.ts` with `llmSecrets.svelte.ts`) against the in-memory stand-in of
 // the resource routes, which serves the write-only contract (`fakeResourceServer.ts`). A queued
-// set, clear, copy, or cleanup is sent after the cycle's resource batch, one at a time on the
+// set, clear, or cleanup is sent after the cycle's resource batch, one at a time on the
 // record's revision; a stale revision rereads and retries a bounded number of times; a refused
 // write (400) is a reported discard; a retryable failure keeps the write; a 412 halts; an
 // acknowledgement or a reread is adopted by the sibling text (unchanged, local-only, both changed);
@@ -61,8 +61,7 @@ const flat = (
     kind: "flat",
     field,
 });
-const preset = (id: string): SecretPath => ({ kind: "entry", field: "modelPresets", id });
-const model = (id: string): SecretPath => ({ kind: "entry", field: "customModels", id });
+const cred = (id: string): SecretPath => ({ kind: "entry", field: "credentials", id });
 const secretRequests = (fake: FakeResourceServer) =>
     fake.requests.filter((r) => r.path.startsWith("/api/llm-secrets/"));
 const requestLog = (fake: FakeResourceServer) => fake.requests.map((r) => `${r.method} ${r.path}`);
@@ -70,38 +69,23 @@ const onSecretRoutes = (path: string) => path.startsWith("/api/llm-secrets/");
 const onBatch = (path: string) => path === "/api/resources/batch";
 
 /**
- * Boots the adapter the way `loadData` does over a store holding two modelPresets with keys, one custom
- * model with a key, a stored OpenAI key, and a readable sibling; the boot compare pass has run.
+ * Boots the adapter the way `loadData` does over a store holding two named credentials with keys
+ * (the only entry map since `docs/plan/model-profiles.md` O2), a stored OpenAI key, and a readable
+ * sibling; the boot compare pass has run.
  */
 async function boot() {
     vi.resetModules();
     const fake = new FakeResourceServer();
-    fake.set(
-        "modelPresets",
-        "main",
-        (await serverNormalizer("modelPresets"))([
-            { id: "p1", name: "p1" },
-            { id: "p2", name: "p2" },
-        ]),
-    );
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
     fake.set("pluginStorage", "main", {});
     await materialize(fake);
     fake.set(
-        "customModels",
+        "credentials",
         "main",
-        (await serverNormalizer("customModels"))([
-            {
-                id: "m1",
-                internalId: "i1",
-                url: "https://m.test",
-                format: 0,
-                tokenizer: 0,
-                name: "M1",
-                params: "",
-                flags: [],
-            },
+        (await serverNormalizer("credentials"))([
+            { id: "c1", name: "C1", type: "openai" },
+            { id: "c2", name: "C2", type: "anthropic" },
         ]),
     );
     fake.set(
@@ -110,8 +94,7 @@ async function boot() {
         (await serverNormalizer("llmSecrets"))({
             openAIKey: STORED_KEY,
             google: { projectId: "proj", accessToken: "" },
-            modelPresets: { p1: { proxyKey: "pk-1" }, p2: { proxyKey: "pk-2" } },
-            customModels: { m1: { key: "mk-1" } },
+            credentials: { c1: { key: "ck-1" }, c2: { key: "ck-2" } },
         }),
     );
     server.current = fake;
@@ -155,8 +138,8 @@ describe("a queued credential write", () => {
         expect(bootBatches.flatMap((batch) => batch.ops.map((op) => op.kind))).not.toContain("llmSecrets");
         expect(secrets.secretStatus(path)).toEqual({ set: true, hint: "AAAA", pending: false });
         expect(secrets.secretStatus(flat("claudeAPIKey"))).toEqual({ set: false, hint: "", pending: false });
-        expect(secrets.secretStatus(preset("p1"))).toEqual({ set: true, hint: "", pending: false });
-        expect(secrets.secretStatus(model("m1"))).toEqual({ set: true, hint: "", pending: false });
+        expect(secrets.secretStatus(cred("c1"))).toEqual({ set: true, hint: "", pending: false });
+        expect(secrets.secretStatus(cred("c2"))).toEqual({ set: true, hint: "", pending: false });
         expect(settings.llmSecrets.openAIKey).toBe("");
         const unload = () => {
             const event = new Event("beforeunload", { cancelable: true });
@@ -213,28 +196,28 @@ describe("a queued credential write", () => {
         expect(alerts.normal).not.toHaveBeenCalled();
     });
 
-    it("goes after the batch that creates its model preset: a copy, and a key queued while a batch is in flight", async () => {
+    it("goes after the batch that creates its credential: a key queued with it, and a key queued while a batch is in flight", async () => {
         const { fake, sync, secrets, settings } = await boot();
-        settings.modelPresets.push({ ...JSON.parse(JSON.stringify(settings.modelPresets[0])), id: "p3", name: "p3" });
-        secrets.copyModelPresetSecret("p1", "p3");
-        expect(secrets.secretStatus(preset("p3"))).toEqual({ set: true, hint: "", pending: true });
+        settings.credentials.push({ id: "c3", name: "C3", type: "openai" });
+        secrets.setSecret(cred("c3"), "ck-3");
+        expect(secrets.secretStatus(cred("c3"))).toEqual({ set: true, hint: "", pending: true });
         await sync.flushResources();
-        expect(requestLog(fake)).toEqual(["POST /api/resources/batch", "POST /api/llm-secrets/modelPresets/copy"]);
-        expect(fake.batchBodies()[0].ops.map((op) => op.kind)).toEqual(["modelPresets"]);
-        expect(secretRequests(fake)[0].body).toMatchObject({ from: "p1", to: "p3" });
-        expect(fake.data("modelPresets", "main").map((p: { id: string }) => p.id)).toEqual(["p1", "p2", "p3"]);
-        expect(fake.data("llmSecrets", "main").modelPresets.p3).toEqual({ proxyKey: "pk-1" });
-        expect(secrets.secretStatus(preset("p3"))).toEqual({ set: true, hint: "", pending: false });
+        expect(requestLog(fake)).toEqual(["POST /api/resources/batch", "PUT /api/llm-secrets/credentials/~c3/key"]);
+        expect(fake.batchBodies()[0].ops.map((op) => op.kind)).toEqual(["credentials"]);
+        expect(secretRequests(fake)[0].body).toMatchObject({ value: "ck-3" });
+        expect(fake.data("credentials", "main").map((c: { id: string }) => c.id)).toEqual(["c1", "c2", "c3"]);
+        expect(fake.data("llmSecrets", "main").credentials.c3).toEqual({ key: "ck-3" });
+        expect(secrets.secretStatus(cred("c3"))).toEqual({ set: true, hint: "", pending: false });
 
-        // A model preset created, and its key queued, while a batch is in flight: the key waits for the
-        // next cycle, after the batch that carries the preset.
+        // A credential created, and its key queued, while a batch is in flight: the key waits for the
+        // next cycle, after the batch that carries the credential.
         fake.requests.length = 0;
         fake.holdNextBatch = true;
-        settings.modelPresets.push({ ...JSON.parse(JSON.stringify(settings.modelPresets[0])), id: "p4", name: "p4" });
+        settings.credentials.push({ id: "c4", name: "C4", type: "openai" });
         const flushed = sync.flushResources();
         await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
-        settings.modelPresets.push({ ...JSON.parse(JSON.stringify(settings.modelPresets[0])), id: "p5", name: "p5" });
-        secrets.setSecret(preset("p5"), "pk-5");
+        settings.credentials.push({ id: "c5", name: "C5", type: "openai" });
+        secrets.setSecret(cred("c5"), "ck-5");
         await tick();
         fake.releaseBatch!();
         await flushed;
@@ -242,14 +225,14 @@ describe("a queued credential write", () => {
         const log = requestLog(fake);
         const batches = fake.batchBodies();
         expect(batches).toHaveLength(2);
-        expect(batches[0].ops[0].data.map((p: { id: string }) => p.id)).toEqual(["p1", "p2", "p3", "p4"]);
-        expect(batches[1].ops[0].data.map((p: { id: string }) => p.id)).toEqual(["p1", "p2", "p3", "p4", "p5"]);
+        expect(batches[0].ops[0].data.map((c: { id: string }) => c.id)).toEqual(["c1", "c2", "c3", "c4"]);
+        expect(batches[1].ops[0].data.map((c: { id: string }) => c.id)).toEqual(["c1", "c2", "c3", "c4", "c5"]);
         expect(log).toEqual([
             "POST /api/resources/batch",
             "POST /api/resources/batch",
-            "PUT /api/llm-secrets/modelPresets/~p5/proxyKey",
+            "PUT /api/llm-secrets/credentials/~c5/key",
         ]);
-        expect(fake.data("llmSecrets", "main").modelPresets.p5).toEqual({ proxyKey: "pk-5" });
+        expect(fake.data("llmSecrets", "main").credentials.c5).toEqual({ key: "ck-5" });
     });
 
     it("retries a stale revision after a reread, a bounded number of times per cycle, and keeps the write for the next cycle", async () => {
@@ -382,7 +365,7 @@ describe("adopting the server's record after a write or a reread", () => {
         expect(fake.data("llmSecrets", "main")).toMatchObject({ openAIKey: "sk-x", google: { projectId: "remote" } });
         // The reread's changed revision invalidated every path; the write bumped its own again.
         expect(secrets.secretVersion(flat("claudeAPIKey"))).toBe(1);
-        expect(secrets.secretVersion(preset("p1"))).toBe(1);
+        expect(secrets.secretVersion(cred("c1"))).toBe(1);
         expect(secrets.secretVersion(flat("openAIKey"))).toBe(2);
         // Nothing is written back: the mirror equals the server.
         fake.requests.length = 0;
@@ -411,7 +394,7 @@ describe("adopting the server's record after a write or a reread", () => {
             .ops.find((op) => op.kind === "llmSecrets");
         expect(sibling.data).toMatchObject({ vertexClientEmail: "edited-during" });
         expect(sibling.data).not.toHaveProperty("openAIKey");
-        expect(sibling.data).not.toHaveProperty("modelPresets");
+        expect(sibling.data).not.toHaveProperty("credentials");
         expect(fake.data("llmSecrets", "main")).toMatchObject({
             openAIKey: "sk-y",
             vertexClientEmail: "edited-during",
@@ -458,92 +441,70 @@ describe("adopting the server's record after a write or a reread", () => {
 });
 
 describe("the cleanup of a deleted owner's entry", () => {
-    const removePreset = (modelPresets: { id: string }[], id: string) => {
-        modelPresets.splice(
-            modelPresets.findIndex((entry) => entry.id === id),
+    const removeCredential = (credentials: { id: string }[], id: string) => {
+        credentials.splice(
+            credentials.findIndex((entry) => entry.id === id),
             1,
         );
     };
 
-    it("is sent once the deletion is saved, for a model preset and for a custom model", async () => {
+    it("is sent once the deletion is saved, for a named credential", async () => {
         const { fake, sync, secrets, settings } = await boot();
-        removePreset(settings.modelPresets, "p2");
-        secrets.deleteModelPresetSecret("p2");
-        expect(secrets.secretStatus(preset("p2"))).toEqual({ set: false, hint: "", pending: true });
+        removeCredential(settings.credentials, "c2");
+        secrets.deleteEntrySecret("credentials", "c2");
+        expect(secrets.secretStatus(cred("c2"))).toEqual({ set: false, hint: "", pending: true });
         await sync.flushResources();
-        expect(requestLog(fake)).toEqual([
-            "POST /api/resources/batch",
-            "PUT /api/llm-secrets/modelPresets/~p2/proxyKey",
-        ]);
+        expect(requestLog(fake)).toEqual(["POST /api/resources/batch", "PUT /api/llm-secrets/credentials/~c2/key"]);
+        expect(fake.batchBodies()[0].ops.map((op) => op.kind)).toEqual(["credentials"]);
         expect(secretRequests(fake)[0].body).toMatchObject({ value: "" });
-        expect(fake.data("llmSecrets", "main").modelPresets).toEqual({ p1: { proxyKey: "pk-1" } });
-        expect(secrets.secretStatus(preset("p2"))).toEqual({ set: false, hint: "", pending: false });
-
-        fake.requests.length = 0;
-        settings.customModels.splice(0, 1);
-        secrets.deleteEntrySecret("customModels", "m1");
-        await sync.flushResources();
-        expect(requestLog(fake)).toEqual(["POST /api/resources/batch", "PUT /api/llm-secrets/customModels/~m1/key"]);
-        expect(fake.batchBodies()[0].ops.map((op) => op.kind)).toEqual(["customModels"]);
-        expect(fake.data("llmSecrets", "main").customModels).toEqual({});
+        expect(fake.data("llmSecrets", "main").credentials).toEqual({ c1: { key: "ck-1" } });
+        expect(secrets.secretStatus(cred("c2"))).toEqual({ set: false, hint: "", pending: false });
         expect(secrets.llmSecretState.queue).toEqual([]);
     });
 
     it("is dropped without a request when a conflict restored the owner, while an explicit clear of a live owner still goes", async () => {
         const { fake, sync, secrets, settings } = await boot();
-        // Another tab renamed p1: this client's deletion of p2 conflicts and is discarded.
-        const modelPresets = fake.data("modelPresets", "main");
+        // Another tab renamed c1: this client's deletion of c2 conflicts and is discarded.
+        const credentials = fake.data("credentials", "main");
         fake.set(
-            "modelPresets",
+            "credentials",
             "main",
-            modelPresets.map((p: { id: string }) => (p.id === "p1" ? { ...p, name: "renamed" } : p)),
+            credentials.map((c: { id: string }) => (c.id === "c1" ? { ...c, name: "renamed" } : c)),
         );
-        removePreset(settings.modelPresets, "p2");
-        secrets.deleteModelPresetSecret("p2");
+        removeCredential(settings.credentials, "c2");
+        secrets.deleteEntrySecret("credentials", "c2");
         const result = await sync.flushResources();
-        expect(result.discarded).toEqual(["modelPresets/main"]);
-        expect(settings.modelPresets.map((p) => [p.id, p.name])).toEqual([
-            ["p1", "renamed"],
-            ["p2", "p2"],
+        expect(result.discarded).toEqual(["credentials/main"]);
+        expect(settings.credentials.map((c) => [c.id, c.name])).toEqual([
+            ["c1", "renamed"],
+            ["c2", "C2"],
         ]);
         expect(secretRequests(fake)).toEqual([]);
-        expect(fake.data("llmSecrets", "main").modelPresets.p2).toEqual({ proxyKey: "pk-2" });
-        expect(secrets.secretStatus(preset("p2"))).toEqual({ set: true, hint: "", pending: false });
+        expect(fake.data("llmSecrets", "main").credentials.c2).toEqual({ key: "ck-2" });
+        expect(secrets.secretStatus(cred("c2"))).toEqual({ set: true, hint: "", pending: false });
         expect(secrets.llmSecretState.queue).toEqual([]);
 
-        secrets.clearSecret(preset("p2"));
+        secrets.clearSecret(cred("c2"));
         await sync.flushResources();
         expect(secretRequests(fake).map((r) => `${r.method} ${r.path}`)).toEqual([
-            "PUT /api/llm-secrets/modelPresets/~p2/proxyKey",
+            "PUT /api/llm-secrets/credentials/~c2/key",
         ]);
-        expect(fake.data("llmSecrets", "main").modelPresets).toEqual({ p1: { proxyKey: "pk-1" } });
-
-        // The same for a custom model whose deletion a conflict discarded.
-        fake.requests.length = 0;
-        const models = fake.data("customModels", "main");
-        fake.set("customModels", "main", [{ ...models[0], name: "renamed" }]);
-        settings.customModels.splice(0, 1);
-        secrets.deleteEntrySecret("customModels", "m1");
-        expect((await sync.flushResources()).discarded).toEqual(["customModels/main"]);
-        expect(settings.customModels.map((m: { id: string }) => m.id)).toEqual(["m1"]);
-        expect(secretRequests(fake)).toEqual([]);
-        expect(fake.data("llmSecrets", "main").customModels).toEqual({ m1: { key: "mk-1" } });
-        expect(secrets.secretStatus(model("m1")).set).toBe(true);
+        expect(fake.data("llmSecrets", "main").credentials).toEqual({ c1: { key: "ck-1" } });
     });
 
     it("waits behind a quarantined deletion without keeping the loop running, the barrier names the refusal, and goes once the deletion is saved", async () => {
         const { fake, sync, secrets, settings } = await boot();
         // The adapter's own periodic timers, set at start; a scheduled cycle would add one.
         const timersAtRest = vi.getTimerCount();
-        fake.failNext = { status: 400, body: { error: "ops[0]: modelPresets refused" }, times: 1, match: onBatch };
-        removePreset(settings.modelPresets, "p2");
-        secrets.deleteModelPresetSecret("p2");
+        fake.failNext = { status: 400, body: { error: "ops[0]: credentials refused" }, times: 1, match: onBatch };
+        removeCredential(settings.credentials, "c2");
+        secrets.deleteEntrySecret("credentials", "c2");
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 400 });
         expect(fake.batchCount()).toBe(1);
         expect(secretRequests(fake)).toEqual([]);
-        expect(fake.data("llmSecrets", "main").modelPresets.p2).toEqual({ proxyKey: "pk-2" });
+        expect(fake.data("llmSecrets", "main").credentials.c2).toEqual({ key: "ck-2" });
         // Unsaved, but not runnable work: no cycle is scheduled for it.
-        expect(secrets.secretStatus(preset("p2"))).toEqual({ set: false, hint: "", pending: true });
+        expect(secrets.secretStatus(cred("c2"))).toEqual({ set: false, hint: "", pending: true });
         expect(vi.getTimerCount()).toBe(timersAtRest);
         await vi.advanceTimersByTimeAsync(10_000);
         expect(fake.batchCount()).toBe(1);
@@ -553,15 +514,15 @@ describe("the cleanup of a deleted owner's entry", () => {
         expect(secrets.llmSecretState.queue).toHaveLength(1);
 
         // An edit of the refused collection retries it; the cleanup follows the saved deletion.
-        settings.modelPresets[0].name = "fixed";
+        settings.credentials[0].name = "fixed";
         await sync.flushResources();
         expect(requestLog(fake).slice(1)).toEqual([
             "POST /api/resources/batch",
-            "PUT /api/llm-secrets/modelPresets/~p2/proxyKey",
+            "PUT /api/llm-secrets/credentials/~c2/key",
         ]);
-        expect(fake.data("modelPresets", "main").map((p: { id: string }) => p.id)).toEqual(["p1"]);
-        expect(fake.data("llmSecrets", "main").modelPresets).toEqual({ p1: { proxyKey: "pk-1" } });
+        expect(fake.data("credentials", "main").map((c: { id: string }) => c.id)).toEqual(["c1"]);
+        expect(fake.data("llmSecrets", "main").credentials).toEqual({ c1: { key: "ck-1" } });
         expect(secrets.llmSecretState.queue).toEqual([]);
-        expect(secrets.secretStatus(preset("p2"))).toEqual({ set: false, hint: "", pending: false });
+        expect(secrets.secretStatus(cred("c2"))).toEqual({ set: false, hint: "", pending: false });
     });
 });

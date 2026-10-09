@@ -1,3 +1,4 @@
+import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // The Phase 6 Stop D Docker smoke (the closeout's two-client matrix), against the built app (the
 // Docker image on a fresh volume), through the UI and the public API only (no dev modules):
 // - first run: client A sets the password of the fresh server, client B (another browser context,
@@ -284,12 +285,34 @@ try {
     const ui = await single("ui");
     epoch = ui.epoch ?? epoch;
     const presets = await single("presets");
+    const modelPresets = await single("modelPresets");
+    const modelProfiles = await single("modelProfiles");
+    const preset = {
+        ...presets.data[0],
+        aiModel: "reverse_proxy",
+        subModel: "reverse_proxy",
+        forceReplaceUrl: `${providerBase}/v1/chat/completions`,
+        customProxyRequestModel: "mock",
+        maxContext: 900,
+        maxResponse: 100,
+    };
     const order = await single("characterOrder");
-    const presetId = presets.data[0].id;
+    const credentials = await single("credentials");
     const chaId = randomUUID();
     const chatId = `${chaId}-chat`;
     const seeded = await post("/api/resources/batch", {
         ops: [
+            {
+                kind: "credentials",
+                id: "main",
+                baseRevision: credentials.revision,
+                data: [...credentials.data, { id: "stop-d-key", name: "Stop D key", type: "custom" }],
+            },
+            ...modelFixtureOps(
+                { ...preset, customTokenizer: "tik", credentialId: "stop-d-key" },
+                modelPresets,
+                modelProfiles,
+            ),
             {
                 kind: "ui",
                 id: "main",
@@ -300,18 +323,7 @@ try {
                 kind: "presets",
                 id: "main",
                 baseRevision: presets.revision,
-                data: [
-                    {
-                        ...presets.data[0],
-                        aiModel: "reverse_proxy",
-                        subModel: "reverse_proxy",
-                        forceReplaceUrl: `${providerBase}/v1/chat/completions`,
-                        customProxyRequestModel: "mock",
-                        maxContext: 900,
-                        maxResponse: 100,
-                    },
-                    ...presets.data.slice(1),
-                ],
+                data: [promptFixture(preset), ...presets.data.slice(1)],
             },
             {
                 kind: "characters",
@@ -347,7 +359,7 @@ try {
     check("seed: stored", seeded.status === 200, seeded);
     // The sentinel credential, written through the public route (the browser never holds it).
     const secrets = await single("llmSecrets");
-    const keyed = await api(`/api/llm-secrets/presets/~${encodeURIComponent(presetId)}/proxyKey`, {
+    const keyed = await api("/api/llm-secrets/credentials/~stop-d-key/key", {
         method: "PUT",
         body: JSON.stringify({ value: SENTINEL, baseRevision: secrets.revision }),
     });

@@ -1,8 +1,8 @@
-import type { Credential } from "../../../shared/database.ts";
+import type { Credential, ModelProfile } from "../../../shared/database.ts";
 import { resolveCredentialBinding, type CredentialRefusalReason } from "../../../shared/llm/credentialBinding.ts";
 import { credentialSlotOf, type CredentialSlot } from "../../../shared/llm/credentialSlots.ts";
 import { secretStatus } from "../storage/llmSecrets.svelte";
-import { activeModelPreset, scopedPresetRoot, settings, type PresetScope } from "../storage/settingsViews.svelte";
+import { settings } from "../storage/settingsViews.svelte";
 import { getModelInfo } from "./modellist";
 
 export type ModelCredential = { slot: CredentialSlot | null } & (
@@ -11,20 +11,14 @@ export type ModelCredential = { slot: CredentialSlot | null } & (
     | { state: "refused"; credentialId: string; record?: Credential; reason: CredentialRefusalReason }
 );
 
-/** The model's binding decision, using only metadata and masked (including pending) key status. */
-export function credentialFor(modelId: string, scope?: PresetScope): ModelCredential {
-    const modelInfo = getModelInfo(modelId, scope);
+/** A profile's binding decision, using metadata and masked (including pending) named-key status. */
+export function credentialFor(profile: ModelProfile | undefined, modelId = profile?.modelId ?? ""): ModelCredential {
+    const modelInfo = getModelInfo(modelId, undefined, profile ?? null);
     const slot = credentialSlotOf(modelId, modelInfo);
     const binding = resolveCredentialBinding(
         modelId,
         modelInfo,
-        {
-            modelCredentials: settings.providers.modelCredentials ?? {},
-            customModels: settings.customModels ?? [],
-            proxyCredentialId: (scope
-                ? scopedPresetRoot(scope, "proxyCredentialId")
-                : activeModelPreset.proxyCredentialId) as string | undefined,
-        },
+        profile,
         Object.fromEntries((settings.credentials ?? []).map((record) => [record.id, record])),
         (record) => secretStatus({ kind: "entry", field: "credentials", id: record.id }).set,
     );
@@ -50,28 +44,14 @@ export function credentialsAccepted(modelId: string): Credential[] {
 }
 
 export type CredentialUsage = {
-    kind: "model" | "customModel" | "modelPreset";
+    kind: "modelProfile";
     id: string;
     name: string;
 };
 
-/** Every stored binding naming this id, including ignored global entries and inactive model presets. */
+/** Every profile naming this credential, including profiles no preset currently uses. */
 export function credentialsUsing(credentialId: string): CredentialUsage[] {
-    const uses: CredentialUsage[] = [];
-    for (const [modelId, binding] of Object.entries(settings.providers.modelCredentials ?? {})) {
-        if (binding === credentialId) {
-            uses.push({ kind: "model", id: modelId, name: getModelInfo(modelId).name });
-        }
-    }
-    for (const model of settings.customModels ?? []) {
-        if (Object.hasOwn(model, "credentialId") && model.credentialId === credentialId) {
-            uses.push({ kind: "customModel", id: model.id, name: model.name });
-        }
-    }
-    for (const preset of settings.modelPresets ?? []) {
-        if (Object.hasOwn(preset, "proxyCredentialId") && preset.proxyCredentialId === credentialId) {
-            uses.push({ kind: "modelPreset", id: preset.id, name: preset.name });
-        }
-    }
-    return uses;
+    return (settings.modelProfiles ?? [])
+        .filter((profile) => profile.credentialId === credentialId)
+        .map((profile) => ({ kind: "modelProfile", id: profile.id, name: profile.name }));
 }

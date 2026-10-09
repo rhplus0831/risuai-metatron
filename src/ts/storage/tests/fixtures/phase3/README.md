@@ -48,6 +48,11 @@ without ids). The stored `botPresets[0]` still carries the pre-split template pa
 included, because `default.risup`/`custom.risup` pin the `.risup` reader contract; `normalizePresets`
 drops those fields when a test installs it. The removal of the fallback models (2026-10-09) took
 `fallbackModels` and `fallbackWhenBlankResponse` out of the root and the default model preset by hand.
+The model profiles (`docs/plan/model-profiles.md`, 2026-10-09) changed it by hand again: the default
+model preset holds only its slots and toggle (`mainSlot`/`subSlot` naming profile `default`,
+`auxSlots: {}`), the new `modelProfiles` collection holds the one default profile with the values
+the root copy captured for the moved fields, and `providers.modelCredentials` is gone. The captured
+root keeps `apiType` and `proxyKey`, now dropped fields, as it keeps `hypaMemoryKey`.
 
 Re-running the script overwrites all three files. Across captures, the snapshot's ids and the
 `.risup` bytes differ while the decoded presets are equal, so compare decoded presets, never bytes.

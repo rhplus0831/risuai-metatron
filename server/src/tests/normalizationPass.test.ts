@@ -80,7 +80,7 @@ describe("a fresh store", () => {
     it("holds every materialize singleton at revision 1 as its normalizer's fixed point, and nothing else", () => {
         const store = open(path.join(tempDir(), "resources.sqlite"));
         expect(store.writeCount()).toBe(materialized.length);
-        expect(materialized.length).toBe(20);
+        expect(materialized.length).toBe(21);
         const state = observe(store);
         for (const kind of allDefaults) {
             const records = state.kinds[kind.name];
@@ -303,9 +303,10 @@ describe("the pass at startup", () => {
 describe("the pass strips preset credentials (Phase 3, slice 7)", () => {
     // `proxyKey` and `openAIKey` left the preset schema: `normalizePreset` keeps only the prompt
     // fields, so a preset stored with either (before slice 7, or by hand) is rewritten without them
-    // at the next start, its id kept. The per-model-preset `proxyKey` lives in
-    // `llmSecrets.modelPresets`, which the pass leaves as it is.
-    it("rewrites a presets record that carries proxyKey and openAIKey once, keeping ids and the llmSecrets map untouched", () => {
+    // at the next start, its id kept. The per-model-preset `proxyKey` map `llmSecrets.modelPresets`
+    // is retired (`docs/plan/model-profiles.md`, O2): the same pass rewrites a stored llmSecrets
+    // record without it, keeping every other field.
+    it("rewrites a presets record that carries proxyKey and openAIKey once, keeping ids, and drops the retired llmSecrets.modelPresets map", () => {
         const file = path.join(tempDir(), "resources.sqlite");
         const before = observe(open(file));
         stores.pop()!.close();
@@ -328,7 +329,7 @@ describe("the pass strips preset credentials (Phase 3, slice 7)", () => {
         );
 
         const store = open(file);
-        expect(store.writeCount()).toBe(1);
+        expect(store.writeCount()).toBe(2);
         const after = observe(store);
         const presets = after.kinds.presets[0];
         expect(presets.data).toEqual([first, { ...first, id: "second", name: "Second" }]);
@@ -338,8 +339,9 @@ describe("the pass strips preset credentials (Phase 3, slice 7)", () => {
         }
         expect(parseToken(presets.revision)).toMatchObject({ epoch: before.epoch, revision: 2 });
         const llmSecrets = after.kinds.llmSecrets[0];
-        expect(llmSecrets.data).toEqual({ ...secrets, modelPresets: map });
-        expect(parseToken(llmSecrets.revision)).toMatchObject({ epoch: before.epoch, revision: 1 });
+        expect(llmSecrets.data).toEqual(secrets);
+        expect(Object.hasOwn(llmSecrets.data as object, "modelPresets")).toBe(false);
+        expect(parseToken(llmSecrets.revision)).toMatchObject({ epoch: before.epoch, revision: 2 });
         stores.pop()!.close();
 
         // The rewritten record is a fixed point: the next start writes nothing.

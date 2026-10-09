@@ -24,7 +24,7 @@ const settings = () => ({
     additionalParams: [] as [string, string][],
     applyAdditionalParamsToAll: false,
     autofillRequestUrl: false,
-    customModels: [] as { id: string; params: string; key: string }[],
+    customModels: [] as { id: string; params: string }[],
     gptVisionQuality: "high",
     jsonSchema:
         '{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}',
@@ -37,7 +37,6 @@ const settings = () => ({
     nanogptRequestModel: "nanogpt-model",
     nanogptUseSubscriptionEndpoint: false,
     openAIKey: "openai-key",
-    proxyKey: "proxy-key",
     requestRetrys: 0,
     reasoningEffort: 2,
     seperateParametersEnabled: false,
@@ -353,12 +352,10 @@ describe("OpenAI Responses API helpers", () => {
     });
 
     it("applies custom model Responses endpoint, key, and additional params", async () => {
-        db.OaiCompAPIKeys = { customKey: "custom-key" };
         db.customModels = [
             {
                 id: "xcustom:::responses",
                 params: 'header::X-Custom=yes\nmetadata.tier=gold\nextra=json::{"enabled":true}',
-                key: "",
             },
         ];
 
@@ -366,10 +363,12 @@ describe("OpenAI Responses API helpers", () => {
             baseArg({
                 aiModel: "xcustom:::responses",
                 previewBody: true,
+                // A custom model holds no key (`docs/plan/model-profiles.md` O2): the key is the
+                // profile's bound named key, which `requestChatDataMain` hands over as `arg.key`.
+                key: "custom-key",
                 modelInfo: {
                     ...baseArg().modelInfo,
                     endpoint: "https://custom.example/v1/responses",
-                    keyIdentifier: "customKey",
                 },
             }),
         );
@@ -544,7 +543,8 @@ describe("OpenAI Responses API helpers", () => {
         expect(result.type).toBe("success");
         const preview = JSON.parse(result.result as string);
         expect(preview.url).toBe("https://proxy.example/api/v1/responses");
-        expect(preview.headers.Authorization).toBe("Bearer proxy-key");
+        // No bound key: a reverse proxy has no flat default (`docs/plan/model-profiles.md` O2).
+        expect(preview.headers.Authorization).toBe("Bearer ");
         expect(preview.headers["X-Test"]).toBe("ok");
         expect(preview.body.metadata.source).toBe("risu");
     });

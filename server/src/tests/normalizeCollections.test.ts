@@ -185,15 +185,12 @@ describe("plain list and map collections", () => {
         );
     });
 
-    it("customModels: a credential binding is a string when present", () => {
+    it("customModels: a definition holds no credential binding or key; either is dropped, of any kind", () => {
         const model = { id: "xcustom:::a", internalId: "b" };
-        expect(normalizeCustomModels([{ ...model, credentialId: "c1" }])).toEqual([{ ...model, credentialId: "c1" }]);
+        // `docs/plan/model-profiles.md`, product decision 3: the profile picks the key.
+        expect(normalizeCustomModels([{ ...model, credentialId: "c1" }])).toEqual([model]);
+        expect(normalizeCustomModels([{ ...model, credentialId: 1, key: "sk-leak" }])).toEqual([model]);
         expect(normalizeCustomModels([model])).toEqual([model]);
-        rejects(
-            normalizeCustomModels,
-            [{ ...model, credentialId: 1 }],
-            "customModels.credentialId must be a string when present",
-        );
     });
 
     it("authRefreshes: every known field is a string or absent (a public client has no secret)", () => {
@@ -411,26 +408,46 @@ describe("presets", () => {
 });
 
 describe("modelPresets", () => {
-    it("materializes one default model preset, gives every element the model fields and an id, and rejects a non-list", () => {
+    it("materializes one default model preset, gives every element the slot fields and an id, and rejects a non-list", () => {
+        const defaultSlots = {
+            mainSlot: { profileId: "default" },
+            subSlot: { profileId: "default" },
+            auxSlots: {},
+            seperateModelsForAxModels: false,
+        };
         for (const input of [undefined, []]) {
             const out = normalizeModelPresetCollection(input);
             expect(out).toHaveLength(1);
-            expect(out[0]).toMatchObject({
-                id: expect.stringMatching(UUID_V4),
-                name: "New Model Preset",
-                maxContext: 4000,
-                aiModel: expect.any(String),
-            });
+            expect(out[0]).toEqual({ id: expect.stringMatching(UUID_V4), name: "New Model Preset", ...defaultSlots });
         }
         const out = normalizeModelPresetCollection([
-            { name: "m", maxContext: 1, temperature: 5, proxyKey: "leak" },
+            {
+                name: "m",
+                auxSlots: { memory: { profileId: "p" } },
+                seperateModelsForAxModels: true,
+                maxContext: 1,
+                aiModel: "gpt",
+                apiType: "gpt",
+                temperature: 5,
+                proxyKey: "leak",
+                proxyCredentialId: "c1",
+            },
             { id: "keep" },
             { id: "keep" },
         ]);
         expect(out.map((preset) => preset.name)).toEqual(["m", "New Model Preset", "New Model Preset"]);
-        expect(out[0]).toMatchObject({ maxContext: 1 });
-        // A model preset holds no prompt field, credential, or image.
-        for (const field of ["temperature", "proxyKey", "image", "mainPrompt"]) {
+        expect(out[0]).toMatchObject({ auxSlots: { memory: { profileId: "p" } }, seperateModelsForAxModels: true });
+        // A model preset holds only its slot choices: no prompt field, profile field, credential, or image.
+        for (const field of [
+            "temperature",
+            "proxyKey",
+            "proxyCredentialId",
+            "apiType",
+            "aiModel",
+            "maxContext",
+            "image",
+            "mainPrompt",
+        ]) {
             expect(Object.hasOwn(out[0], field), field).toBe(false);
         }
         expect(out[1].id).toBe("keep");

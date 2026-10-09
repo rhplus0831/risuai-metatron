@@ -1,3 +1,4 @@
+import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for the Phase 5 cutover's credential criterion ("no LLM provider credential appears
 // in client network traffic, except the request that enters or replaces a key"): every credential
 // leaf of `llmSecrets` (`shared/llmSecrets.ts`) gets its own sentinel, set through the server's
@@ -67,8 +68,8 @@ const SECRETS = {
     "hordeConfig/apiKey": sentinel("hordeApiKey"),
     "novelai/token": sentinel("novelaiToken"),
     "OaiCompAPIKeys/~OpenAI": sentinel("oaiCompOpenAI"),
-    // `presets/~<id>/proxyKey` is added once the preset id is known.
-    "customModels/~cm-check/key": sentinel("customModelKey"),
+    "credentials/~custom-check/key": sentinel("customNamedKey"),
+    "credentials/~proxy-check/key": sentinel("proxyNamedKey"),
 };
 
 // The local responder for the providers' fixed origins (reached through the server's preload).
@@ -376,9 +377,10 @@ try {
     epoch = ui.epoch ?? epoch;
     const order = (await api("/api/resources/characterOrder/main")).body;
     const presets = (await api("/api/resources/presets/main")).body;
+    const modelPresets = (await api("/api/resources/modelPresets/main")).body;
+    const modelProfiles = (await api("/api/resources/modelProfiles/main")).body;
     const providers = (await api("/api/resources/providers/main")).body;
-    const presetId = presets.data[0].id;
-    SECRETS[`presets/~${presetId}/proxyKey`] = sentinel("presetProxyKey");
+    const credentials = (await api("/api/resources/credentials/main")).body;
     const chaId = randomUUID();
     const preset = {
         ...presets.data[0],
@@ -420,12 +422,23 @@ try {
         method: "POST",
         body: JSON.stringify({
             ops: [
+                {
+                    kind: "credentials",
+                    id: "main",
+                    baseRevision: credentials.revision,
+                    data: [
+                        ...credentials.data,
+                        { id: "custom-check", name: "Custom key", type: "custom" },
+                        { id: "proxy-check", name: "Proxy key", type: "custom" },
+                    ],
+                },
+                ...modelFixtureOps({ ...preset, customTokenizer: "tik" }, modelPresets, modelProfiles),
                 { kind: "ui", id: "main", baseRevision: ui.revision, data: { ...ui.data, didFirstSetup: true } },
                 {
                     kind: "presets",
                     id: "main",
                     baseRevision: presets.revision,
-                    data: [preset, ...presets.data.slice(1)],
+                    data: [promptFixture(preset), ...presets.data.slice(1)],
                 },
                 {
                     kind: "providers",
@@ -759,13 +772,16 @@ try {
                 const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
                 const { readSettingsRoot, writeSettingsRoot } = await import("/src/ts/storage/settingsViews.svelte.ts");
                 const tokenizer = await import("/src/ts/tokenizer.ts");
-                const previous = readSettingsRoot("aiModel");
-                writeSettingsRoot("aiModel", "gemini-1.5-pro-latest");
+                const { activeModelPreset } = await import("/src/ts/storage/settingsViews.svelte.ts");
+                const { setMainModelSlot } = await import("/src/ts/storage/collectionStore.svelte.ts");
+                const { applyModelFixtureSettings } = await import("/util/playwright/modelProfiles.browser.mjs");
+                const previous = activeModelPreset.mainSlot.profileId;
+                applyModelFixtureSettings({ aiModel: "gemini-1.5-pro-latest" });
                 writeSettingsRoot("googleClaudeTokenizing", true);
                 try {
                     return (await tokenizer.encode("hello world, counted remotely")).length;
                 } finally {
-                    writeSettingsRoot("aiModel", previous);
+                    setMainModelSlot(activeModelPreset.id, previous);
                     writeSettingsRoot("googleClaudeTokenizing", false);
                 }
             }),

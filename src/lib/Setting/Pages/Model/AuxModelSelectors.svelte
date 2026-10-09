@@ -3,39 +3,19 @@
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import { language } from "src/lang";
-    import ModelList from "src/lib/UI/ModelList.svelte";
-    import CredentialSelect from "src/lib/UI/GUI/CredentialSelect.svelte";
+    import ProfileSlotSelect from "./ProfileSlotSelect.svelte";
+    import type { AuxModelMode } from "../../../../../shared/database.ts";
+
+    const modes: readonly AuxModelMode[] = ["memory", "translate", "emotion", "otherAx"];
 </script>
 
 <div class="flex items-center mt-4">
-    <Check bind:check={activeModelPreset.seperateModelsForAxModels} name={language.seperateModelsForAxModels}></Check>
+    <Check bind:check={activeModelPreset.seperateModelsForAxModels} name={language.seperateModelsForAxModels} />
 </div>
-{#if activeModelPreset.seperateModelsForAxModels}
+{#if activeModelPreset.seperateModelsForAxModels && activeModelPreset.id}
     <Accordion name={language.axModelsDef} styled>
-        <span class="text-textcolor mt-4"> Memory </span>
-        <ModelList bind:value={activeModelPreset.seperateModels.memory} blankable />
-        {#if activeModelPreset.seperateModels.memory}
-            <CredentialSelect modelId={activeModelPreset.seperateModels.memory} compact />
-        {/if}
-
-        <span class="text-textcolor mt-4"> Translations </span>
-        <ModelList bind:value={activeModelPreset.seperateModels.translate} blankable />
-        {#if activeModelPreset.seperateModels.translate}
-            <CredentialSelect modelId={activeModelPreset.seperateModels.translate} compact />
-        {/if}
-
-        <span class="text-textcolor mt-4"> Emotion </span>
-
-        <ModelList bind:value={activeModelPreset.seperateModels.emotion} blankable />
-        {#if activeModelPreset.seperateModels.emotion}
-            <CredentialSelect modelId={activeModelPreset.seperateModels.emotion} compact />
-        {/if}
-
-        <span class="text-textcolor mt-4"> OtherAx </span>
-
-        <ModelList bind:value={activeModelPreset.seperateModels.otherAx} blankable />
-        {#if activeModelPreset.seperateModels.otherAx}
-            <CredentialSelect modelId={activeModelPreset.seperateModels.otherAx} compact />
-        {/if}
+        {#each modes as mode}
+            <ProfileSlotSelect presetId={activeModelPreset.id} {mode} label={language.modelProfiles.auxModes[mode]} />
+        {/each}
     </Accordion>
 {/if}

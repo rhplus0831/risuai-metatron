@@ -1204,7 +1204,7 @@ describe("createJobTools", () => {
                 enabledModules: urls.map((_, index) => `m${index}`),
                 modules: urls.map((url, index) => ({ id: `m${index}`, name: `m${index}`, mcp: { url } })),
             },
-            request: { db: options.secret ? { proxyKey: options.secret } : {} },
+            request: { db: options.secret ? { openAIKey: options.secret } : {} },
         } as unknown as JobScope;
     }
     type Answer = CallbackResult | { ok: true; value: unknown } | { ok: false; error: string } | Error;

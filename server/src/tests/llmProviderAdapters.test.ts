@@ -2,9 +2,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LLMFlags, LLMFormat } from "../../../shared/llm.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
-import type { RequestArgs, ToolCallRecord, ToolDescriptor } from "../../../shared/llm/request.ts";
+import type { ModelModeExtended, RequestArgs, ToolCallRecord, ToolDescriptor } from "../../../shared/llm/request.ts";
 import { normalizePersonas } from "../../../shared/personas.ts";
-import { normalizeModelPresets, normalizePresets } from "../../../shared/presets.ts";
+import { normalizeModelPresets, normalizeModelProfiles, normalizePresets } from "../../../shared/presets.ts";
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeProviders } from "../data/normalize/providers.ts";
 import type { RequestContext } from "../llm/context.ts";
@@ -71,18 +71,76 @@ const SECRETS = {
     vertexToken: "vertex-token-SENTINEL-7777",
 };
 const PROVIDER = "https://mock.test/v1/chat/completions";
+/**
+ * A reverse proxy has no flat default key (`docs/plan/model-profiles.md` O2): the fixture's
+ * `reverse_proxy` profiles bind this named key unless the scenario names its own `credentialId`.
+ */
+const PROXY_CREDENTIAL = { id: "proxy", name: "Proxy key", type: "custom" };
+
+type ProfileSlot = "main" | "sub" | "memory" | "translate" | "emotion" | "otherAx";
 
 type Settings = {
+    /**
+     * The prompt preset's fields and the model fields together. `aiModel`, `subModel`, and
+     * `seperateModels` name the main, sub, and auxiliary profiles' model ids; every other model
+     * field (connection, compatibility, `credentialId`) goes on each of those profiles, as one
+     * model preset used to hold them for every slot.
+     */
     preset?: Record<string, unknown>;
+    /** Per-profile fields over the derived ones (for example two different `credentialId`s). */
+    profiles?: Partial<Record<ProfileSlot, Record<string, unknown>>>;
     providers?: Record<string, unknown>;
     secrets?: Record<string, unknown>;
     customModels?: unknown[];
     /** The named credentials' readable records (their keys go in `secrets.credentials`). */
     credentials?: unknown[];
     selectedCharacterName?: string | null;
+    /** The model preset `m` (its slots and toggle) and the profiles as given, over `preset`'s derived ones. */
+    model?: { preset: Record<string, unknown>; profiles: Record<string, unknown>[] };
 };
 
+/** The model preset `m` and its profiles, from `Settings.preset` and `Settings.profiles`. */
+function modelRecords(overrides: Settings) {
+    const {
+        aiModel = "reverse_proxy",
+        subModel = "reverse_proxy",
+        seperateModels = {},
+        seperateModelsForAxModels = false,
+        ...fields
+    } = (overrides.preset ?? {}) as Record<string, any>;
+    const profile = (slot: ProfileSlot, modelId: string) => ({
+        id: slot,
+        name: slot,
+        forceReplaceUrl: PROVIDER,
+        customProxyRequestModel: "mock-model",
+        customAPIFormat: LLMFormat.OpenAICompatible,
+        ...(modelId === "reverse_proxy" && !("credentialId" in fields) ? { credentialId: PROXY_CREDENTIAL.id } : {}),
+        ...fields,
+        modelId,
+        ...overrides.profiles?.[slot],
+    });
+    const aux = Object.entries(seperateModels as Record<string, string>).filter(([, modelId]) => modelId);
+    return {
+        modelProfiles: normalizeModelProfiles([
+            profile("main", aiModel),
+            profile("sub", subModel),
+            ...aux.map(([mode, modelId]) => profile(mode as ProfileSlot, modelId)),
+        ]),
+        modelPresets: normalizeModelPresets([
+            {
+                id: "m",
+                name: "m",
+                mainSlot: { profileId: "main" },
+                subSlot: { profileId: "sub" },
+                auxSlots: Object.fromEntries(aux.map(([mode]) => [mode, { profileId: mode }])),
+                seperateModelsForAxModels,
+            },
+        ]),
+    };
+}
+
 function settings(overrides: Settings = {}) {
+    const secrets = overrides.secrets ?? {};
     const records: Record<string, unknown> = {
         providers: normalizeProviders({ requestRetrys: 0, ...overrides.providers }),
         llmSecrets: normalizeLlmSecrets({
@@ -90,27 +148,24 @@ function settings(overrides: Settings = {}) {
             claudeAPIKey: SECRETS.claudeAPIKey,
             mistralKey: SECRETS.mistralKey,
             google: { accessToken: SECRETS.google, projectId: "proj-1" },
-            modelPresets: { m: { proxyKey: SECRETS.proxyKey } },
-            ...overrides.secrets,
+            ...secrets,
+            credentials: {
+                [PROXY_CREDENTIAL.id]: { key: SECRETS.proxyKey },
+                ...(secrets.credentials as Record<string, unknown> | undefined),
+            },
         }),
         ui: { autoSuggestPrefix: "" },
         customModels: overrides.customModels ?? [],
-        credentials: overrides.credentials ?? [],
-        // `overrides.preset` may mix both owners' fields: each normalizer keeps its own
-        // (`docs/plan/split-preset.md`), so the prompt preset `p` and the model preset `m` split it.
+        credentials: [PROXY_CREDENTIAL, ...(overrides.credentials ?? [])],
+        // `overrides.preset` mixes the prompt preset's and the model fields: the prompt preset
+        // normalizer keeps its own (`docs/plan/split-preset.md`), `modelRecords` takes the rest.
         presets: normalizePresets([{ id: "p", name: "p", maxResponse: 300, temperature: 70, ...overrides.preset }]),
-        modelPresets: normalizeModelPresets([
-            {
-                id: "m",
-                name: "m",
-                aiModel: "reverse_proxy",
-                subModel: "reverse_proxy",
-                forceReplaceUrl: PROVIDER,
-                customProxyRequestModel: "mock-model",
-                customAPIFormat: LLMFormat.OpenAICompatible,
-                ...overrides.preset,
-            },
-        ]),
+        ...(overrides.model
+            ? {
+                  modelProfiles: normalizeModelProfiles(overrides.model.profiles),
+                  modelPresets: normalizeModelPresets([{ id: "m", name: "m", ...overrides.model.preset }]),
+              }
+            : modelRecords(overrides)),
         personas: normalizePersonas([{ id: "u", name: "Uma", personaPrompt: "Uma is curious." }]),
     };
     const characters: Record<string, unknown> = { c: { chaId: "c", name: overrides.selectedCharacterName ?? "Cara" } };
@@ -154,7 +209,7 @@ type Recorded = {
 type Scenario = {
     settings: Settings;
     arg: RequestArgs;
-    mode?: "model" | "submodel" | "translate";
+    mode?: ModelModeExtended;
     tools?: ToolDescriptor[];
     /** The remembered tool calls the prompt's markers name. */
     known?: Record<string, ToolCallRecord>;
@@ -239,10 +294,11 @@ async function run(scenario: Scenario): Promise<Recorded> {
             return new Response(canned.body, { status: canned.status, headers: canned.headers ?? {} });
         }) as typeof fetch,
     });
-    const getModelInfo = (id: string) => {
+    // As `buildContext`: the main profile's flags (the roots), or the request-local profile's.
+    const getModelInfo: RequestContext["getModelInfo"] = (id, profile = db as never) => {
         const info = resolveModelInfo(id, {
-            enableCustomFlags: db.enableCustomFlags,
-            customFlags: db.customFlags,
+            enableCustomFlags: profile.enableCustomFlags,
+            customFlags: profile.customFlags,
             customModels: db.customModels,
         });
         const format = scenario.formats?.[id];
@@ -436,12 +492,19 @@ const ROLL_DICE: ToolDescriptor = {
 
 const NANOGPT_KEY = "nanogpt-SENTINEL-8888";
 const NANOGPT_MODEL = "nano/model-1";
-/** One `nanogpt` request in `format`, with the NanoGPT key and request model and the provider settings given. */
-const nanogpt = (format: LLMFormat, providers: Record<string, unknown>, answer: CannedResponse) =>
+/**
+ * One `nanogpt` request in `format`, with the NanoGPT key, the request model and the provider (both
+ * profile fields, `docs/plan/model-profiles.md` O7), and the provider settings given.
+ */
+const nanogpt = (
+    format: LLMFormat,
+    { nanogptProvider, ...providers }: Record<string, unknown>,
+    answer: CannedResponse,
+) =>
     run({
         settings: {
-            preset: { aiModel: "nanogpt" },
-            providers: { nanogptRequestModel: NANOGPT_MODEL, ...providers },
+            preset: { aiModel: "nanogpt", nanogptRequestModel: NANOGPT_MODEL, nanogptProvider },
+            providers,
             secrets: { nanogptKey: NANOGPT_KEY },
         },
         formats: { nanogpt: format },
@@ -788,9 +851,10 @@ describe("the server provider adapters", () => {
     it("a custom model (`xcustom:::`), Mistral, and the legacy instruct format", async () => {
         const custom = await run({
             settings: {
-                preset: { aiModel: "xcustom:::mine" },
-                // The model's key is an `llmSecrets` credential (7b): `loadRequestDb` merges it back.
-                secrets: { customModels: { "xcustom:::mine": { key: "custom-key" } } },
+                // A custom model holds no key (`docs/plan/model-profiles.md` O2): its profile binds one.
+                preset: { aiModel: "xcustom:::mine", credentialId: "mine" },
+                credentials: [{ id: "mine", name: "Mine", type: "custom" }],
+                secrets: { credentials: { mine: { key: "custom-key" } } },
                 customModels: [
                     {
                         id: "xcustom:::mine",
@@ -1464,8 +1528,9 @@ describe("the server provider adapters", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// Named credentials (`docs/plan/shared-api-keys.md`): a binding replaces the model's default key, a
-// model without one keeps it, and a binding that cannot be honored refuses the request.
+// Named credentials (`docs/plan/shared-api-keys.md`, bound on the profile since
+// `docs/plan/model-profiles.md`): a profile's binding replaces the model's default key, a profile
+// without one keeps it, and a binding that cannot be honored refuses the request.
 
 const NAMED = {
     work: "sk-named-work-SENTINEL-8888",
@@ -1484,19 +1549,10 @@ function named(entries: { id: string; type: string; key?: string; clientEmail?: 
     };
 }
 
-/** Settings with named credentials and the model-to-credential bindings merged in. */
-function withNamed(
-    base: Settings,
-    entries: Parameters<typeof named>[0],
-    modelCredentials: Record<string, string> = {},
-): Settings {
+/** Settings with named credentials merged in (the profiles bind them with `credentialId`). */
+function withNamed(base: Settings, entries: Parameters<typeof named>[0]): Settings {
     const { credentials, credentialKeys } = named(entries);
-    return {
-        ...base,
-        credentials,
-        providers: { ...base.providers, modelCredentials },
-        secrets: { ...base.secrets, credentials: credentialKeys },
-    };
+    return { ...base, credentials, secrets: { ...base.secrets, credentials: credentialKeys } };
 }
 
 const headersOf = (recorded: Recorded) => recorded.calls.map((call) => call.headers);
@@ -1504,11 +1560,11 @@ const wireOf = (recorded: Recorded) => JSON.stringify([recorded.calls, recorded.
 const claudeAnswer = () => json({ content: [{ type: "text", text: "from claude" }] });
 
 describe("named credentials", () => {
-    it("a catalogue model's global binding replaces its default key, and an unbound model keeps the default", async () => {
+    it("a catalogue model's profile binding replaces its default key, and an unbound profile keeps the default", async () => {
         const bound = await run({
-            settings: withNamed({ preset: { aiModel: "gpt-5.5" } }, [{ id: "work", type: "openai", key: NAMED.work }], {
-                "gpt-5.5": "work",
-            }),
+            settings: withNamed({ preset: { aiModel: "gpt-5.5", credentialId: "work" } }, [
+                { id: "work", type: "openai", key: NAMED.work },
+            ]),
             arg: prompt(),
             upstream: () => chat("bound"),
         });
@@ -1518,11 +1574,9 @@ describe("named credentials", () => {
         expect(wireOf(bound)).not.toContain(SECRETS.openAIKey);
         expect(bound.result).toMatchObject({ type: "success", result: "bound" });
 
-        // A binding for another model leaves this one on its default key.
+        // A profile without a binding stays on its default key, though a named key exists.
         const unbound = await run({
-            settings: withNamed({ preset: { aiModel: "gpt-5.5" } }, [{ id: "work", type: "openai", key: NAMED.work }], {
-                "gpt-5.4": "work",
-            }),
+            settings: withNamed({ preset: { aiModel: "gpt-5.5" } }, [{ id: "work", type: "openai", key: NAMED.work }]),
             arg: prompt(),
             upstream: () => chat("default"),
         });
@@ -1532,12 +1586,14 @@ describe("named credentials", () => {
 
     it("two Anthropic models on one model preset send two different keys", async () => {
         const settings = withNamed(
-            { preset: { aiModel: "claude-sonnet-4-5-20250929", subModel: "claude-opus-4-6" } },
+            {
+                preset: { aiModel: "claude-sonnet-4-5-20250929", subModel: "claude-opus-4-6" },
+                profiles: { main: { credentialId: "work" }, sub: { credentialId: "home" } },
+            },
             [
                 { id: "work", type: "anthropic", key: NAMED.work },
                 { id: "home", type: "custom", key: NAMED.home },
             ],
-            { "claude-sonnet-4-5-20250929": "work", "claude-opus-4-6": "home" },
         );
         const main = await run({ settings, arg: prompt(), upstream: claudeAnswer });
         const sub = await run({ settings, arg: prompt(), mode: "submodel", upstream: claudeAnswer });
@@ -1550,8 +1606,8 @@ describe("named credentials", () => {
         }
     });
 
-    it("two custom models share one key on their records, over their own keys; a global entry for them is ignored", async () => {
-        const customModel = (id: string, credentialId?: string) => ({
+    it("two custom models share one key on their profiles; an unbound custom model sends no key", async () => {
+        const customModel = (id: string) => ({
             id,
             name: id,
             internalId: `${id}-internal`,
@@ -1560,31 +1616,25 @@ describe("named credentials", () => {
             flags: [LLMFlags.hasFullSystemPrompt],
             tokenizer: 0,
             params: "",
-            ...(credentialId ? { credentialId } : {}),
         });
-        const base = (aiModel: string): Settings => ({
-            preset: { aiModel },
-            secrets: {
-                customModels: {
-                    "xcustom:::a": { key: "own-key-a" },
-                    "xcustom:::b": { key: "own-key-b" },
-                    "xcustom:::c": { key: "own-key-c" },
-                },
-            },
-            customModels: [
-                customModel("xcustom:::a", "shared"),
-                customModel("xcustom:::b", "shared"),
-                customModel("xcustom:::c"),
-            ],
+        const base = (aiModel: string, credentialId?: string): Settings => ({
+            preset: { aiModel, ...(credentialId ? { credentialId } : {}) },
+            customModels: [customModel("xcustom:::a"), customModel("xcustom:::b"), customModel("xcustom:::c")],
         });
         const entries = [
             { id: "shared", type: "custom", key: NAMED.work },
             { id: "other", type: "custom", key: NAMED.home },
         ];
         const runs = await Promise.all(
-            ["xcustom:::a", "xcustom:::b", "xcustom:::c"].map((aiModel) =>
+            (
+                [
+                    ["xcustom:::a", "shared"],
+                    ["xcustom:::b", "shared"],
+                    ["xcustom:::c", undefined],
+                ] as const
+            ).map(([aiModel, credentialId]) =>
                 run({
-                    settings: withNamed(base(aiModel), entries, { "xcustom:::c": "other" }),
+                    settings: withNamed(base(aiModel, credentialId), entries),
                     arg: prompt(),
                     upstream: () => chat("custom"),
                 }),
@@ -1593,21 +1643,22 @@ describe("named credentials", () => {
         expect(runs.map((recorded) => headersOf(recorded)[0].authorization)).toEqual([
             `Bearer ${NAMED.work}`,
             `Bearer ${NAMED.work}`,
-            // `c` has no `credentialId`: its own key, not the global `modelCredentials` entry.
-            "Bearer own-key-c",
+            // `c`'s profile binds nothing, and a custom model has no flat default key (O2).
+            "Bearer ",
         ]);
+        expect(wireOf(runs[2])).not.toContain(SECRETS.openAIKey);
         expect(runs.map((recorded) => recorded.calls[0].url)).toEqual(
             Array(3).fill("https://custom.test/v1/chat/completions"),
         );
     });
 
-    it("a reverse proxy binds on its model preset, over the preset's proxyKey; a global entry for it is ignored", async () => {
+    it("a reverse proxy binds on its profile; an unbound reverse proxy sends no key", async () => {
         const entries = [
             { id: "work", type: "custom", key: NAMED.work },
             { id: "home", type: "custom", key: NAMED.home },
         ];
         const bound = await run({
-            settings: withNamed({ preset: { proxyCredentialId: "work" } }, entries, { reverse_proxy: "home" }),
+            settings: withNamed({ preset: { credentialId: "work" } }, entries),
             arg: prompt(),
             upstream: () => chat("proxied"),
         });
@@ -1616,27 +1667,29 @@ describe("named credentials", () => {
         ]);
         expect(wireOf(bound)).not.toContain(SECRETS.proxyKey);
 
+        // A reverse proxy has no flat default key (`docs/plan/model-profiles.md` O2).
         const unbound = await run({
-            settings: withNamed({}, entries, { reverse_proxy: "home" }),
+            settings: withNamed({ preset: { credentialId: undefined } }, entries),
             arg: prompt(),
             upstream: () => chat("proxied"),
         });
-        expect(headersOf(unbound).map((headers) => headers.authorization)).toEqual([`Bearer ${SECRETS.proxyKey}`]);
+        expect(headersOf(unbound).map((headers) => headers.authorization)).toEqual(["Bearer "]);
+        for (const secret of [SECRETS.proxyKey, SECRETS.openAIKey, NAMED.work, NAMED.home]) {
+            expect(wireOf(unbound)).not.toContain(secret);
+        }
     });
 
     it("a keyIdentifier model takes a bound key, else its OaiCompAPIKeys entry, and never falls back to the OpenAI key", async () => {
         const deepseek = (settings: Settings) =>
             run({
-                settings: { ...settings, preset: { aiModel: "deepseek-v4-flash" } },
+                settings: { ...settings, preset: { ...settings.preset, aiModel: "deepseek-v4-flash" } },
                 arg: prompt(),
                 upstream: () => chat("deep"),
             });
         const bound = await deepseek(
-            withNamed(
-                { secrets: { OaiCompAPIKeys: { deepseek: "ds-stored" } } },
-                [{ id: "work", type: "custom", key: NAMED.work }],
-                { "deepseek-v4-flash": "work" },
-            ),
+            withNamed({ preset: { credentialId: "work" }, secrets: { OaiCompAPIKeys: { deepseek: "ds-stored" } } }, [
+                { id: "work", type: "custom", key: NAMED.work },
+            ]),
         );
         const stored = await deepseek({ secrets: { OaiCompAPIKeys: { deepseek: "ds-stored" } } });
         const missing = await deepseek({});
@@ -1656,12 +1709,16 @@ describe("named credentials", () => {
         const recorded = await run({
             settings: withNamed(
                 {
-                    preset: { aiModel: "ollama-cloud" },
-                    providers: { ollamaRequestFormat: LLMFormat.OpenAICompatible, ollamaCloudModel: "gpt-oss:120b" },
+                    // The Ollama fields are profile fields (`docs/plan/model-profiles.md` O7).
+                    preset: {
+                        aiModel: "ollama-cloud",
+                        credentialId: "work",
+                        ollamaRequestFormat: LLMFormat.OpenAICompatible,
+                        ollamaCloudModel: "gpt-oss:120b",
+                    },
                     secrets: { ollamaApiKey: "ollama-stored" },
                 },
                 [{ id: "work", type: "ollama", key: NAMED.work }],
-                { "ollama-cloud": "work" },
             ),
             arg: prompt(),
             upstream: () => chat("cloud"),
@@ -1675,9 +1732,11 @@ describe("named credentials", () => {
     it("Bedrock signs with a bound composite key and takes its region", async () => {
         const recorded = await run({
             settings: withNamed(
-                { preset: { aiModel: "anthropic.claude-opus-4-6-v1" }, secrets: { claudeAPIKey: SECRETS.bedrock } },
+                {
+                    preset: { aiModel: "anthropic.claude-opus-4-6-v1", credentialId: "aws" },
+                    secrets: { claudeAPIKey: SECRETS.bedrock },
+                },
                 [{ id: "aws", type: "bedrock", key: NAMED.bedrock }],
-                { "anthropic.claude-opus-4-6-v1": "aws" },
             ),
             arg: { ...prompt(), useStreaming: false },
             upstream: () => json({ content: [{ type: "text", text: "from bedrock" }] }),
@@ -1698,7 +1757,7 @@ describe("named credentials", () => {
             run({
                 settings: withNamed(
                     {
-                        preset: { aiModel: "gemini-2.5-flash-vertex" },
+                        preset: { aiModel: "gemini-2.5-flash-vertex", credentialId: "sa" },
                         providers: { vertexRegion: "us-central1" },
                         secrets: {
                             vertexClientEmail: "svc@proj.iam.gserviceaccount.com",
@@ -1714,7 +1773,6 @@ describe("named credentials", () => {
                             ...(projectId ? { projectId } : {}),
                         },
                     ],
-                    { "gemini-2.5-flash-vertex": "sa" },
                 ),
                 arg: { ...prompt(), useStreaming: false },
                 upstream: () => json({ candidates: [{ content: { parts: [{ text: "vertex says" }] } }] }),
@@ -1743,35 +1801,253 @@ describe("named credentials", () => {
             }
             return result.result;
         };
-        const gpt = { preset: { aiModel: "gpt-5.5" } };
-        expect(await refusal(withNamed(gpt, [], { "gpt-5.5": "gone" }))).toContain("no longer exists");
-        expect(await refusal(withNamed(gpt, [{ id: "work", type: "openai" }], { "gpt-5.5": "work" }))).toContain(
-            "has no key",
+        const gpt = (credentialId: string) => ({ preset: { aiModel: "gpt-5.5", credentialId } });
+        expect(await refusal(withNamed(gpt("gone"), []))).toContain("no longer exists");
+        expect(await refusal(withNamed(gpt("work"), [{ id: "work", type: "openai" }]))).toContain("has no key");
+        expect(await refusal(withNamed(gpt("work"), [{ id: "work", type: "anthropic", key: NAMED.work }]))).toContain(
+            "not accepted",
         );
         expect(
-            await refusal(withNamed(gpt, [{ id: "work", type: "anthropic", key: NAMED.work }], { "gpt-5.5": "work" })),
-        ).toContain("not accepted");
-        expect(
             await refusal(
-                withNamed(
-                    { preset: { aiModel: "gemini-2.5-flash-vertex" } },
-                    [{ id: "sa", type: "vertex", key: NAMED.vertexKey }],
-                    { "gemini-2.5-flash-vertex": "sa" },
-                ),
+                withNamed({ preset: { aiModel: "gemini-2.5-flash-vertex", credentialId: "sa" } }, [
+                    { id: "sa", type: "vertex", key: NAMED.vertexKey },
+                ]),
             ),
         ).toContain("no client email");
         expect(
             await refusal(
-                withNamed({ preset: { aiModel: "mancer" } }, [{ id: "work", type: "custom", key: NAMED.work }], {
-                    mancer: "work",
-                }),
+                withNamed({ preset: { aiModel: "mancer", credentialId: "work" } }, [
+                    { id: "work", type: "custom", key: NAMED.work },
+                ]),
             ),
         ).toContain("does not accept");
         // The message names the model and the credential, never its key.
-        expect(
-            await refusal(withNamed(gpt, [{ id: "work", type: "anthropic", key: NAMED.work }], { "gpt-5.5": "work" })),
-        ).toMatch(/gpt-5\.5.*Key work/);
+        expect(await refusal(withNamed(gpt("work"), [{ id: "work", type: "anthropic", key: NAMED.work }]))).toMatch(
+            /gpt-5\.5.*Key work/,
+        );
         // A reverse proxy and a custom model refuse the same way.
-        await refusal(withNamed({ preset: { proxyCredentialId: "gone" } }, []));
+        await refusal(withNamed({ preset: { credentialId: "gone" } }, []));
+    });
+});
+
+// `docs/plan/model-profiles.md`: each slot's profile chooses the model, the key, the endpoint, and
+// the compatibility options of its own request.
+describe("model profiles", () => {
+    const OPENAI = "https://api.openai.com/v1/chat/completions";
+    const failure = (recorded: Recorded) => {
+        expect(recorded.calls).toEqual([]);
+        expect(recorded.result).toMatchObject({ type: "fail", noRetry: true });
+        return (recorded.result as { result: string }).result;
+    };
+    const summaryOf = (recorded: Recorded) =>
+        recorded.calls.map((call) => [call.url, call.headers.authorization, (call.body as { model: string }).model]);
+
+    it("sends one model id from two profiles with two keys: the main request and the memory request", async () => {
+        const settings = withNamed(
+            {
+                model: {
+                    preset: {
+                        mainSlot: { profileId: "chat" },
+                        subSlot: { profileId: "chat" },
+                        seperateModelsForAxModels: true,
+                        auxSlots: { memory: { profileId: "summary" } },
+                    },
+                    profiles: [
+                        { id: "chat", modelId: "gpt-5.5", credentialId: "work" },
+                        { id: "summary", modelId: "gpt-5.5", credentialId: "home" },
+                    ],
+                },
+            },
+            [
+                { id: "work", type: "openai", key: NAMED.work },
+                { id: "home", type: "custom", key: NAMED.home },
+            ],
+        );
+        const main = await run({ settings, arg: prompt(), upstream: () => chat("main") });
+        const memory = await run({ settings, arg: prompt(), mode: "memory", upstream: () => chat("memory") });
+        const emotion = await run({ settings, arg: prompt(), mode: "emotion", upstream: () => chat("emotion") });
+        expect(summaryOf(main)).toEqual([[OPENAI, `Bearer ${NAMED.work}`, "gpt-5.5"]]);
+        expect(summaryOf(memory)).toEqual([[OPENAI, `Bearer ${NAMED.home}`, "gpt-5.5"]]);
+        // An unset auxiliary slot uses the sub slot.
+        expect(summaryOf(emotion)).toEqual([[OPENAI, `Bearer ${NAMED.work}`, "gpt-5.5"]]);
+    });
+
+    it("sends an auxiliary reverse proxy to its own URL with its own key, beside a main proxy on another URL", async () => {
+        const proxy = (id: string, url: string, requestModel: string, credentialId: string) => ({
+            id,
+            modelId: "reverse_proxy",
+            forceReplaceUrl: url,
+            customProxyRequestModel: requestModel,
+            customAPIFormat: LLMFormat.OpenAICompatible,
+            credentialId,
+        });
+        const settings = withNamed(
+            {
+                model: {
+                    preset: {
+                        mainSlot: { profileId: "main" },
+                        subSlot: { profileId: "main" },
+                        seperateModelsForAxModels: true,
+                        auxSlots: { translate: { profileId: "aux" } },
+                    },
+                    profiles: [
+                        proxy("main", "https://main.test/v1/chat/completions", "main-model", "work"),
+                        proxy("aux", "https://aux.test/v1/chat/completions", "aux-model", "home"),
+                    ],
+                },
+            },
+            [
+                { id: "work", type: "custom", key: NAMED.work },
+                { id: "home", type: "custom", key: NAMED.home },
+            ],
+        );
+        const main = await run({ settings, arg: prompt(), upstream: () => chat("main") });
+        const translate = await run({ settings, arg: prompt(), mode: "translate", upstream: () => chat("aux") });
+        expect(summaryOf(main)).toEqual([
+            ["https://main.test/v1/chat/completions", `Bearer ${NAMED.work}`, "main-model"],
+        ]);
+        expect(summaryOf(translate)).toEqual([
+            ["https://aux.test/v1/chat/completions", `Bearer ${NAMED.home}`, "aux-model"],
+        ]);
+        expect(wireOf(translate)).not.toContain("main.test");
+    });
+
+    it("applies an auxiliary profile's custom flags and system replacement to its request only", async () => {
+        const settings: Settings = {
+            model: {
+                preset: {
+                    mainSlot: { profileId: "main" },
+                    subSlot: { profileId: "main" },
+                    seperateModelsForAxModels: true,
+                    auxSlots: { emotion: { profileId: "plain" } },
+                },
+                profiles: [
+                    { id: "main", modelId: "gpt-5.5" },
+                    // No flags: the model loses its full system prompt support for this profile.
+                    {
+                        id: "plain",
+                        modelId: "gpt-5.5",
+                        enableCustomFlags: true,
+                        customFlags: [],
+                        systemContentReplacement: "[{{slot}}]",
+                    },
+                ],
+            },
+        };
+        const firstMessage = (recorded: Recorded) => (recorded.calls[0].body as { messages: unknown[] }).messages[0];
+        const main = await run({ settings, arg: prompt(), upstream: () => chat("main") });
+        const emotion = await run({ settings, arg: prompt(), mode: "emotion", upstream: () => chat("emotion") });
+        // GPT-5.5 sends its full system prompt as the developer turn.
+        expect(firstMessage(main)).toEqual({ role: "developer", content: "Be brief." });
+        expect(firstMessage(emotion)).toEqual({ role: "user", content: "[Be brief.]" });
+    });
+
+    it("refuses a missing profile and a missing key, each without an upstream call", async () => {
+        const settings = withNamed(
+            {
+                model: {
+                    preset: {
+                        mainSlot: { profileId: "gone" },
+                        subSlot: { profileId: "keyless" },
+                        seperateModelsForAxModels: true,
+                        auxSlots: { otherAx: { profileId: "gone-too" } },
+                    },
+                    profiles: [{ id: "keyless", modelId: "gpt-5.5", credentialId: "deleted-key" }],
+                },
+            },
+            [],
+        );
+        const upstream = () => chat("must not run");
+        expect(failure(await run({ settings, arg: prompt(), upstream }))).toContain("model profile no longer exists");
+        expect(failure(await run({ settings, arg: prompt(), mode: "otherAx", upstream }))).toContain(
+            "model profile no longer exists",
+        );
+        const keyless = failure(await run({ settings, arg: prompt(), mode: "submodel", upstream }));
+        expect(keyless).toContain("credential no longer exists");
+        expect(keyless).not.toContain(SECRETS.openAIKey);
+    });
+
+    it("uses the main profile for a matching static model, and no profile otherwise (O5)", async () => {
+        const settings = withNamed(
+            {
+                model: {
+                    preset: { mainSlot: { profileId: "main" }, subSlot: { profileId: "main" } },
+                    profiles: [{ id: "main", modelId: "gpt-5.5", credentialId: "work" }],
+                },
+            },
+            [{ id: "work", type: "openai", key: NAMED.work }],
+        );
+        const matching = await run({
+            settings,
+            arg: { ...prompt(), staticModel: "gpt-5.5" },
+            upstream: () => chat("a"),
+        });
+        expect(summaryOf(matching)).toEqual([[OPENAI, `Bearer ${NAMED.work}`, "gpt-5.5"]]);
+
+        // A main proxy profile lends neither its URL nor its key to another static model.
+        const proxied = withNamed(
+            {
+                model: {
+                    preset: { mainSlot: { profileId: "main" }, subSlot: { profileId: "main" } },
+                    profiles: [
+                        {
+                            id: "main",
+                            modelId: "reverse_proxy",
+                            forceReplaceUrl: "https://main.test/v1/chat/completions",
+                            customAPIFormat: LLMFormat.OpenAICompatible,
+                            credentialId: "work",
+                        },
+                    ],
+                },
+            },
+            [{ id: "work", type: "custom", key: NAMED.work }],
+        );
+        const other = await run({
+            settings: proxied,
+            arg: { ...prompt(), staticModel: "gpt-5.4" },
+            upstream: () => chat("b"),
+        });
+        expect(summaryOf(other)).toEqual([[OPENAI, `Bearer ${SECRETS.openAIKey}`, "gpt-5.4"]]);
+        // A definition that needs a profile refuses as a static model.
+        const custom = await run({
+            settings: proxied,
+            arg: { ...prompt(), staticModel: "xcustom:::m1" },
+            upstream: () => chat("c"),
+        });
+        expect(failure(custom)).toContain("without a model profile");
+    });
+
+    it("sends a bare auxiliary slot with the flat default key and default options, and refuses one that needs a profile", async () => {
+        const settings: Settings = {
+            model: {
+                preset: {
+                    mainSlot: { profileId: "main" },
+                    subSlot: { profileId: "main" },
+                    seperateModelsForAxModels: true,
+                    auxSlots: { memory: { modelId: "gpt-5.5" }, translate: { modelId: "openrouter" } },
+                },
+                profiles: [
+                    {
+                        id: "main",
+                        modelId: "reverse_proxy",
+                        forceReplaceUrl: PROVIDER,
+                        customAPIFormat: LLMFormat.OpenAICompatible,
+                        credentialId: PROXY_CREDENTIAL.id,
+                        enableCustomFlags: true,
+                        customFlags: [],
+                    },
+                ],
+            },
+        };
+        const memory = await run({ settings, arg: prompt(), mode: "memory", upstream: () => chat("bare") });
+        expect(summaryOf(memory)).toEqual([[OPENAI, `Bearer ${SECRETS.openAIKey}`, "gpt-5.5"]]);
+        // The main profile's empty custom flags do not reach the bare slot.
+        expect((memory.calls[0].body as { messages: unknown[] }).messages[0]).toEqual({
+            role: "developer",
+            content: "Be brief.",
+        });
+        expect(wireOf(memory)).not.toContain(SECRETS.proxyKey);
+        const translate = await run({ settings, arg: prompt(), mode: "translate", upstream: () => chat("x") });
+        expect(failure(translate)).toContain('"openrouter" without a model profile');
     });
 });

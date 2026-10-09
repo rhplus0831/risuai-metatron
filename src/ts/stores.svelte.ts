@@ -42,6 +42,8 @@ export const SettingsMenuIndex = writable(-1);
 export const MODEL_SETTINGS_MENU = 1;
 /** The shared API key list and bindings (`ApiKeysSettings.svelte`). */
 export const API_KEYS_SETTINGS_MENU = 17;
+/** The shared model profile list and editor (`ModelProfilesSettings.svelte`). */
+export const MODEL_PROFILES_SETTINGS_MENU = 18;
 /** The settings page of the prompt preset (`PromptPresetSettings.svelte`); its template editor is menu 13. */
 export const PROMPT_SETTINGS_MENU = 16;
 export const ReloadGUIPointer = writable(0);

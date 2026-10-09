@@ -1,3 +1,4 @@
+import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for Phase 6 slice 3 (the streaming display optimization rewired to server streams,
 // owner decision 3): for each `streamingDisplayOptimizationMode` ("off", "balanced", "strong"), a
 // server send makes its reply the streaming message (`streamingState`, with the configured mode) from
@@ -82,33 +83,35 @@ try {
     const ui = await single("ui");
     epoch = ui.epoch ?? epoch;
     const presets = await single("presets");
+    const modelPresets = await single("modelPresets");
+    const modelProfiles = await single("modelProfiles");
+    const preset = {
+        ...presets.data[0],
+        aiModel: "reverse_proxy",
+        subModel: "reverse_proxy",
+        forceReplaceUrl: `${providerBase}/v1/chat/completions`,
+        customProxyRequestModel: "mock",
+        maxContext: 900,
+        maxResponse: 100,
+    };
     const providers = await single("providers");
     const order = await single("characterOrder");
     const chaId = randomUUID();
     const seeded = await batch({
         ops: [
+            ...modelFixtureOps({ ...preset, customTokenizer: "tik" }, modelPresets, modelProfiles),
             { kind: "ui", id: "main", baseRevision: ui.revision, data: { ...ui.data, didFirstSetup: true } },
             {
                 kind: "presets",
                 id: "main",
                 baseRevision: presets.revision,
-                data: [
-                    {
-                        ...presets.data[0],
-                        aiModel: "reverse_proxy",
-                        subModel: "reverse_proxy",
-                        forceReplaceUrl: `${providerBase}/v1/chat/completions`,
-                        customProxyRequestModel: "mock",
-                        maxContext: 900,
-                        maxResponse: 100,
-                    },
-                ],
+                data: [promptFixture(preset)],
             },
             {
                 kind: "providers",
                 id: "main",
                 baseRevision: providers.revision,
-                data: { ...providers.data, useStreaming: true, customTokenizer: "tik" },
+                data: { ...providers.data, useStreaming: true },
             },
             {
                 kind: "characters",

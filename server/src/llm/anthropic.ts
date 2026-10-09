@@ -5,6 +5,7 @@ import { HttpRequest } from "@smithy/protocol-http";
 import { SignatureV4 } from "@smithy/signature-v4";
 import { LLMFlags, LLMFormat } from "../../../shared/llm.ts";
 import { NANOGPT_MESSAGES_ENDPOINT } from "../../../shared/llm/providers/nanogpt.ts";
+import { defaultCredentialKey } from "./credentials.ts";
 import type { MultiModal } from "../../../shared/openai.ts";
 import { textifyReadableStream } from "./transport.ts";
 import { replaceAsync, simplifySchema, sleep } from "./util.ts";
@@ -76,7 +77,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
     const ollamaCloudAnthropic = aiModel === "ollama-cloud";
     // NanoGPT does not expose a subscription Messages endpoint.
     let replacerURL = nanogpt ? NANOGPT_MESSAGES_ENDPOINT : (arg.customURL ?? "https://api.anthropic.com/v1/messages");
-    let apiKey = arg.key || (nanogpt ? db.nanogptKey : aiModel === "reverse_proxy" ? db.proxyKey : db.claudeAPIKey);
+    let apiKey = arg.key ?? defaultCredentialKey(aiModel, nanogpt ? db.nanogptKey : db.claudeAPIKey);
     const maxTokens = arg.maxTokens;
     if (aiModel === "reverse_proxy" && db.autofillRequestUrl) {
         if (replacerURL.endsWith("v1")) {

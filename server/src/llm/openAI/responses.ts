@@ -237,12 +237,7 @@ function buildResponsesHeaders(arg: RequestDataArgumentExtended, risuIdentify: b
     const db = arg.ctx.db;
     const aiModel = arg.aiModel;
     const headers: Record<string, string> = {
-        Authorization:
-            "Bearer " +
-            getOpenAIRequestKey(
-                arg,
-                aiModel === "nanogpt" ? db.nanogptKey : aiModel === "reverse_proxy" ? db.proxyKey : db.openAIKey,
-            ),
+        Authorization: "Bearer " + getOpenAIRequestKey(arg, aiModel === "nanogpt" ? db.nanogptKey : db.openAIKey),
         "Content-Type": "application/json",
     };
 

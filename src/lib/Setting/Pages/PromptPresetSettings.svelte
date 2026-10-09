@@ -1,10 +1,5 @@
 <script lang="ts">
-    import {
-        activeModelPreset,
-        settings,
-        activePreset,
-        currentPresetRecord,
-    } from "src/ts/storage/settingsViews.svelte";
+    import { settings, activePreset, currentPresetRecord } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { language } from "src/lang";
     import Help from "src/lib/Others/Help.svelte";
@@ -20,11 +15,10 @@
     import Button from "src/lib/UI/GUI/Button.svelte";
     import OobaSettings from "./OobaSettings.svelte";
     import Accordion from "src/lib/UI/Accordion.svelte";
-    import OpenrouterSettings from "./OpenrouterSettings.svelte";
     import PromptSettings from "./PromptSettings.svelte";
     import { openPresetList } from "src/ts/stores.svelte";
     import { selectSingleFile } from "src/ts/util";
-    import { getModelInfo, LLMFormat } from "src/ts/model/modellist";
+    import { getModelInfoForMode, LLMFormat } from "src/ts/model/modellist";
     import RegexList from "src/lib/SideBars/Scripts/RegexList.svelte";
     import SettingRenderer from "../SettingRenderer.svelte";
     import { allBasicParameterItems } from "src/ts/setting/botSettingsParamsData";
@@ -54,8 +48,8 @@
     }
 
     let submenu = $state(settings.ui.useLegacyGUI ? -1 : 1);
-    let modelInfo = $derived(getModelInfo(activeModelPreset.aiModel));
-    let subModelInfo = $derived(getModelInfo(activeModelPreset.subModel));
+    let modelInfo = $derived(getModelInfoForMode("model"));
+    let subModelInfo = $derived(getModelInfoForMode("submodel"));
 </script>
 
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.prompt}</h2>
@@ -111,7 +105,7 @@
 {#if submenu === 1 || submenu === -1}
     <!-- Data-driven basic parameters -->
     <SettingRenderer items={allBasicParameterItems} {modelInfo} {subModelInfo} />
-    {#if activeModelPreset.aiModel === "textgen_webui" || activeModelPreset.aiModel === "mancer" || activeModelPreset.aiModel.startsWith("local_") || activeModelPreset.aiModel.startsWith("hf:::")}
+    {#if modelInfo.id === "textgen_webui" || modelInfo.id === "mancer" || modelInfo.id.startsWith("local_") || modelInfo.id.startsWith("hf:::")}
         <span class="text-textcolor">Repetition Penalty</span>
         <SliderInput
             min={1}
@@ -335,12 +329,8 @@
         <!-- Standard parameters now handled by SettingRenderer above -->
     {/if}
 
-    {#if (settings.providers.reverseProxyOobaMode && activeModelPreset.aiModel === "reverse_proxy") || activeModelPreset.aiModel === "ooba"}
-        <OobaSettings instructionMode={activeModelPreset.aiModel === "ooba"} />
-    {/if}
-
-    {#if activeModelPreset.aiModel.startsWith("openrouter")}
-        <OpenrouterSettings />
+    {#if (settings.providers.reverseProxyOobaMode && modelInfo.id === "reverse_proxy") || modelInfo.id === "ooba"}
+        <OobaSettings instructionMode={modelInfo.id === "ooba"} />
     {/if}
 {/if}
 

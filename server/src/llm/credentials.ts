@@ -1,4 +1,5 @@
 import type { LLMModel } from "../../../shared/llm.ts";
+import type { ModelProfile } from "../../../shared/database.ts";
 import { resolveCredentialBinding, type CredentialRefusalReason } from "../../../shared/llm/credentialBinding.ts";
 import { messages } from "./messages.ts";
 import type { RequestDb } from "./settings.ts";
@@ -17,12 +18,22 @@ const refusalMessages: Record<CredentialRefusalReason, string> = {
     unsupportedModel: messages.errors.credentialUnsupportedModel,
 };
 
-/** Resolve only the slot's binding; an invalid binding never redirects to a default credential. */
-export function resolveCredential(db: RequestDb, aiModel: string, modelInfo: LLMModel): ResolvedCredential {
+/** Custom definitions and reverse proxies have no flat default key (Model Profiles O2). */
+export function defaultCredentialKey(modelId: string | undefined, defaultKey: string | undefined): string {
+    return modelId === "reverse_proxy" || modelId?.startsWith("xcustom:::") ? "" : (defaultKey ?? "");
+}
+
+/** Resolve only the profile's binding; an invalid binding never redirects to a default credential. */
+export function resolveCredential(
+    db: RequestDb,
+    aiModel: string,
+    modelInfo: LLMModel,
+    profile: Pick<ModelProfile, "credentialId"> | undefined,
+): ResolvedCredential {
     const binding = resolveCredentialBinding(
         aiModel,
         modelInfo,
-        db,
+        profile,
         db.credentials ?? {},
         (credential) => !!credential.key,
     );

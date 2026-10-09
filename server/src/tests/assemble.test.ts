@@ -132,15 +132,20 @@ async function startServer(): Promise<Server> {
  * Seeds the scenario for one fixture the way the capture applied it: `baseSettings` then the
  * fixture's `settings`, each key to its home (a persona root alias onto the selected persona, a
  * forwarded prompt preset key onto the selected `Default` preset under its field name, a forwarded
- * model preset key onto the materialized model preset (`docs/plan/split-preset.md`), else the
- * section holding it); the two extra presets through `normalizePreset`; every character with its chats.
+ * model key onto the materialized model preset's main profile (`aiModel` as its `modelId`, the
+ * profile options as they are; `subModel` the sub slot's model, `docs/plan/model-profiles.md`),
+ * else the section holding it); the two extra presets through `normalizePreset`; every character
+ * with its chats.
  */
 async function seed(s: Server, fixture: Fixture) {
     const settings = { ...scenario.baseSettings, ...fixture.settings };
     const presets = await s.single("presets");
     const modelPresets = await s.single("modelPresets");
+    const modelProfiles = await s.single("modelProfiles");
     const defaultPreset: Record<string, unknown> = { ...presets.data[0], name: "Default" };
     const modelPreset: Record<string, unknown> = { ...modelPresets.data[0], name: "Default" };
+    const mainProfile: Record<string, unknown> = { ...modelProfiles.data[0], name: "Default" };
+    let subModel: string | undefined;
     const personas = structuredClone(scenario.personas) as Record<string, any>[];
     const selected = personas[(settings.selectedPersona as number | undefined) ?? 0];
     const sectionPatch: Record<string, Record<string, unknown>> = {};
@@ -161,7 +166,17 @@ async function seed(s: Server, fixture: Fixture) {
             continue;
         }
         if (forwardedModel.has(key)) {
-            modelPreset[presetField[key] ?? key] = structuredClone(value);
+            // The capture's settings hold no auxiliary slot choices; a model preset seed would need them.
+            expect(key, `the model setting ${key} has a seed`).not.toBe("seperateModels");
+            if (key === "aiModel") {
+                mainProfile.modelId = value;
+            } else if (key === "subModel") {
+                subModel = value as string;
+            } else if (key === "seperateModelsForAxModels") {
+                modelPreset[key] = value;
+            } else {
+                mainProfile[key] = structuredClone(value);
+            }
             continue;
         }
         const section = Object.entries(SECTION_FIELDS).find(([, fields]) =>
@@ -175,9 +190,18 @@ async function seed(s: Server, fixture: Fixture) {
         // The capture's `presetChain` pick switched the whole preset: `Alpha`, a canonical preset,
         // brought the schema's default model with it. A pick changes the prompt preset only now
         // (`docs/plan/split-preset.md`), so the model the capture assembled with is seeded as the
-        // job's model preset.
-        modelPreset.aiModel = PRESET_DEFAULTS.aiModel;
-        modelPreset.subModel = PRESET_DEFAULTS.subModel;
+        // job's model preset's profile.
+        mainProfile.modelId = PRESET_DEFAULTS.modelId;
+        subModel = PRESET_DEFAULTS.modelId!;
+    }
+    // One profile when the main and sub models agree (every capture fixture), else a sub profile
+    // with the same options, as the shared model preset fields applied to both.
+    const profiles = [mainProfile];
+    modelPreset.mainSlot = { profileId: mainProfile.id };
+    modelPreset.subSlot = { profileId: mainProfile.id };
+    if (subModel !== undefined && subModel !== mainProfile.modelId) {
+        profiles.push({ ...mainProfile, id: "sub", name: "Sub", modelId: subModel });
+        modelPreset.subSlot = { profileId: "sub" };
     }
     const ops: unknown[] = [
         {
@@ -189,6 +213,7 @@ async function seed(s: Server, fixture: Fixture) {
                 ...scenario.presets.map((preset) => normalizePreset(structuredClone(preset) as never)),
             ],
         },
+        { kind: "modelProfiles", id: "main", baseRevision: modelProfiles.revision, data: profiles },
         { kind: "modelPresets", id: "main", baseRevision: modelPresets.revision, data: [modelPreset] },
         { kind: "personas", id: "main", baseRevision: (await s.single("personas")).revision, data: personas },
     ];

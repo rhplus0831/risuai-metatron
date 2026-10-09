@@ -23,9 +23,8 @@ import {
  */
 export type SecretRequest =
     | { kind: "put"; path: SecretPath; value: string }
-    | { kind: "copy"; from: string; to: string }
     /**
-     * Removes the entry of a deleted preset or custom model: sent only once the owner's deletion
+     * Removes the entry of a deleted named credential: sent only once the owner's deletion
      * is saved, and dropped if the owner is back (a conflict discarded the deletion).
      */
     | { kind: "cleanup"; path: Extract<SecretPath, { kind: "entry" }> };
@@ -67,30 +66,19 @@ export function clearSecret(path: SecretPath): number {
     return setSecret(path, "");
 }
 
-/** Gives model preset `to` a copy of model preset `from`'s `proxyKey` (on the server; the tab never reads it). */
-export function copyModelPresetSecret(from: string, to: string): number {
-    return enqueue({ kind: "copy", from, to });
-}
-
-/** The entry of a model preset or custom model the tab just deleted (not a clear of a live one). */
+/** The entry of a named credential the tab just deleted (not a clear of a live one). */
 export function deleteEntrySecret(field: SecretEntryMap, id: string): number {
     return enqueue({ kind: "cleanup", path: { kind: "entry", field, id } });
 }
 
-export function deleteModelPresetSecret(id: string): number {
-    return deleteEntrySecret("modelPresets", id);
-}
-
-const modelPresetPath = (id: string): SecretPath => ({ kind: "entry", field: "modelPresets", id });
-
 /** The paths a queued write changes. */
 export function secretOpTarget(request: SecretRequest): SecretPath {
-    return request.kind === "copy" ? modelPresetPath(request.to) : request.path;
+    return request.path;
 }
 
 /**
  * The status of `path`: the acknowledged masked leaf with the queued writes applied over it in
- * queue order (as the server applies them), so a copy reads its source as it is at that point.
+ * queue order, as the server applies them.
  */
 export function secretStatus(path: SecretPath): SecretStatus {
     const wanted = secretPathKey(path);
@@ -103,13 +91,6 @@ export function secretStatus(path: SecretPath): SecretStatus {
             overlay.set(secretPathKey(request.path), { set: request.value !== "", hint: "", pending: true });
         } else if (request.kind === "cleanup") {
             overlay.set(secretPathKey(request.path), { set: false, hint: "", pending: true });
-        } else {
-            const source = current(modelPresetPath(request.from));
-            overlay.set(secretPathKey(modelPresetPath(request.to)), {
-                set: source.set,
-                hint: source.hint,
-                pending: true,
-            });
         }
     }
     return overlay.get(wanted) ?? current(path);

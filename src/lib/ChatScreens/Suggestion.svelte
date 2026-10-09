@@ -1,10 +1,11 @@
 <script lang="ts">
+    import { getModelInfoForMode } from "src/ts/model/modellist";
     import {
         selectedCharacter,
         type AnyClientCharacter,
         type ClientCharacter,
     } from "src/ts/storage/characterStore.svelte";
-    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { requestChatData } from "src/ts/process/request/request";
     import { doingChat, type OpenAIChat } from "../../ts/process/index.svelte";
     import { type character, type DeepReadonly, type Message, type groupChat } from "../../ts/storage/database.svelte";
@@ -18,6 +19,7 @@
     import { ParseMarkdown } from "src/ts/parser/parser.svelte";
     import { defaultAutoSuggestPrompt } from "../../ts/storage/defaultPrompts.js";
 
+    const subModel = $derived(getModelInfoForMode("submodel").id);
     const currentCharacter = $derived(selectedCharacter());
     interface Props {
         send: () => any;
@@ -96,11 +98,7 @@
             },
         ];
 
-        if (
-            activeModelPreset.subModel === "textgen_webui" ||
-            activeModelPreset.subModel === "mancer" ||
-            activeModelPreset.subModel.startsWith("local_")
-        ) {
+        if (subModel === "textgen_webui" || subModel === "mancer" || subModel.startsWith("local_")) {
             promptbody = [
                 {
                     role: "system",

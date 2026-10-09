@@ -76,6 +76,7 @@ let epoch = "";
 let signer: Awaited<ReturnType<typeof createSigner>>;
 let presetId = "";
 let modelPresetId = "";
+let profileId = "";
 let personaId = "";
 
 async function api(url: string, init: RequestInit = {}) {
@@ -104,8 +105,12 @@ async function patchProviders(patch: Record<string, unknown>) {
     });
     expect(res.status).toBe(200);
 }
-/** Patches one prompt preset (`presets`) or model preset (`modelPresets`) by id. */
-async function patchPreset(kind: "presets" | "modelPresets", id: string, patch: Record<string, unknown>) {
+/** Patches one prompt preset (`presets`), model preset (`modelPresets`), or model profile by id. */
+async function patchPreset(
+    kind: "presets" | "modelPresets" | "modelProfiles",
+    id: string,
+    patch: Record<string, unknown>,
+) {
     const current = await single(kind);
     const res = await batch({
         ops: [
@@ -338,12 +343,15 @@ beforeAll(async () => {
     ).epoch;
     const presets = await single("presets");
     const modelPresets = await single("modelPresets");
+    const modelProfiles = await single("modelProfiles");
     const personas = await single("personas");
     presetId = presets.data[0].id;
     modelPresetId = modelPresets.data[0].id;
+    profileId = modelProfiles.data[0].id;
     personaId = personas.data[0].id;
-    // The selected model preset: a reverse proxy to the fake provider. The prompt presets: the
-    // selected one and `Alpha`, the presetChain pick (`docs/plan/split-preset.md`).
+    // The selected model preset's main and sub slots use one profile: a reverse proxy to the fake
+    // provider. The prompt presets: the selected one and `Alpha`, the presetChain pick
+    // (`docs/plan/split-preset.md`, `docs/plan/model-profiles.md`).
     const common = {
         maxResponse: 100,
         jailbreakToggle: false,
@@ -351,19 +359,25 @@ beforeAll(async () => {
     const seededPresets = await batch({
         ops: [
             {
-                kind: "modelPresets",
+                kind: "modelProfiles",
                 id: "main",
-                baseRevision: modelPresets.revision,
+                baseRevision: modelProfiles.revision,
                 data: [
                     {
-                        ...modelPresets.data[0],
-                        aiModel: "reverse_proxy",
-                        subModel: "reverse_proxy",
+                        ...modelProfiles.data[0],
+                        modelId: "reverse_proxy",
                         maxContext: 4000,
                         forceReplaceUrl: providerUrl,
                         customProxyRequestModel: "m",
+                        customTokenizer: "tik",
                     },
                 ],
+            },
+            {
+                kind: "modelPresets",
+                id: "main",
+                baseRevision: modelPresets.revision,
+                data: [{ ...modelPresets.data[0], mainSlot: { profileId }, subSlot: { profileId } }],
             },
             {
                 kind: "presets",
@@ -391,7 +405,7 @@ beforeAll(async () => {
         ],
     });
     expect(seededPresets.status, JSON.stringify(seededPresets.body)).toBe(200);
-    await patchProviders({ useStreaming: true, customTokenizer: "tik" });
+    await patchProviders({ useStreaming: true });
 }, SLOW);
 
 afterAll(async () => {
@@ -581,10 +595,10 @@ describe("a send", () => {
             });
             mode = { chunks: ["Reply."], delayMs: 0 };
             const before = bodies.length;
-            // While the first speaker's request runs, the stored preset changes its model.
+            // While the first speaker's request runs, the stored profile changes its model.
             onRequest = async () => {
                 onRequest = null;
-                await patchPreset("modelPresets", modelPresetId, { customProxyRequestModel: "changed-during-job" });
+                await patchPreset("modelProfiles", profileId, { customProxyRequestModel: "changed-during-job" });
             };
             try {
                 const { events, terminal } = await job("group", grp);
@@ -598,7 +612,7 @@ describe("a send", () => {
                 expect(JSON.stringify(bodies.at(-1).messages)).toContain("[Write the next reply only as Cid]");
             } finally {
                 onRequest = null;
-                await patchPreset("modelPresets", modelPresetId, { customProxyRequestModel: "m" });
+                await patchPreset("modelProfiles", profileId, { customProxyRequestModel: "m" });
             }
         },
         SLOW,

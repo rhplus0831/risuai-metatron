@@ -5,7 +5,7 @@ import { SECTION_FIELDS } from "../../../shared/sections.ts";
 import { characterList } from "./characterStore.svelte";
 import { withChatsCopy } from "./chatStore.svelte";
 import {
-    forwardedPresetField,
+    isForwardedPresetRoot,
     isSettingsRootKey,
     readPresetFieldOf,
     readSettingsRoot,
@@ -25,8 +25,7 @@ import {
 
 /**
  * The legacy flat shape of the settings, as the removed facade answered a snapshot of it: every
- * root name the views serve (`SETTINGS_ROOT_KEYS`), `proxyKey` (always `""`: the tab never holds the
- * key), and the three per-tab selection indexes. Each value is a plain copy (`undefined` kept as an
+ * root name the views serve (`SETTINGS_ROOT_KEYS`) and the three per-tab selection indexes. Each value is a plain copy (`undefined` kept as an
  * own key); the characters are not part of it. User-keyed maps go through JSON, so an own
  * `__proto__` key stays data.
  */
@@ -36,7 +35,6 @@ export function rootSnapshot(): Record<string, unknown> {
         for (const key of SETTINGS_ROOT_KEYS) {
             snapshot[key] = plainClone(readSettingsRoot(key));
         }
-        snapshot.proxyKey = "";
         snapshot.botPresetsId = selectedPresetIndex();
         snapshot.selectedPersona = selectedPersonaIndex();
         snapshot.loreBookPage = selectedLoreBookPage();
@@ -64,7 +62,7 @@ export function buildDatabaseSubset(keys: readonly string[], scope: PresetScope 
                 continue;
             }
             const value =
-                scope !== null && forwardedPresetField(key) !== undefined
+                scope !== null && isForwardedPresetRoot(key)
                     ? readPresetFieldOf(scope, key)
                     : isSettingsRootKey(key)
                       ? readSettingsRoot(key)
@@ -91,6 +89,7 @@ const REPORT_REMOVED_KEYS: ReadonlySet<string> = new Set([
     "enabledModules",
     "botPresets",
     "modelPresets",
+    "modelProfiles",
     "characterOrder",
     "webUiUrl",
     "hordeConfig",

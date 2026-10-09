@@ -72,7 +72,7 @@ type Server = FakeResourceServer | StoreBackedServer;
 const json = (text: string) => JSON.parse(text);
 /** A plain copy of a mirror value, for `Object.hasOwn` checks that a Svelte proxy would answer differently. */
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
-const presetPath = (id: string): SecretPath => ({ kind: "entry", field: "modelPresets", id });
+const credPath = (id: string): SecretPath => ({ kind: "entry", field: "credentials", id });
 
 /** A fresh module graph with the server stand-in installed, without starting the adapter. */
 async function fresh<S extends Server>(fake: S) {
@@ -152,7 +152,7 @@ const customRecords: Record<string, unknown> = {
     llmSecrets: {
         openAIKey: "sk",
         OaiCompAPIKeys: json('{"__proto__":"proto-key","https://x":"k2"}'),
-        modelPresets: json('{"__proto__":{"proxyKey":"proto"},"preset-1":{"proxyKey":"p1"}}'),
+        credentials: json('{"__proto__":{"key":"proto"},"cred-1":{"key":"p1"}}'),
     },
     ui: {
         zoomsize: 111,
@@ -202,10 +202,19 @@ const customRecords: Record<string, unknown> = {
     customModels: [{ id: "m", internalId: "i", name: "M" }],
     enabledModules: ["mod"],
     statics: { messages: 3, imports: "bad" },
+    // The model fields live on the profiles (`docs/plan/model-profiles.md`); the stored preset still
+    // carries the fields that moved or were removed, which the server normalizer drops.
+    modelProfiles: [
+        { id: "profile-1", name: "F", modelId: "model-x", maxContext: 9000, credentialId: "cred-1" },
+        { name: "G" },
+    ],
     modelPresets: [
         {
             id: "preset-1",
             name: "M",
+            mainSlot: { profileId: "profile-1" },
+            subSlot: { profileId: "profile-1" },
+            auxSlots: { memory: { modelId: "mm" } },
             aiModel: "model-x",
             maxContext: 9000,
             fallbackModels: { model: ["m", ""], memory: [], emotion: [], translate: [], otherAx: [] },
@@ -285,10 +294,22 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             expect(Object.hasOwn(plain(settings.globalChatVariables), "__proto__")).toBe(true);
             expect(settings.providers.additionalParams).toEqual([["header::X-Test", "y"]]);
             expect(Object.hasOwn(plain(settings.presets[0].seperateParameters.overrides), "__proto__")).toBe(true);
-            expect(settings.modelPresets[0]).toMatchObject({ id: "preset-1", aiModel: "model-x", maxContext: 9000 });
-            // The removed fallback models: a stored record's lists are dropped.
-            expect(Object.hasOwn(settings.modelPresets[0], "fallbackModels")).toBe(false);
-            expect(Object.hasOwn(plain(settings.modelPresets[0].seperateModels), "__proto__")).toBe(true);
+            expect(settings.modelPresets[0]).toMatchObject({
+                id: "preset-1",
+                mainSlot: { profileId: "profile-1" },
+                auxSlots: { memory: { modelId: "mm" } },
+            });
+            expect(settings.modelProfiles[0]).toMatchObject({
+                id: "profile-1",
+                modelId: "model-x",
+                maxContext: 9000,
+                credentialId: "cred-1",
+            });
+            expect(settings.modelProfiles[1].id).toEqual(expect.any(String));
+            // The removed fallback models and the fields that moved to the profile: dropped.
+            for (const field of ["fallbackModels", "aiModel", "maxContext", "seperateModels"]) {
+                expect(Object.hasOwn(settings.modelPresets[0], field), field).toBe(false);
+            }
             expect(settings.modelPresets[1].id).toEqual(expect.any(String));
             // The write-only `llmSecrets` record (7b) reaches the tab masked: the mirror's credential
             // fields read "", and the status (own `__proto__` keys included) is in `llmSecretState`.
@@ -297,8 +318,8 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             expect(Object.hasOwn(plain(secrets.llmSecretState.masked!.OaiCompAPIKeys), "__proto__")).toBe(true);
             expect(secrets.isSecretSet({ kind: "map", field: "OaiCompAPIKeys", id: "__proto__" })).toBe(true);
             expect(secrets.isSecretSet({ kind: "flat", field: "openAIKey" })).toBe(true);
-            expect(secrets.secretStatus(presetPath("__proto__"))).toEqual({ set: true, hint: "", pending: false });
-            expect(secrets.secretStatus(presetPath("preset-1"))).toEqual({ set: true, hint: "", pending: false });
+            expect(secrets.secretStatus(credPath("__proto__"))).toEqual({ set: true, hint: "", pending: false });
+            expect(secrets.secretStatus(credPath("cred-1"))).toEqual({ set: true, hint: "", pending: false });
             await sync.flushResources();
             expect(store.batchCount()).toBe(0);
         } finally {
@@ -375,8 +396,8 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             (settings.presets[0].seperateParameters.overrides as any).claude = { temperature: 3 };
             // The `llmSecrets` edit is a sibling (its credentials are queued writes, not record edits).
             settings.llmSecrets.vertexClientEmail = "vertex@example.test";
-            first.secrets.setSecret(presetPath("__proto__"), "proto2");
-            first.secrets.setSecret(presetPath(settings.presets[1].id), "q");
+            first.secrets.setSecret(credPath("__proto__"), "proto2");
+            first.secrets.setSecret(credPath("key-1"), "q");
             settings.secrets.elevenLabKey = "el";
             settings.memoryTranslateMedia.sdSteps = 32;
             settings.globalChatVariables.y = "2";
@@ -405,7 +426,7 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             // preset records of each owner; nothing is written under a root.
             activePersona.name = "u2";
             activePreset.temperature = 42;
-            first.views.activeModelPreset.maxContext = 9001;
+            first.views.activeMainProfile.maxContext = 9001;
             settings.presets[0].name = "P2";
             settings.modelPresets[0].name = "M2";
             await first.sync.flushResources();
@@ -423,40 +444,40 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             expect(store.record("hypaV3Presets", "main")!.data.items[2]).toEqual(hypa);
             expect(store.record("hypaV3Presets", "main")!.data.selectedId).toBe(hypa.id);
             expect(store.record("statics", "main")!.data).toEqual({ messages: 4, imports: 0 });
-            expect(Object.hasOwn(store.record("llmSecrets", "main")!.data.modelPresets, "__proto__")).toBe(true);
-            expect(store.record("llmSecrets", "main")!.data.modelPresets.__proto__).toEqual({ proxyKey: "proto2" });
-            expect(store.record("llmSecrets", "main")!.data.modelPresets[settings.presets[1].id]).toEqual({
-                proxyKey: "q",
-            });
+            expect(Object.hasOwn(store.record("llmSecrets", "main")!.data.credentials, "__proto__")).toBe(true);
+            expect(store.record("llmSecrets", "main")!.data.credentials.__proto__).toEqual({ key: "proto2" });
+            expect(store.record("llmSecrets", "main")!.data.credentials["key-1"]).toEqual({ key: "q" });
             // The sibling write carried no credential, and the server kept the stored ones.
             expect(store.record("llmSecrets", "main")!.data.vertexClientEmail).toBe("vertex@example.test");
             expect(store.record("llmSecrets", "main")!.data.openAIKey).toBe("sk");
             expect(store.secretRequests().map((request) => request.path)).toEqual([
-                "/api/llm-secrets/modelPresets/~__proto__/proxyKey",
-                `/api/llm-secrets/modelPresets/~${settings.presets[1].id}/proxyKey`,
+                "/api/llm-secrets/credentials/~__proto__/key",
+                "/api/llm-secrets/credentials/~key-1/key",
             ]);
             expect(store.record("personas", "main")!.data[0].name).toBe("u2");
             expect(store.record("personas", "main")!.data[0]).not.toHaveProperty("username");
             expect(store.record("presets", "main")!.data[0]).toMatchObject({ name: "P2", temperature: 42 });
             expect(store.record("presets", "main")!.data[0]).not.toHaveProperty("maxContext");
-            expect(store.record("modelPresets", "main")!.data[0]).toMatchObject({ name: "M2", maxContext: 9001 });
+            expect(store.record("modelPresets", "main")!.data[0]).toMatchObject({ name: "M2" });
+            expect(store.record("modelPresets", "main")!.data[0]).not.toHaveProperty("maxContext");
             expect(store.record("modelPresets", "main")!.data[0]).not.toHaveProperty("temperature");
+            expect(store.record("modelProfiles", "main")!.data[0]).toMatchObject({ id: "profile-1", maxContext: 9001 });
 
             const second = await boot(store);
             expect(second.bootBatches).toEqual([]);
             expect(second.settings.ui.zoomsize).toBe(112);
             expect(second.activePersona.name).toBe("u2");
             expect(second.activePreset.temperature).toBe(42);
-            expect(second.views.activeModelPreset.maxContext).toBe(9001);
+            expect(second.views.activeMainProfile.maxContext).toBe(9001);
             expect(second.settings.translatorPresets.selectedId).toBe(third.id);
             expect(second.settings.hypaV3Presets.selectedId).toBe(hypa.id);
             expect(second.settings.llmSecrets.vertexClientEmail).toBe("vertex@example.test");
-            expect(second.secrets.secretStatus(presetPath("__proto__"))).toEqual({
+            expect(second.secrets.secretStatus(credPath("__proto__"))).toEqual({
                 set: true,
                 hint: "",
                 pending: false,
             });
-            expect(second.secrets.isSecretSet(presetPath(settings.presets[1].id))).toBe(true);
+            expect(second.secrets.isSecretSet(credPath("key-1"))).toBe(true);
             expect(Object.hasOwn(plain(second.settings.presets[0].seperateParameters.overrides), "__proto__")).toBe(
                 true,
             );
@@ -494,7 +515,7 @@ describe("installBootRecords", () => {
         const fake = await fakeStore();
         fake.set("llmSecrets", "main", {
             ...fake.data<Record<string, unknown>>("llmSecrets", "main")!,
-            modelPresets: json('{"p":{"proxyKey":"x"},"__proto__":{"proxyKey":"y"}}'),
+            credentials: json('{"p":{"key":"x"},"__proto__":{"key":"y"}}'),
         });
         fake.set("characters", "a", { chaId: "a", name: "Alice", type: "character" });
         const { client, bootstrap, secrets, settings, records, characterList } = await fresh(fake);
@@ -537,9 +558,9 @@ describe("installBootRecords", () => {
         // Phase 6 slice 9a: the installation holds the chats in the chat module and writes none onto the characters.
         expect(plain(characterList())).toEqual([{ chaId: "a", name: "Alice", type: "character" }]);
         expect(settings.llmSecrets.openAIKey).toBe("");
-        expect(secrets.isSecretSet(presetPath("p"))).toBe(true);
-        expect(secrets.isSecretSet(presetPath("__proto__"))).toBe(true);
-        expect(secrets.isSecretSet(presetPath("absent"))).toBe(false);
+        expect(secrets.isSecretSet(credPath("p"))).toBe(true);
+        expect(secrets.isSecretSet(credPath("__proto__"))).toBe(true);
+        expect(secrets.isSecretSet(credPath("absent"))).toBe(false);
     });
 
     it("gives the optional Phase 1 lists `[]` and leaves the plugin storage absent when the server has no record, and defaults nothing else", async () => {
@@ -620,7 +641,7 @@ describe("no root record", () => {
 describe("watchers", () => {
     it("mark only the record an edit belongs to", async () => {
         const { fake, sync, secrets, settings, activePreset, activePersona, views } = await boot(await fakeStore());
-        const { activeModelPreset } = views;
+        const { activeModelPreset, activeMainProfile } = views;
         const s = settings as any;
         const edits: [string, () => void][] = [
             ["ui", () => (s.ui.zoomsize = 111)],
@@ -648,7 +669,9 @@ describe("watchers", () => {
             // A forwarded preset field (slice 5) is an edit of the selected preset record of its owner.
             ["presets", () => (activePreset.temperature = 42)],
             ["presets", () => (s.presets[0].name = "P")],
-            ["modelPresets", () => (activeModelPreset.maxContext = 4242)],
+            // A forwarded profile field is an edit of the selected model preset's main profile.
+            ["modelProfiles", () => (activeMainProfile.maxContext = 4242)],
+            ["modelPresets", () => (activeModelPreset.seperateModelsForAxModels = true)],
             ["modelPresets", () => (s.modelPresets[0].name = "M")],
         ];
         for (const [kind, edit] of edits) {
@@ -661,14 +684,12 @@ describe("watchers", () => {
         }
         // A credential write (7b) is no record edit: no batch, one request to `/api/llm-secrets`.
         fake.requests.length = 0;
-        secrets.setSecret(presetPath("p"), "k");
+        secrets.setSecret(credPath("p"), "k");
         await sync.flushResources();
         expect(fake.batchBodies()).toHaveLength(0);
-        expect(fake.secretRequests().map((request) => request.path)).toEqual([
-            "/api/llm-secrets/modelPresets/~p/proxyKey",
-        ]);
-        expect(fake.data("llmSecrets", "main").modelPresets).toEqual({ p: { proxyKey: "k" } });
-        expect(secrets.secretStatus(presetPath("p"))).toEqual({ set: true, hint: "", pending: false });
+        expect(fake.secretRequests().map((request) => request.path)).toEqual(["/api/llm-secrets/credentials/~p/key"]);
+        expect(fake.data("llmSecrets", "main").credentials).toEqual({ p: { key: "k" } });
+        expect(secrets.secretStatus(credPath("p"))).toEqual({ set: true, hint: "", pending: false });
     });
 
     it("send a selection change as the collection's { items, selectedId } record", async () => {
@@ -729,16 +750,16 @@ describe("conflict reloads", () => {
 
     it("replaces the secret status with the masked llmSecrets record, own __proto__ key included, keeps the stored credentials on the next sibling write, and echoes nothing", async () => {
         const { fake, sync, secrets, settings } = await boot(await fakeStore());
-        secrets.setSecret(presetPath("p1"), "local");
+        secrets.setSecret(credPath("p1"), "local");
         await sync.flushResources();
-        expect(fake.data("llmSecrets", "main").modelPresets).toEqual({ p1: { proxyKey: "local" } });
-        expect(secrets.secretStatus(presetPath("p1"))).toEqual({ set: true, hint: "", pending: false });
-        // Another client replaced the record: a sibling, a credential, and the modelPresets map.
+        expect(fake.data("llmSecrets", "main").credentials).toEqual({ p1: { key: "local" } });
+        expect(secrets.secretStatus(credPath("p1"))).toEqual({ set: true, hint: "", pending: false });
+        // Another client replaced the record: a sibling, a credential, and the credentials map.
         fake.set("llmSecrets", "main", {
             ...fake.data<Record<string, unknown>>("llmSecrets", "main")!,
             openAIKey: "remote",
             vertexClientEmail: "remote",
-            modelPresets: json('{"p2":{"proxyKey":"remote"},"__proto__":{"proxyKey":"proto"}}'),
+            credentials: json('{"p2":{"key":"remote"},"__proto__":{"key":"proto"}}'),
         });
         settings.llmSecrets.vertexClientEmail = "local";
         fake.requests.length = 0;
@@ -748,9 +769,9 @@ describe("conflict reloads", () => {
         // The mirror never holds a credential; the status comes from the masked record.
         expect(settings.llmSecrets.openAIKey).toBe("");
         expect(secrets.isSecretSet({ kind: "flat", field: "openAIKey" })).toBe(true);
-        expect(secrets.isSecretSet(presetPath("p1"))).toBe(false);
-        expect(secrets.isSecretSet(presetPath("p2"))).toBe(true);
-        expect(secrets.isSecretSet(presetPath("__proto__"))).toBe(true);
+        expect(secrets.isSecretSet(credPath("p1"))).toBe(false);
+        expect(secrets.isSecretSet(credPath("p2"))).toBe(true);
+        expect(secrets.isSecretSet(credPath("__proto__"))).toBe(true);
         const before = fake.batchCount();
         await sync.flushResources();
         expect(fake.batchCount()).toBe(before);
@@ -762,14 +783,14 @@ describe("conflict reloads", () => {
             .at(-1)!
             .ops.find((op) => op.kind === "llmSecrets");
         expect(sentOp.data).not.toHaveProperty("openAIKey");
-        expect(sentOp.data).not.toHaveProperty("modelPresets");
+        expect(sentOp.data).not.toHaveProperty("credentials");
         const stored = fake.data("llmSecrets", "main");
         expect(stored.vertexClientEmail).toBe("again");
         expect(stored.openAIKey).toBe("remote");
-        expect(Object.hasOwn(stored.modelPresets, "__proto__")).toBe(true);
-        expect(stored.modelPresets.__proto__).toEqual({ proxyKey: "proto" });
-        expect(stored.modelPresets.p2).toEqual({ proxyKey: "remote" });
-        expect(stored.modelPresets).not.toHaveProperty("p1");
+        expect(Object.hasOwn(stored.credentials, "__proto__")).toBe(true);
+        expect(stored.credentials.__proto__).toEqual({ key: "proto" });
+        expect(stored.credentials.p2).toEqual({ key: "remote" });
+        expect(stored.credentials).not.toHaveProperty("p1");
     });
 
     it("replaces a selectable collection and its selection together, and echoes nothing", async () => {

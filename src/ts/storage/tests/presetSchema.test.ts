@@ -2,16 +2,20 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { Database } from "../../../../shared/database.ts";
+import type { Database, ModelPreset, ModelProfile } from "../../../../shared/database.ts";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import { isRecordId, newId } from "../../../../shared/ids.ts";
 import {
+    DEFAULT_MODEL_PROFILE_ID,
     MODEL_PRESET_DEFAULT_NAME,
     MODEL_PRESET_FIELDS,
+    MODEL_PROFILE_FIELDS,
     newPersonaId,
     newPresetId,
     normalizeModelPreset,
     normalizeModelPresets,
+    normalizeModelProfile,
+    normalizeModelProfiles,
     normalizePreset,
     normalizePresets,
     PERSONA_ROOT_ALIASES,
@@ -25,6 +29,7 @@ import {
     defaultOoba,
     presetTemplate,
     type ModelPresetField,
+    type ModelProfileField,
     type PresetField,
     type PromptPresetField,
 } from "../../../../shared/presets.ts";
@@ -37,6 +42,7 @@ import {
     FORWARDED_PRESET_KEYS,
     FORWARDED_ROOT_KEYS,
     forwardPresetRoots,
+    MODEL_PROFILE_ROOT_FIELDS,
     PERSONA_ROOT_KEYS,
     PHASE1_FIELDS,
     SECTION_FIELDS,
@@ -49,9 +55,11 @@ import { createTranslatorPreset } from "../../../../shared/translatorPresets.ts"
 
 // Phase 3, slice 2 (`docs/plan/phases/slices/phase-3-settings-sections/shared-schema-and-ids.md`,
 // "Review-step tests"): the canonical preset schema, its normalizers, the id helpers, and the
-// field-to-resource partition; since the preset split (`docs/plan/split-preset.md`) the schema is
-// one table with two owners, the prompt preset (`presets`) and the model preset (`modelPresets`),
-// each normalized to its own fields. Everything here is pure `shared/` code, so the file runs in node.
+// field-to-resource partition; since the preset split (`docs/plan/split-preset.md`) and the model
+// profiles (`docs/plan/model-profiles.md`) the schema is one table with three owners, the prompt
+// preset (`presets`), the model preset (`modelPresets`, the slot choices), and the model profile
+// (`modelProfiles`), each normalized to its own fields. Everything here is pure `shared/` code, so
+// the file runs in node.
 
 const fixtureDir = path.resolve(import.meta.dirname, "fixtures/phase3");
 const bootSnapshot = JSON.parse(readFileSync(path.join(fixtureDir, "boot-snapshot.json"), "utf-8")) as Record<
@@ -82,7 +90,8 @@ describe("PRESET_DEFAULTS", () => {
             if (field === "name" || field === "image") {
                 continue; // preset-only fields, no root mirror
             }
-            const rootName = presetToRootName[field] ?? field;
+            // A profile's `modelId` is what the root `aiModel` derives from (the main slot's profile).
+            const rootName = field === "modelId" ? "aiModel" : (presetToRootName[field] ?? field);
             if (!Object.hasOwn(bootSnapshot, rootName)) {
                 continue;
             }
@@ -103,21 +112,25 @@ describe("PRESET_DEFAULTS", () => {
         expect(PRESET_FIELDS).not.toContain("forceReplaceUrl2");
         expect(PRESET_FIELDS).not.toContain("autoSuggestPrefix");
         expect(PRESET_FIELDS).not.toContain("autoSuggestClean");
-        // Slice 7: both LLM credentials live in `llmSecrets` (`proxyKey` by model preset id), so neither is a preset field.
+        // `openAIKey` lives in `llmSecrets`; `proxyKey`, its binding `proxyCredentialId`, and `apiType`
+        // are dropped (Model Profiles O2, O9): a profile's optional `credentialId` names a key instead.
         expect(PRESET_FIELDS).not.toContain("proxyKey");
+        expect(PRESET_FIELDS).not.toContain("proxyCredentialId");
+        expect(PRESET_FIELDS).not.toContain("apiType");
         const unset = PRESET_FIELDS.filter((field) => PRESET_DEFAULTS[field] === undefined).sort();
         expect(unset).toEqual([
+            "credentialId",
             "koboldURL",
             "localStopStrings",
             "promptPreprocess",
             "promptTemplate",
-            "proxyCredentialId",
             "proxyRequestModel",
         ]);
     });
 });
 
-const modelFields = new Set<string>(MODEL_PRESET_FIELDS);
+/** The model preset's and the model profile's fields: never on a prompt preset. */
+const modelFields = new Set<string>([...MODEL_PRESET_FIELDS, ...MODEL_PROFILE_FIELDS]);
 const promptRecordFields: readonly PresetField[] = [...PRESET_RECORD_FIELDS, ...PROMPT_PRESET_FIELDS];
 const modelRecordFields: readonly PresetField[] = ["name", ...MODEL_PRESET_FIELDS];
 
@@ -141,20 +154,27 @@ describe("normalizePreset", () => {
 
     it("drops every model field an old file or record carries, whatever its value (the prompt preset stores only its own)", () => {
         const legacy: Record<string, unknown> = { name: "old" };
-        for (const field of MODEL_PRESET_FIELDS) {
-            legacy[field] = PRESET_DEFAULTS[field] ?? "set";
+        for (const field of modelFields) {
+            legacy[field] = PRESET_DEFAULTS[field as PresetField] ?? "set";
         }
         legacy.maxContext = 123456;
         legacy.aiModel = "gpt-x";
         const preset = normalizePreset(legacy) as unknown as Record<string, unknown>;
-        for (const field of MODEL_PRESET_FIELDS) {
+        for (const field of [...modelFields, "aiModel"]) {
             expect(Object.hasOwn(preset, field), field).toBe(false);
         }
         expect(preset.name).toBe("old");
-        // The stored shapes are disjoint: no key but `id` and `name` is in both records.
+        // The stored shapes are disjoint: no key but `id` and `name` is in two of the records.
         const model = normalizeModelPreset(legacy) as unknown as Record<string, unknown>;
-        const shared = Object.keys(preset).filter((key) => Object.hasOwn(model, key));
-        expect(shared.sort()).toEqual(["id", "name"]);
+        const profile = normalizeModelProfile(legacy) as unknown as Record<string, unknown>;
+        for (const [a, b] of [
+            [preset, model],
+            [preset, profile],
+            [model, profile],
+        ]) {
+            const shared = Object.keys(a).filter((key) => Object.hasOwn(b, key));
+            expect(shared.sort()).toEqual(["id", "name"]);
+        }
     });
 
     it("returns fresh copies of the defaults", () => {
@@ -215,7 +235,8 @@ describe("normalizePreset", () => {
     });
 
     it("treats the former keep-on-switch fields as ordinary fields of their owners: filled with their defaults, a null replaced", () => {
-        // `seperateParameters` is the prompt preset's; the auxiliary and fallback four the model preset's.
+        // `seperateParameters` is the prompt preset's; the auxiliary slots and their toggle the model
+        // preset's (the auxiliary model ids, `seperateModels`, are derived from the slots and never stored).
         const present = normalizePreset({
             seperateParameters: { memory: { temperature: 1 }, emotion: {}, translate: {}, otherAx: {} },
         });
@@ -232,23 +253,30 @@ describe("normalizePreset", () => {
             PRESET_DEFAULTS.seperateParameters,
         );
 
+        const slots = {
+            memory: { profileId: "m" },
+            emotion: { modelId: "e" },
+            translate: { profileId: "t" },
+            otherAx: { modelId: "o" },
+        };
         const model = normalizeModelPreset({
+            auxSlots: slots,
             seperateModels: { memory: "m", emotion: "e", translate: "t", otherAx: "o" },
             seperateModelsForAxModels: true,
             fallbackModels: { model: ["a", ""], memory: [], emotion: [], translate: [], otherAx: [] },
             fallbackWhenBlankResponse: true,
         });
-        expect(model.seperateModels).toEqual({ memory: "m", emotion: "e", translate: "t", otherAx: "o" });
+        expect(model.auxSlots).toEqual(slots);
         expect(model.seperateModelsForAxModels).toBe(true);
-        // The removed fallback models: an old record's lists and toggle are dropped.
-        for (const field of ["fallbackModels", "fallbackWhenBlankResponse"]) {
+        // The removed fallback models and the old stored auxiliary model ids: dropped, never migrated (O6).
+        for (const field of ["fallbackModels", "fallbackWhenBlankResponse", "seperateModels"]) {
             expect(Object.hasOwn(model, field), field).toBe(false);
         }
         const modelAbsent = normalizeModelPreset({ name: "x" });
-        expect(modelAbsent.seperateModels).toEqual(PRESET_DEFAULTS.seperateModels);
+        expect(modelAbsent.auxSlots).toEqual(PRESET_DEFAULTS.auxSlots);
         expect(modelAbsent.seperateModelsForAxModels).toBe(false);
         // A `null` was `saveCurrentPreset`'s "keep" marker; it is the default now, never stored.
-        expect(normalizeModelPreset({ seperateModels: null }).seperateModels).toEqual(PRESET_DEFAULTS.seperateModels);
+        expect(normalizeModelPreset({ auxSlots: null }).auxSlots).toEqual(PRESET_DEFAULTS.auxSlots);
     });
 
     it("applies the migrations setDatabase and setPreset applied to the root copy, each on the record that owns the field", () => {
@@ -278,11 +306,14 @@ describe("normalizePreset", () => {
         expect(preset.formatingOrder).toEqual(["description", "personaPrompt", "main", "chats"]);
         expect(preset.top_p).toBe(1);
         expect(preset.seperateParameters.overrides).toEqual({});
-        // The model-owned migrations run on the model preset, and never put the field on the prompt preset.
+        // The profile-owned migrations run on the model profile, and never put the field on the prompt
+        // preset or the model preset.
+        const modelPreset = normalizeModelPreset(legacy) as unknown as Record<string, unknown>;
         for (const field of ["localNetworkMode", "localNetworkTimeoutSec", "openrouterProvider"]) {
             expect(Object.hasOwn(preset, field), field).toBe(false);
+            expect(Object.hasOwn(modelPreset, field), field).toBe(false);
         }
-        const model = normalizeModelPreset(legacy) as any;
+        const model = normalizeModelProfile(legacy) as any;
         expect(model.localNetworkMode).toBe(false);
         expect(model.localNetworkTimeoutSec).toBe(600);
         expect(model.openrouterProvider).toEqual({ order: ["DeepInfra"], only: [], ignore: [] });
@@ -298,7 +329,7 @@ describe("normalizePreset", () => {
             { type: "description" },
         ]);
 
-        expect(normalizeModelPreset({ openrouterProvider: "" }).openrouterProvider).toEqual({
+        expect(normalizeModelProfile({ openrouterProvider: "" }).openrouterProvider).toEqual({
             order: [],
             only: [],
             ignore: [],
@@ -337,7 +368,9 @@ describe("normalizePreset", () => {
         expect(output.NAISettings).not.toBe(input.NAISettings);
         expect(output.formatingOrder).toEqual(["personaPrompt", "main"]);
         expect(input.formatingOrder).toEqual(["main"]);
-        const model = normalizeModelPreset(input) as any;
+        normalizeModelPreset(input);
+        expect(JSON.stringify(input)).toBe(before);
+        const model = normalizeModelProfile(input) as any;
         expect(JSON.stringify(input)).toBe(before);
         expect(model.openrouterProvider).toEqual({ order: ["x"], only: [], ignore: [] });
         expect(input.openrouterProvider).toBe("x");
@@ -361,40 +394,66 @@ describe("normalizeModelPreset", () => {
         expect(Object.keys(preset).sort()).toEqual(
             ["id", ...modelRecordFields.filter((field) => PRESET_DEFAULTS[field] !== undefined)].sort(),
         );
-        for (const field of ["image", ...PROMPT_PRESET_FIELDS]) {
+        for (const field of ["image", ...PROMPT_PRESET_FIELDS, ...MODEL_PROFILE_FIELDS]) {
             expect(Object.hasOwn(preset, field), field).toBe(false);
         }
-        // The unset model fields stay absent, as in the prompt preset.
-        expect(MODEL_PRESET_FIELDS.filter((field) => PRESET_DEFAULTS[field] === undefined).sort()).toEqual([
-            "koboldURL",
-            "proxyCredentialId",
-            "proxyRequestModel",
-        ]);
+        // Every model preset field has a default: the main and sub slots name the default profile (O4).
+        expect(MODEL_PRESET_FIELDS.filter((field) => PRESET_DEFAULTS[field] === undefined)).toEqual([]);
+        expect(preset.mainSlot).toEqual({ profileId: DEFAULT_MODEL_PROFILE_ID });
+        expect(preset.subSlot).toEqual({ profileId: DEFAULT_MODEL_PROFILE_ID });
     });
 
     it("keeps a given name, drops the credentials and the prompt fields, keeps a valid id, and lets options.id win", () => {
-        const preset = normalizeModelPreset({
+        const input = {
             id: "keep-me",
             name: "Model",
             image: "img",
             proxyKey: "pk-leak",
+            proxyCredentialId: "cred-leak",
             openAIKey: "sk-leak",
             temperature: 1,
             mainPrompt: "m",
-            aiModel: "gpt-x",
+            apiType: "api-leak",
+            aiModel: "gpt-leak",
+            mainSlot: { profileId: "main-profile" },
             maxContext: 12,
-        }) as unknown as Record<string, unknown>;
-        expect(preset).toMatchObject({ id: "keep-me", name: "Model", aiModel: "gpt-x", maxContext: 12 });
-        for (const dropped of ["image", "proxyKey", "openAIKey", "temperature", "mainPrompt"]) {
+            credentialId: "cred-1",
+        };
+        const preset = normalizeModelPreset(input) as unknown as Record<string, unknown>;
+        expect(preset).toMatchObject({ id: "keep-me", name: "Model", mainSlot: { profileId: "main-profile" } });
+        // The moved and dropped fields (the model id, the connection fields, the credentials) are not kept.
+        for (const dropped of [
+            "image",
+            "proxyKey",
+            "proxyCredentialId",
+            "openAIKey",
+            "temperature",
+            "mainPrompt",
+            "apiType",
+            "aiModel",
+            "maxContext",
+            "credentialId",
+        ]) {
             expect(Object.hasOwn(preset, dropped), dropped).toBe(false);
         }
         expect(JSON.stringify(preset)).not.toContain("leak");
+        // The profile keeps its connection fields and its key binding, never a secret.
+        const profile = normalizeModelProfile(input) as unknown as Record<string, unknown>;
+        expect(profile).toMatchObject({ id: "keep-me", name: "Model", maxContext: 12, credentialId: "cred-1" });
+        for (const dropped of ["image", "proxyKey", "proxyCredentialId", "openAIKey", "temperature", "mainSlot"]) {
+            expect(Object.hasOwn(profile, dropped), dropped).toBe(false);
+        }
+        expect(JSON.stringify(profile)).not.toContain("leak");
         expect(normalizeModelPreset({ id: "keep-me" }, { id: "override" }).id).toBe("override");
         expect(normalizeModelPreset({ id: 42 }).id).toMatch(UUID_V4);
         expect(normalizeModelPreset(null).id).toMatch(UUID_V4);
-        // A wrong kind takes the default; a name that is not a string takes the model default.
-        expect(normalizeModelPreset({ maxContext: "big", name: 5 })).toMatchObject({
-            maxContext: PRESET_DEFAULTS.maxContext,
+        // A wrong kind takes the default (a main slot holds only a profile id); a name that is not a
+        // string takes the model default.
+        expect(
+            normalizeModelPreset({ seperateModelsForAxModels: "yes", mainSlot: { modelId: "bare" }, name: 5 }),
+        ).toMatchObject({
+            seperateModelsForAxModels: false,
+            mainSlot: PRESET_DEFAULTS.mainSlot,
             name: MODEL_PRESET_DEFAULT_NAME,
         });
     });
@@ -402,9 +461,11 @@ describe("normalizeModelPreset", () => {
     it("returns fresh copies of the defaults", () => {
         const a = normalizeModelPreset({});
         const b = normalizeModelPreset({});
-        expect(a.seperateModels).toEqual(b.seperateModels);
-        expect(a.seperateModels).not.toBe(b.seperateModels);
-        expect(a.seperateModels).not.toBe(PRESET_DEFAULTS.seperateModels);
+        expect(a.mainSlot).toEqual(b.mainSlot);
+        expect(a.mainSlot).not.toBe(b.mainSlot);
+        expect(a.mainSlot).not.toBe(PRESET_DEFAULTS.mainSlot);
+        expect(a.auxSlots).not.toBe(b.auxSlots);
+        expect(a.auxSlots).not.toBe(PRESET_DEFAULTS.auxSlots);
     });
 });
 
@@ -415,7 +476,7 @@ describe("normalizeModelPresets", () => {
             expect(presets).toHaveLength(1);
             expect(presets[0].id).toMatch(UUID_V4);
             expect(presets[0].name).toBe(MODEL_PRESET_DEFAULT_NAME);
-            expect(presets[0].maxContext).toBe(PRESET_DEFAULTS.maxContext);
+            expect(presets[0].mainSlot).toEqual({ profileId: DEFAULT_MODEL_PROFILE_ID });
         }
     });
 
@@ -519,7 +580,8 @@ describe("ids", () => {
 
 // The partition (slice 2 "Proposed decisions", plan amendments A2 and A3; slices 5 and 6 forwarded
 // the whole root; the preset split, `docs/plan/split-preset.md`, gave the root preset keys two
-// owners): the five sections, the thirteen collections with their two selection fields, the
+// owners, and the model profiles, `docs/plan/model-profiles.md`, a third): the five sections, the
+// fifteen collections with their two selection fields, the
 // forwarded root keys (served by the client forwarding layer, never stored), the dropped fields, and
 // the Phase 1 fields cover `keyof Database` exactly once. The type-level half below is checked by
 // `pnpm check`; the runtime half checks the counts derived from the lists and the keys the
@@ -532,13 +594,18 @@ type PresetRootName<F extends PresetField> = F extends "NAISettings"
       : F extends "regex"
         ? "presetRegex"
         : F;
-type ForwardedPresetKey = {
-    [F in PresetField]: F extends "name" | "image" | "proxyKey" ? never : PresetRootName<F>;
-}[PresetField];
+type ForwardedPresetKey = { [F in PromptPresetField]: PresetRootName<F> }[PromptPresetField];
+/** The derived model roots: the slots' model ids, the toggle, and the main profile's options. */
+type ForwardedModelKey =
+    | "aiModel"
+    | "subModel"
+    | "seperateModels"
+    | "seperateModelsForAxModels"
+    | Exclude<ModelProfileField, "modelId" | "credentialId">;
 // `FORWARDED_ROOT_KEYS` is typed `keyof Database`, so its members are spelled out here from the
 // lists it is built from.
 type ForwardedRootKey =
-    ForwardedPresetKey | "proxyKey" | keyof typeof PERSONA_ROOT_ALIASES | (typeof SELECTION_KEYS)[number];
+    ForwardedPresetKey | ForwardedModelKey | keyof typeof PERSONA_ROOT_ALIASES | (typeof SELECTION_KEYS)[number];
 type ListedKey =
     | (typeof SECTION_FIELDS)[SectionKind][number]
     | (typeof COLLECTION_FIELDS)[CollectionKind]
@@ -547,14 +614,18 @@ type ListedKey =
     | (typeof DROPPED_FIELDS)[number]
     | (typeof PHASE1_FIELDS)[number];
 type UnlistedDatabaseKey = Exclude<keyof Database, ListedKey>;
-type NotADatabaseKey = Exclude<ListedKey, keyof Database>;
+// `modelCredentials` left `Database` (Model Profiles decision 3) but stays listed as dropped by name.
+type NotADatabaseKey = Exclude<ListedKey, keyof Database | "modelCredentials">;
 // Both resolve to `never` when the lists partition `keyof Database`; a new `Database` field that
 // no list names, or a listed name that is not a `Database` field, fails `pnpm check` here.
 const everyDatabaseKeyIsListed: [UnlistedDatabaseKey] extends [never] ? true : false = true;
 const everyListedKeyIsADatabaseKey: [NotADatabaseKey] extends [never] ? true : false = true;
-// The two owners partition the schema at the type level too: a field of both, or of neither, is `never`.
-type OwnedTwice = Extract<ModelPresetField, PromptPresetField>;
-type Unowned = Exclude<PresetField, ModelPresetField | PromptPresetField | "name" | "image">;
+// The three owners partition the schema at the type level too: a field of two, or of none, is `never`.
+type OwnedTwice =
+    | Extract<ModelPresetField, PromptPresetField>
+    | Extract<ModelProfileField, PromptPresetField>
+    | Extract<ModelPresetField, ModelProfileField>;
+type Unowned = Exclude<PresetField, ModelPresetField | ModelProfileField | PromptPresetField | "name" | "image">;
 const noFieldIsOwnedTwice: [OwnedTwice] extends [never] ? true : false = true;
 const everyFieldIsOwned: [Unowned] extends [never] ? true : false = true;
 
@@ -598,16 +669,17 @@ describe("field-to-resource partition", () => {
         expect(unlisted).toEqual([]);
     });
 
-    it("splits the schema between the two owners: disjoint, exhaustive, in schema order, the design's model table exactly", () => {
+    it("splits the schema between the three owners: disjoint, exhaustive, in schema order, the design's model and profile tables exactly", () => {
         // `name` and `image` are the records' own; every other field has exactly one owner.
         expect(PRESET_RECORD_FIELDS).toEqual(["name", "image"]);
-        const owned = [...MODEL_PRESET_FIELDS, ...PROMPT_PRESET_FIELDS];
+        const owned = [...MODEL_PRESET_FIELDS, ...MODEL_PROFILE_FIELDS, ...PROMPT_PRESET_FIELDS];
         expect(new Set(owned).size).toBe(owned.length);
         expect([...owned, ...PRESET_RECORD_FIELDS].sort()).toEqual([...PRESET_FIELDS].sort());
         expect(PROMPT_PRESET_FIELDS).toEqual(
             PRESET_FIELDS.filter(
                 (field) =>
                     !(MODEL_PRESET_FIELDS as readonly string[]).includes(field) &&
+                    !(MODEL_PROFILE_FIELDS as readonly string[]).includes(field) &&
                     field !== "name" &&
                     field !== "image",
             ),
@@ -618,27 +690,34 @@ describe("field-to-resource partition", () => {
                 expect(owner, field).toBeUndefined();
             } else {
                 expect(owner, field).toBe(
-                    (MODEL_PRESET_FIELDS as readonly string[]).includes(field) ? "model" : "prompt",
+                    (MODEL_PRESET_FIELDS as readonly string[]).includes(field)
+                        ? "model"
+                        : (MODEL_PROFILE_FIELDS as readonly string[]).includes(field)
+                          ? "profile"
+                          : "prompt",
                 );
             }
         }
-        // The model table of `docs/plan/split-preset.md` ("Field partition", "Decided placements").
+        // The field partition of `docs/plan/model-profiles.md` ("Data model"): the model preset holds
+        // the slot choices and the toggle; the profile the definition, the key binding, the connection,
+        // routing, compatibility, and capacity fields, plus the O7 provider fields.
         expect([...MODEL_PRESET_FIELDS].sort()).toEqual(
+            ["mainSlot", "subSlot", "auxSlots", "seperateModelsForAxModels"].sort(),
+        );
+        expect([...MODEL_PROFILE_FIELDS].sort()).toEqual(
             [
-                "aiModel",
-                "subModel",
-                "apiType",
-                "currentPluginProvider",
+                "modelId",
+                "credentialId",
                 "forceReplaceUrl",
                 "customProxyRequestModel",
                 "proxyRequestModel",
-                "proxyCredentialId",
                 "customAPIFormat",
                 "textgenWebUIStreamURL",
                 "textgenWebUIBlockingURL",
                 "koboldURL",
                 "localNetworkMode",
                 "localNetworkTimeoutSec",
+                "currentPluginProvider",
                 "openrouterRequestModel",
                 "openrouterProvider",
                 "useInstructPrompt",
@@ -651,12 +730,26 @@ describe("field-to-resource partition", () => {
                 "outputImageModal",
                 "modelTools",
                 "maxContext",
-                "seperateModelsForAxModels",
-                "seperateModels",
+                "nanogptRequestModel",
+                "nanogptRequestModelName",
+                "nanogptProvider",
+                "ollamaURL",
+                "ollamaModel",
+                "ollamaModelName",
+                "ollamaModelSource",
+                "ollamaInputMode",
+                "ollamaRequestFormat",
+                "ollamaCloudModel",
+                "ollamaCloudModelName",
+                "customTokenizer",
             ].sort(),
         );
+        // The dropped fields (O9, decision 3) and the derived model ids are in no owner.
+        for (const field of ["apiType", "proxyKey", "proxyCredentialId", "aiModel", "subModel", "seperateModels"]) {
+            expect(PRESET_FIELDS as readonly string[], field).not.toContain(field);
+        }
         // The confirmed placements: sampling, reasoning, the JSON schema, and the per-role parameters
-        // are the prompt's; the context window, the system replacements, and the custom flags the model's.
+        // are the prompt's; the context window, the system replacements, and the custom flags the profile's.
         for (const field of [
             "temperature",
             "maxResponse",
@@ -672,15 +765,34 @@ describe("field-to-resource partition", () => {
         ] as const) {
             expect(presetFieldOwner(field), field).toBe("prompt");
         }
-        expect(MODEL_PRESET_FIELDS).toHaveLength(28);
-        expect(PROMPT_PRESET_FIELDS).toHaveLength(PRESET_FIELDS.length - 28 - 2);
+        for (const field of ["maxContext", "systemContentReplacement", "customFlags"] as const) {
+            expect(presetFieldOwner(field), field).toBe("profile");
+        }
+        expect(MODEL_PRESET_FIELDS).toHaveLength(4);
+        expect(MODEL_PROFILE_FIELDS).toHaveLength(36);
+        expect(PROMPT_PRESET_FIELDS).toHaveLength(PRESET_FIELDS.length - 4 - 36 - 2);
     });
 
-    it("derives the forwarded lists from the two owners: 45 prompt keys, 28 model keys, proxyKey, 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
+    it("derives the forwarded lists from the owners: 45 prompt keys, 38 model keys (3 derived model ids, the toggle, 34 profile options), 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
         expect(FORWARDED_PRESET_KEYS).toEqual(PROMPT_PRESET_FIELDS.map((field) => presetToRootName[field] ?? field));
         expect(FORWARDED_PRESET_KEYS).toHaveLength(45);
-        expect(FORWARDED_MODEL_PRESET_KEYS).toEqual([...MODEL_PRESET_FIELDS]);
-        expect(FORWARDED_MODEL_PRESET_KEYS).toHaveLength(28);
+        // The profile's options at root, without its record metadata (`modelId`, `credentialId`).
+        expect(MODEL_PROFILE_ROOT_FIELDS).toEqual(
+            MODEL_PROFILE_FIELDS.filter((field) => field !== "modelId" && field !== "credentialId"),
+        );
+        expect(MODEL_PROFILE_ROOT_FIELDS).toHaveLength(34);
+        expect(FORWARDED_MODEL_PRESET_KEYS).toEqual([
+            "aiModel",
+            "subModel",
+            "seperateModels",
+            "seperateModelsForAxModels",
+            ...MODEL_PROFILE_ROOT_FIELDS,
+        ]);
+        expect(FORWARDED_MODEL_PRESET_KEYS).toHaveLength(38);
+        // The slots and the profile metadata are never forwarded under their stored names.
+        for (const field of ["mainSlot", "subSlot", "auxSlots", "modelId", "credentialId"]) {
+            expect(FORWARDED_ROOT_KEYS as readonly string[], field).not.toContain(field);
+        }
         // The aliases appear under their root names, never their preset names (all three are prompt fields).
         expect(FORWARDED_PRESET_KEYS).toEqual(
             expect.arrayContaining(["NAIsettings", "reasoningEffort", "presetRegex"]),
@@ -703,38 +815,63 @@ describe("field-to-resource partition", () => {
         });
         expect(SELECTION_KEYS).toEqual(["botPresetsId", "selectedPersona", "loreBookPage"]);
         // Slice 6: the persona keys and all three selections are forwarded; no residual root is left.
+        // `proxyKey` is no longer forwarded (O2): it is a dropped field.
         expect(FORWARDED_ROOT_KEYS).toEqual([
             ...FORWARDED_PRESET_KEYS,
             ...FORWARDED_MODEL_PRESET_KEYS,
-            "proxyKey",
             ...PERSONA_ROOT_KEYS,
             ...SELECTION_KEYS,
         ]);
-        expect(FORWARDED_ROOT_KEYS).toHaveLength(45 + 28 + 1 + 4 + 3);
+        expect(FORWARDED_ROOT_KEYS).toHaveLength(45 + 38 + 4 + 3);
+        expect(FORWARDED_ROOT_KEYS).not.toContain("proxyKey");
+        expect(DROPPED_FIELDS).toEqual(expect.arrayContaining(["proxyKey", "apiType", "proxyCredentialId"]));
     });
 
     it("forwardPresetRoots writes every forwarded preset key from its owner, with the owner's defaults, and nothing else", () => {
         const prompt = { id: "p", name: "P", temperature: 7, NAISettings: { starter: "s" }, regex: [{ in: "x" }] };
-        const model = { id: "m", name: "M", aiModel: "model-x", maxContext: 9 };
+        const model = {
+            id: "m",
+            name: "M",
+            mainSlot: { profileId: "main" },
+            subSlot: { profileId: "sub" },
+            auxSlots: { memory: { modelId: "bare-model" }, emotion: { profileId: "gone" } },
+            seperateModelsForAxModels: true,
+        } as unknown as ModelPreset;
+        const profiles = [
+            { id: "main", name: "Main", modelId: "model-x", maxContext: 9 },
+            { id: "sub", name: "Sub", modelId: "model-y", maxContext: 8, forceReplaceUrl: "https://sub" },
+        ] as unknown as ModelProfile[];
         const target: Record<string, unknown> = { untouched: true };
-        forwardPresetRoots(target, prompt, model);
+        forwardPresetRoots(target, prompt, model, profiles);
         expect(target.untouched).toBe(true);
         expect(target.temperature).toBe(7);
         expect(target.NAIsettings).toEqual({ starter: "s" });
         expect(target.presetRegex).toEqual([{ in: "x" }]);
+        // The slots' model ids (a bare slot its own, a dangling or unset one ""), the toggle, and the
+        // main profile's options.
+        expect(target.aiModel).toBe("model-x");
+        expect(target.subModel).toBe("model-y");
+        expect(target.seperateModels).toEqual({ memory: "bare-model", emotion: "", translate: "", otherAx: "" });
+        expect(target.seperateModelsForAxModels).toBe(true);
+        expect(target.maxContext).toBe(9);
+        // A field the owner lacks takes its default (never the sub profile's); a field of another
+        // owner is never read.
+        expect(target.maxResponse).toBe(PRESET_DEFAULTS.maxResponse);
+        expect(target.forceReplaceUrl).toBe(PRESET_DEFAULTS.forceReplaceUrl);
+        forwardPresetRoots(
+            target,
+            { ...prompt, aiModel: "leak", maxContext: 1 },
+            { ...model, temperature: 1, maxContext: 2 } as unknown as ModelPreset,
+            [{ ...profiles[0], temperature: 1 } as unknown as ModelProfile, profiles[1]],
+        );
         expect(target.aiModel).toBe("model-x");
         expect(target.maxContext).toBe(9);
-        // A field the owner lacks takes its default; a field of the other owner is never read.
-        expect(target.maxResponse).toBe(PRESET_DEFAULTS.maxResponse);
-        expect(target.subModel).toBe(PRESET_DEFAULTS.subModel);
-        forwardPresetRoots(target, { ...prompt, aiModel: "leak" }, { ...model, temperature: 1 });
-        expect(target.aiModel).toBe("model-x");
         expect(target.temperature).toBe(7);
         // Every forwarded key is an own key of the target (an unset one as `undefined`), nothing else.
         expect(Object.keys(target).sort()).toEqual(
             ["untouched", ...FORWARDED_PRESET_KEYS, ...FORWARDED_MODEL_PRESET_KEYS].sort(),
         );
-        for (const key of ["name", "image", "id", "proxyKey"]) {
+        for (const key of ["name", "image", "id", "proxyKey", "mainSlot", "subSlot", "auxSlots", "modelId"]) {
             expect(Object.hasOwn(target, key), key).toBe(false);
         }
     });
@@ -745,8 +882,12 @@ describe("field-to-resource partition", () => {
         // fallback models were removed afterwards: they are in no section and no preset.
         for (const field of ["seperateModels", "seperateModelsForAxModels"]) {
             expect(SECTION_FIELDS.providers as readonly string[], field).not.toContain(field);
-            expect(presetFieldOwner(field as PresetField), field).toBe("model");
         }
+        // The toggle is the model preset's; the auxiliary model ids are derived from its slots (Model
+        // Profiles "Compatibility"), forwarded but never stored.
+        expect(presetFieldOwner("seperateModelsForAxModels")).toBe("model");
+        expect(PRESET_FIELDS as readonly string[]).not.toContain("seperateModels");
+        expect(FORWARDED_MODEL_PRESET_KEYS as readonly string[]).toContain("seperateModels");
         for (const field of ["fallbackModels", "fallbackWhenBlankResponse"]) {
             expect(union, field).not.toContain(field);
             expect(PRESET_FIELDS as readonly string[], field).not.toContain(field);
@@ -768,13 +909,15 @@ describe("field-to-resource partition", () => {
         expect(COLLECTION_FIELDS.statics).toBe("statics");
     });
 
-    it("lists five sections and fourteen collections, two of them with a selection field, modelPresets among them", () => {
+    it("lists five sections and fifteen collections, two of them with a selection field, modelPresets and modelProfiles among them", () => {
         expect(Object.keys(SECTION_KIND)).toHaveLength(5);
         expect(Object.keys(SECTION_FIELDS).sort()).toEqual(Object.keys(SECTION_KIND).sort());
-        expect(Object.keys(COLLECTION_KIND)).toHaveLength(14);
+        expect(Object.keys(COLLECTION_KIND)).toHaveLength(15);
         expect(Object.keys(COLLECTION_FIELDS).sort()).toEqual(Object.keys(COLLECTION_KIND).sort());
         expect(COLLECTION_KIND.modelPresets).toBe("modelPresets");
         expect(COLLECTION_FIELDS.modelPresets).toBe("modelPresets");
+        expect(COLLECTION_KIND.modelProfiles).toBe("modelProfiles");
+        expect(COLLECTION_FIELDS.modelProfiles).toBe("modelProfiles");
         expect(COLLECTION_SELECTION_FIELDS).toEqual({
             translatorPresets: "translatorPresetId",
             hypaV3Presets: "hypaV3PresetId",
@@ -787,11 +930,11 @@ describe("field-to-resource partition", () => {
 // Slice 5 (`forwarding-presets-and-selection.md`, "Missing and null values"): the normalizers keep an
 // explicit `null` only where it is a value the readers handle (`PRESET_NULLABLE_FIELDS`); any other
 // `null` gets the default, as `setPreset` gave the root working copy before Phase 3 (the former
-// keep-on-switch `null` marker went with the split). The server `presets` and `modelPresets`
-// normalizers run the same functions, so a cleared number comes back as its default after a reload.
+// keep-on-switch `null` marker went with the split). The server `presets`, `modelPresets`, and
+// `modelProfiles` normalizers run the same functions, so a cleared number comes back as its default after a reload.
 // This replaces slice 2's rule, which kept every `null` (Astra challenge point 4).
 describe("null canonicalization", () => {
-    it("lists the nullable fields as preset fields of either owner", () => {
+    it("lists the nullable fields as schema fields of their owners", () => {
         expect(PRESET_NULLABLE_FIELDS).toEqual([
             "promptTemplate",
             "NAIadventure",
@@ -807,12 +950,13 @@ describe("null canonicalization", () => {
         for (const field of PRESET_NULLABLE_FIELDS) {
             expect(PRESET_FIELDS, field).toContain(field);
         }
-        expect(PRESET_NULLABLE_FIELDS.filter((field) => presetFieldOwner(field) === "model")).toEqual([
+        expect(PRESET_NULLABLE_FIELDS.filter((field) => presetFieldOwner(field) === "profile")).toEqual([
             "openrouterProvider",
         ]);
+        expect(PRESET_NULLABLE_FIELDS.filter((field) => presetFieldOwner(field) === "model")).toEqual([]);
     });
 
-    it("keeps a null in a nullable field and gives any other null its default, on either record", () => {
+    it("keeps a null in a nullable field and gives any other null its default, on every record", () => {
         const nulls = {
             id: "nulls",
             // Nullable: kept.
@@ -825,7 +969,9 @@ describe("null canonicalization", () => {
             dynamicOutput: null,
             NAIadventure: null,
             // Anything else: the default, scalars and containers alike.
-            seperateModels: null,
+            auxSlots: null,
+            mainSlot: null,
+            seperateModelsForAxModels: null,
             maxResponse: null,
             temperature: null,
             mainPrompt: null,
@@ -853,25 +999,28 @@ describe("null canonicalization", () => {
         expect(preset.NAISettings).toEqual(PRESET_DEFAULTS.NAISettings);
 
         const model = normalizeModelPreset(nulls) as unknown as Record<string, unknown>;
-        expect(model.openrouterProvider).toBeNull();
-        expect(model.seperateModels).toEqual(PRESET_DEFAULTS.seperateModels);
-        expect(model.maxContext).toBe(PRESET_DEFAULTS.maxContext);
-        expect(model.systemContentReplacement).toBe("system: {{slot}}");
-        expect(model.JinjaTemplate).toBe("");
+        expect(model.auxSlots).toEqual(PRESET_DEFAULTS.auxSlots);
+        expect(model.mainSlot).toEqual(PRESET_DEFAULTS.mainSlot);
+        expect(model.seperateModelsForAxModels).toBe(false);
+        const profile = normalizeModelProfile(nulls) as unknown as Record<string, unknown>;
+        expect(profile.openrouterProvider).toBeNull();
+        expect(profile.maxContext).toBe(PRESET_DEFAULTS.maxContext);
+        expect(profile.systemContentReplacement).toBe("system: {{slot}}");
+        expect(profile.JinjaTemplate).toBe("");
         // A fresh copy of the default, never the shared default object.
         expect(preset.ooba).not.toBe(defaultOoba);
         expect(preset.promptSettings).not.toBe(PRESET_DEFAULTS.promptSettings);
     });
 
-    it("is what the server presets and modelPresets normalizers store, and a fixed point of itself", async () => {
+    it("is what the server presets, modelPresets, and modelProfiles normalizers store, and a fixed point of itself", async () => {
         // Loaded at run time through a computed specifier, like `storeBackedServer.ts`: the client
         // `tsconfig.json` must not type-check the strict server sources.
-        const { normalizePresetCollection, normalizeModelPresetCollection } = (await import(
-            /* @vite-ignore */ `${"../../../../server/src/data/normalize/"}presets.ts`
-        )) as {
-            normalizePresetCollection: (input: unknown) => Record<string, unknown>[];
-            normalizeModelPresetCollection: (input: unknown) => Record<string, unknown>[];
-        };
+        const { normalizePresetCollection, normalizeModelPresetCollection, normalizeModelProfileCollection } =
+            (await import(/* @vite-ignore */ `${"../../../../server/src/data/normalize/"}presets.ts`)) as {
+                normalizePresetCollection: (input: unknown) => Record<string, unknown>[];
+                normalizeModelPresetCollection: (input: unknown) => Record<string, unknown>[];
+                normalizeModelProfileCollection: (input: unknown) => Record<string, unknown>[];
+            };
         const stored = normalizePresetCollection([{ id: "nulls", maxResponse: null, ooba: null, min_p: null }]);
         expect(stored).toHaveLength(1);
         expect(stored[0].maxResponse).toBe(PRESET_DEFAULTS.maxResponse);
@@ -879,13 +1028,22 @@ describe("null canonicalization", () => {
         expect(stored[0].min_p).toBeNull();
         expect(normalizePresets(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
         const models = normalizeModelPresetCollection([
-            { id: "nulls", maxContext: null, openrouterProvider: null, proxyKey: "leak", temperature: 1 },
+            { id: "nulls", auxSlots: null, maxContext: 5, proxyKey: "leak", temperature: 1 },
         ]);
         expect(models).toHaveLength(1);
-        expect(models[0].maxContext).toBe(PRESET_DEFAULTS.maxContext);
-        expect(models[0].openrouterProvider).toBeNull();
-        expect(Object.hasOwn(models[0], "proxyKey")).toBe(false);
-        expect(Object.hasOwn(models[0], "temperature")).toBe(false);
+        expect(models[0].auxSlots).toEqual(PRESET_DEFAULTS.auxSlots);
+        for (const field of ["maxContext", "proxyKey", "temperature"]) {
+            expect(Object.hasOwn(models[0], field), field).toBe(false);
+        }
         expect(normalizeModelPresets(JSON.parse(JSON.stringify(models)))).toEqual(models);
+        const profiles = normalizeModelProfileCollection([
+            { id: "nulls", maxContext: null, openrouterProvider: null, proxyKey: "leak", temperature: 1 },
+        ]);
+        expect(profiles).toHaveLength(1);
+        expect(profiles[0].maxContext).toBe(PRESET_DEFAULTS.maxContext);
+        expect(profiles[0].openrouterProvider).toBeNull();
+        expect(Object.hasOwn(profiles[0], "proxyKey")).toBe(false);
+        expect(Object.hasOwn(profiles[0], "temperature")).toBe(false);
+        expect(normalizeModelProfiles(JSON.parse(JSON.stringify(profiles)))).toEqual(profiles);
     });
 });

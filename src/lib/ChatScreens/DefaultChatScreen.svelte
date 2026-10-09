@@ -1,12 +1,7 @@
 <script lang="ts">
+    import { getModelInfoForMode } from "src/ts/model/modellist";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
-    import {
-        activeModelPreset,
-        settings,
-        activePreset,
-        activePersona,
-        currentPersonaRecord,
-    } from "src/ts/storage/settingsViews.svelte";
+    import { settings, activePreset, activePersona, currentPersonaRecord } from "src/ts/storage/settingsViews.svelte";
     import Suggestion from "./Suggestion.svelte";
     import {
         CameraIcon,
@@ -76,6 +71,8 @@
     import Button from "../UI/GUI/Button.svelte";
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
     import { getAdditionalChatLoadPages, getInitialChatLoadPages } from "src/ts/chatLoadPages";
+
+    const subModel = $derived(getModelInfoForMode("submodel").id);
 
     const loadPlaygroundMenu = () => import("../Playground/PlaygroundMenu.svelte").then((m) => m.default);
 
@@ -939,9 +936,7 @@
                 <Suggestion
                     messageInput={(msg) =>
                         (messageInput =
-                            (activeModelPreset.subModel === "textgen_webui" ||
-                                activeModelPreset.subModel === "mancer" ||
-                                activeModelPreset.subModel.startsWith("local_")) &&
+                            (subModel === "textgen_webui" || subModel === "mancer" || subModel.startsWith("local_")) &&
                             settings.ui.autoSuggestClean
                                 ? msg.replace(/ +\(.+?\) *$| - [^"'*]*?$/, "")
                                 : msg)}

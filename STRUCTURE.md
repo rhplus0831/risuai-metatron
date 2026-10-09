@@ -84,9 +84,11 @@ Data and persistence (details: `docs/structure/persistence.md`)
   collection field gets its default and migration in its server normalizer
   (`server/src/data/normalize/`), never on the client: the client's projection must equal the
   server's normalized text. The flat preset and persona fields (`FORWARDED_ROOT_KEYS`) are served
-  by `activePreset` (the prompt preset), `activeModelPreset` (the model preset), and `activePersona`,
-  and by root name (`readSettingsRoot`/`writeSettingsRoot`) from the selected preset that owns the
-  field or the selected persona (`settingsViews.svelte.ts`); write them synchronously (a value
+  by `activePreset` (the prompt preset), `activeModelPreset` (the model preset's slots),
+  `activeMainProfile`/`profileForSlot` (a model profile), and `activePersona`, and by root name
+  (`readSettingsRoot`/`writeSettingsRoot`) from the selected preset that owns the field, the main
+  slot's profile, or the selected persona (`settingsViews.svelte.ts`); `aiModel`, `subModel`, and
+  `seperateModels` are derived model ids, never stored (`docs/plan/model-profiles.md`); write them synchronously (a value
   copied back from an `$effect` can land after a switch). The boot installs the records as the
   server sent them (`initializeRecords`) and does not normalize. Chat and message fields
   are the exception: they are stored as the client sends them (the server normalizer in
@@ -233,11 +235,12 @@ targeted path to read them.
 | Module (`RisuModule`, `.risum`)        | Bundle of lorebook/regex/trigger/assets/MCP, enabled globally, per chat, per character, or via a persona          | characters-modules |
 | Persona                                | User identity (name/icon/prompt), optionally with an embedded module                                              | characters-modules |
 | Prompt / model preset (`.risup`)       | Prompt preset (`botPreset`, `.risup`) and model preset (`ModelPreset`, no file), selected independently           | settings-i18n      |
+| Model profile (`modelProfiles`)        | One way to use a model: model id, named key, connection and compatibility options; a model preset slot names one  | llm-requests       |
 | Inlay                                  | Image/media stored on the server (`inlays` resource + asset) and referenced in chat text as `{{inlay::id}}`       | chat-pipeline      |
 | Asset                                  | Card media stored as `assets/<hash>.<ext>` through `saveAsset`, referenced by path                                | global-api         |
 | SupaMemory / HypaV2 / HypaV3 / Hanurai | Long-term memory and summarization algorithms                                                                     | memory             |
-| Aux model / submodel                   | Secondary model for memory/emotion/translate/`otherAx`, selected via `seperateModels`                             | llm-requests       |
-| Named API key (`credentials`)          | A user-named key (value in `llmSecrets.credentials`) a model binds to; no binding uses the default key            | llm-requests       |
+| Aux model / submodel                   | Secondary model for memory/emotion/translate/`otherAx`: an auxiliary slot's profile, else the sub slot's          | llm-requests       |
+| Named API key (`credentials`)          | A user-named key (value in `llmSecrets.credentials`) a profile binds to; no binding uses the default key          | llm-requests       |
 | Realm / Hub                            | Card browse and download service (`hubURL`, `realm.risuai.net`); Node proxies it via `/hub-proxy` (GET only)      | backup-sync-hub    |
 | Iris                                   | Built-in assistant modal using the RisuAccess MCP tools                                                           | global-api         |
 | Playground                             | Tool screens selected by `PlaygroundStore` (tokenizer, Jinja, subtitles, ...)                                     | media-aux          |

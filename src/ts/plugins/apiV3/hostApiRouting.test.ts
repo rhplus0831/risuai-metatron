@@ -99,12 +99,14 @@ import {
 } from "src/ts/storage/selection.svelte";
 import { readSettingsRoot, selectedPersonaIndex, settings } from "src/ts/storage/settingsViews.svelte";
 import { rootSnapshot } from "src/ts/storage/snapshots.svelte";
-import { installFlatDatabaseWithChats, modelPresetOf } from "src/ts/storage/tests/installFlatDatabase";
+import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 import { executePluginV3 } from "./v3.svelte";
 
 const ui = () => settings.ui as any;
 const preset = (id: string) => settings.presets.find((entry: { id: string }) => entry.id === id) as any;
 const modelPreset = (id: string) => settings.modelPresets.find((entry: { id: string }) => entry.id === id) as any;
+const modelProfile = (id: string) => settings.modelProfiles.find((entry: { id: string }) => entry.id === id) as any;
 /** A plain copy (a Svelte proxy compares differently, and an own `__proto__` key survives JSON). */
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const ids = () => characterList().map((character: any) => character.chaId);
@@ -158,11 +160,15 @@ function liveDatabase(fields: Record<string, unknown> = {}) {
             { id: "a", name: "A" },
             { id: "b", name: "B" },
         ],
-        // The model presets of the same ids (`docs/plan/split-preset.md`), with the model fields the
-        // routed keys write.
+        // The model presets of the same ids (`docs/plan/split-preset.md`), each with its own main
+        // profile (`docs/plan/model-profiles.md`), which the routed profile keys write.
         modelPresets: [
-            modelPresetOf({ id: "a", name: "A", seperateModels: { memory: "" }, seperateModelsForAxModels: false }),
-            modelPresetOf({ id: "b", name: "B", seperateModels: { memory: "" }, seperateModelsForAxModels: false }),
+            normalizeModelPreset({ name: "A", mainSlot: { profileId: "m-a" } }, { id: "a" }),
+            normalizeModelPreset({ name: "B", mainSlot: { profileId: "m-b" } }, { id: "b" }),
+        ],
+        modelProfiles: [
+            normalizeModelProfile({ id: "m-a", name: "A", modelId: "model-a" }),
+            normalizeModelProfile({ id: "m-b", name: "B", modelId: "model-b" }),
         ],
         personas: plain(personas),
         characters: [],
@@ -231,18 +237,35 @@ describe("the routing table: settings keys", () => {
         expect(console.warn).not.toHaveBeenCalled();
     });
 
+    // The model roots plugins may write (Model Profiles O8, through `writeModelRoot`): `maxContext`
+    // lands in the main slot's profile, `seperateModels.<mode>` with no profile of that model id
+    // becomes a bare slot, and `seperateModelsForAxModels` sets the preset toggle.
+    const auxRoot = (memory: string) => ({ memory, translate: "", emotion: "", otherAx: "" });
     it.each([
-        ["maxContext", 1001, 1002],
-        ["seperateModels", { memory: "m1" }, { memory: "m2" }],
-        ["seperateModelsForAxModels", true, false],
+        ["maxContext", 1001, 1002, (id: string) => modelProfile(`m-${id}`).maxContext, (value: any) => value],
+        [
+            "seperateModels",
+            { memory: "m1" },
+            { memory: "m2" },
+            (id: string) => modelPreset(id).auxSlots,
+            (value: any) => ({ memory: { modelId: value.memory } }),
+        ],
+        [
+            "seperateModelsForAxModels",
+            true,
+            false,
+            (id: string) => modelPreset(id).seperateModelsForAxModels,
+            (value: any) => value,
+        ],
     ] as const)(
-        "%s lands in the selected model preset by id, through both setters (docs/plan/split-preset.md)",
-        async (key, lite, full) => {
+        "%s lands in the selected model preset (or its main profile) by id, through both setters (docs/plan/model-profiles.md O8)",
+        async (key, lite, full, stored, storedOf) => {
+            const rootOf = (value: any) => (key === "seperateModels" ? auxRoot(value.memory) : value);
             const api = await makeApi();
             await api.setDatabaseLite({ [key]: lite });
-            expect(plain(modelPreset("a")[key])).toEqual(lite);
-            expect(plain(modelPreset("b")[key])).not.toEqual(lite);
-            expect(plain(readSettingsRoot(key))).toEqual(lite);
+            expect(plain(stored("a"))).toEqual(storedOf(lite));
+            expect(plain(stored("b") ?? null)).not.toEqual(storedOf(lite));
+            expect(plain(readSettingsRoot(key))).toEqual(rootOf(lite));
             expect(settings.presets.every((entry: object) => !(key in entry))).toBe(true);
             expect(settings.pluginStorage).toBeUndefined();
 
@@ -251,9 +274,9 @@ describe("the routing table: settings keys", () => {
             selectPreset("b");
             selectModelPreset("b");
             await api.setDatabase({ [key]: full });
-            expect(plain(modelPreset("b")[key])).toEqual(full);
-            expect(plain(modelPreset("a")[key])).toEqual(lite);
-            expect(plain(readSettingsRoot(key))).toEqual(full);
+            expect(plain(stored("b"))).toEqual(storedOf(full));
+            expect(plain(stored("a"))).toEqual(storedOf(lite));
+            expect(plain(readSettingsRoot(key))).toEqual(rootOf(full));
             expect(console.warn).not.toHaveBeenCalled();
         },
     );
@@ -607,6 +630,108 @@ describe("the per-key contract (A14)", () => {
             /characters are not loaded/,
         );
         expect(console.warn).not.toHaveBeenCalled();
+    });
+});
+
+// `docs/plan/model-profiles.md` O8: plugins see model ids, never profile ids, and a write of a
+// model root changes a slot only when the rules name exactly one target.
+describe("the model roots under the O8 write rules", () => {
+    const settingsWarnings = () =>
+        vi
+            .mocked(console.warn)
+            .mock.calls.map((call) => String(call[0]))
+            .filter((text) => text.startsWith("[Settings] Refused"));
+    /** Model preset `a` with a twin profile of its main model in `memory` and a deleted one in `otherAx`. */
+    function twinDatabase(mainProfileId = "m-a") {
+        liveDatabase({
+            modelPresets: [
+                normalizeModelPreset(
+                    {
+                        name: "A",
+                        mainSlot: { profileId: mainProfileId },
+                        seperateModelsForAxModels: true,
+                        auxSlots: {
+                            memory: { profileId: "twin" },
+                            emotion: { modelId: "gpt-5.5" },
+                            otherAx: { profileId: "gone" },
+                        },
+                    },
+                    { id: "a" },
+                ),
+                normalizeModelPreset({ name: "B", mainSlot: { profileId: "m-b" } }, { id: "b" }),
+            ],
+            modelProfiles: [
+                normalizeModelProfile({ id: "m-a", name: "A", modelId: "model-a", maxContext: 3000 }),
+                normalizeModelProfile({ id: "twin", name: "Twin", modelId: "model-a" }),
+                normalizeModelProfile({ id: "m-b", name: "B", modelId: "model-b" }),
+            ],
+        });
+    }
+
+    it("reads model ids, and a read-modify-write round trip changes no slot (a twin model id, a deleted profile)", async () => {
+        twinDatabase();
+        const api = await makeApi();
+        const keys = ["maxContext", "seperateModels", "seperateModelsForAxModels", "temperature"];
+        const read = await api.getDatabase(keys);
+        expect(read).toMatchObject({
+            maxContext: 3000,
+            seperateModelsForAxModels: true,
+            seperateModels: { memory: "model-a", translate: "", emotion: "gpt-5.5", otherAx: "" },
+        });
+        const before = plain(modelPreset("a"));
+        await api.setDatabaseLite({ ...read, temperature: 55 });
+        await api.setDatabase({ ...read, temperature: 56 });
+        expect(preset("a").temperature).toBe(56);
+        expect(plain(modelPreset("a"))).toEqual(before);
+        expect(modelProfile("m-a").maxContext).toBe(3000);
+        expect(settingsWarnings()).toEqual([]);
+    });
+
+    it("applies each mode by the rules in order: clear, one match, no match (bare), a definition that needs a profile refused", async () => {
+        twinDatabase();
+        const api = await makeApi();
+        await api.setDatabaseLite({
+            seperateModels: { memory: "", translate: "model-b", emotion: "gemini-2.5-flash", otherAx: "reverse_proxy" },
+            temperature: 57,
+        });
+        expect(plain(modelPreset("a").auxSlots)).toEqual({
+            translate: { profileId: "m-b" },
+            emotion: { modelId: "gemini-2.5-flash" },
+            // Refused: the deleted profile stays named, and the other modes and keys still apply.
+            otherAx: { profileId: "gone" },
+        });
+        expect(preset("a").temperature).toBe(57);
+        expect(settingsWarnings()).toEqual([expect.stringContaining("seperateModels.otherAx")]);
+    });
+
+    it("refuses a model id two profiles share, keeping the slot", async () => {
+        twinDatabase();
+        const api = await makeApi();
+        await api.setDatabase({ seperateModels: { translate: "model-a" } });
+        expect(modelPreset("a").auxSlots.translate).toBeUndefined();
+        expect(readSettingsRoot("seperateModels")).toMatchObject({ translate: "" });
+        expect(settingsWarnings()).toEqual([expect.stringContaining("several profiles")]);
+    });
+
+    it("writes maxContext to the main profile, shared by every preset that uses it, and refuses it with no main profile", async () => {
+        twinDatabase();
+        const api = await makeApi();
+        modelPreset("b").mainSlot = { profileId: "m-a" };
+        await api.setDatabaseLite({ maxContext: 4096 });
+        expect(modelProfile("m-a").maxContext).toBe(4096);
+        selectModelPreset("b");
+        expect(readSettingsRoot("maxContext")).toBe(4096);
+
+        twinDatabase("deleted");
+        const fresh = await makeApi();
+        const read = await fresh.getDatabase(["maxContext"]);
+        // Handing back the default the root reads is no change; a changed value has no target.
+        await fresh.setDatabaseLite({ maxContext: read.maxContext, temperature: 58 });
+        expect(settingsWarnings()).toEqual([]);
+        await fresh.setDatabaseLite({ maxContext: 8192, temperature: 59 });
+        expect(preset("a").temperature).toBe(59);
+        expect(readSettingsRoot("maxContext")).toBe(read.maxContext);
+        expect(settingsWarnings()).toEqual([expect.stringContaining("maxContext")]);
     });
 });
 

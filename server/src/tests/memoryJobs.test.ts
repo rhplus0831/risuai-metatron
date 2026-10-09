@@ -132,6 +132,7 @@ let epoch = "";
 let signer: Awaited<ReturnType<typeof createSigner>>;
 let presetId = "";
 let modelPresetId = "";
+let profileId = "";
 let personaId = "";
 const logged: string[] = [];
 
@@ -168,7 +169,6 @@ const SECTION_OF: Record<string, string> = {
     hanuraiSplit: "memoryTranslateMedia",
     hypaCustomSettings: "secrets",
     useStreaming: "providers",
-    customTokenizer: "providers",
     inlayErrorResponse: "providers",
 };
 async function patchSettings(fields: Record<string, unknown>) {
@@ -186,10 +186,10 @@ async function patchSettings(fields: Record<string, unknown>) {
     const res = await batch({ ops });
     expect(res.status, JSON.stringify(res.body).slice(0, 300)).toBe(200);
 }
-/** Patches the selected prompt preset (`presets`) or model preset (`modelPresets`). */
-async function patchPreset(kind: "presets" | "modelPresets", patch: Record<string, unknown>) {
+/** Patches the selected prompt preset (`presets`), model preset (`modelPresets`), or its profile. */
+async function patchPreset(kind: "presets" | "modelPresets" | "modelProfiles", patch: Record<string, unknown>) {
     const current = await single(kind);
-    const target = kind === "presets" ? presetId : modelPresetId;
+    const target = kind === "presets" ? presetId : kind === "modelPresets" ? modelPresetId : profileId;
     const res = await batch({
         ops: [
             {
@@ -416,14 +416,17 @@ beforeAll(async () => {
     ).epoch;
     presetId = (await single("presets")).data[0].id;
     modelPresetId = (await single("modelPresets")).data[0].id;
+    profileId = (await single("modelProfiles")).data[0].id;
     personaId = (await single("personas")).data[0].id;
-    await patchPreset("modelPresets", {
-        aiModel: "reverse_proxy",
-        subModel: "reverse_proxy",
+    // The main and sub slots use one profile: a reverse proxy to the fake provider.
+    await patchPreset("modelProfiles", {
+        modelId: "reverse_proxy",
         maxContext: 900,
         forceReplaceUrl: providerUrl,
         customProxyRequestModel: "m",
+        customTokenizer: "tik",
     });
+    await patchPreset("modelPresets", { mainSlot: { profileId }, subSlot: { profileId } });
     await patchPreset("presets", {
         maxResponse: 100,
         mainPrompt: "Main prompt.",
@@ -432,7 +435,6 @@ beforeAll(async () => {
     });
     await patchSettings({
         useStreaming: true,
-        customTokenizer: "tik",
         ...defaultMemorySettings,
         hypaCustomSettings: { url: embedderUrl, key: EMBED_KEY, model: "emb-model" },
     });
@@ -858,7 +860,7 @@ describe("credentials and the other consumers", () => {
     it(
         "answers a WebLLM model's previewPrompt without inference, as the browser does",
         async () => {
-            await patchPreset("modelPresets", { aiModel: "hf:::Xenova/tiny-random-mistral" });
+            await patchPreset("modelProfiles", { modelId: "hf:::Xenova/tiny-random-mistral" });
             try {
                 const chaId = await seedCharacter({ count: 2, extra: { supaMemory: false } });
                 const { terminal } = await job("previewPrompt", chaId);
@@ -868,7 +870,7 @@ describe("credentials and the other consumers", () => {
                 });
                 expect(upstream).toHaveLength(0);
             } finally {
-                await patchPreset("modelPresets", { aiModel: "reverse_proxy" });
+                await patchPreset("modelProfiles", { modelId: "reverse_proxy" });
             }
         },
         SLOW,

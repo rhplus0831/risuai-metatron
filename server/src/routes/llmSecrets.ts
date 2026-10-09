@@ -1,11 +1,5 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import {
-    maskLlmSecrets,
-    parseSecretPath,
-    readSecret,
-    writeSecret,
-    type SecretPath,
-} from "../../../shared/llmSecrets.ts";
+import { maskLlmSecrets, parseSecretPath, writeSecret, type SecretPath } from "../../../shared/llmSecrets.ts";
 import { RESOURCE_EPOCH_HEADER, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
@@ -17,7 +11,6 @@ import type { AuthStore } from "./auth.ts";
 import { storeErrorResponse } from "./resources.ts";
 
 const PREFIX = "/api/llm-secrets/";
-const COPY_PATH = "/api/llm-secrets/modelPresets/copy";
 /** A credential is text a user pastes; anything larger is refused. */
 const MAX_SECRET_LENGTH = 64 * 1024;
 
@@ -28,8 +21,6 @@ const MAX_SECRET_LENGTH = 64 * 1024;
  * - `PUT /api/llm-secrets/<path>` `{ value, baseRevision }`: sets the credential (an empty value
  *   clears a leaf and removes a map entry);
  * - `DELETE /api/llm-secrets/<path>?baseRevision=`: clears it;
- * - `POST /api/llm-secrets/modelPresets/copy` `{ from, to, baseRevision }`: gives model preset `to` a
- *   copy of model preset `from`'s `proxyKey` entry (or removes `to`'s when `from` has none).
  *
  * JWT, `x-resource-epoch` (412), the maintenance gate (503), the record's revision (409 `{ error,
  * revision }`), 400 for a bad path or value; each answers `{ epoch, revision, data }` with the
@@ -86,31 +77,6 @@ export function registerLlmSecretRoutes(
             return storeErrorResponse(c, error);
         }
     };
-
-    app.post(COPY_PATH, limiter, async (c) => {
-        const denied = await auth.checkAuth(c);
-        if (denied) {
-            return denied;
-        }
-        const read = await readJsonBody(c);
-        if (!read.ok) {
-            return read.response;
-        }
-        const body = read.body;
-        if (
-            !isPlainObject(body) ||
-            typeof body.from !== "string" ||
-            typeof body.to !== "string" ||
-            body.from === "" ||
-            body.to === "" ||
-            typeof body.baseRevision !== "string"
-        ) {
-            return c.json({ error: "Body must be { from, to, baseRevision }" }, 400);
-        }
-        const from: SecretPath = { kind: "entry", field: "modelPresets", id: body.from };
-        const to: SecretPath = { kind: "entry", field: "modelPresets", id: body.to };
-        return update(c, body.baseRevision, (record) => writeSecret(record, to, readSecret(record, from)));
-    });
 
     app.put(`${PREFIX}*`, limiter, async (c) => {
         const denied = await auth.checkAuth(c);

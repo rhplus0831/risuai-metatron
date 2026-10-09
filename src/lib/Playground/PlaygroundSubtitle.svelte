@@ -1,11 +1,11 @@
 <script lang="ts">
-    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { auxFetch } from "src/ts/network/auxFetch";
     import { language } from "src/lang";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
-    import { getModelInfo, LLMFlags } from "src/ts/model/modellist";
+    import { getModelInfoForMode, LLMFlags } from "src/ts/model/modellist";
     import { requestChatData } from "src/ts/process/request/request";
     import { asBuffer, selectFileByDom, selectSingleFile, sleep } from "src/ts/util";
     import { alertError, alertSelect } from "src/ts/alert";
@@ -22,7 +22,7 @@
 
     let selLang = $state(settings.ui.language);
     let prompt = $state(LLMModePrompt);
-    let modelInfo = $derived(getModelInfo(activeModelPreset.aiModel));
+    let modelInfo = $derived(getModelInfoForMode("model"));
     let outputText = $state("");
     let fileB64 = $state("");
     let vttB64 = $state("");

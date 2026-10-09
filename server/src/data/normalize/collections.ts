@@ -82,12 +82,11 @@ export function normalizeCustomModels(input: unknown): Database["customModels"] 
     if (!entries.every((entry) => typeof entry.id === "string" && typeof entry.internalId === "string")) {
         throw new ResourceValidationError("customModels entries need string id and internalId");
     }
-    if (entries.some((entry) => Object.hasOwn(entry, "credentialId") && typeof entry.credentialId !== "string")) {
-        throw new ResourceValidationError("customModels.credentialId must be a string when present");
-    }
-    // A model's key is an `llmSecrets` credential (`customModels.<id>.key`), never stored here: one
-    // in the data (an older client or record) is dropped, not kept readable.
-    return plainClone(entries).map(({ key: _key, ...entry }) => entry) as unknown as Database["customModels"];
+    // Definitions hold neither keys nor bindings: profiles choose named credentials. Drop the
+    // retired fields from an older client or record instead of keeping them readable.
+    return plainClone(entries).map(
+        ({ key: _key, credentialId: _credentialId, ...entry }) => entry,
+    ) as unknown as Database["customModels"];
 }
 
 /** Named credential metadata only; the key is a write-only `llmSecrets.credentials` entry. */

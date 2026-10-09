@@ -5,24 +5,25 @@ import { LLMFormat, LLMProvider } from "../../llm.ts";
 import { credentialSlotOf } from "../credentialSlots.ts";
 import { BASE_LLM_MODELS, resolveModelInfo } from "../models.ts";
 
-// `docs/plan/shared-api-keys.md`, "The credential slot table": which default a model reads today,
-// where its binding lives, and which named key types it accepts.
+// `docs/plan/shared-api-keys.md`, "The credential slot table": which default a model reads today
+// and which named key types it accepts. The binding itself is the profile's `credentialId`
+// (`docs/plan/model-profiles.md`).
 
 const slotOf = (id: string) => credentialSlotOf(id, resolveModelInfo(id));
 const allButVertex = CREDENTIAL_TYPES.filter((type) => type !== "vertex");
 
 describe("credentialSlotOf", () => {
-    it("binds a custom model on its record and a reverse proxy on the model preset, accepting every type but Vertex", () => {
+    it("gives a custom model and a reverse proxy no flat default, accepting every type but Vertex", () => {
+        const noDefault = "No flat default (no key unless a named key is chosen)";
         expect(credentialSlotOf("xcustom:::m1", resolveModelInfo("x"))).toEqual({
             slot: "customModel",
-            binding: "customModel",
             accepts: allButVertex,
-            defaultDescription: "llmSecrets.customModels.xcustom:::m1.key",
+            defaultDescription: noDefault,
         });
-        expect(slotOf("reverse_proxy")).toMatchObject({
+        expect(slotOf("reverse_proxy")).toEqual({
             slot: "reverseProxy",
-            binding: "modelPreset",
             accepts: allButVertex,
+            defaultDescription: noDefault,
         });
     });
 
@@ -32,7 +33,6 @@ describe("credentialSlotOf", () => {
         for (const model of keyed) {
             expect(credentialSlotOf(model.id, model), model.id).toEqual({
                 slot: "keyIdentifier",
-                binding: "global",
                 accepts: ["custom"],
                 defaultDescription: `OaiCompAPIKeys.${model.keyIdentifier}`,
             });
@@ -50,7 +50,7 @@ describe("credentialSlotOf", () => {
             LLMFormat.NanoGPTLegacy,
         ].map((format) => {
             const slot = credentialSlotOf("nanogpt", { ...nano, format });
-            expect(slot).toMatchObject({ slot: "nanogpt", binding: "global", accepts: ["nanogpt", "custom"] });
+            expect(slot).toMatchObject({ slot: "nanogpt", accepts: ["nanogpt", "custom"] });
             return slot!.defaultDescription;
         });
         // Every NanoGPT adapter defaults to the NanoGPT key.
@@ -77,7 +77,6 @@ describe("credentialSlotOf", () => {
             seen.add(model.provider);
             expect(credentialSlotOf(model.id, model), model.id).toMatchObject({
                 slot: expected[0],
-                binding: "global",
                 accepts: expected[1],
             });
         }

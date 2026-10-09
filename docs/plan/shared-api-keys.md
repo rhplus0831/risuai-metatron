@@ -13,11 +13,15 @@ list of named keys, and let each model choose which key it sends. Two goals:
 Confirmed 2026-10-08:
 
 1. **Global binding.** A model id chooses its key once, for every model
-   preset that uses it. No per-preset override in this plan.
+   preset that uses it. No per-preset override in this plan. _Superseded by
+   [Model Profiles](model-profiles.md): the binding is each profile's
+   `credentialId`, and `providers.modelCredentials` is removed._
 2. **The current keys stay as the defaults.** `openAIKey`, `claudeAPIKey`,
    `OaiCompAPIKeys.<id>`, each custom model's own key, and each model preset's
    `proxyKey` are not migrated. A model without a binding sends exactly what
-   it sends today. A binding is an override.
+   it sends today. A binding is an override. _The custom model's own key and
+   `proxyKey` were removed by Model Profiles O2: those two send no key
+   unless a named key is chosen._
 3. **A dangling binding refuses the request.** A binding whose key was
    deleted, has no value, or has the wrong type fails the request
    (`noRetry`, so neither retries nor fallback models run). It is never

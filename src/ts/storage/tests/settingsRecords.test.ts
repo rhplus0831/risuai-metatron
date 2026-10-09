@@ -216,32 +216,42 @@ describe("writes through the views and the records", () => {
 });
 
 describe("entry credentials over the save loop", () => {
-    it("never put a custom model's key or a model preset's proxyKey in a batch: they go to the credential routes after it", async () => {
-        const { fake, sync, settings, record, mirrorText } = await boot();
+    it("refuse a custom model's key and a model preset's or profile's proxyKey: nothing is queued or sent (Model Profiles O2)", async () => {
+        const { fake, sync, settings, record, mirrorText, records } = await boot();
         const SECRET = "sk-entry-SENTINEL";
-        settings.customModels.push({ id: "m1", internalId: "i1", name: "M1", key: `${SECRET}-push` } as any);
-        settings.customModels[0] = { ...plain(settings.customModels[0]), name: "M1b", key: `${SECRET}-element` };
-        settings.customModels = [
-            ...settings.customModels,
-            { id: "m2", internalId: "i2", name: "M2", key: `${SECRET}-list` } as any,
-        ];
-        (settings.modelPresets[0] as Record<string, unknown>).proxyKey = `${SECRET}-proxy`;
+        settings.customModels.push({ id: "m1", internalId: "i1", name: "M1" } as any);
         await sync.flushResources();
-        const sent = JSON.stringify(fake.batchBodies());
-        expect(sent).not.toContain(SECRET);
-        expect(record("customModels")).toEqual([
-            { id: "m1", internalId: "i1", name: "M1b" },
-            { id: "m2", internalId: "i2", name: "M2" },
-        ]);
-        expect(fake.secretRequests().map((request: any) => request.path)).toEqual([
-            "/api/llm-secrets/customModels/~m1/key",
-            "/api/llm-secrets/customModels/~m1/key",
-            "/api/llm-secrets/customModels/~m2/key",
-            `/api/llm-secrets/modelPresets/~${settings.modelPresets[0].id}/proxyKey`,
-        ]);
-        const stored = fake.record("llmSecrets", "main")!.data as any;
-        expect(stored.customModels).toEqual({ m1: { key: `${SECRET}-element` }, m2: { key: `${SECRET}-list` } });
-        expect(stored.modelPresets[settings.modelPresets[0].id]).toEqual({ proxyKey: `${SECRET}-proxy` });
+        fake.requests.length = 0;
+        const { CredentialRefusedError } = records;
+        expect(() =>
+            settings.customModels.push({ id: "m2", internalId: "i2", name: "M2", key: `${SECRET}-push` } as any),
+        ).toThrow(CredentialRefusedError);
+        expect(
+            () =>
+                (settings.customModels[0] = {
+                    ...plain(settings.customModels[0]),
+                    name: "M1b",
+                    key: `${SECRET}-element`,
+                }),
+        ).toThrow(CredentialRefusedError);
+        expect(
+            () =>
+                (settings.customModels = [
+                    ...settings.customModels,
+                    { id: "m2", internalId: "i2", name: "M2", key: `${SECRET}-list` } as any,
+                ]),
+        ).toThrow(CredentialRefusedError);
+        expect(() => ((settings.modelPresets[0] as Record<string, unknown>).proxyKey = `${SECRET}-proxy`)).toThrow(
+            CredentialRefusedError,
+        );
+        expect(() => ((settings.modelProfiles[0] as Record<string, unknown>).proxyKey = `${SECRET}-proxy`)).toThrow(
+            CredentialRefusedError,
+        );
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(0);
+        expect(fake.secretRequests()).toEqual([]);
+        expect(record("customModels")).toEqual([{ id: "m1", internalId: "i1", name: "M1" }]);
+        expect(JSON.stringify(fake.record("llmSecrets", "main")?.data ?? {})).not.toContain(SECRET);
         // The tab holds none of them (the root snapshot and the character list).
         expect(mirrorText()).not.toContain(SECRET);
     });
@@ -368,7 +378,8 @@ describe("bulk writers notify once per record they change", () => {
         const [, p2] = settings.presets.map((preset: any) => preset.id);
         const [, m2] = settings.modelPresets.map((preset: any) => preset.id);
         const notified = countNotifications();
-        // `maxContext` and `seperateModelsForAxModels` are the model preset's (`docs/plan/split-preset.md`).
+        // `seperateModelsForAxModels` is the model preset's (`docs/plan/split-preset.md`); `maxContext` is
+        // the main slot's profile's (`docs/plan/model-profiles.md`).
         collectionStore.updateSettings({
             temperature: 5,
             maxContext: 1234,
@@ -377,7 +388,7 @@ describe("bulk writers notify once per record they change", () => {
             seperateModelsForAxModels: true,
             hypaModel: "m",
         });
-        expect(notified.sort()).toEqual(["memoryTranslateMedia", "modelPresets", "presets", "ui"]);
+        expect(notified.sort()).toEqual(["memoryTranslateMedia", "modelPresets", "modelProfiles", "presets", "ui"]);
         notified.length = 0;
         presets.changeToPreset(p2);
         presets.changeToModelPreset(m2);

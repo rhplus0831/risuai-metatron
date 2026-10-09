@@ -1,7 +1,13 @@
 import { untrack } from "svelte";
 import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { withCompatChats } from "../storage/chatStore.svelte";
-import { forwardedPresetField, readSettingsRoot, settings } from "../storage/settingsViews.svelte";
+import {
+    isForwardedPresetRoot,
+    scopedPresetRoot,
+    readSettingsRoot,
+    settings,
+    type SettingsRootKey,
+} from "../storage/settingsViews.svelte";
 import DOMPurify from "dompurify";
 import markdownit from "markdown-it";
 import {
@@ -27,7 +33,6 @@ import { selectedIndex } from "../storage/selection.svelte";
 import css, { type CssAtRuleAST } from "@adobe/css-tools";
 import { calcString } from "../process/infunctions";
 import { findCharacterbyId, getPersonaPrompt, getUserIcon, getUserName, pickHashRand, replaceAsync } from "../util";
-import { presetFieldOwner, presetFieldValue } from "../../../shared/presets.ts";
 import { PluginTargetGoneError } from "../plugins/apiV3/pluginContext";
 import { getInlayAssetBlob } from "../process/files/inlays";
 import { getModuleAssets, getModuleLorebooks, getModules } from "../process/modules";
@@ -1106,7 +1111,7 @@ const CBS_SETTING_KEYS = [
 function cbsDatabase(presetField?: (rootKey: string) => unknown): CbsDatabase {
     const view = {};
     for (const key of CBS_SETTING_KEYS) {
-        const fromPreset = presetField !== undefined && forwardedPresetField(key) !== undefined;
+        const fromPreset = presetField !== undefined && isForwardedPresetRoot(key);
         Object.defineProperty(view, key, {
             enumerable: true,
             get: fromPreset ? () => presetField(key) : () => readSettingsRoot(key),
@@ -1212,17 +1217,15 @@ export function risuChatParserScoped(
         // parse); the preset fields then read the context's owning preset as it is now. `{{user}}` and
         // the persona prompt come from the host functions below, not from the database.
         const scopedDb = () => {
-            const preset = recordOf(settings.presets, scope.presetId, "preset");
-            const modelPreset = recordOf(settings.modelPresets, scope.modelPresetId, "model preset");
+            recordOf(settings.presets, scope.presetId, "preset");
+            recordOf(settings.modelPresets, scope.modelPresetId, "model preset");
             personaOf();
-            return cbsDatabase((rootKey) => {
-                const field = forwardedPresetField(rootKey)!;
-                return presetFieldValue(presetFieldOwner(field) === "model" ? modelPreset : preset, field);
-            });
+            return cbsDatabase((rootKey) => scopedPresetRoot(scope, rootKey as SettingsRootKey));
         };
         evaluator = createCbsEvaluator({
             ...base,
             getDatabase: scopedDb,
+            getModelInfo: (id) => getModelInfo(id, scope),
             getUserName: () => personaOf().name,
             getPersonaPrompt: () => personaOf().personaPrompt,
         });

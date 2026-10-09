@@ -1,5 +1,18 @@
 <script lang="ts">
-    import { activeModelPreset, settings, activePreset, activePersona } from "src/ts/storage/settingsViews.svelte";
+    import {
+        activeModelPreset,
+        activeMainProfile,
+        settings,
+        activePreset,
+        activePersona,
+    } from "src/ts/storage/settingsViews.svelte";
+    import {
+        addModelProfile,
+        updateModelProfile,
+        setMainModelSlot,
+        setSubModelSlot,
+    } from "src/ts/storage/collectionStore.svelte";
+    import { getModelInfo } from "src/ts/model/modellist";
     import { setSecret } from "src/ts/storage/llmSecrets.svelte";
     import { Send } from "@lucide/svelte";
     import { changeLanguage, language } from "src/lang";
@@ -79,47 +92,54 @@
                 settings.ui.textTheme = "highcontrast";
                 updateTextThemeAndCSS();
 
+                let maxContext = activeMainProfile.maxContext;
                 switch (chatMemorySelection) {
                     case 0: {
-                        activeModelPreset.maxContext = 16000;
+                        maxContext = 16000;
                         activePreset.maxResponse = 1000;
                         break;
                     }
                     case 1: {
-                        activeModelPreset.maxContext = 8000;
+                        maxContext = 8000;
                         activePreset.maxResponse = 500;
                         break;
                     }
                     case 2: {
-                        activeModelPreset.maxContext = 12000;
+                        maxContext = 12000;
                         activePreset.maxResponse = 800;
                         break;
                     }
                     case 3: {
-                        activeModelPreset.maxContext = 100000;
+                        maxContext = 100000;
                         activePreset.maxResponse = 1000;
                         break;
                     }
                 }
 
-                if (provider === "claude") {
-                    activeModelPreset.aiModel = "claude-sonnet-4-6";
-                    activeModelPreset.subModel = "claude-sonnet-4-6";
-                }
-
-                if (provider === "openai") {
-                    activeModelPreset.aiModel = "gpt4o-chatgpt";
-                    activeModelPreset.subModel = "gpt4o-chatgpt";
-                }
-
-                if (provider === "openrouter") {
-                    activeModelPreset.aiModel = "openrouter";
-                    activeModelPreset.subModel = "openrouter";
-                    activeModelPreset.openrouterRequestModel = "risu/free";
-                }
-                if (provider === "horde") {
-                    activeModelPreset.aiModel = "horde:::auto";
-                    activeModelPreset.subModel = "horde:::auto";
+                const modelIds: Record<string, string> = {
+                    claude: "claude-sonnet-4-6",
+                    openai: "gpt4o-chatgpt",
+                    openrouter: "openrouter",
+                    horde: "horde:::auto",
+                };
+                const modelId = modelIds[provider];
+                if (modelId && activeModelPreset.id) {
+                    const matches = settings.modelProfiles.filter((profile) => profile.modelId === modelId);
+                    const profileId =
+                        matches.length === 1
+                            ? matches[0].id
+                            : addModelProfile({
+                                  modelId,
+                                  name: getModelInfo(modelId, undefined, null).name,
+                              });
+                    updateModelProfile(profileId, {
+                        maxContext,
+                        ...(provider === "openrouter" ? { openrouterRequestModel: "risu/free" } : {}),
+                    });
+                    setMainModelSlot(activeModelPreset.id, profileId);
+                    setSubModelSlot(activeModelPreset.id, profileId);
+                } else {
+                    activeMainProfile.maxContext = maxContext;
                 }
                 if (chatLang !== 0) {
                     switch (settings.ui.language) {

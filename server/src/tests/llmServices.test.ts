@@ -115,14 +115,12 @@ describe("the redactor", () => {
         const secrets = collectSecrets({
             openAIKey: "oai",
             claudeAPIKey: "AKIA:secretpart:us-east-1",
-            proxyKey: "proxy",
             google: { accessToken: "goog", projectId: "my-project" },
             hordeConfig: { apiKey: "horde", model: "model-name", softPrompt: "sp" },
             novelai: { token: "nai", model: "clio-v1" },
             vertexClientEmail: "me@gserviceaccount.com",
             vertexPrivateKey: "-----BEGIN PRIVATE KEY-----x",
             OaiCompAPIKeys: { deepseek: "ds" },
-            customModels: [{ key: "ck:part" }],
         } as never);
         expect(secrets).toEqual(
             expect.arrayContaining([
@@ -131,15 +129,11 @@ describe("the redactor", () => {
                 "AKIA",
                 "secretpart",
                 "us-east-1",
-                "proxy",
                 "goog",
                 "horde",
                 "nai",
                 "-----BEGIN PRIVATE KEY-----x",
                 "ds",
-                "ck:part",
-                "ck",
-                "part",
             ]),
         );
         for (const sibling of ["my-project", "model-name", "sp", "clio-v1", "me@gserviceaccount.com"]) {

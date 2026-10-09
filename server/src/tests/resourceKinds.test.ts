@@ -207,8 +207,7 @@ const CASES: KindCase[] = [
             openAIKey: masked(false),
             google: { accessToken: masked(false), projectId: "" },
             OaiCompAPIKeys: {},
-            modelPresets: {},
-            customModels: {},
+            credentials: {},
         }),
         write: { google: { projectId: "proj" } },
         stored: expect.objectContaining({
@@ -244,12 +243,43 @@ const CASES: KindCase[] = [
     // ---- the collections ---------------------------------------------------------------------
     {
         kind: "modelPresets",
-        // Materialized with one default model preset (`docs/plan/split-preset.md`).
-        fresh: [expect.objectContaining({ id: anyString(), name: "New Model Preset", aiModel: anyString() })],
-        // The model fields only: a prompt field and a credential are dropped, a wrong kind takes its default.
-        write: [{ id: "m1", name: "One", maxContext: "big", temperature: 5, proxyKey: "leak-proxy" }],
-        stored: [expect.objectContaining({ id: "m1", name: "One", maxContext: expect.any(Number) })],
-        absent: ["temperature", "proxyKey"],
+        // Materialized with one default model preset whose main and sub slots name the default
+        // profile (`docs/plan/model-profiles.md`, O4).
+        fresh: [
+            expect.objectContaining({
+                id: anyString(),
+                name: "New Model Preset",
+                mainSlot: { profileId: "default" },
+                subSlot: { profileId: "default" },
+            }),
+        ],
+        // The slot choices only: a prompt field, a profile field, a credential, and the old model
+        // ids are dropped; a main slot without a profile tag and a wrong kind take their default.
+        write: [
+            {
+                id: "m1",
+                name: "One",
+                mainSlot: { modelId: "gpt-4o" },
+                auxSlots: { memory: { profileId: "p1" }, bogus: { profileId: "p2" } },
+                seperateModelsForAxModels: "yes",
+                maxContext: 5,
+                aiModel: "gpt-4o",
+                temperature: 5,
+                proxyKey: "leak-proxy",
+                proxyCredentialId: "c1",
+            },
+        ],
+        stored: [
+            {
+                id: "m1",
+                name: "One",
+                mainSlot: { profileId: "default" },
+                subSlot: { profileId: "default" },
+                auxSlots: { memory: { profileId: "p1" } },
+                seperateModelsForAxModels: false,
+            },
+        ],
+        absent: ["temperature", "proxyKey", "proxyCredentialId", "maxContext", "aiModel"],
         forbidden: ["leak-proxy"],
         // A repeated id is re-keyed; an empty list becomes one default again.
         update: [
@@ -263,6 +293,48 @@ const CASES: KindCase[] = [
         },
         invalid: {},
         refused: "modelPresets must be an array of objects",
+    },
+    {
+        kind: "modelProfiles",
+        // Materialized with one default profile (`docs/plan/model-profiles.md`, O4).
+        fresh: [expect.objectContaining({ id: "default", name: "New Model Profile", modelId: anyString() })],
+        // The profile fields only: a prompt field, a slot, and an inline key are dropped (O2), a
+        // wrong kind takes its default.
+        write: [
+            {
+                id: "p1",
+                name: "Opus",
+                modelId: "claude-opus",
+                credentialId: "c1",
+                maxContext: "big",
+                temperature: 5,
+                mainSlot: { profileId: "p1" },
+                proxyKey: "leak-profile-key",
+            },
+        ],
+        stored: [
+            expect.objectContaining({
+                id: "p1",
+                name: "Opus",
+                modelId: "claude-opus",
+                credentialId: "c1",
+                maxContext: expect.any(Number),
+            }),
+        ],
+        absent: ["temperature", "mainSlot", "proxyKey"],
+        forbidden: ["leak-profile-key"],
+        // A repeated id is re-keyed.
+        update: [
+            { id: "p1", name: "Two" },
+            { id: "p1", name: "Three" },
+        ],
+        updated: [expect.objectContaining({ id: "p1", name: "Two" }), expect.objectContaining({ name: "Three" })],
+        checkUpdated: (data) => {
+            expect(data[1].id).not.toBe("p1");
+            expect(data[1].id).toEqual(expect.any(String));
+        },
+        invalid: {},
+        refused: "modelProfiles must be an array of objects",
     },
     {
         kind: "loreBook",
@@ -413,8 +485,8 @@ const CASES: KindCase[] = [
     {
         kind: "customModels",
         fresh: [],
-        // A model's key is an `llmSecrets` credential: one in the record is dropped.
-        write: [{ id: "m1", internalId: "i1", name: "M", key: "secret-model-key" }],
+        // A custom model holds no key or key binding (`docs/plan/model-profiles.md`, O2): either is dropped.
+        write: [{ id: "m1", internalId: "i1", name: "M", key: "secret-model-key", credentialId: "c1" }],
         stored: [{ id: "m1", internalId: "i1", name: "M" }],
         forbidden: ["secret-model-key"],
         update: [],
@@ -670,7 +742,7 @@ describe("every registered kind over the resource routes", () => {
                 kind: "llmSecrets",
                 id: "main",
                 baseRevision: batched.revision,
-                data: { modelPresets: { m1: { proxyKey: "pk-leak-batch" } } },
+                data: { credentials: { c1: { key: "pk-leak-batch" } } },
             },
         ]);
         expect(refusedBatch.status).toBe(400);

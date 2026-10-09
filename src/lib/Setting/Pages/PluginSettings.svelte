@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { activeModelPreset, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { activeMainProfile, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { PlusIcon, TrashIcon, LinkIcon, CodeXmlIcon, PowerIcon, PowerOffIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import { alertConfirm, alertSelect } from "src/ts/alert";
@@ -113,8 +113,8 @@
                 onclick={async () => {
                     const v = await alertConfirm(language.removeConfirm + (plugin.displayName ?? plugin.name));
                     if (v) {
-                        if (activeModelPreset.currentPluginProvider === plugin.name) {
-                            activeModelPreset.currentPluginProvider = "";
+                        if (activeMainProfile.currentPluginProvider === plugin.name) {
+                            activeMainProfile.currentPluginProvider = "";
                         }
                         let plugins = settings.plugins ?? [];
                         plugins.splice(i, 1);

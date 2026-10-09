@@ -867,16 +867,48 @@ export const languageKorean = {
     chatAssumed: "",
     proxyAPIKey: "키/패스워드",
     apiKeys: "API 키 관리",
+    modelProfiles: {
+        title: "모델 정보",
+        description:
+            "모델 정보에는 모델, 이름을 붙인 키, 연결 옵션을 설정합니다. 모델 프리셋에서는 각 슬롯에 사용할 모델 정보를 선택합니다.",
+        add: "모델 정보 추가",
+        copy: "모델 정보 복사",
+        delete: "모델 정보 삭제",
+        newName: "새 모델 정보",
+        copyName: (name: string) => `${name} 복사본`,
+        keepOne: "모델 정보는 최소 하나를 유지해야 합니다.",
+        profileLabel: (name: string, model: string) => `${name} — ${model}`,
+        missingProfile: (id: string) => `모델 정보 없음 (${id})`,
+        missingSlotHint: "이 슬롯의 모델 정보가 삭제되었습니다. 요청을 보내기 전에 다른 모델 정보를 선택해 주세요.",
+        noProfile: (model: string) => `모델 정보 없이 사용 (${model})`,
+        createFromBare: "이 모델의 모델 정보 만들기",
+        useSubProfile: "보조 모델의 모델 정보 사용",
+        auxModes: { memory: "메모리", translate: "번역", emotion: "감정", otherAx: "기타 보조 요청" },
+        deleteConfirm: (name: string, uses: string) =>
+            uses
+                ? `"${name}" 모델 정보를 삭제하시겠습니까?\n\n이 모델 정보를 사용하는 모델 프리셋:\n${uses}\n\n슬롯의 연결은 그대로 남습니다. 다른 모델 정보를 선택할 때까지 해당 요청을 보낼 수 없습니다.`
+                : `"${name}" 모델 정보를 삭제하시겠습니까?`,
+        missingRequest: (mode: string) => `${mode} 슬롯의 모델 정보가 없어 요청을 보낼 수 없습니다.`,
+        requiredRequest: (model: string) => `"${model}" 모델에는 모델 정보가 필요하여 요청을 보낼 수 없습니다.`,
+        defaultKeys: "제공자 기본 키",
+        defaultKeysHint:
+            "이름을 붙인 키를 선택하지 않은 모델 정보는 이 기본 키를 사용합니다. 커스텀 모델과 리버스 프록시는 이름을 붙인 키를 선택하지 않으면 키 없이 요청을 보냅니다.",
+        localNetworkMode: "로컬 네트워크 모드",
+        localNetworkTimeoutSec: "로컬 네트워크 제한 시간 (초)",
+        vertexRegion: "Vertex 지역",
+        responseStreaming: "응답 스트리밍",
+        streamGeminiThoughts: "Gemini 생각 스트리밍",
+    },
     sharedApiKeys: {
         description:
-            "이름을 붙인 키를 관리하고 모델마다 사용할 키를 선택합니다. 연결된 키가 없는 모델은 기본 키를 사용합니다.",
+            "이름을 붙인 키를 관리하고 모델 정보마다 사용할 키를 선택합니다. 연결된 키가 없으면 제공자 기본 키를 사용하며, 커스텀 모델과 리버스 프록시는 키 없이 요청을 보냅니다.",
         addKey: "키 추가",
         deleteKey: "키 삭제",
         unnamedKey: "이름 없는 키",
         missingKey: "키 없음",
         noKeys: "아직 공유 키가 없습니다. 키를 추가한 뒤 새 항목에 키 값을 붙여 넣어 주세요.",
         bindings: "키 연결 목록",
-        noBindings: "공유 키가 연결된 모델이 없습니다. 각 모델은 기본 키를 사용합니다.",
+        noBindings: "이름을 붙인 키를 선택한 모델 정보가 없습니다.",
         removeBinding: "기본 키 사용",
         clientEmail: "Vertex 클라이언트 이메일",
         projectId: "프로젝트 ID",
@@ -889,13 +921,11 @@ export const languageKorean = {
         defaultOption: (label: string) => `기본값 (${label})`,
         deleteConfirm: (name: string, uses: string) =>
             uses
-                ? `"${name}" 키를 삭제하시겠습니까?\n\n이 키를 사용하는 곳:\n${uses}\n\n다른 키를 선택할 때까지 이 모델과 프리셋의 요청을 보낼 수 없습니다.`
+                ? `"${name}" 키를 삭제하시겠습니까?\n\n이 키를 사용하는 곳:\n${uses}\n\n다른 키를 선택할 때까지 이 모델 정보의 요청을 보낼 수 없습니다.`
                 : `"${name}" 키를 삭제하시겠습니까?`,
         usageLabel: (kind: string, name: string) => `${kind}: ${name}`,
         usageKinds: {
-            model: "모델",
-            customModel: "커스텀 모델",
-            modelPreset: "모델 프리셋 (리버스 프록시)",
+            modelProfile: "모델 정보",
         },
         types: {
             openai: "OpenAI",
@@ -924,8 +954,8 @@ export const languageKorean = {
             nanogpt: "NanoGPT 키",
             ollama: "Ollama Cloud 키",
             keyIdentifier: "이 제공자의 키",
-            customModel: "이 모델의 자체 키",
-            reverseProxy: "이 프리셋의 프록시 키",
+            customModel: "키 없이 사용",
+            reverseProxy: "키 없이 사용",
         },
         refused: {
             missing: "선택한 키가 없어 요청을 보낼 수 없습니다. 다른 키나 기본값을 선택해 주세요.",

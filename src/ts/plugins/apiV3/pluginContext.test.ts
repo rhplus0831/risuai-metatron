@@ -205,8 +205,9 @@ import {
     selectPersona,
     selectPreset,
 } from "src/ts/storage/selection.svelte";
-import { activeModelPreset, activePreset, settings } from "src/ts/storage/settingsViews.svelte";
+import { activeMainProfile, activePreset, readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 import { doingChat } from "src/ts/process/index.svelte";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
@@ -223,8 +224,9 @@ vi.stubGlobal("safeStructuredClone", (value: unknown) =>
 );
 
 const preset = (id: string) => settings.presets.find((entry: { id: string }) => entry.id === id) as any;
-/** The model preset of the same id (`installFlatDatabase` splits the fixture's model fields off). */
-const modelPreset = (id: string) => settings.modelPresets.find((entry: { id: string }) => entry.id === id) as any;
+/** The main profile of the model preset `id` (`docs/plan/model-profiles.md`): `m-a` or `m-b`. */
+const mainProfile = (id: string) =>
+    settings.modelProfiles.find((entry: { id: string }) => entry.id === `m-${id}`) as any;
 const characterOf = (chaId: string) => characterList().find((entry: any) => entry?.chaId === chaId) as any;
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const texts = (ref: chatStore.ChatRef) => chatStore.findChat(ref)!.message.map((message) => message.data);
@@ -258,8 +260,16 @@ function liveDatabase() {
     selectPersona("p");
     const raw: Record<string, unknown> = {
         botPresets: [
-            { id: "a", name: "A", temperature: 10, maxContext: 1000 },
-            { id: "b", name: "B", temperature: 20, maxContext: 2000 },
+            { id: "a", name: "A", temperature: 10 },
+            { id: "b", name: "B", temperature: 20 },
+        ],
+        modelPresets: [
+            normalizeModelPreset({ name: "A", mainSlot: { profileId: "m-a" } }, { id: "a" }),
+            normalizeModelPreset({ name: "B", mainSlot: { profileId: "m-b" } }, { id: "b" }),
+        ],
+        modelProfiles: [
+            normalizeModelProfile({ id: "m-a", name: "A", maxContext: 1000 }),
+            normalizeModelProfile({ id: "m-b", name: "B", maxContext: 2000 }),
         ],
         personas: [
             { id: "p", name: "P", icon: "", personaPrompt: "", note: "", largePortrait: false },
@@ -609,14 +619,15 @@ describe("settings inside a hook", () => {
 
         await invokeHook(listener, context, listenerArg);
 
-        // `temperature` is the prompt preset's, `maxContext` the model preset's (`docs/plan/split-preset.md`).
+        // `temperature` is the prompt preset's, `maxContext` the model preset's main profile's
+        // (`docs/plan/split-preset.md`, `docs/plan/model-profiles.md` O8).
         expect(preset("a")).toMatchObject({ temperature: 33 });
         expect(preset("b")).toMatchObject({ temperature: 20 });
-        expect(modelPreset("a")).toMatchObject({ maxContext: 3333 });
-        expect(modelPreset("b")).toMatchObject({ maxContext: 2000 });
+        expect(mainProfile("a")).toMatchObject({ maxContext: 3333 });
+        expect(mainProfile("b")).toMatchObject({ maxContext: 2000 });
         // The views still serve the selected presets; the section key landed in its record.
         expect(activePreset.temperature).toBe(20);
-        expect(activeModelPreset.maxContext).toBe(2000);
+        expect(activeMainProfile.maxContext).toBe(2000);
         expect(settings.ui.theme).toBe("hooked");
         expect(selection.presetId).toBe("b");
         expect(selection.modelPresetId).toBe("b");
@@ -768,15 +779,15 @@ describe("gone targets", () => {
         settings.presets = settings.presets.filter((entry: { id: string }) => entry.id !== "a");
         selectPreset("b");
         selectModelPreset("b");
-        const model = activeModelPreset.aiModel;
+        const model = readSettingsRoot("aiModel");
 
         await invokeHook(listener, context, listenerArg);
 
         expect(settings.ui.theme).toBe("ok");
         expect(plain(settings.pluginStorage)).toEqual({ aiModel: "custom value" });
         // The forwarded `aiModel` of the selected model preset is not what the plugin wrote.
-        expect(activeModelPreset.aiModel).toBe(model);
-        expect(modelPreset("b")).toMatchObject({ aiModel: model, maxContext: 2000 });
+        expect(readSettingsRoot("aiModel")).toBe(model);
+        expect(mainProfile("b")).toMatchObject({ modelId: model, maxContext: 2000 });
         expect(preset("b")).toMatchObject({ temperature: 20 });
         expect(settings.modelPresets.map((entry: { id: string }) => entry.id)).toEqual(["b"]);
         expect(console.warn).not.toHaveBeenCalled();
@@ -830,10 +841,10 @@ describe("the runners", () => {
         grants.value = false;
         const prompts: ((value: boolean) => void)[] = [];
         alerts.confirm.mockImplementation(() => new Promise<boolean>((resolve) => prompts.push(resolve)));
-        // `aiModel` is a model preset field (`docs/plan/split-preset.md`): the request reads it from
-        // the model preset of its captured context, else the selected one.
-        modelPreset("a").aiModel = "pluginmodel:::ctx";
-        modelPreset("b").aiModel = "pluginmodel:::ctx";
+        // `aiModel` is the model id of the model preset's main profile (`docs/plan/model-profiles.md`):
+        // the request reads it from the model preset of its captured context, else the selected one.
+        mainProfile("a").modelId = "pluginmodel:::ctx";
+        mainProfile("b").modelId = "pluginmodel:::ctx";
         const context = capturePluginContext(refB1);
         selectPreset("b");
 
@@ -966,8 +977,8 @@ describe("the host functions that forward the hook's target", () => {
             seen.push(`provider ${where(provider).join("/")} ${temperature} ${arg.prompt_chat[0].content}`);
             return { success: true, content: "reply" };
         });
-        modelPreset("a").aiModel = "pluginmodel:::target";
-        modelPreset("b").aiModel = "pluginmodel:::target";
+        mainProfile("a").modelId = "pluginmodel:::target";
+        mainProfile("b").modelId = "pluginmodel:::target";
         const results: unknown[] = [];
         const listener = await listenerOf(api, async () => {
             results.push(await api.runLLMModel({ mode: "model", messages: [{ role: "user", content: "blocked" }] }));

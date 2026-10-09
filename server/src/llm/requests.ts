@@ -375,10 +375,10 @@ export function createLlmRequests(options: LlmRequestsOptions) {
     /** The `RequestContext` both entries share (`start` for a tab, `runInJob` for a job). */
     function buildContext(p: ContextParts): RequestContext {
         const { db } = p.loaded;
-        const modelInfo = (modelId: string): LLMModel => {
+        const modelInfo: RequestContext["getModelInfo"] = (modelId, profile = db) => {
             const model = resolveModelInfo(modelId, {
-                enableCustomFlags: db.enableCustomFlags,
-                customFlags: db.customFlags,
+                enableCustomFlags: profile.enableCustomFlags,
+                customFlags: profile.customFlags,
                 customModels: db.customModels,
                 extraModels: p.extraModels(modelId),
                 // A job's plugin provider descriptors, returned as registered (the tab's

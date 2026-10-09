@@ -11,7 +11,10 @@ export const chatFormatSettingsItems: SettingItem[] = [
         id: "chatFormat.template",
         type: "select",
         labelKey: "chatFormating",
-        bindKey: "instructChatTemplate",
+        getValue: (ctx) => ctx.modelProfile.instructChatTemplate,
+        setValue: (value, ctx) => {
+            ctx.modelProfile.instructChatTemplate = value;
+        },
         options: {
             selectOptions: [
                 { value: "chatml", label: "ChatML" },
@@ -31,8 +34,11 @@ export const chatFormatSettingsItems: SettingItem[] = [
         id: "chatFormat.jinjaTemplate",
         type: "textarea",
         fallbackLabel: "Jinja Template",
-        bindKey: "JinjaTemplate",
-        condition: (ctx) => ctx.modelPreset.instructChatTemplate === "jinja",
+        getValue: (ctx) => ctx.modelProfile.JinjaTemplate,
+        setValue: (value, ctx) => {
+            ctx.modelProfile.JinjaTemplate = value;
+        },
+        condition: (ctx) => ctx.modelProfile.instructChatTemplate === "jinja",
         keywords: ["jinja", "template", "custom"],
     },
 ];

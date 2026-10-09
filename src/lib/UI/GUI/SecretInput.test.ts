@@ -23,7 +23,8 @@ vi.mock("src/lang", () => ({
 
 import SecretInput from "./SecretInput.svelte";
 
-const presetPath = (id: string): SecretPath => ({ kind: "entry", field: "modelPresets", id });
+// A named key's entry (`credentials`, the one entry map since `docs/plan/model-profiles.md` O2).
+const entryPath = (id: string): SecretPath => ({ kind: "entry", field: "credentials", id });
 const queued = () => llmSecretState.queue.map((op) => op.request);
 
 let target: HTMLElement;
@@ -51,9 +52,7 @@ function render(props: { path: SecretPath; onchange?: () => void }) {
 
 beforeEach(() => {
     llmSecretState.queue.splice(0);
-    setMaskedSecrets(
-        maskLlmSecrets({ openAIKey: "sk-stored-SENTINEL-AAAA", modelPresets: { a: { proxyKey: "pk-a" } } }),
-    );
+    setMaskedSecrets(maskLlmSecrets({ openAIKey: "sk-stored-SENTINEL-AAAA", credentials: { a: { key: "pk-a" } } }));
     target = document.createElement("div");
     document.body.appendChild(target);
 });
@@ -107,28 +106,28 @@ describe("SecretInput", () => {
     });
 
     it("drops the draft when the input is moved to another path, and a clear queues a clear and never the draft", () => {
-        const props = reactiveProps({ path: presetPath("a") as SecretPath });
+        const props = reactiveProps({ path: entryPath("a") as SecretPath });
         const { input, button, status, type } = render(props);
         expect(status()).toBe("Set");
         type("draft-for-a");
-        props.path = presetPath("b");
+        props.path = entryPath("b");
         flushSync();
         expect(input().value).toBe("");
         expect(status()).toBe("Not set");
         expect(button("Clear")).toBeNull();
         expect(queued()).toEqual([]);
 
-        props.path = presetPath("a");
+        props.path = entryPath("a");
         flushSync();
         type("draft-never-sent");
         button("Clear")!.click();
         flushSync();
-        expect(queued()).toEqual([{ kind: "put", path: presetPath("a"), value: "" }]);
+        expect(queued()).toEqual([{ kind: "put", path: entryPath("a"), value: "" }]);
         expect(input().value).toBe("");
         expect(status()).toBe("Not set · saving");
         // Acknowledged by the server (the queue emptied, the masked record replaced): not set, no button.
         llmSecretState.queue.splice(0);
-        setMaskedSecrets(maskLlmSecrets({ openAIKey: "sk-stored-SENTINEL-AAAA", modelPresets: {} }));
+        setMaskedSecrets(maskLlmSecrets({ openAIKey: "sk-stored-SENTINEL-AAAA", credentials: {} }));
         flushSync();
         expect(status()).toBe("Not set");
         expect(button("Clear")).toBeNull();

@@ -1,3 +1,4 @@
+import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for Phase 5 slice 13: the display transform of a chat runs through
 // `POST /api/transform` for a chat with `editdisplay` regex scripts, a Lua `editDisplay` listener
 // that sets a chat variable, and a display trigger (the expected text is checked; since the cutover
@@ -105,6 +106,8 @@ try {
         epoch = ui.epoch ?? epoch;
         const order = (await api("/api/resources/characterOrder/main")).body;
         const presets = (await api("/api/resources/presets/main")).body;
+        const modelPresets = (await api("/api/resources/modelPresets/main")).body;
+        const modelProfiles = (await api("/api/resources/modelProfiles/main")).body;
         const providers = (await api("/api/resources/providers/main")).body;
         const chaId = randomUUID();
         const chatId = randomUUID();
@@ -171,18 +174,19 @@ try {
             method: "POST",
             body: JSON.stringify({
                 ops: [
+                    ...modelFixtureOps({ ...preset, customTokenizer: "tik" }, modelPresets, modelProfiles),
                     { kind: "ui", id: "main", baseRevision: ui.revision, data: { ...ui.data, didFirstSetup: true } },
                     {
                         kind: "presets",
                         id: "main",
                         baseRevision: presets.revision,
-                        data: [preset, ...presets.data.slice(1)],
+                        data: [promptFixture(preset), ...presets.data.slice(1)],
                     },
                     {
                         kind: "providers",
                         id: "main",
                         baseRevision: providers.revision,
-                        data: { ...providers.data, useStreaming: true, customTokenizer: "tik" },
+                        data: { ...providers.data, useStreaming: true },
                     },
                     { kind: "characters", id: chaId, baseRevision: null, data: character },
                     {

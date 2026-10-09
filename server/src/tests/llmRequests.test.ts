@@ -11,7 +11,7 @@ import type {
     ToolDescriptor,
 } from "../../../shared/llm/request.ts";
 import { normalizePersonas } from "../../../shared/personas.ts";
-import { normalizeModelPresets, normalizePresets } from "../../../shared/presets.ts";
+import { normalizeModelPresets, normalizeModelProfiles, normalizePresets } from "../../../shared/presets.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeProviders } from "../data/normalize/providers.ts";
@@ -41,25 +41,42 @@ const PROVIDER = "https://mock.test/v1/chat/completions";
 
 type Records = Record<string, unknown> & { characters?: Record<string, unknown> };
 
-function makeRecords(overrides: { preset?: Record<string, unknown>; secrets?: Record<string, unknown> } = {}): Records {
+/**
+ * The settings records. `overrides.preset` mixes the prompt preset's fields and the profile's
+ * (`aiModel` is its `modelId`): each normalizer keeps its own (`docs/plan/split-preset.md`,
+ * `docs/plan/model-profiles.md`), so the prompt preset `p` and the profile `main` (both slots of
+ * the model preset `m`) split it. A reverse proxy has no flat default key (O2): the `reverse_proxy`
+ * profile binds the named key `proxy` (`overrides.proxyKey`, else `SECRET`) unless the preset
+ * names its own `credentialId`.
+ */
+function makeRecords(
+    overrides: { preset?: Record<string, unknown>; secrets?: Record<string, unknown>; proxyKey?: string } = {},
+): Records {
+    const { aiModel = "reverse_proxy", ...fields } = overrides.preset ?? {};
     return {
         providers: normalizeProviders({}),
-        llmSecrets: normalizeLlmSecrets({ modelPresets: { m: { proxyKey: SECRET } }, ...overrides.secrets }),
+        llmSecrets: normalizeLlmSecrets({
+            credentials: { proxy: { key: overrides.proxyKey ?? SECRET } },
+            ...overrides.secrets,
+        }),
         ui: { autoSuggestPrefix: "" },
         customModels: [],
-        // `overrides.preset` may mix both owners' fields: each normalizer keeps its own
-        // (`docs/plan/split-preset.md`), so the prompt preset `p` and the model preset `m` split it.
+        credentials: [{ id: "proxy", name: "Proxy key", type: "custom" }],
         presets: normalizePresets([{ id: "p", name: "p", ...overrides.preset }]),
-        modelPresets: normalizeModelPresets([
+        modelProfiles: normalizeModelProfiles([
             {
-                id: "m",
-                name: "m",
-                aiModel: "reverse_proxy",
+                id: "main",
+                name: "main",
                 forceReplaceUrl: PROVIDER,
                 customProxyRequestModel: "mock-model",
                 customAPIFormat: LLMFormat.OpenAICompatible,
-                ...overrides.preset,
+                ...(aiModel === "reverse_proxy" && !("credentialId" in fields) ? { credentialId: "proxy" } : {}),
+                ...fields,
+                modelId: aiModel,
             },
+        ]),
+        modelPresets: normalizeModelPresets([
+            { id: "m", name: "m", mainSlot: { profileId: "main" }, subSlot: { profileId: "main" } },
         ]),
         personas: normalizePersonas([
             { id: "u", name: "Uma" },
@@ -267,7 +284,7 @@ afterEach(() => {
 });
 
 describe("a buffered request", () => {
-    it("reads the preset's model and the stored proxy key, logs the upstream call with its credential masked, and answers one result", async () => {
+    it("reads the profile's model and its bound proxy key, logs the upstream call with its credential masked, and answers one result", async () => {
         const { registry, calls } = harness(makeRecords(), () => chat("plain answer"));
         const { events, raw } = await run(registry, body());
         expect(types(events)).toEqual(["accepted", "log", "result"]);
@@ -327,11 +344,10 @@ describe("a buffered request", () => {
     });
 
     it("names the tab's selected character for the prompt and the replying character for Ollama's unstringlize, from the ids sent", async () => {
+        // The Ollama fields are profile fields (`docs/plan/model-profiles.md` O7).
         const records = makeRecords({
-            preset: { aiModel: "ollama-hosted" },
+            preset: { aiModel: "ollama-hosted", ollamaURL: "http://ollama.test", ollamaModel: "llama" },
         });
-        (records.providers as Record<string, unknown>).ollamaURL = "http://ollama.test";
-        (records.providers as Record<string, unknown>).ollamaModel = "llama";
         const realFetch = globalThis.fetch;
         const seen: string[] = [];
         globalThis.fetch = (async (input: string | URL | Request) => {
@@ -660,7 +676,7 @@ describe("the callback leg", () => {
     });
 
     it("keeps the event types, ids, names, and a clean tool record intact with a short stored credential", async () => {
-        const { registry } = harness(makeRecords({ secrets: { modelPresets: { m: { proxyKey: "q7" } } } }), (call) =>
+        const { registry } = harness(makeRecords({ proxyKey: "q7" }), (call) =>
             afterTool(call) ? chat("done") : toolCall("call-1", { value: "input" }),
         );
         const { events } = await run(registry, body({ rememberToolUsage: true }, { tools }), (event, id) => {
@@ -808,9 +824,9 @@ describe("the lifecycle", () => {
     });
 
     it("aborts a local Ollama request with the request (buffered), with no late success and no live entry", async () => {
-        const records = makeRecords({ preset: { aiModel: "ollama-hosted" } });
-        (records.providers as Record<string, unknown>).ollamaURL = "http://ollama.test";
-        (records.providers as Record<string, unknown>).ollamaModel = "llama";
+        const records = makeRecords({
+            preset: { aiModel: "ollama-hosted", ollamaURL: "http://ollama.test", ollamaModel: "llama" },
+        });
         const realFetch = globalThis.fetch;
         let upstreamSignal: AbortSignal | undefined;
         let release!: (response: Response) => void;
@@ -1428,20 +1444,13 @@ describe("a job's plugin provider model (runInJob, slice 11b)", () => {
         options: {
             admitted?: string[];
             registered?: string[];
-            currentPluginProvider?: string;
             formated?: JobRequestSpec["arg"]["formated"];
             toolCalls?: Record<string, ToolCallRecord>;
             signal?: AbortSignal;
         } = {},
     ) {
         const loaded = loadRequestDb(fakeStore(records), kinds, ids);
-        const db = {
-            ...loaded.db,
-            pluginModels: (options.admitted ?? ["prov"]).map(descriptor),
-            ...(options.currentPluginProvider !== undefined
-                ? { currentPluginProvider: options.currentPluginProvider }
-                : {}),
-        };
+        const db = { ...loaded.db, pluginModels: (options.admitted ?? ["prov"]).map(descriptor) };
         const registered = options.registered ?? ["prov"];
         const calls: ProviderCall[] = [];
         const ended: string[] = [];
@@ -1606,10 +1615,11 @@ describe("a job's plugin provider model (runInJob, slice 11b)", () => {
         expect(dynamic.calls).toHaveLength(0);
         await dynamic.registry.dispose();
 
-        const legacy = await startProvider(makeRecords({ preset: { aiModel: "custom" } }), {
-            registered: ["legacy"],
-            currentPluginProvider: "legacy",
-        });
+        // `currentPluginProvider` is a profile field (`docs/plan/model-profiles.md`).
+        const legacy = await startProvider(
+            makeRecords({ preset: { aiModel: "custom", currentPluginProvider: "legacy" } }),
+            { registered: ["legacy"] },
+        );
         expect(legacy.http).toHaveLength(0);
         expect(legacy.call.payload.name).toBe("legacy");
         legacy.call.settle({ outcome: "answered", value: { success: true, content: "legacy text" } });

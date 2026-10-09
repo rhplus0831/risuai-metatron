@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import {
     MODEL_PRESET_FIELDS,
+    MODEL_PROFILE_FIELDS,
     PRESET_FIELDS,
     PRESET_ROOT_ALIASES,
     presetFieldOwner,
@@ -24,15 +25,18 @@ import { StoreBackedServer } from "./storeBackedServer";
 // fresh-boot defaults (see the fixture README). Here the client boots the way `loadData` does against
 // the real server store (`storeBackedServer.ts`: the server normalizers materialize every section
 // and collection, so what `installBootRecords` receives is what a fresh server holds), and the same
-// shape (`rootSnapshot()`, the legacy flat settings with `proxyKey: ""` and the three selection
-// indexes, plus the characters; Phase 6 slice 10) is compared by the rule:
+// shape (`rootSnapshot()`, the legacy flat settings with the three selection indexes, plus the
+// characters; Phase 6 slice 10) is compared by the rule:
 //
 // 1. every root field of the fixture outside `DROPPED_FIELDS` and the selection keys equals the
-//    post-phase value, a forwarded field read through the layer (the model fields through the
-//    selected model preset since the preset split, `docs/plan/split-preset.md`);
+//    post-phase value, a forwarded field read through the layer (the model ids derived from the
+//    selected model preset's slots and the profile fields from its main profile since the model
+//    profiles, `docs/plan/model-profiles.md`);
 // 2. the selected prompt preset equals the fixture's effective root (the root working copy, not
 //    the dormant `botPresets[0]` template payload) through `PRESET_ROOT_ALIASES` for the prompt
-//    fields, and the selected model preset for the model fields, apart from `name` and `image`;
+//    fields, the selected model preset for its toggle, and its main profile for the profile fields
+//    (`modelId` against the root `aiModel`), apart from `name` and `image`; the slots have no root
+//    of their own and are compared in (3);
 // 3. `personas[0]` and `modelPresets[0]` ignoring `id`;
 // 4. the translator and HypaV3 preset lists ignoring ids, with the first item selected;
 // 5. every other collection deep-equal.
@@ -107,6 +111,13 @@ async function bootFresh() {
         snapshot: root as Record<string, any>,
         selected: JSON.parse(JSON.stringify(views.currentPresetRecord())) as Record<string, unknown>,
         selectedModel: JSON.parse(JSON.stringify(views.currentModelPresetRecord())) as Record<string, unknown>,
+        mainProfile: JSON.parse(
+            JSON.stringify(
+                views.settings.modelProfiles.find(
+                    (profile) => profile.id === views.currentModelPresetRecord()?.mainSlot.profileId,
+                ),
+            ),
+        ) as Record<string, unknown>,
         presetCount: views.settings.presets.length as number,
         modelPresetCount: views.settings.modelPresets.length as number,
         records,
@@ -118,7 +129,7 @@ describe("the boot snapshot of a fresh store against the fresh-boot fixture", ()
     it("differs only in ids and the id selections", async () => {
         const booted = await bootFresh();
         try {
-            const { snapshot, selected, selectedModel } = booted;
+            const { snapshot, selected, selectedModel, mainProfile } = booted;
             expect(booted.presetCount).toBe(1);
             expect(booted.modelPresetCount).toBe(1);
 
@@ -158,22 +169,29 @@ describe("the boot snapshot of a fresh store against the fresh-boot fixture", ()
             }
             expect(snapshot.seperateParameters).not.toBeUndefined();
 
-            // (2) The selected prompt and model presets against the fixture's effective root, through
-            // the aliases, each field read from its owner.
+            // (2) The selected prompt preset, model preset, and main profile against the fixture's
+            // effective root, through the aliases, each field read from its owner. The slots have no
+            // root; they are compared with `modelPresets[0]` in (3).
             const rootOf: Record<string, string> = Object.fromEntries(
                 Object.entries(PRESET_ROOT_ALIASES).map(([root, preset]) => [preset, root]),
             );
+            expect(mainProfile).toBeTruthy();
             for (const field of PRESET_FIELDS) {
                 if (field === "name" || field === "image") continue;
-                const rootKey = rootOf[field] ?? field;
-                const record = presetFieldOwner(field) === "model" ? selectedModel : selected;
+                if (field === "mainSlot" || field === "subSlot" || field === "auxSlots") continue;
+                const rootKey = field === "modelId" ? "aiModel" : (rootOf[field] ?? field);
+                const owner = presetFieldOwner(field);
+                const record = owner === "model" ? selectedModel : owner === "profile" ? mainProfile : selected;
                 if (isDeepStrictEqual(fixture[rootKey], record[field])) continue;
                 unexpected.push({ rule: 2, field, rootBefore: fixture[rootKey], presetAfter: record[field] });
             }
-            // The stored shapes are disjoint: the model preset holds no prompt field or image, the
-            // prompt preset no model field.
-            for (const field of MODEL_PRESET_FIELDS) {
+            // The stored shapes are disjoint: the model preset holds no prompt or profile field or
+            // image, the prompt preset no model or profile field.
+            for (const field of [...MODEL_PRESET_FIELDS, ...MODEL_PROFILE_FIELDS]) {
                 expect(Object.hasOwn(selected, field), field).toBe(false);
+            }
+            for (const field of MODEL_PROFILE_FIELDS) {
+                expect(Object.hasOwn(selectedModel, field), field).toBe(false);
             }
             expect(Object.hasOwn(selectedModel, "image")).toBe(false);
             expect(Object.hasOwn(selectedModel, "temperature")).toBe(false);
@@ -191,7 +209,8 @@ describe("the boot snapshot of a fresh store against the fresh-boot fixture", ()
                 expect(snapshot[selectionKey], selectionKey).toBe(snapshot[list][0].id);
             }
 
-            // (5) Every other collection, and the Phase 1 lists, deep-equal.
+            // (5) Every other collection (the one default model profile, whose id is fixed, among them),
+            // and the Phase 1 lists, deep-equal.
             for (const key of Object.values(COLLECTION_FIELDS)) {
                 if (SELECTABLE.includes(key)) continue;
                 expect(snapshot[key], key).toEqual(fixture[key]);
@@ -217,12 +236,12 @@ describe("the boot snapshot of a fresh store against the fresh-boot fixture", ()
                 expect(Object.hasOwn(record, key), key).toBe(false);
             }
             // These fresh-boot fields intentionally remain `undefined` (and therefore absent in JSON).
+            // The profile's `credentialId` is not forwarded to root, and `proxyCredentialId` is dropped.
             expect(absentNowUndefined.filter((key) => !sectionOf.has(key)).sort()).toEqual([
                 "koboldURL",
                 "localStopStrings",
                 "promptPreprocess",
                 "promptTemplate",
-                "proxyCredentialId",
                 "proxyRequestModel",
             ]);
         } finally {

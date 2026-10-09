@@ -4,15 +4,14 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Slice 4 of `docs/plan/split-preset.md`: `botpreset.svelte` lists either preset kind. The model
-// list selects, adds, copies, and removes model presets (their `proxyKey` entries follow through
-// `llmSecrets.svelte.ts`) and never touches the prompt presets; the prompt-only actions (export,
-// import, comparison, the Ctrl+1..9 numbers) stay on the prompt list.
+// list selects, adds, copies, and removes model presets (a copy keeps its profile references; the
+// model preset holds no key since `docs/plan/model-profiles.md` O2) and never touches the prompt
+// presets; the prompt-only actions (export, import, comparison, the Ctrl+1..9 numbers) stay on the
+// prompt list.
 
 const mocks = vi.hoisted(() => ({
     confirm: vi.fn(),
     error: vi.fn(),
-    copySecret: vi.fn(() => 0),
-    deleteSecret: vi.fn(() => 0),
 }));
 
 vi.mock("src/ts/alert", () => ({
@@ -21,11 +20,6 @@ vi.mock("src/ts/alert", () => ({
     alertNormal: vi.fn(),
     alertInput: vi.fn(),
     alertMd: vi.fn(),
-}));
-vi.mock("src/ts/storage/llmSecrets.svelte", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("src/ts/storage/llmSecrets.svelte")>()),
-    copyModelPresetSecret: mocks.copySecret,
-    deleteModelPresetSecret: mocks.deleteSecret,
 }));
 // Reached through `stores.svelte.ts` and the preset functions' import path; nothing under test needs them.
 vi.mock("src/ts/process/modules", () => ({
@@ -37,8 +31,8 @@ vi.mock("src/ts/process/modules", () => ({
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn(), globalFetch: vi.fn() }));
 
-import { MODEL_PRESET_DEFAULT_NAME } from "../../../shared/presets.ts";
-import { settings, activePreset, activeModelPreset } from "src/ts/storage/settingsViews.svelte";
+import { MODEL_PRESET_DEFAULT_NAME, normalizeModelPreset, normalizeModelProfile } from "../../../shared/presets.ts";
+import { settings, activePreset, activeModelPreset, activeMainProfile } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
 import Botpreset from "./botpreset.svelte";
@@ -72,8 +66,12 @@ beforeEach(() => {
             { id: "p2", name: "Prompt Two", temperature: 50 },
         ],
         modelPresets: [
-            { id: "m1", name: "Model One", aiModel: "gpt4o" },
-            { id: "m2", name: "Model Two", aiModel: "claude" },
+            normalizeModelPreset({ name: "Model One", mainSlot: { profileId: "gpt" } }, { id: "m1" }),
+            normalizeModelPreset({ name: "Model Two", mainSlot: { profileId: "claude" } }, { id: "m2" }),
+        ],
+        modelProfiles: [
+            normalizeModelProfile({ id: "gpt", name: "GPT", modelId: "gpt4o" }),
+            normalizeModelProfile({ id: "claude", name: "Claude", modelId: "claude" }),
         ],
     } as any);
     selectPreset("p1");
@@ -104,12 +102,12 @@ describe("the model preset list", () => {
         list.rowNamed("Model Two").click();
         flushSync();
         expect(activeModelPreset.id).toBe("m2");
-        expect(activeModelPreset.aiModel).toBe("claude");
+        expect(activeMainProfile.modelId).toBe("claude");
         expect(activePreset.id).toBe("p1");
         expect(list.close).toHaveBeenCalledTimes(1);
     });
 
-    it("adds a default model preset, and copies one with its proxy key entry", () => {
+    it("adds a default model preset, and copies one with its profile references", () => {
         const list = render("model");
         list.icon(list.target, "plus")!.click();
         flushSync();
@@ -123,13 +121,13 @@ describe("the model preset list", () => {
         flushSync();
         const copy = settings.modelPresets[3];
         expect(copy.name).toBe("Model Two Copy");
-        expect(copy.aiModel).toBe("claude");
-        expect(mocks.copySecret).toHaveBeenCalledWith("m2", copy.id);
+        expect(copy.mainSlot).toEqual({ profileId: "claude" });
+        expect(settings.modelProfiles).toHaveLength(2);
         expect(settings.presets).toHaveLength(2);
         expect(list.close).not.toHaveBeenCalled();
     });
 
-    it("removes a model preset after the dialog, reselecting and dropping its key, but never the last one", async () => {
+    it("removes a model preset after the dialog, reselecting, but never the last one", async () => {
         const list = render("model");
         mocks.confirm.mockResolvedValueOnce(true);
         list.icon(list.rowNamed("Model One"), "trash")!.click();
@@ -137,7 +135,6 @@ describe("the model preset list", () => {
         flushSync();
         expect(settings.modelPresets.map((preset) => preset.id)).toEqual(["m2"]);
         expect(activeModelPreset.id).toBe("m2");
-        expect(mocks.deleteSecret).toHaveBeenCalledWith("m1");
         expect(settings.presets).toHaveLength(2);
 
         list.icon(list.rowNamed("Model Two"), "trash")!.click();

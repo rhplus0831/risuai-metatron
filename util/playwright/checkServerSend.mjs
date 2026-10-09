@@ -1,3 +1,4 @@
+import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for Phase 5 slice 9: a send from the chat input runs as a server job against a mock provider (an OpenAI-compatible SSE stream): the
 // browser posts the job with the input and its user message id, the user message and the streamed
 // reply show and are stored, a continue extends the reply, a settings edit made right before a
@@ -121,6 +122,8 @@ try {
         epoch = ui.epoch ?? epoch;
         const order = (await api("/api/resources/characterOrder/main")).body;
         const presets = (await api("/api/resources/presets/main")).body;
+        const modelPresets = (await api("/api/resources/modelPresets/main")).body;
+        const modelProfiles = (await api("/api/resources/modelProfiles/main")).body;
         const providers = (await api("/api/resources/providers/main")).body;
         const chaId = randomUUID();
         const preset = {
@@ -165,6 +168,7 @@ try {
             method: "POST",
             body: JSON.stringify({
                 ops: [
+                    ...modelFixtureOps({ ...preset, customTokenizer: "tik" }, modelPresets, modelProfiles),
                     {
                         kind: "ui",
                         id: "main",
@@ -176,13 +180,13 @@ try {
                         kind: "presets",
                         id: "main",
                         baseRevision: presets.revision,
-                        data: [preset, ...presets.data.slice(1)],
+                        data: [promptFixture(preset), ...presets.data.slice(1)],
                     },
                     {
                         kind: "providers",
                         id: "main",
                         baseRevision: providers.revision,
-                        data: { ...providers.data, useStreaming: true, customTokenizer: "tik" },
+                        data: { ...providers.data, useStreaming: true },
                     },
                     { kind: "characters", id: chaId, baseRevision: null, data: character },
                     {

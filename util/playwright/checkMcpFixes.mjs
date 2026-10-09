@@ -1,3 +1,4 @@
+import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Browser check for Phase 5's Stop D fixes to the MCP clients and graph memory (slice 13d), on the
 // server-job path (the only one since the cutover; the tab client's fixes are pinned by
 // `src/ts/process/mcp/tests/mcplib.test.ts`), against a mock provider
@@ -300,6 +301,17 @@ try {
     epoch = ui.epoch ?? epoch;
     const order = await single("characterOrder");
     const presets = await single("presets");
+    const modelPresets = await single("modelPresets");
+    const modelProfiles = await single("modelProfiles");
+    const preset = {
+        ...presets.data[0],
+        aiModel: "reverse_proxy",
+        subModel: "reverse_proxy",
+        forceReplaceUrl: `${providerBase}/v1/chat/completions`,
+        customProxyRequestModel: "mock",
+        maxContext: 4000,
+        maxResponse: 100,
+    };
     const providers = await single("providers");
     const media = await single("memoryTranslateMedia");
     const modules = await single("modules");
@@ -313,29 +325,19 @@ try {
         method: "POST",
         body: JSON.stringify({
             ops: [
+                ...modelFixtureOps({ ...preset, customTokenizer: "tik" }, modelPresets, modelProfiles),
                 { kind: "ui", id: "main", baseRevision: ui.revision, data: { ...ui.data, didFirstSetup: true } },
                 {
                     kind: "presets",
                     id: "main",
                     baseRevision: presets.revision,
-                    data: [
-                        {
-                            ...presets.data[0],
-                            aiModel: "reverse_proxy",
-                            subModel: "reverse_proxy",
-                            forceReplaceUrl: `${providerBase}/v1/chat/completions`,
-                            customProxyRequestModel: "mock",
-                            maxContext: 4000,
-                            maxResponse: 100,
-                        },
-                        ...presets.data.slice(1),
-                    ],
+                    data: [promptFixture(preset), ...presets.data.slice(1)],
                 },
                 {
                     kind: "providers",
                     id: "main",
                     baseRevision: providers.revision,
-                    data: { ...providers.data, useStreaming: true, customTokenizer: "tik" },
+                    data: { ...providers.data, useStreaming: true },
                 },
                 {
                     kind: "memoryTranslateMedia",

@@ -1,4 +1,5 @@
 import type { LLMModel } from "../../../shared/llm.ts";
+import type { ModelProfile } from "../../../shared/database.ts";
 import type {
     InlaySignature,
     LlmInlayEvent,
@@ -72,8 +73,8 @@ export type RequestContext = {
     intercept: (body: unknown, type: string) => Promise<unknown>;
     /** `supportsInlayImage()`: whether the main model (`db.aiModel`) takes image input. */
     supportsInlayImage: () => boolean;
-    /** `getModelInfo` over the static catalogue and the request's dynamic model. */
-    getModelInfo: (id: string) => LLMModel;
+    /** Catalogue/dynamic resolution with main-profile flags by default, or request-local flags. */
+    getModelInfo: (id: string, profile?: Pick<ModelProfile, "enableCustomFlags" | "customFlags">) => LLMModel;
     /** A Google service-account access token for Vertex, cached on the server. */
     vertexAccessToken: (clientEmail: string, privateKey: string) => Promise<string>;
     /**

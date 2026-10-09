@@ -956,16 +956,53 @@ export const languageEnglish = {
     chatAssumed: "",
     proxyAPIKey: "Key/Password",
     apiKeys: "API Keys",
+    modelProfiles: {
+        title: "Model profiles",
+        description:
+            "Profiles choose a model, a named key, and connection options. Model presets choose a profile for each slot.",
+        add: "Add profile",
+        copy: "Copy profile",
+        delete: "Delete profile",
+        newName: "New Model Profile",
+        copyName: (name: string) => `${name} Copy`,
+        keepOne: "Keep at least one model profile.",
+        profileLabel: (name: string, model: string) => `${name} — ${model}`,
+        missingProfile: (id: string) => `Missing profile (${id})`,
+        missingSlotHint: "This slot's profile was deleted. Choose another profile before sending a request.",
+        noProfile: (model: string) => `No profile (${model})`,
+        createFromBare: "Create profile for this model",
+        useSubProfile: "Use submodel profile",
+        auxModes: {
+            memory: "Memory",
+            translate: "Translations",
+            emotion: "Emotion",
+            otherAx: "Other auxiliary requests",
+        },
+        deleteConfirm: (name: string, uses: string) =>
+            uses
+                ? `Delete profile "${name}"?\n\nUsed by these model presets:\n${uses}\n\nTheir slots will remain missing and requests will be refused until another profile is chosen.`
+                : `Delete profile "${name}"?`,
+        missingRequest: (mode: string) => `Requests are refused because the ${mode} slot's model profile is missing.`,
+        requiredRequest: (model: string) => `Requests are refused because model "${model}" needs a model profile.`,
+        defaultKeys: "Default provider keys",
+        defaultKeysHint:
+            "Profiles without a named key use these defaults. Custom models and reverse proxies send no key unless a named key is chosen.",
+        localNetworkMode: "Local network mode",
+        localNetworkTimeoutSec: "Local network timeout (seconds)",
+        vertexRegion: "Vertex region",
+        responseStreaming: "Response streaming",
+        streamGeminiThoughts: "Stream Gemini thoughts",
+    },
     sharedApiKeys: {
         description:
-            "Manage named keys and choose which key each model uses. Models without a binding use their default key.",
+            "Manage named keys and choose which key each model profile uses. Unbound profiles use the provider default; custom models and reverse proxies send no key.",
         addKey: "Add key",
         deleteKey: "Delete key",
         unnamedKey: "Unnamed key",
         missingKey: "Missing key",
         noKeys: "No shared keys yet. Add a key, then paste its value into the new row.",
         bindings: "Key bindings",
-        noBindings: "No shared key bindings. Models use their default keys.",
+        noBindings: "No model profiles have a named key selected.",
         removeBinding: "Use default key",
         clientEmail: "Vertex client email",
         projectId: "Project ID",
@@ -978,13 +1015,11 @@ export const languageEnglish = {
         defaultOption: (label: string) => `Default (${label})`,
         deleteConfirm: (name: string, uses: string) =>
             uses
-                ? `Delete key "${name}"?\n\nUsed by:\n${uses}\n\nRequests from these models and presets will be refused until another key is chosen.`
+                ? `Delete key "${name}"?\n\nUsed by:\n${uses}\n\nRequests from these profiles will be refused until another key is chosen.`
                 : `Delete key "${name}"?`,
         usageLabel: (kind: string, name: string) => `${kind}: ${name}`,
         usageKinds: {
-            model: "Model",
-            customModel: "Custom model",
-            modelPreset: "Model preset (reverse proxy)",
+            modelProfile: "Model profile",
         },
         types: {
             openai: "OpenAI",
@@ -1013,8 +1048,8 @@ export const languageEnglish = {
             nanogpt: "NanoGPT key",
             ollama: "Ollama Cloud key",
             keyIdentifier: "This provider's key",
-            customModel: "This model's own key",
-            reverseProxy: "This preset's proxy key",
+            customModel: "No key",
+            reverseProxy: "No key",
         },
         refused: {
             missing: "Requests are refused because the selected key is missing. Choose another key or the default.",

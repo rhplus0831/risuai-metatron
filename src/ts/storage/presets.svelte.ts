@@ -19,7 +19,6 @@ import {
 import type { botPreset } from "../../../shared/database.ts";
 import { safeStructuredClone } from "../polyfill";
 import { addPreset } from "./collectionStore.svelte";
-import { copyModelPresetSecret, deleteModelPresetSecret } from "./llmSecrets.svelte";
 import { selectModelPreset, selectPreset, selection } from "./selection.svelte";
 import { currentPresetRecord, settings } from "./settingsViews.svelte";
 
@@ -56,7 +55,7 @@ export function changeToModelPreset(id: string) {
     }
 }
 
-/** Adds a copy of model preset `id` (its `proxyKey` entry too) under a new id. Returns the new id. */
+/** Copies model preset `id` under a new id, keeping its profile references. Returns the new id. */
 export function copyModelPreset(id: string): string | undefined {
     const presets = settings.modelPresets;
     const source = presets?.find((preset) => preset.id === id);
@@ -66,12 +65,11 @@ export function copyModelPreset(id: string): string | undefined {
     const copy = plainClone(source);
     const copyId = newPresetId();
     presets.push(normalizeModelPreset({ ...copy, name: `${copy.name} Copy` }, { id: copyId }));
-    copyModelPresetSecret(id, copyId);
     return copyId;
 }
 
 /**
- * Removes model preset `id` and its `proxyKey` entry. The last model preset is never removed (a
+ * Removes model preset `id`. The last model preset is never removed (a
  * selection always needs a record; returns `false`). Removing the selected one selects the first
  * remaining one, as deleting the selected prompt preset does.
  */
@@ -86,7 +84,6 @@ export function removeModelPreset(id: string): boolean {
     if (next && !presets.some((preset) => preset.id === selection.modelPresetId)) {
         selectModelPreset(next.id);
     }
-    deleteModelPresetSecret(id);
     return true;
 }
 

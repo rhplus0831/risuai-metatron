@@ -32,7 +32,7 @@ const stubs = vi.hoisted(() => ({
     ),
     channelCall: null as { jobId: string; callbackId: string } | null,
     dynamicIds: new Set<string>(),
-    /** Each `getModelInfo` call's arguments: the id and the request's preset scope (P2). */
+    /** Each `getModelInfoForMode` call's arguments: the mode and the request's preset scope (P2). */
     modelInfoCalls: [] as unknown[][],
     db: {
         aiModel: "reverse_proxy",
@@ -48,19 +48,26 @@ const stubs = vi.hoisted(() => ({
 
 vi.mock("src/ts/alert", () => ({ alertError: stubs.alertError }));
 vi.mock("src/ts/globalApi.svelte", () => ({ appendFetchLog: stubs.appendFetchLog }));
-vi.mock("src/ts/model/modellist", () => ({
-    LLMFlags: { hasImageInput: 3 },
-    getModelInfo: (id: string, scope?: unknown) => {
-        stubs.modelInfoCalls.push([id, scope]);
-        return {
-            id,
-            tokenizer: 1,
-            internalID: id === "reverse_proxy" ? undefined : `internal-${id}`,
-            flags: id === "with-images" ? [3] : [],
-        };
-    },
-    isDynamicModel: (id: string) => stubs.dynamicIds.has(id),
-}));
+vi.mock("src/ts/model/modellist", async () => {
+    // The mode's model id is resolved through the real slot routing (`resolveModelSlot`), so the
+    // metadata follows the main profile of the model preset the scope names.
+    const { resolveModelSlot } = await import("src/ts/storage/settingsViews.svelte");
+    const infoOf = (id: string) => ({
+        id,
+        tokenizer: 1,
+        internalID: id === "reverse_proxy" ? undefined : `internal-${id}`,
+        flags: id === "with-images" ? [3] : [],
+    });
+    return {
+        LLMFlags: { hasImageInput: 3 },
+        getModelInfo: (id: string) => infoOf(id),
+        getModelInfoForMode: (mode: string, scope?: { presetId: string; modelPresetId: string }) => {
+            stubs.modelInfoCalls.push([mode, scope]);
+            return infoOf(resolveModelSlot(mode as never, scope as never).modelId ?? "");
+        },
+        isDynamicModel: (id: string) => stubs.dynamicIds.has(id),
+    };
+});
 vi.mock("src/ts/network/channelCallSource", () => ({ activeChannelCall: () => stubs.channelCall }));
 vi.mock("src/ts/network/generationJobs", () => ({ generationClientId: () => "tab-1" }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParserScoped: stubs.parserScoped }));
@@ -106,8 +113,8 @@ vi.mock("../../mcp/mcp", () => ({
 
 import { initializeRecords, takeRecordFields, trackedRecord } from "src/ts/storage/records.svelte";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
-import { activeModelPreset } from "src/ts/storage/settingsViews.svelte";
-import { modelPresetOf, takeRootPresetFields } from "src/ts/storage/tests/installFlatDatabase";
+import { activeMainProfile } from "src/ts/storage/settingsViews.svelte";
+import { normalizeModelPreset, normalizeModelProfile } from "../../../../../shared/presets";
 import { requestServer } from "../transport";
 import {
     assembleChats,
@@ -149,26 +156,34 @@ function assembleFixture(unloaded: readonly string[]) {
 /**
  * The settings installed in the records (as the removed `setDatabaseLite` installed a database;
  * there is no whole-database object since Phase 6 slice 10), since the transport reads them
- * through the record views (Phase 6 slice 7): `stubs.db`'s preset fields in
- * each of the two presets (`installFlatDatabase` would split them; here the model fields go to the
- * model presets of the same ids, `docs/plan/split-preset.md`), its section fields in their sections,
+ * through the record views (Phase 6 slice 7): `stubs.db`'s model fields (`aiModel` as the model id)
+ * in the main profile of each model preset (`profile-<model preset id>`; the model presets share the
+ * prompt presets' ids, `docs/plan/split-preset.md`, `docs/plan/model-profiles.md`), its section fields in their sections,
  * two personas, two characters (the transport reads the selected one, Phase 6 slice 8); preset-1 (both
  * kinds), persona-1, and char-1 selected. `preset-ctx` and the model preset `model-ctx` are the pair a
  * plugin context captures in the cases below: never selected, so a request that carries them proves
  * the capture (a captured preset that does not exist is refused).
  */
 function installSettings() {
-    const raw = { ...stubs.db };
-    const preset = takeRootPresetFields(raw);
+    const { aiModel, currentPluginProvider, customTokenizer, ...raw } = { ...stubs.db };
     raw.botPresets = [
-        { ...preset, id: "preset-1", name: "Preset 1" },
-        { ...preset, id: "preset-2", name: "Preset 2" },
-        { ...preset, id: "preset-ctx", name: "Preset ctx" },
+        { id: "preset-1", name: "Preset 1" },
+        { id: "preset-2", name: "Preset 2" },
+        { id: "preset-ctx", name: "Preset ctx" },
     ];
-    raw.modelPresets = [
-        ...(raw.botPresets as Record<string, unknown>[]).map(modelPresetOf),
-        modelPresetOf({ ...preset, id: "model-ctx", name: "Model ctx" }),
-    ];
+    const modelPresetIds = ["preset-1", "preset-2", "preset-ctx", "model-ctx"];
+    raw.modelPresets = modelPresetIds.map((id) =>
+        normalizeModelPreset({ name: id, mainSlot: { profileId: `profile-${id}` } }, { id }),
+    );
+    raw.modelProfiles = modelPresetIds.map((id) =>
+        normalizeModelProfile({
+            id: `profile-${id}`,
+            name: id,
+            modelId: aiModel,
+            currentPluginProvider,
+            customTokenizer,
+        }),
+    );
     raw.personas = [
         { id: "persona-1", name: "Persona 1" },
         { id: "persona-2", name: "Persona 2" },
@@ -305,7 +320,7 @@ describe("the request body", () => {
         selectModelPreset("preset-2");
         selectPersona("persona-2");
         selectCharacter("char-2");
-        activeModelPreset.aiModel = "with-images";
+        activeMainProfile.modelId = "with-images";
         (tools[0].inputSchema as { type: string }).type = "mutated";
         arg.formated[0].content = "mutated";
         release();
@@ -347,9 +362,7 @@ describe("the request body", () => {
         expect(init.method).toBe("POST");
         expect(init.headers).toMatchObject({ "content-type": "application/json", "x-resource-epoch": "epoch-1" });
         // The main model's flags come from the captured model preset, not the selected one (P2).
-        expect(stubs.modelInfoCalls).toEqual([
-            ["reverse_proxy", { presetId: "preset-ctx", modelPresetId: "model-ctx" }],
-        ]);
+        expect(stubs.modelInfoCalls).toEqual([["model", { presetId: "preset-ctx", modelPresetId: "model-ctx" }]]);
     });
 
     it("refuses, before the flush and the POST, a request whose captured preset or model preset no longer exists", async () => {
@@ -393,8 +406,8 @@ describe("the request body", () => {
     it("falls back to the selection for a request without a chat, sends a dynamic model's descriptor, the active job callback, and the prompt's tool records", async () => {
         stubs.dynamicIds.add("dynamic_google_x");
         stubs.channelCall = { jobId: "job-1", callbackId: "cb-1" };
-        activeModelPreset.aiModel = "with-images";
-        activeModelPreset.currentPluginProvider = "legacy";
+        activeMainProfile.modelId = "with-images";
+        activeMainProfile.currentPluginProvider = "legacy";
         stubs.decodeToolCall.mockImplementation(async (inner) =>
             inner === "id-1name" ? { call: { id: "id-1", name: "name", arg: {} }, response: [] } : undefined,
         );
@@ -436,16 +449,16 @@ describe("the request body", () => {
         expect(body.toolRecords).toEqual({
             "id-1name": { call: { id: "id-1", name: "name", arg: {} }, response: [] },
         });
-        activeModelPreset.currentPluginProvider = "";
+        activeMainProfile.currentPluginProvider = "";
     });
 
     it("tokenizes and names the main model of the request's captured model preset, not the selected one", async () => {
         // A hook captured model preset `preset-2` while `preset-1` is selected (the pair the server
         // receives is the pair the tab decided with, `docs/plan/split-preset.md`).
-        activeModelPreset.aiModel = "reverse_proxy";
+        activeMainProfile.modelId = "reverse_proxy";
         selectModelPreset("preset-2");
-        activeModelPreset.aiModel = "with-images";
-        activeModelPreset.currentPluginProvider = "legacy";
+        activeMainProfile.modelId = "with-images";
+        activeMainProfile.currentPluginProvider = "legacy";
         selectModelPreset("preset-1");
         await requestServer(
             {
@@ -469,7 +482,7 @@ describe("the request body", () => {
             mainModel: { imageInput: true },
             tokenizer: { aiModel: "with-images", currentPluginProvider: "legacy", pluginTokenizer: "llama" },
         });
-        expect(stubs.modelInfoCalls).toEqual([["with-images", { presetId: "preset-1", modelPresetId: "preset-2" }]]);
+        expect(stubs.modelInfoCalls).toEqual([["model", { presetId: "preset-1", modelPresetId: "preset-2" }]]);
     });
 
     it("sends nothing when the flush is refused, or the caller aborted before, during the flush, or during the tool-record read", async () => {

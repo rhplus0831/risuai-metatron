@@ -10,9 +10,6 @@
     import { PlusIcon, TrashIcon, ArrowUp, ArrowDown } from "@lucide/svelte";
     import type { LLMFlags, LLMFormat, LLMTokenizer } from "src/ts/model/types";
     import { v4 } from "uuid";
-    import SecretInput from "src/lib/UI/GUI/SecretInput.svelte";
-    import CredentialSelect from "src/lib/UI/GUI/CredentialSelect.svelte";
-    import { deleteEntrySecret } from "src/ts/storage/llmSecrets.svelte";
 
     let openedModels = $state(new Set<string>());
 
@@ -92,7 +89,7 @@
                         styled="outlined"
                         onclick={(e) => {
                             e.stopPropagation();
-                            // By the captured id: the model's key leaves the server with it.
+                            // Delete the captured definition; profiles that name it keep their model id.
                             const id = model.id;
                             let models = settings.customModels;
                             const at = models.findIndex((entry) => entry.id === id);
@@ -100,7 +97,6 @@
                                 models.splice(at, 1);
                             }
                             settings.customModels = models;
-                            deleteEntrySecret("customModels", id);
                             openedModels.delete(model.id);
                             openedModels = new Set(openedModels);
                         }}
@@ -166,13 +162,6 @@
                         <OptionInput value="17">AWSBedrockClaude</OptionInput>
                         <OptionInput value="18">OpenAIResponseAPI</OptionInput>
                     </SelectInput>
-                    <div class="mt-2">
-                        <CredentialSelect modelId={model.id} bindingTarget="customModel" />
-                    </div>
-                    {#if model.credentialId === undefined}
-                        <span class="text-textcolor">{language.sharedApiKeys.defaults.customModel}</span>
-                        <SecretInput path={{ kind: "entry", field: "customModels", id: model.id }} />
-                    {/if}
                     <span class="text-textcolor">{language.additionalParams}</span>
                     <TextAreaInput
                         bind:value={settings.customModels[index].params}

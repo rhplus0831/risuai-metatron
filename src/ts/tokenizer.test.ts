@@ -1,17 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { activeModelPreset } from "./storage/settingsViews.svelte";
+import { DEFAULT_MODEL_PROFILE_ID, normalizeModelProfile } from "../../shared/presets";
+import { activeMainProfile } from "./storage/settingsViews.svelte";
 import { installFlatDatabase } from "./storage/tests/installFlatDatabase";
 import { encode } from "./tokenizer";
 
 const mocks = vi.hoisted(() => {
     const fixture = {
-        aiModel: "hf:::Xenova/opt-350m",
+        modelId: "hf:::Xenova/opt-350m",
         currentPluginProvider: "",
         customTokenizer: "",
         enableCustomFlags: false,
-        googleClaudeTokenizing: false,
-        useTokenizerCaching: false,
     };
     return { fixture, constructedWith: [] as string[] };
 });
@@ -55,15 +54,22 @@ vi.mock("src/etc/o200k_base.json", () => ({
 }));
 
 // The fixture installed into the records, since the tokenizer reads the settings through the record
-// views (Phase 6 slice 7): its root model fields (`aiModel`, `currentPluginProvider`) become the one
-// model preset's (`docs/plan/split-preset.md`), the others the `providers` section's. A case changes
-// them through the views.
-installFlatDatabase({ ...mocks.fixture }, "tokenizer-preset");
+// views (Phase 6 slice 7): its model fields (`modelId`, `currentPluginProvider`) are the main profile
+// of the one model preset (`docs/plan/model-profiles.md`), the tokenizer toggles the `providers`
+// section's. A case changes them through the views.
+installFlatDatabase(
+    {
+        modelProfiles: [normalizeModelProfile({ ...mocks.fixture }, { id: DEFAULT_MODEL_PROFILE_ID })],
+        googleClaudeTokenizing: false,
+        useTokenizerCaching: false,
+    },
+    "tokenizer-preset",
+);
 
 describe("encode", () => {
     it("tokenizes WebLLM models (LLMTokenizer.Local) with the default tiktoken encoder", async () => {
-        // The installed model preset is what the tokenizer reads (not a default of an absent field).
-        expect(activeModelPreset.aiModel).toBe(mocks.fixture.aiModel);
+        // The installed main profile is what the tokenizer reads (not a default of an absent field).
+        expect(activeMainProfile.modelId).toBe(mocks.fixture.modelId);
         const result = await encode("hi");
 
         expect(Array.from(result)).toEqual([104, 105]);
@@ -74,19 +80,19 @@ describe("encode", () => {
 describe("the routing shared with the server (Phase 5 slice 4)", () => {
     const base = { ...mocks.fixture };
     const restore = () => {
-        activeModelPreset.aiModel = base.aiModel;
-        activeModelPreset.currentPluginProvider = base.currentPluginProvider;
+        activeMainProfile.modelId = base.modelId;
+        activeMainProfile.currentPluginProvider = base.currentPluginProvider;
     };
 
     it("a legacy plugin provider without options counts with o200k_base; a `custom` tokenizer without its function answers [0]", async () => {
         const { pluginHooks } = await import("./plugins/pluginHooks");
         try {
-            activeModelPreset.aiModel = "custom";
-            activeModelPreset.currentPluginProvider = "absent";
+            activeMainProfile.modelId = "custom";
+            activeMainProfile.currentPluginProvider = "absent";
             expect(Array.from(await encode("hi"))).toEqual([104, 105]);
             expect(mocks.constructedWith.at(-1)).toBe("o200k_base");
             pluginHooks.providerOptions.set("p", { tokenizer: "custom" } as any);
-            activeModelPreset.currentPluginProvider = "p";
+            activeMainProfile.currentPluginProvider = "p";
             expect(Array.from(await encode("hi"))).toEqual([0]);
             pluginHooks.providerOptions.set("p", { tokenizer: "custom", tokenizerFunc: async () => [7, 8, 9] } as any);
             expect(Array.from(await encode("hi"))).toEqual([7, 8, 9]);

@@ -1,3 +1,4 @@
+import { modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
 // Measurement for Phase 6 slice 9 (chat projection and lazy loading; `docs/plan/phases/slices/
 // phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`): the chats left the
 // character records for the chat module's own store (9a), and boot reads summaries, a chat loads
@@ -160,6 +161,17 @@ try {
     const ui = await single("ui");
     epoch = ui.epoch ?? epoch;
     const presets = await single("presets");
+    const modelPresets = await single("modelPresets");
+    const modelProfiles = await single("modelProfiles");
+    const preset = {
+        ...presets.data[0],
+        aiModel: "reverse_proxy",
+        subModel: "reverse_proxy",
+        forceReplaceUrl: `${providerBase}/v1/chat/completions`,
+        customProxyRequestModel: "mock",
+        maxContext: 900,
+        maxResponse: 100,
+    };
     const providers = await single("providers");
     const character = (chaId, name) => ({
         chaId,
@@ -198,6 +210,7 @@ try {
         chatId: id,
         baseRevision: null,
         ops: [
+            ...modelFixtureOps({ ...preset, customTokenizer: "tik" }, modelPresets, modelProfiles),
             {
                 op: "create",
                 chat: {
@@ -224,23 +237,13 @@ try {
                     kind: "presets",
                     id: "main",
                     baseRevision: presets.revision,
-                    data: [
-                        {
-                            ...presets.data[0],
-                            aiModel: "reverse_proxy",
-                            subModel: "reverse_proxy",
-                            forceReplaceUrl: `${providerBase}/v1/chat/completions`,
-                            customProxyRequestModel: "mock",
-                            maxContext: 900,
-                            maxResponse: 100,
-                        },
-                    ],
+                    data: [promptFixture(preset)],
                 },
                 {
                     kind: "providers",
                     id: "main",
                     baseRevision: providers.revision,
-                    data: { ...providers.data, useStreaming: true, customTokenizer: "tik" },
+                    data: { ...providers.data, useStreaming: true },
                 },
                 ...characters.map((data) => ({ kind: "characters", id: data.chaId, baseRevision: null, data })),
             ],

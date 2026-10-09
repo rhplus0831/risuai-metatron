@@ -2,14 +2,11 @@
     import { language } from "src/lang";
     import { alertConfirm } from "src/ts/alert";
     import { credentialsUsing, type CredentialUsage } from "src/ts/model/credentials";
-    import { getModelInfo } from "src/ts/model/modellist";
     import {
         addCredential,
         updateCredential,
         deleteCredential,
-        setModelCredential,
-        setCustomModelCredential,
-        setProxyCredential,
+        setProfileCredential,
     } from "src/ts/storage/collectionStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { CREDENTIAL_TYPES, type CredentialType } from "../../../../shared/database.ts";
@@ -27,30 +24,16 @@
     let keyList: HTMLDivElement;
 
     const credentials = $derived(settings.credentials ?? []);
-    const bindings = $derived.by(() => {
-        const rows: (CredentialUsage & { credentialId: string })[] = Object.entries(
-            settings.providers.modelCredentials ?? {},
-        ).map(([id, credentialId]) => ({
-            kind: "model",
-            id,
-            name: getModelInfo(id).name,
-            credentialId,
-        }));
-        for (const model of settings.customModels ?? []) {
-            if (model.credentialId !== undefined)
-                rows.push({ kind: "customModel", id: model.id, name: model.name, credentialId: model.credentialId });
-        }
-        for (const preset of settings.modelPresets ?? []) {
-            if (preset.proxyCredentialId !== undefined)
-                rows.push({
-                    kind: "modelPreset",
-                    id: preset.id,
-                    name: preset.name,
-                    credentialId: preset.proxyCredentialId,
-                });
-        }
-        return rows;
-    });
+    const bindings = $derived(
+        (settings.modelProfiles ?? [])
+            .filter((profile) => profile.credentialId !== undefined)
+            .map((profile) => ({
+                kind: "modelProfile" as const,
+                id: profile.id,
+                name: profile.name,
+                credentialId: profile.credentialId!,
+            })),
+    );
 
     function keyName(id: string) {
         const record = credentials.find((credential) => credential.id === id);
@@ -79,16 +62,7 @@
     }
 
     function removeBinding(binding: CredentialUsage) {
-        switch (binding.kind) {
-            case "customModel":
-                setCustomModelCredential(binding.id, null);
-                break;
-            case "modelPreset":
-                setProxyCredential(binding.id, null);
-                break;
-            default:
-                setModelCredential(binding.id, null);
-        }
+        setProfileCredential(binding.id, null);
     }
 </script>
 

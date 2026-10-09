@@ -1,5 +1,6 @@
 import {
     forwardedPresetField,
+    isModelPresetRootKey,
     missingPresetTarget,
     reconcileSelection,
     settings,
@@ -7,12 +8,17 @@ import {
     writeSettingsRoot,
 } from "./settingsViews.svelte";
 import { untrack } from "svelte";
+import isEqual from "lodash/isEqual";
 import { v4 } from "uuid";
 import {
     CREDENTIAL_TYPES,
     type Credential,
     type CredentialType,
     type Database,
+    type AuxModelMode,
+    type ModelPreset,
+    type ModelProfile,
+    type ModelSlot,
     type RisuPersona,
 } from "../../../shared/database.ts";
 import { isRecordId } from "../../../shared/ids.ts";
@@ -23,6 +29,9 @@ import {
     newPersonaId,
     newPresetId,
     normalizeModelPreset,
+    normalizeModelProfile,
+    MODEL_PROFILE_FIELDS,
+    PRESET_DEFAULTS,
     normalizePreset,
     PRESET_FIELD_KINDS,
     PRESET_NULLABLE_FIELDS,
@@ -31,6 +40,7 @@ import {
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { SECTION_FIELDS } from "../../../shared/sections.ts";
 import { valueKindOf } from "../../../shared/valueKinds.ts";
+import { definitionNeedsProfile } from "../../../shared/llm/modelSlots.ts";
 import {
     detach,
     MutationTargetGoneError,
@@ -83,6 +93,19 @@ function checkPresetValue(key: string, field: PresetField, value: unknown) {
 }
 
 function checkSettingKey(key: string, value: unknown): "preset" | "section" {
+    if (isModelPresetRootKey(key)) {
+        if (key === "aiModel" || key === "subModel") {
+            if (typeof value !== "string") {
+                throw new MutationValidationError(key, "expected a model id string");
+            }
+        } else if (key === "seperateModels") {
+            requireObject(key, value);
+            requireJsonData(key, value);
+        } else {
+            checkPresetValue(key, key as PresetField, value);
+        }
+        return "preset";
+    }
     const field = forwardedPresetField(key);
     if (field !== undefined) {
         checkPresetValue(key, field, value);
@@ -113,9 +136,9 @@ function checkSettingKey(key: string, value: unknown): "preset" | "section" {
 /**
  * Sets settings fields. A key is a field of the `providers`, `ui`, `memoryTranslateMedia`, or
  * `secrets` section (written there), or a forwarded preset field (`FORWARDED_PRESET_KEYS` or
- * `FORWARDED_MODEL_PRESET_KEYS`, by its root name), written into its owning preset: the prompt
- * preset `options.presetId` names or the model preset `options.modelPresetId` names, else the
- * selected one. A caller that captured its presets before an await passes them. Every key is checked
+ * `FORWARDED_MODEL_PRESET_KEYS`, by its root name). Prompt fields write their preset; model roots
+ * use the slot/profile rules in `writeModelRoot`. The ids in `options` name the captured pair,
+ * otherwise the selected pair is used. A caller that captured its presets before an await passes them. Every key is checked
  * first, and the owning preset must exist when a preset field is set (`MutationTargetGoneError`
  * otherwise); nothing is written unless everything passes. `llmSecrets` fields, `proxyKey`, the
  * persona fields, and the selection indexes are refused.
@@ -419,6 +442,124 @@ export function addModelPreset(preset: unknown): string {
     return id;
 }
 
+/** Adds a model profile with schema defaults and a fresh id; any secret fields are dropped. */
+export function addModelProfile(profile: unknown): string {
+    requireObject("modelProfile", profile);
+    requireJsonData("modelProfile", profile);
+    const id = newPresetId();
+    settings.modelProfiles ??= [];
+    settings.modelProfiles.push(normalizeModelProfile(detach(profile), { id }));
+    return id;
+}
+
+/** Updates profile fields by id; optional fields may be removed, and credential ids may dangle. */
+export function updateModelProfile(id: string, patch: Record<string, unknown>): boolean {
+    const prepared = detachPatch(patch, (field, value) => {
+        if (field !== "name" && !(MODEL_PROFILE_FIELDS as readonly string[]).includes(field)) {
+            throw new MutationValidationError(field, "not an editable model profile field");
+        }
+        if (value === undefined && PRESET_DEFAULTS[field as PresetField] === undefined) {
+            return;
+        }
+        checkPresetValue(field, field as PresetField, value);
+    });
+    const index = (settings.modelProfiles ?? []).findIndex((profile) => profile.id === id);
+    if (index === -1) {
+        return false;
+    }
+    batchRecordWrites(() => {
+        const next = writeEntries(settings.modelProfiles[index] as unknown as Record<string, unknown>, prepared);
+        if (next) {
+            settings.modelProfiles[index] = next as unknown as ModelProfile;
+        }
+    });
+    return true;
+}
+
+/** Copies a profile and its named-key binding under a fresh id; no secret is copied. */
+export function copyModelProfile(id: string): string | undefined {
+    const source = (settings.modelProfiles ?? []).find((profile) => profile.id === id);
+    return source ? addModelProfile({ ...detach(source), name: `${source.name} Copy` }) : undefined;
+}
+
+/** Removes a profile, leaving every slot dangling. Like model presets, the last record is kept. */
+export function deleteModelProfile(id: string): boolean {
+    const profiles = settings.modelProfiles;
+    const index = profiles?.findIndex((profile) => profile.id === id) ?? -1;
+    if (!profiles || index === -1 || profiles.length <= 1) {
+        return false;
+    }
+    profiles.splice(index, 1);
+    return true;
+}
+
+/** Presets naming a profile, including disabled auxiliary slots; a bare model id is not a reference. */
+export function presetsUsingModelProfile(id: string): readonly DeepReadonly<ModelPreset>[] {
+    const uses = (slot: ModelSlot | undefined) => slot && "profileId" in slot && slot.profileId === id;
+    return (settings.modelPresets ?? []).filter((preset) =>
+        [preset.mainSlot, preset.subSlot, ...Object.values(preset.auxSlots ?? {})].some(uses),
+    );
+}
+
+function setRequiredModelSlot(presetId: string, field: "mainSlot" | "subSlot", profileId: string): boolean {
+    if (!isRecordId(profileId)) {
+        throw new MutationValidationError(field, "expected a non-empty profile id");
+    }
+    const preset = (settings.modelPresets ?? []).find((entry) => entry.id === presetId);
+    if (!preset) {
+        return false;
+    }
+    if (preset[field]?.profileId !== profileId) {
+        preset[field] = { profileId };
+    }
+    return true;
+}
+
+export function setMainModelSlot(presetId: string, profileId: string): boolean {
+    return setRequiredModelSlot(presetId, "mainSlot", profileId);
+}
+
+export function setSubModelSlot(presetId: string, profileId: string): boolean {
+    return setRequiredModelSlot(presetId, "subSlot", profileId);
+}
+
+/** Sets an auxiliary profile id, an explicit bare definition, or null to clear; tags are never guessed. */
+export function setAuxModelSlot(
+    presetId: string,
+    mode: AuxModelMode,
+    slot: string | { modelId: string } | null,
+): boolean {
+    if (!["memory", "translate", "emotion", "otherAx"].includes(mode)) {
+        throw new MutationValidationError("mode", "not an auxiliary model mode");
+    }
+    let value: ModelSlot | undefined;
+    if (typeof slot === "string" && isRecordId(slot)) {
+        value = { profileId: slot };
+    } else if (slot !== null) {
+        requireObject("slot", slot);
+        if (Object.keys(slot).length !== 1 || !isRecordId(slot.modelId)) {
+            throw new MutationValidationError("slot", "expected a profile id, a bare { modelId }, or null");
+        }
+        if (definitionNeedsProfile(slot.modelId)) {
+            throw new MutationValidationError("slot", "this model definition requires a profile");
+        }
+        value = { modelId: slot.modelId };
+    }
+    const preset = (settings.modelPresets ?? []).find((entry) => entry.id === presetId);
+    if (!preset) {
+        return false;
+    }
+    if (value) {
+        preset.auxSlots ??= {};
+        if (!isEqual(preset.auxSlots[mode], value)) {
+            preset.auxSlots[mode] = value;
+        }
+    } else if (preset.auxSlots?.[mode] !== undefined) {
+        delete preset.auxSlots[mode];
+    }
+    return true;
+}
+
 /** Adds named credential metadata under a fresh record id. Set its key separately through `setSecret`. */
 export function addCredential(input: unknown): string {
     requireObject("credential", input);
@@ -512,30 +653,10 @@ function checkCredentialId(credentialId: string | null) {
     }
 }
 
-/** Sets a global model binding as an own map property; `null` removes it synchronously. */
-export function setModelCredential(modelId: string, credentialId: string | null): void {
-    if (typeof modelId !== "string") {
-        throw new MutationValidationError("modelId", "expected a string");
-    }
+/** Sets a profile's named-key binding synchronously; null deletes it, and missing keys may be named. */
+export function setProfileCredential(profileId: string, credentialId: string | null): boolean {
     checkCredentialId(credentialId);
-    const bindings = Object.fromEntries(Object.entries(settings.providers.modelCredentials));
-    if (credentialId === null) {
-        delete bindings[modelId];
-    } else {
-        Object.defineProperty(bindings, modelId, {
-            value: credentialId,
-            writable: true,
-            enumerable: true,
-            configurable: true,
-        });
-    }
-    settings.providers.modelCredentials = bindings;
-}
-
-/** Sets the custom model's binding; `null` deletes the optional field. Returns whether it exists. */
-export function setCustomModelCredential(modelId: string, credentialId: string | null): boolean {
-    checkCredentialId(credentialId);
-    const record = settings.customModels.find((model) => model.id === modelId);
+    const record = (settings.modelProfiles ?? []).find((profile) => profile.id === profileId);
     if (!record) {
         return false;
     }
@@ -543,21 +664,6 @@ export function setCustomModelCredential(modelId: string, credentialId: string |
         delete record.credentialId;
     } else {
         record.credentialId = credentialId;
-    }
-    return true;
-}
-
-/** Sets the named model preset's proxy binding synchronously; `null` deletes the optional field. */
-export function setProxyCredential(modelPresetId: string, credentialId: string | null): boolean {
-    checkCredentialId(credentialId);
-    const record = settings.modelPresets.find((preset) => preset.id === modelPresetId);
-    if (!record) {
-        return false;
-    }
-    if (credentialId === null) {
-        delete record.proxyCredentialId;
-    } else {
-        record.proxyCredentialId = credentialId;
     }
     return true;
 }

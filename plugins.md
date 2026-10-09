@@ -762,11 +762,23 @@ await Risuai.setDatabaseLite(db);
 
 How `setDatabase`/`setDatabaseLite` apply what you hand back:
 
-- Each key is applied on its own. A key whose value is not valid is refused with a console warning (`[Plugin] Refused ...; the previous value was kept`) and keeps its old value; the other keys still apply. Invalid means, for example, data that is not plain JSON, a value of the wrong kind for a preset setting (a string for `temperature`), or `null` for a setting that cannot be cleared.
+- Each key is applied on its own. A key whose value is not valid is refused with a console warning (`[Plugin] Refused ...` or `[Settings] Refused ...; the previous value was kept`) and keeps its old value; the other keys still apply. Invalid means, for example, data that is not plain JSON, a value of the wrong kind for a preset setting (a string for `temperature`), or `null` for a setting that cannot be cleared.
 - `characters`: characters you changed are updated, new ones are added at the end, and characters you left out are removed (not while one is generating a reply). The list order you hand back does not reorder the characters; use `characterOrder` for the sidebar order.
 - `plugins`: `setDatabase` asks the user to confirm each plugin that is new or changed and installs the confirmed ones; plugins you left out stay installed. `setDatabaseLite` replaces the installed list without asking.
 - `characterOrder` and `selectedPersona` are applied after the other keys, whatever order they have in your object.
-- The preset settings (`temperature`, `maxContext`, `maxResponse`, `frequencyPenalty`, `PresensePenalty`, `seperateModels`, ...) belong to the selected preset. Inside a hook they belong to the preset that was selected when the hook's run started (see Character Operations).
+- Prompt settings (`temperature`, `maxResponse`, `frequencyPenalty`, `PresensePenalty`, ...) belong to the selected prompt preset. Model roots use the selected model preset and its profiles as described below. Inside a hook both use the presets captured when the hook's run started (see Character Operations).
+
+`maxContext` reads the main slot's profile's context limit, or the schema default when that profile is missing. Writing it changes that profile, including for every other preset using it. The same value is a no-op; a changed value is refused when the main profile is missing. `seperateModelsForAxModels` reads and sets the model preset's auxiliary-model toggle.
+
+`seperateModels.memory`, `.emotion`, `.translate`, and `.otherAx` read model ids derived from their slots, never profile ids. A bare slot reads its model id; an unset slot or missing profile reads `""`. Each supplied mode is written with these rules, in order:
+
+1. The value currently read for that slot: no change. A read-modify-write round trip preserves the slot even if several profiles share its model id or its profile is missing.
+2. `""`: clear the slot.
+3. Exactly one profile with that model id: select that profile.
+4. No matching profile: use a bare model-id slot, unless the definition needs a profile, which is refused.
+5. Several matching profiles: refuse the write.
+
+Definitions that need a profile are `reverse_proxy`, `openrouter`, `nanogpt`, `ollama-hosted`, `ollama-cloud`, `ooba`, `mancer`, `kobold`, `custom`, and any `xcustom:::` id. A refused mode keeps its old value with a console warning while other modes and keys still apply.
 
 **Allowed database keys:**
 

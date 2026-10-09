@@ -77,7 +77,7 @@ The playground chat uses the special `§playground` character.
 
 Settings:
 
-- `AuxModelSelectors.svelte`: the model preset's `seperateModelsForAxModels` and `seperateModels.{memory,translate,emotion,otherAx}`.
+- `AuxModelSelectors.svelte`: the model preset's `seperateModelsForAxModels` toggle and the four auxiliary slots (`auxSlots.{memory,translate,emotion,otherAx}`), each a `ProfileSlotSelect` that picks a model profile, falls back to the sub slot when unset, marks a deleted profile missing, and shows a bare slot (a model id a plugin wrote) as "no profile" (`docs/plan/model-profiles.md`; routing in `llm-requests.md`).
 - `TranslatorPresetSettings.svelte`: `translatorPresets`, `translatorPresetId` (the selected preset's id).
 
 ## Flows
@@ -121,14 +121,14 @@ Settings:
 - `generateAIImage(..., 'inlay')` does not persist its result. The caller must persist it.
 - Keep the `.risutl` format constants and legacy-field syncing stable.
 - `translateHTML` must preserve markup boundaries and the `translate=no`/`script`/`style` skips. It applies `edittrans` after translating (`applyEdittransRegex`: the one regex the tab still runs, a plain `RegExp` replacement with no Lua or trigger). Its `editdisplay` call runs on the server (`serverProcessScript`, target kind `translation`), with the context captured when `translateHTML` starts; without a context (a chat not saved on the server yet) the translated text stays as it is.
-- Aux-model keys use the persisted misspelling `seperate*`. `submodel` is not a `seperateModels` key.
+- Aux-model keys use the persisted misspelling `seperate*`. `submodel` is not an auxiliary slot: it always uses the sub slot. The root `seperateModels.<mode>` is a derived model id (the slot's profile's, `""` for an unset or dangling slot), never stored.
 
 ## Recipes
 
 - Add a TTS provider: `ttsMode` in `CharConfig.svelte`, the `database.svelte.ts` fields and defaults, and a `sayTTS` case that routes through `playAudio`. Verify the manual button, auto speech, `speak`, `stopTTS`, and hooks.
 - Add an image backend: a branch in `generateAIImage` that handles both inlay and emotion modes, plus DB settings in `OtherBotSettings.svelte`. Verify `inlayScreen`, triggers, and the playground.
 - Change translation: `translateMain`, `runTranslator`, or `translateHTML`, plus DB defaults. Verify `ChatBody`, input translation, the LLM cache, and `translateVox`.
-- Change aux routing: `AuxModelSelectors.svelte`, `ModelModeExtended`, `requestChatDataMain`, and preset serialization together.
+- Change aux routing: `shared/llm/modelSlots.ts` `resolveSlotProfile` (the one routing rule), `AuxModelSelectors.svelte`, `ModelModeExtended`, and the model preset's slot normalization (`shared/presets.ts`) together.
 - Change media compression: `imageType.ts` first, then the compressors. Run both media tests and `inlays.test.ts`.
 
 ## Tests

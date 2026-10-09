@@ -220,7 +220,7 @@ export const advancedSettingsItems: SettingItem[] = [
         type: "number",
         fallbackLabel: "Local Network Timeout (sec)",
         bindKey: "localNetworkTimeoutSec",
-        condition: (ctx) => ctx.modelPreset.localNetworkMode,
+        condition: (ctx) => ctx.modelProfile.localNetworkMode,
         classes: "block mb-1",
         containerClasses: "pl-7",
         options: { min: 30, max: 3600, inputClassName: "w-full", marginBottom: false },
