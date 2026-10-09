@@ -755,7 +755,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             return value;
         };
         const db = scope.request.db;
-        // The client's `getTools()`: once per request, before the fallback loop, whatever the mode.
+        // The client's `getTools()`: once per request, before the retry loop, whatever the mode.
         let toolSet: JobToolSet | null = null;
         if (jobTools) {
             try {

@@ -1,9 +1,9 @@
 // The server request layer (Phase 5, `request-layer-and-llm-secrets`): a port of
 // `src/ts/process/request/request.ts`'s `requestChatDataMain` and its per-format functions. The
-// client keeps the outer `requestChatData` loop (replacers, the request trigger, fallback models,
-// retries) and the formats that run in the tab (`Plugin`, `WebLLM`); `POST /api/llm/request` runs
-// this for every other format. The client's module reads (`getDatabase`, `globalFetch`, the
-// selected character, `getUserName`, `risuChatParser`, ...) are the request context's (`arg.ctx`).
+// client keeps the outer `requestChatData` loop (replacers, the request trigger, retries) and the
+// formats that run in the tab (`Plugin`, `WebLLM`); `POST /api/llm/request` runs this for every
+// other format. The client's module reads (`getDatabase`, `globalFetch`, the selected character,
+// `getUserName`, `risuChatParser`, ...) are the request context's (`arg.ctx`).
 import { Ollama } from "ollama";
 import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";

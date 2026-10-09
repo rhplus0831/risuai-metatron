@@ -182,8 +182,6 @@ export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     seperateModelsForAxModels: false,
     seperateModels: { memory: "", emotion: "", translate: "", otherAx: "" },
     modelTools: [],
-    fallbackModels: { model: [], memory: [], emotion: [], translate: [], otherAx: [] },
-    fallbackWhenBlankResponse: false,
     verbosity: 1,
     dynamicOutput: null,
 };
@@ -226,8 +224,6 @@ export const MODEL_PRESET_FIELDS = [
     "maxContext",
     "seperateModelsForAxModels",
     "seperateModels",
-    "fallbackModels",
-    "fallbackWhenBlankResponse",
 ] as const satisfies readonly PresetField[];
 
 export type ModelPresetField = (typeof MODEL_PRESET_FIELDS)[number];
@@ -417,19 +413,12 @@ function migrateOpenrouterProvider(value: unknown): unknown {
 }
 
 /**
- * The `setDatabase` migrations of two preset containers, in place, on whichever record holds them:
- * `seperateParameters` (prompt) gets its `overrides` map and every `fallbackModels` (model) list
- * becomes an array without empty entries.
+ * The `setDatabase` migration of a preset container, in place, on whichever record holds it:
+ * `seperateParameters` (prompt) gets its `overrides` map.
  */
 function migratePresetContainers(record: Record<string, unknown>): void {
     if (isPlainObject(record.seperateParameters)) {
         record.seperateParameters.overrides ??= {};
-    }
-    if (isPlainObject(record.fallbackModels)) {
-        const fallback = record.fallbackModels;
-        for (const key of ["model", "memory", "emotion", "translate", "otherAx"]) {
-            fallback[key] = Array.isArray(fallback[key]) ? fallback[key].filter((model: unknown) => model !== "") : [];
-        }
     }
 }
 

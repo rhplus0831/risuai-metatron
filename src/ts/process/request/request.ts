@@ -254,12 +254,6 @@ async function requestPinnedChatData(
     if (presetGone) {
         return presetGone;
     }
-    const fallBackModels: string[] = safeStructuredClone(
-        (scopedPresetRoot(pluginContext, "fallbackModels") as Database["fallbackModels"] | undefined)?.[
-            model as keyof Database["fallbackModels"]
-        ] ?? [],
-    );
-    const fallbackWhenBlankResponse = !!scopedPresetRoot(pluginContext, "fallbackWhenBlankResponse");
     // The request's chat chooses the module MCP servers, not the selection now. After every await
     // below, the chat must still be the one the request began with.
     const target = arg.chatRef ?? pluginContext?.chatRef;
@@ -268,153 +262,120 @@ async function requestPinnedChatData(
     if (!held()) {
         return requestChatGone();
     }
-    fallBackModels.push("");
     let da: requestDataResponse;
+    let trys = 0;
 
     if (arg.escape) {
         arg.useStreaming = false;
         console.warn("Escape is enabled, disabling streaming");
     }
 
-    const originalFormated = safeStructuredClone(arg.formated).map((m) => {
+    arg.formated = safeStructuredClone(arg.formated).map((m) => {
         m.content = risuUnescape(m.content);
         return m;
     });
 
-    for (let fallbackIndex = 0; fallbackIndex < fallBackModels.length; fallbackIndex++) {
-        let trys = 0;
-        arg.formated = safeStructuredClone(originalFormated);
-
-        if (fallbackIndex !== 0 && !fallBackModels[fallbackIndex]) {
-            continue;
+    while (true) {
+        if (abortSignal?.aborted) {
+            return {
+                type: "fail",
+                result: "Aborted",
+            };
+        }
+        if (!held()) {
+            // Each attempt (a retry after a wait too) starts only for the chat the request began with.
+            return requestChatGone();
+        }
+        const goneBefore = requestPresetGone(pluginContext);
+        if (goneBefore) {
+            return goneBefore;
         }
 
-        while (true) {
-            if (abortSignal?.aborted) {
-                return {
-                    type: "fail",
-                    result: "Aborted",
-                };
-            }
-            if (!held()) {
-                // Each attempt (a retry after a wait too) starts only for the chat the request began with.
-                return requestChatGone();
-            }
-            const goneBefore = requestPresetGone(pluginContext);
-            if (goneBefore) {
-                return goneBefore;
-            }
-
-            if (pluginHooks.replacerbeforeRequest.size > 0) {
-                for (const replacer of pluginHooks.replacerbeforeRequest) {
-                    arg.formated = await invokeHook(replacer, pluginContext, arg.formated, model);
-                    if (!held()) {
-                        return requestChatGone();
-                    }
-                }
-                const goneAfterHooks = requestPresetGone(pluginContext);
-                if (goneAfterHooks) {
-                    return goneAfterHooks;
+        if (pluginHooks.replacerbeforeRequest.size > 0) {
+            for (const replacer of pluginHooks.replacerbeforeRequest) {
+                arg.formated = await invokeHook(replacer, pluginContext, arg.formated, model);
+                if (!held()) {
+                    return requestChatGone();
                 }
             }
-
-            // The character's `request` trigger runs only in server jobs (Phase 5 cutover): the tab's own
-            // requests (translation, suggestions, the HypaV3 modal, plugins) go out without it.
-            da = await requestChatDataMain(
-                {
-                    ...arg,
-                    staticModel: fallBackModels[fallbackIndex],
-                    tools: tools,
-                },
-                model,
-                abortSignal,
-            );
-
-            if (abortSignal?.aborted) {
-                return {
-                    type: "fail",
-                    result: "Aborted",
-                };
+            const goneAfterHooks = requestPresetGone(pluginContext);
+            if (goneAfterHooks) {
+                return goneAfterHooks;
             }
-            if (!held()) {
-                // Its chat was replaced or deleted while the reply came: the reply is not accepted.
-                if (da.type === "streaming") {
-                    da.result.cancel().catch(() => {});
-                }
-                return requestChatGone();
+        }
+
+        // The character's `request` trigger runs only in server jobs (Phase 5 cutover): the tab's own
+        // requests (translation, suggestions, the HypaV3 modal, plugins) go out without it.
+        da = await requestChatDataMain(
+            {
+                ...arg,
+                tools: tools,
+            },
+            model,
+            abortSignal,
+        );
+
+        if (abortSignal?.aborted) {
+            return {
+                type: "fail",
+                result: "Aborted",
+            };
+        }
+        if (!held()) {
+            // Its chat was replaced or deleted while the reply came: the reply is not accepted.
+            if (da.type === "streaming") {
+                da.result.cancel().catch(() => {});
             }
+            return requestChatGone();
+        }
 
-            if (da.type === "success" && arg.escape) {
-                da.result = risuEscape(da.result);
-            }
+        if (da.type === "success" && arg.escape) {
+            da.result = risuEscape(da.result);
+        }
 
-            if (da.type === "success" && pluginHooks.replacerafterRequest.size > 0) {
-                for (const replacer of pluginHooks.replacerafterRequest) {
-                    da.result = await invokeHook(replacer, pluginContext, da.result, model);
-                    if (!held()) {
-                        return requestChatGone();
-                    }
-                }
-            }
-
-            if (da.type === "success" && settings.providers.banCharacterset?.length > 0) {
-                let failed = false;
-                for (const set of settings.providers.banCharacterset) {
-                    console.log(set);
-                    const checkRegex = new RegExp(`\\p{Script=${set}}`, "gu");
-
-                    if (checkRegex.test(da.result)) {
-                        trys += 1;
-                        failed = true;
-                        break;
-                    }
-                }
-
-                if (failed) {
-                    continue;
+        if (da.type === "success" && pluginHooks.replacerafterRequest.size > 0) {
+            for (const replacer of pluginHooks.replacerafterRequest) {
+                da.result = await invokeHook(replacer, pluginContext, da.result, model);
+                if (!held()) {
+                    return requestChatGone();
                 }
             }
+        }
 
-            if (da.type === "success" && fallbackIndex !== fallBackModels.length - 1 && fallbackWhenBlankResponse) {
-                if (da.result.trim() === "") {
+        if (da.type === "success" && settings.providers.banCharacterset?.length > 0) {
+            let failed = false;
+            for (const set of settings.providers.banCharacterset) {
+                console.log(set);
+                const checkRegex = new RegExp(`\\p{Script=${set}}`, "gu");
+
+                if (checkRegex.test(da.result)) {
+                    trys += 1;
+                    failed = true;
                     break;
                 }
             }
 
-            if (da.type !== "fail" || da.noRetry) {
-                const usedModel = fallBackModels[fallbackIndex] || da.model;
-                return usedModel
-                    ? {
-                          ...da,
-                          model: usedModel,
-                      }
-                    : da;
+            if (failed) {
+                continue;
             }
+        }
 
-            if (da.failByServerError) {
-                await sleep(1000);
-                if (settings.providers.antiServerOverloads) {
-                    trys -= 0.5; // reduce trys by 0.5, so that it will retry twice as much
-                }
-            }
+        if (da.type !== "fail" || da.noRetry) {
+            return da;
+        }
 
-            trys += 1;
-            if (trys > settings.providers.requestRetrys) {
-                const isPluginModel = da.model === "custom" || da.model?.startsWith("pluginmodel:::");
-                if (fallbackIndex === fallBackModels.length - 1 || isPluginModel) {
-                    return da;
-                }
-                break;
+        if (da.failByServerError) {
+            await sleep(1000);
+            if (settings.providers.antiServerOverloads) {
+                trys -= 0.5; // reduce trys by 0.5, so that it will retry twice as much
             }
+        }
+
+        trys += 1;
+        if (trys > settings.providers.requestRetrys) {
+            return da;
         }
     }
-
-    return (
-        da ?? {
-            type: "fail",
-            result: "All models failed",
-        }
-    );
 }
 
 export function reformater(formated: OpenAIChat[], modelInfo: LLMModel | LLMFlags[]) {

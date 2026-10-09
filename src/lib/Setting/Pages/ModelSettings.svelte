@@ -519,61 +519,6 @@
 
 <AuxModelSelectors />
 
-{#snippet fallbackModelList(arg: "model" | "memory" | "translate" | "emotion" | "otherAx")}
-    {#each activeModelPreset.fallbackModels[arg] as model, i}
-        <span class="text-textcolor mt-4">
-            {language.model}
-            {i + 1}
-        </span>
-        <ModelList bind:value={activeModelPreset.fallbackModels[arg][i]} blankable />
-        {#if model}
-            <CredentialSelect modelId={model} compact />
-        {/if}
-    {/each}
-    <div class="flex gap-2">
-        <button
-            class="bg-selected text-textcolor p-2 rounded-md"
-            onclick={() => {
-                let value = activeModelPreset.fallbackModels[arg] ?? [];
-                value.push("");
-                activeModelPreset.fallbackModels[arg] = value;
-            }}><PlusIcon /></button
-        >
-        <button
-            class="bg-red-500 text-white p-2 rounded-md"
-            onclick={() => {
-                let value = activeModelPreset.fallbackModels[arg] ?? [];
-                value.pop();
-                activeModelPreset.fallbackModels[arg] = value;
-            }}><TrashIcon /></button
-        >
-    </div>
-{/snippet}
-
-<Accordion name={language.fallbackModel} styled>
-    <Check
-        bind:check={activeModelPreset.fallbackWhenBlankResponse}
-        name={language.fallbackWhenBlankResponse}
-        className="mt-4"
-    />
-
-    <Accordion name={language.model} styled>
-        {@render fallbackModelList("model")}
-    </Accordion>
-    <Accordion name={"Memory"} styled>
-        {@render fallbackModelList("memory")}
-    </Accordion>
-    <Accordion name={"Translations"} styled>
-        {@render fallbackModelList("translate")}
-    </Accordion>
-    <Accordion name={"Emotion"} styled>
-        {@render fallbackModelList("emotion")}
-    </Accordion>
-    <Accordion name={"OtherAx"} styled>
-        {@render fallbackModelList("otherAx")}
-    </Accordion>
-</Accordion>
-
 <Accordion styled name={language.systemContentReplacement} help="systemContentReplacement">
     <span class="text-textcolor">{language.systemContentReplacement}</span>
     <TextAreaInput bind:value={activeModelPreset.systemContentReplacement} />

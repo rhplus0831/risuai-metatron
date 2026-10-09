@@ -152,11 +152,10 @@ describe("the boot snapshot of a fresh store against the fresh-boot fixture", ()
             }
             // The former keep-on-switch fields are forwarded preset fields now: compared in (1) as
             // root fields, and present in the fresh boot with their owner's defaults.
-            for (const field of ["seperateModels", "seperateModelsForAxModels", "fallbackWhenBlankResponse"]) {
+            for (const field of ["seperateModels", "seperateModelsForAxModels"]) {
                 expect(Object.hasOwn(fixture, field), field).toBe(true);
                 expect(snapshot[field], field).not.toBeUndefined();
             }
-            expect(snapshot.fallbackModels).not.toBeUndefined();
             expect(snapshot.seperateParameters).not.toBeUndefined();
 
             // (2) The selected prompt and model presets against the fixture's effective root, through

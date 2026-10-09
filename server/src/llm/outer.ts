@@ -6,12 +6,9 @@ import type { RequestDb } from "./settings.ts";
 
 /** What the outer loop calls; every hook it lacks is skipped. */
 export type OuterRequestDeps = {
-    db: Pick<
-        RequestDb,
-        "fallbackModels" | "requestRetrys" | "antiServerOverloads" | "fallbackWhenBlankResponse" | "banCharacterset"
-    >;
+    db: Pick<RequestDb, "requestRetrys" | "antiServerOverloads" | "banCharacterset">;
     signal: AbortSignal;
-    /** One attempt (`requestChatDataMain`), with the model `staticModel` names ("" for the mode's own). */
+    /** One attempt (`requestChatDataMain`) with the mode's own model. */
     attempt: (arg: RequestArgs) => Promise<requestDataResponse>;
     /** The plugins' `replacerbeforeRequest` hooks, in order (a job's channel callback). */
     beforeRequest?: (formated: OpenAIChat[], model: ModelModeExtended) => Promise<OpenAIChat[]>;
@@ -44,10 +41,9 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 
 /**
  * `requestChatData` of `src/ts/process/request/request.ts` (the client's outer loop around
- * `requestChatDataMain`) for a server job: the fallback models, the retries (`requestRetrys`,
- * `antiServerOverloads` after a server error), `escape`, the plugin replacers before and after each
- * attempt, the `request` trigger, `banCharacterset`, and `fallbackWhenBlankResponse`, in the
- * client's order. Tools are the caller's (`arg.tools`).
+ * `requestChatDataMain`) for a server job: the retries (`requestRetrys`, `antiServerOverloads` after
+ * a server error), `escape`, the plugin replacers before and after each attempt, the `request`
+ * trigger, and `banCharacterset`, in the client's order. Tools are the caller's (`arg.tools`).
  */
 export async function requestChatDataOuter(
     input: RequestArgs & { escape?: boolean },
@@ -57,110 +53,85 @@ export async function requestChatDataOuter(
     const { db } = deps;
     const { escape, ...rest } = input;
     const arg: RequestArgs = { ...rest };
-    const fallBackModels: string[] = structuredClone(
-        (db.fallbackModels as Record<string, string[]> | undefined)?.[model] ?? [],
-    );
-    fallBackModels.push("");
-    let da: requestDataResponse | undefined;
+    let da: requestDataResponse;
+    let trys = 0;
 
     if (escape) {
         arg.useStreaming = false;
     }
 
-    const originalFormated = structuredClone(arg.formated).map((message) => {
+    arg.formated = structuredClone(arg.formated).map((message) => {
         message.content = risuUnescape(message.content);
         return message;
     });
 
-    for (let fallbackIndex = 0; fallbackIndex < fallBackModels.length; fallbackIndex++) {
-        let trys = 0;
-        arg.formated = structuredClone(originalFormated);
-
-        if (fallbackIndex !== 0 && !fallBackModels[fallbackIndex]) {
-            continue;
+    while (true) {
+        if (deps.signal.aborted) {
+            return { type: "fail", result: "Aborted" };
         }
 
-        while (true) {
-            if (deps.signal.aborted) {
-                return { type: "fail", result: "Aborted" };
-            }
+        if (deps.beforeRequest) {
+            arg.formated = await deps.beforeRequest(arg.formated, model);
+        }
 
-            if (deps.beforeRequest) {
-                arg.formated = await deps.beforeRequest(arg.formated, model);
-            }
-
-            if (deps.requestTrigger) {
-                try {
-                    const got = await deps.requestTrigger(arg.formated);
-                    if (!got || !Array.isArray(got)) {
-                        throw new Error("Invalid return");
-                    }
-                    arg.formated = got;
-                } catch (error) {
-                    if (deps.isFatal?.(error)) {
-                        throw error;
-                    }
-                    console.error(error);
+        if (deps.requestTrigger) {
+            try {
+                const got = await deps.requestTrigger(arg.formated);
+                if (!got || !Array.isArray(got)) {
+                    throw new Error("Invalid return");
                 }
-            }
-
-            da = await deps.attempt({ ...arg, staticModel: fallBackModels[fallbackIndex] });
-
-            if (deps.signal.aborted) {
-                return { type: "fail", result: "Aborted" };
-            }
-
-            if (da.type === "success" && escape) {
-                da.result = risuEscape(da.result);
-            }
-
-            if (da.type === "success" && deps.afterRequest) {
-                da.result = await deps.afterRequest(da.result, model);
-            }
-
-            if (da.type === "success" && db.banCharacterset?.length > 0) {
-                let failed = false;
-                for (const set of db.banCharacterset) {
-                    const checkRegex = new RegExp(`\\p{Script=${set}}`, "gu");
-                    if (checkRegex.test(da.result)) {
-                        trys += 1;
-                        failed = true;
-                        break;
-                    }
+                arg.formated = got;
+            } catch (error) {
+                if (deps.isFatal?.(error)) {
+                    throw error;
                 }
-                if (failed) {
-                    continue;
-                }
+                console.error(error);
             }
+        }
 
-            if (da.type === "success" && fallbackIndex !== fallBackModels.length - 1 && db.fallbackWhenBlankResponse) {
-                if (da.result.trim() === "") {
+        da = await deps.attempt({ ...arg });
+
+        if (deps.signal.aborted) {
+            return { type: "fail", result: "Aborted" };
+        }
+
+        if (da.type === "success" && escape) {
+            da.result = risuEscape(da.result);
+        }
+
+        if (da.type === "success" && deps.afterRequest) {
+            da.result = await deps.afterRequest(da.result, model);
+        }
+
+        if (da.type === "success" && db.banCharacterset?.length > 0) {
+            let failed = false;
+            for (const set of db.banCharacterset) {
+                const checkRegex = new RegExp(`\\p{Script=${set}}`, "gu");
+                if (checkRegex.test(da.result)) {
+                    trys += 1;
+                    failed = true;
                     break;
                 }
             }
-
-            if (da.type !== "fail" || da.noRetry) {
-                const usedModel = fallBackModels[fallbackIndex] || da.model;
-                return usedModel ? { ...da, model: usedModel } : da;
-            }
-
-            if (da.failByServerError) {
-                await abortableSleep(1000, deps.signal);
-                if (db.antiServerOverloads) {
-                    trys -= 0.5; // reduce trys by 0.5, so that it will retry twice as much
-                }
-            }
-
-            trys += 1;
-            if (trys > db.requestRetrys) {
-                const isPluginModel = da.model === "custom" || da.model?.startsWith("pluginmodel:::");
-                if (fallbackIndex === fallBackModels.length - 1 || isPluginModel) {
-                    return da;
-                }
-                break;
+            if (failed) {
+                continue;
             }
         }
-    }
 
-    return da ?? { type: "fail", result: "All models failed" };
+        if (da.type !== "fail" || da.noRetry) {
+            return da;
+        }
+
+        if (da.failByServerError) {
+            await abortableSleep(1000, deps.signal);
+            if (db.antiServerOverloads) {
+                trys -= 0.5; // reduce trys by 0.5, so that it will retry twice as much
+            }
+        }
+
+        trys += 1;
+        if (trys > db.requestRetrys) {
+            return da;
+        }
+    }
 }

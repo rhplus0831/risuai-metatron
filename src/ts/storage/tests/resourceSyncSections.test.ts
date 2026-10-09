@@ -286,7 +286,8 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             expect(settings.providers.additionalParams).toEqual([["header::X-Test", "y"]]);
             expect(Object.hasOwn(plain(settings.presets[0].seperateParameters.overrides), "__proto__")).toBe(true);
             expect(settings.modelPresets[0]).toMatchObject({ id: "preset-1", aiModel: "model-x", maxContext: 9000 });
-            expect(settings.modelPresets[0].fallbackModels.model).toEqual(["m"]);
+            // The removed fallback models: a stored record's lists are dropped.
+            expect(Object.hasOwn(settings.modelPresets[0], "fallbackModels")).toBe(false);
             expect(Object.hasOwn(plain(settings.modelPresets[0].seperateModels), "__proto__")).toBe(true);
             expect(settings.modelPresets[1].id).toEqual(expect.any(String));
             // The write-only `llmSecrets` record (7b) reaches the tab masked: the mirror's credential

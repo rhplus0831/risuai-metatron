@@ -456,14 +456,6 @@ export interface Database {
     };
     modelTools: string[];
     hotkeys: Hotkey[];
-    fallbackModels: {
-        memory: string[];
-        emotion: string[];
-        translate: string[];
-        otherAx: string[];
-        model: string[];
-    };
-    fallbackWhenBlankResponse: boolean;
     /** The custom models; each one's key is in `llmSecrets.customModels.<id>.key` (Phase 5 slice 7b). */
     customModels: CustomModel[];
     credentials: Credential[];
@@ -931,14 +923,6 @@ export interface botPreset {
         otherAx: string;
     };
     modelTools?: string[];
-    fallbackModels?: {
-        memory: string[];
-        emotion: string[];
-        translate: string[];
-        otherAx: string[];
-        model: string[];
-    };
-    fallbackWhenBlankResponse?: boolean;
     verbosity?: number;
     dynamicOutput?: DynamicOutput;
 }
@@ -976,8 +960,6 @@ export type ModelPreset = { id: string; name: string } & Required<
         | "maxContext"
         | "seperateModelsForAxModels"
         | "seperateModels"
-        | "fallbackModels"
-        | "fallbackWhenBlankResponse"
     >
 > &
     Pick<botPreset, "koboldURL" | "proxyRequestModel" | "proxyCredentialId">;

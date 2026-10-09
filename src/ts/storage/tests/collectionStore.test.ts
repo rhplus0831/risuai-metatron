@@ -109,7 +109,7 @@ describe("updateSettings", () => {
         expect(settings.ui.guiHTML).toBeUndefined();
         expect(settings.secrets.googleSearchCredentials).toBeUndefined();
         collectionStore.updateSettings({
-            fallbackWhenBlankResponse: true,
+            seperateModelsForAxModels: true,
             seperateParameters: { memory: { temperature: 1 }, emotion: {}, translate: {}, otherAx: {}, overrides: {} },
             theme: "waifu",
             guiHTML: "<div/>",
@@ -118,17 +118,17 @@ describe("updateSettings", () => {
         });
         await sync.flushResources();
         // The `providers` section holds none of the five any more (`docs/plan/split-preset.md`).
-        expect(record("providers")).not.toHaveProperty("fallbackWhenBlankResponse");
+        expect(record("providers")).not.toHaveProperty("seperateModelsForAxModels");
         expect(record("providers")).not.toHaveProperty("seperateParameters");
         const modelPreset = record("modelPresets").find((preset: any) => preset.id === selection.modelPresetId);
-        expect(modelPreset.fallbackWhenBlankResponse).toBe(true);
+        expect(modelPreset.seperateModelsForAxModels).toBe(true);
         const preset = record("presets").find((preset: any) => preset.id === selection.presetId);
         expect(preset.seperateParameters.memory).toEqual({ temperature: 1 });
         expect(record("ui")).toMatchObject({ theme: "waifu", guiHTML: "<div/>" });
         expect(record("secrets").googleSearchCredentials).toEqual({ apiKey: "k", searchEngineId: "e" });
         expect(record("memoryTranslateMedia").hypaModel).toBe("m");
         expect(record("presets").every((preset: any) => !("theme" in preset))).toBe(true);
-        expect(record("presets").every((preset: any) => preset.fallbackWhenBlankResponse === undefined)).toBe(true);
+        expect(record("presets").every((preset: any) => preset.seperateModelsForAxModels === undefined)).toBe(true);
         expect(record("modelPresets").every((preset: any) => preset.seperateParameters === undefined)).toBe(true);
     });
 

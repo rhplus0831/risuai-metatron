@@ -104,8 +104,6 @@ function presetA() {
         regex: [{ comment: "ra", type: "editinput", in: "x", out: "y", flag: "" }],
         seperateModels: { memory: "am", emotion: "ae", translate: "at", otherAx: "ao" },
         seperateModelsForAxModels: true,
-        fallbackModels: { memory: ["afm"], emotion: [], translate: [], otherAx: [], model: [] },
-        fallbackWhenBlankResponse: true,
         seperateParameters: { memory: { temperature: 1 }, emotion: {}, translate: {}, otherAx: {}, overrides: {} },
     };
 }
@@ -122,8 +120,6 @@ function presetB() {
         regex: [],
         seperateModels: { memory: "bm", emotion: "be", translate: "bt", otherAx: "bo" },
         seperateModelsForAxModels: false,
-        fallbackModels: { memory: [], emotion: ["bfe"], translate: [], otherAx: [], model: [] },
-        fallbackWhenBlankResponse: false,
         seperateParameters: { memory: {}, emotion: { temperature: 2 }, translate: {}, otherAx: {}, overrides: {} },
     };
 }
@@ -319,7 +315,7 @@ describe("missing and null values", () => {
         const modelRecord = modelPreset("a");
         delete modelRecord.subModel;
         modelRecord.maxContext = null;
-        modelRecord.fallbackModels = null;
+        modelRecord.seperateModels = null;
         const modelBefore = text(modelRecord);
 
         expect(preset$.maxResponse).toBe(PRESET_DEFAULTS.maxResponse);
@@ -330,8 +326,8 @@ describe("missing and null values", () => {
         // The model view reads with the same rules over its own record.
         expect(modelPreset$.subModel).toBe(PRESET_DEFAULTS.subModel);
         expect(modelPreset$.maxContext).toBeNull();
-        expect(modelPreset$.fallbackModels).toEqual(PRESET_DEFAULTS.fallbackModels);
-        expect(modelPreset$.fallbackModels).not.toBe(modelPreset$.fallbackModels);
+        expect(modelPreset$.seperateModels).toEqual(PRESET_DEFAULTS.seperateModels);
+        expect(modelPreset$.seperateModels).not.toBe(modelPreset$.seperateModels);
 
         // Neither the reads nor a snapshot of every root name materialized anything in the record.
         rootSnapshot();
@@ -473,7 +469,6 @@ describe("changeToPreset, changeToModelPreset, and applyPresetTemplate", () => {
         expect(preset$.NAISettings.starter).toBe("starter-b");
         expect(modelPreset$.maxContext).toBe(4000);
         expect(modelPreset$.seperateModels).toEqual(presetA().seperateModels);
-        expect(modelPreset$.fallbackModels).toEqual(presetA().fallbackModels);
         expect(rootSnapshot()).toMatchObject({ temperature: 50, maxContext: 4000, botPresetsId: 1 });
         // Nothing was written anywhere: a switch is a selection change.
         expect([text(preset("a")), text(preset("b")), text(modelPreset("a")), text(modelPreset("b"))]).toEqual(before);

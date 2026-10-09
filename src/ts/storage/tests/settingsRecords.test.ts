@@ -368,13 +368,13 @@ describe("bulk writers notify once per record they change", () => {
         const [, p2] = settings.presets.map((preset: any) => preset.id);
         const [, m2] = settings.modelPresets.map((preset: any) => preset.id);
         const notified = countNotifications();
-        // `maxContext` and `fallbackWhenBlankResponse` are the model preset's (`docs/plan/split-preset.md`).
+        // `maxContext` and `seperateModelsForAxModels` are the model preset's (`docs/plan/split-preset.md`).
         collectionStore.updateSettings({
             temperature: 5,
             maxContext: 1234,
             theme: "waifu",
             lineHeight: 2,
-            fallbackWhenBlankResponse: true,
+            seperateModelsForAxModels: true,
             hypaModel: "m",
         });
         expect(notified.sort()).toEqual(["memoryTranslateMedia", "modelPresets", "presets", "ui"]);

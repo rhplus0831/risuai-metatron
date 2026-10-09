@@ -533,8 +533,6 @@
     { "key": "g", "ctrl": true, "action": "scrollToActiveChar" },
     { "key": "x", "ctrl": true, "action": "popupEditor" }
   ],
-  "fallbackModels": { "model": [], "memory": [], "emotion": [], "translate": [], "otherAx": [] },
-  "fallbackWhenBlankResponse": false,
   "seperateModelsForAxModels": false,
   "seperateModels": { "memory": "", "emotion": "", "translate": "", "otherAx": "" },
   "customModels": [],
@@ -568,9 +566,7 @@
       "modelTools": [],
       "maxContext": 4000,
       "seperateModelsForAxModels": false,
-      "seperateModels": { "memory": "", "emotion": "", "translate": "", "otherAx": "" },
-      "fallbackModels": { "model": [], "memory": [], "emotion": [], "translate": [], "otherAx": [] },
-      "fallbackWhenBlankResponse": false
+      "seperateModels": { "memory": "", "emotion": "", "translate": "", "otherAx": "" }
     }
   ],
   "authRefreshes": [],

@@ -240,17 +240,15 @@ describe("normalizePreset", () => {
         });
         expect(model.seperateModels).toEqual({ memory: "m", emotion: "e", translate: "t", otherAx: "o" });
         expect(model.seperateModelsForAxModels).toBe(true);
-        expect(model.fallbackModels).toEqual({ model: ["a"], memory: [], emotion: [], translate: [], otherAx: [] });
-        expect(model.fallbackWhenBlankResponse).toBe(true);
+        // The removed fallback models: an old record's lists and toggle are dropped.
+        for (const field of ["fallbackModels", "fallbackWhenBlankResponse"]) {
+            expect(Object.hasOwn(model, field), field).toBe(false);
+        }
         const modelAbsent = normalizeModelPreset({ name: "x" });
         expect(modelAbsent.seperateModels).toEqual(PRESET_DEFAULTS.seperateModels);
         expect(modelAbsent.seperateModelsForAxModels).toBe(false);
-        expect(modelAbsent.fallbackModels).toEqual(PRESET_DEFAULTS.fallbackModels);
-        expect(modelAbsent.fallbackWhenBlankResponse).toBe(false);
         // A `null` was `saveCurrentPreset`'s "keep" marker; it is the default now, never stored.
-        expect(normalizeModelPreset({ seperateModels: null, fallbackModels: null }).seperateModels).toEqual(
-            PRESET_DEFAULTS.seperateModels,
-        );
+        expect(normalizeModelPreset({ seperateModels: null }).seperateModels).toEqual(PRESET_DEFAULTS.seperateModels);
     });
 
     it("applies the migrations setDatabase and setPreset applied to the root copy, each on the record that owns the field", () => {
@@ -262,7 +260,6 @@ describe("normalizePreset", () => {
             localNetworkMode: "yes",
             localNetworkTimeoutSec: Number.NaN,
             seperateParameters: { memory: {}, emotion: {}, translate: {}, otherAx: {} },
-            fallbackModels: { model: ["", "gpt"], memory: "nope" },
             openrouterProvider: "DeepInfra",
         };
         const preset = normalizePreset({
@@ -282,13 +279,12 @@ describe("normalizePreset", () => {
         expect(preset.top_p).toBe(1);
         expect(preset.seperateParameters.overrides).toEqual({});
         // The model-owned migrations run on the model preset, and never put the field on the prompt preset.
-        for (const field of ["localNetworkMode", "localNetworkTimeoutSec", "fallbackModels", "openrouterProvider"]) {
+        for (const field of ["localNetworkMode", "localNetworkTimeoutSec", "openrouterProvider"]) {
             expect(Object.hasOwn(preset, field), field).toBe(false);
         }
         const model = normalizeModelPreset(legacy) as any;
         expect(model.localNetworkMode).toBe(false);
         expect(model.localNetworkTimeoutSec).toBe(600);
-        expect(model.fallbackModels).toEqual({ model: ["gpt"], memory: [], emotion: [], translate: [], otherAx: [] });
         expect(model.openrouterProvider).toEqual({ order: ["DeepInfra"], only: [], ignore: [] });
         for (const field of ["NAISettings", "promptSettings", "formatingOrder", "top_p", "seperateParameters"]) {
             expect(Object.hasOwn(model, field), field).toBe(false);
@@ -331,7 +327,6 @@ describe("normalizePreset", () => {
             promptSettings: {},
             formatingOrder: ["main"],
             seperateParameters: { memory: {}, emotion: {}, translate: {}, otherAx: {} },
-            fallbackModels: { model: [""], memory: [], emotion: [], translate: [], otherAx: [] },
             openrouterProvider: "x",
             promptTemplate: [{ type: "plain", role: "assistant" }],
             extra: { nested: true },
@@ -344,8 +339,8 @@ describe("normalizePreset", () => {
         expect(input.formatingOrder).toEqual(["main"]);
         const model = normalizeModelPreset(input) as any;
         expect(JSON.stringify(input)).toBe(before);
-        expect(model.fallbackModels).toEqual({ model: [], memory: [], emotion: [], translate: [], otherAx: [] });
-        expect(input.fallbackModels).toEqual({ model: [""], memory: [], emotion: [], translate: [], otherAx: [] });
+        expect(model.openrouterProvider).toEqual({ order: ["x"], only: [], ignore: [] });
+        expect(input.openrouterProvider).toBe("x");
     });
 });
 
@@ -407,8 +402,8 @@ describe("normalizeModelPreset", () => {
     it("returns fresh copies of the defaults", () => {
         const a = normalizeModelPreset({});
         const b = normalizeModelPreset({});
-        expect(a.fallbackModels).toEqual(b.fallbackModels);
-        expect(a.fallbackModels).not.toBe(b.fallbackModels);
+        expect(a.seperateModels).toEqual(b.seperateModels);
+        expect(a.seperateModels).not.toBe(b.seperateModels);
         expect(a.seperateModels).not.toBe(PRESET_DEFAULTS.seperateModels);
     });
 });
@@ -658,8 +653,6 @@ describe("field-to-resource partition", () => {
                 "maxContext",
                 "seperateModelsForAxModels",
                 "seperateModels",
-                "fallbackModels",
-                "fallbackWhenBlankResponse",
             ].sort(),
         );
         // The confirmed placements: sampling, reasoning, the JSON schema, and the per-role parameters
@@ -679,15 +672,15 @@ describe("field-to-resource partition", () => {
         ] as const) {
             expect(presetFieldOwner(field), field).toBe("prompt");
         }
-        expect(MODEL_PRESET_FIELDS).toHaveLength(30);
-        expect(PROMPT_PRESET_FIELDS).toHaveLength(PRESET_FIELDS.length - 30 - 2);
+        expect(MODEL_PRESET_FIELDS).toHaveLength(28);
+        expect(PROMPT_PRESET_FIELDS).toHaveLength(PRESET_FIELDS.length - 28 - 2);
     });
 
-    it("derives the forwarded lists from the two owners: 45 prompt keys, 30 model keys, proxyKey, 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
+    it("derives the forwarded lists from the two owners: 45 prompt keys, 28 model keys, proxyKey, 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
         expect(FORWARDED_PRESET_KEYS).toEqual(PROMPT_PRESET_FIELDS.map((field) => presetToRootName[field] ?? field));
         expect(FORWARDED_PRESET_KEYS).toHaveLength(45);
         expect(FORWARDED_MODEL_PRESET_KEYS).toEqual([...MODEL_PRESET_FIELDS]);
-        expect(FORWARDED_MODEL_PRESET_KEYS).toHaveLength(30);
+        expect(FORWARDED_MODEL_PRESET_KEYS).toHaveLength(28);
         // The aliases appear under their root names, never their preset names (all three are prompt fields).
         expect(FORWARDED_PRESET_KEYS).toEqual(
             expect.arrayContaining(["NAIsettings", "reasoningEffort", "presetRegex"]),
@@ -717,7 +710,7 @@ describe("field-to-resource partition", () => {
             ...PERSONA_ROOT_KEYS,
             ...SELECTION_KEYS,
         ]);
-        expect(FORWARDED_ROOT_KEYS).toHaveLength(45 + 30 + 1 + 4 + 3);
+        expect(FORWARDED_ROOT_KEYS).toHaveLength(45 + 28 + 1 + 4 + 3);
     });
 
     it("forwardPresetRoots writes every forwarded preset key from its owner, with the owner's defaults, and nothing else", () => {
@@ -747,16 +740,16 @@ describe("field-to-resource partition", () => {
     });
 
     it("places the review corrections: the former keep-on-switch group in the presets, auto-suggest in ui, supaMemoryKey in llmSecrets, hypaMemoryKey dropped", () => {
-        // The preset split (`docs/plan/split-preset.md`, "Keep-on-switch retires"): the five fields
-        // are preset fields, their three toggles are gone from `providers` and from the schema.
-        for (const field of [
-            "seperateModels",
-            "seperateModelsForAxModels",
-            "fallbackModels",
-            "fallbackWhenBlankResponse",
-        ]) {
+        // The preset split (`docs/plan/split-preset.md`, "Keep-on-switch retires"): the fields are
+        // preset fields, their three toggles are gone from `providers` and from the schema. The
+        // fallback models were removed afterwards: they are in no section and no preset.
+        for (const field of ["seperateModels", "seperateModelsForAxModels"]) {
             expect(SECTION_FIELDS.providers as readonly string[], field).not.toContain(field);
             expect(presetFieldOwner(field as PresetField), field).toBe("model");
+        }
+        for (const field of ["fallbackModels", "fallbackWhenBlankResponse"]) {
+            expect(union, field).not.toContain(field);
+            expect(PRESET_FIELDS as readonly string[], field).not.toContain(field);
         }
         expect(SECTION_FIELDS.providers as readonly string[]).not.toContain("seperateParameters");
         expect(presetFieldOwner("seperateParameters")).toBe("prompt");
@@ -833,7 +826,6 @@ describe("null canonicalization", () => {
             NAIadventure: null,
             // Anything else: the default, scalars and containers alike.
             seperateModels: null,
-            fallbackModels: null,
             maxResponse: null,
             temperature: null,
             mainPrompt: null,
@@ -863,7 +855,6 @@ describe("null canonicalization", () => {
         const model = normalizeModelPreset(nulls) as unknown as Record<string, unknown>;
         expect(model.openrouterProvider).toBeNull();
         expect(model.seperateModels).toEqual(PRESET_DEFAULTS.seperateModels);
-        expect(model.fallbackModels).toEqual(PRESET_DEFAULTS.fallbackModels);
         expect(model.maxContext).toBe(PRESET_DEFAULTS.maxContext);
         expect(model.systemContentReplacement).toBe("system: {{slot}}");
         expect(model.JinjaTemplate).toBe("");
