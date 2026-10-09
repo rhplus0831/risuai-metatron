@@ -1,8 +1,10 @@
 # URL Routes Plan
 
 Status: slices 1–2 done (2026-10-09), slice 3 done on the untracked-back
-history model and the accepted risks (2026-10-10). Give each screen an
-address. The browser's history then follows what the user sees: reload
+history model and the accepted risks (2026-10-10), slice 4 built with its
+unit tests (2026-10-10; the manual checks are pending, H1's on Chrome
+desktop, Android Chrome, and the Android PWA among them). Give each screen
+an address. The browser's history then follows what the user sees: reload
 keeps the screen, the browser and mobile back buttons work, and a screen
 can be linked.
 
@@ -245,8 +247,12 @@ type RouteState = {
   v: 1;
   /** For a layer entry: how many entries above its base route (1 = directly on it); 0 for a base route. */
   layerDepth: number;
-  /** For a layer entry (slice 4): the base route under it, applied first on a reload. */
+  /** For a layer entry: the base route under it, applied first on a reload. */
   base?: string;
+  /** For a layer entry whose base changed while it was open (R6): the layer entries beneath can name an older base. */
+  rebased?: true;
+  /** For a layer entry shown at boot without its base entry beneath: the base entry is still to be inserted (H1). */
+  rootPending?: true;
 };
 ```
 
@@ -263,9 +269,14 @@ the browser had dropped).
     pages that read the selected character see the right one.
   - The entry has no state, and the URL is a base route: write the state
     with `replaceState` and apply the URL.
-  - The entry has no state, and the URL is a layer: replace the entry with
-    `/` and push the layer over it (decision 5; when to do this: H1). Then
-    apply `/` and the layer.
+  - The entry has no state, and the URL is a layer: apply `/` and the
+    layer, and stamp the entry `rootPending` with `base: "/"`. The base
+    entry is inserted under it at the first user activation (decision 5,
+    H1). An entry still `rootPending` at a reload waits again.
+  - The URL is a base route and an import that finished before the router
+    started opened settings (`characterURLImport` is not awaited): the
+    layer stays open over that base and the entry waits for its base entry
+    the same way.
   - Anything else: replace with `/` (R4).
 - **Applying a URL** (boot and every `popstate`) sets the stores, then
   replaces the entry with the stores' route. That replace carries every
@@ -286,10 +297,18 @@ the browser had dropped).
   the landing's `popstate` is applied like any other (A1, A6). A traversal
   that does nothing leaves the URL behind (A2).
 - **Every `popstate` is applied.** The router does not ask who started the
-  traversal.
-- **Closing a layer** (settings off, grid off; slice 4). When the
+  traversal. A base entry closes both layers. A layer entry applies its
+  `base` first, then the layer.
+- **Opening a layer** pushes it with `layerDepth: 1` and the stores' base.
+  A settings page opened on a narrow screen (a remembered page, the HypaV3
+  modal, an import, a link at the root insertion) pushes the list under
+  it first (depths 1 and 2), so the page's close returns to the list
+  (decision 6).
+- **Closing a layer** (settings off, grid off). When the
   Navigation API lists the entry `layerDepth` below as an entry of this
-  document whose URL is the layer's `base`, the router traverses to it.
+  document whose URL is the base route the stores show (the layer's
+  `base`, unless R6 changed it in the same step), the router traverses to
+  it.
   Otherwise (the entry is gone, it is another document's, or there is no
   Navigation API) it replaces the layer entry with the base route and
   `layerDepth: 0`. Another entry of the same layer can still remain below
@@ -301,9 +320,27 @@ the browser had dropped).
   different URL beneath (the old base), so it does not go back: it
   replaces the layer entry with the new base route. A back would land on
   the old base and be applied over the new one. The old base stays in the
-  history beneath.
-- **`popstate` from outside the scheme** (no `v: 1`) is treated like a boot
-  entry without state.
+  history beneath. The entry is marked `rebased`, and the router no longer
+  goes back to a layer entry beneath it (the mobile list under a page),
+  which names the old base: the move replaces instead. A base change in
+  the same step as the move counts the same. A `popstate` that lands on a
+  layer entry above depth 1 marks it `rebased` too: while it was a forward
+  entry, R6 can have changed the entries beneath, and the router cannot
+  read their state. So after a back and a forward, the page's close
+  replaces (the list entry stays beneath) instead of going back.
+- **R4 under a layer.** When the layer entry's `base` names a removed
+  character and nothing is selected any more, the base goes home as it
+  does without a layer (the playground value and the realm flag are
+  cleared), then R6 writes it into the entry.
+- **A move inside a layer** goes back when the entry is above depth 1, not
+  `rebased`, and the entry beneath shows the target; pushes for R1's
+  in-settings pushes (the mobile list → a page, the prompt preset → its
+  template); else replaces at the same depth. Switching between settings
+  and the grid replaces (R3) before any back is considered.
+- **`popstate` from outside the scheme** (no `v: 1`) on a base URL is
+  applied and stamped. On a layer URL (an address-bar fragment change) the
+  layer is applied over the stores' base: inserting a base entry there
+  would cut the forward entries.
 - **The settings list on mobile.** On a screen narrower than 700 px, the
   list (`/settings`, depth 1) and a page (`/settings/:page`, depth 2) are
   separate entries.
@@ -312,7 +349,16 @@ the browser had dropped).
   - The list's close button closes the layer by the rule above, from depth
     2 on a page or depth 1 on the list.
   - Escape and the settings hotkey (`hotkey.ts`) set `settingsOpen` to
-    false and close the same way.
+    false and close the same way. Escape also closes the grid (slice 4
+    added it; before, only the grid's button did).
+- **One layer at a time (R3).** Open settings closes the grid under it, so
+  closing settings and going back both show the base route.
+- **Store corrections without a history step.** The playground value 2
+  with nothing selected becomes 1, the settings list on a screen 700 px or
+  wider becomes the model page (R4's canonical `/settings/model`;
+  `Settings.svelte` itself picks the model page only from 900 px, at
+  mount), and open settings closes the grid. They keep the route, so they
+  take no step of their own.
 
 A small `HistoryPort` interface wraps the browser so the unit tests can run
 a fake: `path` and `state` (read live), `push`, `replace`, `entryBelow(n)`
@@ -373,8 +419,15 @@ subscription.
   - The playground value 2 with nothing selected (the Home hotkey from the
     playground chat clears only the selection, which left an empty screen)
     is set to 1, the menu its URL names, before the route is written.
-  - Until slice 4, a layer URL applies home and is replaced with `/`, and an
-    open layer does not change the URL.
+  - Slice 4 (2026-10-10): the layer routes, `layerDepth`, `base`,
+    `rebased`, `rootPending`, and the corrections above. The sync effect's
+    key is the shown route and the base route, so R6 sees a base change
+    under an open layer. The root insertion listens in the capture phase
+    on `window` for the events that give a user activation (`keydown`
+    other than Escape, `mousedown`, a mouse `pointerdown`, a touch or pen
+    `pointerup`, `touchend`, and `click`), trusted only, and checks
+    `navigator.userActivation` where it exists. The listeners go when the
+    entry no longer waits (a close, a push, a `popstate`) and on stop.
   - Rebuilt for decision 8 (2026-10-10): no pending traversal, no
     ownership token, no `navigate` listener. One `browserHistory` object
     with its own live `path` and `state` getters (the first build spread an
@@ -408,6 +461,8 @@ subscription.
   `WelcomeRisu` (the first-setup screen still wins over any route), plugin
   settings menus (callback-based), and message anchors.
 - Replacing the magic numbers in the components.
+- `/settings/hotkeys` below 768 px: `Settings.svelte` renders no hotkey
+  page there (an existing gap that a direct link now reaches).
 
 ## Hazards
 
@@ -418,9 +473,11 @@ subscription.
   entry that boot inserts under a directly opened layer is exactly such an
   entry, so back could skip `/` and leave the app.
   - Mitigation: at boot, show the layer while the URL stays a single entry.
-    Do the replace-with-`/` and push-the-layer step on the first
-    `pointerdown` or `keydown`, which has an activation. A back press
-    before any interaction leaves the app, the same as any first page.
+    Do the replace-with-the-base and push-the-layer step on the first
+    input event that gives an activation (History model). A back press
+    before any interaction leaves the app, the same as any first page. A
+    close before any interaction (Escape gives no activation) finds no base
+    entry and replaces.
   - Check this on Chrome desktop and on Android Chrome (in a tab and in the
     installed PWA). If it still skips, fall back to the overlap form
     (decision 5).

@@ -3,15 +3,18 @@ import { get } from "svelte/store";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
-// The router for the base routes (`docs/plan/url-routes.md`, slice 3, decision 8) against a fake
-// `HistoryPort`: boot with and without state, every `popstate` applied, the sync effect's R1 steps
-// (push, the chat-switch replace, a back only to the confirmed entry beneath and never without the
-// Navigation API), the R4 corrections, G2 (a back that does nothing is not retried) and G4 (the URL
-// catches up at the next change), the playground value 2 normalization through the real effect rerun,
-// and stop/restart. The module graph is imported once (a reset graph would get its own Svelte
-// runtime, and the effect would not see the stores), so each test starts the router on a fresh fake
-// and stops it after. The browser adapter is checked at the end against happy-dom's history and a
-// fake Navigation API.
+// The router (`docs/plan/url-routes.md`, slices 3 and 4, decision 8) against a fake `HistoryPort`:
+// boot with and without state, every `popstate` applied, the sync effect's R1 steps (push, the
+// chat-switch replace, a back only to the confirmed entry beneath and never without the Navigation
+// API), the R4 corrections, G2 (a back that does nothing is not retried) and G4 (the URL catches up
+// at the next change), the store corrections through the real effect rerun, and stop/restart. Slice
+// 4: the layers (settings, the grid) with `layerDepth` and `base`, the close by depth and its replace
+// fallback, the mobile list/page entries, R3, R6 and `rebased`, and the root insertion deferred to
+// the first user activation (`rootPending`; the activation events are dispatched on happy-dom's
+// window with `isTrusted` defined on the instance). The module graph is imported once (a reset
+// graph would get its own Svelte runtime, and the effect would not see the stores), so each test
+// starts the router on a fresh fake and stops it after. The browser adapter is checked at the end
+// against happy-dom's history and a fake Navigation API.
 
 vi.mock("../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -27,15 +30,31 @@ vi.mock("../alert", () => ({
     alertNormalWait: vi.fn(async () => undefined),
 }));
 
-import { OpenRealmStore, PlaygroundStore } from "../stores.svelte";
+import { gridOpenStore, OpenRealmStore, PlaygroundStore, SettingsMenuIndex, settingsOpen } from "../stores.svelte";
+import { MODEL_SETTINGS_MENU, PROMPT_SETTINGS_MENU } from "../settingsMenu";
 import { characterList, removeCharacters } from "../storage/characterStore.svelte";
 import * as chat from "../storage/chatStore.svelte";
 import { initializeRecords, takeRecordFields } from "../storage/records.svelte";
 import { selectCharacter, selection } from "../storage/selection.svelte";
+import { SETTINGS_PAGES } from "./routes";
 import { browserHistory, type HistoryPort, type NavigationLike, type RouteState, startRouter } from "./router.svelte";
 
 const PLAYGROUND = "§playground";
 const STATE: RouteState = { v: 1, layerDepth: 0 };
+const MODEL = MODEL_SETTINGS_MENU;
+const PROMPT = PROMPT_SETTINGS_MENU;
+const TEMPLATE = SETTINGS_PAGES["prompt-template"];
+const DISPLAY = SETTINGS_PAGES.display;
+const HOME = "character=null chat=null playground=0 realm=false";
+const CHAT_A = "character=a chat=a1 playground=0 realm=false";
+const CHAT_B = "character=b chat=b1 playground=0 realm=false";
+/** `window.innerWidth` below which `Settings.svelte` shows the list and a page as separate screens. */
+const NARROW = 500;
+
+/** The state of a layer entry `depth` above its base `base`. */
+function layer(depth: number, base: string, flags: { rebased?: true; rootPending?: true } = {}): RouteState {
+    return { v: 1, layerDepth: depth, base, ...flags };
+}
 
 type Entry = { key: string; path: string; state: unknown };
 
@@ -153,6 +172,30 @@ function screen() {
     return `character=${chaId} chat=${chatId} playground=${get(PlaygroundStore)} realm=${get(OpenRealmStore)}`;
 }
 
+/** The layer the stores show, in one string. */
+function layers() {
+    return `settings=${get(settingsOpen)}:${get(SettingsMenuIndex)} grid=${get(gridOpenStore)}`;
+}
+
+/** Both layers closed, the settings index at the list. */
+function resetLayers() {
+    settingsOpen.set(false);
+    SettingsMenuIndex.set(-1);
+    gridOpenStore.set(false);
+    flushSync();
+}
+
+/** An event as the browser dispatches it: happy-dom leaves `isTrusted` undefined on a constructed event. */
+function trusted<T extends Event>(event: T): T {
+    Object.defineProperty(event, "isTrusted", { value: true, configurable: true });
+    return event;
+}
+
+/** A trusted click on the window (an activation for the root insertion). */
+function click() {
+    window.dispatchEvent(trusted(new MouseEvent("click")));
+}
+
 const create = (characterId: string, id: string, data = "A") => ({
     characterId,
     chatId: id,
@@ -197,14 +240,15 @@ beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    // The stores at home, the first chat selected for every character.
+    // The stores at home, the first chat selected for every character, no layer, a wide screen.
     selectCharacter(null);
     PlaygroundStore.set(0);
     OpenRealmStore.set(false);
     chat.selectChat("a", "a1");
     chat.selectChat("b", "b1");
     chat.selectChat(PLAYGROUND, "p1");
-    flushSync();
+    window.innerWidth = 1024;
+    resetLayers();
 });
 
 afterEach(() => {
@@ -262,14 +306,15 @@ describe("boot", () => {
         expect(history.log).toEqual(["replace /chat/a/a2"]);
     });
 
-    it("R4: an unknown character, an unknown path, and (until slice 4) a layer URL go home", () => {
-        for (const path of ["/chat/nobody/x", "/nonsense", "/settings/model", "/characters", "/playground/chat/p1"]) {
+    it("R4: an unknown character, an unknown path, and an unknown settings slug go home", () => {
+        for (const path of ["/chat/nobody/x", "/nonsense", "/settings/nope", "/playground/chat/p1"]) {
             if (path === "/playground/chat/p1") {
                 // The playground character is checked like any other.
                 removeCharacters([PLAYGROUND]);
             }
             const history = start(new FakeHistory([{ path, state: STATE }]));
-            expect(screen(), path).toBe("character=null chat=null playground=0 realm=false");
+            expect(screen(), path).toBe(HOME);
+            expect(layers(), path).toBe("settings=false:-1 grid=false");
             expect(history.log, path).toEqual(["replace /"]);
             expect(history.state, path).toEqual(STATE);
             stop!();
@@ -629,6 +674,736 @@ describe("R4: a removed character", () => {
 function restoreCharacters() {
     restorePlayground();
 }
+
+describe("boot (layers)", () => {
+    it("opens a layer URL without state over home and waits for the root insertion", () => {
+        let history = start(new FakeHistory([{ path: "/settings/model" }]));
+        expect(screen()).toBe(HOME);
+        expect(layers()).toBe("settings=true:1 grid=false");
+        // The stamp, then the `rootPending` mark.
+        expect(history.log).toEqual(["replace /settings/model", "replace /settings/model"]);
+        expect(history.state).toEqual(layer(1, "/", { rootPending: true }));
+        stop!();
+        resetLayers();
+
+        history = start(new FakeHistory([{ path: "/characters/" }]));
+        expect(screen()).toBe(HOME);
+        expect(layers()).toBe("settings=false:-1 grid=true");
+        expect(history.log).toEqual(["replace /characters", "replace /characters"]);
+        expect(history.state).toEqual(layer(1, "/", { rootPending: true }));
+    });
+
+    it("applies a stamped layer entry's base first, then the layer (a reload), without a root insertion", () => {
+        const history = start(
+            new FakeHistory([
+                { path: "/", state: STATE },
+                { path: "/settings/prompt", state: layer(1, "/chat/a/a2") },
+            ]),
+        );
+        expect(screen()).toBe("character=a chat=a2 playground=0 realm=false");
+        expect(layers()).toBe(`settings=true:${PROMPT} grid=false`);
+        expect(history.log).toEqual(["replace /settings/prompt"]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a2"));
+        click();
+        expect(history.paths()).toEqual(["/", "[/settings/prompt]"]);
+    });
+
+    it("R4: /settings is the model page on a wide screen and the list on a narrow one", () => {
+        let history = start(new FakeHistory([{ path: "/settings", state: layer(1, "/") }]));
+        expect(layers()).toBe("settings=true:1 grid=false");
+        expect(history.log).toEqual(["replace /settings/model"]);
+        stop!();
+        resetLayers();
+
+        window.innerWidth = NARROW;
+        history = start(new FakeHistory([{ path: "/settings", state: layer(1, "/") }]));
+        expect(layers()).toBe("settings=true:-1 grid=false");
+        expect(history.log).toEqual(["replace /settings"]);
+    });
+
+    it("applies a layer entry stamped without a base (slice 3) over home, without a root insertion", () => {
+        const history = start(
+            new FakeHistory([
+                { path: "/chat/a/a1", state: STATE },
+                { path: "/settings/model", state: STATE },
+            ]),
+        );
+        expect(screen()).toBe(HOME);
+        expect(layers()).toBe("settings=true:1 grid=false");
+        expect(history.log).toEqual(["replace /settings/model"]);
+        expect(history.state).toEqual(layer(1, "/"));
+        click();
+        expect(history.log).toHaveLength(1);
+    });
+
+    it("keeps a layer opened before the start (an import) over the URL's base, and waits for its base entry", () => {
+        settingsOpen.set(true);
+        SettingsMenuIndex.set(SETTINGS_PAGES.bot);
+        flushSync();
+        const history = start(new FakeHistory([{ path: "/chat/a/a1" }]));
+        expect(screen()).toBe(CHAT_A);
+        expect(layers()).toBe(`settings=true:${SETTINGS_PAGES.bot} grid=false`);
+        expect(history.log).toEqual(["replace /settings/bot", "replace /settings/bot"]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1", { rootPending: true }));
+        click();
+        expect(history.paths()).toEqual(["/chat/a/a1", "[/settings/bot]"]);
+        expect(history.entries[0].state).toEqual(STATE);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1"));
+    });
+});
+
+describe("popstate (layers)", () => {
+    it("closes the layers on a base entry, and applies a layer entry's base under its layer", () => {
+        const history = start(
+            new FakeHistory(
+                [
+                    { path: "/chat/a/a1", state: STATE },
+                    { path: "/settings/model", state: layer(1, "/chat/a/a1") },
+                    { path: "/chat/b/b1", state: STATE },
+                    { path: "/characters", state: layer(1, "/chat/b/b1") },
+                ],
+                { index: 1 },
+            ),
+        );
+        expect(screen()).toBe(CHAT_A);
+        expect(layers()).toBe("settings=true:1 grid=false");
+        history.go(-1);
+        flushSync();
+        expect(screen()).toBe(CHAT_A);
+        expect(layers()).toBe("settings=false:1 grid=false");
+        history.go(2);
+        flushSync();
+        expect(screen()).toBe(CHAT_B);
+        expect(layers()).toBe("settings=false:1 grid=false");
+        history.go(1);
+        flushSync();
+        expect(screen()).toBe(CHAT_B);
+        expect(layers()).toBe("settings=false:1 grid=true");
+        // Back to the settings entry: its base (A) is applied under it, and the grid closes.
+        history.go(-2);
+        flushSync();
+        expect(screen()).toBe(CHAT_A);
+        expect(layers()).toBe("settings=true:1 grid=false");
+        expect(history.log).toEqual([
+            "replace /settings/model",
+            "replace /chat/a/a1",
+            "replace /chat/b/b1",
+            "replace /characters",
+            "replace /settings/model",
+        ]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1"));
+    });
+
+    it("applies a layer URL without state (a fragment change) over the stores' base, without a root insertion", () => {
+        const history = start(
+            new FakeHistory([{ path: "/chat/a/a1", state: STATE }, { path: "/characters" }], { index: 0 }),
+        );
+        history.go(1);
+        flushSync();
+        expect(screen()).toBe(CHAT_A);
+        expect(layers()).toBe("settings=false:-1 grid=true");
+        expect(history.log).toEqual(["replace /chat/a/a1", "replace /characters"]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1"));
+        click();
+        expect(history.log).toHaveLength(2);
+    });
+
+    it("lands a layer entry whose base names a removed character at home, marked rebased", () => {
+        const history = start(
+            new FakeHistory(
+                [
+                    { path: "/chat/b/b1", state: STATE },
+                    { path: "/settings/model", state: layer(1, "/chat/b/b1") },
+                    { path: "/", state: STATE },
+                ],
+                { index: 2 },
+            ),
+        );
+        removeCharacters(["b"]);
+        history.go(-1);
+        flushSync();
+        expect(screen()).toBe(HOME);
+        expect(layers()).toBe("settings=true:1 grid=false");
+        expect(history.state).toEqual(layer(1, "/", { rebased: true }));
+        restoreCharacters();
+    });
+});
+
+describe("the sync effect (layers)", () => {
+    it("opens a layer with a push over the base entry and closes it with a back to that entry", () => {
+        const history = start(new FakeHistory([{ path: "/chat/a/a1", state: STATE }]));
+        // The settings button: index -1 on a wide screen is the model page (R4), set without a step.
+        settingsOpen.set(true);
+        flushSync();
+        expect(get(SettingsMenuIndex)).toBe(MODEL);
+        expect(history.log).toEqual(["replace /chat/a/a1", "push /settings/model"]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1"));
+        const below = history.keyBelow();
+        settingsOpen.set(false);
+        flushSync();
+        expect(history.log.slice(2)).toEqual([`traverse ${below}`]);
+        history.land(below);
+        flushSync();
+        expect(history.log.slice(3)).toEqual(["replace /chat/a/a1"]);
+        expect(screen()).toBe(CHAT_A);
+        expect(layers()).toBe("settings=false:1 grid=false");
+
+        gridOpenStore.set(true);
+        flushSync();
+        expect(history.log.slice(4)).toEqual(["push /characters"]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1"));
+        gridOpenStore.set(false);
+        flushSync();
+        expect(history.log.slice(5)).toEqual([`traverse ${history.keyBelow()}`]);
+    });
+
+    it("replaces the close when the entry beneath is not the base, and without the Navigation API (A4)", () => {
+        let history = start(
+            new FakeHistory([
+                { path: "/", state: STATE },
+                { path: "/settings/model", state: layer(1, "/chat/a/a1") },
+            ]),
+        );
+        settingsOpen.set(false);
+        flushSync();
+        expect(history.log).toEqual(["replace /settings/model", "replace /chat/a/a1"]);
+        expect(history.state).toEqual(STATE);
+        expect(history.paths()).toEqual(["/", "[/chat/a/a1]"]);
+        stop!();
+        resetLayers();
+
+        history = start(
+            new FakeHistory(
+                [
+                    { path: "/chat/a/a1", state: STATE },
+                    { path: "/characters", state: layer(1, "/chat/a/a1") },
+                ],
+                { navigation: false },
+            ),
+        );
+        gridOpenStore.set(false);
+        flushSync();
+        expect(history.log).toEqual(["replace /characters", "replace /chat/a/a1"]);
+        expect(history.paths()).toEqual(["/chat/a/a1", "[/chat/a/a1]"]);
+    });
+
+    it("replaces a page switch on a wide screen, pushes the prompt template, and goes back from it", () => {
+        const history = start(
+            new FakeHistory([
+                { path: "/chat/a/a1", state: STATE },
+                { path: "/settings/model", state: layer(1, "/chat/a/a1") },
+            ]),
+        );
+        SettingsMenuIndex.set(PROMPT);
+        flushSync();
+        expect(history.log.slice(1)).toEqual(["replace /settings/prompt"]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1"));
+        SettingsMenuIndex.set(TEMPLATE);
+        flushSync();
+        expect(history.log.slice(2)).toEqual(["push /settings/prompt-template"]);
+        expect(history.state).toEqual(layer(2, "/chat/a/a1"));
+        const prompt = history.keyBelow();
+        // The template's back button.
+        SettingsMenuIndex.set(PROMPT);
+        flushSync();
+        expect(history.log.slice(3)).toEqual([`traverse ${prompt}`]);
+        history.land(prompt);
+        flushSync();
+        expect(history.log.slice(4)).toEqual(["replace /settings/prompt"]);
+        expect(layers()).toBe(`settings=true:${PROMPT} grid=false`);
+        // From the template to another page: a replace at depth 2, so the close goes two below.
+        SettingsMenuIndex.set(TEMPLATE);
+        flushSync();
+        SettingsMenuIndex.set(MODEL);
+        flushSync();
+        expect(history.log.slice(5)).toEqual(["push /settings/prompt-template", "replace /settings/model"]);
+        expect(history.state).toEqual(layer(2, "/chat/a/a1"));
+        settingsOpen.set(false);
+        flushSync();
+        expect(history.log.slice(7)).toEqual([`traverse ${history.keyBelow(2)}`]);
+        expect(history.entries[0].path).toBe("/chat/a/a1");
+    });
+
+    it("on a narrow screen: pushes the list → a page, goes back page → list, and closes from a page by two", () => {
+        window.innerWidth = NARROW;
+        const history = start(new FakeHistory([{ path: "/chat/a/a1", state: STATE }]));
+        settingsOpen.set(true);
+        flushSync();
+        expect(layers()).toBe("settings=true:-1 grid=false");
+        expect(history.log.slice(1)).toEqual(["push /settings"]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1"));
+        SettingsMenuIndex.set(DISPLAY);
+        flushSync();
+        expect(history.log.slice(2)).toEqual(["push /settings/display"]);
+        expect(history.state).toEqual(layer(2, "/chat/a/a1"));
+        // The page's close button sets the index to -1: back to the list.
+        const list = history.keyBelow();
+        SettingsMenuIndex.set(-1);
+        flushSync();
+        expect(history.log.slice(3)).toEqual([`traverse ${list}`]);
+        history.land(list);
+        flushSync();
+        expect(history.log.slice(4)).toEqual(["replace /settings"]);
+        expect(layers()).toBe("settings=true:-1 grid=false");
+        // The list's close button on a page (Escape too): the base is two below.
+        SettingsMenuIndex.set(DISPLAY);
+        flushSync();
+        expect(history.log.slice(5)).toEqual(["push /settings/display"]);
+        const base = history.keyBelow(2);
+        settingsOpen.set(false);
+        flushSync();
+        expect(history.log.slice(6)).toEqual([`traverse ${base}`]);
+        history.land(base);
+        flushSync();
+        expect(screen()).toBe(CHAT_A);
+        expect(layers()).toBe(`settings=false:${DISPLAY} grid=false`);
+        expect(history.paths()).toEqual(["[/chat/a/a1]", "/settings", "/settings/display"]);
+    });
+
+    it("on a narrow screen: a remembered page opened from a base entry gets the list beneath it", () => {
+        window.innerWidth = NARROW;
+        SettingsMenuIndex.set(DISPLAY);
+        flushSync();
+        const history = start(new FakeHistory([{ path: "/chat/a/a1", state: STATE }]));
+        settingsOpen.set(true);
+        flushSync();
+        expect(history.log.slice(1)).toEqual(["push /settings", "push /settings/display"]);
+        expect(history.paths()).toEqual(["/chat/a/a1", "/settings", "[/settings/display]"]);
+        expect(history.entries[1].state).toEqual(layer(1, "/chat/a/a1"));
+        expect(history.state).toEqual(layer(2, "/chat/a/a1"));
+        SettingsMenuIndex.set(-1);
+        flushSync();
+        expect(history.log.slice(3)).toEqual([`traverse ${history.keyBelow()}`]);
+    });
+
+    it("on a narrow screen without the Navigation API: page → list replaces, and the close replaces (A4)", () => {
+        window.innerWidth = NARROW;
+        const history = start(
+            new FakeHistory(
+                [
+                    { path: "/chat/a/a1", state: STATE },
+                    { path: "/settings", state: layer(1, "/chat/a/a1") },
+                    { path: "/settings/display", state: layer(2, "/chat/a/a1") },
+                ],
+                { navigation: false },
+            ),
+        );
+        SettingsMenuIndex.set(-1);
+        flushSync();
+        expect(history.log.slice(1)).toEqual(["replace /settings"]);
+        expect(history.state).toEqual(layer(2, "/chat/a/a1"));
+        settingsOpen.set(false);
+        flushSync();
+        expect(history.log.slice(2)).toEqual(["replace /chat/a/a1"]);
+        expect(history.paths()).toEqual(["/chat/a/a1", "/settings", "[/chat/a/a1]"]);
+    });
+
+    it("R6: a character picked in the grid rebases the entry, and the close replaces with the new base", () => {
+        const history = start(
+            new FakeHistory([
+                { path: "/chat/a/a1", state: STATE },
+                { path: "/characters", state: layer(1, "/chat/a/a1") },
+            ]),
+        );
+        selectCharacter("b");
+        flushSync();
+        expect(history.log.slice(1)).toEqual(["replace /characters"]);
+        expect(history.state).toEqual(layer(1, "/chat/b/b1", { rebased: true }));
+        // A change that keeps the base takes no step.
+        chat.selectChat("a", "a2");
+        flushSync();
+        expect(history.log).toHaveLength(2);
+        gridOpenStore.set(false);
+        flushSync();
+        expect(history.log.slice(2)).toEqual(["replace /chat/b/b1"]);
+        expect(history.state).toEqual(STATE);
+        expect(history.paths()).toEqual(["/chat/a/a1", "[/chat/b/b1]"]);
+        expect(screen()).toBe(CHAT_B);
+    });
+
+    it("R6: a close with a base change in the same step replaces; the old base picked again goes back", () => {
+        let history = start(
+            new FakeHistory([
+                { path: "/chat/a/a1", state: STATE },
+                { path: "/settings/model", state: layer(1, "/chat/a/a1") },
+            ]),
+        );
+        // The Home hotkey, then Escape, in one settled step.
+        selectCharacter(null);
+        settingsOpen.set(false);
+        flushSync();
+        expect(history.log.slice(1)).toEqual(["replace /"]);
+        expect(screen()).toBe(HOME);
+        stop!();
+        resetLayers();
+
+        history = start(
+            new FakeHistory([
+                { path: "/chat/a/a1", state: STATE },
+                { path: "/characters", state: layer(1, "/chat/a/a1") },
+            ]),
+        );
+        selectCharacter("b");
+        flushSync();
+        selectCharacter("a");
+        flushSync();
+        expect(history.log.slice(1)).toEqual(["replace /characters", "replace /characters"]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1", { rebased: true }));
+        gridOpenStore.set(false);
+        flushSync();
+        expect(history.log.slice(3)).toEqual([`traverse ${history.keyBelow()}`]);
+    });
+
+    it("R6: a base change in the same step as a move inside the layer replaces, and a rebased entry never goes back", () => {
+        window.innerWidth = NARROW;
+        const history = start(
+            new FakeHistory([
+                { path: "/chat/a/a1", state: STATE },
+                { path: "/settings", state: layer(1, "/chat/a/a1") },
+                { path: "/settings/display", state: layer(2, "/chat/a/a1") },
+            ]),
+        );
+        // One settled step: B selected and the page closed to the list.
+        selectCharacter("b");
+        SettingsMenuIndex.set(-1);
+        flushSync();
+        expect(history.log.slice(1)).toEqual(["replace /settings"]);
+        expect(history.state).toEqual(layer(2, "/chat/b/b1", { rebased: true }));
+        // The list → a page still pushes; the page → the list replaces (the list beneath names A).
+        SettingsMenuIndex.set(DISPLAY);
+        flushSync();
+        SettingsMenuIndex.set(-1);
+        flushSync();
+        expect(history.log.slice(2)).toEqual(["push /settings/display", "replace /settings"]);
+        expect(history.state).toEqual(layer(3, "/chat/b/b1", { rebased: true }));
+        settingsOpen.set(false);
+        flushSync();
+        expect(history.log.slice(4)).toEqual(["replace /chat/b/b1"]);
+        expect(history.paths()).toEqual(["/chat/a/a1", "/settings", "/settings", "[/chat/b/b1]"]);
+    });
+
+    it("R3: switching between settings and the grid replaces at the same depth, before any back", () => {
+        window.innerWidth = NARROW;
+        const history = start(
+            new FakeHistory([
+                { path: "/chat/a/a1", state: STATE },
+                { path: "/settings", state: layer(1, "/chat/a/a1") },
+                { path: "/settings/display", state: layer(2, "/chat/a/a1") },
+            ]),
+        );
+        gridOpenStore.set(true);
+        settingsOpen.set(false);
+        flushSync();
+        expect(history.log.slice(1)).toEqual(["replace /characters"]);
+        expect(history.state).toEqual(layer(2, "/chat/a/a1"));
+        // Settings again, on the list: the list entry beneath is not taken; the grid entry is.
+        settingsOpen.set(true);
+        SettingsMenuIndex.set(-1);
+        flushSync();
+        expect(layers()).toBe("settings=true:-1 grid=false");
+        expect(history.log.slice(2)).toEqual(["replace /settings"]);
+        expect(history.state).toEqual(layer(2, "/chat/a/a1"));
+        expect(history.paths()).toEqual(["/chat/a/a1", "/settings", "[/settings]"]);
+    });
+
+    it("one layer at a time: settings opened over the grid closes it, so the close shows the base", () => {
+        const history = start(new FakeHistory([{ path: "/chat/a/a1", state: STATE }]));
+        gridOpenStore.set(true);
+        flushSync();
+        settingsOpen.set(true);
+        flushSync();
+        expect(layers()).toBe("settings=true:1 grid=false");
+        expect(history.log.slice(1)).toEqual(["push /characters", "replace /settings/model"]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1"));
+        settingsOpen.set(false);
+        flushSync();
+        expect(history.log.slice(3)).toEqual([`traverse ${history.keyBelow()}`]);
+        expect(layers()).toBe("settings=false:1 grid=false");
+    });
+
+    it("normalizes the list to the model page on a wide screen without a step, and takes one back for it (G2)", () => {
+        const history = start(
+            new FakeHistory([
+                { path: "/chat/a/a1", state: STATE },
+                { path: "/settings/model", state: layer(1, "/chat/a/a1") },
+            ]),
+        );
+        SettingsMenuIndex.set(-1);
+        flushSync();
+        expect(get(SettingsMenuIndex)).toBe(MODEL);
+        expect(history.log).toEqual(["replace /settings/model"]);
+        // A model entry beneath the template: prompt → template, back, model, forward, then the list.
+        SettingsMenuIndex.set(PROMPT);
+        flushSync();
+        SettingsMenuIndex.set(TEMPLATE);
+        flushSync();
+        history.go(-1);
+        flushSync();
+        SettingsMenuIndex.set(MODEL);
+        flushSync();
+        history.go(1);
+        flushSync();
+        expect(history.log.slice(1)).toEqual([
+            "replace /settings/prompt",
+            "push /settings/prompt-template",
+            "replace /settings/prompt",
+            "replace /settings/model",
+            "replace /settings/prompt-template",
+        ]);
+        SettingsMenuIndex.set(-1);
+        flushSync();
+        expect(get(SettingsMenuIndex)).toBe(MODEL);
+        // The normalizing write keeps the route: exactly one step, and no retry. The template was
+        // reached by a forward landing, which marks it `rebased`, so the step is a replace, not a back.
+        expect(history.log.slice(6)).toEqual(["replace /settings/model"]);
+        flushSync();
+        flushSync();
+        expect(history.log).toHaveLength(7);
+    });
+
+    it("a chat switch under a layer and a base change back to the entry's base take no extra step", () => {
+        const history = start(
+            new FakeHistory([
+                { path: "/chat/a/a1", state: STATE },
+                { path: "/settings/model", state: layer(1, "/chat/a/a1") },
+            ]),
+        );
+        chat.selectChat("a", "a2");
+        flushSync();
+        expect(history.log.slice(1)).toEqual(["replace /settings/model"]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a2", { rebased: true }));
+        chat.selectChat("a", "a2");
+        flushSync();
+        expect(history.log).toHaveLength(2);
+    });
+
+    it("stops following the layer stores after the stop", () => {
+        const history = start(new FakeHistory([{ path: "/chat/a/a1", state: STATE }]));
+        stop!();
+        stop = null;
+        settingsOpen.set(true);
+        flushSync();
+        expect(history.log).toEqual(["replace /chat/a/a1"]);
+    });
+});
+
+describe("the root insertion (decision 5, H1)", () => {
+    it("inserts the base entry under a direct layer link at the first activation, before the app's handlers", () => {
+        const history = start(new FakeHistory([{ path: "/settings/model" }]));
+        // Not an activation: an untrusted click, Escape, a touch pointerdown, a mouse pointerup.
+        window.dispatchEvent(new MouseEvent("click"));
+        window.dispatchEvent(trusted(new KeyboardEvent("keydown", { key: "Escape" })));
+        window.dispatchEvent(trusted(new PointerEvent("pointerdown", { pointerType: "touch" })));
+        window.dispatchEvent(trusted(new PointerEvent("pointerup", { pointerType: "mouse" })));
+        expect(history.paths()).toEqual(["[/settings/model]"]);
+        expect(history.state).toEqual(layer(1, "/", { rootPending: true }));
+        // A key the app handles: the window's capture listener runs before the document's handler.
+        const seen: string[][] = [];
+        const handler = () => seen.push(history.paths());
+        document.addEventListener("keydown", handler);
+        try {
+            document.body.dispatchEvent(trusted(new KeyboardEvent("keydown", { key: "a", bubbles: true })));
+        } finally {
+            document.removeEventListener("keydown", handler);
+        }
+        expect(seen).toEqual([["/", "[/settings/model]"]]);
+        expect(history.entries[0].state).toEqual(STATE);
+        expect(history.state).toEqual(layer(1, "/"));
+        expect(history.log).toEqual([
+            "replace /settings/model",
+            "replace /settings/model",
+            "replace /",
+            "push /settings/model",
+        ]);
+        // Done: a later activation inserts nothing more, and the close goes back to the base entry.
+        click();
+        expect(history.log).toHaveLength(4);
+        const root = history.keyBelow();
+        settingsOpen.set(false);
+        flushSync();
+        expect(history.log.slice(4)).toEqual([`traverse ${root}`]);
+        history.land(root);
+        flushSync();
+        expect(screen()).toBe(HOME);
+        expect(layers()).toBe("settings=false:1 grid=false");
+    });
+
+    it("accepts a mouse pointerdown, a touch pointerup, a touchend, and a mousedown", () => {
+        const events = [
+            trusted(new PointerEvent("pointerdown", { pointerType: "mouse" })),
+            trusted(new PointerEvent("pointerup", { pointerType: "touch" })),
+            trusted(new Event("touchend")),
+            trusted(new MouseEvent("mousedown")),
+        ];
+        for (const event of events) {
+            const history = start(new FakeHistory([{ path: "/characters" }]));
+            window.dispatchEvent(event);
+            expect(history.paths(), event.type).toEqual(["/", "[/characters]"]);
+            stop!();
+            resetLayers();
+        }
+    });
+
+    it("inserts the list under a settings page on a narrow screen", () => {
+        window.innerWidth = NARROW;
+        const history = start(new FakeHistory([{ path: "/settings/display" }]));
+        expect(layers()).toBe(`settings=true:${DISPLAY} grid=false`);
+        click();
+        expect(history.paths()).toEqual(["/", "/settings", "[/settings/display]"]);
+        expect(history.entries.map((entry) => entry.state)).toEqual([STATE, layer(1, "/"), layer(2, "/")]);
+        SettingsMenuIndex.set(-1);
+        flushSync();
+        expect(history.log.slice(5)).toEqual([`traverse ${history.keyBelow()}`]);
+    });
+
+    it("inserts the base the layer has now, not the one at boot (R6 before the activation)", () => {
+        const history = start(new FakeHistory([{ path: "/characters" }]));
+        // A plugin or the import selects a character before any activation.
+        selectCharacter("a");
+        flushSync();
+        expect(history.state).toEqual(layer(1, "/chat/a/a1", { rebased: true, rootPending: true }));
+        click();
+        expect(history.paths()).toEqual(["/chat/a/a1", "[/characters]"]);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1"));
+    });
+
+    it("follows navigator.userActivation where it exists", () => {
+        const activation = { isActive: false };
+        Object.defineProperty(navigator, "userActivation", { configurable: true, value: activation });
+        try {
+            const history = start(new FakeHistory([{ path: "/settings/model" }]));
+            window.dispatchEvent(trusted(new MouseEvent("mousedown")));
+            expect(history.paths()).toEqual(["[/settings/model]"]);
+            activation.isActive = true;
+            window.dispatchEvent(trusted(new MouseEvent("mousedown")));
+            expect(history.paths()).toEqual(["/", "[/settings/model]"]);
+        } finally {
+            delete (navigator as { userActivation?: unknown }).userActivation;
+        }
+    });
+
+    it("closes before any activation by a replace (G3), and inserts nothing after", () => {
+        const history = start(new FakeHistory([{ path: "/settings/model" }]));
+        settingsOpen.set(false);
+        flushSync();
+        expect(history.log.slice(2)).toEqual(["replace /"]);
+        expect(history.state).toEqual(STATE);
+        click();
+        expect(history.paths()).toEqual(["[/]"]);
+        // Reopened by a click: an ordinary push over the base entry.
+        settingsOpen.set(true);
+        flushSync();
+        expect(history.log.slice(3)).toEqual(["push /settings/model"]);
+        expect(history.state).toEqual(layer(1, "/"));
+    });
+
+    it("keeps waiting across a switch of layers, and stops at a push without an activation", () => {
+        window.innerWidth = NARROW;
+        let history = start(new FakeHistory([{ path: "/characters" }]));
+        settingsOpen.set(true);
+        flushSync();
+        expect(history.log.slice(2)).toEqual(["replace /settings"]);
+        expect(history.state).toEqual(layer(1, "/", { rootPending: true }));
+        click();
+        expect(history.paths()).toEqual(["/", "[/settings]"]);
+        stop!();
+        resetLayers();
+
+        history = start(new FakeHistory([{ path: "/settings" }]));
+        // A page opened without an activation (a plugin): the entry above is not waiting.
+        SettingsMenuIndex.set(DISPLAY);
+        flushSync();
+        expect(history.log.slice(2)).toEqual(["push /settings/display"]);
+        expect(history.state).toEqual(layer(2, "/"));
+        click();
+        expect(history.paths()).toEqual(["/settings", "[/settings/display]"]);
+    });
+
+    it("waits again after a reload of an entry still pending, and stops at a popstate and at the stop", () => {
+        let history = start(
+            new FakeHistory([{ path: "/characters", state: layer(1, "/chat/a/a1", { rootPending: true }) }]),
+        );
+        expect(screen()).toBe(CHAT_A);
+        expect(layers()).toBe("settings=false:-1 grid=true");
+        expect(history.log).toEqual(["replace /characters", "replace /characters"]);
+        click();
+        expect(history.paths()).toEqual(["/chat/a/a1", "[/characters]"]);
+        expect(history.entries[0].state).toEqual(STATE);
+        expect(history.state).toEqual(layer(1, "/chat/a/a1"));
+        stop!();
+        resetLayers();
+
+        // A fragment change on the pending entry: the wait ends, the mark stays for the next reload.
+        history = start(new FakeHistory([{ path: "/settings/model" }]));
+        history.go(0);
+        flushSync();
+        expect(history.state).toEqual(layer(1, "/", { rootPending: true }));
+        click();
+        expect(history.paths()).toEqual(["[/settings/model]"]);
+        stop!();
+        resetLayers();
+
+        history = start(new FakeHistory([{ path: "/settings/model" }]));
+        stop!();
+        stop = null;
+        click();
+        expect(history.paths()).toEqual(["[/settings/model]"]);
+        expect(history.log).toHaveLength(2);
+    });
+});
+
+describe("defects found at the slice 4 review", () => {
+    // Astra's challenge, point 1. The list beneath was rebased while this page was a forward entry;
+    // its state cannot be read, so a page reached by a landing is marked `rebased` and its close
+    // replaces instead of going back to the list (whose landing would apply home and lose A).
+    it("a move inside the layer does not go back from an entry reached by a landing above depth 1", () => {
+        window.innerWidth = NARROW;
+        const history = start(
+            new FakeHistory([
+                { path: "/chat/a/a1", state: STATE },
+                { path: "/settings", state: layer(1, "/chat/a/a1") },
+                { path: "/settings/display", state: layer(2, "/chat/a/a1") },
+            ]),
+        );
+        history.go(-1);
+        flushSync();
+        // The Home hotkey on the list: R6 rebases the list entry.
+        selectCharacter(null);
+        flushSync();
+        expect(history.entries[1].state).toEqual(layer(1, "/", { rebased: true }));
+        history.go(1);
+        flushSync();
+        expect(screen()).toBe(CHAT_A);
+        // The page's close button: a replace, not a back to the list (k2).
+        SettingsMenuIndex.set(-1);
+        flushSync();
+        const step = history.log.at(-1)!;
+        if (step.startsWith("traverse ")) {
+            history.land(step.slice("traverse ".length));
+            flushSync();
+        }
+        expect(screen()).toBe(CHAT_A);
+        expect(history.log.slice(4)).toEqual(["replace /settings"]);
+    });
+
+    // Astra's challenge, point 3. Under a layer, a removed selected character goes home as it does
+    // without a layer (R4): the stale playground value is cleared, not kept as the layer's base.
+    it("a removed character under a layer goes home (R4), not to the stale playground menu", () => {
+        const history = start(new FakeHistory([{ path: "/playground", state: STATE }]));
+        // The sidebar from the playground menu: `changeChar` leaves the playground value at 1.
+        selectCharacter("a");
+        flushSync();
+        settingsOpen.set(true);
+        flushSync();
+        expect(history.paths()).toEqual(["/playground", "/chat/a/a1", "[/settings/model]"]);
+        removeCharacters(["a"]);
+        flushSync();
+        const observed = { screen: screen(), state: history.state };
+        restoreCharacters();
+        expect(observed.screen).toBe(HOME);
+        expect(observed.state).toEqual(layer(1, "/", { rebased: true }));
+    });
+});
 
 describe("browserHistory", () => {
     const entry = (

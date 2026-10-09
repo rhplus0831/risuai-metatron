@@ -6,6 +6,7 @@ import { alertMd, alertSelect, alertToast, alertWait, doingAlert, alertRequestLo
 import { changeToPreset as changeToPreset2 } from "./storage/presets.svelte";
 import {
     alertStore,
+    gridOpenStore,
     openPersonaList,
     openPresetList,
     OpenRealmStore,
@@ -245,11 +246,16 @@ export function initHotkey() {
             }
         }
         if (ev.key === "Escape") {
-            if (doingAlert()) {
+            // Read before the toast: `alertToast` replaces the alert, and a toast is no alert.
+            const hadAlert = doingAlert();
+            if (hadAlert) {
                 alertToast("Alert Closed");
             }
             if (get(settingsOpen)) {
                 settingsOpen.set(false);
+            } else if (get(gridOpenStore) && !hadAlert) {
+                // The character grid closes like settings (its URL is a layer, `router/router.svelte.ts`).
+                gridOpenStore.set(false);
             }
             ev.preventDefault();
         }
