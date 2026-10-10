@@ -1,7 +1,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page, type Route } from "@playwright/test";
-import { modelFixtureOps, promptFixture } from "../util/playwright/modelProfiles.mjs";
+import { chatBindingFixture, modelFixtureOps, promptFixture } from "../util/playwright/modelProfiles.mjs";
 import { openApp } from "../util/playwright/stack.mjs";
 
 // Phase 5 slice 13b (`docs/plan/phases/slices/phase-5-server-side-processing/script-transform.md`):
@@ -128,6 +128,7 @@ async function seed(
     const providers = (await s.api("/api/resources/providers/main")).body;
     const modelPresets = (await s.api("/api/resources/modelPresets/main")).body;
     const modelProfiles = (await s.api("/api/resources/modelProfiles/main")).body;
+    const personas = (await s.api("/api/resources/personas/main")).body;
     const chaId = randomUUID();
     const character = {
         name: `Transform ${chaId.slice(0, 6)}`,
@@ -178,6 +179,9 @@ async function seed(
         maxContext: 4000,
         maxResponse: 100,
     };
+    // Every chat is bound to that model preset, the prompt preset, and the first persona: a send
+    // runs only with a complete binding (`docs/plan/chat-binding.md`).
+    const binding = chatBindingFixture(modelPresets, presets, personas);
     const seeded = await s.api("/api/resources/batch", {
         method: "POST",
         body: JSON.stringify({
@@ -214,6 +218,7 @@ async function seed(
                         chat: {
                             id: chat.id,
                             name: chat.id,
+                            ...binding,
                             message: chat.message,
                             scriptstate: chat.scriptstate ?? {},
                         },

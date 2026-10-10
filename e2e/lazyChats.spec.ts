@@ -1,7 +1,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
-import { modelFixtureOps } from "../util/playwright/modelProfiles.mjs";
+import { chatBindingFixture, modelFixtureOps } from "../util/playwright/modelProfiles.mjs";
 import { openApp } from "../util/playwright/stack.mjs";
 
 // Phase 6 slice 9b (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`,
@@ -135,6 +135,8 @@ async function seed(s: Session): Promise<string> {
     const order = (await s.api("/api/resources/characterOrder/main")).body;
     const modelPresets = (await s.api("/api/resources/modelPresets/main")).body;
     const modelProfiles = (await s.api("/api/resources/modelProfiles/main")).body;
+    const presets = (await s.api("/api/resources/presets/main")).body;
+    const personas = (await s.api("/api/resources/personas/main")).body;
     const providers = (await s.api("/api/resources/providers/main")).body;
     seededRecords = { modelPresets: modelPresets.data, modelProfiles: modelProfiles.data, providers: providers.data };
     const chaId = randomUUID();
@@ -168,6 +170,9 @@ async function seed(s: Session): Promise<string> {
     };
     // A profile on the mock provider, named by the first model preset's main and sub slots.
     const model = { aiModel: "reverse_proxy", forceReplaceUrl: providerUrl, customProxyRequestModel: "mock" };
+    // Every chat is bound to that model preset, the first prompt preset, and the first persona: the
+    // send below runs only with a complete binding (`docs/plan/chat-binding.md`).
+    const binding = chatBindingFixture(modelPresets, presets, personas);
     const seeded = await s.api("/api/resources/batch", {
         method: "POST",
         body: JSON.stringify({
@@ -203,6 +208,7 @@ async function seed(s: Session): Promise<string> {
                         chat: {
                             id,
                             name: id.toUpperCase(),
+                            ...binding,
                             message: Array.from({ length: id === "big" ? 60 : 2 }, (_, i) => message(id, i)),
                             ...(id === "s2" ? { folderId: "folder-1" } : {}),
                         },

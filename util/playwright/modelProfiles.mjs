@@ -44,6 +44,20 @@ export function modelFixtureOps(configuration, modelPresets, modelProfiles) {
     ];
 }
 
+/**
+ * The binding a seeded chat needs before it can be sent (`docs/plan/chat-binding.md`: a chat is sent
+ * only with its own model preset, prompt preset, and persona, and never with the tab's selection):
+ * the first model preset, whose slots `modelFixtureOps` points at the mock provider, the first prompt
+ * preset, and the first persona, as the resource reads answer them. Spread into a chat's `create` op.
+ */
+export function chatBindingFixture(modelPresets, presets, personas) {
+    return {
+        modelPresetId: modelPresets.data[0].id,
+        promptPresetId: presets.data[0].id,
+        bindedPersona: personas.data[0].id,
+    };
+}
+
 /** Keep the prompt half of a check's former combined preset fixture. */
 export function promptFixture(preset) {
     const fields = { ...preset };

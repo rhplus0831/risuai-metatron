@@ -1,7 +1,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
-import { modelFixtureOps } from "../util/playwright/modelProfiles.mjs";
+import { chatBindingFixture, modelFixtureOps } from "../util/playwright/modelProfiles.mjs";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
 // Phase 6 slice 7 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/readers-settings-consumers.md`,
@@ -289,9 +289,14 @@ async function seedChat(s: Session, ui: Record<string, unknown>, memory: Record<
     const order = (await s.api("/api/resources/characterOrder/main")).body;
     const modelPresets = (await s.api("/api/resources/modelPresets/main")).body;
     const modelProfiles = (await s.api("/api/resources/modelProfiles/main")).body;
+    const personas = (await s.api("/api/resources/personas/main")).body;
     const selected = await views(s.page);
-    // `modelFixtureOps` sets the first model preset's slots: the one a fresh tab selects.
+    // `modelFixtureOps` sets the first model preset's slots: the one a fresh tab selects. The chat is
+    // bound to it, the first prompt preset (the selected one, edited below), and the first persona
+    // (`docs/plan/chat-binding.md`: a send runs only with a complete binding).
     expect(selected.modelPreset.id).toBe(modelPresets.data[0].id);
+    expect(selected.preset.id).toBe(presets.data[0].id);
+    const binding = chatBindingFixture(modelPresets, presets, personas);
     const model = {
         aiModel: "reverse_proxy",
         subModel: "reverse_proxy",
@@ -379,6 +384,7 @@ async function seedChat(s: Session, ui: Record<string, unknown>, memory: Record<
                             chat: {
                                 id: chatId,
                                 name: "Settings chat",
+                                ...binding,
                                 message: [{ role: "char", data: "Seeded reply.", chatId: "m-seed" }],
                             },
                         },
