@@ -11,7 +11,11 @@ When no plans are active, keep the list below set to `None`.
 Active planning and implementation:
 
 - [Split Preset](split-preset.md): split the bot preset into model and prompt
-  presets (done; per-chat selection is the open follow-up).
+  presets (done; per-chat selection is the open follow-up, planned in
+  [Chat Binding](chat-binding.md)).
+- [Chat Binding](chat-binding.md): bind each chat's model preset, prompt
+  preset, and persona, and refuse to send until all three are bound
+  (planned).
 - [Shared API Keys](shared-api-keys.md): move LLM credentials into a named key
   list that each model binds to (done; named keys for the auxiliary
   operations are the open follow-up).
