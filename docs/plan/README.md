@@ -10,12 +10,6 @@ When no plans are active, keep the list below set to `None`.
 
 Active planning and implementation:
 
-- [Split Preset](split-preset.md): split the bot preset into model and prompt
-  presets (done; its per-chat selection follow-up is done in
-  [Chat Binding](chat-binding.md)).
-- [Chat Binding](chat-binding.md): bind each chat's model preset, prompt
-  preset, and persona, and refuse to send until all three are bound
-  (done, slices 1–7).
 - [Shared API Keys](shared-api-keys.md): move LLM credentials into a named key
   list that each model binds to (done; named keys for the auxiliary
   operations are the open follow-up).
@@ -32,3 +26,9 @@ Active planning and implementation:
 - The server-owned data plan (Phases 0–6, `STRUCTURE.md`, "Migration History")
   closed out at commit `9d09288b`; its last version, `PLAN.md` and `phases/`,
   is in that commit's tree.
+- Split Preset (`split-preset.md`: the bot preset split into model and prompt
+  presets) and Chat Binding (`chat-binding.md`: each chat binds its model
+  preset, prompt preset, and persona, and is not sent until all three are
+  bound) closed out at commit `809b35cc`; their last versions are in that
+  commit's tree. The guides and code comments still name them by path (and
+  Chat Binding's decisions by number).

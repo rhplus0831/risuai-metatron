@@ -254,7 +254,9 @@ targeted path to read them.
 ## Migration History
 
 The guides name these steps where a version boundary matters (old saves, archives, fixtures). The
-plan that drove them is archived; its last version is in git (`docs/plan/README.md`).
+plan that drove them is archived; its last version is in git (`docs/plan/README.md`). So are the
+finished plans the guides still name by path (`docs/plan/split-preset.md`,
+`docs/plan/chat-binding.md`): `docs/plan/README.md` "Archived" names the commit that holds them.
 
 | Step    | What changed                                                                                                                              | Last commit               |
 | ------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |

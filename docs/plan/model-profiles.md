@@ -7,7 +7,7 @@ uses). The auxiliary model separation (`seperateModelsForAxModels`)
 becomes a per-slot profile choice, so each auxiliary model gets its own key,
 endpoint, and compatibility options.
 
-Builds on [Split Preset](split-preset.md) and [Shared API Keys](shared-api-keys.md).
+Builds on Split Preset (`split-preset.md`, archived: see [the plan index](README.md)) and [Shared API Keys](shared-api-keys.md).
 It supersedes Shared API Keys decision 1 (one global key per model id).
 
 ## Terms
