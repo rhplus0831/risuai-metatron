@@ -1,4 +1,6 @@
+import { untrack } from "svelte";
 import { language } from "src/lang";
+import type { Chat } from "../../../shared/database.ts";
 import {
     readChatBindingIds,
     resolveChatBinding,
@@ -8,9 +10,9 @@ import {
     type ChatBindingProblem,
     type ChatBindingResult,
 } from "../../../shared/chatBinding.ts";
-import { chatEntry, countChatEntries, setChatMeta, type ChatRef } from "./chatStore.svelte";
+import { chatEntry, countChatEntries, selectedChatId, setChatMeta, type ChatRef } from "./chatStore.svelte";
 import { trackedRecord, type RecordKind } from "./records.svelte";
-import { tabSelectionIds } from "./settingsViews.svelte";
+import { settings, tabSelectionIds } from "./settingsViews.svelte";
 
 /*
  * A chat's binding on the client (`docs/plan/chat-binding.md`): read from the chat's list entry, so
@@ -157,4 +159,63 @@ export function pickedId(field: ChatBindingField, ref: ChatRef | null, viewId: s
  */
 export function chatsBoundTo(field: ChatBindingField, id: string): number {
     return countChatEntries((entry) => readChatBindingIds(entry)[field] === id);
+}
+
+/** The stored binding fields a new chat starts with (each omitted when unset). */
+export type InitialChatBinding = Pick<Chat, "modelPresetId" | "promptPresetId" | "bindedPersona">;
+
+/**
+ * How a fresh chat of `chaId` starts (`docs/plan/chat-binding.md`, decision 4), read before the chat
+ * is created: with `newChatBinding` `inherit` (anything but `empty`, the normalizer's default) the
+ * binding of the character's selected chat (else its first, as `selectedChatId` answers), keeping
+ * only ids that name records that exist and never `bindingReview` (a source still awaiting its
+ * confirmation stays blocked; its new chat does not). With `empty`, or a character without chats,
+ * nothing. Never the tab's selection. Untracked.
+ */
+export function initialChatBinding(chaId: string): InitialChatBinding {
+    return untrack(() => {
+        if (settings.ui.newChatBinding === "empty") {
+            return {};
+        }
+        const chatId = selectedChatId(chaId);
+        const ids = chatId === null ? undefined : chatBindingIds({ chaId, chatId });
+        if (!ids) {
+            return {};
+        }
+        const binding: InitialChatBinding = {};
+        if (ids.modelPresetId !== null && lookup.modelPreset(ids.modelPresetId)) {
+            binding.modelPresetId = ids.modelPresetId;
+        }
+        if (ids.promptPresetId !== null && lookup.promptPreset(ids.promptPresetId)) {
+            binding.promptPresetId = ids.promptPresetId;
+        }
+        if (ids.personaId !== null && lookup.persona(ids.personaId)) {
+            binding.bindedPersona = ids.personaId;
+        }
+        return binding;
+    });
+}
+
+/**
+ * Prepares an imported chat's binding before it is created (decision 6): drops each bound id that
+ * does not name a record here (or is not a non-blank string) and sets `bindingReview`, so the chat
+ * waits for the user's confirmation before its first send. Mutates `chat`. Untracked.
+ */
+export function importedChatBinding(chat: Chat) {
+    untrack(() => {
+        const ids = readChatBindingIds(chat);
+        const keep = (
+            key: "modelPresetId" | "promptPresetId" | "bindedPersona",
+            id: string | null,
+            exists: (id: string) => boolean,
+        ) => {
+            if (id === null || !exists(id)) {
+                delete chat[key];
+            }
+        };
+        keep("modelPresetId", ids.modelPresetId, lookup.modelPreset);
+        keep("promptPresetId", ids.promptPresetId, lookup.promptPreset);
+        keep("bindedPersona", ids.personaId, lookup.persona);
+        chat.bindingReview = true;
+    });
 }

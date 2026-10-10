@@ -6,6 +6,7 @@
 
 import type { SettingItem } from "./types";
 import { language } from "src/lang";
+import { DEFAULT_NEW_CHAT_BINDING } from "../../../shared/chatBinding.ts";
 
 export const accessibilitySettingsItems: SettingItem[] = [
     // Header
@@ -188,6 +189,22 @@ export const accessibilitySettingsItems: SettingItem[] = [
         labelKey: "createFolderOnBranch",
         bindKey: "createFolderOnBranch",
         keywords: ["create", "folder", "branch"],
+    },
+    {
+        id: "acc.newChatBinding",
+        type: "segmented",
+        labelKey: "newChatBinding",
+        bindKey: "newChatBinding",
+        // Shown as the creation reads it (`initialChatBinding`): anything but `empty` is `inherit`, so
+        // an unexpected value is not reset to the last option when the page opens.
+        getValue: (ctx) => (ctx.settings.ui.newChatBinding === "empty" ? "empty" : DEFAULT_NEW_CHAT_BINDING),
+        options: {
+            segmentOptions: [
+                { value: "inherit", labelKey: "newChatBindingInherit" },
+                { value: "empty", labelKey: "newChatBindingEmpty" },
+            ],
+        },
+        keywords: ["new", "chat", "preset", "persona", "binding", "inherit"],
     },
     {
         id: "acc.hamburgerButtonBottom",

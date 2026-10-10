@@ -29,6 +29,7 @@ import { translateHTML } from "./translator/translator";
 import { captureTransform } from "./parser/transformClient";
 import { doingChat } from "./process/index.svelte";
 import { createChat, ensureChat, ensureChatLoaded, findChat, isCharacterGenerating } from "./storage/chatStore.svelte";
+import { importedChatBinding } from "./storage/chatBinding.svelte";
 import { readChatsDetached } from "./storage/chatEdits";
 import { importCharacter } from "./characterCards";
 import { PngChunk } from "./pngChunk";
@@ -450,9 +451,14 @@ export async function importChat() {
             alertError(language.errors.importTargetGone);
             return;
         }
-        /** Adds imported chats at the top of the list, in their order (new chat and message ids where needed). */
+        /**
+         * Adds imported chats at the top of the list, in their order (new chat and message ids where
+         * needed). Every format passes here: each chat keeps only the bound ids that exist here and
+         * waits for the user's confirmation before its first send (`importedChatBinding`).
+         */
         const addChats = (chats: Chat[]) => {
             chats.forEach((chat, index) => {
+                importedChatBinding(chat);
                 createChat(chaId, chat, { index });
             });
         };

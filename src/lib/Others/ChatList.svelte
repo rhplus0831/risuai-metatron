@@ -9,6 +9,7 @@
     import { findCharacterbyId } from "../../ts/util";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import { changeChatTo } from "src/ts/globalApi.svelte";
+    import { initialChatBinding } from "src/ts/storage/chatBinding.svelte";
     import {
         chatList,
         createChat,
@@ -123,7 +124,15 @@
                             : [];
                     createChat(
                         cha.chaId,
-                        { message, note: "", name: `New Chat ${len + 1}`, localLore: [], fmIndex: -1 },
+                        {
+                            // Read before the chat is created: it becomes the selected chat.
+                            ...initialChatBinding(cha.chaId),
+                            message,
+                            note: "",
+                            name: `New Chat ${len + 1}`,
+                            localLore: [],
+                            fmIndex: -1,
+                        },
                         { index: 0, select: true },
                     );
                     changeChatTo(0);

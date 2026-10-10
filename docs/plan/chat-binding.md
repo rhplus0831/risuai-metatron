@@ -1,7 +1,6 @@
 # Chat Binding Plan
 
-Status: slices 1–5 done; slices 6–7 planned. Until slice 6 a new chat
-starts unbound and an imported chat keeps its ids without a review. Each chat
+Status: slices 1–6 done; slice 7 (e2e and docs) planned. Each chat
 binds its own **model preset**, **prompt preset**,
 and **persona**, and a chat cannot be sent until all three are bound. This is
 the "Later: per-chat selection" follow-up of [split-preset.md](split-preset.md),
@@ -370,6 +369,22 @@ list them all.
 - **Tests:** inherit copies the previous chat's ids and drops gone ones; empty
   starts unbound; copy and branch keep the source binding; import sets
   review and drops gone ids.
+- **As built** (decided while implementing):
+  - **Inherit** reads the character's selected chat through `selectedChatId`, which already answers
+    the first chat in order when none is chosen, from its list entry (an unloaded chat works). The
+    new-chat buttons read it before `createChat`, since the new chat becomes the selected one.
+  - **A source awaiting its confirmation** (an imported chat) gives its existing ids to a new chat
+    without `bindingReview`, as the plan says: the source stays blocked, and the new chat can be
+    sent. Changing that is a change of decision 4 or 6, not a fix.
+  - **Imports** pass every format through `importChat`'s `addChats`, which runs
+    `importedChatBinding` before `createChat`; an imported `bindingReview: false` is overwritten.
+  - **Unchanged on purpose:** the first chat of a new character (`ensureChat`, character creation,
+    card imports, the playground, module conversion) is built empty; chats a plugin supplies
+    (`setChats`, character replacement and insertion through `installCharacterChats`) keep what
+    the plugin passes. The policy lives in the callers, never in `createChat`.
+  - **The setting** sits on the accessibility page next to `createFolderOnBranch` (there is no
+    chat behaviour page), as a segmented choice whose value reads anything but `empty` as `inherit`,
+    as the creation does, so the page never rewrites an unexpected value.
 
 ### 7. E2E and docs
 

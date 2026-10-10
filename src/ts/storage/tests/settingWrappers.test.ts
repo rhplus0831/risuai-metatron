@@ -33,6 +33,7 @@ vi.mock("../../process/modules", () => ({
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 
+import { language } from "src/lang";
 import type { SettingContext, SettingItem } from "../../setting/types";
 import type { Database } from "../database.svelte";
 import { changeToModelPreset, changeToPreset } from "../presets.svelte";
@@ -466,6 +467,40 @@ describe("SettingSegmented", () => {
         expect(profile("pa").instructChatTemplate).toBe("vicuna");
         expect(profile("pb").instructChatTemplate).toBe("alpaca");
         expect(segmented.onChange).toHaveBeenCalledTimes(1);
+    });
+
+    // `docs/plan/chat-binding.md`, slice 6: the new-chat binding choice shows anything but `empty` as
+    // inherit, as `initialChatBinding` reads it, so an unset or unexpected `ui` value is not rewritten
+    // by the hidden-option fallback when the page opens; a choice writes the `ui` record.
+    it("acc.newChatBinding shows an unset or unexpected value as inherit without a write, and writes a choice into the ui record", () => {
+        const segmented = accessibilitySettingsItems.find((entry) => entry.id === "acc.newChatBinding")!;
+        // The fixture has no `ui` record until a write creates it.
+        const ui = () => recordData<Record<string, unknown>>("ui") ?? {};
+        expect(settings.ui.newChatBinding).toBeUndefined();
+        const { target } = render(SettingSegmented, { item: segmented, ctx: ctx() });
+        flushSync();
+        expect(target.textContent).toContain(language.newChatBinding);
+        expect(active(target)).toBe(language.newChatBindingInherit);
+        expect(ui().newChatBinding).toBeUndefined();
+
+        (settings.ui as Record<string, unknown>).newChatBinding = "weird";
+        flushSync();
+        expect(active(target)).toBe(language.newChatBindingInherit);
+        expect(ui().newChatBinding).toBe("weird");
+        // The option shown is not a write.
+        segment(target, language.newChatBindingInherit).click();
+        expect(ui().newChatBinding).toBe("weird");
+
+        segment(target, language.newChatBindingEmpty).click();
+        expect(ui().newChatBinding).toBe("empty");
+        expect(settings.ui.newChatBinding).toBe("empty");
+        flushSync();
+        expect(active(target)).toBe(language.newChatBindingEmpty);
+
+        segment(target, language.newChatBindingInherit).click();
+        expect(ui().newChatBinding).toBe("inherit");
+        flushSync();
+        expect(active(target)).toBe(language.newChatBindingInherit);
     });
 });
 

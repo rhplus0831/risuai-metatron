@@ -132,6 +132,7 @@ async function boot() {
     vi.spyOn(util, "sleep").mockResolvedValue(undefined);
     vi.spyOn(util, "selectSingleFile").mockImplementation(() => picker.answer() as any);
     const characters = await import("./characters");
+    const binding = await import("./storage/chatBinding.svelte");
     const select = (chaId: string) => selectionModule.selectCharacter(chaId);
     const chatsOf = (chaId: string) => plain(booted.character(chaId).chats) as any[];
     const texts = (chaId: string, at: number) => chatsOf(chaId)[at].message.map((message: any) => message.data);
@@ -146,7 +147,7 @@ async function boot() {
         };
         await characters.importChat();
     };
-    return { ...booted, characters, alpha, beta, index, select, chatsOf, texts, run };
+    return { ...booted, characters, binding, alpha, beta, index, select, chatsOf, texts, run };
 }
 
 // The first boot compiles the module graph; done once here so no test pays for it, in the
@@ -309,5 +310,163 @@ describe("importChat writes the character selected when the dialog opened", () =
         await characters.importChat();
         expect(opened).not.toHaveBeenCalled();
         expect(alerts.error).not.toHaveBeenCalled();
+    });
+});
+
+// `docs/plan/chat-binding.md`, slice 6: every import format passes `importChat`'s `addChats`, which
+// prepares each chat's binding (`importedChatBinding`) before `createChat`: the ids that name a
+// prompt preset, model preset, or persona here are kept, the others (gone, padded, blank, not a
+// string) dropped, and `bindingReview: true` set (an imported `false` overwritten), so the chat is
+// blocked until the user confirms it. The saved chat on the server carries the same fields.
+describe("importChat prepares each imported chat's binding", () => {
+    /** The ids of the records the harness holds: the first prompt preset, model preset, and persona. */
+    const existing = (booted: Awaited<ReturnType<typeof boot>>) => ({
+        promptPresetId: booted.settings.presets[0].id as string,
+        modelPresetId: booted.settings.modelPresets[0].id as string,
+        bindedPersona: booted.activePersona.id as string,
+    });
+    const chatWith = (name: string, fields: Record<string, unknown>) => ({
+        name,
+        message: [{ role: "user", data: `${name} text` }],
+        note: "a note",
+        localLore: [],
+        fmIndex: -1,
+        ...fields,
+    });
+    const file = (name: string, value: unknown) => ({ name, data: encode(value) });
+    /** The binding fields of a chat as the mirror and the server hold them. */
+    const fieldsOf = (chat: Record<string, unknown>) => {
+        const picked: Record<string, unknown> = {};
+        for (const key of ["modelPresetId", "promptPresetId", "bindedPersona", "bindingReview"]) {
+            if (key in chat) {
+                picked[key] = chat[key];
+            }
+        }
+        return picked;
+    };
+    /** The imported chats' fields, in the mirror and on the server after a flush (the top `count` chats). */
+    const saved = async (booted: Awaited<ReturnType<typeof boot>>, count: number) => {
+        const chats = booted.chatsOf(booted.alpha).slice(0, count);
+        await booted.sync.flushResources();
+        return chats.map((chat: any) => {
+            const stored = booted.fake.chat(booted.alpha, chat.id)!.data as unknown as Record<string, unknown>;
+            expect(fieldsOf(stored)).toEqual(fieldsOf(chat));
+            expect(booted.binding.chatBinding({ chaId: booted.alpha, chatId: chat.id })).toMatchObject({ ok: false });
+            return fieldsOf(chat);
+        });
+    };
+
+    it("a jsonl chat (no ids) waits for the confirmation", async () => {
+        const booted = await boot();
+        await booted.run(jsonl());
+        expect(await saved(booted, 1)).toEqual([{ bindingReview: true }]);
+        expect(booted.binding.chatBinding({ chaId: booted.alpha, chatId: booted.chatsOf(booted.alpha)[0].id })).toEqual(
+            {
+                ok: false,
+                problems: [
+                    { field: "modelPresetId", reason: "unset" },
+                    { field: "promptPresetId", reason: "unset" },
+                    { field: "personaId", reason: "unset" },
+                    { field: "review" },
+                ],
+            },
+        );
+    });
+
+    it("a risuAllChats v2 file: existing ids kept with an imported false overwritten, gone, padded, blank, and non-string ids dropped", async () => {
+        const booted = await boot();
+        const ids = existing(booted);
+        await booted.run(
+            file("chats.json", {
+                type: "risuAllChats",
+                ver: 2,
+                folders: [],
+                data: [
+                    chatWith("Full", { ...ids, bindingReview: false }),
+                    chatWith("Gone", {
+                        modelPresetId: "m-gone",
+                        promptPresetId: ` ${ids.promptPresetId} `,
+                        bindedPersona: "",
+                    }),
+                    chatWith("Odd", { modelPresetId: 7, promptPresetId: ids.promptPresetId, bindedPersona: null }),
+                    chatWith("Bare", {}),
+                ],
+            }),
+        );
+        expect(booted.chatsOf(booted.alpha).map((chat: any) => chat.name)).toEqual([
+            "Full",
+            "Gone",
+            "Odd",
+            "Bare",
+            "A1",
+        ]);
+        expect(await saved(booted, 4)).toEqual([
+            { ...ids, bindingReview: true },
+            { bindingReview: true },
+            { promptPresetId: ids.promptPresetId, bindingReview: true },
+            { bindingReview: true },
+        ]);
+        expect(alerts.normal).toHaveBeenCalledWith(language.successImport);
+        // Confirmed by the user, the fully bound one sends.
+        const full = booted.chatsOf(booted.alpha)[0].id;
+        booted.binding.chatBindingPatch({ chaId: booted.alpha, chatId: full }, { review: false });
+        expect(booted.binding.chatBinding({ chaId: booted.alpha, chatId: full })).toMatchObject({ ok: true });
+    });
+
+    it("a risuChat v2 file with one chat", async () => {
+        const booted = await boot();
+        const ids = existing(booted);
+        await booted.run(
+            file("chat.json", {
+                type: "risuChat",
+                ver: 2,
+                data: chatWith("One", { modelPresetId: ids.modelPresetId, bindedPersona: "u-gone" }),
+            }),
+        );
+        expect(await saved(booted, 1)).toEqual([{ modelPresetId: ids.modelPresetId, bindingReview: true }]);
+    });
+
+    it("a risuAllChats v1 file", async () => {
+        const booted = await boot();
+        const ids = existing(booted);
+        await booted.run(
+            file("all.json", {
+                type: "risuAllChats",
+                ver: 1,
+                data: [
+                    chatWith("V1 full", { ...ids, bindingReview: false }),
+                    chatWith("V1 gone", { modelPresetId: "m-gone", promptPresetId: "p-gone", bindedPersona: "u-gone" }),
+                ],
+            }),
+        );
+        expect(booted.chatsOf(booted.alpha).map((chat: any) => chat.name)).toEqual(["V1 full", "V1 gone", "A1"]);
+        expect(await saved(booted, 2)).toEqual([{ ...ids, bindingReview: true }, { bindingReview: true }]);
+    });
+
+    it("a risuChat v1 file", async () => {
+        const booted = await boot();
+        const ids = existing(booted);
+        await booted.run(
+            file("one.json", {
+                type: "risuChat",
+                ver: 1,
+                data: chatWith("Single", { promptPresetId: ids.promptPresetId, bindedPersona: ids.bindedPersona }),
+            }),
+        );
+        expect(await saved(booted, 1)).toEqual([
+            { promptPresetId: ids.promptPresetId, bindedPersona: ids.bindedPersona, bindingReview: true },
+        ]);
+    });
+
+    it("an html export", async () => {
+        const booted = await boot();
+        const ids = existing(booted);
+        const chat = chatWith("Html", { ...ids, promptPresetId: "p-gone", bindingReview: false });
+        const html = `<html><body><div class="idat">${JSON.stringify(chat)}</div></body></html>`;
+        await booted.run({ name: "chat.html", data: new TextEncoder().encode(html) });
+        expect(booted.chatsOf(booted.alpha)[0].name).toBe("Html");
+        expect(await saved(booted, 1)).toEqual([
+            { modelPresetId: ids.modelPresetId, bindedPersona: ids.bindedPersona, bindingReview: true },
+        ]);
     });
 });
