@@ -12,7 +12,7 @@ import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 // removal, trash, restore, a permanent delete, the playground character (created, then reopened), and
 // a module converted to a character; then a reload shows all of it. Two tabs on a character edit are
 // `util/playwright/checkLiveUpdates.mjs`'s. The stack's store is shared by every spec of a run, in file
-// order: this file sorts after `idleReload.spec.ts`, which needs the store fresh.
+// order: `0-idleReload.spec.ts` sorts first, since it needs the store fresh.
 
 /** Lets the save loop run: the debounce is 500 ms, and a boot pass may send more than one cycle. */
 const settle = (page: Page) => page.waitForTimeout(2500);

@@ -7,6 +7,8 @@ import { openApp } from "../util/playwright/stack.mjs";
 // materializes every section, collection, and `presets`, and the client's boot (`installBootRecords`)
 // creates only the two Phase 1 lists it fills (no `root` record since slice 6). From then on an idle
 // reload must write nothing: every projection equals the server's normalized text.
+// The store is shared by every spec of a run, in file order, so this file must run first: the `0-`
+// prefix sorts it before any camelCase name.
 
 /** The ops of every batch the page sends, as `kind` with `+` for a create. */
 function trackBatches(page: Page): string[][] {

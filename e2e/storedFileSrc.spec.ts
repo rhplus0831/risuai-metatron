@@ -13,7 +13,6 @@ import { openApp } from "../util/playwright/stack.mjs";
 //   at 10 s), and no worker at all fall back to an object URL that displays.
 // The worker's own requests are faulted through the page's `fetch`, which `getFileSrc` and the
 // storage reads call.
-// (Named to sort after `idleReload.spec.ts`, which needs the run's fresh store: specs run in file order.)
 
 const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
