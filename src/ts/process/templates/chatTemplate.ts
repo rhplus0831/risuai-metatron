@@ -17,6 +17,9 @@ export const applyChatTemplate = (
         custom?: string;
         /** A captured request profile; null uses defaults instead of the active profile. */
         profile?: ModelProfile | null;
+        /** The request's chat's character and persona names; default: the selected ones. */
+        characterName?: string;
+        userName?: string;
     } = {},
 ) => {
     const currentChar = selectedCharacter();
@@ -31,7 +34,7 @@ export const applyChatTemplate = (
     return renderChatTemplate(messages, {
         type,
         jinjaTemplate: arg.custom ?? field("JinjaTemplate"),
-        characterName: () => currentChar.name,
-        userName: () => getUserName(),
+        characterName: () => arg.characterName ?? currentChar.name,
+        userName: () => arg.userName ?? getUserName(),
     });
 };

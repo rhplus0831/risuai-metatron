@@ -13,6 +13,8 @@ const stubs = vi.hoisted(() => ({
     getTools: vi.fn<(...args: unknown[]) => Promise<unknown[]>>(),
     getModelInfo: vi.fn<(id: string, scope?: unknown, profile?: unknown) => unknown>(),
     requestServer: vi.fn(),
+    /** The `scope` each `applyParameters` call read its sampling parameters with. */
+    paramScopes: [] as unknown[],
     hooks: {
         replacerbeforeRequest: new Set<(formated: unknown, mode: string) => Promise<unknown>>(),
         replacerafterRequest: new Set<(result: string, mode: string) => Promise<string>>(),
@@ -47,7 +49,10 @@ vi.mock("src/ts/model/modellist", async () => {
 });
 vi.mock("src/ts/process/request/shared", () => ({
     applyAdditionalParameters: vi.fn(),
-    applyParameters: (params: unknown) => params,
+    applyParameters: (params: unknown, _parameters: unknown, _rename: unknown, arg: { scope?: unknown }) => {
+        stubs.paramScopes.push(arg?.scope);
+        return params;
+    },
     getAdditionalParameters: vi.fn(),
 }));
 vi.mock("src/ts/util", () => ({ sleep: async () => {}, checkPersonaBinded: () => null }));
@@ -62,7 +67,8 @@ import { language } from "src/lang";
 import { LLMFlags, LLMFormat } from "src/ts/model/types";
 import { setChannelCallSource } from "src/ts/network/channelCallSource";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
-import { selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
+import { selectChat } from "src/ts/storage/chatStore.svelte";
+import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../../shared/presets";
 import { requestChatData, requestChatDataMain } from "../request";
@@ -148,6 +154,7 @@ beforeEach(() => {
     }));
     provider1.mockClear();
     provider2.mockClear();
+    stubs.paramScopes.length = 0;
     stubs.hooks.replacerbeforeRequest.clear();
     stubs.hooks.replacerafterRequest.clear();
     stubs.hooks.providers.clear();
@@ -214,9 +221,41 @@ describe("the send guard of a chat's request", () => {
             expect.objectContaining({ chatRef: refBound, presetId: "pp-1", modelPresetId: "mp-1", personaId: "p1" }),
             expect.objectContaining({ id: "prof-1" }),
         );
-        // No chat: the selection, as before (decision 10).
+        // No chat, none selected: the selection (decision 10).
         expect(await requestChatData(argOf(), "model")).toMatchObject({ type: "success", result: "from prov-2" });
         expect(provider2).toHaveBeenCalledTimes(1);
+    });
+
+    it("runs a request without a chat on the views (decision 10): the selected chat's bound presets where they exist, else the selection, with a bare scope its parameters read too, never refused by that chat's binding", async () => {
+        const bare = (presetId: string, modelPresetId: string) => ({ presetId, modelPresetId });
+        // The selected chat `bound` binds the `1` records while the tab selects the `2`s.
+        selectCharacter("a");
+        selectChat("a", "bound");
+        expect(await requestChatData(argOf(), "model")).toMatchObject({ type: "success", result: "from prov-1" });
+        expect(provider1).toHaveBeenCalledTimes(1);
+        // The model routing and the sampling parameters read the same bare pair: no `chatRef`.
+        expect(stubs.getModelInfo).toHaveBeenCalledWith(
+            "custom",
+            bare("pp-1", "mp-1"),
+            expect.objectContaining({ id: "prof-1" }),
+        );
+        expect(stubs.paramScopes).toEqual([bare("pp-1", "mp-1")]);
+
+        // The selected chat's binding is incomplete (`loose`): not a send, not refused, the selection.
+        selectChat("a", "loose");
+        expect(await requestChatData(argOf(), "model")).toMatchObject({ type: "success", result: "from prov-2" });
+        expect(stubs.paramScopes.at(-1)).toEqual(bare("pp-2", "mp-2"));
+        // Partly gone (`stale`): each field on its own, the prompt preset held, the model preset the selection's.
+        selectChat("a", "stale");
+        expect(await requestChatData(argOf(), "model")).toMatchObject({ type: "success", result: "from prov-2" });
+        expect(stubs.paramScopes.at(-1)).toEqual(bare("pp-1", "mp-2"));
+        // Home: the selection.
+        selectCharacter(null);
+        expect(await requestChatData(argOf(), "model")).toMatchObject({ type: "success", result: "from prov-2" });
+        expect(stubs.paramScopes.at(-1)).toEqual(bare("pp-2", "mp-2"));
+        expect(provider1).toHaveBeenCalledTimes(1);
+        expect(provider2).toHaveBeenCalledTimes(3);
+        expect(stubs.requestServer).not.toHaveBeenCalled();
     });
 
     it("checks again where the model is entered: a binding undone during a replacerbeforeRequest hook refuses the request before the provider", async () => {

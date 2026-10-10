@@ -1,5 +1,12 @@
 import { type AnyClientCharacter, selectedCharacter } from "./storage/characterStore.svelte";
-import { activeMainProfile, readSettingsRoot, settings, activePreset } from "./storage/settingsViews.svelte";
+import {
+    activeMainProfile,
+    readSettingsRoot,
+    scopedPresetRoot,
+    settings,
+    activePreset,
+    type PresetScope,
+} from "./storage/settingsViews.svelte";
 import type { Tiktoken } from "@dqbd/tiktoken";
 import type { Tokenizer } from "@mlc-ai/web-tokenizers";
 import { type groupChat, type character, type Chat, type DeepReadonly } from "./storage/database.svelte";
@@ -83,10 +90,19 @@ export async function encodeWithTokenizer(
     }
 }
 
-export async function encode(data: string): Promise<number[] | Uint32Array | Int32Array> {
-    const modelInfo = getModelInfoForMode("model");
-    const aiModel = readSettingsRoot("aiModel") as string;
-    const { currentPluginProvider, customTokenizer } = activeMainProfile;
+/**
+ * Encodes with the main model's tokenizer: of `scope`'s model preset (a caller that captured its
+ * chat, `docs/plan/chat-binding.md`), else of the settings views' (the selected chat's or the tab's).
+ */
+export async function encode(data: string, scope?: PresetScope): Promise<number[] | Uint32Array | Int32Array> {
+    const modelInfo = getModelInfoForMode("model", scope);
+    const aiModel = (scope ? scopedPresetRoot(scope, "aiModel") : readSettingsRoot("aiModel")) as string;
+    const { currentPluginProvider, customTokenizer } = scope
+        ? {
+              currentPluginProvider: scopedPresetRoot(scope, "currentPluginProvider") as string,
+              customTokenizer: scopedPresetRoot(scope, "customTokenizer") as string,
+          }
+        : activeMainProfile;
     const pluginTokenizer = pluginHooks.providerOptions.get(currentPluginProvider)?.tokenizer ?? "none";
 
     let cacheKey = "";
@@ -118,7 +134,7 @@ export async function encode(data: string): Promise<number[] | Uint32Array | Int
     });
     switch (choice.kind) {
         case "googleCloud":
-            result = await tokenizeGoogleCloud(data);
+            result = await tokenizeGoogleCloud(data, modelInfo);
             break;
         case "pluginFunction":
             result = (await pluginHooks.providerOptions.get(currentPluginProvider)?.tokenizerFunc?.(data)) ?? [0];
@@ -170,8 +186,7 @@ let lastTikModel = "cl100k_base";
 
 let googleCloudTokenizedCache = new Map<string, number>();
 
-async function tokenizeGoogleCloud(text: string) {
-    const model = getModelInfoForMode("model");
+async function tokenizeGoogleCloud(text: string, model: LLMModel) {
     const cacheKey = text + model.internalID;
 
     if (googleCloudTokenizedCache.has(cacheKey)) {
@@ -320,8 +335,9 @@ export async function tokenizerChar(char: character) {
     return encoded.length;
 }
 
-export async function tokenize(data: string) {
-    const encoded = await encode(data);
+/** The token count of `data` (`scope`: as `encode` takes it). */
+export async function tokenize(data: string, scope?: PresetScope) {
+    const encoded = await encode(data, scope);
     return encoded.length;
 }
 

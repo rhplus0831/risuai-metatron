@@ -207,7 +207,7 @@ describe("P10: the summary requests carry the send's or the action's context", (
         });
     }
 
-    it("sends neither key without a context (the modal's callers before P10, and `summarize` on its own)", async () => {
+    it("sends neither key without a context (the modal's callers before P10, and `summarize` on its own); a chat alone gets its context captured", async () => {
         await runV3(byName("v3-cold-overflow"));
         expect(requestArgs.length).toBeGreaterThan(0);
         for (const arg of requestArgs) {
@@ -218,8 +218,15 @@ describe("P10: the summary requests carry the send's or the action's context", (
         const { summarize } = await import("./hypav3");
         await summarize([{ role: "user", content: "x" }], false, { chatRef: null });
         expect("chatRef" in requestArgs[0]).toBe(false);
+        expect("pluginContext" in requestArgs[0]).toBe(false);
+        // A context with the chat alone: `summarize` captures the chat's plugin context once
+        // (`docs/plan/chat-binding.md`, slice 4) and the request carries it. The chat is not held
+        // here, so its display ids are the tab's.
+        const { tabSelectionIds } = await import("src/ts/storage/settingsViews.svelte");
         await summarize([{ role: "user", content: "x" }], true, { chatRef: { chaId: "c", chatId: "k" } } as never);
-        expect(requestArgs[1]).toMatchObject({ chatRef: { chaId: "c", chatId: "k" } });
-        expect("pluginContext" in requestArgs[1]).toBe(false);
+        expect(requestArgs[1]).toMatchObject({
+            chatRef: { chaId: "c", chatId: "k" },
+            pluginContext: { chatRef: { chaId: "c", chatId: "k" }, ...tabSelectionIds() },
+        });
     });
 });

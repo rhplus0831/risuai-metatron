@@ -17,8 +17,8 @@ import {
 import {
     settings,
     activeModelPreset,
-    activePreset,
     activePersona,
+    activePreset,
     missingScopeTarget,
     scopedPresetRoot,
 } from "../../storage/settingsViews.svelte";
@@ -45,7 +45,6 @@ import { pluginHooks } from "src/ts/plugins/pluginHooks";
 import { authFetch } from "src/ts/storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "src/ts/storage/resourceClient";
 import { flushResources } from "src/ts/storage/resourceSync.svelte";
-import { checkPersonaBinded } from "src/ts/util";
 import { saveInlayedSignature, setInlayAsset, writeInlayImage } from "../files/inlays";
 import { callTool, decodeToolCall, encodeToolCall } from "../mcp/mcp";
 import type { MCPTool } from "../mcp/mcplib";
@@ -143,7 +142,9 @@ export async function requestServer(
     const pluginContext = arg.pluginContext ?? capturePluginContext(parseChatRef);
     // The ids (`docs/plan/chat-binding.md`): a chat's request names its captured context's (the
     // chat's binding when it was captured, or a job callback's targets), else the chat's complete
-    // binding; a request without a chat names the tab's selection (decision 10).
+    // binding; a request without a chat names the settings views' (decision 10: the selected chat's
+    // bound ids where they exist, else the tab's selection; `requestChatDataMain` computes with the
+    // same ids). It sends no `chatRef`: it is not a send, so no binding refuses it.
     let ids: { presetId: string; modelPresetId: string; personaId: string };
     if (arg.pluginContext) {
         ids = {
@@ -159,10 +160,10 @@ export async function requestServer(
         ids = chatContextIds(binding.ids);
     } else {
         ids = {
-            presetId: activePreset.id || "",
-            modelPresetId: activeModelPreset.id || "",
-            // `getUserName()` (no chat): the selected chat's bound persona, else the selected persona.
-            personaId: checkPersonaBinded()?.id ?? activePersona.id ?? "",
+            presetId: activePreset.id ?? "",
+            modelPresetId: activeModelPreset.id ?? "",
+            // `getUserName()` (no chat): the selected chat's bound persona, else the tab's persona.
+            personaId: activePersona.id ?? "",
         };
     }
     const { presetId, modelPresetId, personaId } = ids;
@@ -172,7 +173,7 @@ export async function requestServer(
     if (missing) {
         return fail(`The ${missing} this request runs with no longer exists`);
     }
-    // A chat's request has one persona, the chat's; without a chat the selected one is forwarded.
+    // A chat's request has one persona, the chat's; without a chat the view's one is forwarded.
     const selectedPersonaId = chatRef ? personaId : (activePersona.id ?? "");
     const scope = { presetId, modelPresetId, personaId };
     // The main model and tokenizer of the model preset whose id the request carries.

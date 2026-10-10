@@ -13,7 +13,7 @@ import { type ChatTokenizer } from "src/ts/tokenizer";
 import { inlayTokenRegex } from "src/ts/util/inlayTokens";
 import type { HypaV3Preset, HypaV3Data, SerializableHypaV3Data, Summary } from "../../../../shared/memory.ts";
 import type { ChatRef } from "src/ts/storage/chatStore.svelte";
-import type { PluginCallContext } from "src/ts/plugins/apiV3/pluginContext";
+import { capturePluginContext, type PluginCallContext } from "src/ts/plugins/apiV3/pluginContext";
 
 /**
  * Whose request a summary is (Phase 5 P10): the chat it summarizes and the plugin call context
@@ -1478,7 +1478,10 @@ export async function summarize(
           ? "[Summarize the ongoing role story, It must also remove redundancy and unnecessary text and content from the output.]"
           : settings.summarizationPrompt;
 
-    const formated: OpenAIChat[] = parseChatML(summarizationPrompt.replaceAll("{{slot}}", strMessages)) ?? [
+    const formated: OpenAIChat[] = parseChatML(
+        summarizationPrompt.replaceAll("{{slot}}", strMessages),
+        context?.chatRef ?? context?.pluginContext?.chatRef,
+    ) ?? [
         {
             role: "user",
             content: strMessages,
@@ -1491,7 +1494,14 @@ export async function summarize(
 
     // API
     if (settings.summarizationModel === "subModel") {
-        console.log(logPrefix, `Using ax model ${resolveModelSlot("memory").modelId ?? ""} for summarization.`);
+        const scope = context?.pluginContext ?? capturePluginContext(context?.chatRef);
+        let modelId = "";
+        try {
+            modelId = resolveModelSlot("memory", scope).modelId ?? "";
+        } catch {
+            // A gone model preset: the request below refuses it.
+        }
+        console.log(logPrefix, `Using ax model ${modelId} for summarization.`);
 
         const response = await requestChatData(
             {
@@ -1500,7 +1510,7 @@ export async function summarize(
                 useStreaming: false,
                 noMultiGen: true,
                 ...(context?.chatRef ? { chatRef: context.chatRef } : {}),
-                ...(context?.pluginContext ? { pluginContext: context.pluginContext } : {}),
+                ...(scope ? { pluginContext: scope } : {}),
             },
             "memory",
         );

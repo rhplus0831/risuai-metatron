@@ -24,12 +24,16 @@ vi.mock(import("../../storage/database.svelte"), () => {
 
 vi.mock(import("../../globalApi.svelte"), () => ({
     aiWatermarkingLawApplies: () => false,
-    getFileSrc: () => Promise.resolve(""),
+    getFileSrc: vi.fn(() => Promise.resolve("")),
 }));
 
-import { risuChatParser, risuChatParserScoped } from "../parser.svelte";
+import { ParseMarkdown, risuChatParser, risuChatParserScoped } from "../parser.svelte";
+import { getChatVarOf, setChatVarOf } from "../chatVar.svelte";
+import { getFileSrc } from "../../globalApi.svelte";
+import { getUserIcon } from "../../util";
 import { PluginTargetGoneError } from "../../plugins/apiV3/pluginContext";
 import { characterList } from "../../storage/characterStore.svelte";
+import { chatBindingPatch } from "../../storage/chatBinding.svelte";
 import { selectChat } from "../../storage/chatStore.svelte";
 import { selectCharacterAt, selectModelPreset, selectPersona, selectPreset } from "../../storage/selection.svelte";
 import { settings } from "../../storage/settingsViews.svelte";
@@ -51,13 +55,15 @@ function database(selected: { preset: string; modelPreset?: string; persona: str
             {
                 id: "p-ctx",
                 name: "Context",
-                templateDefaultVariables: "",
+                templateDefaultVariables: "x=ctx",
+                moduleIntergration: "mod-ctx",
                 mainPrompt: "ctx main",
             },
             {
                 id: "p-sel",
                 name: "Selected",
-                templateDefaultVariables: "",
+                templateDefaultVariables: "x=sel",
+                moduleIntergration: "mod-sel",
                 mainPrompt: "sel main",
             },
         ],
@@ -70,15 +76,24 @@ function database(selected: { preset: string; modelPreset?: string; persona: str
             normalizeModelProfile({ id: "m-sel", name: "Selected", modelId: "sel-model", maxContext: 2222 }),
         ],
         personas: [
-            { id: "u-ctx", name: "Ctx Persona", personaPrompt: "the context persona" },
-            { id: "u-sel", name: "Sel Persona", personaPrompt: "the selected persona" },
+            { id: "u-ctx", name: "Ctx Persona", personaPrompt: "the context persona", icon: "icon-ctx" },
+            { id: "u-sel", name: "Sel Persona", personaPrompt: "the selected persona", icon: "icon-sel" },
+        ],
+        // The modules the presets' integration lists name (`moduleIntergration`).
+        modules: [
+            { id: "mod-ctx", name: "Ctx module", namespace: "ns-ctx", lorebook: [] },
+            { id: "mod-sel", name: "Sel module", namespace: "ns-sel", lorebook: [] },
         ],
         characters: [
             {
                 chaId: "c",
                 name: "Cara",
+                image: "char-img",
                 chatPage: 0,
-                chats: [{ id: "k", message: [], scriptstate: {}, bindedPersona: "" }],
+                chats: [
+                    { id: "k", message: [], scriptstate: {}, bindedPersona: "" },
+                    { id: "j", message: [], scriptstate: {}, bindedPersona: "" },
+                ],
                 defaultVariables: "",
             },
         ],
@@ -162,5 +177,100 @@ describe("risuChatParserScoped", () => {
         );
         // The plain parser is unaffected.
         expect(risuChatParser("{{user}}")).toBe("Sel Persona");
+    });
+});
+
+// Slice 4 of `docs/plan/chat-binding.md`: a plain parse for a chat (`arg.chatRef`) runs on that
+// chat's display ids (each bound record that exists, else the tab's selection), while a parse without
+// a chat reads the settings views, which follow the selected chat.
+describe("risuChatParser for a chat", () => {
+    const k = { chaId: "c", chatId: "k" };
+    const j = { chaId: "c", chatId: "j" };
+    const ctx = "Ctx Persona|the context persona|ctx-model|1111|Cara";
+    const sel = "Sel Persona|the selected persona|sel-model|2222|Cara";
+
+    it("reads the chat's bound records, else the tab's, per field; a background chat never reads the selected chat's binding", () => {
+        chatBindingPatch(k, { promptPresetId: "p-ctx", modelPresetId: "p-ctx", personaId: "u-ctx" });
+        // The selected chat `k` is bound: the views and a parse for `k` read its records.
+        expect(risuChatParser(input)).toBe(ctx);
+        expect(risuChatParser(input, { chatRef: k })).toBe(ctx);
+        // Chat `j` is unbound and not selected: the tab's, not `k`'s.
+        expect(risuChatParser(input, { chatRef: j })).toBe(sel);
+        // A partial binding: the unbound persona falls back; the presets hold.
+        chatBindingPatch(k, { personaId: null });
+        expect(risuChatParser(input, { chatRef: k })).toBe("Sel Persona|the selected persona|ctx-model|1111|Cara");
+        expect(risuChatParser(input)).toBe("Sel Persona|the selected persona|ctx-model|1111|Cara");
+        // A bound record that is gone falls back for that field only.
+        chatBindingPatch(k, { personaId: "u-gone" });
+        expect(risuChatParser(input, { chatRef: k })).toBe("Sel Persona|the selected persona|ctx-model|1111|Cara");
+    });
+
+    it("a ref captured for a chat keeps reading that chat after the selection moved to another chat", () => {
+        chatBindingPatch(k, { promptPresetId: "p-ctx", modelPresetId: "p-ctx", personaId: "u-ctx" });
+        selectChat("c", "j");
+        expect(risuChatParser(input)).toBe(sel);
+        expect(risuChatParser(input, { chatRef: j })).toBe(sel);
+        expect(risuChatParser(input, { chatRef: k })).toBe(ctx);
+        // The tab's selection changes: an unbound chat follows it, a bound one does not.
+        selectPreset("p-ctx");
+        selectPersona("u-ctx");
+        expect(risuChatParser(input, { chatRef: j })).toBe("Ctx Persona|the context persona|sel-model|2222|Cara");
+        expect(risuChatParser(input, { chatRef: k })).toBe(ctx);
+    });
+});
+
+// Slice 4, scoped CBS: the preset-owned variable defaults and module integration are the scope's
+// (a `presetChain` pick included), while a stored chat variable stays the parse's chat's.
+describe("risuChatParserScoped reads the variable defaults and the module integration from its scope", () => {
+    const k = { chaId: "c", chatId: "k" };
+    const text = "{{getvar::x}}|{{moduleenabled::ns-ctx}}|{{moduleenabled::ns-sel}}";
+    const selScope = { presetId: "p-sel", modelPresetId: "p-sel", personaId: "u-sel" };
+
+    it("the scope's preset wins over the chat's display preset; a stored variable is the chat's", () => {
+        // `k` is unbound: its display preset is the tab's (`p-sel`), as the views'.
+        expect(risuChatParser(text)).toBe("sel|0|1");
+        expect(risuChatParser(text, { chatRef: k })).toBe("sel|0|1");
+        expect(getChatVarOf(k, "x")).toBe("sel");
+        expect(risuChatParserScoped(text, {}, scope)).toBe("ctx|1|0");
+        expect(risuChatParserScoped(text, { chatRef: k }, scope)).toBe("ctx|1|0");
+        expect(getChatVarOf(k, "x", scope)).toBe("ctx");
+        // `k` bound to `p-ctx`: a parse for `k` reads it; a scope naming `p-sel` (a pick) still wins.
+        chatBindingPatch(k, { promptPresetId: "p-ctx", modelPresetId: "p-ctx", personaId: "u-ctx" });
+        expect(risuChatParser(text, { chatRef: k })).toBe("ctx|1|0");
+        expect(risuChatParser(text)).toBe("ctx|1|0");
+        expect(risuChatParserScoped(text, { chatRef: k }, selScope)).toBe("sel|0|1");
+        // The stored value of the parse's chat wins over every default.
+        setChatVarOf(k, "x", "stored");
+        expect(risuChatParserScoped(text, { chatRef: k }, selScope)).toBe("stored|0|1");
+        expect(risuChatParserScoped(text, { chatRef: k }, scope)).toBe("stored|1|0");
+        expect(risuChatParser(text, { chatRef: k })).toBe("stored|1|0");
+    });
+});
+
+// Slice 4, item 5: the asset pass of `ParseMarkdown` reads the render's persona icon before its first
+// await, for the chat selected when the render began, also without a transform context.
+describe("ParseMarkdown's asset pass", () => {
+    const k = { chaId: "c", chatId: "k" };
+
+    it("uses the icon of the persona the render's chat showed when it began, not the chat selected after an await", async () => {
+        chatBindingPatch(k, { personaId: "u-ctx" });
+        expect(getUserIcon()).toBe("icon-ctx");
+        // The character image is resolved first: the user switches to the unbound chat `j` meanwhile.
+        vi.mocked(getFileSrc).mockImplementation(async (path: string) => {
+            if (path === "char-img") {
+                selectChat("c", "j");
+            }
+            return `src:${path}`;
+        });
+        try {
+            const out = await ParseMarkdown("{{source::user}}", characterList()[0] as never, "normal", -1, {}, null);
+            expect(getUserIcon()).toBe("icon-sel");
+            expect(vi.mocked(getFileSrc).mock.calls.map(([path]) => path)).toEqual(["char-img", "icon-ctx"]);
+            expect(out).toContain("src:icon-ctx");
+            expect(out).not.toContain("icon-sel");
+        } finally {
+            vi.mocked(getFileSrc).mockReset();
+            vi.mocked(getFileSrc).mockImplementation(() => Promise.resolve(""));
+        }
     });
 });

@@ -1,6 +1,6 @@
 // First: module effects elsewhere (`stores.svelte`) read `selectedChat()` while this module may still be loading.
 import { onCharacterSelectionChanged, selection } from "./selection.svelte";
-import { settings } from "./settingsViews.svelte";
+import { setOpenChatBindingSource, settings } from "./settingsViews.svelte";
 import { untrack } from "svelte";
 import { v4 as uuidv4 } from "uuid";
 import type {
@@ -14,6 +14,7 @@ import type {
 } from "../../../shared/chats.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { StreamingMessage } from "../../../shared/jobs.ts";
+import { readChatBindingIds } from "../../../shared/chatBinding.ts";
 import { compareRevision } from "../../../shared/resources.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { language } from "src/lang";
@@ -3790,3 +3791,15 @@ export function startChatDriftCheck() {
 export function noteMirrorReplaced() {
     mutationToken += 1;
 }
+
+// The settings views read the selected chat's binding first (`docs/plan/chat-binding.md`, slice 4):
+// the selected chat as `currentChatRef` names it (also while it loads; a summary has the list fields).
+// Only the four binding fields are read, so a view does not track the chat's other fields.
+setOpenChatBindingSource(() => {
+    const ref = currentChatRef();
+    const holding = ref ? holdingAt(ref.chaId) : undefined;
+    if (!ref || !holding?.ids.includes(ref.chatId)) {
+        return undefined;
+    }
+    return readChatBindingIds(holding.chats[slot(ref.chatId)] ?? holding.summaries[slot(ref.chatId)] ?? {});
+});

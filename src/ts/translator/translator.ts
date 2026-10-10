@@ -1,6 +1,6 @@
 import { getModelInfoForMode } from "../model/modellist";
 import { type AnyClientCharacter, selectedCharacter } from "../storage/characterStore.svelte";
-import { settings, activePreset } from "../storage/settingsViews.svelte";
+import { settings, activePreset, readPresetFieldOf } from "../storage/settingsViews.svelte";
 import { get } from "svelte/store";
 import { parseChatML } from "../parser/chatML";
 import { type character, type customscript, type groupChat } from "../storage/database.svelte";
@@ -305,10 +305,10 @@ export async function translateHTML(
             audio.play().catch(() => {});
         }
 
-        return applyEdittransRegex(r, charArg, alwaysExistChar, chatID);
+        return applyEdittransRegex(r, charArg, alwaysExistChar, chatID, transform);
     }
     if (settings.memoryTranslateMedia.translatorType == "bergamot" && settings.memoryTranslateMedia.htmlTranslation) {
-        const from = getModelInfoForMode("model").id.startsWith("novellist") ? "ja" : "en";
+        const from = getModelInfoForMode("model", transform?.context).id.startsWith("novellist") ? "ja" : "en";
         const to = settings.memoryTranslateMedia.translator || "en";
 
         if (!bergamotTranslate) {
@@ -316,7 +316,13 @@ export async function translateHTML(
             bergamotTranslate = bergamotTranslator.bergamotTranslate;
         }
 
-        return applyEdittransRegex(await bergamotTranslate(html, from, to, true), charArg, alwaysExistChar, chatID);
+        return applyEdittransRegex(
+            await bergamotTranslate(html, from, to, true),
+            charArg,
+            alwaysExistChar,
+            chatID,
+            transform,
+        );
     }
     const dom = new DOMParser().parseFromString(html, "text/html");
     console.log(html);
@@ -499,7 +505,7 @@ export async function translateHTML(
     // Remove the outer <html|body|head> tags
     translatedHTML = translatedHTML.replace(/<\/?(html|body|head)[^>]*>/g, "");
 
-    translatedHTML = applyEdittransRegex(translatedHTML, charArg, alwaysExistChar, chatID);
+    translatedHTML = applyEdittransRegex(translatedHTML, charArg, alwaysExistChar, chatID, transform);
 
     // console.log(html)
     // console.log(translatedHTML)
@@ -648,18 +654,26 @@ interface pEdittransScript {
     actions: string[];
 }
 
+/**
+ * Applies the `edittrans` scripts. With `transform` (a render that captured its chat before its
+ * awaits), the preset's and the modules' scripts and their CBS are that chat's (its display ids);
+ * without one, the selected chat's.
+ */
 export function applyEdittransRegex(
     text: string,
     charArg: simpleCharacterArgument | string,
     alwaysExistChar: AnyClientCharacter | simpleCharacterArgument,
     chatID = -1,
+    transform?: CapturedTransform | null,
 ): string {
     if (charArg === "") return text;
 
+    const chatRef = transform?.chatRef;
+    const presetRegex = transform
+        ? ((readPresetFieldOf(transform.context, "presetRegex") as customscript[] | undefined) ?? [])
+        : (activePreset.regex ?? []);
     let scripts: customscript[] = [];
-    scripts = (activePreset.regex ?? [])
-        .concat(getModuleRegexScripts() ?? [])
-        .concat(alwaysExistChar?.customscript ?? []);
+    scripts = presetRegex.concat(getModuleRegexScripts(chatRef) ?? []).concat(alwaysExistChar?.customscript ?? []);
 
     const parsedScripts: pEdittransScript[] = [];
     let orderChanged = false;
@@ -725,7 +739,7 @@ export function applyEdittransRegex(
 
             let input = script.in;
             if (pscript.actions.includes("cbs")) {
-                input = risuChatParser(input, { chatID: chatID });
+                input = risuChatParser(input, { chatID: chatID, ...(chatRef ? { chatRef } : {}) });
             }
 
             const reg = new RegExp(input, pscript.flag);

@@ -1,4 +1,4 @@
-import { settings, activePreset } from "../../storage/settingsViews.svelte";
+import { settings, scopedPresetRoot, type PresetScope, type SettingsRootKey } from "../../storage/settingsViews.svelte";
 import { parseAdditionalParamJsonValue } from "./additionalParams";
 
 import type { LLMParameter } from "../../../../shared/llm.ts";
@@ -126,8 +126,12 @@ export function applyParameters(
     arg: {
         ignoreTopKIfZero?: boolean;
         modelId: string;
+        /** The request's presets (a captured chat's, or the tab's); without one, the settings views. */
+        scope?: PresetScope;
     },
 ): Record<string, any> {
+    // A captured preset that is gone throws (`PresetTargetGoneError`), never reads another preset.
+    const preset = (rootKey: SettingsRootKey) => scopedPresetRoot(arg.scope, rootKey) as number;
     const reasoningDisabledEffort = parameters.includes("reasoning_effort_none") ? "none" : "minimal";
     const reasoningMinEffort = parameters.includes("reasoning_effort_min_medium") ? "medium" : "low";
     const supportsXHighReasoning = parameters.includes("reasoning_effort_xhigh");
@@ -169,37 +173,37 @@ export function applyParameters(
         if (isReasoningCapabilityParameter(parameter)) {
             continue;
         }
-        if (parameter === "top_k" && arg.ignoreTopKIfZero && activePreset.top_k === 0) {
+        if (parameter === "top_k" && arg.ignoreTopKIfZero && preset("top_k") === 0) {
             continue;
         }
         switch (parameter) {
             case "temperature": {
-                value = activePreset.temperature === -1000 ? -1000 : activePreset.temperature / 100;
+                value = preset("temperature") === -1000 ? -1000 : preset("temperature") / 100;
                 break;
             }
             case "top_k": {
-                value = activePreset.top_k;
+                value = preset("top_k");
                 break;
             }
             case "repetition_penalty": {
-                value = activePreset.repetition_penalty;
+                value = preset("repetition_penalty");
                 break;
             }
             case "min_p": {
-                value = activePreset.min_p;
+                value = preset("min_p");
                 break;
             }
             case "top_a": {
-                value = activePreset.top_a;
+                value = preset("top_a");
                 break;
             }
             case "top_p": {
-                value = activePreset.top_p;
+                value = preset("top_p");
                 break;
             }
             case "reasoning_effort": {
                 value = getEffort(
-                    activePreset.reasonEffort,
+                    preset("reasoningEffort"),
                     reasoningDisabledEffort,
                     supportsXHighReasoning,
                     reasoningMinEffort,
@@ -207,19 +211,19 @@ export function applyParameters(
                 break;
             }
             case "verbosity": {
-                value = getVerbosity(activePreset.verbosity);
+                value = getVerbosity(preset("verbosity"));
                 break;
             }
             case "frequency_penalty": {
-                value = activePreset.frequencyPenalty === -1000 ? -1000 : activePreset.frequencyPenalty / 100;
+                value = preset("frequencyPenalty") === -1000 ? -1000 : preset("frequencyPenalty") / 100;
                 break;
             }
             case "presence_penalty": {
-                value = activePreset.PresensePenalty === -1000 ? -1000 : activePreset.PresensePenalty / 100;
+                value = preset("PresensePenalty") === -1000 ? -1000 : preset("PresensePenalty") / 100;
                 break;
             }
             case "thinking_tokens": {
-                value = activePreset.thinkingTokens;
+                value = preset("thinkingTokens");
                 break;
             }
         }

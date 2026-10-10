@@ -460,25 +460,14 @@
         }
     }
 
+    // The selected chat's bound persona when it exists, else the tab's: the persona view resolves
+    // that order itself (`docs/plan/chat-binding.md`, slice 4).
     let { userIconPortrait, currentUsername, userIcon } = $derived.by(() => {
-        const bindedPersona = currentChat?.bindedPersona;
-
-        if (bindedPersona) {
-            const persona = settings.personas.find((p) => p.id === bindedPersona);
-            if (persona) {
-                return {
-                    currentUsername: persona.name,
-                    userIconPortrait: persona.largePortrait,
-                    userIcon: persona.icon,
-                };
-            }
-        }
-
         const persona = currentPersonaRecord();
         return {
             currentUsername: activePersona.name,
-            userIconPortrait: persona.largePortrait,
-            userIcon: persona.icon,
+            userIconPortrait: persona?.largePortrait,
+            userIcon: persona?.icon,
         };
     });
 

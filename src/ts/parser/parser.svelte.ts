@@ -1,6 +1,7 @@
 import { untrack } from "svelte";
 import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
-import { withCompatChats } from "../storage/chatStore.svelte";
+import { type ChatRef, currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
+import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import {
     isForwardedPresetRoot,
     scopedPresetRoot,
@@ -491,8 +492,12 @@ async function parseAdditionalAssets(
     data: string,
     char: simpleCharacterArgument | character | AnyClientCharacter,
     mode: "normal" | "back",
-    arg: { ch: number },
+    /** `chatRef`: the chat the render captured (its persona's icon), else the selected chat's. */
+    arg: { ch: number; chatRef?: ChatRef | null },
 ) {
+    // Read before the first await (the selected chat can change meanwhile), untracked as the read
+    // after the awaits was: a render must not rerun on a persona change elsewhere.
+    const userIcon = untrack(() => getUserIcon(arg.chatRef));
     const assetWidthString =
         (settings.ui.assetWidth && settings.ui.assetWidth !== -1) || settings.ui.assetWidth === 0
             ? `max-width:${settings.ui.assetWidth}rem;`
@@ -603,7 +608,7 @@ async function parseAdditionalAssets(
         }
         data = data.replace(/\uE9b4CHAR\uE9b4/g, chara.image ? await getFileSrc(chara.image) : "");
 
-        data = data.replace(/\uE9b4USER\uE9b4/g, getUserIcon() ? await getFileSrc(getUserIcon()) : "");
+        data = data.replace(/\uE9b4USER\uE9b4/g, userIcon ? await getFileSrc(userIcon) : "");
     }
 
     return data;
@@ -771,10 +776,13 @@ export async function ParseMarkdown(
     let char = typeof charArg === "string" ? findCharacterbyId(charArg) : charArg;
     // The server transform's context: the caller's, or captured before the first await.
     const transform = char ? (capturedTransform === undefined ? captureTransform(chatID) : capturedTransform) : null;
+    // The chat this render is for, also when the server path does not apply (no transform).
+    const renderRef = transform?.chatRef ?? untrack(() => currentChatRef());
 
     if (char && char.type !== "group") {
         data = await parseAdditionalAssets(data, char, additionalAssetMode, {
             ch: chatID,
+            chatRef: renderRef,
         });
         firstParsed = data;
     }
@@ -797,6 +805,7 @@ export async function ParseMarkdown(
     if (firstParsed !== data && char && char.type !== "group") {
         data = await parseAdditionalAssets(data, char, additionalAssetMode, {
             ch: chatID,
+            chatRef: renderRef,
         });
     }
 
@@ -1175,7 +1184,19 @@ function sharedParseArg(arg: ClientCbsParseArg): CbsParseArg {
     return { ...arg, chara: withCompatChats(arg.chara) as character | groupChat };
 }
 
+/**
+ * Parses CBS for the tab. A parse for a chat (`arg.chatRef`) reads that chat's display ids
+ * (`chatDisplayIds`: each bound record that exists, else the tab's selection) for its preset fields
+ * and persona, not the settings views, which follow the selected chat (`docs/plan/chat-binding.md`,
+ * slice 4): a caller that captured its chat before an await parses for that chat.
+ */
 export function risuChatParser(da: string, arg: ClientCbsParseArg = {}): string {
+    if (arg.chatRef) {
+        const ids = chatDisplayIds(arg.chatRef);
+        if (ids.presetId && ids.modelPresetId && ids.personaId) {
+            return risuChatParserScoped(da, arg, ids);
+        }
+    }
     return clientCbsEvaluator().risuChatParser(da, sharedParseArg(arg));
 }
 
@@ -1183,10 +1204,11 @@ const scopedEvaluators = new Map<string, CbsEvaluator>();
 
 /**
  * `risuChatParser` for a frozen plugin call context (Phase 4's hook context; Phase 5 slice 7a): the
- * preset fields read the context's prompt or model preset (whichever owns the field), and `{{user}}` and the persona prompt read the context's
- * persona (the effective one when the context was taken: the chat's bound persona, else the
- * selected one), instead of the tab's selection at parse time. Everything else is the tab's, as
- * `risuChatParser` reads it. A context preset, model preset, or persona that no longer exists fails the parse
+ * preset fields read the context's prompt or model preset (whichever owns the field), as do the
+ * preset-owned variable defaults and module integration, and `{{user}}` and the persona prompt read
+ * the context's persona (the effective one when the context was taken: the chat's bound persona,
+ * else the selected one), instead of the settings views at parse time. Everything else is the
+ * tab's, as `risuChatParser` reads it. A context preset, model preset, or persona that no longer exists fails the parse
  * (`PluginTargetGoneError`), as a hook's other target-bound calls do.
  */
 export function risuChatParserScoped(
@@ -1225,6 +1247,11 @@ export function risuChatParserScoped(
         evaluator = createCbsEvaluator({
             ...base,
             getDatabase: scopedDb,
+            // The preset-owned reads (variable defaults, module integration) are the scope's too;
+            // stored chat variables stay the parse's chat's.
+            getChatVar: (key, chatRef) => (chatRef ? getChatVarOf(chatRef, key, scope) : getChatVar(key, scope)),
+            getModules: (chatRef) => getModules(chatRef, scope),
+            getModuleLorebooks: (chatRef) => getModuleLorebooks(chatRef, scope),
             getModelInfo: (id) => getModelInfo(id, scope),
             getUserName: () => personaOf().name,
             getPersonaPrompt: () => personaOf().personaPrompt,

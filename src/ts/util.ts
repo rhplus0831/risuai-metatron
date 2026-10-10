@@ -1,6 +1,6 @@
 import { characterList, selectedCharacter } from "./storage/characterStore.svelte";
 import { chatEntry, currentChatRef } from "./storage/chatStore.svelte";
-import { settings, activePreset, activePersona, currentPersonaRecord } from "./storage/settingsViews.svelte";
+import { settings, activePreset, tabPersonaRecord } from "./storage/settingsViews.svelte";
 import { get, writable, type Writable } from "svelte/store";
 import type { Message } from "./storage/database.svelte";
 import { createBlankChar, getCharImage } from "./characters";
@@ -85,41 +85,30 @@ export function checkPersonaBinded(chatRef?: { chaId: string; chatId: string } |
     }
 }
 
+/**
+ * The persona a render of `chatRef`'s chat (default: the selected chat) shows: its bound persona
+ * when that exists, else the tab's selected persona (`docs/plan/chat-binding.md`'s display rule),
+ * never the selected chat's when `chatRef` names another chat.
+ */
+function displayPersona(chatRef?: { chaId: string; chatId: string } | null) {
+    return checkPersonaBinded(chatRef) ?? tabPersonaRecord();
+}
+
 export function getUserName(chatRef?: { chaId: string; chatId: string } | null) {
-    const bindedPersona = checkPersonaBinded(chatRef);
-    if (bindedPersona) {
-        return bindedPersona.name;
-    }
-    return activePersona.name ?? "User";
+    return displayPersona(chatRef)?.name ?? "User";
 }
 
 export function getUserIcon(chatRef?: { chaId: string; chatId: string } | null) {
-    const bindedPersona = checkPersonaBinded(chatRef);
-    if (bindedPersona) {
-        return bindedPersona.icon;
-    }
-    return activePersona.icon ?? "";
+    return displayPersona(chatRef)?.icon ?? "";
 }
 
 export function getPersonaPrompt(chatRef?: { chaId: string; chatId: string } | null) {
-    const bindedPersona = checkPersonaBinded(chatRef);
-    if (bindedPersona) {
-        return bindedPersona.personaPrompt;
-    }
-    return activePersona.personaPrompt ?? "";
+    return displayPersona(chatRef)?.personaPrompt ?? "";
 }
 
-export function getUserIconProtrait() {
+export function getUserIconProtrait(chatRef?: { chaId: string; chatId: string } | null) {
     try {
-        const bindedPersona = checkPersonaBinded();
-        if (bindedPersona) {
-            return bindedPersona.largePortrait;
-        }
-        const persona = currentPersonaRecord();
-        if (!persona) {
-            return false;
-        }
-        return persona.largePortrait;
+        return displayPersona(chatRef)?.largePortrait ?? false;
     } catch (error) {
         return false;
     }

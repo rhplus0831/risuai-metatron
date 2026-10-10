@@ -179,7 +179,11 @@ export async function createGenerationJob(body: CreateInput): Promise<string> {
         // The tab's own job: its registered hooks, and the emotions it showed last (the server's
         // emotion modes penalize a recent choice as the tab's do).
         const channel = await import("./jobChannel");
-        hooks = await channel.registeredHooks();
+        // The job's model preset (its chat's binding), not the settings views'.
+        const { presetId, modelPresetId } = context;
+        hooks = await channel.registeredHooks(
+            presetId !== null && modelPresetId !== null ? { presetId, modelPresetId } : undefined,
+        );
         if (context.client && !context.client.emotions) {
             context = {
                 ...context,

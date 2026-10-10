@@ -121,10 +121,11 @@ export function getStopStrings(suggesting: boolean = false) {
     return [...new Set(stopStrings)];
 }
 
-export function unstringlizeChat(text: string, formated: OpenAIChat[], char: string = "") {
+/** `userName`: the request's persona name (a caller that captured its chat), else the selected chat's. */
+export function unstringlizeChat(text: string, formated: OpenAIChat[], char: string = "", userName?: string) {
     let minIndex = -1;
 
-    const chunks = getUnstringlizerChunks(formated, char).chunks;
+    const chunks = getUnstringlizerChunks(formated, char, "normal", userName).chunks;
 
     for (const chunk of chunks) {
         const ind = text.indexOf(chunk);
@@ -143,7 +144,12 @@ export function unstringlizeChat(text: string, formated: OpenAIChat[], char: str
     return text;
 }
 
-export function getUnstringlizerChunks(formated: OpenAIChat[], char: string, mode: "ain" | "normal" = "normal") {
+export function getUnstringlizerChunks(
+    formated: OpenAIChat[],
+    char: string,
+    mode: "ain" | "normal" = "normal",
+    userName: string = getUserName(),
+) {
     let chunks: string[] = ["system note:", "system:", "system note：", "system："];
     let charNames: string[] = [];
     if (char) {
@@ -158,16 +164,16 @@ export function getUnstringlizerChunks(formated: OpenAIChat[], char: string, mod
             chunks.push(`${char}： `);
         }
     }
-    if (getUserName()) {
-        charNames.push(getUserName());
+    if (userName) {
+        charNames.push(userName);
         if (mode === "ain") {
-            chunks.push(`${getUserName()} `);
-            chunks.push(`${getUserName()}　`);
+            chunks.push(`${userName} `);
+            chunks.push(`${userName}　`);
         } else {
-            chunks.push(`${getUserName()}:`);
-            chunks.push(`${getUserName()}：`);
-            chunks.push(`${getUserName()}: `);
-            chunks.push(`${getUserName()}： `);
+            chunks.push(`${userName}:`);
+            chunks.push(`${userName}：`);
+            chunks.push(`${userName}: `);
+            chunks.push(`${userName}： `);
         }
     }
 

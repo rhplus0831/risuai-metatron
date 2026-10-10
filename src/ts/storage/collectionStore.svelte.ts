@@ -2,6 +2,8 @@ import {
     forwardedPresetField,
     isModelPresetRootKey,
     missingPresetTarget,
+    modelPresetRecordForWrite,
+    presetRecordForWrite,
     reconcileSelection,
     settings,
     writePresetField,
@@ -138,7 +140,8 @@ function checkSettingKey(key: string, value: unknown): "preset" | "section" {
  * `secrets` section (written there), or a forwarded preset field (`FORWARDED_PRESET_KEYS` or
  * `FORWARDED_MODEL_PRESET_KEYS`, by its root name). Prompt fields write their preset; model roots
  * use the slot/profile rules in `writeModelRoot`. The ids in `options` name the captured pair,
- * otherwise the selected pair is used. A caller that captured its presets before an await passes them. Every key is checked
+ * otherwise the pair a settings view reads now (the selected chat's bound presets where they exist,
+ * else the tab's selection: `presetRecordForWrite`). A caller that captured its presets before an await passes them. Every key is checked
  * first, and the owning preset must exist when a preset field is set (`MutationTargetGoneError`
  * otherwise); nothing is written unless everything passes. `llmSecrets` fields, `proxyKey`, the
  * persona fields, and the selection indexes are refused.
@@ -151,8 +154,9 @@ export function updateSettings(
     const entries = Object.entries(patch).map(([key, value]) => ({ key, value, target: checkSettingKey(key, value) }));
     const prepared = entries.map((entry) => ({ ...entry, value: detach(entry.value) }));
     const scope = {
-        presetId: options.presetId ?? untrack(() => selection.presetId),
-        modelPresetId: options.modelPresetId ?? untrack(() => selection.modelPresetId),
+        presetId: options.presetId ?? presetRecordForWrite()?.id ?? untrack(() => selection.presetId),
+        modelPresetId:
+            options.modelPresetId ?? modelPresetRecordForWrite()?.id ?? untrack(() => selection.modelPresetId),
     };
     const missing = missingPresetTarget(
         scope,

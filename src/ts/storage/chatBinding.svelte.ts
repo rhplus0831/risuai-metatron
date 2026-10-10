@@ -9,14 +9,15 @@ import {
 } from "../../../shared/chatBinding.ts";
 import { chatEntry, setChatMeta, type ChatRef } from "./chatStore.svelte";
 import { trackedRecord, type RecordKind } from "./records.svelte";
-import { activeModelPreset, activePersona, activePreset } from "./settingsViews.svelte";
+import { tabSelectionIds } from "./settingsViews.svelte";
 
 /*
  * A chat's binding on the client (`docs/plan/chat-binding.md`): read from the chat's list entry, so
  * it resolves synchronously also for a chat that is not loaded. `undefined` means the chat is not a
  * member (gone or not listed), never "use the tab's selection". `settingsViews.svelte.ts` must not
- * import this module (`chatStore.svelte.ts` imports the views): the views will reach it through a
- * registered getter. This module reads the views only for the display rule's fallback.
+ * import this module (`chatStore.svelte.ts` imports the views): the views get the selected chat's
+ * binding from `chatStore.svelte.ts`'s registration. This module reads the tab's selection only for
+ * the display rule's fallback.
  */
 
 function hasRecord(kind: RecordKind, id: string): boolean {
@@ -47,17 +48,19 @@ export function chatContextIds(ids: Extract<ChatBindingResult, { ok: true }>["id
 
 /**
  * The ids a render of the chat uses (the display rule): per field, the bound id when it names a
- * record that exists, else the tab's (`""` when it has none). Equal to the binding when that is
- * complete; never for a send, which refuses an incomplete binding (`chatBinding`). Tracked.
+ * record that exists, else the tab's selection (`""` when it has none), never another chat's
+ * binding. For the selected chat these are the settings views' ids. Equal to the binding when that
+ * is complete; never for a send, which refuses an incomplete binding (`chatBinding`). Tracked.
  */
 export function chatDisplayIds(ref: ChatRef): ChatContextIds {
     const bound = chatBindingIds(ref);
-    const pick = (id: string | null | undefined, exists: (id: string) => boolean, tab: string | undefined) =>
-        id && exists(id) ? id : (tab ?? "");
+    const tab = tabSelectionIds();
+    const pick = (id: string | null | undefined, exists: (id: string) => boolean, fallback: string) =>
+        id && exists(id) ? id : fallback;
     return {
-        presetId: pick(bound?.promptPresetId, lookup.promptPreset, activePreset.id),
-        modelPresetId: pick(bound?.modelPresetId, lookup.modelPreset, activeModelPreset.id),
-        personaId: pick(bound?.personaId, lookup.persona, activePersona.id),
+        presetId: pick(bound?.promptPresetId, lookup.promptPreset, tab.presetId),
+        modelPresetId: pick(bound?.modelPresetId, lookup.modelPreset, tab.modelPresetId),
+        personaId: pick(bound?.personaId, lookup.persona, tab.personaId),
     };
 }
 

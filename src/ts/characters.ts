@@ -26,6 +26,7 @@ import {
 import { AppendableBuffer, changeChatTo, checkCharOrder, downloadFile, getFileSrc } from "./globalApi.svelte";
 import { parseMarkdownSafe } from "./parser/parser.svelte";
 import { translateHTML } from "./translator/translator";
+import { captureTransform } from "./parser/transformClient";
 import { doingChat } from "./process/index.svelte";
 import { createChat, ensureChat, ensureChatLoaded, findChat, isCharacterGenerating } from "./storage/chatStore.svelte";
 import { readChatsDetached } from "./storage/chatEdits";
@@ -246,12 +247,17 @@ export async function exportChat(chatId: string) {
         }
         // A copy: the chat can change while the export translates.
         const chat = JSON.parse(JSON.stringify(found)) as Chat;
+        // The exported chat's persona name and render context, read now: it need not be the selected
+        // chat, and the selection can change during the awaits below (`docs/plan/chat-binding.md`).
+        const ref = { chaId: char.chaId, chatId };
+        const userName = getUserName(ref);
+        const transform = doTranslate ? captureTransform(-1, { chatRef: ref }) : null;
         const date = new Date().toJSON();
         const htmlChatParse = async (v: string) => {
             v = parseMarkdownSafe(v);
 
             if (doTranslate) {
-                v = await translateHTML(v, false, "", -1);
+                v = await translateHTML(v, false, "", -1, false, transform);
             }
 
             if (anonymous) {
@@ -292,7 +298,7 @@ export async function exportChat(chatId: string) {
                       ? char.name
                       : anonymous
                         ? "×××"
-                        : getUserName();
+                        : userName;
                 chatContentHTML += `<div class="chat">
                     <h2>${name}</h2>
                     <div>${await htmlChatParse(v.data)}</div>
@@ -370,7 +376,7 @@ export async function exportChat(chatId: string) {
                       ? char.name
                       : anonymous
                         ? "×××"
-                        : getUserName();
+                        : userName;
                 chatContentHTML += `<tr>
                     <td>${name}</td>
                     <td>${await htmlChatParse(v.data)}</td>
@@ -408,7 +414,7 @@ export async function exportChat(chatId: string) {
                     if (v.saying) {
                         return `--${findCharacterbyId(v.saying).name}\n${v.data}`;
                     } else {
-                        return `--${v.role === "char" ? char.name : getUserName()}\n${v.data}`;
+                        return `--${v.role === "char" ? char.name : userName}\n${v.data}`;
                     }
                 })
                 .join("\n\n");

@@ -199,17 +199,20 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
     }, 30_000);
 
     it("scans the user's messages under the bound persona's name, else the selected persona's, else User", async () => {
-        const { characterStore, collectionStore, chat, chaId, ref, lorebook, activePersona } = await boot([
-            message("m1", "user", "a dragon"),
-        ]);
+        const { characterStore, collectionStore, chat, chaId, ref, lorebook, activePersona, settingsViews } =
+            await boot([message("m1", "user", "a dragon")]);
         characterStore.updateCharacter(chaId, { globalLore: [lore("rx", "/dragon/", "d", { useRegex: true })] });
         const prompt = async () => (await lorebook.loadLoreBookV3Prompt(ref)).matchLog[0].prompt;
         expect(await prompt()).toBe("\x01{{User}}:a dragon\x01");
         const personaId = collectionStore.addPersona({ name: "Mina", personaPrompt: "", icon: "" });
         chat.setChatMeta(ref, { bindedPersona: personaId });
-        expect(activePersona.name).toBe("User");
+        // The persona view follows the selected chat's binding (`docs/plan/chat-binding.md`, slice 4);
+        // the tab's own persona is unchanged.
+        expect(activePersona.name).toBe("Mina");
+        expect(settingsViews.tabPersonaRecord()?.name).toBe("User");
         expect(await prompt()).toBe("\x01{{Mina}}:a dragon\x01");
         chat.setChatMeta(ref, {}, ["bindedPersona"]);
+        expect(activePersona.name).toBe("User");
         activePersona.name = undefined as any;
         expect(await prompt()).toBe("\x01{{User}}:a dragon\x01");
     }, 30_000);

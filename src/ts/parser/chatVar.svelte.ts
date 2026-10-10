@@ -1,19 +1,25 @@
 import { characterList, selectedCharacter } from "../storage/characterStore.svelte";
-import { settings, activePreset } from "../storage/settingsViews.svelte";
+import { settings, activePreset, readPresetFieldOf, type PresetScope } from "../storage/settingsViews.svelte";
+import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import { parseKeyValue } from "../util";
 import { setCurrentChatMeta } from "../storage/chatEdits";
 import { type ChatRef, currentChatRef, findChat, selectedChat, setChatMeta } from "../storage/chatStore.svelte";
 
-export function getChatVar(key: string): string {
+/**
+ * A chat variable of the selected chat, else its default: the character's, then the prompt preset's
+ * (`scope`'s, a parse for a captured context; else the settings view's).
+ */
+export function getChatVar(key: string, scope?: PresetScope): string {
     const char = selectedCharacter();
     if (!char) {
         return "null";
     }
     const state = selectedChat()?.scriptstate?.["$" + key];
     if (state === undefined || state === null) {
-        const defaultVariables = parseKeyValue(char.defaultVariables).concat(
-            parseKeyValue(activePreset.templateDefaultVariables),
-        );
+        const presetDefaults = scope
+            ? (readPresetFieldOf(scope, "templateDefaultVariables") as string | undefined)
+            : activePreset.templateDefaultVariables;
+        const defaultVariables = parseKeyValue(char.defaultVariables).concat(parseKeyValue(presetDefaults ?? ""));
         const findResult = defaultVariables.find((f) => {
             return f[0] === key;
         });
@@ -36,17 +42,23 @@ export function setChatVar(key: string, value: string): boolean {
     return true;
 }
 
-/** `getChatVar` for a given chat (a caller that captured its chat before an await). */
-export function getChatVarOf(ref: ChatRef | null, key: string): string {
+/**
+ * `getChatVar` for a given chat (a caller that captured its chat before an await). The preset's
+ * defaults are `scope`'s (a parse for a captured context, a `presetChain` pick included), else the
+ * chat's display preset.
+ */
+export function getChatVarOf(ref: ChatRef | null, key: string, scope?: PresetScope): string {
     const char = ref ? characterList().find((entry) => entry?.chaId === ref.chaId) : undefined;
     if (!char) {
         return "null";
     }
     const state = findChat(ref)?.scriptstate?.["$" + key];
     if (state === undefined || state === null) {
-        const defaultVariables = parseKeyValue(char.defaultVariables).concat(
-            parseKeyValue(activePreset.templateDefaultVariables),
-        );
+        // The scope's preset, else the chat's display preset (`docs/plan/chat-binding.md`), never
+        // the selected chat's.
+        const presetDefaults = readPresetFieldOf(scope ?? chatDisplayIds(ref), "templateDefaultVariables") as
+            string | undefined;
+        const defaultVariables = parseKeyValue(char.defaultVariables).concat(parseKeyValue(presetDefaults ?? ""));
         return defaultVariables.find((f) => f[0] === key)?.[1] ?? "null";
     }
     return state.toString();

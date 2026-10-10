@@ -1,8 +1,9 @@
 # Chat Binding Plan
 
-Status: slices 1–3 done; slices 4–7 planned. Until slice 5 there is no UI
+Status: slices 1–4 done; slices 5–7 planned. Until slice 5 there is no UI
 to bind a chat's model and prompt presets, so chats without them cannot be
-sent (accepted). Each chat binds its own **model preset**, **prompt preset**,
+sent (accepted), and the pickers still change only the tab selection (see
+slice 4). Each chat binds its own **model preset**, **prompt preset**,
 and **persona**, and a chat cannot be sent until all three are bound. This is
 the "Later: per-chat selection" follow-up of [split-preset.md](split-preset.md),
 with one deliberate change: that section sketched a fallback to the tab
@@ -56,9 +57,13 @@ chat's own three ids or does not happen.
    (`prompt/runner.ts`, `setCallbackPreset`). The tab no longer calls
    `changeToPreset` on the `preset` event, and the chat's binding is not
    rewritten.
-10. **Requests that have no chat are unchanged.** The playground, translating
+10. **Requests that have no chat are not sends.** The playground, translating
     UI text, card tools, and other `/api/llm/request` calls without a
-    `chatRef` keep using the tab selection. They are not sends.
+    `chatRef` are never refused by a binding and carry no `chatRef`. They run
+    on the settings views: the selected chat's bound ids where they exist,
+    else the tab selection, i.e. what the screen shows. (Amended in slice 4:
+    with decision 8 the tab selection is visible only at home, so a chatless
+    request on it would run on settings the screen does not show.)
 
 ## Data model
 
@@ -192,14 +197,25 @@ list them all.
 
 ### 4. Views follow the open chat
 
+- **The open chat** is the selected chat (`currentChatRef()`): the selected
+  character's selected chat, also on its closed-chat screen and while it
+  loads. Only home has none.
 - **The resolvers.** `resolvePreset`, `resolveModelPreset`, and
   `resolvePersona` (`src/ts/storage/settingsViews.svelte.ts`) first try the
   open chat's bound id (`selectedChat`), then the tab selection.
+  - Per field, as the display rule: a bound id whose record exists wins; an
+    unset or deleted one falls through; `bindingReview` does not matter.
+  - `chatStore.svelte.ts` registers the reader of the selected chat's binding
+    fields (`setOpenChatBindingSource`), since it imports the views; the
+    reader is held in state, so a view read before the registration reruns.
+  - `chatDisplayIds` falls back to the tab selection proper
+    (`tabSelectionIds`), never to the open chat's binding.
   - The fallback branch keeps its write to `selection` for the tab ids only.
     It never writes a chat id there, and it never writes the chat.
   - `presetRecordForWrite`, `modelPresetRecordForWrite`, and
     `personaRecordForWrite` follow the same order, so the settings pages edit
-    what the open chat uses.
+    what the open chat uses. The view setters, `writeModelRoot`, and a
+    plugin's `updateSettings` without captured ids write there too.
 - **The readers.** This brings along every reader of `activePreset`,
   `activeModelPreset`, `activeMainProfile`, `profileForSlot`, `activePersona`,
   and `resolveModelSlot` without a slot scope. The `Toggles.svelte` toggles,
@@ -220,12 +236,36 @@ list them all.
   - `process/memory/hypav3.ts` (`maxResponse`, `resolveModelSlot("memory")`);
   - `process/request/shared.ts` (sampling parameters);
   - `process/request/request.ts` (`activeMainProfile`);
-  - `translator/translator.ts` (`activePreset.regex`; also its LLM
-    translation of chat text, which goes out without the chat's ref and so
-    still uses the tab selection);
+  - `translator/translator.ts` (`activePreset.regex`, the module scripts,
+    and their CBS read the captured transform's chat; its LLM translation of
+    chat text goes out without the chat's ref, a chatless request on the
+    views per decision 10);
   - `process/stringlize.ts`;
   - `files/inlays.ts`.
-- **Tests** (`src/ts/storage/tests/settingsViews.test.ts`):
+  - Also found and fixed: a CBS parse with a `chatRef` (`risuChatParser`)
+    reads that chat's display ids, which covers commands, lore activation,
+    and `parseChatML` (HypaV3 summaries); lore activation tokenizes with the
+    chat's model preset; `getModules(chatRef)` and `getChatVarOf` read the
+    chat's preset; the WebLLM path, `exportChat`, the rich message copy, and
+    the asset pass of `ParseMarkdown` read their chat's names and icon before
+    their awaits; job hooks describe plugin models with the job's model
+    preset.
+  - Persona helpers (`getUserName(ref)` and the others) fall back to the
+    tab's persona, not the open chat's.
+- **Requests without a chat** (decision 10) run on the views, read once
+  before any await: `requestChatDataMain` scopes them to a bare preset pair
+  (no `chatRef`, so no binding refuses them) and the transport sends the same
+  ids, its persona `activePersona`. Their plugin settings calls, CBS, and
+  translator prompts read the same views.
+- **Scoped CBS** (`risuChatParserScoped`, a plugin context or a captured
+  chat) reads the preset-owned variable defaults and module integration from
+  its scope too (`getChatVarOf`/`getModules` take an optional scope), so a
+  `presetChain` pick's parse uses the picked preset.
+- **Until slice 5** the pickers still change only the tab selection. With a
+  bound field, a list highlights the bound record and a pick changes nothing
+  visible.
+- **Tests** (`src/ts/storage/tests/chatBindingViews.test.ts` and
+  `chatBindingReaders.test.ts`):
   - the open chat's binding wins;
   - a gone chat id falls through to the tab selection without writing it;
   - a write goes to the bound record;

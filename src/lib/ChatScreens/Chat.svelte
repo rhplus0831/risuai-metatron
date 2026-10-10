@@ -805,6 +805,11 @@
         <button
             class="flex items-center hover:text-blue-500 transition-colors button-icon-copy"
             onclick={async () => {
+                // The persona this message's chat shows, read before the awaits below (the selected
+                // chat can change meanwhile; `docs/plan/chat-binding.md`).
+                const copyChat = displayedChat;
+                const copyUserName = getUserName(copyChat);
+                const copyUserIcon = getUserIcon(copyChat);
                 const copyText = renderRawStreaming
                     ? risuChatParser(rawStreamingText, {
                           chara: name,
@@ -990,7 +995,7 @@
                         }
 
                         const isUserMessage = role === "user";
-                        const displayName = isUserMessage ? getUserName() : name;
+                        const displayName = isUserMessage ? copyUserName : name;
                         const modelInfo = messageGenerationInfo
                             ? capitalize(getModelInfo(messageGenerationInfo.model).shortName)
                             : isUserMessage
@@ -1002,7 +1007,7 @@
 
                         if (isUserMessage) {
                             finalHasValidImage = false;
-                            const userIcon = getUserIcon();
+                            const userIcon = copyUserIcon;
                             if (userIcon) {
                                 try {
                                     const userIconSrc = await getFileSrc(userIcon);

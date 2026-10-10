@@ -1,5 +1,5 @@
 import { characterList } from "../storage/characterStore.svelte";
-import { settings } from "../storage/settingsViews.svelte";
+import { settings, type PresetScope } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
 import { get } from "svelte/store";
 import type { ChannelChunk } from "../../../shared/jobs.ts";
@@ -865,9 +865,10 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
 
 /**
  * The plugin hooks registered now (`GenerationHooks`), from the active registries: each provider
- * with a copy of its model descriptor, the body interceptors, and the plugin MCP identifiers.
+ * with a copy of its model descriptor (with the custom flags of `scope`'s model preset, the job's;
+ * else of the settings views'), the body interceptors, and the plugin MCP identifiers.
  */
-export async function registeredHooks(): Promise<GenerationHooks> {
+export async function registeredHooks(scope?: PresetScope): Promise<GenerationHooks> {
     const { getModelInfo } = await import("../model/modellist");
     return {
         replacers: {
@@ -879,7 +880,7 @@ export async function registeredHooks(): Promise<GenerationHooks> {
         chatOutput: pluginHooks.chatOutput.size > 0,
         providers: [...pluginHooks.providers.keys()].map((name) => ({
             name,
-            model: JSON.parse(JSON.stringify(getModelInfo(`pluginmodel:::${name}`))),
+            model: JSON.parse(JSON.stringify(getModelInfo(`pluginmodel:::${name}`, scope))),
         })),
         mcpTools: [...registeredCustomPluginMCPs.keys()],
     };

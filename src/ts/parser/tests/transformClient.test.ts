@@ -84,24 +84,14 @@ vi.mock("../../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
     return { CharEmotion: writable({}) };
 });
-// The selected prompt preset's, model preset's, and persona's ids, as the views serve them
-// (`undefined` when there is none).
+// The tab's selected prompt preset, model preset, and persona ids, the display rule's fallback
+// (`tabSelectionIds`: `""` when there is none; `docs/plan/chat-binding.md`, slice 4).
 vi.mock("../../storage/settingsViews.svelte", () => ({
-    activePreset: {
-        get id() {
-            return state.preset;
-        },
-    },
-    activeModelPreset: {
-        get id() {
-            return state.modelPreset;
-        },
-    },
-    activePersona: {
-        get id() {
-            return state.persona;
-        },
-    },
+    tabSelectionIds: () => ({
+        presetId: state.preset ?? "",
+        modelPresetId: state.modelPreset ?? "",
+        personaId: state.persona ?? "",
+    }),
 }));
 vi.mock("../../storage/serverAuth", () => ({
     authFetch: async (path: string, init: { body: string; headers: Record<string, string> }) => {

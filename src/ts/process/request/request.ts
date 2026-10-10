@@ -1,4 +1,4 @@
-import { type ClientCharacter, selectedCharacter } from "../../storage/characterStore.svelte";
+import { type ClientCharacter, characterList, selectedCharacter } from "../../storage/characterStore.svelte";
 import {
     settings,
     activeMainProfile,
@@ -6,6 +6,8 @@ import {
     activePreset,
     missingScopeTarget,
     scopedPresetRoot,
+    activeModelPreset,
+    type PresetScope,
 } from "../../storage/settingsViews.svelte";
 import { plainClone, presetFieldValue } from "../../../../shared/presets.ts";
 import { credentialFor } from "../../model/credentials";
@@ -24,7 +26,7 @@ import {
     type ChatContextIds,
 } from "../../storage/chatBinding.svelte";
 import { activeChannelCallTargets } from "../../network/channelCallSource";
-import { sleep } from "../../util";
+import { getUserName, sleep } from "../../util";
 import type { OpenAIChat } from "../index.svelte";
 import { getTools } from "../mcp/mcp";
 import type { MCPTool } from "../mcp/mcplib";
@@ -90,6 +92,11 @@ export interface RequestDataArgumentExtended extends requestDataArgument {
     key?: string;
     additionalOutput?: string;
     saveSignatures?: boolean;
+    /**
+     * The presets the request runs with (set by `requestChatDataMain`): its plugin context's, else
+     * the settings views' (a request without a chat, decision 10 of `docs/plan/chat-binding.md`).
+     */
+    presetScope?: PresetScope;
 }
 
 export type requestDataResponse =
@@ -207,7 +214,7 @@ const requestChatGone = (): requestDataResponse => ({
 });
 
 /** A refusal of a request whose captured `scope` lost a preset, or `undefined` while both exist (or without a scope). */
-function requestPresetGone(scope: PluginCallContext | undefined): requestDataResponse | undefined {
+function requestPresetGone(scope: PresetScope | undefined): requestDataResponse | undefined {
     const missing = scope ? missingScopeTarget(scope) : undefined;
     return missing ? { type: "fail", result: `The ${missing} this request runs with no longer exists` } : undefined;
 }
@@ -548,9 +555,16 @@ export async function requestChatDataMain(
     const original = { ...arg };
     const targ: RequestDataArgumentExtended = arg;
 
-    // Model decisions follow the request's captured presets (its plugin context), else the selection,
-    // so the tab routes and tokenizes with the model preset whose id the server receives.
-    const scope = arg.pluginContext;
+    // Model decisions follow the request's captured presets (its plugin context), else the settings
+    // views (a request without a chat, decision 10 of `docs/plan/chat-binding.md`: what the screen
+    // shows, the selected chat's bound presets where they exist, else the tab's selection), read once
+    // now, so the tab routes and tokenizes with the model preset whose id the server receives
+    // (`requestServer` reads the same ids). A bare scope: a chatless request carries no `chatRef`.
+    const scope: PresetScope = arg.pluginContext ?? {
+        presetId: activePreset.id ?? "",
+        modelPresetId: activeModelPreset.id ?? "",
+    };
+    targ.presetScope = scope;
     const presetGone = requestPresetGone(scope);
     if (presetGone) {
         return presetGone;
@@ -674,6 +688,7 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
                       {},
                       {
                           modelId: arg.aiModel,
+                          scope: arg.presetScope,
                       },
                   ) as any,
                   arg.abortSignal,
@@ -733,11 +748,18 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
 async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const formated = arg.formated;
     const aiModel = arg.aiModel;
-    const currentChar = selectedCharacter();
+    // The names of the request's chat, read once now (the selected chat can change during the run):
+    // its character and its persona (the captured context's), else the selected ones.
+    const chatRef = arg.chatRef ?? arg.pluginContext?.chatRef;
+    const currentChar = chatRef ? characterList().find((entry) => entry?.chaId === chatRef.chaId) : selectedCharacter();
+    const characterName = currentChar?.name ?? "";
+    const userName = arg.pluginContext
+        ? (settings.personas.find((persona) => persona?.id === arg.pluginContext!.personaId)?.name ?? "User")
+        : getUserName();
     const maxTokens = arg.maxTokens;
     const temperature = arg.temperature;
     const realModel = aiModel.split(":::")[1];
-    const prompt = applyChatTemplate(formated, { profile: arg.modelProfile ?? null });
+    const prompt = applyChatTemplate(formated, { profile: arg.modelProfile ?? null, characterName, userName });
 
     if (arg.previewBody) {
         return {
@@ -747,7 +769,7 @@ async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestD
             }),
         };
     }
-    const ooba = scopedPresetRoot(arg.pluginContext, "ooba") as typeof activePreset.ooba;
+    const ooba = scopedPresetRoot(arg.presetScope, "ooba") as typeof activePreset.ooba;
     const transformersParams = {
         temperature: temperature,
         max_new_tokens: maxTokens,
@@ -762,6 +784,6 @@ async function requestWebLLM(arg: RequestDataArgumentExtended): Promise<requestD
     const v = await runTransformers(prompt, realModel, finalParams);
     return {
         type: "success",
-        result: unstringlizeChat((v.generated_text as string) ?? "", formated, currentChar?.name ?? ""),
+        result: unstringlizeChat((v.generated_text as string) ?? "", formated, characterName, userName),
     };
 }

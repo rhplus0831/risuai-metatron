@@ -3,6 +3,7 @@ import { settings } from "../storage/settingsViews.svelte";
 import { getChatVar, getChatVarOf, setChatVar, setChatVarOf } from "../parser/chatVar.svelte";
 import { type Message, type loreBook } from "../storage/database.svelte";
 import { tokenize } from "../tokenizer";
+import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import { risuChatParser } from "../parser/parser.svelte";
 import { findCharacterbyId, getUserName, pickHashRand, selectSingleFile } from "../util";
 import { alertError, alertNormal } from "../alert";
@@ -118,6 +119,10 @@ async function activatePinnedLore(ref: ChatRef | null) {
     // The chat's owner now: if its character's chats are replaced during the activation (even under
     // the same ids), its variables are not read or written there and the result is dropped.
     const owner = ref ? chatOwnerToken(ref.chaId) : null;
+    // The chat's model preset for the token counts (its display ids, `docs/plan/chat-binding.md`), read
+    // now: the selected chat can change during the activation. Without a chat, the settings views'.
+    const ids = ref ? chatDisplayIds(ref) : null;
+    const tokenScope = ids?.presetId && ids.modelPresetId ? ids : undefined;
     const same = () => {
         if (ref && chatOwnerToken(ref.chaId) !== owner) {
             throw new Error("The chat changed during the lore activation");
@@ -148,7 +153,7 @@ async function activatePinnedLore(ref: ChatRef | null) {
                 same();
                 return risuChatParser(text, { chara: char, chatRef: ref });
             },
-            tokenize,
+            tokenize: (text) => tokenize(text, tokenScope),
             testRegex: (pattern, flags, text) => new RegExp(pattern, flags).test(text),
         },
     );

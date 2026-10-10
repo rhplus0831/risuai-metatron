@@ -111,6 +111,7 @@ import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from 
 import { activeMainProfile } from "src/ts/storage/settingsViews.svelte";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../../shared/presets";
 import { requestServer } from "../transport";
+import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
 import {
     assembleChats,
     createChat,
@@ -458,6 +459,65 @@ describe("the request body", () => {
             "id-1name": { call: { id: "id-1", name: "name", arg: {} }, response: [] },
         });
         activeMainProfile.currentPluginProvider = "";
+    });
+
+    it("runs a request without a chat on the views (decision 10): the selected chat's bound ids where they exist, else the tab's; no chatRef, never refused", async () => {
+        // The selected chat `chat-1` binds the `2` records while the tab selects the `1`s.
+        const ref = { chaId: "char-1", chatId: "chat-1" };
+        chatBindingPatch(ref, { promptPresetId: "preset-2", modelPresetId: "preset-2", personaId: "persona-2" });
+        stubs.fetch.mockResolvedValueOnce(
+            sseResponse([
+                accepted,
+                { type: "callback", id: "cb-1", name: "cbs", payload: { text: "x", chatRef: null } },
+                success,
+            ]),
+        );
+        expect(await requestServer(baseArg() as never, "model", null, modelInfo)).toEqual({
+            type: "success",
+            result: "ok",
+        });
+        let body = postedBody();
+        expect(body.context).toMatchObject({
+            presetId: "preset-2",
+            modelPresetId: "preset-2",
+            personaId: "persona-2",
+            selectedPersonaId: "persona-2",
+            selectedCharacterId: "char-1",
+        });
+        expect(body.arg.chatRef).toBeUndefined();
+        await flushTick();
+        // The `cbs` callback parses on the selected chat with the same ids.
+        expect(stubs.parserScoped.mock.calls[0]).toEqual([
+            "x",
+            { chatRef: ref },
+            { presetId: "preset-2", modelPresetId: "preset-2", personaId: "persona-2" },
+        ]);
+
+        // A partial binding (the model preset unbound, the persona gone): each field falls through to
+        // the tab's; the request is not a send, so the incomplete binding refuses nothing.
+        chatBindingPatch(ref, { modelPresetId: null, personaId: "persona-gone" });
+        stubs.fetch.mockClear();
+        expect(await requestServer(baseArg() as never, "model", null, modelInfo)).toMatchObject({ type: "success" });
+        body = postedBody();
+        expect(body.context).toMatchObject({
+            presetId: "preset-2",
+            modelPresetId: "preset-1",
+            personaId: "persona-1",
+            selectedPersonaId: "persona-1",
+        });
+        expect(body.arg.chatRef).toBeUndefined();
+
+        // Home: the tab's.
+        selectCharacter(null);
+        stubs.fetch.mockClear();
+        await requestServer(baseArg() as never, "model", null, modelInfo);
+        expect(postedBody().context).toMatchObject({
+            presetId: "preset-1",
+            modelPresetId: "preset-1",
+            personaId: "persona-1",
+            selectedPersonaId: "persona-1",
+            selectedCharacterId: null,
+        });
     });
 
     it("tokenizes and names the main model of the request's captured model preset, not the selected one", async () => {

@@ -15,6 +15,7 @@ import {
     type SlotProfileResolution,
 } from "../../../shared/llm/modelSlots.ts";
 import type { ModelModeExtended } from "../../../shared/llm/request.ts";
+import type { ChatBindingIds } from "../../../shared/chatBinding.ts";
 import {
     MODEL_PRESET_FIELDS,
     MODEL_PROFILE_FIELDS,
@@ -61,12 +62,14 @@ import { isJsonData } from "./mutationValidation";
  *   `settings.presets`, `settings.modules`, `settings.plugins`, `settings.pluginStorage` are the
  *   Phase 1 lists.
  * - `activePreset.<field>`: the selected prompt preset under its own field names (`name`, `image`,
- *   `PROMPT_PRESET_FIELDS`: `NAISettings`, `reasonEffort`, `regex`, ...). A read resolves
- *   the selection (the first preset when it names none, which becomes the selection) and gives a
+ *   `PROMPT_PRESET_FIELDS`: `NAISettings`, `reasonEffort`, `regex`, ...). A read resolves the
+ *   selected chat's bound preset when it exists (`docs/plan/chat-binding.md`, slice 4), else the
+ *   tab's selection (the first preset when it names none, which becomes the selection), and gives a
  *   missing value its default as a fresh copy, so a change inside a default object saves nothing
- *   (assign the field whole). A write goes to the preset the selection names now, never redirected:
- *   none, and it is dropped. The views follow the selection; a handler that must keep its record
- *   across an await captures `activePreset.id` (or `currentPresetRecord()`) first.
+ *   (assign the field whole). A write goes to the preset a read resolves now, never redirected:
+ *   none, and it is dropped. The views follow the selected chat and the selection; a handler that
+ *   must keep its record across an await captures `activePreset.id` (or `currentPresetRecord()`)
+ *   first, and a reader that captured a chat reads that chat's ids, never the views.
  * - `activeModelPreset.<field>`: the selected model preset (`name`, `MODEL_PRESET_FIELDS`), likewise
  *   (`docs/plan/split-preset.md`); a handler that must keep it across an await captures
  *   `activeModelPreset.id`.
@@ -114,11 +117,35 @@ export type ActivePersona = Pick<RisuPersona, ActivePersonaField> & { readonly i
 //
 // - Every access resolves the record anew from the current collection (nothing is cached), so a
 //   collection replaced by a conflict reload or a splice is honored at once.
-// - When the selected id names no record, a read falls back to the first record and makes it the
-//   selection (untracked: the read may come from a `$derived`, where a tracked write throws). A
+// - The selected chat's binding comes first (`docs/plan/chat-binding.md`, slice 4): per field, a
+//   bound id that names a record wins; an unset or gone one falls through to the tab's selection (the
+//   display rule; a pending review does not matter). The binding is never written to the selection.
+// - When the tab's selected id names no record, a read falls back to the first record and makes it
+//   the selection (untracked: the read may come from a `$derived`, where a tracked write throws). A
 //   write made while the id names no record is dropped, never redirected to another record.
 // - Writes resolve untracked: an `$effect` that writes must not rerun, and write again, into the
 //   next record when the selection changes.
+
+/**
+ * The selected chat's bound ids, from `chatStore.svelte.ts` (which imports this module, so it
+ * registers the reader instead). Held in state: a view read before the registration reruns after it.
+ */
+const openChatSource = $state<{ read: () => ChatBindingIds | undefined }>({ read: () => undefined });
+
+/** Registers the reader of the selected chat's bound ids (`chatStore.svelte.ts`, once at load). */
+export function setOpenChatBindingSource(read: () => ChatBindingIds | undefined) {
+    openChatSource.read = read;
+}
+
+/** The selected chat's bound ids (tracked), or undefined at home or before its chats are held. */
+function openChatBinding(): ChatBindingIds | undefined {
+    return openChatSource.read();
+}
+
+/** The record a bound id names, or undefined when it is unset or names none. */
+function boundRecord<T>(id: string | null | undefined, find: (id: string) => T | undefined): T | undefined {
+    return id ? find(id) : undefined;
+}
 
 type PresetRecord = Record<string, unknown> & { id: string };
 type ModelPresetRecord = ModelPreset & Record<string, unknown>;
@@ -133,8 +160,13 @@ function findPreset(id: string): PresetRecord | undefined {
     return presetList().find((preset) => preset?.id === id);
 }
 
-/** The selected preset: the one `selection.presetId` names, else the first, which becomes the selection. */
+/** The selected chat's bound preset when it exists, else the tab's (`resolveTabPreset`). */
 function resolvePreset(): PresetRecord | undefined {
+    return boundRecord(openChatBinding()?.promptPresetId, findPreset) ?? resolveTabPreset();
+}
+
+/** The tab's selected preset: the one `selection.presetId` names, else the first, which becomes the selection. */
+function resolveTabPreset(): PresetRecord | undefined {
     const record = findPreset(selection.presetId);
     if (record !== undefined) {
         return record;
@@ -181,8 +213,13 @@ export function resolveModelSlot(
     return resolveSlotProfile(preset, modelProfileList(), mode, staticModel);
 }
 
-/** The selected model preset: the one `selection.modelPresetId` names, else the first, which becomes the selection. */
+/** The selected chat's bound model preset when it exists, else the tab's (`resolveTabModelPreset`). */
 function resolveModelPreset(): ModelPresetRecord | undefined {
+    return boundRecord(openChatBinding()?.modelPresetId, findModelPreset) ?? resolveTabModelPreset();
+}
+
+/** The tab's selected model preset: the one `selection.modelPresetId` names, else the first, which becomes the selection. */
+function resolveTabModelPreset(): ModelPresetRecord | undefined {
     const record = findModelPreset(selection.modelPresetId);
     if (record !== undefined) {
         return record;
@@ -204,8 +241,13 @@ function findPersona(id: string): PersonaRecord | undefined {
     return personaList().find((persona) => persona?.id === id);
 }
 
-/** The selected persona: the one `selection.personaId` names, else the first, which becomes the selection. */
+/** The selected chat's bound persona when it exists, else the tab's (`resolveTabPersona`). */
 function resolvePersona(): PersonaRecord | undefined {
+    return boundRecord(openChatBinding()?.personaId, findPersona) ?? resolveTabPersona();
+}
+
+/** The tab's selected persona: the one `selection.personaId` names, else the first, which becomes the selection. */
+function resolveTabPersona(): PersonaRecord | undefined {
     const record = findPersona(selection.personaId);
     if (record !== undefined) {
         return record;
@@ -219,21 +261,46 @@ function resolvePersona(): PersonaRecord | undefined {
 }
 
 /**
- * The preset a write to the selected preset goes to, without the read fallback: `undefined` when
- * the selection names no record (the write is then dropped, never redirected).
+ * The preset a write to the selected preset goes to: the one a read shows (the selected chat's bound
+ * preset when it exists, else the tab's), without the read's first-record fallback: `undefined` when
+ * the tab's selection names no record (the write is then dropped, never redirected).
  */
 export function presetRecordForWrite(): botPreset | undefined {
-    return untrack(() => findPreset(selection.presetId)) as unknown as botPreset | undefined;
+    return untrack(
+        () => boundRecord(openChatBinding()?.promptPresetId, findPreset) ?? findPreset(selection.presetId),
+    ) as unknown as botPreset | undefined;
 }
 
-/** The model preset a write to the selected model preset goes to, without the read fallback. */
+/** The model preset a write to the selected model preset goes to, likewise. */
 export function modelPresetRecordForWrite(): ModelPreset | undefined {
-    return untrack(() => findModelPreset(selection.modelPresetId)) as unknown as ModelPreset | undefined;
+    return untrack(
+        () =>
+            boundRecord(openChatBinding()?.modelPresetId, findModelPreset) ?? findModelPreset(selection.modelPresetId),
+    ) as unknown as ModelPreset | undefined;
 }
 
-/** The persona a write to the selected persona goes to, without the read fallback. */
+/** The persona a write to the selected persona goes to, likewise. */
 export function personaRecordForWrite(): RisuPersona | undefined {
-    return untrack(() => findPersona(selection.personaId)) as unknown as RisuPersona | undefined;
+    return untrack(
+        () => boundRecord(openChatBinding()?.personaId, findPersona) ?? findPersona(selection.personaId),
+    ) as unknown as RisuPersona | undefined;
+}
+
+/**
+ * The tab's selection resolved now, ignoring the selected chat's binding (`""` when a list is empty):
+ * what a chat's field that is unset or gone shows (`chatDisplayIds`), never another chat's binding.
+ */
+export function tabSelectionIds(): { presetId: string; modelPresetId: string; personaId: string } {
+    return {
+        presetId: resolveTabPreset()?.id ?? "",
+        modelPresetId: resolveTabModelPreset()?.id ?? "",
+        personaId: resolveTabPersona()?.id ?? "",
+    };
+}
+
+/** The tab's selected persona, ignoring the selected chat's binding; `undefined` when there is none. */
+export function tabPersonaRecord(): RisuPersona | undefined {
+    return resolveTabPersona() as unknown as RisuPersona | undefined;
 }
 
 /**
@@ -261,12 +328,12 @@ export function selectedPersonaIndex(): number {
           );
 }
 
-/** Resolves the selection against the records now, so a write before the first read has a record to go to. */
+/** Resolves the tab's selection against the records now, so a write before the first read has a record to go to. */
 export function reconcileSelection() {
     untrack(() => {
-        resolvePreset();
-        resolveModelPreset();
-        resolvePersona();
+        resolveTabPreset();
+        resolveTabModelPreset();
+        resolveTabPersona();
         selectedLoreBookPage();
     });
 }
@@ -323,7 +390,9 @@ export function writeModelRoot(
         if (!modelRootKeys.has(rootKey) && !rootKey.startsWith("seperateModels.")) {
             return refuseModelRoot(rootKey, "not a model root field");
         }
-        const preset = findModelPreset(scope?.modelPresetId ?? selection.modelPresetId);
+        const preset = scope
+            ? findModelPreset(scope.modelPresetId)
+            : (modelPresetRecordForWrite() as ModelPresetRecord | undefined);
         const profiles = modelProfileList();
         if (rootKey === "seperateModels") {
             if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -635,14 +704,16 @@ function buildPresetView<T>(
     return Object.freeze(view) as T;
 }
 
-export const activePreset: ActivePreset = buildPresetView<ActivePreset>(ACTIVE_PRESET_FIELDS, resolvePreset, () =>
-    findPreset(selection.presetId),
+export const activePreset: ActivePreset = buildPresetView<ActivePreset>(
+    ACTIVE_PRESET_FIELDS,
+    resolvePreset,
+    () => presetRecordForWrite() as unknown as Record<string, unknown> | undefined,
 );
 
 export const activeModelPreset: ActiveModelPreset = buildPresetView<ActiveModelPreset>(
     ACTIVE_MODEL_PRESET_FIELDS,
     resolveModelPreset,
-    () => findModelPreset(selection.modelPresetId),
+    () => modelPresetRecordForWrite() as unknown as Record<string, unknown> | undefined,
 );
 
 /**
@@ -714,7 +785,7 @@ function buildActivePersona(): ActivePersona {
                 return value;
             },
             (value) => {
-                const record = untrack(() => findPersona(selection.personaId));
+                const record = personaRecordForWrite() as unknown as PersonaRecord | undefined;
                 if (record !== undefined) {
                     record[field] = value;
                 }

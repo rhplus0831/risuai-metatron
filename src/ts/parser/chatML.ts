@@ -1,6 +1,8 @@
 import { risuChatParser } from "./parser.svelte";
+import type { ChatRef } from "../storage/chatStore.svelte";
 
-export function parseChatML(data: string): OpenAIChat[] | null {
+/** `chatRef`: the chat whose CBS the contents parse with (`risuChatParser`), else the selected chat's. */
+export function parseChatML(data: string, chatRef?: ChatRef | null): OpenAIChat[] | null {
     const starter = "<|im_start|>";
     const seperator = "<|im_sep|>";
     const ender = "<|im_end|>";
@@ -52,7 +54,7 @@ export function parseChatML(data: string): OpenAIChat[] | null {
 
             return {
                 role: role,
-                content: risuChatParser(v),
+                content: risuChatParser(v, chatRef ? { chatRef } : {}),
                 thoughts: thoughts,
             };
         });

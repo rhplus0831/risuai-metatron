@@ -1,5 +1,6 @@
 import { selectedCharacter, characterList } from "../storage/characterStore.svelte";
-import { settings, activePreset } from "../storage/settingsViews.svelte";
+import { settings, activePreset, readPresetFieldOf, type PresetScope } from "../storage/settingsViews.svelte";
+import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import { language } from "src/lang";
 import {
     alertClear,
@@ -443,9 +444,12 @@ export type ModuleChatRef = { chaId: string; chatId: string } | null | undefined
 
 /**
  * The enabled modules for `chatRef`'s chat and character (default: the selected ones): the global
- * list, the chat's and the character's modules, and the bound persona's embedded module.
+ * list, the chat's and the character's modules, the bound persona's embedded module, and the
+ * prompt preset's integration list: `scope`'s preset (a parse for a captured context, a
+ * `presetChain` pick included), else `chatRef`'s display preset (`docs/plan/chat-binding.md`), else
+ * the settings view, which follows the selected chat.
  */
-export function getModules(chatRef?: ModuleChatRef) {
+export function getModules(chatRef?: ModuleChatRef, scope?: PresetScope) {
     const character = chatRef ? characterList().find((entry) => entry?.chaId === chatRef.chaId) : selectedCharacter();
     const currentChat = chatRef ? findChat(chatRef) : selectedChat();
     const persona = checkPersonaBinded(chatRef);
@@ -459,8 +463,12 @@ export function getModules(chatRef?: ModuleChatRef) {
     if (persona && persona.embeddedModule) {
         ids = ids.concat([persona.embeddedModule?.id]);
     }
-    if (activePreset.moduleIntergration) {
-        const intList = activePreset.moduleIntergration.split(",").map((s) => s.trim());
+    const integration =
+        scope || chatRef
+            ? (readPresetFieldOf(scope ?? chatDisplayIds(chatRef!), "moduleIntergration") as string | undefined)
+            : activePreset.moduleIntergration;
+    if (integration) {
+        const intList = integration.split(",").map((s) => s.trim());
         ids = ids.concat(intList);
     }
     const idsJoined = ids.join("-");
@@ -474,8 +482,9 @@ export function getModules(chatRef?: ModuleChatRef) {
     return modules;
 }
 
-export function getModuleLorebooks(chatRef?: ModuleChatRef) {
-    const modules = getModules(chatRef);
+/** The lorebooks of `getModules(chatRef, scope)`. */
+export function getModuleLorebooks(chatRef?: ModuleChatRef, scope?: PresetScope) {
+    const modules = getModules(chatRef, scope);
     let lorebooks: loreBook[] = [];
     for (const module of modules) {
         if (!module) {
