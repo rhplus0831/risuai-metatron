@@ -206,6 +206,7 @@ import {
     selectPreset,
 } from "src/ts/storage/selection.svelte";
 import { activeMainProfile, activePreset, readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
+import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 import { doingChat } from "src/ts/process/index.svelte";
@@ -344,6 +345,13 @@ async function listenerOf(api: CapturedApi, fn: Function) {
 
 /** What the selection-dependent getters answer now: [character index, chat index]. */
 const where = (api: CapturedApi): [number, number] => [api.getCurrentCharacterIndex(), api.getCurrentChatIndex()];
+
+/**
+ * Binds a chat to prompt and model preset `a` and `persona` (`docs/plan/chat-binding.md`): a request
+ * for a chat runs only on the chat's complete binding, so the cases that send bind their chat first.
+ */
+const bind = (ref: { chaId: string; chatId: string }, personaId: string) =>
+    chatBindingPatch(ref, { modelPresetId: "a", promptPresetId: "a", personaId });
 
 const listenerArg = { char: {}, chat: {}, characterIndex: 0, chatIndex: 0, messageIndex: 0 };
 
@@ -845,6 +853,8 @@ describe("the runners", () => {
         // the request reads it from the model preset of its captured context, else the selected one.
         mainProfile("a").modelId = "pluginmodel:::ctx";
         mainProfile("b").modelId = "pluginmodel:::ctx";
+        bind(refB1, "q");
+        bind(refA1, "p");
         const context = capturePluginContext(refB1);
         selectPreset("b");
 
@@ -864,14 +874,15 @@ describe("the runners", () => {
         expect(seen).toEqual(["before 1/1", "provider 1/1 10 hi", "after 1/1"]);
         expect(where(api)).toEqual([0, 0]);
 
-        // Without a passed context, the request captures one at its entry: the selection then.
+        // Without a passed context, the request captures one at its entry: the chat's binding (preset
+        // `a`), not the selection (`b`).
         seen.length = 0;
         const captured = await requestChatData(
             { formated: [{ role: "user", content: "again" }], bias: {}, chatRef: refA1 },
             "model",
         );
         expect(captured).toMatchObject({ type: "success", result: "reply!" });
-        expect(seen).toEqual(["before 0/1", "provider 0/1 20 again", "after 0/1"]);
+        expect(seen).toEqual(["before 0/1", "provider 0/1 10 again", "after 0/1"]);
     });
 });
 
@@ -892,6 +903,7 @@ describe("the host functions that forward the hook's target", () => {
             results.push(await api.parseRisuChat("scripted", { processRegex: true }));
         });
         saved(refB1);
+        bind(refB1, "q");
         const context = capturePluginContext(refB1);
         selectCharacterAt(0);
         chatStore.selectChat("b", 2);
@@ -923,8 +935,8 @@ describe("the host functions that forward the hook's target", () => {
         });
         expect(scoped[0][2]).toEqual(scope);
         // The script path: the scoped parse before the stage, then the server transform of the hook's
-        // chat with the hook's preset and persona (the persona bound to `b1`), whose continuation ran
-        // the handlers above.
+        // chat with that chat's binding (`docs/plan/chat-binding.md`, the display rule; here the hook's
+        // preset and persona, not the selected `b`), whose continuation ran the handlers above.
         expect(scoped[1][0]).toBe("scripted");
         expect((scoped[1][1] as any).chara.chaId).toBe("b");
         expect(scoped[1][1]).toMatchObject({ chatRef: refB1, chatID: -1 });
@@ -938,7 +950,7 @@ describe("the host functions that forward the hook's target", () => {
                 presetId: "a",
                 modelPresetId: "a",
                 personaId: "q",
-                selectedPersonaId: "p",
+                selectedPersonaId: "q",
             },
             targets: [{ kind: "text", sourceId: "b", chatIndex: -1, source: "scripted" }],
         });
@@ -979,6 +991,7 @@ describe("the host functions that forward the hook's target", () => {
         });
         mainProfile("a").modelId = "pluginmodel:::target";
         mainProfile("b").modelId = "pluginmodel:::target";
+        bind(refB1, "q");
         const results: unknown[] = [];
         const listener = await listenerOf(api, async () => {
             results.push(await api.runLLMModel({ mode: "model", messages: [{ role: "user", content: "blocked" }] }));

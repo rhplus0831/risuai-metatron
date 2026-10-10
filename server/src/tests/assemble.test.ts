@@ -230,7 +230,19 @@ async function seed(s: Server, fixture: Fixture) {
                 characterId: character.chaId,
                 chatId: chat.id,
                 baseRevision: null,
-                ops: [{ op: "create", chat }],
+                // The capture had no chat binding (`docs/plan/chat-binding.md`): each chat is bound to the
+                // ids the preview job sends, keeping a bound persona the fixture holds (else the selected one).
+                ops: [
+                    {
+                        op: "create",
+                        chat: {
+                            ...chat,
+                            modelPresetId: modelPreset.id,
+                            promptPresetId: defaultPreset.id,
+                            bindedPersona: chat.bindedPersona ?? selected.id,
+                        },
+                    },
+                ],
             });
         }
     }

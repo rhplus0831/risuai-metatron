@@ -26,6 +26,7 @@ import {
     type ResourceStore,
 } from "../data/resourceStore.ts";
 import type { MaintenanceGate, SnapshotManager } from "../data/snapshots.ts";
+import { checkChatBinding, readChatBindingState } from "./chatBinding.ts";
 import { type ChannelHub, createChannelHub, type JobChannel, parseGenerationHooks } from "./channel.ts";
 import type { GenerationLock, MessageOwner, MessageRef } from "./generationLock.ts";
 
@@ -665,6 +666,13 @@ export function createGenerationJobs(options: {
         if (revision !== body.context.chatRevision) {
             return { ok: false, status: 409, body: { error: "stale" } };
         }
+        // The job runs on its chat's binding or not at all (`docs/plan/chat-binding.md`), whatever its
+        // kind (a preview too): `targets` below is then the binding. `loadJobScope` checks it again.
+        const binding = readChatBindingState(store, kinds, { characterId, chatId });
+        const refusal = binding.chat && checkChatBinding(binding.chat, binding.lookup, body.context, "send");
+        if (refusal) {
+            return { ok: false, status: 409, body: refusal };
+        }
         let resolveFinished!: () => void;
         const finished = new Promise<void>((resolve) => {
             resolveFinished = resolve;
@@ -896,22 +904,30 @@ export function createGenerationJobs(options: {
         /** The owner's view of its job, or null for an unknown job or another client's. */
         /**
          * The job callback an aux request runs inside (`POST /api/llm/request` with `channelCall`),
-         * when the job is `clientId`'s, has not ended, and that callback is outstanding: its channel
-         * and an unwatch for `onSettled`, which runs once when the callback settles. Else `null`.
+         * when the job is `clientId`'s, has not ended, and that callback is outstanding: its channel,
+         * a copy of the job's targets as they are now (a `presetChain` pick included), and an unwatch
+         * for `onSettled`, which runs once when the callback settles. Else `null`.
          */
         parentCallback(
             jobId: string,
             clientId: string | undefined,
             callbackId: string,
             onSettled: () => void,
-        ): { channel: JobChannel; unwatch: () => void; endJob: () => void } | null {
+        ): { channel: JobChannel; targets: CallbackTargets; unwatch: () => void; endJob: () => void } | null {
             const job = ownJob(jobId, clientId);
             if (!job || job.ended) {
                 return null;
             }
             const unwatch = job.channelLink.watchCallback(callbackId, onSettled);
             // A child callback's barrier failure, timeout, or disconnect ends the job (`job-channel`).
-            return unwatch ? { channel: job.channelLink.channel, unwatch, endJob: () => abort(job, "failed") } : null;
+            return unwatch
+                ? {
+                      channel: job.channelLink.channel,
+                      targets: structuredClone(job.targets),
+                      unwatch,
+                      endJob: () => abort(job, "failed"),
+                  }
+                : null;
         },
 
         status(jobId: string, clientId: string | undefined): GenerationStatus | null {

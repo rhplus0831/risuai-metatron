@@ -301,6 +301,73 @@ describe("POST /api/llm/request", () => {
         expect(upstreamRequests).toHaveLength(0);
     });
 
+    it("answers 409 with the binding problems for a chat whose binding is not complete, and 409 mismatch for other ids (`docs/plan/chat-binding.md`)", async () => {
+        const ids = await seed();
+        const seeded = await client.json("/api/resources/batch", {
+            ops: [{ kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { name: "K", message: [] } }],
+                },
+                {
+                    characterId: "c",
+                    chatId: "b",
+                    baseRevision: null,
+                    ops: [
+                        {
+                            op: "create",
+                            chat: {
+                                name: "B",
+                                modelPresetId: ids.modelPresetId,
+                                promptPresetId: ids.presetId,
+                                bindedPersona: ids.personaId,
+                                message: [],
+                            },
+                        },
+                    ],
+                },
+            ],
+        });
+        expect(seeded.status).toBe(200);
+        await client.readEpoch();
+        const incomplete = await client.json("/api/llm/request", body(ids, { chatRef: { chaId: "c", chatId: "k" } }));
+        expect(incomplete.status).toBe(409);
+        expect(await incomplete.json()).toEqual({
+            error: "chatBindingIncomplete",
+            problems: [
+                { field: "modelPresetId", reason: "unset" },
+                { field: "promptPresetId", reason: "unset" },
+                { field: "personaId", reason: "unset" },
+            ],
+        });
+        const mismatch = await client.json(
+            "/api/llm/request",
+            body({ ...ids, personaId: "other" }, { chatRef: { chaId: "c", chatId: "b" } }),
+        );
+        expect(mismatch.status).toBe(409);
+        expect(await mismatch.json()).toEqual({ error: "chatBindingMismatch" });
+        expect(upstreamRequests).toHaveLength(0);
+        const bound = await client.json("/api/llm/request", body(ids, { chatRef: { chaId: "c", chatId: "b" } }));
+        expect(bound.status).toBe(200);
+        expect((await events(bound)).at(-1)).toMatchObject({ type: "result", response: { type: "success" } });
+        expect(upstreamRequests).toHaveLength(1);
+
+        // A chat that does not exist (or whose character does not): 404, nothing runs.
+        const missingChat = await client.json("/api/llm/request", body(ids, { chatRef: { chaId: "c", chatId: "x" } }));
+        expect(missingChat.status).toBe(404);
+        expect(await missingChat.json()).toEqual({ error: "The chat this request is for no longer exists" });
+        const missingChar = await client.json(
+            "/api/llm/request",
+            body(ids, { chatRef: { chaId: "nobody", chatId: "b" } }),
+        );
+        expect(missingChar.status).toBe(404);
+        expect(await missingChar.json()).toEqual({ error: "The chat this request is for no longer exists" });
+        expect(upstreamRequests).toHaveLength(1);
+    });
+
     it("ends the request when the client disconnects mid-stream over a real socket, and refuses new ones after shutdown began", async () => {
         const ids = await seed();
         const read = async (kind: string) =>

@@ -636,6 +636,8 @@ describe("the registry over a real socket", () => {
     let base = "";
     let epoch = "";
     let signer: Awaited<ReturnType<typeof createSigner>>;
+    /** The chat's binding (`docs/plan/chat-binding.md`): the default records' ids, which every job names. */
+    let bound = { presetId: "", modelPresetId: "", personaId: "" };
     let steps: Step[] = [];
     let wake: (() => void) | null = null;
 
@@ -690,6 +692,13 @@ describe("the registry over a real socket", () => {
         signer = await createSigner();
         await fetch(`${base}/api/login`, json({ password: "pw", publicKey: signer.publicJwk }));
         epoch = ((await (await request("/api/resources/ui")).json()) as { epoch: string }).epoch;
+        const firstId = async (kind: string) =>
+            ((await (await request(`/api/resources/${kind}/main`)).json()) as { data: { id: string }[] }).data[0].id;
+        bound = {
+            presetId: await firstId("presets"),
+            modelPresetId: await firstId("modelPresets"),
+            personaId: await firstId("personas"),
+        };
         const seeded = await request(
             "/api/resources/batch",
             json({
@@ -700,7 +709,16 @@ describe("the registry over a real socket", () => {
                         chatId: "k",
                         baseRevision: null,
                         ops: [
-                            { op: "create", chat: { name: "K", message: [{ role: "user", data: "hi", chatId: "u" }] } },
+                            {
+                                op: "create",
+                                chat: {
+                                    name: "K",
+                                    modelPresetId: bound.modelPresetId,
+                                    promptPresetId: bound.presetId,
+                                    bindedPersona: bound.personaId,
+                                    message: [{ role: "user", data: "hi", chatId: "u" }],
+                                },
+                            },
                         ],
                     },
                 ],
@@ -737,9 +755,7 @@ describe("the registry over a real socket", () => {
                 context: {
                     characterId: "c",
                     chatId: "k",
-                    presetId: null,
-                    modelPresetId: null,
-                    personaId: null,
+                    ...bound,
                     mode: "normal",
                     input: "",
                     chatRevision: await chatRevision(),
@@ -838,6 +854,37 @@ describe("the registry over a real socket", () => {
         await owner.next("done");
         expect(outcome.result).toEqual({ outcome: "answered", value: "EARLY" });
         expect(types(owner.events).filter((type) => type === "cancel")).toEqual([]);
+    });
+
+    it("hands an aux request of a callback the job's targets as they are now, a presetChain pick included, as a detached copy (`docs/plan/chat-binding.md`)", async () => {
+        await listen();
+        const outcome: { result?: CallbackResult } = {};
+        step(async (job) => {
+            job.setCallbackPreset!("picked");
+            outcome.result = await job.channel.callback("editoutput", { text: "x" });
+            return "end" as never;
+        });
+        const { body } = await create();
+        const jobId = body.jobId as string;
+        const owner = await connect(jobId);
+        const callback = await owner.next("callback");
+        expect(callback.targets).toEqual({ chatRef: { chaId: "c", chatId: "k" }, ...bound, presetId: "picked" });
+        const settled = vi.fn();
+        const parent = server!.context.generationJobs.parentCallback(jobId, "tab", callback.id, settled)!;
+        expect(parent).not.toBeNull();
+        expect(parent.targets).toEqual({ chatRef: { chaId: "c", chatId: "k" }, ...bound, presetId: "picked" });
+        parent.targets.presetId = "mutated";
+        const again = server!.context.generationJobs.parentCallback(jobId, "tab", callback.id, () => {})!;
+        expect(again.targets.presetId).toBe("picked");
+        // Another client, an unknown callback: none.
+        expect(server!.context.generationJobs.parentCallback(jobId, "other", callback.id, () => {})).toBeNull();
+        expect(server!.context.generationJobs.parentCallback(jobId, "tab", "nope", () => {})).toBeNull();
+        parent.unwatch();
+        again.unwatch();
+        owner.send({ type: "answer", id: callback.id, outcome: "answered", value: "X" });
+        await owner.next("done");
+        expect(outcome.result).toEqual({ outcome: "answered", value: "X" });
+        expect(settled).not.toHaveBeenCalled();
     });
 
     it("re-sends a pending question on a reconnect as a replay, ignores the superseded socket's answer, and times out with a cancel", async () => {

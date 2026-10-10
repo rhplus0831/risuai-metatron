@@ -1,10 +1,17 @@
 import { selectedCharacter } from "../../storage/characterStore.svelte";
 import {
+    chatBinding,
+    chatBindingProblems,
+    chatBindingRefusalText,
+    chatContextIds,
+} from "../../storage/chatBinding.svelte";
+import {
     type ChatRef,
     chatEntry,
     chatOwnerToken,
     currentChatRef,
     ensureChatLoaded,
+    loadChat,
     pinChat,
 } from "../../storage/chatStore.svelte";
 import {
@@ -26,6 +33,7 @@ import {
     type ToolCallRecord,
 } from "../../../../shared/llm/request.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../../shared/resources.ts";
+import { language } from "src/lang";
 import { alertError } from "src/ts/alert";
 import { appendFetchLog } from "src/ts/globalApi.svelte";
 import { getModelInfoForMode, isDynamicModel, LLMFlags, type LLMModel } from "src/ts/model/modellist";
@@ -66,6 +74,11 @@ const TOOL_CALL_MARKER = /<tool_call>(.*?)<\/tool_call>/gs;
 
 function fail(result: string): ClientResponse {
     return { type: "fail", result };
+}
+
+/** A refusal that a retry would only repeat (the chat's binding). */
+function refuse(result: string): ClientResponse {
+    return { type: "fail", result, noRetry: true };
 }
 
 function selectedChatRef(): { chaId: string; chatId: string } | null {
@@ -123,23 +136,45 @@ export async function requestServer(
     modelInfo: LLMModel,
 ): Promise<ClientResponse> {
     // Everything that depends on the selection is read now, before any await. A plugin context's
-    // chat is the request's chat when the caller named none.
+    // chat is the request's chat when the caller named none; the server sees it as `arg.chatRef`.
     const chatRef = arg.chatRef ?? arg.pluginContext?.chatRef ?? null;
     // A parse the server asks for without a chat runs on the chat that was selected now.
     const parseChatRef = chatRef ?? selectedChatRef();
     const pluginContext = arg.pluginContext ?? capturePluginContext(parseChatRef);
-    const presetId = pluginContext?.presetId || activePreset.id || "";
-    const modelPresetId = pluginContext?.modelPresetId || activeModelPreset.id || "";
+    // The ids (`docs/plan/chat-binding.md`): a chat's request names its captured context's (the
+    // chat's binding when it was captured, or a job callback's targets), else the chat's complete
+    // binding; a request without a chat names the tab's selection (decision 10).
+    let ids: { presetId: string; modelPresetId: string; personaId: string };
+    if (arg.pluginContext) {
+        ids = {
+            presetId: arg.pluginContext.presetId,
+            modelPresetId: arg.pluginContext.modelPresetId,
+            personaId: arg.pluginContext.personaId,
+        };
+    } else if (chatRef) {
+        const binding = chatBinding(chatRef);
+        if (!binding?.ok) {
+            return refuse(chatBindingRefusalText(chatBindingProblems(binding)));
+        }
+        ids = chatContextIds(binding.ids);
+    } else {
+        ids = {
+            presetId: activePreset.id || "",
+            modelPresetId: activeModelPreset.id || "",
+            // `getUserName()` (no chat): the selected chat's bound persona, else the selected persona.
+            personaId: checkPersonaBinded()?.id ?? activePersona.id ?? "",
+        };
+    }
+    const { presetId, modelPresetId, personaId } = ids;
     const presetScope = { presetId, modelPresetId };
     // A captured preset that is gone refuses the request here, as the server would by its ids.
     const missing = missingScopeTarget(presetScope);
     if (missing) {
         return fail(`The ${missing} this request runs with no longer exists`);
     }
-    const selectedPersonaId = activePersona.id ?? "";
-    // `getUserName()` (no chat): the selected chat's bound persona, else the selected persona.
-    const personaId = checkPersonaBinded()?.id ?? selectedPersonaId;
-    const scope = { presetId, modelPresetId, personaId: pluginContext?.personaId || personaId };
+    // A chat's request has one persona, the chat's; without a chat the selected one is forwarded.
+    const selectedPersonaId = chatRef ? personaId : (activePersona.id ?? "");
+    const scope = { presetId, modelPresetId, personaId };
     // The main model and tokenizer of the model preset whose id the request carries.
     const aiModel = (scopedPresetRoot(presetScope, "aiModel") as string | undefined) ?? "";
     const currentPluginProvider = (scopedPresetRoot(presetScope, "currentPluginProvider") as string | undefined) ?? "";
@@ -150,6 +185,9 @@ export async function requestServer(
             args[key] = arg[key];
         }
     }
+    if (chatRef) {
+        args.chatRef = { chaId: chatRef.chaId, chatId: chatRef.chatId };
+    }
     const requestArgs = JSON.parse(JSON.stringify(args)) as RequestArgs;
     const body: Omit<LlmRequestBody, "toolRecords"> = {
         clientId: generationClientId(),
@@ -159,7 +197,8 @@ export async function requestServer(
             modelPresetId,
             personaId,
             selectedPersonaId,
-            selectedCharacterId: selectedCharacter()?.chaId ?? null,
+            // The request chat's character, else the selected one.
+            selectedCharacterId: chatRef ? chatRef.chaId : (selectedCharacter()?.chaId ?? null),
             speakerId: arg.currentChar?.chaId ?? null,
             mainModel: { imageInput: mainModel.flags.includes(LLMFlags.hasImageInput) },
             // `encode`'s scope (`src/ts/tokenizer.ts`), as the tab would tokenize now.
@@ -281,6 +320,20 @@ export async function requestServer(
             const parsed = await response.json();
             if (response.status === 412 && parsed?.error === "EpochMismatch" && typeof parsed.epoch === "string") {
                 throw epochMismatch(parsed.epoch);
+            }
+            if (response.status === 409 && parsed?.error === "chatBindingIncomplete") {
+                return refuse(chatBindingRefusalText(Array.isArray(parsed.problems) ? parsed.problems : []));
+            }
+            if (response.status === 409 && parsed?.error === "chatBindingMismatch") {
+                // The server holds a newer binding than this tab: read the chat again for the next request.
+                if (chatRef) {
+                    void loadChat(chatRef).catch((loadError) => console.error("[Request]", loadError));
+                }
+                return refuse(language.chatBinding.mismatch);
+            }
+            if (response.status === 404 && chatRef && typeof parsed?.error === "string") {
+                // The request's chat is gone on the server: a retry would only repeat it.
+                return refuse(parsed.error);
             }
             if (typeof parsed?.error === "string") {
                 error = parsed.error;

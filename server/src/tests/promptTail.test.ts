@@ -241,6 +241,10 @@ async function seedCharacter(options: {
                             id: "k",
                             name: "K",
                             fmIndex: -1,
+                            // Bound to the ids the jobs send (`docs/plan/chat-binding.md`): a job runs on its chat's binding.
+                            modelPresetId,
+                            promptPresetId: presetId,
+                            bindedPersona: personaId,
                             message: options.messages ?? [{ role: "user", data: "q", chatId: "u1" }],
                         },
                     },

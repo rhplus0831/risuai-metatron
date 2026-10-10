@@ -144,6 +144,10 @@ function setup(options: { attached?: boolean; embeddings?: EmbeddingsService } =
                         chat: {
                             id: "k",
                             name: "K",
+                            // The chat's binding (`docs/plan/chat-binding.md`): the job scope checks the context's ids against it.
+                            modelPresetId: "m",
+                            promptPresetId: "p",
+                            bindedPersona: "u",
                             message: [
                                 { role: "user", data: "hi", chatId: "m1" },
                                 { role: "char", data: "owner reply", chatId: "m2" },

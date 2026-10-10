@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
+import type { ChatBindingProblem } from "../../../shared/chatBinding.ts";
 import {
     type GenerationCreateBody,
     type GenerationEvent,
@@ -54,6 +55,21 @@ export class GenerationStaleError extends Error {
     constructor() {
         super("The chat changed on the server; reload it and send again");
         this.name = "GenerationStaleError";
+    }
+}
+
+/**
+ * 409 `chatBindingIncomplete` (with the chat's binding `problems`) or `chatBindingMismatch`: the job's
+ * ids are not its chat's complete binding (`docs/plan/chat-binding.md`). Nothing ran.
+ */
+export class ChatBindingRefusedError extends Error {
+    readonly code: "chatBindingIncomplete" | "chatBindingMismatch";
+    readonly problems: readonly ChatBindingProblem[];
+    constructor(code: ChatBindingRefusedError["code"], problems: readonly ChatBindingProblem[] = []) {
+        super(code === "chatBindingMismatch" ? "The chat's binding changed" : "The chat's binding is incomplete");
+        this.name = "ChatBindingRefusedError";
+        this.code = code;
+        this.problems = problems;
     }
 }
 
@@ -123,7 +139,7 @@ export function forgetGenerationJob(jobId: string) {
 }
 
 async function failure(response: Response): Promise<never> {
-    let body: { error?: string; jobId?: string; epoch?: string } = {};
+    let body: { error?: string; jobId?: string; epoch?: string; problems?: ChatBindingProblem[] } = {};
     try {
         body = await response.json();
     } catch {}
@@ -132,6 +148,9 @@ async function failure(response: Response): Promise<never> {
     }
     if (response.status === 409 && body.error === "stale") {
         throw new GenerationStaleError();
+    }
+    if (response.status === 409 && (body.error === "chatBindingIncomplete" || body.error === "chatBindingMismatch")) {
+        throw new ChatBindingRefusedError(body.error, Array.isArray(body.problems) ? body.problems : []);
     }
     if (response.status === 412 && body.error === "EpochMismatch") {
         // The restore notice and reload, as for any other resource request.
@@ -375,32 +394,14 @@ export function applyGenerationEvent(
             }
             return;
         case "preset":
-            applyJobPreset(jobId, event.presetId);
+            // A `presetChain` pick is the job's own (`docs/plan/chat-binding.md`, decision 9): neither
+            // the tab's selection nor the chat's binding changes.
             return;
         case "done":
         case "error":
             releaseGenerationJob(jobId);
             return;
     }
-}
-
-/** The jobs whose `presetChain` pick this tab applied (an attach sends the event again). */
-const appliedPresets = new Set<string>();
-
-/**
- * A send's `presetChain` pick (Phase 5 slice 9): the tab switches its selection as the browser path's
- * `changeToPreset(id)` does, once per job. After a reload an attach applies it again (the set
- * is this page's): with the selection unchanged that only re-saves its working values into it, but
- * a selection changed since is switched back (recorded).
- */
-function applyJobPreset(jobId: string, presetId: string) {
-    if (appliedPresets.has(jobId)) {
-        return;
-    }
-    appliedPresets.add(jobId);
-    void import("../storage/presets.svelte")
-        .then(({ changeToPreset }) => changeToPreset(presetId))
-        .catch((error) => console.error("[Generation]", error));
 }
 
 /**

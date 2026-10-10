@@ -1,19 +1,22 @@
+import { language } from "src/lang";
 import {
     readChatBindingIds,
     resolveChatBinding,
     type ChatBindingIds,
     type ChatBindingLookup,
+    type ChatBindingProblem,
     type ChatBindingResult,
 } from "../../../shared/chatBinding.ts";
 import { chatEntry, setChatMeta, type ChatRef } from "./chatStore.svelte";
 import { trackedRecord, type RecordKind } from "./records.svelte";
+import { activeModelPreset, activePersona, activePreset } from "./settingsViews.svelte";
 
 /*
  * A chat's binding on the client (`docs/plan/chat-binding.md`): read from the chat's list entry, so
  * it resolves synchronously also for a chat that is not loaded. `undefined` means the chat is not a
  * member (gone or not listed), never "use the tab's selection". `settingsViews.svelte.ts` must not
  * import this module (`chatStore.svelte.ts` imports the views): the views will reach it through a
- * registered getter.
+ * registered getter. This module reads the views only for the display rule's fallback.
  */
 
 function hasRecord(kind: RecordKind, id: string): boolean {
@@ -32,6 +35,49 @@ const lookup: ChatBindingLookup = {
 export function chatBinding(ref: ChatRef): ChatBindingResult | undefined {
     const entry = chatEntry(ref);
     return entry ? resolveChatBinding(entry, lookup) : undefined;
+}
+
+/** The ids a job, request, or transform context names (`presetId` is the prompt preset). */
+export type ChatContextIds = { presetId: string; modelPresetId: string; personaId: string };
+
+/** A complete binding's ids as a context names them. */
+export function chatContextIds(ids: Extract<ChatBindingResult, { ok: true }>["ids"]): ChatContextIds {
+    return { presetId: ids.promptPresetId, modelPresetId: ids.modelPresetId, personaId: ids.personaId };
+}
+
+/**
+ * The ids a render of the chat uses (the display rule): per field, the bound id when it names a
+ * record that exists, else the tab's (`""` when it has none). Equal to the binding when that is
+ * complete; never for a send, which refuses an incomplete binding (`chatBinding`). Tracked.
+ */
+export function chatDisplayIds(ref: ChatRef): ChatContextIds {
+    const bound = chatBindingIds(ref);
+    const pick = (id: string | null | undefined, exists: (id: string) => boolean, tab: string | undefined) =>
+        id && exists(id) ? id : (tab ?? "");
+    return {
+        presetId: pick(bound?.promptPresetId, lookup.promptPreset, activePreset.id),
+        modelPresetId: pick(bound?.modelPresetId, lookup.modelPreset, activeModelPreset.id),
+        personaId: pick(bound?.personaId, lookup.persona, activePersona.id),
+    };
+}
+
+/**
+ * Why a chat cannot be sent, as the alert shows it: the refusal and one line per problem. A chat
+ * that is not a member has no problems listed.
+ */
+export function chatBindingRefusalText(problems: readonly ChatBindingProblem[]): string {
+    const strings = language.chatBinding;
+    const lines = problems.map((problem) =>
+        problem.field === "review"
+            ? strings.review
+            : `${strings.fields[problem.field]}: ${problem.reason === "unset" ? strings.unset : strings.gone}`,
+    );
+    return [strings.refused, ...lines].join("\n");
+}
+
+/** The problems of `result` (none when the chat is not a member or the binding is complete). */
+export function chatBindingProblems(result: ChatBindingResult | undefined): readonly ChatBindingProblem[] {
+    return result && "problems" in result ? result.problems : [];
 }
 
 /** The chat's bound ids as stored, field by field, for a display or a picker (not for a send). */

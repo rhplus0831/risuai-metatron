@@ -1,5 +1,10 @@
 import type { AnyClientCharacter } from "../storage/characterStore.svelte";
-import { activeModelPreset, activePreset, activePersona } from "../storage/settingsViews.svelte";
+import {
+    chatBinding,
+    chatBindingProblems,
+    chatBindingRefusalText,
+    chatContextIds,
+} from "../storage/chatBinding.svelte";
 import type {
     GenerationCommand,
     GenerationContext,
@@ -12,6 +17,7 @@ import { alertError } from "../alert";
 import {
     abortGenerationJob,
     applyGenerationEvent,
+    ChatBindingRefusedError,
     createGenerationJob,
     followGenerationJob,
     type GenerationFollow,
@@ -20,7 +26,7 @@ import {
     releaseGenerationJob,
     savedGenerationJobIds,
 } from "../network/generationJobs";
-import { type ChatRef, ensureChatLoaded, heldChatRevision, pinChat } from "../storage/chatStore.svelte";
+import { type ChatRef, ensureChatLoaded, heldChatRevision, loadChat, pinChat } from "../storage/chatStore.svelte";
 import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 import {
     flushResources,
@@ -28,7 +34,7 @@ import {
     generatingNoticeCount,
     watchForRestore,
 } from "../storage/resourceSync.svelte";
-import { checkPersonaBinded, sleep } from "../util";
+import { sleep } from "../util";
 
 /** How often a follow whose socket closed before the job's end attaches again. */
 const MAX_ATTACHES = 5;
@@ -231,9 +237,10 @@ export type ServerJobRequest = {
 };
 
 /**
- * A server job of this tab (Phase 5 slices 8a, 8b, 9): the target
- * and the settings ids are taken before the first await (a selection change while the save flushes
- * does not move the job; `identity` gives a plugin call's own preset and effective persona), every
+ * A server job of this tab (Phase 5 slices 8a, 8b, 9): the target and the settings ids are taken
+ * before the first await, from the chat's binding (`docs/plan/chat-binding.md`; `identity` gives a
+ * plugin call's own captured ids). A chat whose binding is not complete runs nothing (the problems
+ * are shown), never the tab's selection; the server refuses it too (409, shown the same way). Every
  * pending write is saved first (a refused or a discarding flush runs nothing), then the job runs and
  * its events are applied until it ends. Its chat and record changes arrive as the server's records;
  * its alerts and questions through the job's channel. An error ends with `alertError`. `onStart`
@@ -272,13 +279,14 @@ async function runPinnedServerJob(
     options: ServerJobOptions,
 ): Promise<{ outcome: ServerCommandOutcome; terminal: GenerationTerminalEvent | "lost" | null }> {
     const refused = { outcome: "refused" as const, terminal: null };
-    const presetId = options.identity ? options.identity.presetId : (activePreset.id ?? null);
-    const modelPresetId = options.identity ? options.identity.modelPresetId : (activeModelPreset.id ?? null);
-    const selectedPersonaId = activePersona.id ?? null;
-    // `getUserName(ref)`: the chat's bound persona, else the selected one.
-    const personaId = options.identity
-        ? options.identity.personaId
-        : (checkPersonaBinded(ref)?.id ?? selectedPersonaId);
+    // The send guard: every job of a chat (send, continue, reroll, group, preview, command) runs on
+    // the chat's complete binding or not at all.
+    const binding = chatBinding(ref);
+    if (!binding?.ok) {
+        alertError(chatBindingRefusalText(chatBindingProblems(binding)));
+        return refused;
+    }
+    const { presetId, modelPresetId, personaId } = options.identity ?? chatContextIds(binding.ids);
     const client = {
         viewport: { width: window.innerWidth, height: window.innerHeight },
         browserLanguage: navigator.language,
@@ -328,7 +336,6 @@ async function runPinnedServerJob(
                 presetId,
                 modelPresetId,
                 personaId,
-                selectedPersonaId,
                 mode: request.kind,
                 input: "",
                 chatRevision,
@@ -338,6 +345,16 @@ async function runPinnedServerJob(
             ...(request.command ? { command: request.command } : {}),
         } as Parameters<typeof createGenerationJob>[0]);
     } catch (error) {
+        if (error instanceof ChatBindingRefusedError) {
+            if (error.code === "chatBindingMismatch") {
+                // The server holds a newer binding than this tab: read the chat again, and the user sends again.
+                void loadChat(ref).catch((loadError) => console.error("[Generation]", loadError));
+                alertError(language.chatBinding.mismatch);
+            } else {
+                alertError(chatBindingRefusalText(error.problems));
+            }
+            return refused;
+        }
         if (error instanceof GenerationBusyError) {
             // This tab's own job (one a reload lost track of): follow it instead; another's is busy.
             const owned = await readGenerationJob(error.jobId).catch(() => null);

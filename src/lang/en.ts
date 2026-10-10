@@ -1265,6 +1265,18 @@ export const languageEnglish = {
     resourceRestored: "The server data was restored from a backup. The app will reload.",
     characterGenerating: "This character is generating a reply. Wait until it finishes.",
     chatGenerating: "This chat is generating a reply. Wait until it finishes.",
+    chatBinding: {
+        refused: "This chat cannot be sent until its model preset, prompt preset, and persona are set.",
+        fields: {
+            modelPresetId: "Model preset",
+            promptPresetId: "Prompt preset",
+            personaId: "Persona",
+        },
+        unset: "not set",
+        gone: "deleted",
+        review: "The imported chat's settings need a confirmation.",
+        mismatch: "This chat's model preset, prompt preset, or persona changed. Check them and send again.",
+    },
     maxSupaChunkSize: "Max SupaMemory Chunk Size",
     addCharacter: "Add Character",
     importFromRealm: "Choose from RisuRealm",

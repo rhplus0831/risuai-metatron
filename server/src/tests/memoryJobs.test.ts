@@ -293,7 +293,21 @@ async function seedCharacter(
                 characterId: chaId,
                 chatId: "k",
                 baseRevision: null,
-                ops: [{ op: "create", chat: { id: "k", name: "K", fmIndex: -1, message: messages } }],
+                ops: [
+                    {
+                        op: "create",
+                        // Bound to the ids the jobs send (`docs/plan/chat-binding.md`): a job runs on its chat's binding.
+                        chat: {
+                            id: "k",
+                            name: "K",
+                            fmIndex: -1,
+                            modelPresetId,
+                            promptPresetId: presetId,
+                            bindedPersona: personaId,
+                            message: messages,
+                        },
+                    },
+                ],
             },
         ],
     });

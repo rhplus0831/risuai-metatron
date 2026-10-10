@@ -1,11 +1,13 @@
-import { settings, activePreset, activeModelPreset, activePersona } from "../../storage/settingsViews.svelte";
 import { untrack } from "svelte";
-import { chatEntry, chatOwnerToken, type ChatRef } from "../../storage/chatStore.svelte";
+import { chatDisplayIds } from "../../storage/chatBinding.svelte";
+import { chatOwnerToken, type ChatRef } from "../../storage/chatStore.svelte";
 
 /**
  * The call context of a plugin hook (Phase 4, `PLAN.md` Decision 5 for client hooks): the chat a hook
- * runs for, the prompt and model presets selected when its runner started, and the effective persona (the chat's bound
- * persona, else the selected one; carried for Phase 5, no Phase 4 host function reads it). A runner
+ * runs for and its prompt preset, model preset, and persona when its runner started: the chat's
+ * binding (`docs/plan/chat-binding.md`), or a job callback's targets. A chat whose binding is not
+ * complete gets its display ids (each bound id that exists, else the tab's); a send or request with
+ * such a context is refused by the send guard, never run on them. A runner
  * captures it before its first await and hands it to each hook it calls (`invokeHook`); the hook's
  * wrapper (`v3.svelte.ts`) takes it synchronously and keeps it on its plugin instance's stack until
  * the hook settles, so the selection-dependent host functions that plugin calls meanwhile act on the
@@ -40,20 +42,19 @@ export class PluginTargetGoneError extends Error {
     }
 }
 
-/** The context of a hook for `chatRef` (none without a chat), from the selection as it is now. */
+/** The context of a hook for `chatRef` (none without a chat), from its binding as it is now. */
 export function capturePluginContext(chatRef: ChatRef | null | undefined): PluginCallContext | undefined {
     if (!chatRef) {
         return undefined;
     }
     return untrack(() => {
-        // The list entry: the bound persona holds also while the chat is not loaded.
-        const bound = chatEntry(chatRef)?.bindedPersona;
-        const boundPersona = bound ? settings.personas?.find((persona) => persona?.id === bound) : undefined;
+        // The list entry: the binding holds also while the chat is not loaded.
+        const { presetId, modelPresetId, personaId } = chatDisplayIds(chatRef);
         return {
             chatRef: { chaId: chatRef.chaId, chatId: chatRef.chatId },
-            presetId: activePreset.id ?? "",
-            modelPresetId: activeModelPreset.id ?? "",
-            personaId: boundPersona?.id ?? activePersona.id ?? "",
+            presetId,
+            modelPresetId,
+            personaId,
             owner: chatOwnerToken(chatRef.chaId),
         };
     });

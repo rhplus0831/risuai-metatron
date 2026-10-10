@@ -517,7 +517,9 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                 chatRevision: "",
                 ...(request.client ? { client: request.client } : {}),
             };
-            const scope = loadJobScope(store, kinds, context);
+            // A render, read-only: the chat's bound fields that exist must be the ones sent; an
+            // unset or gone field renders with the tab's (`docs/plan/chat-binding.md`).
+            const scope = loadJobScope(store, kinds, context, { binding: "display" });
             const chat = scopeChat(scope)!;
             const shared: Shared = { budget: createLuaBudget(), cbsUsage: { usedMs: 0 } };
             const base = baseKey(request, scope, life.epoch, chat);

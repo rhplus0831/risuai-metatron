@@ -773,6 +773,49 @@ describe("the transform's admission", () => {
     );
 
     it(
+        "renders with the display rule (`docs/plan/chat-binding.md`): a bound record that exists must be the one sent (409 chatBindingMismatch), an unset or gone one takes the sent id, a pending review does not matter",
+        async () => {
+            const personas = await single("personas");
+            await batch({
+                ops: [
+                    {
+                        kind: "personas",
+                        id: "main",
+                        baseRevision: personas.revision,
+                        data: [...personas.data, { id: "u2", name: "Bound User" }],
+                    },
+                    character("tb"),
+                ],
+                chats: [
+                    chatCreate("tb", "k", {
+                        modelPresetId: "m-gone",
+                        promptPresetId: presetId,
+                        bindedPersona: "u2",
+                        bindingReview: true,
+                    }),
+                ],
+            });
+            const t = [target("a", "tb", "{{user}}")];
+            // The tab's persona for a chat bound to another one: refused, nothing rendered.
+            const mismatch = await render("tb", "k", t);
+            expect(mismatch.status).toBe(409);
+            expect(mismatch.body).toEqual({ error: "chatBindingMismatch" });
+            const otherPreset = await render("tb", "k", t, {
+                context: { ...context("tb", "k"), personaId: "u2", presetId: "nope" },
+            });
+            expect(otherPreset.status).toBe(409);
+            expect(otherPreset.body).toEqual({ error: "chatBindingMismatch" });
+            // The bound persona, the bound preset, and the tab's model preset for the gone one: rendered with that persona.
+            const ok = await render("tb", "k", t, {
+                context: { ...context("tb", "k"), personaId: "u2", selectedPersonaId: "u2" },
+            });
+            expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+            expect(ok.body.results).toMatchObject([{ id: "a", ok: true, text: "Bound User" }]);
+        },
+        SLOW,
+    );
+
+    it(
         "authentication comes before the body is read; an authenticated body over 8 MiB is 413, with or without its length",
         async () => {
             const streamOf = (chunks: number, counter: { pulled: number }) =>

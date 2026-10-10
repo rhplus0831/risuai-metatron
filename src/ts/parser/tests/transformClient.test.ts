@@ -22,7 +22,16 @@ const state = vi.hoisted(() => ({
     preset: "preset-1" as string | undefined,
     modelPreset: "model-1" as string | undefined,
     persona: "persona-1" as string | undefined,
+    /** The chats' bound persona, prompt preset, and model preset (`chatEntry`; every chat shares them). */
     bound: undefined as string | undefined,
+    boundPreset: undefined as string | undefined,
+    boundModel: undefined as string | undefined,
+    /** The settings lists the display rule looks the bound ids up in (`trackedRecord`). */
+    records: {
+        presets: [{ id: "preset-1" }, { id: "preset-bound" }],
+        modelPresets: [{ id: "model-1" }, { id: "model-bound" }],
+        personas: [{ id: "persona-1" }, { id: "persona-bound" }],
+    } as Record<string, { id: string }[]>,
     handler: null as unknown as (path: string, body: any) => unknown,
     calls: [] as { path: string; body: any; headers: Record<string, string> }[],
     hookContexts: [] as unknown[],
@@ -33,7 +42,9 @@ const state = vi.hoisted(() => ({
 
 const key = (ref: { chaId: string; chatId: string }) => `${ref.chaId}/${ref.chatId}`;
 
-vi.mock("src/lang", () => ({ language: { serverTransformFailed: "Render failed" } }));
+vi.mock("src/lang", () => ({
+    language: { serverTransformFailed: "Render failed", chatBinding: { mismatch: "binding changed" } },
+}));
 vi.mock("../../alert", () => ({ alertToast: (text: string) => state.toasts.push(text) }));
 vi.mock("../../network/generationJobs", () => ({ generationClientId: () => "client-1" }));
 vi.mock("../../plugins/apiV3/pluginContext", () => ({
@@ -56,6 +67,11 @@ vi.mock("../../storage/chatStore.svelte", async () => {
     const { lockSource } = await import("./transformReactive.svelte");
     return {
         currentChatRef: () => state.current,
+        // The list entry: the binding fields the display rule reads (`docs/plan/chat-binding.md`).
+        chatEntry: (ref: { chaId: string; chatId: string }) =>
+            state.chats.has(key(ref))
+                ? { bindedPersona: state.bound, promptPresetId: state.boundPreset, modelPresetId: state.boundModel }
+                : undefined,
         findChat: (ref: { chaId: string; chatId: string }) => state.chats.get(key(ref)),
         heldChatRevision: (ref: { chaId: string; chatId: string }) => (state.held.has(key(ref)) ? "rev-1" : null),
         isMessageLocked: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) => {
@@ -103,7 +119,7 @@ vi.mock("../../storage/resourceClient", () => ({
         return new Error(`EpochMismatch ${epoch}`);
     },
 }));
-vi.mock("../../util", () => ({ checkPersonaBinded: () => (state.bound ? { id: state.bound } : undefined) }));
+vi.mock("../../storage/records.svelte", () => ({ trackedRecord: (kind: string) => state.records[kind] }));
 
 import { CharEmotion } from "../../stores.svelte";
 import {
@@ -180,6 +196,8 @@ beforeEach(() => {
     state.preset = "preset-1";
     state.persona = "persona-1";
     state.bound = undefined;
+    state.boundPreset = undefined;
+    state.boundModel = undefined;
     state.locked.clear();
     state.calls.length = 0;
     state.hookContexts.length = 0;
@@ -220,18 +238,19 @@ describe("captureTransform", () => {
         expect(captureTransform(0)).toBeNull();
     });
 
-    it("captures the chat, the message id at the index, both presets, the effective and selected persona, and the lock", () => {
+    it("captures the chat, the message id at the index, both presets, the chat's persona (as the selected one too), and the lock", () => {
         const ref = newChat();
         state.bound = "persona-bound";
         state.locked.add(`${key(ref)}/m1`);
         const captured = captureTransform(1)!;
+        // A chat's render has one persona: `selectedPersonaId` carries it too (`docs/plan/chat-binding.md`).
         expect(captured.context).toEqual({
             characterId: ref.chaId,
             chatId: ref.chatId,
             presetId: "preset-1",
             modelPresetId: "model-1",
             personaId: "persona-bound",
-            selectedPersonaId: "persona-1",
+            selectedPersonaId: "persona-bound",
         });
         expect(captured.messageId).toBe("m1");
         expect(captured.locked).toBe(true);
@@ -247,10 +266,12 @@ describe("captureTransform", () => {
         expect(greeting.locked).toBe(false);
     });
 
-    it("prefers a given plugin context's chat, presets, and persona over the selection", () => {
+    it("takes a given plugin context's chat and hands the context to the handlers, but renders with the chat's display ids, not the context's", () => {
         const selected = newChat();
         const other = newChat();
         state.current = selected;
+        // A job callback's context carries the job's ids (a `presetChain` pick): the render is the chat's
+        // (`docs/plan/chat-binding.md`, the display rule), here the tab's for a chat without a binding.
         const pluginContext = {
             chatRef: other,
             presetId: "preset-hook",
@@ -262,12 +283,34 @@ describe("captureTransform", () => {
         expect(captured.context).toMatchObject({
             characterId: other.chaId,
             chatId: other.chatId,
-            presetId: "preset-hook",
-            modelPresetId: "model-hook",
-            personaId: "persona-hook",
+            presetId: "preset-1",
+            modelPresetId: "model-1",
+            personaId: "persona-1",
             selectedPersonaId: "persona-1",
         });
         expect(captured.pluginContext).toBe(pluginContext);
+    });
+
+    it("renders with the display rule: a bound id whose record exists, else the tab's (an unset or deleted binding falls back per field)", () => {
+        const ref = newChat();
+        state.boundPreset = "preset-bound";
+        state.boundModel = "model-gone";
+        state.bound = "persona-bound";
+        expect(captureTransform(0)!.context).toMatchObject({
+            presetId: "preset-bound",
+            modelPresetId: "model-1",
+            personaId: "persona-bound",
+            selectedPersonaId: "persona-bound",
+        });
+        // The bound persona deleted meanwhile: the tab's persona renders, as before the binding.
+        state.records.personas = [{ id: "persona-1" }];
+        expect(captureTransform(0)!.context).toMatchObject({ personaId: "persona-1", selectedPersonaId: "persona-1" });
+        state.records.personas = [{ id: "persona-1" }, { id: "persona-bound" }];
+        // Without a tab fallback for an unbound field there is no context.
+        state.boundPreset = undefined;
+        state.preset = undefined;
+        expect(captureTransform(0)).toBeNull();
+        expect(ref).toBeTruthy();
     });
 
     it("does not make a reactive computation depend on the lock state (a lock change elsewhere re-renders no row)", () => {
@@ -449,6 +492,17 @@ describe("batching and splitting", () => {
         expect(answers.map((a) => a.data)).toEqual(Array.from({ length: 65 }, (_, i) => `t${i}`));
         expect(transformPosts()).toHaveLength(2);
         expect(state.toasts).toEqual(["Render failed: Boom"]);
+    });
+
+    it("answers raw with the localized reason when the server refuses a bound id this tab no longer matches (409 chatBindingMismatch)", async () => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        state.handler = () => ({ status: 409, body: { error: "chatBindingMismatch" } });
+        const call = serverProcessScript(char(ref.chaId), "M", "editdisplay", 0, {}, captured, "message");
+        await flush();
+        expect((await call).data).toBe("M");
+        expect(state.toasts).toEqual(["Render failed: binding changed"]);
+        expect(state.epochs).toEqual([]);
     });
 
     it("hands a 412 EpochMismatch to the epoch handler and answers raw", async () => {

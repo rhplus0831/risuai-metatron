@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import { isToolContentEntry } from "../../../shared/llm/validate.ts";
-import { MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
+import type { ChatBindingProblem } from "../../../shared/chatBinding.ts";
+import { type CallbackTargets, MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
 import {
     LLM_CALLBACK_TIMEOUT_MS,
     type LlmCallbackAnswer,
@@ -20,6 +21,7 @@ import {
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import type { JobChannel } from "../jobs/channel.ts";
+import { type ChatBindingRefusal, checkChatBinding, readChatBindingState } from "../jobs/chatBinding.ts";
 import type { TokenCounter, TokenCountScope } from "../prompt/tokens.ts";
 import type { ClaudeObserver } from "./claudeObserver.ts";
 import type { PluginProviderAnswer, RequestContext } from "./context.ts";
@@ -40,6 +42,8 @@ const STRONG_BAN_CACHE_SIZE = 500;
 
 export type ParentCallback = {
     channel: JobChannel;
+    /** The job's targets when the request came (its chat, and the ids its callbacks run with). */
+    targets: CallbackTargets;
     unwatch: () => void;
     /** Ends the job (a barrier failure, a timeout, or a disconnect of a child callback ends it). */
     endJob: () => void;
@@ -88,7 +92,7 @@ type LiveRequest = {
 
 export type StartResult =
     | { ok: true; id: string; stream: ReadableStream<Uint8Array> }
-    | { ok: false; status: 400 | 409 | 429 | 503; error: string };
+    | { ok: false; status: 400 | 404 | 409 | 429 | 503; error: string; problems?: ChatBindingProblem[] };
 
 export type AnswerResult = "accepted" | "ignored" | "missing";
 
@@ -821,6 +825,38 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         return { ...response, result: stream };
     }
 
+    /**
+     * A request for a chat (`arg.chatRef`) runs on that chat's ids (`docs/plan/chat-binding.md`):
+     * inside a callback of that chat's job, on the job's targets (a `presetChain` pick included);
+     * otherwise on the chat's complete binding, and a chat that does not exist is refused (404). A
+     * request without a chat is not checked (decision 10).
+     */
+    function chatRequestRefusal(
+        body: LlmRequestBody,
+        parent: ParentCallback | null,
+    ): ChatBindingRefusal | { error: "chatNotFound" } | null {
+        const ref = body.arg.chatRef;
+        if (!ref) {
+            return null;
+        }
+        const { presetId, modelPresetId, personaId } = body.context;
+        const targets = parent?.targets;
+        if (targets && targets.chatRef.chaId === ref.chaId && targets.chatRef.chatId === ref.chatId) {
+            const same =
+                presetId === targets.presetId &&
+                modelPresetId === targets.modelPresetId &&
+                personaId === targets.personaId;
+            return same ? null : { error: "chatBindingMismatch" };
+        }
+        const state = readChatBindingState(options.store, options.kinds, {
+            characterId: ref.chaId,
+            chatId: ref.chatId,
+        });
+        return state.chat
+            ? checkChatBinding(state.chat, state.lookup, body.context, "send")
+            : { error: "chatNotFound" };
+    }
+
     function start(body: LlmRequestBody, signal: AbortSignal): StartResult {
         if (!accepting) {
             return { ok: false, status: 503, error: "The server is shutting down" };
@@ -854,6 +890,13 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             if (!parent) {
                 return { ok: false, status: 409, error: "The job callback this request names is not running" };
             }
+        }
+        const refusal = chatRequestRefusal(body, parent);
+        if (refusal) {
+            parent?.unwatch();
+            return refusal.error === "chatNotFound"
+                ? { ok: false, status: 404, error: "The chat this request is for no longer exists" }
+                : { ok: false, status: 409, ...refusal };
         }
 
         let redactor: Redactor = createRedactor([]);
@@ -1018,7 +1061,8 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                     presetId: body.context.presetId,
                     modelPresetId: body.context.modelPresetId,
                     personaId: body.context.personaId,
-                    selectedPersonaId: body.context.selectedPersonaId,
+                    // A chat's request has one persona, the chat's: no separate selected persona.
+                    selectedPersonaId: body.arg.chatRef ? body.context.personaId : body.context.selectedPersonaId,
                     selectedCharacterId: body.context.selectedCharacterId,
                     speakerId: body.context.speakerId,
                 });

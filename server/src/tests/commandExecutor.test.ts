@@ -72,6 +72,10 @@ function setup(options: { type?: "character" | "group" } = {}) {
                             id: "k",
                             name: "K",
                             scriptstate: { $old: "old" },
+                            // The chat's binding (`docs/plan/chat-binding.md`): the job scope checks the context's ids against it.
+                            modelPresetId: "m",
+                            promptPresetId: "p",
+                            bindedPersona: "u",
                             message: [
                                 { role: "char", data: "greeting", chatId: "m1" },
                                 { role: "user", data: "hi there", chatId: "m2" },

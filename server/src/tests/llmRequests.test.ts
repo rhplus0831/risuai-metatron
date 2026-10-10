@@ -39,7 +39,11 @@ import { sleep, waitFor } from "./testSupport.ts";
 const SECRET = "sk-proxy-SENTINEL-1111";
 const PROVIDER = "https://mock.test/v1/chat/completions";
 
-type Records = Record<string, unknown> & { characters?: Record<string, unknown> };
+type Records = Record<string, unknown> & {
+    characters?: Record<string, unknown>;
+    /** The chats by `<characterId>/<chatId>`: their binding fields (`docs/plan/chat-binding.md`). */
+    chats?: Record<string, Record<string, unknown>>;
+};
 
 /**
  * The settings records. `overrides.preset` mixes the prompt preset's fields and the profile's
@@ -83,6 +87,11 @@ function makeRecords(
             { id: "b", name: "Bound" },
         ]),
         characters: { c: { chaId: "c", name: "Cara" }, s: { chaId: "s", name: "Speaker" } },
+        // Chat `k` is bound to the ids `body()` sends; `loose` has no binding.
+        chats: {
+            "c/k": { modelPresetId: "m", promptPresetId: "p", bindedPersona: "u" },
+            "c/loose": {},
+        },
     };
 }
 
@@ -99,10 +108,17 @@ function fakeStore(records: Records): ResourceStore {
                         : (records[ref.kind.name] ?? null),
             })),
         }),
+        chatSummary: (characterId: string, id: string) => {
+            const chat = records.chats?.[`${characterId}/${id}`];
+            return chat ? { characterId, id, revision: "r1", name: id, fmIndex: -1, ...chat } : null;
+        },
     } as unknown as ResourceStore;
 }
 
 const kinds = { get: (name: string) => ({ name }) } as unknown as ResourceKindRegistry;
+
+/** The targets of the job a `channelCall` names: chat `k` with the ids `body()` sends. */
+const JOB_TARGETS = { chatRef: { chaId: "c", chatId: "k" }, presetId: "p", modelPresetId: "m", personaId: "u" };
 
 /** A job's tool set that offers nothing (slice 12a): no descriptors, so a call is never legitimate. */
 function noTools(): JobRequestSpec["tools"] {
@@ -1280,6 +1296,7 @@ describe("the child interceptor of a job callback", () => {
                             return typeof outcome === "function" ? outcome(payload) : outcome;
                         },
                     } as never,
+                    targets: { ...JOB_TARGETS },
                     unwatch() {},
                     endJob: () => ended++,
                 };
@@ -1361,6 +1378,7 @@ describe("the child interceptor of a job callback", () => {
                     settled = onSettled;
                     return {
                         channel: { callback: async () => ({ outcome: "refused", refusal: "unregistered" }) } as never,
+                        targets: { ...JOB_TARGETS },
                         unwatch() {},
                         endJob() {},
                     };
@@ -1387,6 +1405,7 @@ describe("the child interceptor of a job callback", () => {
             const { registry, calls } = harness(records, () => chat("x"), {
                 parentCallback: () => ({
                     channel: { callback: async () => ({ outcome: "answered", value: null }) } as never,
+                    targets: { ...JOB_TARGETS },
                     unwatch() {},
                     endJob() {},
                 }),
@@ -1403,6 +1422,162 @@ describe("the child interceptor of a job callback", () => {
             await registry.dispose();
             await parent.registry.dispose();
         }
+    });
+});
+
+// `docs/plan/chat-binding.md`, slice 2: a request for a chat (`arg.chatRef`) runs on that chat's binding
+// (`chatRequestRefusal`): outside a job callback the chat's complete binding, inside a callback of that
+// chat's job the job's targets (a `presetChain` pick included). A refusal is a 409 before registration
+// and before the provider, with the problems for an incomplete binding, and releases the callback
+// watch. A request without a chat is not checked (decision 10).
+describe("a chat's request and its binding", () => {
+    const chatRef = { chaId: "c", chatId: "k" };
+    const context = (ids: Record<string, unknown>) => ({ context: { ...body().context, ...ids } });
+
+    it("runs a chat request on the chat's binding, refuses other ids (mismatch) or an incomplete binding (with its problems) before the provider, and leaves a request without a chat alone", async () => {
+        const records = makeRecords();
+        const { registry, calls } = harness(records, () => chat("done"));
+        const refused = (request: LlmRequestBody) => registry.start(request, new AbortController().signal);
+
+        const ok = await run(registry, body({ chatRef }));
+        expect(terminal(ok.events)[0]).toMatchObject({ response: { type: "success", result: "done" } });
+        expect(calls).toHaveLength(1);
+
+        expect(refused(body({ chatRef }, context({ personaId: "b" })))).toEqual({
+            ok: false,
+            status: 409,
+            error: "chatBindingMismatch",
+        });
+        expect(refused(body({ chatRef }, context({ presetId: "other" })))).toMatchObject({
+            status: 409,
+            error: "chatBindingMismatch",
+        });
+        expect(refused(body({ chatRef: { chaId: "c", chatId: "loose" } }))).toEqual({
+            ok: false,
+            status: 409,
+            error: "chatBindingIncomplete",
+            problems: [
+                { field: "modelPresetId", reason: "unset" },
+                { field: "promptPresetId", reason: "unset" },
+                { field: "personaId", reason: "unset" },
+            ],
+        });
+        records.chats!["c/k"] = { ...records.chats!["c/k"], bindedPersona: "zz", bindingReview: true };
+        expect(refused(body({ chatRef }))).toEqual({
+            ok: false,
+            status: 409,
+            error: "chatBindingIncomplete",
+            problems: [{ field: "personaId", reason: "gone" }, { field: "review" }],
+        });
+        expect(calls).toHaveLength(1);
+        expect(registry.liveIds()).toEqual([]);
+
+        // No chat: the ids are the caller's (the tab's selection), as before.
+        const free = await run(registry, body({}, context({ personaId: "b" })));
+        expect(terminal(free.events)[0]).toMatchObject({ response: { type: "success" } });
+        expect(calls).toHaveLength(2);
+        await registry.dispose();
+    });
+
+    it("inside a callback of the chat's own job compares with the job's targets (a presetChain pick), checks another chat against the store, and unwatches the callback on a refusal", async () => {
+        const records = makeRecords();
+        // The pick exists as a prompt preset (the job re-scoped on it).
+        (records.presets as Record<string, unknown>[]).push({
+            ...(records.presets as object[])[0],
+            id: "picked",
+            name: "picked",
+        });
+        let unwatched = 0;
+        const { registry, calls } = harness(records, () => chat("done"), {
+            parentCallback: (jobId, clientId, callbackId) =>
+                jobId === "job" && clientId === "client-a" && callbackId === "cb"
+                    ? {
+                          channel: {
+                              callback: async () => ({ outcome: "refused", refusal: "unregistered", error: "none" }),
+                          } as never,
+                          // The job picked `picked` for its prompt preset: its callbacks run on it.
+                          targets: { ...JOB_TARGETS, presetId: "picked" },
+                          unwatch: () => unwatched++,
+                          endJob() {},
+                      }
+                    : null,
+        });
+        const channelCall = { jobId: "job", callbackId: "cb" };
+        const refused = (request: LlmRequestBody) => registry.start(request, new AbortController().signal);
+
+        const picked = await run(registry, body({ chatRef }, { channelCall, ...context({ presetId: "picked" }) }));
+        expect(terminal(picked.events)[0]).toMatchObject({ response: { type: "success" } });
+        expect(calls).toHaveLength(1);
+        // The request's end released its watch (the usual cleanup); each refusal below releases its own.
+        expect(unwatched).toBe(1);
+
+        // The chat's stored binding is not the job's: refused, and the callback watch is released.
+        expect(refused(body({ chatRef }, { channelCall }))).toEqual({
+            ok: false,
+            status: 409,
+            error: "chatBindingMismatch",
+        });
+        expect(unwatched).toBe(2);
+        expect(
+            refused(body({ chatRef }, { channelCall, ...context({ presetId: "picked", personaId: "b" }) })),
+        ).toMatchObject({
+            status: 409,
+            error: "chatBindingMismatch",
+        });
+        expect(unwatched).toBe(3);
+
+        // Another chat's request inside this job's callback: that chat's own binding.
+        expect(refused(body({ chatRef: { chaId: "c", chatId: "loose" } }, { channelCall }))).toMatchObject({
+            status: 409,
+            error: "chatBindingIncomplete",
+        });
+        expect(unwatched).toBe(4);
+        expect(calls).toHaveLength(1);
+        expect(registry.liveIds()).toEqual([]);
+        await registry.dispose();
+    });
+
+    it("answers 404 for a chat that does not exist (or whose character does not), before registration and the provider, releasing the callback watch of another chat's job", async () => {
+        const records = makeRecords();
+        let unwatched = 0;
+        const { registry, calls } = harness(records, () => chat("done"), {
+            parentCallback: (jobId, clientId, callbackId) =>
+                jobId === "job" && clientId === "client-a" && callbackId === "cb"
+                    ? {
+                          channel: {
+                              callback: async () => ({ outcome: "refused", refusal: "unregistered", error: "none" }),
+                          } as never,
+                          targets: { ...JOB_TARGETS },
+                          unwatch: () => unwatched++,
+                          endJob() {},
+                      }
+                    : null,
+        });
+        const refused = (request: LlmRequestBody) => registry.start(request, new AbortController().signal);
+        const gone = { ok: false, status: 404, error: "The chat this request is for no longer exists" };
+
+        // The store path: the chat is not listed, or its character is not.
+        expect(refused(body({ chatRef: { chaId: "c", chatId: "nope" } }))).toEqual(gone);
+        expect(refused(body({ chatRef: { chaId: "zz", chatId: "k" } }))).toEqual(gone);
+        expect(unwatched).toBe(0);
+        // Inside a callback of chat `k`'s job, a request for another chat that does not exist: the
+        // same 404, and the callback watch the admission took is released.
+        const channelCall = { jobId: "job", callbackId: "cb" };
+        expect(refused(body({ chatRef: { chaId: "c", chatId: "nope" } }, { channelCall }))).toEqual(gone);
+        expect(unwatched).toBe(1);
+        // A callback that is not running is refused first (409), as before.
+        expect(
+            refused(
+                body({ chatRef: { chaId: "c", chatId: "nope" } }, { channelCall: { ...channelCall, callbackId: "x" } }),
+            ),
+        ).toMatchObject({
+            status: 409,
+            error: "The job callback this request names is not running",
+        });
+        expect(unwatched).toBe(1);
+        expect(calls).toHaveLength(0);
+        expect(registry.liveIds()).toEqual([]);
+        await registry.dispose();
     });
 });
 

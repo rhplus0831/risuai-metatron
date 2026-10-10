@@ -255,6 +255,10 @@ function bindingsSetup(options: { desc?: string; triggerscript?: triggerscript[]
                             id: "k",
                             name: "K",
                             fmIndex: -1,
+                            // The chat's binding (`docs/plan/chat-binding.md`): the job scope checks the context's ids against it.
+                            modelPresetId: "m",
+                            promptPresetId: "p",
+                            bindedPersona: "u",
                             message: [{ role: "user", data: "hi", chatId: "m1" }],
                         },
                     },

@@ -40,12 +40,29 @@ const stubs = vi.hoisted(() => ({
     /** `pinChat`: a release per pin, so the runner's pin/release pairs run as the real ones do. */
     pin: vi.fn(() => vi.fn()),
     held: vi.fn<() => string | null>(() => "e:1:1"),
-    bound: vi.fn<() => { id: string } | null>(() => null),
+    /**
+     * `chatEntry`: the target chat's list entry, whose binding (`docs/plan/chat-binding.md`) the runner
+     * sends; `undefined` for a chat that is not listed. The default binds the records installed below.
+     */
+    entry: vi.fn<() => Record<string, unknown> | undefined>(() => ({})),
+    /** `loadChat`: the runner reads the chat again after a binding mismatch. */
+    loadChat: vi.fn<() => Promise<unknown>>(async () => ({})),
 }));
+/** The seeded chat's binding: the one prompt and model preset (`preset`) and the selected persona. */
+const BOUND = { modelPresetId: "preset", promptPresetId: "preset", bindedPersona: "selected" };
 
 class BusyError extends Error {
     constructor(readonly jobId: string) {
         super("busy");
+    }
+}
+/** The job transport's 409 `chatBindingIncomplete` / `chatBindingMismatch` (`ChatBindingRefusedError`). */
+class BindingRefusedError extends Error {
+    constructor(
+        readonly code: "chatBindingIncomplete" | "chatBindingMismatch",
+        readonly problems: { field: string; reason?: string }[] = [],
+    ) {
+        super(code);
     }
 }
 /** `flushResources` refused because a change it must save waits for a generation. */
@@ -65,7 +82,19 @@ class RequestError extends Error {
     }
 }
 
-vi.mock("src/lang", () => ({ language: { chatGenerating: "generating" } }));
+vi.mock("src/lang", () => ({
+    language: {
+        chatGenerating: "generating",
+        chatBinding: {
+            refused: "cannot send",
+            fields: { modelPresetId: "Model preset", promptPresetId: "Prompt preset", personaId: "Persona" },
+            unset: "not set",
+            gone: "deleted",
+            review: "needs a confirmation",
+            mismatch: "binding changed",
+        },
+    },
+}));
 vi.mock("../alert", () => ({ alertError: stubs.alertError }));
 vi.mock("../network/generationJobs", () => ({
     abortGenerationJob: (jobId: string) => stubs.abort(jobId),
@@ -79,14 +108,17 @@ vi.mock("../network/generationJobs", () => ({
         stubs.follows.push({ jobId, onEvent, end });
         return { closed, send: () => true, close() {} };
     },
+    ChatBindingRefusedError: BindingRefusedError,
     GenerationBusyError: BusyError,
     readGenerationJob: stubs.read,
     releaseGenerationJob: stubs.release,
     savedGenerationJobIds: stubs.saved,
 }));
 vi.mock("../storage/chatStore.svelte", () => ({
+    chatEntry: stubs.entry,
     ensureChatLoaded: stubs.load,
     heldChatRevision: stubs.held,
+    loadChat: stubs.loadChat,
     pinChat: stubs.pin,
 }));
 vi.mock("../storage/resourceClient", () => ({ getResourceEpoch: () => EPOCH, ResourceRequestError: RequestError }));
@@ -96,7 +128,7 @@ vi.mock("../storage/resourceSync.svelte", () => ({
     generatingNoticeCount: stubs.notices,
     watchForRestore: stubs.restored,
 }));
-vi.mock("../util", () => ({ checkPersonaBinded: stubs.bound, sleep: async () => {} }));
+vi.mock("../util", () => ({ sleep: async () => {} }));
 
 type Module = typeof import("./serverCommands");
 let commands: Module;
@@ -121,18 +153,22 @@ beforeEach(async () => {
     stubs.held.mockReset().mockReturnValue("e:1:1");
     stubs.load.mockReset().mockResolvedValue({});
     stubs.pin.mockReset().mockImplementation(() => vi.fn());
-    stubs.bound.mockReset().mockReturnValue(null);
+    stubs.entry.mockReset().mockReturnValue({ ...BOUND });
+    stubs.loadChat.mockReset().mockResolvedValue({});
     stubs.flush.mockReset().mockResolvedValue({ discarded: [] });
     stubs.notices.mockReset().mockReturnValue(0);
     stubs.restored.mockReset().mockResolvedValue(false);
     stubs.abort.mockReset().mockResolvedValue(undefined);
     vi.spyOn(console, "error").mockImplementation(() => {});
-    // The identity the runner reads through the settings views: one preset and one persona in the
-    // records of this module graph (the only records, so the selection resolves to them).
+    // The records the chat's binding names (`chatBinding` checks that they exist): the prompt preset
+    // `preset` (and the model preset of the same id it implies), the personas `selected` and `bound`.
     const { installFlatDatabase } = await import("../storage/tests/installFlatDatabase");
     installFlatDatabase({
         botPresets: [{ id: "preset", name: "preset" }],
-        personas: [{ id: "selected", name: "Selected", personaPrompt: "", icon: "", note: "" }],
+        personas: [
+            { id: "selected", name: "Selected", personaPrompt: "", icon: "", note: "" },
+            { id: "bound", name: "Bound", personaPrompt: "", icon: "", note: "" },
+        ],
     });
     commands = await import("./serverCommands");
 });
@@ -303,10 +339,12 @@ describe("resumeServerJobs (boot)", () => {
 describe("runServerButton", () => {
     const char = { chaId: "c", type: "character" } as never;
 
-    it("takes the target and settings ids before the flush, saves first, and runs a command job it then follows", async () => {
-        stubs.bound.mockReturnValue({ id: "bound" });
+    it("takes the target and the chat's binding before the flush, saves first, and runs a command job it then follows", async () => {
+        stubs.entry.mockReturnValue({ ...BOUND, bindedPersona: "bound" });
         stubs.create.mockResolvedValue("j");
         const run = commands.runServerButton(char, "go", ref);
+        // The binding was read: a change before the flush ends does not move the job.
+        stubs.entry.mockReturnValue({ ...BOUND });
         await flush();
         expect(stubs.create).toHaveBeenCalledTimes(1);
         const body = stubs.create.mock.calls[0][0] as {
@@ -320,11 +358,13 @@ describe("runServerButton", () => {
             characterId: "c",
             chatId: "k",
             presetId: "preset",
+            modelPresetId: "preset",
             personaId: "bound",
-            selectedPersonaId: "selected",
             mode: "button",
             chatRevision: "e:1:1",
         });
+        // A chat job has one persona, the chat's: no selected persona is sent (`docs/plan/chat-binding.md`).
+        expect(body.context).not.toHaveProperty("selectedPersonaId");
         expect(body.context.client).toMatchObject({ viewport: { width: expect.any(Number) } });
         expect(stubs.flush).toHaveBeenCalledTimes(1);
         expect(follows()[0]?.jobId).toBe("j");
@@ -483,8 +523,8 @@ describe("runServerJob", () => {
             characterId: "c",
             chatId: "k",
             presetId: "preset",
+            modelPresetId: "preset",
             personaId: "selected",
-            selectedPersonaId: "selected",
             mode: "send",
             input: "hi",
             userMessageId: "u1",
@@ -496,8 +536,7 @@ describe("runServerJob", () => {
         expect(stubs.abort).not.toHaveBeenCalled();
     });
 
-    it("takes a plugin call's presets and effective persona as the identity, keeping the selected persona", async () => {
-        stubs.bound.mockReturnValue({ id: "bound" });
+    it("takes a plugin call's captured ids as the identity instead of the binding, once the chat's binding is complete", async () => {
         stubs.create.mockResolvedValue("j");
         const run = send(
             { input: "" },
@@ -509,10 +548,66 @@ describe("runServerJob", () => {
             presetId: "plug-preset",
             modelPresetId: "plug-model",
             personaId: "plug-persona",
-            selectedPersonaId: "selected",
         });
+        expect(body.context).not.toHaveProperty("selectedPersonaId");
         endWith(follows()[0], done);
         await run;
+    });
+
+    // The send guard (`docs/plan/chat-binding.md`, slice 3): a chat whose binding is not complete runs
+    // nothing, before the flush and the create, never on the tab's selection; the server's 409s are shown
+    // the same way.
+    it("refuses a chat whose binding is not complete before the flush, listing each problem, and never falls back to the selection", async () => {
+        stubs.entry.mockReturnValue({ bindedPersona: "nope", bindingReview: true });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(
+            await send(
+                { input: "hi" },
+                { identity: { presetId: "preset", modelPresetId: "preset", personaId: "selected" } },
+            ),
+        ).toEqual({ outcome: "refused", terminal: null });
+        expect(await commands.runServerButton(char, "go", ref)).toBeUndefined();
+        expect(await commands.runServerManualTrigger(char, "greet", ref, { triggerId: "t" })).toBe("refused");
+        expect(stubs.flush).not.toHaveBeenCalled();
+        expect(stubs.create).not.toHaveBeenCalled();
+        expect(follows()).toHaveLength(0);
+        expect(stubs.alertError).toHaveBeenCalledTimes(4);
+        expect(stubs.alertError.mock.calls[0][0]).toBe(
+            [
+                "cannot send",
+                "Model preset: not set",
+                "Prompt preset: not set",
+                "Persona: deleted",
+                "needs a confirmation",
+            ].join("\n"),
+        );
+        // A chat that is not listed: refused with the header alone (no fields to list).
+        stubs.entry.mockReturnValue(undefined);
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(stubs.alertError).toHaveBeenLastCalledWith("cannot send");
+        expect(stubs.create).not.toHaveBeenCalled();
+    });
+
+    it("shows the server's 409 binding refusals: a mismatch reads the chat again and asks to send again, an incomplete binding lists its problems", async () => {
+        stubs.create.mockRejectedValueOnce(new BindingRefusedError("chatBindingMismatch"));
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(stubs.loadChat).toHaveBeenCalledTimes(1);
+        expect(stubs.loadChat).toHaveBeenCalledWith(ref);
+        expect(stubs.alertError).toHaveBeenLastCalledWith("binding changed");
+        stubs.create.mockRejectedValueOnce(
+            new BindingRefusedError("chatBindingIncomplete", [{ field: "promptPresetId", reason: "gone" }]),
+        );
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(stubs.loadChat).toHaveBeenCalledTimes(1);
+        expect(stubs.alertError).toHaveBeenLastCalledWith("cannot send\nPrompt preset: deleted");
+        expect(follows()).toHaveLength(0);
+        expect(stubs.alertError).toHaveBeenCalledTimes(2);
+        // A failed re-read is logged, not shown twice.
+        stubs.loadChat.mockRejectedValueOnce(new Error("offline"));
+        stubs.create.mockRejectedValueOnce(new BindingRefusedError("chatBindingMismatch"));
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        await flush();
+        expect(stubs.alertError).toHaveBeenCalledTimes(3);
     });
 
     it("reports `unknown` for a create request without an answer and `refused` for an answered refusal, alerting once each", async () => {

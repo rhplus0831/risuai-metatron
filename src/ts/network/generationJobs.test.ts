@@ -406,19 +406,15 @@ describe("the event dispatcher and the resume", () => {
         expect(transport.savedGenerationJobs()).toEqual({});
     });
 
-    it("applies a job's `preset` event with changeToPreset(id) once per job, whatever an attach re-sends (slice 9)", async () => {
-        // An earlier test's preset event may still settle its import: start from a clean count.
+    it("leaves the selection alone on a job's `preset` event: a presetChain pick is the job's own (`docs/plan/chat-binding.md`, decision 9)", async () => {
         await flush();
         stubs.changeToPreset.mockClear();
         const preset = { type: "preset" as const, epoch: EPOCH, presetId: "pa" };
         transport.applyGenerationEvent("jp1", ref, preset);
         transport.applyGenerationEvent("jp1", ref, preset);
-        transport.applyGenerationEvent("jp1", ref, { ...preset, presetId: "pb" });
-        await flush();
-        expect(stubs.changeToPreset.mock.calls).toEqual([["pa"]]);
         transport.applyGenerationEvent("jp2", ref, { ...preset, presetId: "pb" });
         await flush();
-        expect(stubs.changeToPreset.mock.calls).toEqual([["pa"], ["pb"]]);
+        expect(stubs.changeToPreset).not.toHaveBeenCalled();
         expect(stubs.endServerJob).not.toHaveBeenCalled();
     });
 

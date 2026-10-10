@@ -16,6 +16,14 @@ import { capturePluginContext, invokeHook, type PluginCallContext } from "../../
 import { pluginHooks } from "../../plugins/pluginHooks";
 import { type character, type ModelProfile } from "../../storage/database.svelte";
 import { type ChatRef, chatEntry, chatOwnerToken, ensureChatLoaded, pinChat } from "../../storage/chatStore.svelte";
+import {
+    chatBinding,
+    chatBindingProblems,
+    chatBindingRefusalText,
+    chatContextIds,
+    type ChatContextIds,
+} from "../../storage/chatBinding.svelte";
+import { activeChannelCallTargets } from "../../network/channelCallSource";
 import { sleep } from "../../util";
 import type { OpenAIChat } from "../index.svelte";
 import { getTools } from "../mcp/mcp";
@@ -127,6 +135,11 @@ export async function requestChatData(
     model: ModelModeExtended,
     abortSignal: AbortSignal = null,
 ): Promise<requestDataResponse> {
+    // Before the chat is pinned, the tools are discovered, and any hook runs.
+    const refusal = chatRequestRefusal(arg);
+    if (refusal) {
+        return refusal;
+    }
     arg.pluginContext ??= capturePluginContext(arg.chatRef);
     const target = arg.chatRef ?? arg.pluginContext?.chatRef ?? null;
     arg.chatOwner ??= target ? chatOwnerToken(target.chaId) : undefined;
@@ -138,6 +151,54 @@ export function requestChatHeld(target: ChatRef | null | undefined, owner: strin
     return (
         !target || (chatEntry(target) !== undefined && (owner === undefined || chatOwnerToken(target.chaId) === owner))
     );
+}
+
+const sameChat = (a: ChatRef, b: ChatRef) => a.chaId === b.chaId && a.chatId === b.chatId;
+
+const sameIds = (a: ChatContextIds, b: ChatContextIds) =>
+    a.presetId === b.presetId && a.modelPresetId === b.modelPresetId && a.personaId === b.personaId;
+
+/**
+ * The send guard of a chat's request (`docs/plan/chat-binding.md`): a request for a chat (its
+ * `chatRef`, else its plugin context's) runs on that chat's ids, never on the tab's selection.
+ *
+ * - Inside a callback of that chat's job, the ids are the job's (its `presetChain` pick included):
+ *   a captured context must name them.
+ * - Otherwise the chat's binding must be complete, and a captured context must name the binding as
+ *   it is now (a chat rebound since the capture is refused, not run on the old ids).
+ * - A `chatRef` and a plugin context naming two chats are refused.
+ *
+ * A chat that is not listed is refused as gone; a request without a chat is not checked
+ * (decision 10). Checked at `requestChatData`'s start and again where a request enters
+ * `requestChatDataMain` (a plugin's direct call, the tab-run models, after the hooks); the server
+ * checks the requests it runs too.
+ */
+function chatRequestRefusal(arg: requestDataArgument): requestDataResponse | undefined {
+    const context = arg.pluginContext;
+    if (arg.chatRef && context && !sameChat(arg.chatRef, context.chatRef)) {
+        return { type: "fail", noRetry: true, result: language.chatBinding.mismatch };
+    }
+    const target = arg.chatRef ?? context?.chatRef;
+    if (!target) {
+        return undefined;
+    }
+    const mismatch = (ids: ChatContextIds): requestDataResponse | undefined =>
+        context && !sameIds(context, ids)
+            ? { type: "fail", noRetry: true, result: language.chatBinding.mismatch }
+            : undefined;
+    const call = activeChannelCallTargets();
+    if (call && sameChat(call.chatRef, target)) {
+        return mismatch(call);
+    }
+    const binding = chatBinding(target);
+    if (!binding) {
+        // Not listed (deleted, or its character's chats replaced): nothing runs for it.
+        return requestChatGone();
+    }
+    if (!binding.ok) {
+        return { type: "fail", noRetry: true, result: chatBindingRefusalText(chatBindingProblems(binding)) };
+    }
+    return mismatch(chatContextIds(binding.ids));
 }
 
 const requestChatGone = (): requestDataResponse => ({
@@ -475,6 +536,14 @@ export async function requestChatDataMain(
     model: ModelModeExtended,
     abortSignal: AbortSignal = null,
 ): Promise<requestDataResponse> {
+    // A chat's request decides its model with the chat's ids, also when the caller captured none.
+    if (arg.chatRef && !arg.pluginContext) {
+        arg.pluginContext = capturePluginContext(arg.chatRef);
+    }
+    const refusal = chatRequestRefusal(arg);
+    if (refusal) {
+        return refusal;
+    }
     // The server transport sends the caller's arguments as they are; the defaults below mutate `arg`.
     const original = { ...arg };
     const targ: RequestDataArgumentExtended = arg;

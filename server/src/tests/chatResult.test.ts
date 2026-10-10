@@ -74,6 +74,11 @@ function setup() {
                             name: "K",
                             note: "n0",
                             scriptstate: { $a: "1" },
+                            // The chat's binding (`docs/plan/chat-binding.md`): the job scope checks the context's ids against it.
+                            modelPresetId: "m",
+                            promptPresetId: "p",
+                            bindedPersona: "u",
+
                             message: [m("m1", "greeting", "char"), m("m2", "hi there"), m("m3", "and more", "char")],
                         },
                     },

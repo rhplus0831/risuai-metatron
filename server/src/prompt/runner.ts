@@ -286,7 +286,9 @@ async function runSend(
         if (!found) {
             chain = { missing: ele };
         } else {
-            const picked = loadJobScope(store, kinds, { ...job.context, presetId: found.id });
+            // The pick is this job's own prompt preset: the chat's binding is checked but its prompt
+            // preset is not compared (`docs/plan/chat-binding.md`, decision 9).
+            const picked = loadJobScope(store, kinds, { ...job.context, presetId: found.id }, { binding: "chain" });
             admitProviderModels(picked, job.hooks.providers);
             chain = { scope: picked, presetId: found.id };
         }

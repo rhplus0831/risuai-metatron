@@ -106,7 +106,15 @@ function setup(options: { lore?: Record<string, unknown>[]; image?: string; inla
                 ops: [
                     {
                         op: "create",
-                        chat: { id: "k", name: "K", message: [{ role: "user", data: "hi", chatId: "m1" }] },
+                        // The chat's binding (`docs/plan/chat-binding.md`): the job scope checks the context's ids against it.
+                        chat: {
+                            id: "k",
+                            name: "K",
+                            modelPresetId: "m",
+                            promptPresetId: "p",
+                            bindedPersona: "u",
+                            message: [{ role: "user", data: "hi", chatId: "m1" }],
+                        },
                     },
                 ],
             },

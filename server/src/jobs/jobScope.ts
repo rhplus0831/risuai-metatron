@@ -25,6 +25,13 @@ import {
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import { loadRequestDb, type LoadedRequestDb } from "../llm/settings.ts";
+import {
+    bindingLookup,
+    checkChatBinding,
+    chatBindingRefusalMessage,
+    type ChatBindingMode,
+    type ChatBindingRefusal,
+} from "./chatBinding.ts";
 import { GenerationRunnerError } from "./generationJobs.ts";
 
 /**
@@ -54,10 +61,12 @@ export type JobScope = {
     modelPreset: ModelPreset;
     /** Captured model profiles, shared by the job's main and auxiliary requests. */
     modelProfiles: ModelProfile[];
-    /** The chat's bound persona, else the selected one (`getUserName()`). */
+    /**
+     * The job's persona (`context.personaId`): the chat's bound persona (a transform's is its display
+     * persona), also the forwarded `db.username` and `db.personaPrompt`. A chat job has no separate
+     * selected persona: `context.selectedPersonaId` is not read.
+     */
     effectivePersona: RisuPersona;
-    /** The tab's selected persona (the forwarded `db.username`). */
-    selectedPersona: RisuPersona;
     request: LoadedRequestDb;
     /**
      * The revision of every record the load read, by `<kind>/<id>` (the chat's is `chatRevision`),
@@ -90,12 +99,29 @@ function mirrorSecrets(record: Record<string, unknown>): Record<string, unknown>
     return out;
 }
 
+/** The job's ids are not its chat's binding (`docs/plan/chat-binding.md`): 409, with the refusal. */
+export class ChatBindingError extends GenerationRunnerError {
+    readonly refusal: ChatBindingRefusal;
+    constructor(refusal: ChatBindingRefusal) {
+        super(409, chatBindingRefusalMessage(refusal));
+        this.name = "ChatBindingError";
+        this.refusal = refusal;
+    }
+}
+
 /**
  * Reads the job's scope in consecutive synchronous store reads (no await between them, so one
- * committed state). The ids are the ones the client sent: a missing character, chat, prompt or
- * model preset, or persona fails the job (`GenerationRunnerError` 404), never a redirect to another record.
+ * committed state). The ids are the ones the client sent: they are checked against the chat's
+ * binding first (`binding`, default `send`; `ChatBindingError` 409), then a missing character,
+ * chat, prompt or model preset, or persona fails the job (`GenerationRunnerError` 404), never a
+ * redirect to another record.
  */
-export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, context: GenerationContext): JobScope {
+export function loadJobScope(
+    store: ResourceStore,
+    kinds: ResourceKindRegistry,
+    context: GenerationContext,
+    options: { binding?: ChatBindingMode } = {},
+): JobScope {
     const kind = (name: string) => kindOf(kinds, name);
     const sectionKinds = Object.values(SECTION_KIND).map(kind);
     const collectionKinds = Object.values(COLLECTION_KIND).map(kind);
@@ -138,6 +164,22 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
     db.botPresets = presets;
     db.modules = single(RESOURCE_KIND.modules) ?? [];
 
+    // The chat and its binding before the records the ids name, so a bound record deleted since the
+    // job was created reports the binding problem rather than a missing record.
+    const chatRecord = chatRead.chats[0];
+    if (!chatRecord?.data || chatRecord.revision === null) {
+        throw new GenerationRunnerError(404, "The job's chat no longer exists");
+    }
+    const refusal = checkChatBinding(
+        chatRecord.data as Chat,
+        bindingLookup(presets, db.modelPresets, db.personas),
+        context,
+        options.binding ?? "send",
+    );
+    if (refusal) {
+        throw new ChatBindingError(refusal);
+    }
+
     const preset = presets.find((record) => record?.id === context.presetId);
     if (!preset) {
         throw new GenerationRunnerError(404, "The job's preset no longer exists");
@@ -157,23 +199,22 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
         return found;
     };
     const effectivePersona = personaById(context.personaId);
-    const selectedPersona = personaById(context.selectedPersonaId ?? context.personaId);
 
     const modelProfiles = db.modelProfiles as ModelProfile[];
     // The forwarding layer's view for this job: the prompt and derived model/profile roots, the
-    // selected persona's fields, and the selection indexes.
+    // job persona's fields, and the selection indexes.
     forwardPresetRoots(db, preset as unknown as Record<string, unknown>, modelPreset, modelProfiles);
     db.botPresetsId = Math.max(
         0,
         presets.findIndex((record) => record?.id === preset.id),
     );
     for (const [rootKey, field] of Object.entries(PERSONA_ROOT_ALIASES)) {
-        const value = selectedPersona[field as keyof RisuPersona];
+        const value = effectivePersona[field as keyof RisuPersona];
         db[rootKey] = typeof value === "string" ? value : PERSONA_DEFAULTS[field as keyof typeof PERSONA_DEFAULTS];
     }
     db.selectedPersona = Math.max(
         0,
-        personas.findIndex((record) => record?.id === selectedPersona.id),
+        personas.findIndex((record) => record?.id === effectivePersona.id),
     );
 
     const characters = (read.kinds[RESOURCE_KIND.characters] ?? []).map(
@@ -181,8 +222,7 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
     );
     db.characters = characters;
     const owner = characters.find((entry) => entry.chaId === context.characterId);
-    const chatRecord = chatRead.chats[0];
-    if (!owner || !chatRecord?.data || chatRecord.revision === null) {
+    if (!owner) {
         throw new GenerationRunnerError(404, "The job's chat no longer exists");
     }
     setChats(owner, [chatRecord.data as Chat]);
@@ -191,7 +231,7 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
         presetId: preset.id,
         modelPresetId: modelPreset.id,
         personaId: effectivePersona.id,
-        selectedPersonaId: selectedPersona.id,
+        selectedPersonaId: effectivePersona.id,
         selectedCharacterId: context.characterId,
         speakerId: context.speakerChaId ?? null,
     });
@@ -213,7 +253,6 @@ export function loadJobScope(store: ResourceStore, kinds: ResourceKindRegistry, 
         modelPreset,
         modelProfiles,
         effectivePersona,
-        selectedPersona,
         request,
     };
 }

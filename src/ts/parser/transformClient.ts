@@ -1,4 +1,3 @@
-import { activeModelPreset, activePreset, activePersona } from "../storage/settingsViews.svelte";
 import { untrack } from "svelte";
 import { get } from "svelte/store";
 import { v4 as uuidv4 } from "uuid";
@@ -21,11 +20,11 @@ import { alertToast } from "../alert";
 import { generationClientId } from "../network/generationJobs";
 import { capturePluginContext, invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../plugins/pluginHooks";
+import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import { type ChatRef, currentChatRef, findChat, heldChatRevision, isMessageLocked } from "../storage/chatStore.svelte";
 import { CharEmotion } from "../stores.svelte";
 import { authFetch } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
-import { checkPersonaBinded } from "../util";
 
 /**
  * The client of the script transform (Phase 5 slice 13; `shared/transform.ts`): the `editdisplay`
@@ -128,11 +127,10 @@ function readTransformContext(
     if (!chat || heldChatRevision(chatRef) === null) {
         return null;
     }
-    const presetId = options.pluginContext?.presetId || activePreset.id;
-    const modelPresetId = options.pluginContext?.modelPresetId || activeModelPreset.id;
-    const selectedPersonaId = activePersona.id;
-    const personaId = options.pluginContext?.personaId || checkPersonaBinded(chatRef)?.id || selectedPersonaId;
-    if (!presetId || !modelPresetId || !personaId || !selectedPersonaId) {
+    // The chat's display ids (`docs/plan/chat-binding.md`): its bound ids where they exist, else the
+    // tab's. Also inside a plugin hook: a job's `presetChain` pick is that job's, not the chat's render.
+    const { presetId, modelPresetId, personaId } = chatDisplayIds(chatRef);
+    if (!presetId || !modelPresetId || !personaId) {
         return null;
     }
     const messageId = chatID >= 0 ? chat.message[chatID]?.chatId : undefined;
@@ -145,7 +143,8 @@ function readTransformContext(
             presetId,
             modelPresetId,
             personaId,
-            selectedPersonaId,
+            // A chat's render has one persona (the server reads `personaId` only).
+            selectedPersonaId: personaId,
         },
         ...(messageId ? { messageId } : {}),
         pluginContext: options.pluginContext ?? capturePluginContext(chatRef),
@@ -281,6 +280,10 @@ async function postOnce(path: string, body: unknown, deadline: number): Promise<
         const error = epochMismatch(answer.epoch ?? "");
         epochRefusals.add(error);
         throw error;
+    }
+    if (response.status === 409 && answer.error === "chatBindingMismatch") {
+        // The server holds a newer binding than this tab: the text stays unprocessed, with a readable reason.
+        throw new Error(language.chatBinding.mismatch);
     }
     if (!response.ok) {
         throw new Error(answer.error ?? `The render failed (${response.status})`);

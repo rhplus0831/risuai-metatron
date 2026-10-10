@@ -173,7 +173,10 @@ async function seedCharacter(options: {
                             chat: {
                                 id: "k",
                                 name: "K",
-                                ...(options.bindPersona ? { bindedPersona: "bound" } : {}),
+                                // The binding the jobs send (`docs/plan/chat-binding.md`): a job runs on its chat's binding.
+                                modelPresetId,
+                                promptPresetId: presetId,
+                                bindedPersona: options.bindPersona ? "bound" : defaultPersonaId,
                                 message: [
                                     { role: "char", data: "greeting", chatId: "m1" },
                                     { role: "user", data: "second", chatId: "m2" },
@@ -572,7 +575,7 @@ describe("a manual trigger job", () => {
     );
 
     it(
-        "writes the persona description to the job's effective (bound) persona while the getter reads the selected persona as frozen",
+        "writes the persona description to the job's (bound) persona while the getter reads that persona's prompt as frozen at the job's start",
         async () => {
             const chaId = await seedCharacter({
                 triggers: [
@@ -591,7 +594,9 @@ describe("a manual trigger job", () => {
             expect(personas.find((persona: any) => persona.id === defaultPersonaId).personaPrompt ?? "").toBe(
                 defaultPersonaPrompt,
             );
-            expect(texts(await readChat(chaId)).at(-1)).toBe(`char:pd=[${defaultPersonaPrompt}]`);
+            // The job has one persona, the chat's bound one (`docs/plan/chat-binding.md`): the forwarded
+            // `personaPrompt` the getter reads is its prompt as loaded, not the tab's selected persona's.
+            expect(texts(await readChat(chaId)).at(-1)).toBe("char:pd=[bound prompt]");
         },
         SLOW,
     );

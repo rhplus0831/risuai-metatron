@@ -365,6 +365,73 @@ describe("the binding of an unloaded chat", () => {
     });
 });
 
+// Slice 3: the ids a context names and the display rule (`chatContextIds`, `chatDisplayIds`), and the
+// refusal text of the send guard (`chatBindingRefusalText`, `chatBindingProblems`).
+describe("the context ids and the display rule", () => {
+    it("chatContextIds names the prompt preset as presetId; chatDisplayIds takes each bound id that names a record, else the tab's", async () => {
+        const { binding } = await boot();
+        const selection = await import("../selection.svelte");
+        selection.selectPreset("p1");
+        selection.selectModelPreset("m1");
+        selection.selectPersona("u1");
+        const tab = { presetId: "p1", modelPresetId: "m1", personaId: "u1" };
+        expect(binding.chatContextIds({ modelPresetId: "m2", promptPresetId: "p2", personaId: "u2" })).toEqual({
+            presetId: "p2",
+            modelPresetId: "m2",
+            personaId: "u2",
+        });
+        expect(binding.chatDisplayIds(ref("bound"))).toEqual({ presetId: "p2", modelPresetId: "m2", personaId: "u2" });
+        // Per field: the gone prompt preset and the padded model preset fall back; the persona holds; the
+        // pending review does not matter for a render.
+        expect(binding.chatDisplayIds(ref("padded"))).toEqual(tab);
+        expect(binding.chatDisplayIds(ref("unbound"))).toEqual(tab);
+        expect(binding.chatDisplayIds(ref("nope"))).toEqual(tab);
+        selection.selectPreset("p2");
+        selection.selectModelPreset("m2");
+        selection.selectPersona("u2");
+        expect(binding.chatDisplayIds(ref("unbound"))).toEqual({
+            presetId: "p2",
+            modelPresetId: "m2",
+            personaId: "u2",
+        });
+        expect(binding.chatDisplayIds(ref("padded"))).toEqual({ presetId: "p2", modelPresetId: "m2", personaId: "u1" });
+        expect(binding.chatDisplayIds(ref("reviewed"))).toEqual({
+            presetId: "p1",
+            modelPresetId: "m1",
+            personaId: "u1",
+        });
+        // The send guard stays strict: the display ids are not a complete binding.
+        expect(binding.chatBinding(ref("padded"))).toMatchObject({ ok: false });
+        expect(binding.chatBinding(ref("unbound"))).toEqual({ ok: false, problems: UNSET });
+    });
+
+    it("chatBindingRefusalText lists each problem under the header; chatBindingProblems is empty for a complete binding or a non-member", async () => {
+        const { binding } = await boot();
+        const { language } = await import("src/lang");
+        const strings = language.chatBinding;
+        expect(binding.chatBindingProblems(binding.chatBinding(ref("bound")))).toEqual([]);
+        expect(binding.chatBindingProblems(undefined)).toEqual([]);
+        expect(binding.chatBindingProblems(binding.chatBinding(ref("unbound")))).toEqual(UNSET);
+        expect(binding.chatBindingRefusalText(binding.chatBindingProblems(binding.chatBinding(ref("padded"))))).toBe(
+            [
+                strings.refused,
+                `${strings.fields.modelPresetId}: ${strings.gone}`,
+                `${strings.fields.promptPresetId}: ${strings.gone}`,
+                strings.review,
+            ].join("\n"),
+        );
+        expect(binding.chatBindingRefusalText(UNSET as Parameters<typeof binding.chatBindingRefusalText>[0])).toBe(
+            [
+                strings.refused,
+                `${strings.fields.modelPresetId}: ${strings.unset}`,
+                `${strings.fields.promptPresetId}: ${strings.unset}`,
+                `${strings.fields.personaId}: ${strings.unset}`,
+            ].join("\n"),
+        );
+        expect(binding.chatBindingRefusalText([])).toBe(strings.refused);
+    });
+});
+
 describe("reactivity", () => {
     it("a reader re-runs when a bound record is removed or replaced, when the binding is patched, and when a remote summary refresh changes the chat", async () => {
         const { chat, binding, records, probes, flushSync, commit, remoteMeta } = await boot();

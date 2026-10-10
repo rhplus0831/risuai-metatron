@@ -1954,7 +1954,15 @@ describe("the bindings' ask with a withdrawing signal", () => {
                     ops: [
                         {
                             op: "create",
-                            chat: { id: "k", name: "K", message: [{ role: "user", data: "hi", chatId: "m1" }] },
+                            // The chat's binding (`docs/plan/chat-binding.md`): the job scope checks the context's ids against it.
+                            chat: {
+                                id: "k",
+                                name: "K",
+                                modelPresetId: "m",
+                                promptPresetId: "p",
+                                bindedPersona: "u",
+                                message: [{ role: "user", data: "hi", chatId: "m1" }],
+                            },
                         },
                     ],
                 },

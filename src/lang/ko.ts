@@ -900,6 +900,18 @@ export const languageKorean = {
         responseStreaming: "응답 스트리밍",
         streamGeminiThoughts: "Gemini 생각 스트리밍",
     },
+    chatBinding: {
+        refused: "이 채팅의 모델 프리셋, 프롬프트 프리셋, 페르소나를 모두 설정해야 보낼 수 있습니다.",
+        fields: {
+            modelPresetId: "모델 프리셋",
+            promptPresetId: "프롬프트 프리셋",
+            personaId: "페르소나",
+        },
+        unset: "설정 안 됨",
+        gone: "삭제됨",
+        review: "가져온 채팅의 설정을 확인해야 합니다.",
+        mismatch: "이 채팅의 모델 프리셋, 프롬프트 프리셋 또는 페르소나가 바뀌었습니다. 확인한 뒤 다시 보내 주세요.",
+    },
     sharedApiKeys: {
         description:
             "제공자 기본 키와 이름을 붙인 키를 관리합니다. 각 연결에서 이름을 붙인 키를 선택할 수 있으며, 선택하지 않은 연결은 제공자 기본 키를 사용하며, 커스텀 모델과 리버스 프록시는 이름을 붙인 키를 선택하지 않으면 키 없이 요청을 보냅니다.",

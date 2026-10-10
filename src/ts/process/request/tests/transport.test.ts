@@ -72,18 +72,12 @@ vi.mock("src/ts/network/channelCallSource", () => ({ activeChannelCall: () => st
 vi.mock("src/ts/network/generationJobs", () => ({ generationClientId: () => "tab-1" }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParserScoped: stubs.parserScoped }));
 vi.mock("src/ts/plugins/apiV3/pluginContext", async () => {
-    // The selection is the real one (the records' preset and persona are selected by id).
-    const { selection } = await import("src/ts/storage/selection.svelte");
+    // The capture is the real display rule over the real records and selection: the chat's bound ids
+    // where they exist, else the selected ones (`docs/plan/chat-binding.md`).
+    const { chatDisplayIds } = await import("src/ts/storage/chatBinding.svelte");
     return {
         capturePluginContext: (chatRef: { chaId: string; chatId: string } | null) =>
-            chatRef
-                ? {
-                      chatRef,
-                      presetId: selection.presetId,
-                      modelPresetId: selection.modelPresetId,
-                      personaId: stubs.selected.bound?.id ?? selection.personaId,
-                  }
-                : undefined,
+            chatRef ? { chatRef, ...chatDisplayIds(chatRef) } : undefined,
     };
 });
 vi.mock("src/ts/plugins/pluginHooks", () => ({
@@ -111,6 +105,7 @@ vi.mock("../../mcp/mcp", () => ({
     encodeToolCall: stubs.encodeToolCall,
 }));
 
+import { language } from "src/lang";
 import { initializeRecords, takeRecordFields, trackedRecord } from "src/ts/storage/records.svelte";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { activeMainProfile } from "src/ts/storage/settingsViews.svelte";
@@ -124,10 +119,20 @@ import {
     installCharacterChats,
 } from "src/ts/storage/chatStore.svelte";
 
+/** A complete binding: the selected prompt preset, model preset, and persona. */
+const BOUND = { modelPresetId: "preset-1", promptPresetId: "preset-1", bindedPersona: "persona-1" };
+
 const fixtureCharacters = () => [
     { chaId: "char-1", type: "character", name: "Char 1", chatPage: 0, chats: [{ id: "chat-1", message: [] }] },
     { chaId: "char-2", type: "character", name: "Char 2", chatPage: 0, chats: [{ id: "chat-2", message: [] }] },
-    { chaId: "char-9", type: "character", name: "Char 9", chatPage: 0, chats: [{ id: "chat-9", message: [] }] },
+    // `chat-9` (the request chat the cases name) is bound to the selected records (`docs/plan/chat-binding.md`).
+    {
+        chaId: "char-9",
+        type: "character",
+        name: "Char 9",
+        chatPage: 0,
+        chats: [{ id: "chat-9", ...BOUND, message: [] }],
+    },
     { chaId: "other", type: "character", name: "Other", chatPage: 0, chats: [{ id: "k", message: [] }] },
 ];
 
@@ -296,6 +301,7 @@ describe("the request body", () => {
     it("captures the ids, the tokenizer scope, and the arguments before the flush, so a selection change while saving does not move the request", async () => {
         let release!: () => void;
         stubs.flush.mockReturnValue(new Promise<void>((resolve) => (release = resolve)));
+        // The selected chat's bound persona is the selection's business: a chat request names its own ids.
         stubs.selected.bound = { id: "bound-1" };
         const tools = [{ name: "t", description: "d", inputSchema: { type: "object" } }];
         const arg = {
@@ -329,12 +335,14 @@ describe("the request body", () => {
         expect(body).toEqual({
             clientId: "tab-1",
             mode: "submodel",
+            // The captured context's ids, the request chat's character, and its one persona as the selected
+            // one too (`docs/plan/chat-binding.md`), not the tab's selection.
             context: {
                 presetId: "preset-ctx",
                 modelPresetId: "model-ctx",
-                personaId: "bound-1",
-                selectedPersonaId: "persona-1",
-                selectedCharacterId: "char-1",
+                personaId: "persona-ctx",
+                selectedPersonaId: "persona-ctx",
+                selectedCharacterId: "char-9",
                 speakerId: "speaker-1",
                 mainModel: { imageInput: false },
                 tokenizer: {
@@ -521,6 +529,155 @@ describe("the request body", () => {
         releaseRead(undefined);
         expect(await reads).toEqual({ type: "fail", result: "Aborted" });
         expect(stubs.fetch).not.toHaveBeenCalled();
+    });
+
+    // `docs/plan/chat-binding.md`, slice 3: a chat's request names the chat's own binding and runs only
+    // while that binding is complete; the server's 409s map to the same localized text and are not retried.
+    it("names the chat's binding for a chat request without a context, and refuses an incomplete binding before the flush", async () => {
+        createChat("char-9", {
+            id: "chat-bound",
+            name: "Bound",
+            note: "",
+            localLore: [],
+            modelPresetId: "model-ctx",
+            promptPresetId: "preset-ctx",
+            bindedPersona: "persona-2",
+            message: [],
+        } as never);
+        createChat("char-9", { id: "chat-loose", name: "Loose", note: "", localLore: [], message: [] } as never);
+        stubs.selected.bound = { id: "bound-1" };
+        const bound = { chaId: "char-9", chatId: "chat-bound" };
+        expect(await requestServer({ ...baseArg(), chatRef: bound } as never, "model", null, modelInfo)).toEqual({
+            type: "success",
+            result: "ok",
+        });
+        const body = postedBody();
+        expect(body.context).toMatchObject({
+            presetId: "preset-ctx",
+            modelPresetId: "model-ctx",
+            personaId: "persona-2",
+            selectedPersonaId: "persona-2",
+            selectedCharacterId: "char-9",
+        });
+        expect(body.arg.chatRef).toEqual(bound);
+        // The server sees a context-only chat as the request's chat too.
+        const context = { chatRef: bound, presetId: "preset-ctx", modelPresetId: "model-ctx", personaId: "persona-2" };
+        expect(
+            await requestServer({ ...baseArg(), pluginContext: context } as never, "model", null, modelInfo),
+        ).toEqual({ type: "success", result: "ok" });
+        expect(JSON.parse(posted()[1][1]!.body as string).arg.chatRef).toEqual(bound);
+        expect(stubs.modelInfoCalls.at(-1)).toEqual(["model", { presetId: "preset-ctx", modelPresetId: "model-ctx" }]);
+
+        // An incomplete binding: refused before the flush and the POST, not retried, never the selection.
+        stubs.flush.mockClear();
+        stubs.fetch.mockClear();
+        const loose = { chaId: "char-9", chatId: "chat-loose" };
+        expect(await requestServer({ ...baseArg(), chatRef: loose } as never, "model", null, modelInfo)).toEqual({
+            type: "fail",
+            noRetry: true,
+            result: [
+                language.chatBinding.refused,
+                `${language.chatBinding.fields.modelPresetId}: ${language.chatBinding.unset}`,
+                `${language.chatBinding.fields.promptPresetId}: ${language.chatBinding.unset}`,
+                `${language.chatBinding.fields.personaId}: ${language.chatBinding.unset}`,
+            ].join("\n"),
+        });
+        expect(stubs.flush).not.toHaveBeenCalled();
+        expect(stubs.fetch).not.toHaveBeenCalled();
+    });
+
+    it("turns the server's 409 binding refusals into localized, non-retried failures, reading the chat again after a mismatch, and a chat request's 404 into a non-retried failure", async () => {
+        const chat9 = { chaId: "char-9", chatId: "chat-9" };
+        const chatRead = () =>
+            stubs.readRefs.mock.calls.filter(([, options]) =>
+                (options as { chats?: { characterId: string; id: string }[] } | undefined)?.chats?.some(
+                    (ref) => ref.characterId === chat9.chaId && ref.id === chat9.chatId,
+                ),
+            );
+        stubs.fetch.mockResolvedValueOnce(
+            Response.json(
+                { error: "chatBindingIncomplete", problems: [{ field: "personaId", reason: "gone" }] },
+                { status: 409 },
+            ),
+        );
+        expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
+            type: "fail",
+            noRetry: true,
+            result: `${language.chatBinding.refused}\n${language.chatBinding.fields.personaId}: ${language.chatBinding.gone}`,
+        });
+        await flushTick();
+        expect(chatRead()).toHaveLength(0);
+
+        // A mismatch: the server holds a newer binding than this tab (`persona-2` here), so the chat
+        // is read again (`loadChat`) and the next request names it; the refusal does not wait for the read.
+        stubs.readRefs.mockImplementation(async (_refs, options) => ({
+            epoch: "epoch-1",
+            items: [],
+            chatCollections: [],
+            chatSummaryCollections: [],
+            chats: ((options as { chats?: { characterId: string; id: string }[] }).chats ?? []).map(
+                ({ characterId, id }) => ({
+                    characterId,
+                    id,
+                    revision: "r2",
+                    data: { id, name: id, message: [], ...BOUND, bindedPersona: "persona-2" },
+                }),
+            ),
+        }));
+        stubs.fetch.mockResolvedValueOnce(Response.json({ error: "chatBindingMismatch" }, { status: 409 }));
+        expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
+            type: "fail",
+            noRetry: true,
+            result: language.chatBinding.mismatch,
+        });
+        await flushTick();
+        expect(chatRead()).toHaveLength(1);
+        expect(findChat(chat9)?.bindedPersona).toBe("persona-2");
+        expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
+            type: "success",
+            result: "ok",
+        });
+        expect(JSON.parse(posted().at(-1)![1]!.body as string).context).toMatchObject({
+            presetId: "preset-1",
+            modelPresetId: "preset-1",
+            personaId: "persona-2",
+        });
+        // A failed read is logged, not thrown into the refusal.
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+        stubs.readRefs.mockRejectedValueOnce(new Error("offline"));
+        stubs.fetch.mockResolvedValueOnce(Response.json({ error: "chatBindingMismatch" }, { status: 409 }));
+        expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
+            type: "fail",
+            noRetry: true,
+            result: language.chatBinding.mismatch,
+        });
+        await flushTick();
+        expect(chatRead()).toHaveLength(2);
+        expect(consoleError).toHaveBeenCalledWith("[Request]", expect.objectContaining({ message: "offline" }));
+        consoleError.mockRestore();
+
+        // A 404 for the request's chat: the chat is gone on the server, a retry would only repeat it.
+        stubs.fetch.mockResolvedValueOnce(
+            Response.json({ error: "The chat this request is for no longer exists" }, { status: 404 }),
+        );
+        expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
+            type: "fail",
+            noRetry: true,
+            result: "The chat this request is for no longer exists",
+        });
+        // The context's chat is the request's chat for the 404 too.
+        const context = { chatRef: chat9, presetId: "preset-1", modelPresetId: "preset-1", personaId: "persona-1" };
+        stubs.fetch.mockResolvedValueOnce(Response.json({ error: "gone" }, { status: 404 }));
+        expect(
+            await requestServer({ ...baseArg(), pluginContext: context } as never, "model", null, modelInfo),
+        ).toEqual({ type: "fail", noRetry: true, result: "gone" });
+        // Without a chat a 404 is an ordinary failure (retried as any other).
+        stubs.fetch.mockResolvedValueOnce(Response.json({ error: "nothing here" }, { status: 404 }));
+        expect(await requestServer(baseArg() as never, "model", null, modelInfo)).toEqual({
+            type: "fail",
+            result: "nothing here",
+        });
+        expect(stubs.alertError).not.toHaveBeenCalled();
     });
 
     it("turns a refused POST into a fail result, a 412 through the epoch handler, and a network error into its message", async () => {
@@ -717,8 +874,8 @@ describe("the events", () => {
 
 describe("the callbacks", () => {
     it("parses a `cbs` callback with the captured chat and scope (or the payload's chat), and answers each callback once by id", async () => {
-        stubs.selected.bound = { id: "bound-1" };
-        selectPreset("preset-1");
+        // The scope is the request chat's binding, not the selection (`preset-2` is selected meanwhile).
+        selectPreset("preset-2");
         stubs.parserScoped.mockImplementationOnce(() => {
             throw new Error("bad macro");
         });
@@ -750,7 +907,7 @@ describe("the callbacks", () => {
         );
         await flushTick();
         await flushTick();
-        const scope = { presetId: "preset-1", modelPresetId: "preset-1", personaId: "bound-1" };
+        const scope = { presetId: "preset-1", modelPresetId: "preset-1", personaId: "persona-1" };
         expect(stubs.parserScoped.mock.calls).toEqual([
             ["{{user}}", { chatRef: { chaId: "char-9", chatId: "chat-9" } }, scope],
             ["{{char}}", { chatRef: { chaId: "other", chatId: "k" } }, scope],
@@ -850,7 +1007,7 @@ describe("the request's chats (Phase 6 slice 9b)", () => {
     const replaceChar9 = () =>
         installCharacterChats(
             "char-9",
-            [{ id: "chat-9", name: "again", note: "", localLore: [], message: [] }] as never,
+            [{ id: "chat-9", name: "again", note: "", localLore: [], ...BOUND, message: [] }] as never,
             {
                 firstMsgIndex: -1,
             },

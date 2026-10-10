@@ -15,6 +15,7 @@ import {
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { readJsonBody } from "../http/body.ts";
 import { GenerationRunnerError } from "../jobs/generationJobs.ts";
+import { ChatBindingError } from "../jobs/jobScope.ts";
 import {
     TransformRequestError,
     TransformSnapshotError,
@@ -212,7 +213,9 @@ export function parseTransformContinue(body: Record<string, unknown>): Transform
  * `TransformResponse` as JSON. Authenticated, rate-limited, the body capped at
  * `MAX_TRANSFORM_BODY_BYTES`, the resource epoch checked (412 `EpochMismatch`). A render writes
  * nothing, so it does not hold the maintenance gate: a maintenance stops it (503, `Retry-After`).
- * A missing chat, preset, or persona is 404; a snapshot that is gone is 409 `SnapshotExpired`.
+ * A missing chat, preset, or persona is 404; a snapshot that is gone is 409 `SnapshotExpired`; an id
+ * that is not the chat's bound one (`docs/plan/chat-binding.md`, the display rule) is 409
+ * `chatBindingMismatch`.
  */
 export function registerTransformRoutes(
     app: Hono<AppEnv>,
@@ -264,6 +267,9 @@ export function registerTransformRoutes(
             }
             if (error instanceof TransformRequestError) {
                 return c.json({ error: error.message }, 400);
+            }
+            if (error instanceof ChatBindingError) {
+                return c.json(error.refusal, 409);
             }
             if (error instanceof GenerationRunnerError && error.status === 404) {
                 return c.json({ error: error.message }, 404);

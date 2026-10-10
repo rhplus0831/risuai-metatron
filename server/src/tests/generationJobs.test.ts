@@ -88,11 +88,27 @@ function setup() {
         store.close();
         rmSync(dir, { recursive: true, force: true });
     });
+    // The chats' binding (`docs/plan/chat-binding.md`): the default records' ids, which every job names.
+    const firstId = (name: string) => (store.get(kinds.get(name)!, "main")!.data as { id: string }[])[0].id;
+    const bound = {
+        presetId: firstId("presets"),
+        modelPresetId: firstId("modelPresets"),
+        personaId: firstId("personas"),
+    };
+    const binding = {
+        modelPresetId: bound.modelPresetId,
+        promptPresetId: bound.presetId,
+        bindedPersona: bound.personaId,
+    };
     store.applyChanges({
         ops: [{ kind: characters, id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
         chats: [
-            group(null, [{ op: "create", chat: { name: "K", message: [m("u", "hi"), m("r", "", "char")] } as never }]),
-            group(null, [{ op: "create", chat: { name: "J", message: [m("x", "X")] } as never }], "j"),
+            group(null, [
+                { op: "create", chat: { name: "K", ...binding, message: [m("u", "hi"), m("r", "", "char")] } as never },
+            ]),
+            group(null, [{ op: "create", chat: { name: "J", ...binding, message: [m("x", "X")] } as never }], "j"),
+            // No binding: cannot be sent (`docs/plan/chat-binding.md`).
+            group(null, [{ op: "create", chat: { name: "Loose", message: [m("y", "Y")] } as never }], "loose"),
         ],
     });
     const revision = () => store.chatRevision("c", "k")!;
@@ -103,9 +119,7 @@ function setup() {
     const context = (input = "") => ({
         characterId: "c",
         chatId: "k",
-        presetId: null,
-        modelPresetId: null,
-        personaId: null,
+        ...bound,
         mode: "normal",
         input,
         chatRevision: revision(),
@@ -142,7 +156,7 @@ function setup() {
     };
     const ended = (jobId: string) => waitFor(() => jobs.status(jobId, "tab")?.state === "ended");
     const owner = (messageId: string) => lock.ownerOf({ ...ref, messageId })?.generationId ?? null;
-    return { dir, lock, store, snapshots, jobs, revision, text, context, create, run, ended, owner };
+    return { dir, lock, store, snapshots, jobs, revision, text, context, create, run, ended, owner, bound };
 }
 
 describe("admission", () => {
@@ -207,6 +221,68 @@ describe("admission", () => {
         expect(jobs.abort(jobId, "tab")).toBe(false);
         // The slot is free again once the job ended.
         expect(jobs.create({ kind: "send", context: context(), clientId: "tab" }, store.epoch()).ok).toBe(true);
+    });
+
+    // `docs/plan/chat-binding.md`, slice 2: a job of any kind runs on its chat's complete binding or not at all.
+    it("refuses a chat whose binding is not complete (with its problems) or whose ids differ from the context's, after busy and stale, for a preview too", async () => {
+        const { jobs, store, context, create, run, ended } = setup();
+        const loose = { ...context(), chatId: "loose", chatRevision: store.chatRevision("c", "loose")! };
+        const incomplete = {
+            ok: false,
+            status: 409,
+            body: {
+                error: "chatBindingIncomplete",
+                problems: [
+                    { field: "modelPresetId", reason: "unset" },
+                    { field: "promptPresetId", reason: "unset" },
+                    { field: "personaId", reason: "unset" },
+                ],
+            },
+        };
+        expect(jobs.create({ kind: "send", context: loose, clientId: "tab" }, store.epoch())).toEqual(incomplete);
+        expect(jobs.create({ kind: "preview", context: loose, clientId: "tab" }, store.epoch())).toEqual(incomplete);
+        expect(
+            jobs.create(
+                { kind: "command", context: loose, clientId: "tab", command: { type: "button", data: "" } },
+                store.epoch(),
+            ),
+        ).toEqual(incomplete);
+        const other = { ...context(), personaId: "other" };
+        expect(jobs.create({ kind: "send", context: other, clientId: "tab" }, store.epoch())).toEqual({
+            ok: false,
+            status: 409,
+            body: { error: "chatBindingMismatch" },
+        });
+        expect(jobs.create({ kind: "previewPrompt", context: other, clientId: "tab" }, store.epoch())).toMatchObject({
+            status: 409,
+            body: { error: "chatBindingMismatch" },
+        });
+        // Staleness and a running job are answered first (a reloaded tab learns the job id).
+        expect(
+            jobs.create(
+                {
+                    kind: "send",
+                    context: { ...other, chatRevision: "00000000-0000-4000-8000-000000000000:1:1" },
+                    clientId: "tab",
+                },
+                store.epoch(),
+            ),
+        ).toMatchObject({ status: 409, body: { error: "stale" } });
+        const finished = run(async (job) => {
+            await aborted(job);
+        });
+        const jobId = create();
+        expect(jobs.create({ kind: "send", context: other, clientId: "other" }, store.epoch())).toEqual({
+            ok: false,
+            status: 409,
+            body: { error: "chatBusy", jobId },
+        });
+        expect(jobs.abort(jobId, "tab")).toBe(true);
+        await finished;
+        await ended(jobId);
+        expect(jobs.status(jobId, "tab")?.state).toBe("ended");
+        // Nothing ran for the refused ones: no job of chat `loose` exists, and its slot is free.
+        expect(jobs.create({ kind: "send", context: loose, clientId: "tab" }, store.epoch())).toEqual(incomplete);
     });
 });
 

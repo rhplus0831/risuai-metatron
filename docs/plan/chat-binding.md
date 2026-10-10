@@ -1,6 +1,8 @@
 # Chat Binding Plan
 
-Status: slice 1 done; slices 2–7 planned. Each chat binds its own **model preset**, **prompt preset**,
+Status: slices 1–3 done; slices 4–7 planned. Until slice 5 there is no UI
+to bind a chat's model and prompt presets, so chats without them cannot be
+sent (accepted). Each chat binds its own **model preset**, **prompt preset**,
 and **persona**, and a chat cannot be sent until all three are bound. This is
 the "Later: per-chat selection" follow-up of [split-preset.md](split-preset.md),
 with one deliberate change: that section sketched a fallback to the tab
@@ -121,9 +123,9 @@ list them all.
 - **Generation jobs** (`server/src/routes/generations.ts` and `create` in
   `server/src/jobs/generationJobs.ts`). Before a job is created, read the
   chat's list fields (`store.readRefs`) and run `resolveChatBinding`.
-  - Not ok: reject with 409 `chat_binding_incomplete`, carrying `problems`.
+  - Not ok: reject with 409 `chatBindingIncomplete`, carrying `problems`.
   - Ok, but `context.presetId`, `modelPresetId`, or `personaId` differ from
-    the binding: reject with 409 `chat_binding_mismatch`. The tab saw an
+    the binding: reject with 409 `chatBindingMismatch`. The tab saw an
     older binding.
   - Checking at creation keeps `job.targets`, which is built from
     `body.context`, equal to the binding.
@@ -143,9 +145,15 @@ list them all.
   - It also fixes `runSetup.ts` `selectedPersonaPrompt` and the root
     `db.username`.
   - Keep the field in the contract for requests without a chat.
-- **`POST /api/transform`** (`TransformContext` has `chatId`) and
-  **`POST /api/llm/request` when `args.chatRef` is set** get the same two
-  checks. `loadRequestDb` itself does not change.
+- **`POST /api/llm/request` when `args.chatRef` is set** gets the same two
+  checks; inside a callback of that chat's job it is compared with the job's
+  targets instead (a `presetChain` pick included). `loadRequestDb` itself
+  does not change.
+- **`POST /api/transform`** is a read-only render and uses the **display
+  rule** (decided while implementing): per field, the bound id when it names
+  a record that exists, else the tab's. The server rejects (409
+  `chatBindingMismatch`) only a field bound to an existing record that is
+  sent differently; `bindingReview` does not matter.
 - **Tests** in `server/src/tests/`: unset field, gone record, review pending,
   mismatch, the `presetChain` re-scope allowed, the persona prompt gate using
   the bound persona, and a request without `chatRef` unaffected.
@@ -153,7 +161,8 @@ list them all.
 ### 3. Client contexts and the send guard
 
 - **Every context builder takes its ids from `chatBinding(ref)`** for the ref
-  it captured, never from the views:
+  it captured, never from the views (renders and plugin contexts use the
+  display rule, `chatDisplayIds(ref)`):
   - `runPinnedServerJob` (`src/ts/process/serverCommands.ts`). Drop the
     `activePreset`/`activeModelPreset`/`checkPersonaBinded` defaults.
     `options.identity`, for reruns of a held job, stays.
@@ -166,8 +175,11 @@ list them all.
 - **The guard goes in `runPinnedServerJob`**, before `flushResources`, so
   send, continue, reroll, group, preview, and command jobs all pass through
   it.
-  - When the binding is not ok, it shows the problems (`alertError`), opens
-    the chat's binding panel (slice 5), and returns `refused`.
+  - When the binding is not ok, it shows the problems (`alertError`) and
+    returns `refused`; opening the binding panel comes with slice 5.
+  - Chat LLM requests have the same guard in `requestChatData` (before hooks
+    and tools) and at `requestChatDataMain` (a plugin's direct call, the
+    browser-run models); a request inside a job callback is exempt.
   - The server's 409 codes map to the same message.
   - A mismatch refreshes the chat's list entry and asks for a resend.
 - **`applyJobPreset`** (`src/ts/network/generationJobs.ts`) stops calling
@@ -208,7 +220,9 @@ list them all.
   - `process/memory/hypav3.ts` (`maxResponse`, `resolveModelSlot("memory")`);
   - `process/request/shared.ts` (sampling parameters);
   - `process/request/request.ts` (`activeMainProfile`);
-  - `translator/translator.ts` (`activePreset.regex`);
+  - `translator/translator.ts` (`activePreset.regex`; also its LLM
+    translation of chat text, which goes out without the chat's ref and so
+    still uses the tab selection);
   - `process/stringlize.ts`;
   - `files/inlays.ts`.
 - **Tests** (`src/ts/storage/tests/settingsViews.test.ts`):

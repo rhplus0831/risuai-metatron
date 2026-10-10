@@ -67,6 +67,8 @@ async function boot() {
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
     fake.set("pluginStorage", "main", {});
+    // Chat `k` is bound to the stored records (`docs/plan/chat-binding.md`): a send runs on its binding.
+    const firstId = (kind: string) => (fake.record(kind, "main")!.data as { id: string }[])[0].id;
     fake.store.applyChanges({
         ops: [{ kind: fake.kind("characters"), id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
         chats: [
@@ -82,6 +84,9 @@ async function boot() {
                             name: "K",
                             note: "",
                             localLore: [],
+                            modelPresetId: firstId("modelPresets"),
+                            promptPresetId: firstId("presets"),
+                            bindedPersona: firstId("personas"),
                             message: [m("a", "A", "char"), m("b", "B", "char"), m("c", "C")],
                         } as any,
                     },

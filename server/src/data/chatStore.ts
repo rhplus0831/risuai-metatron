@@ -902,6 +902,12 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return row ? tokens.token(row.seq, row.revision) : null;
         },
 
+        /** A chat's summary (its listed fields; its messages are not read), or null when it does not exist. */
+        readChatSummary(characterId: string, id: string): ChatSummary | null {
+            const row = selectChat.get(characterId, id) as ChatRow | undefined;
+            return row ? chatSummary(characterId, { ...row, id }) : null;
+        },
+
         /**
          * Deletes a character's chats, their messages, and its order (inside the character's delete).
          * Returns the ids of the chats it deleted and whether an order existed.

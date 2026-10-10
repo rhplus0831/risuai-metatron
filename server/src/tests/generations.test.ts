@@ -29,6 +29,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
     let base = "";
     let epoch = "";
     let signer: Awaited<ReturnType<typeof createSigner>>;
+    /** The chat's binding (`docs/plan/chat-binding.md`): the default records' ids, which every job names. */
+    let bound = { presetId: "", modelPresetId: "", personaId: "" };
     /** The steps the current test hands the runner, in order; the runner waits for each. */
     let steps: Step[] = [];
     let wake: (() => void) | null = null;
@@ -94,6 +96,13 @@ describe("generation jobs over HTTP and WebSocket", () => {
         signer = await createSigner();
         await fetch(`${base}/api/login`, json({ password: "pw", publicKey: signer.publicJwk }));
         epoch = ((await (await request("/api/resources/ui")).json()) as { epoch: string }).epoch;
+        const firstId = async (kind: string) =>
+            ((await (await request(`/api/resources/${kind}/main`)).json()) as { data: { id: string }[] }).data[0].id;
+        bound = {
+            presetId: await firstId("presets"),
+            modelPresetId: await firstId("modelPresets"),
+            personaId: await firstId("personas"),
+        };
         const seeded = await request("/api/resources/batch", {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -101,7 +110,16 @@ describe("generation jobs over HTTP and WebSocket", () => {
                 ops: [{ kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
                 chats: [
                     group(null, [
-                        { op: "create", chat: { name: "K", message: [m("u", "hi"), m("r", "", "char")] } as never },
+                        {
+                            op: "create",
+                            chat: {
+                                name: "K",
+                                modelPresetId: bound.modelPresetId,
+                                promptPresetId: bound.presetId,
+                                bindedPersona: bound.personaId,
+                                message: [m("u", "hi"), m("r", "", "char")],
+                            } as never,
+                        },
                     ]),
                 ],
             }),
@@ -131,9 +149,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
     const context = async (input = "") => ({
         characterId: "c",
         chatId: "k",
-        presetId: null,
-        modelPresetId: null,
-        personaId: null,
+        ...bound,
         mode: "normal",
         input,
         chatRevision: (await revision()).revision,

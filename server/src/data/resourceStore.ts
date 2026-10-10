@@ -885,6 +885,12 @@ export function createResourceStore(options: {
             return chatTables.chatRevision(characterId, id);
         },
 
+        /** A chat's summary (its listed fields and revision; its messages are not read), or null when it does not exist. */
+        chatSummary(characterId: string, id: string): ChatSummary | null {
+            assertOpen();
+            return chatTables.readChatSummary(characterId, id);
+        },
+
         /** `applyChanges` with resource operations only; returns their tokens in operation order. */
         applyBatch(
             operations: readonly ResourceBatchOperation[],
