@@ -1,6 +1,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page, type Route } from "@playwright/test";
+import { modelFixtureOps, promptFixture } from "../util/playwright/modelProfiles.mjs";
 import { openApp } from "../util/playwright/stack.mjs";
 
 // Phase 5 slice 13b (`docs/plan/phases/slices/phase-5-server-side-processing/script-transform.md`):
@@ -125,6 +126,8 @@ async function seed(
     const order = (await s.api("/api/resources/characterOrder/main")).body;
     const presets = (await s.api("/api/resources/presets/main")).body;
     const providers = (await s.api("/api/resources/providers/main")).body;
+    const modelPresets = (await s.api("/api/resources/modelPresets/main")).body;
+    const modelProfiles = (await s.api("/api/resources/modelProfiles/main")).body;
     const chaId = randomUUID();
     const character = {
         name: `Transform ${chaId.slice(0, 6)}`,
@@ -165,6 +168,7 @@ async function seed(
         replaceGlobalNote: "",
         triggerscript: [{ comment: "lua", type: "start", conditions: [], effect: [{ type: "triggerlua", code: LUA }] }],
     };
+    // The model fields go to a profile that the first model preset's slots name (`modelFixtureOps`).
     const preset = {
         ...presets.data[0],
         aiModel: "reverse_proxy",
@@ -183,8 +187,9 @@ async function seed(
                     kind: "presets",
                     id: "main",
                     baseRevision: presets.revision,
-                    data: [preset, ...presets.data.slice(1)],
+                    data: [promptFixture(preset), ...presets.data.slice(1)],
                 },
+                ...modelFixtureOps(preset, modelPresets, modelProfiles),
                 {
                     kind: "providers",
                     id: "main",

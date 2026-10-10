@@ -1,6 +1,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { modelFixtureOps } from "../util/playwright/modelProfiles.mjs";
 import { openApp } from "../util/playwright/stack.mjs";
 
 // Phase 6 slice 9b (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/chat-projection-and-lazy-loading.md`,
@@ -124,7 +125,7 @@ const message = (id: string, i: number) => ({
 });
 
 /** What the seed changes besides the character, to be restored at the end (the specs after this one share the store). */
-let seededRecords: { presets: any; providers: any } | null = null;
+let seededRecords: { modelPresets: any; modelProfiles: any; providers: any } | null = null;
 
 /** Seeds the character with its twelve chats (`big`: 60 messages, the others 2) and the mock provider. */
 async function seed(s: Session): Promise<string> {
@@ -132,9 +133,10 @@ async function seed(s: Session): Promise<string> {
     const ui = (await s.api("/api/resources/ui/main")).body;
     s.setEpoch(ui.epoch);
     const order = (await s.api("/api/resources/characterOrder/main")).body;
-    const presets = (await s.api("/api/resources/presets/main")).body;
+    const modelPresets = (await s.api("/api/resources/modelPresets/main")).body;
+    const modelProfiles = (await s.api("/api/resources/modelProfiles/main")).body;
     const providers = (await s.api("/api/resources/providers/main")).body;
-    seededRecords = { presets: presets.data, providers: providers.data };
+    seededRecords = { modelPresets: modelPresets.data, modelProfiles: modelProfiles.data, providers: providers.data };
     const chaId = randomUUID();
     const character = {
         name: `Lazy ${chaId.slice(0, 6)}`,
@@ -164,13 +166,8 @@ async function seed(s: Session): Promise<string> {
         replaceGlobalNote: "",
         triggerscript: [],
     };
-    const preset = {
-        ...presets.data[0],
-        aiModel: "reverse_proxy",
-        subModel: "reverse_proxy",
-        forceReplaceUrl: providerUrl,
-        customProxyRequestModel: "mock",
-    };
+    // A profile on the mock provider, named by the first model preset's main and sub slots.
+    const model = { aiModel: "reverse_proxy", forceReplaceUrl: providerUrl, customProxyRequestModel: "mock" };
     const seeded = await s.api("/api/resources/batch", {
         method: "POST",
         body: JSON.stringify({
@@ -181,12 +178,7 @@ async function seed(s: Session): Promise<string> {
                     baseRevision: ui.revision,
                     data: { ...ui.data, didFirstSetup: true, useLegacyGUI: true },
                 },
-                {
-                    kind: "presets",
-                    id: "main",
-                    baseRevision: presets.revision,
-                    data: [preset, ...presets.data.slice(1)],
-                },
+                ...modelFixtureOps(model, modelPresets, modelProfiles),
                 {
                     kind: "providers",
                     id: "main",
@@ -439,17 +431,29 @@ test("boot holds summaries, chats load when selected, the trim keeps eight idle 
     expect(b.errors).toEqual([]);
     await contextB.close();
 
-    // Cleanup: the character (its chats and order go with it), and the preset and provider records
+    // Cleanup: the character (its chats and order go with it), and the model and provider records
     // as they were before the seed (the specs after this one share the store).
     const record = (await a.api(`/api/resources/characters/${chaId}`)).body;
-    const presetsNow = (await a.api("/api/resources/presets/main")).body;
+    const modelPresetsNow = (await a.api("/api/resources/modelPresets/main")).body;
+    const modelProfilesNow = (await a.api("/api/resources/modelProfiles/main")).body;
     const providersNow = (await a.api("/api/resources/providers/main")).body;
     const removed = await a.api("/api/resources/batch", {
         method: "POST",
         body: JSON.stringify({
             ops: [
                 { kind: "characters", id: chaId, baseRevision: record.revision, delete: true },
-                { kind: "presets", id: "main", baseRevision: presetsNow.revision, data: seededRecords!.presets },
+                {
+                    kind: "modelPresets",
+                    id: "main",
+                    baseRevision: modelPresetsNow.revision,
+                    data: seededRecords!.modelPresets,
+                },
+                {
+                    kind: "modelProfiles",
+                    id: "main",
+                    baseRevision: modelProfilesNow.revision,
+                    data: seededRecords!.modelProfiles,
+                },
                 { kind: "providers", id: "main", baseRevision: providersNow.revision, data: seededRecords!.providers },
             ],
         }),

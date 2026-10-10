@@ -1,19 +1,21 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { modelFixtureOps } from "../util/playwright/modelProfiles.mjs";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
 // Phase 6 slice 7 (`docs/plan/phases/slices/phase-6-thin-client-and-closeout/readers-settings-consumers.md`,
 // "Validation"): the settings consumers outside the settings pages read and write through the settings
 // views. In the real app against the isolated stack of `playwright.config.ts`:
-// - the first-run wizard: every write lands in its section, the selected preset, or the selected
-//   persona on the server (the API key goes to the server's write-only credentials, and the tab never
-//   reads it back), and a reload starts the app instead of the wizard;
+// - the first-run wizard: every write lands in its section, the selected preset, the model profile
+//   its slots name, or the selected persona on the server (the API key goes to the server's
+//   write-only credentials, and the tab never reads it back), and a reload starts the app instead of
+//   the wizard;
 // - the chat screen's settings-driven behaviors: send with Enter (on and off), the auto-translate
 //   input row toggled from the menu (saved), the icon size, the module effect (a module that hides the
 //   icons, enabled globally or named by the preset's module integration), the theme;
 // - the playground pages and the Iris modal mount without a page error; the Iris modal's model check
-//   follows the selected preset's sub model, and its saved dialogue lands in the `ui` record.
+//   follows the selected model preset's sub slot, and its saved dialogue lands in the `ui` record.
 // The provider is a local mock; no public service is contacted. The spec name sorts after every other
 // spec: it changes the selected preset, the persona, and the ui settings of the shared stack.
 
@@ -104,20 +106,33 @@ const flush = (page: Page) =>
 /** What the tab's settings views read now (a plain copy). */
 const views = (page: Page) =>
     page.evaluate(async () => {
-        const { settings, activePreset, activePersona } = await import("/src/ts/storage/settingsViews.svelte.ts");
+        const { settings, activePreset, activeModelPreset, activeMainProfile, activeSubProfile, activePersona } =
+            await import("/src/ts/storage/settingsViews.svelte.ts");
         const { selection } = await import("/src/ts/storage/selection.svelte.ts");
+        const profile = (view: typeof activeMainProfile) => ({
+            id: view.id,
+            modelId: view.modelId,
+            maxContext: view.maxContext,
+        });
         return JSON.parse(
             JSON.stringify({
                 ui: settings.ui,
                 memory: settings.memoryTranslateMedia,
                 preset: { id: activePreset.id, ...activePreset },
+                modelPreset: { id: activeModelPreset.id },
+                mainProfile: profile(activeMainProfile),
+                subProfile: profile(activeSubProfile),
                 persona: { id: activePersona.id, name: activePersona.name },
-                selection: { presetId: selection.presetId, personaId: selection.personaId },
+                selection: {
+                    presetId: selection.presetId,
+                    modelPresetId: selection.modelPresetId,
+                    personaId: selection.personaId,
+                },
             }),
         );
     });
 
-test("the first-run wizard writes every answer into its section, the selected preset, or the selected persona, and a reload starts the app", async ({
+test("the first-run wizard writes every answer into its section, the selected preset, the model profile its slots name, or the selected persona, and a reload starts the app", async ({
     context,
     baseURL,
 }) => {
@@ -174,13 +189,12 @@ test("the first-run wizard writes every answer into its section, the selected pr
         translatorType: "google",
         useAutoTranslateInput: true,
     });
-    expect(after.preset).toMatchObject({
-        id: before.preset.id,
-        maxContext: 8000,
-        maxResponse: 500,
-        aiModel: "gpt4o-chatgpt",
-        subModel: "gpt4o-chatgpt",
-    });
+    expect(after.preset).toMatchObject({ id: before.preset.id, maxResponse: 500 });
+    // The model and its context size are a profile's, which the selected model preset's main and sub
+    // slots name (`docs/plan/model-profiles.md`).
+    expect(after.modelPreset.id).toBe(before.modelPreset.id);
+    expect(after.mainProfile).toMatchObject({ modelId: "gpt4o-chatgpt", maxContext: 8000 });
+    expect(after.subProfile).toEqual(after.mainProfile);
     expect(after.persona).toEqual({ id: before.persona.id, name: "Wizard Tester" });
     expect(after.selection).toEqual(before.selection);
     const tabText = await s.page.evaluate(async () => {
@@ -195,6 +209,8 @@ test("the first-run wizard writes every answer into its section, the selected pr
             settings.ui,
             settings.memoryTranslateMedia,
             settings.presets,
+            settings.modelPresets,
+            settings.modelProfiles,
             settings.personas,
             activePreset,
             activePersona,
@@ -218,16 +234,21 @@ test("the first-run wizard writes every answer into its section, the selected pr
         useAutoTranslateInput: true,
     });
     const presets = (await s.api("/api/resources/presets/main")).body.data as any[];
-    const selected = presets.find((preset) => preset.id === before.preset.id);
-    expect(selected).toMatchObject({
+    expect(presets.find((preset) => preset.id === before.preset.id)).toMatchObject({ maxResponse: 500 });
+    const profiles = (await s.api("/api/resources/modelProfiles/main")).body.data as any[];
+    expect(profiles.find((profile) => profile.id === after.mainProfile.id)).toMatchObject({
+        modelId: "gpt4o-chatgpt",
         maxContext: 8000,
-        maxResponse: 500,
-        aiModel: "gpt4o-chatgpt",
-        subModel: "gpt4o-chatgpt",
     });
-    // The other presets are untouched by the template and the answers.
-    for (const preset of presets.filter((entry) => entry.id !== before.preset.id)) {
-        expect(preset.aiModel === "gpt4o-chatgpt" && preset.maxContext === 8000).toBe(false);
+    const modelPresets = (await s.api("/api/resources/modelPresets/main")).body.data as any[];
+    const slot = { profileId: after.mainProfile.id };
+    expect(modelPresets.find((preset) => preset.id === before.modelPreset.id)).toMatchObject({
+        mainSlot: slot,
+        subSlot: slot,
+    });
+    // The other model presets are untouched by the answers.
+    for (const preset of modelPresets.filter((entry) => entry.id !== before.modelPreset.id)) {
+        expect([preset.mainSlot, preset.subSlot]).not.toContainEqual(slot);
     }
     const personas = (await s.api("/api/resources/personas/main")).body.data as any[];
     expect(personas.find((persona) => persona.id === before.persona.id)?.name).toBe("Wizard Tester");
@@ -235,7 +256,15 @@ test("the first-run wizard writes every answer into its section, the selected pr
     const secrets = (await s.api("/api/resources/llmSecrets/main")).body;
     expect(JSON.stringify(secrets)).not.toContain("sk-wizard-test-key");
     expect(JSON.stringify(secrets.data)).toContain("openAIKey");
-    for (const kind of ["ui", "providers", "secrets", "memoryTranslateMedia", "presets"]) {
+    for (const kind of [
+        "ui",
+        "providers",
+        "secrets",
+        "memoryTranslateMedia",
+        "presets",
+        "modelPresets",
+        "modelProfiles",
+    ]) {
         const record = (await s.api(`/api/resources/${kind}/main`)).body;
         expect(JSON.stringify(record), kind).not.toContain("sk-wizard-test-key");
     }
@@ -249,7 +278,7 @@ test("the first-run wizard writes every answer into its section, the selected pr
     expect(unexpected(s.blocked)).toEqual([]);
 });
 
-/** Seeds a character with one chat, a preset on the mock provider, and the given ui and memory fields, then opens the chat. */
+/** Seeds a character with one chat, the selected model preset on the mock provider, and the given ui and memory fields, then opens the chat. */
 async function seedChat(s: Session, ui: Record<string, unknown>, memory: Record<string, unknown>) {
     await s.open();
     const uiRecord = (await s.api("/api/resources/ui/main")).body;
@@ -258,7 +287,18 @@ async function seedChat(s: Session, ui: Record<string, unknown>, memory: Record<
     const providers = (await s.api("/api/resources/providers/main")).body;
     const presets = (await s.api("/api/resources/presets/main")).body;
     const order = (await s.api("/api/resources/characterOrder/main")).body;
-    const selectedPresetId = (await views(s.page)).preset.id;
+    const modelPresets = (await s.api("/api/resources/modelPresets/main")).body;
+    const modelProfiles = (await s.api("/api/resources/modelProfiles/main")).body;
+    const selected = await views(s.page);
+    // `modelFixtureOps` sets the first model preset's slots: the one a fresh tab selects.
+    expect(selected.modelPreset.id).toBe(modelPresets.data[0].id);
+    const model = {
+        aiModel: "reverse_proxy",
+        subModel: "reverse_proxy",
+        forceReplaceUrl: providerUrl,
+        customProxyRequestModel: "mock",
+        maxContext: 4000,
+    };
     const chaId = randomUUID();
     const chatId = randomUUID();
     const character = {
@@ -316,19 +356,10 @@ async function seedChat(s: Session, ui: Record<string, unknown>, memory: Record<
                     id: "main",
                     baseRevision: presets.revision,
                     data: (presets.data as any[]).map((preset) =>
-                        preset.id === selectedPresetId
-                            ? {
-                                  ...preset,
-                                  aiModel: "reverse_proxy",
-                                  subModel: "reverse_proxy",
-                                  forceReplaceUrl: providerUrl,
-                                  customProxyRequestModel: "mock",
-                                  maxContext: 4000,
-                                  maxResponse: 100,
-                              }
-                            : preset,
+                        preset.id === selected.preset.id ? { ...preset, maxResponse: 100 } : preset,
                     ),
                 },
+                ...modelFixtureOps(model, modelPresets, modelProfiles),
                 { kind: "characters", id: chaId, baseRevision: null, data: character },
                 {
                     kind: "characterOrder",
@@ -530,11 +561,12 @@ test("the playground pages and the Iris modal mount without an error; the Iris m
     expect(s.errors, "playground chat").toEqual([]);
     await setPlayground(0);
 
-    // The Iris modal: the intro line, and the unsupported-model notice following the sub model.
+    // The Iris modal: the intro line, and the unsupported-model notice following the sub slot (Iris
+    // asks in mode `otherAx`, which falls back to the sub slot), set to a profile of that model.
     const setSubModel = (model: string) =>
         s.page.evaluate(async (model) => {
-            const { activePreset } = await import("/src/ts/storage/settingsViews.svelte.ts");
-            activePreset.subModel = model;
+            const { applyModelFixtureSettings } = await import("/util/playwright/modelProfiles.browser.mjs");
+            applyModelFixtureSettings({ subModel: model });
         }, model);
     const openIris = (open: boolean) =>
         s.page.evaluate(async (open) => {

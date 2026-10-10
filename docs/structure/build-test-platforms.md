@@ -142,6 +142,7 @@ Test inventory:
 
 - No automated tests for the service worker, the manifest, or the userscript. Verify those manually.
 - Browser checks use Playwright against the stack above: plain `playwright-core` scripts in `util/playwright/` for captures and one-off observations, `@playwright/test` specs in `e2e/` for repeatable checks (`pnpm test:e2e`). `playwright.config.ts`, `e2e/`, and `util/playwright/` are outside `tsconfig.json`'s include, so `pnpm check` does not type-check them.
+- A check that points the stack at a mock provider writes a model profile and the model preset's slots (`docs/plan/model-profiles.md`), never `aiModel`, `forceReplaceUrl`, or `maxContext` on a `presets` record, whose normalizer drops them without an error. Use `util/playwright/modelProfiles.mjs` (`modelFixtureOps` for the batch, `promptFixture` for the prompt half) or, in the page, `modelProfiles.browser.mjs` (`applyModelFixtureSettings`).
 
 ## Known Hazards
 
