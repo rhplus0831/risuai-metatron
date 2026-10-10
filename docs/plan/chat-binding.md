@@ -1,6 +1,6 @@
 # Chat Binding Plan
 
-Status: slices 1–6 done; slice 7 (e2e and docs) planned. Each chat
+Status: done (slices 1–7). Each chat
 binds its own **model preset**, **prompt preset**,
 and **persona**, and a chat cannot be sent until all three are bound. This is
 the "Later: per-chat selection" follow-up of [split-preset.md](split-preset.md),
@@ -408,6 +408,19 @@ list them all.
     - `settings-i18n.md`: the pickers and views, and `newChatBinding`;
     - `self-host-server.md`: the 409 codes and the persona split removal;
     - `STRUCTURE.md` D2: views read the open chat's binding first.
+- **As built** (decided while implementing):
+  - **The shared seed** is `chatBindingFixture` in `util/playwright/modelProfiles.mjs`, next to
+    `modelFixtureOps`: the first model preset, prompt preset, and persona, spread into a seeded
+    chat. `lazyChats`, `serverTransform`, and `welcomeAndChatSettings` bind their chats with it.
+  - **`e2e/chatBinding.spec.ts`** holds the four new flows. The imported chat is bound completely
+    before its confirmation, so the review alone is shown to block the send. The two tabs are two
+    pages of one browser context (shared `localStorage`, separate `sessionStorage` client ids).
+    Its teardown restores the records and `ui` it changed, takes its characters out of
+    `characterOrder`, and always stops the mock provider.
+  - **`e2e/personaBinding.spec.ts`**: a pick at home moves the tab selection, a pick with a chat
+    open binds that chat, and the chat list's "Chat Settings" rebinds a row's chat.
+  - **Docs** also corrected the guides that still described the tab's `preset` event switching the
+    selection, the pickers and the persona selection acting on the tab only, and Escape.
 
 ## Order and risk
 

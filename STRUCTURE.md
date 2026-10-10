@@ -7,7 +7,7 @@ no standalone browser build (the client without the server shows only a notice),
 they drift. Grep the identifier instead.
 
 Last full audited: 2026-09-27.
-Last scoped updated: 2026-10-09 (the Model menu's Preset / Connections / API Keys tabs; before that, the model profiles and the named API keys).
+Last scoped updated: 2026-10-11 (the per-chat binding of the model preset, prompt preset, and persona; before that, the Model menu's Preset / Connections / API Keys tabs).
 
 ## Agent Read Protocol
 
@@ -87,7 +87,10 @@ Data and persistence (details: `docs/structure/persistence.md`)
   by `activePreset` (the prompt preset), `activeModelPreset` (the model preset's slots),
   `activeMainProfile`/`profileForSlot` (a model profile), and `activePersona`, and by root name
   (`readSettingsRoot`/`writeSettingsRoot`) from the selected preset that owns the field, the main
-  slot's profile, or the selected persona (`settingsViews.svelte.ts`); `aiModel`, `subModel`, and
+  slot's profile, or the selected persona (`settingsViews.svelte.ts`). While a chat is open
+  (`currentChatRef()`), "selected" is that chat's bound record when it exists, else the tab's
+  selection (`docs/plan/chat-binding.md`); a send never falls back: it refuses a chat whose
+  binding is incomplete (`chatBinding(ref)`), and the server refuses it too. `aiModel`, `subModel`, and
   `seperateModels` are derived model ids, never stored (`docs/plan/model-profiles.md`); write them synchronously (a value
   copied back from an `$effect` can land after a switch). The boot installs the records as the
   server sent them (`initializeRecords`) and does not normalize. Chat and message fields

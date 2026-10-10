@@ -1,8 +1,9 @@
 # Split Preset Plan
 
-Status: done (slices 1–6); per-chat selection is the open follow-up. Split the single bot preset (`botPreset`, the
+Status: done (slices 1–6); per-chat selection is done in [chat-binding.md](chat-binding.md). Split the single bot preset (`botPreset`, the
 `presets` collection) into a **model preset** and a **prompt preset** that are
-selected independently. A later step lets each chat pick its own pair.
+selected independently. Each chat now binds its own pair (and persona):
+[chat-binding.md](chat-binding.md).
 
 Reference: `/home/codex/risuai-fastify` did the same split
 (`e4f98e847`, `docs/split-bot-preset.md` in that commit), then had to add
@@ -186,10 +187,10 @@ promptPreset)` in `shared/`) replaces the two `FORWARDED_PRESET_KEYS` loops in
 
 ## Later: per-chat selection
 
-Out of scope, but the contracts above are its seam: a chat gains optional
-`modelPresetId`/`promptPresetId`, and the client picks the chat's ids when set,
-else the tab selection. The server already takes explicit ids, so it does not
-change.
+Done in [chat-binding.md](chat-binding.md): a chat binds its own model preset,
+prompt preset, and persona, and a chat whose binding is incomplete is not sent.
+There is no fallback to the tab selection. The contracts above were its seam:
+the server takes explicit ids, and checks them against the chat's binding.
 
 ## Slices
 

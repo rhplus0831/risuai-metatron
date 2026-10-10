@@ -48,7 +48,7 @@
   - Effective sets: `getModules`, then `getModuleLorebooks`, `getModuleAssets`, `getModuleTriggers`, `getModuleRegexScripts`, `getModuleToggles`, `getModuleMcps`.
   - `applyModule`, `moduleUpdate`, `refreshModules`.
 - `interchangeability.ts`: `convertModuleToCharacter`, `convertCharacterToModule`, persona↔character, persona↔module (an embedded module ID is normalized to `$embedded`).
-- `persona.ts`: `changeUserPersona(id)` (selects the persona for this client; the persona fields are forwarded, so nothing is copied), `selectUserImg` (captures the selected persona before the file dialog and sets its icon, keeping its id, so bound chats stay bound). `exportUserPersona`/`importUserPersona` use a PNG `persona` tEXt chunk.
+- `persona.ts`: `changeUserPersona(id, target?)` (picks the persona where the screen shows it, through `pickBinding`: with a chat open it binds that chat, at home it selects for this client; `target` names a chat or `null` for the tab; the persona fields are forwarded, so nothing is copied), `selectUserImg` (captures the selected persona before the file dialog and sets its icon, keeping its id, so bound chats stay bound). `exportUserPersona`/`importUserPersona` use a PNG `persona` tEXt chunk.
 - UI:
   - `CharConfig.svelte`: the main editor, binding the selected character's record (`currentCharacter`, `$derived(selectedCharacter())`). Tabs cover identity, greetings, images, emotions, assets, lore, regex, triggers, TTS, export, and delete.
   - Lorebook:
@@ -133,7 +133,7 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - `chaId` and chat IDs must be unique. The installation (`initializeRecords`) gives a character without a valid or unique id a new one, and a character's id never changes afterwards; chat and message ids are assigned by the chat module (`createChat`, `appendMessage`) and kept unique by the server.
 - An import path adds a character only through `addCharacter` (and modules, personas, and presets through the collection module). The core-app creators (`createNewCharacter`, `createNewGroup`) add through it too.
 - A character's chats are created through the chat module once it is in the mirror: `importChat` calls `createChat` (a copy gets a fresh chat id and keeps its message ids), and `changeChar` calls `ensureChat` for a character without one. A character that is not yet added (a new card, an import) carries its initial chats in its input; its creation (`prepareNewCharacter`) gives it a first chat when it has none, each chat its `fmIndex` (the character's `firstMsgIndex`) and `localLore` (`prepareChatInput`), and moves `postHistoryInstructions` into the note of the chat at `chatPage`; `addCharacter`/`replaceCharacterAt` then hand the chats to the chat module (`installCharacterChats`: the record holds none) and the save loop creates them with the character.
-- `changeUserPersona(id)` with an id that is not in `settings.personas` does nothing.
+- `changeUserPersona(id)` with an id that is not in `settings.personas`, or for a chat that is gone, does nothing and returns false. `PersonaSettings.svelte` creation captures its target before its dialog; a deletion moves only the tab's selection, never a chat's binding.
 
 ## Recipes
 

@@ -28,6 +28,7 @@
   - `initHotkey`: keydown dispatch switch.
   - `hotkeyMatches`: reads the hotkey only (a missing modifier flag is "not held"); it never writes the stored list.
   - `activeHotkeys`: the stored hotkeys without `scrollToActiveChar` while `enableScrollToActiveChar` is off (the dispatch and `HotkeySettings.svelte` read through it).
+  - Ctrl+1..9 pick the prompt preset through `pickBinding` (`docs/plan/chat-binding.md`): the open chat's binding, else the tab's selection at home; nothing while a picker list or the binding dialog is open.
 - `src/ts/defaulthotkeys.ts`: re-exports `defaultHotkeys` (declared in `shared/hotkeys.ts`) and the `Hotkey` type declared in `shared/settings.ts`.
 - `src/ts/observer.svelte.ts`:
   - `startObserveDom`: idempotent. Adds one `document` `contextmenu` delegate (Copy/Download menu for `x-hl-lang` code blocks) and a `MutationObserver` on `document.body` that syncs BGM from `risu-ctrl="bgm___<volume|auto>___<src>"` markers.
@@ -83,7 +84,7 @@ URL routes (`src/ts/router/`). The stores above stay the state; the router keeps
 - The router does not track its own back: it calls `traverseTo` and ignores the promises; the landing is applied like any `popstate`. Without the Navigation API it never goes back (a close replaces).
 - A layer shown at boot without its base entry beneath (a link, a bookmark, an import that finished before the router started) is stamped `rootPending`; the base entry is inserted under it at the first user activation (trusted capture-phase `keydown` other than Escape, `mousedown`, mouse `pointerdown`, touch or pen `pointerup`, `touchend`, `click`), because Chrome's back button skips entries pushed without one.
 - Store corrections that keep the route run in their own effect: the playground value 2 with nothing selected becomes 1, the settings list on a wide screen becomes the model page, open settings closes the grid.
-- Escape closes settings, else the grid (unless it dismissed an alert).
+- Escape closes the topmost layer only: an alert, else the prompt comparison (`PromptDiffModal`, a capture listener), else a picker list (persona, model preset, prompt preset) or the chat binding dialog (`hotkey.ts` `topBindingLayer`; also from a focused text field), else settings, else the grid.
 
 ## State
 
@@ -101,7 +102,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 - Reload signals:
   - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetTransformEffects` (the script transform's applied emotions, `cbs-rendering.md`).
   - `ReloadChatPointer`.
-- Overlays: `alertStore`, `terminalNotice` (`TerminalNotice.svelte`, a modal dialog above every other overlay), `popupStore`, `popUpEditorStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, `QuickSettings`.
+- Overlays: `alertStore`, `terminalNotice` (`TerminalNotice.svelte`, a modal dialog above every other overlay), `popupStore`, `popUpEditorStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, `QuickSettings`, the picker lists `openPresetList`/`openModelPresetList`/`openPersonaList` (`PickerListState`: `true` for what the screen shows, or `{ chatRef }` for one chat), and `chatBindingDialog` (the chat whose binding dialog is open, or null).
 - Plugin extension arrays (runes): `additionalSettingsMenu`, `additionalFloatingActionButtons`, `additionalHamburgerMenu`, `additionalChatMenu`, `chatPanelStore`, `bodyIntercepterStore`. Types are `MenuDef` and `ChatPanelDef`.
 - Misc: `CustomCSSStore` (its subscriber injects CSS with `innerHTML`), `SafeModeStore`, `CharEmotion`, `ScrollToMessageStore`, `hotReloading`, `disableHighlight`.
 - Root `$effect`: reruns `moduleUpdate` when module, chat, or background dependencies change.
