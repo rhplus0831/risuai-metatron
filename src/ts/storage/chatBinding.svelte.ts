@@ -2,12 +2,13 @@ import { language } from "src/lang";
 import {
     readChatBindingIds,
     resolveChatBinding,
+    type ChatBindingField,
     type ChatBindingIds,
     type ChatBindingLookup,
     type ChatBindingProblem,
     type ChatBindingResult,
 } from "../../../shared/chatBinding.ts";
-import { chatEntry, setChatMeta, type ChatRef } from "./chatStore.svelte";
+import { chatEntry, countChatEntries, setChatMeta, type ChatRef } from "./chatStore.svelte";
 import { trackedRecord, type RecordKind } from "./records.svelte";
 import { tabSelectionIds } from "./settingsViews.svelte";
 
@@ -135,4 +136,25 @@ export function chatBindingPatch(ref: ChatRef, patch: ChatBindingPatch) {
         unset.push("bindingReview");
     }
     setChatMeta(ref, set, unset);
+}
+
+/**
+ * The id a picker marks as chosen: in chat mode (`ref` set) the chat's bound id when it names a record
+ * that exists, else none (the view's tab fallback is not the chat's); at home `viewId`, the tab's
+ * selection the view shows. Tracked.
+ */
+export function pickedId(field: ChatBindingField, ref: ChatRef | null, viewId: string | undefined): string | null {
+    if (!ref) {
+        return viewId ?? null;
+    }
+    const id = chatBindingIds(ref)?.[field] ?? null;
+    return id !== null && chatBindingTargetExists(field, id) ? id : null;
+}
+
+/**
+ * How many chats (of every character, loaded or not, review pending or not) bind `field` to `id`.
+ * Untracked: for a deletion's confirmation.
+ */
+export function chatsBoundTo(field: ChatBindingField, id: string): number {
+    return countChatEntries((entry) => readChatBindingIds(entry)[field] === id);
 }

@@ -4,6 +4,7 @@
     import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { currentChatRef, selectedChat } from "src/ts/storage/chatStore.svelte";
     import { setChatOpen } from "src/ts/storage/selection.svelte";
+    import ChatBindingPanel from "./ChatBindingPanel.svelte";
     import ChatNoteEditor from "./ChatNoteEditor.svelte";
     import Toggles from "./Toggles.svelte";
 
@@ -13,7 +14,8 @@
 
     /*
      * The sidebar's chat tab while a chat is open (`selection.chatOpen`), in place of the chat list:
-     * a way back to the list (the closed-chat screen), the chat's author note, and the toggles.
+     * a way back to the list (the closed-chat screen), the chat's binding (it reads the list entry, so
+     * it shows while the chat loads), the chat's author note, and the toggles.
      */
     let { chara }: Props = $props();
     const currentChat = $derived(selectedChat());
@@ -28,6 +30,10 @@
         <ArrowLeftIcon size={18} />
         <span>{language.goback}</span>
     </button>
+
+    {#if currentRef}
+        <ChatBindingPanel chatRef={currentRef} />
+    {/if}
 
     <!-- The chat's fields wait while the selected chat loads; another chat gets its own editor. -->
     {#if currentChat && currentRef}

@@ -22,6 +22,7 @@
     import RegexList from "src/lib/SideBars/Scripts/RegexList.svelte";
     import SettingRenderer from "../SettingRenderer.svelte";
     import { allBasicParameterItems } from "src/ts/setting/botSettingsParamsData";
+    import BindingScopeNote from "../BindingScopeNote.svelte";
 
     /**
      * The prompt preset's page (`docs/plan/split-preset.md`, slice 4): the selected prompt preset's
@@ -56,6 +57,7 @@
 
 <div class="flex items-center gap-2 mb-4 p-2 rounded-md border border-darkborderc">
     <span class="text-textcolor2 text-sm shrink-0">{language.promptPreset}</span>
+    <BindingScopeNote field="promptPresetId" />
     {#if currentPresetRecord()?.image}
         <img src={currentPresetRecord()?.image} alt="icon" class="w-6 h-6 rounded-md" decoding="async" />
     {/if}
@@ -396,10 +398,16 @@
             <button
                 class="font-medium cursor-pointer hover:text-textcolor"
                 onclick={async () => {
+                    // The shown preset can change while the file dialog is open: the bias goes to this preset.
+                    const presetId = activePreset.id;
                     const sel = await selectSingleFile(["json"]);
-                    const utf8 = new TextDecoder().decode(sel.data);
-                    if (Array.isArray(JSON.parse(utf8))) {
-                        activePreset.bias = JSON.parse(utf8);
+                    if (!sel) {
+                        return;
+                    }
+                    const parsed = JSON.parse(new TextDecoder().decode(sel.data));
+                    const target = settings.presets.find((preset) => preset.id === presetId);
+                    if (Array.isArray(parsed) && target) {
+                        target.bias = parsed;
                     }
                 }}><HardDriveUploadIcon /></button
             >

@@ -7,6 +7,7 @@
         openPresetList,
         openModelPresetList,
         openPersonaList,
+        chatBindingDialog,
         CustomGUISettingMenuStore,
         loadedStore,
         alertStore,
@@ -35,6 +36,7 @@
     import SavePopupIconComp from "./lib/Others/SavePopupIcon.svelte";
     import Botpreset from "./lib/Setting/botpreset.svelte";
     import ListedPersona from "./lib/Setting/listedPersona.svelte";
+    import ChatBindingDialog from "./lib/Others/ChatBindingDialog.svelte";
     import CustomGUISettingMenu from "./lib/Setting/Pages/CustomGUISettingMenu.svelte";
     import { checkCharOrder } from "./ts/globalApi.svelte";
     import { ArrowUpIcon, GlobeIcon, PlusIcon } from "@lucide/svelte";
@@ -273,8 +275,18 @@
     {#if $showRealmInfoStore}
         <RealmPopUp bind:openedData={$showRealmInfoStore} />
     {/if}
+    <!-- Before the picker lists: a list opened from the binding dialog's rows paints on top of it. -->
+    {#if $chatBindingDialog}
+        <ChatBindingDialog
+            chatRef={$chatBindingDialog}
+            close={() => {
+                $chatBindingDialog = null;
+            }}
+        />
+    {/if}
     {#if $openPresetList}
         <Botpreset
+            chatRef={typeof $openPresetList === "object" ? $openPresetList.chatRef : undefined}
             close={() => {
                 $openPresetList = false;
             }}
@@ -283,6 +295,7 @@
     {#if $openModelPresetList}
         <Botpreset
             kind="model"
+            chatRef={typeof $openModelPresetList === "object" ? $openModelPresetList.chatRef : undefined}
             close={() => {
                 $openModelPresetList = false;
             }}
@@ -290,6 +303,7 @@
     {/if}
     {#if $openPersonaList}
         <ListedPersona
+            chatRef={typeof $openPersonaList === "object" ? $openPersonaList.chatRef : undefined}
             close={() => {
                 $openPersonaList = false;
             }}

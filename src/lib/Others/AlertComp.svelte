@@ -815,7 +815,7 @@
                         }}
                     >
                         <div class="flex flex-col justify-start items-start">
-                            <span>{language.bindPersona}</span>
+                            <span>{language.chatBinding.chatSettings}</span>
                         </div>
                         <div class="ml-9 float-right flex-1 flex justify-end">
                             <ChevronRightIcon />

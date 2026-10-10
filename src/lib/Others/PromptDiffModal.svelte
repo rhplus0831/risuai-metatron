@@ -1,6 +1,8 @@
 <script lang="ts">
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { XIcon } from "@lucide/svelte";
+    import { get } from "svelte/store";
+    import { doingAlert, terminalNotice } from "src/ts/alert";
     import { type PromptDiffPrefs } from "../../ts/storage/database.svelte";
     import type {
         PromptItem,
@@ -1241,7 +1243,22 @@
         if (expandedRanges.some((r) => r.scope === scope && r.from === from && r.to === to)) return;
         expandedRanges = [...expandedRanges, { scope, from, to }];
     }
+
+    /**
+     * Escape closes this comparison, the topmost layer, through its own close (which saves the
+     * preferences), and not the preset list under it: caught before the global hotkey listener. An
+     * alert or the terminal notice above it closes first.
+     */
+    function closeOnEscape(event: KeyboardEvent) {
+        if (event.key === "Escape" && !doingAlert() && get(terminalNotice) === null) {
+            event.stopPropagation();
+            event.preventDefault();
+            handleClose();
+        }
+    }
 </script>
+
+<svelte:document onkeydowncapture={closeOnEscape} />
 
 {#snippet pillRadioGroup(
     label: string,

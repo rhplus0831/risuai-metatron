@@ -3,10 +3,12 @@ import { characterList, selectedCharacter } from "./storage/characterStore.svelt
 import { settings } from "./storage/settingsViews.svelte";
 import { get } from "svelte/store";
 import { alertMd, alertSelect, alertToast, alertWait, doingAlert, alertRequestLogs, terminalNotice } from "./alert";
-import { changeToPreset as changeToPreset2 } from "./storage/presets.svelte";
+import { pickBinding } from "./storage/chatBindingPick";
 import {
     alertStore,
+    chatBindingDialog,
     gridOpenStore,
+    openModelPresetList,
     openPersonaList,
     openPresetList,
     OpenRealmStore,
@@ -26,6 +28,14 @@ export function initHotkey() {
     document.addEventListener("keydown", async (ev) => {
         // The terminal notice is a modal dialog with its own keys: no shortcut runs behind it.
         if (get(terminalNotice) !== null) {
+            return;
+        }
+        // Escape closes the topmost picker list or binding dialog also from a text field (a preset's
+        // rename, or the composer that kept the focus); an alert above it closes first (below).
+        const bindingLayer = ev.key === "Escape" && !doingAlert() ? topBindingLayer() : null;
+        if (bindingLayer) {
+            closeBindingLayer(bindingLayer);
+            ev.preventDefault();
             return;
         }
         if (
@@ -251,11 +261,15 @@ export function initHotkey() {
             if (hadAlert) {
                 alertToast("Alert Closed");
             }
-            if (get(settingsOpen)) {
-                settingsOpen.set(false);
-            } else if (get(gridOpenStore) && !hadAlert) {
-                // The character grid closes like settings (its URL is a layer, `router/router.svelte.ts`).
-                gridOpenStore.set(false);
+            // Only the topmost layer closes: the settings and the grid stay under a picker list or the
+            // binding dialog (one without an alert above it closed at the top of this handler).
+            if (topBindingLayer() === null) {
+                if (get(settingsOpen)) {
+                    settingsOpen.set(false);
+                } else if (get(gridOpenStore) && !hadAlert) {
+                    // The character grid closes like settings (its URL is a layer, `router/router.svelte.ts`).
+                    gridOpenStore.set(false);
+                }
             }
             ev.preventDefault();
         }
@@ -385,14 +399,53 @@ function focusQuery(query: string) {
     }
 }
 
+type BindingLayer = "personaList" | "modelPresetList" | "presetList" | "bindingDialog";
+
+/** The topmost open picker list or binding dialog (`App.svelte` mounts the dialog first, then the lists in this order). */
+function topBindingLayer(): BindingLayer | null {
+    if (get(openPersonaList)) {
+        return "personaList";
+    }
+    if (get(openModelPresetList)) {
+        return "modelPresetList";
+    }
+    if (get(openPresetList)) {
+        return "presetList";
+    }
+    if (get(chatBindingDialog)) {
+        return "bindingDialog";
+    }
+    return null;
+}
+
+function closeBindingLayer(layer: BindingLayer) {
+    switch (layer) {
+        case "personaList":
+            openPersonaList.set(false);
+            break;
+        case "modelPresetList":
+            openModelPresetList.set(false);
+            break;
+        case "presetList":
+            openPresetList.set(false);
+            break;
+        case "bindingDialog":
+            chatBindingDialog.set(null);
+            break;
+    }
+}
+
+/** Ctrl+1..9: picks the prompt preset for the open chat's binding, else (home) the tab's selection. */
 function changeToPreset(num: number) {
     // The popup editor writes its draft back to the field it was opened on when it closes; with a
-    // forwarded preset field that is the selected preset, so the selection must not change meanwhile.
-    if (!doingAlert() && !popUpEditorStore.open) {
+    // forwarded preset field that is the shown preset, so it must not change meanwhile. Nothing runs
+    // behind a picker list or the binding dialog, which may be choosing for another chat.
+    if (!doingAlert() && !popUpEditorStore.open && topBindingLayer() === null) {
         let pres = settings.presets;
         if (pres.length > num) {
-            alertToast(`Changed to Preset: ${pres[num].name}`);
-            changeToPreset2(pres[num].id);
+            if (pickBinding("promptPresetId", pres[num].id)) {
+                alertToast(`Changed to Preset: ${pres[num].name}`);
+            }
         }
     }
 }

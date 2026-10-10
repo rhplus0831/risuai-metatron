@@ -13,12 +13,17 @@
     import { onDestroy, onMount } from "svelte";
     import { sleep, sortableOptions } from "src/ts/util";
     import { newPersonaId } from "../../../../shared/presets.ts";
+    import { currentChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatsBoundTo, pickedId } from "src/ts/storage/chatBinding.svelte";
+    import { selectPersona, selection } from "src/ts/storage/selection.svelte";
+    import BindingScopeNote from "../BindingScopeNote.svelte";
 
     let stb: Sortable = null;
     let ele: HTMLDivElement = $state();
     let sorted = $state(0);
-    // Read once per render, not once per row.
-    const selectedPersonaId = $derived(activePersona.id);
+    // Read once per render, not once per row. The ring marks the open chat's bound persona (none
+    // when unset or deleted), else at home the tab's; the editor below edits `activePersona`.
+    const selectedPersonaId = $derived(pickedId("personaId", currentChatRef(), activePersona.id));
     const createStb = () => {
         stb = Sortable.create(ele, {
             // The selection is by id, so a reorder leaves it on the same persona.
@@ -54,7 +59,10 @@
     });
 </script>
 
-<h2 class="mb-2 text-2xl font-bold mt-2">{language.persona}</h2>
+<div class="flex items-center gap-2 mb-2 mt-2">
+    <h2 class="text-2xl font-bold">{language.persona}</h2>
+    <BindingScopeNote field="personaId" />
+</div>
 
 {#key sorted}
     <div
@@ -92,6 +100,8 @@
         <div class="flex justify-center items-center ml-2 mr-2">
             <BaseRoundedButton
                 onClick={async () => {
+                    // The chat a new persona is picked for, read before the dialog (null: the tab's selection).
+                    const target = currentChatRef();
                     const sel = parseInt(await alertSelect([language.createfromScratch, language.importCharacter]));
                     if (sel === 0) {
                         const id = newPersonaId();
@@ -102,7 +112,7 @@
                             personaPrompt: "",
                             note: "",
                         });
-                        changeUserPersona(id);
+                        changeUserPersona(id, target);
                     } else if (sel === 1) {
                         await importUserPersona();
                     }
@@ -177,7 +187,11 @@
                         return;
                     }
                     const { id, name } = target;
-                    const d = await alertConfirm(`${language.removeConfirm}${name}`);
+                    const bound = chatsBoundTo("personaId", id);
+                    const d = await alertConfirm(
+                        `${language.removeConfirm}${name}` +
+                            (bound > 0 ? `\n\n${language.chatBinding.usedByChats(bound)}` : ""),
+                    );
                     if (!d) {
                         return;
                     }
@@ -186,8 +200,9 @@
                     if (index === -1 || personas.length === 1) {
                         return;
                     }
-                    if (activePersona.id === id) {
-                        changeUserPersona(personas.find((persona) => persona.id !== id).id);
+                    // Chats bound to it keep the id and show it as deleted; only the tab's selection moves on.
+                    if (selection.personaId === id) {
+                        selectPersona(personas.find((persona) => persona.id !== id).id);
                     }
                     personas.splice(index, 1);
                 }}>{language.remove}</Button

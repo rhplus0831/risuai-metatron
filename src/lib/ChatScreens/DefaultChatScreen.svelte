@@ -31,7 +31,9 @@
         additionalChatMenu,
         additionalFloatingActionButtons,
         chatPanelStore,
+        chatBindingDialog,
     } from "../../ts/stores.svelte";
+    import { chatBinding } from "../../ts/storage/chatBinding.svelte";
     import { tick } from "svelte";
     import Chat from "./Chat.svelte";
     import { type Message } from "../../ts/storage/database.svelte";
@@ -107,6 +109,11 @@
     );
     // While the selected chat loads (null when it is loaded or nothing is selected).
     let selectedLoad = $derived(selectedChatLoad());
+    // The selected chat cannot be sent until its binding is complete: the send button sets it up.
+    let bindingIncomplete = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref !== null && chatBinding(ref)?.ok === false;
+    });
     let messages = $derived(currentChat?.message ?? []);
 
     function scrollToBottom() {
@@ -215,6 +222,12 @@
         const char = characterOf();
         const cha = findChat(ref)?.message;
         if (!char || !cha) {
+            return;
+        }
+        // An incomplete binding opens its setup before anything is consumed (also for Continue): the
+        // text, the translation draft, and the attachments stay in the composer.
+        if (chatBinding(ref)?.ok === false) {
+            chatBindingDialog.set(ref);
             return;
         }
 
@@ -803,6 +816,20 @@
                         style:height={inputHeight}
                     >
                         <div class="loadmove chat-process-stage-0" class:autoload={autoMode}></div>
+                    </button>
+                {:else if bindingIncomplete}
+                    <!-- Keeps `button-icon-send`: the send hotkey clicks it and opens the setup too. -->
+                    <button
+                        onclick={() => {
+                            const ref = currentChatRef();
+                            if (ref) {
+                                chatBindingDialog.set(ref);
+                            }
+                        }}
+                        class="flex justify-center border-y border-darkborderc items-center text-draculared text-sm p-3 peer-focus:border-textcolor hover:bg-blue-500 hover:text-white transition-colors button-icon-send whitespace-nowrap"
+                        style:height={inputHeight}
+                    >
+                        {language.chatBinding.setUp}
                     </button>
                 {:else}
                     <button

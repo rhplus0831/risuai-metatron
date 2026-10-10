@@ -33,8 +33,11 @@ vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi
 
 import { MODEL_PRESET_DEFAULT_NAME, normalizeModelPreset, normalizeModelProfile } from "../../../shared/presets.ts";
 import { settings, activePreset, activeModelPreset, activeMainProfile } from "src/ts/storage/settingsViews.svelte";
-import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { selectCharacter, selection, selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
+import { chatBinding, chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
+import { chatEntry, deleteChat, selectChat } from "src/ts/storage/chatStore.svelte";
+import { language } from "src/lang";
 import Botpreset from "./botpreset.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
@@ -172,5 +175,192 @@ describe("the prompt preset list", () => {
         flushSync();
         expect(activePreset.id).toBe("p2");
         expect(activeModelPreset.id).toBe("m1");
+    });
+});
+
+// `docs/plan/chat-binding.md`, slice 5 (decision 8): the list picks for the chat the screen shows.
+// With an open chat a pick binds that chat (the tab's selection stays), the highlight is the chat's
+// bound record that exists (none when unset or gone, never the view's tab fallback), and the list
+// names the chat. A list opened for a given chat (`chatRef`) picks for that chat, selected or not,
+// and closes when it is gone. A deletion names how many chats bind the record, leaves those chats
+// as they are, and moves the tab's selection only when it named the record. At home everything is
+// the tab's, as before.
+describe("the lists with a chat open (slice 5)", () => {
+    const chat = (id: string, fields: Record<string, unknown> = {}) => ({
+        id,
+        name: id.toUpperCase(),
+        note: "",
+        localLore: [],
+        message: [{ role: "char", data: "hi", chatId: `m-${id}` }],
+        ...fields,
+    });
+    const refK = { chaId: "c", chatId: "k" };
+    const refJ = { chaId: "c", chatId: "j" };
+
+    /** The tab selects `p1`/`m1`; chat `k` binds `p2`/`m2`, chat `j` binds nothing; `k` is open. */
+    beforeEach(() => {
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    chatPage: 0,
+                    chats: [chat("k", { modelPresetId: "m2", promptPresetId: "p2" }), chat("j")],
+                },
+            ],
+            useLegacyGUI: false,
+            showPromptComparison: true,
+            botPresets: [
+                { id: "p1", name: "Prompt One", temperature: 80 },
+                { id: "p2", name: "Prompt Two", temperature: 50 },
+                { id: "p3", name: "Prompt Three", temperature: 30 },
+            ],
+            modelPresets: [
+                normalizeModelPreset({ name: "Model One", mainSlot: { profileId: "gpt" } }, { id: "m1" }),
+                normalizeModelPreset({ name: "Model Two", mainSlot: { profileId: "claude" } }, { id: "m2" }),
+                normalizeModelPreset({ name: "Model Three", mainSlot: { profileId: "gpt" } }, { id: "m3" }),
+            ],
+            modelProfiles: [
+                normalizeModelProfile({ id: "gpt", name: "GPT", modelId: "gpt4o" }),
+                normalizeModelProfile({ id: "claude", name: "Claude", modelId: "claude" }),
+            ],
+        } as any);
+        selectPreset("p1");
+        selectModelPreset("m1");
+        selectCharacter("c");
+        selectChat("c", "k");
+    });
+
+    afterEach(() => {
+        selectCharacter(null);
+    });
+
+    function renderFor(kind: "prompt" | "model", chatRef?: { chaId: string; chatId: string }) {
+        const close = vi.fn();
+        const target = document.createElement("div");
+        document.body.appendChild(target);
+        mounted.push(mount(Botpreset, { target, props: { kind, close, chatRef } }));
+        flushSync();
+        const rows = () => [...target.querySelectorAll<HTMLButtonElement>("button[draggable]")];
+        const rowNamed = (name: string) => rows().find((entry) => entry.textContent?.includes(name))!;
+        const selectedNames = () =>
+            rows()
+                .filter((row) => row.classList.contains("bg-selected"))
+                .map((row) => row.textContent?.replace(/\s+/g, " ").trim());
+        const icon = (root: Element, name: string) => root.querySelector<HTMLElement>(`.lucide-${name}`)?.parentElement;
+        return { target, close, rows, rowNamed, selectedNames, icon };
+    }
+
+    it("marks the open chat's bound preset, names the chat, and a pick binds the chat, not the tab", () => {
+        const prompt = renderFor("prompt");
+        expect(prompt.target.textContent).toContain(language.chatBinding.forChat("K"));
+        // The view shows the chat's `p2` too, but the highlight is the binding's, not the view's.
+        expect(activePreset.id).toBe("p2");
+        expect(prompt.selectedNames()).toEqual(["2 Prompt Two"]);
+
+        prompt.rowNamed("Prompt Three").click();
+        flushSync();
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "p3", modelPresetId: "m2" });
+        expect(selection.presetId).toBe("p1");
+        expect(activePreset.id).toBe("p3");
+        expect(prompt.close).toHaveBeenCalledTimes(1);
+
+        const model = renderFor("model");
+        expect(model.selectedNames()).toEqual(["Model Two"]);
+        model.rowNamed("Model Three").click();
+        flushSync();
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "p3", modelPresetId: "m3" });
+        expect(selection.modelPresetId).toBe("m1");
+        expect(chatEntry(refJ)).not.toHaveProperty("promptPresetId");
+    });
+
+    it("marks nothing for an unset or gone binding although the view falls back to the tab's preset", () => {
+        selectChat("c", "j");
+        const prompt = renderFor("prompt");
+        expect(activePreset.id).toBe("p1");
+        expect(prompt.selectedNames()).toEqual([]);
+        expect(prompt.target.textContent).toContain(language.chatBinding.forChat("J"));
+
+        chatBindingPatch(refJ, { promptPresetId: "p-gone" });
+        flushSync();
+        expect(prompt.selectedNames()).toEqual([]);
+        chatBindingPatch(refJ, { promptPresetId: "p2" });
+        flushSync();
+        expect(prompt.selectedNames()).toEqual(["2 Prompt Two"]);
+    });
+
+    it("a list opened for a chat picks for that chat, not the open one, and closes when that chat is gone", () => {
+        const prompt = renderFor("prompt", refJ);
+        expect(prompt.target.textContent).toContain(language.chatBinding.forChat("J"));
+        expect(prompt.selectedNames()).toEqual([]);
+        prompt.rowNamed("Prompt Two").click();
+        flushSync();
+        expect(chatEntry(refJ)).toMatchObject({ promptPresetId: "p2" });
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "p2", modelPresetId: "m2" });
+        expect(selection.presetId).toBe("p1");
+        expect(prompt.close).toHaveBeenCalledTimes(1);
+
+        const model = renderFor("model", refJ);
+        deleteChat(refJ);
+        flushSync();
+        expect(model.close).toHaveBeenCalledTimes(1);
+        expect(selection.modelPresetId).toBe("m1");
+    });
+
+    it("at home the list marks and picks the tab's selection and names no chat", () => {
+        selectCharacter(null);
+        const prompt = renderFor("prompt");
+        expect(prompt.target.textContent).not.toContain("For this chat");
+        expect(prompt.selectedNames()).toEqual(["1 Prompt One"]);
+        prompt.rowNamed("Prompt Three").click();
+        flushSync();
+        expect(selection.presetId).toBe("p3");
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "p2" });
+    });
+
+    it("deleting a prompt preset names the chats bound to it, leaves them bound, and moves only a tab selection that named it", async () => {
+        selectPreset("p3");
+        const prompt = renderFor("prompt");
+        mocks.confirm.mockResolvedValueOnce(true);
+        prompt.icon(prompt.rowNamed("Prompt Two"), "trash")!.click();
+        await settle();
+        flushSync();
+        expect(mocks.confirm).toHaveBeenLastCalledWith(
+            `${language.removeConfirm}Prompt Two\n\n${language.chatBinding.usedByChats(1)}`,
+        );
+        expect(settings.presets.map((preset) => preset.id)).toEqual(["p1", "p3"]);
+        // The chat keeps the id (shown as deleted); the tab's `p3` was not the deleted one and stays.
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "p2" });
+        expect(chatBinding(refK)).toMatchObject({ ok: false });
+        expect((chatBinding(refK) as { problems: unknown[] }).problems).toContainEqual({
+            field: "promptPresetId",
+            reason: "gone",
+        });
+        expect(selection.presetId).toBe("p3");
+
+        // The tab's own preset deleted: the selection moves to the first remaining one, the chat is untouched.
+        mocks.confirm.mockResolvedValueOnce(true);
+        prompt.icon(prompt.rowNamed("Prompt Three"), "trash")!.click();
+        await settle();
+        flushSync();
+        expect(mocks.confirm).toHaveBeenLastCalledWith(`${language.removeConfirm}Prompt Three`);
+        expect(settings.presets.map((preset) => preset.id)).toEqual(["p1"]);
+        expect(selection.presetId).toBe("p1");
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "p2" });
+    });
+
+    it("deleting a model preset names the chats bound to it and leaves them bound", async () => {
+        const model = renderFor("model");
+        mocks.confirm.mockResolvedValueOnce(true);
+        model.icon(model.rowNamed("Model Two"), "trash")!.click();
+        await settle();
+        flushSync();
+        expect(mocks.confirm).toHaveBeenLastCalledWith(
+            `${language.removeConfirm}Model Two\n\n${language.chatBinding.usedByChats(1)}`,
+        );
+        expect(settings.modelPresets.map((preset) => preset.id)).toEqual(["m1", "m3"]);
+        expect(chatEntry(refK)).toMatchObject({ modelPresetId: "m2" });
+        expect(selection.modelPresetId).toBe("m1");
     });
 });

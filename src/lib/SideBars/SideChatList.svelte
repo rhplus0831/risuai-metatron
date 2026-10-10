@@ -1,6 +1,5 @@
 <script lang="ts">
     import { type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
-    import { activePersona, currentPersonaRecord } from "src/ts/storage/settingsViews.svelte";
     import { onDestroy, onMount } from "svelte";
     import { v4 } from "uuid";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
@@ -13,17 +12,19 @@
         SplitIcon,
         FolderPlusIcon,
         BookmarkCheckIcon,
+        CircleAlertIcon,
     } from "@lucide/svelte";
 
     import type { Chat, ChatFolder, character, DeepReadonly, groupChat } from "src/ts/storage/database.svelte";
-    import { ReloadGUIPointer } from "src/ts/stores.svelte";
+    import { chatBindingDialog, ReloadGUIPointer } from "src/ts/stores.svelte";
+    import { chatBinding } from "src/ts/storage/chatBinding.svelte";
 
     import CheckInput from "../UI/GUI/CheckInput.svelte";
     import Button from "../UI/GUI/Button.svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
 
     import { exportChat, importChat, exportAllChats } from "src/ts/characters";
-    import { alertChatOptions, alertConfirm, alertError, alertNormal, alertSelect, alertStore } from "src/ts/alert";
+    import { alertChatOptions, alertConfirm, alertError, alertSelect, alertStore } from "src/ts/alert";
     import { findCharacterbyId, sleep, sortableOptions } from "src/ts/util";
     import { bookmarkListOpen } from "src/ts/stores.svelte";
     import { language } from "src/lang";
@@ -69,9 +70,15 @@
         return chat ? ($state.snapshot(chat) as Chat) : null;
     }
 
+    /** Whether a row's chat cannot be sent until its binding is complete (from its list entry). */
+    function bindingIncomplete(chat: ChatListEntry): boolean {
+        return chatBinding({ chaId: chara.chaId, chatId: chat.id })?.ok === false;
+    }
+
     /**
-     * A chat row's options: copy the chat, or bind or unbind the persona. The chat (and its character)
-     * are captured before the dialogs, so a selection change or a reorder meanwhile cannot redirect them.
+     * A chat row's options: copy the chat, or open its binding (chat settings). The chat (and its
+     * character) are captured before the dialogs, so a selection change or a reorder meanwhile cannot
+     * redirect them.
      */
     async function chatOptions(entry: ChatListEntry) {
         const ref = { chaId: chara.chaId, chatId: entry.id };
@@ -90,20 +97,9 @@
                 break;
             }
             case 1: {
-                // The list entry: a chat that is not loaded has its persona binding there too.
-                if (chatEntry(ref)?.bindedPersona) {
-                    const confirm = await alertConfirm(language.doYouWantToUnbindCurrentPersona);
-                    if (confirm && chatEntry(ref)) {
-                        setChatMeta(ref, { bindedPersona: "" });
-                        alertNormal(language.personaUnbindedSuccess);
-                    }
-                } else {
-                    const confirm = await alertConfirm(language.doYouWantToBindCurrentPersona);
-                    if (confirm && chatEntry(ref)) {
-                        setChatMeta(ref, { bindedPersona: activePersona.id });
-                        console.log(currentPersonaRecord());
-                        alertNormal(language.personaBindedSuccess);
-                    }
+                // The binding is in the list entry, so a chat that is not loaded opens too.
+                if (chatEntry(ref)) {
+                    chatBindingDialog.set(ref);
                 }
                 break;
             }
@@ -397,6 +393,15 @@
                                             />
                                         {:else}
                                             <span>{chat.name}</span>
+                                            {#if bindingIncomplete(chat)}
+                                                <span
+                                                    class="ml-1 shrink-0 text-draculared"
+                                                    title={language.chatBinding.incomplete}
+                                                    data-chat-binding-incomplete
+                                                >
+                                                    <CircleAlertIcon size={14} />
+                                                </span>
+                                            {/if}
                                         {/if}
                                         <div class="grow flex justify-end">
                                             <div
@@ -514,6 +519,15 @@
                                 />
                             {:else}
                                 <span>{chat.name}</span>
+                                {#if bindingIncomplete(chat)}
+                                    <span
+                                        class="ml-1 shrink-0 text-draculared"
+                                        title={language.chatBinding.incomplete}
+                                        data-chat-binding-incomplete
+                                    >
+                                        <CircleAlertIcon size={14} />
+                                    </span>
+                                {/if}
                             {/if}
                             <div class="grow flex justify-end">
                                 <div

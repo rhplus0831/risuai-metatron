@@ -3,8 +3,6 @@
     import { alertConfirm, alertError } from "../../ts/alert";
     import { language } from "../../lang";
     import {
-        changeToModelPreset,
-        changeToPreset,
         copyModelPreset,
         copyPreset,
         downloadPreset,
@@ -28,6 +26,10 @@
     import PromptDiffModal from "../Others/PromptDiffModal.svelte";
     import { RISU_PRESET_DRAG_TYPE } from "src/ts/dragTypes";
     import { moveRecordListItem } from "src/ts/storage/records.svelte";
+    import { chatEntry, currentChatRef, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatsBoundTo, pickedId } from "src/ts/storage/chatBinding.svelte";
+    import { pickBinding } from "src/ts/storage/chatBindingPick";
+    import { selectPreset, selection } from "src/ts/storage/selection.svelte";
 
     let editMode = $state(false);
     let isDragging = $state(false);
@@ -37,23 +39,33 @@
         close?: any;
         /** Which presets the list shows: the prompt presets (`settings.presets`) or the model presets. */
         kind?: "prompt" | "model";
+        /** The chat whose binding a pick changes (the binding panel's row); else the open chat, else the tab's selection. */
+        chatRef?: ChatRef;
     }
 
-    let { close = () => {}, kind = "prompt" }: Props = $props();
+    let { close = () => {}, kind = "prompt", chatRef }: Props = $props();
     const isPrompt = $derived(kind === "prompt");
+    const field = $derived<"promptPresetId" | "modelPresetId">(isPrompt ? "promptPresetId" : "modelPresetId");
     /** The listed records: name and id for both kinds, `image` only on a prompt preset. */
     const presets = $derived<{ id: string; name?: string; image?: string }[]>(
         isPrompt ? settings.presets : settings.modelPresets,
     );
+    /** The chat the list picks for (decision 8): the given chat, else the open chat; null at home. */
+    const shownRef = $derived(chatRef ?? currentChatRef());
+    const shownChatName = $derived(shownRef ? chatEntry(shownRef)?.name : undefined);
     // Read once per render, not once per row (the selected index searched the list for every row).
-    const selectedPresetId = $derived(isPrompt ? activePreset.id : activeModelPreset.id);
+    const selectedPresetId = $derived(pickedId(field, shownRef, isPrompt ? activePreset.id : activeModelPreset.id));
 
-    function selectListed(id: string) {
-        if (isPrompt) {
-            changeToPreset(id);
-        } else {
-            changeToModelPreset(id);
+    // A list opened for a chat closes when that chat is gone; it never falls back to the open chat.
+    $effect(() => {
+        if (chatRef && !chatEntry(chatRef)) {
+            close();
         }
+    });
+
+    /** Picks preset `id` for the given chat, else the open chat at this click, else the tab's selection. */
+    function selectListed(id: string): boolean {
+        return pickBinding(field, id, chatRef);
     }
 
     function copyListed(id: string) {
@@ -78,7 +90,10 @@
             alertError(language.errors.onlyOneChat);
             return;
         }
-        const d = await alertConfirm(`${language.removeConfirm}${name}`);
+        const bound = chatsBoundTo(field, id);
+        const d = await alertConfirm(
+            `${language.removeConfirm}${name}` + (bound > 0 ? `\n\n${language.chatBinding.usedByChats(bound)}` : ""),
+        );
         if (!d) {
             return;
         }
@@ -97,9 +112,10 @@
             alertError(language.errors.onlyOneChat);
             return;
         }
-        if (activePreset.id === id) {
+        // Chats bound to it keep the id and show it as deleted; only the tab's selection moves on.
+        if (selection.presetId === id) {
             const next = botPresets.find((entry) => entry.id !== id);
-            changeToPreset(next.id);
+            selectPreset(next.id);
         }
         botPresets.splice(index, 1);
     }
@@ -178,6 +194,9 @@
                 </button>
             </div>
         </div>
+        {#if shownRef}
+            <span class="text-textcolor2 text-sm mb-2">{language.chatBinding.forChat(shownChatName ?? "")}</span>
+        {/if}
         {#each presets as preset, i}
             <div
                 class="w-full transition-all duration-200"
@@ -207,8 +226,7 @@
 
             <button
                 onclick={() => {
-                    if (!editMode) {
-                        selectListed(preset.id);
+                    if (!editMode && selectListed(preset.id)) {
                         close();
                     }
                 }}

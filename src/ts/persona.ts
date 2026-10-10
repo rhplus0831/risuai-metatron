@@ -7,7 +7,8 @@ import { language } from "src/lang";
 import { reencodeImage } from "./process/files/inlays";
 import { PngChunk } from "./pngChunk";
 import { newPersonaId } from "../../shared/presets.ts";
-import { selectPersona } from "./storage/selection.svelte";
+import { pickBinding } from "./storage/chatBindingPick";
+import type { ChatRef } from "./storage/chatStore.svelte";
 import { addPersona } from "./storage/collectionStore.svelte";
 
 /**
@@ -29,13 +30,13 @@ export async function selectUserImg() {
 }
 
 /**
- * Selects persona `id` for this client. The persona fields are forwarded to the selected persona,
- * so nothing is copied.
+ * Picks persona `id` where the screen shows it (decision 8 of `docs/plan/chat-binding.md`): `target`
+ * names the chat, `null` the tab's selection, and `undefined` the open chat now, else (home) the tab's
+ * selection. The persona fields are forwarded to the shown persona, so nothing is copied. Returns
+ * false when nothing changed (the persona or the chat is gone).
  */
-export function changeUserPersona(id: string) {
-    if (settings.personas.some((persona) => persona.id === id)) {
-        selectPersona(id);
-    }
+export function changeUserPersona(id: string, target?: ChatRef | null): boolean {
+    return pickBinding("personaId", id, target);
 }
 
 interface PersonaCard {

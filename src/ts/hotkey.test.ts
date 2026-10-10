@@ -41,10 +41,19 @@ import type { Database } from "./storage/database.svelte";
 import { setRecordWriteListener } from "./storage/records.svelte";
 import { llmSecretState, setMaskedSecrets } from "./storage/llmSecrets.svelte";
 import { maskLlmSecrets } from "../../shared/llmSecrets.ts";
+import { chatEntry, selectChat } from "./storage/chatStore.svelte";
 import { selectCharacter, selectedIndex, selection, selectPreset } from "./storage/selection.svelte";
 import { activePreset, selectedPresetIndex, settings } from "./storage/settingsViews.svelte";
-import { installFlatDatabase } from "./storage/tests/installFlatDatabase";
-import { popUpEditorStore, settingsOpen } from "./stores.svelte";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "./storage/tests/installFlatDatabase";
+import {
+    chatBindingDialog,
+    gridOpenStore,
+    openModelPresetList,
+    openPersonaList,
+    openPresetList,
+    popUpEditorStore,
+    settingsOpen,
+} from "./stores.svelte";
 
 let installed = false;
 
@@ -281,5 +290,183 @@ describe("the previous/next character hotkeys (Phase 6 slice 8)", () => {
         pressChar("[");
         expect(selection.characterId).toBe("b");
         expect(selectedIndex()).toBe(2);
+    });
+});
+
+// `docs/plan/chat-binding.md`, slice 5: Ctrl+1..9 picks the prompt preset for the open chat's binding
+// (the tab's selection stays), else at home for the tab; nothing runs while a picker list or the
+// binding dialog is open. Escape closes only the topmost layer: an alert, else the persona list, the
+// model preset list, the prompt preset list, the binding dialog (in the order `App.svelte` mounts
+// them), else the settings or the grid as before; a list or the dialog closes also from a focused text
+// field, where the other shortcuts stay off.
+describe("the preset hotkeys and Escape with the binding layers (slice 5)", () => {
+    const refK = { chaId: "c", chatId: "k" };
+    const refJ = { chaId: "c", chatId: "j" };
+    const chat = (id: string, fields: Record<string, unknown> = {}) => ({
+        id,
+        name: id.toUpperCase(),
+        note: "",
+        localLore: [],
+        message: [{ role: "char", data: "hi", chatId: `m-${id}` }],
+        ...fields,
+    });
+    const pressPlain = (key: string) =>
+        document.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    const layers = () => ({
+        persona: get(openPersonaList),
+        model: get(openModelPresetList),
+        preset: get(openPresetList),
+        dialog: get(chatBindingDialog),
+        settings: get(settingsOpen),
+        grid: get(gridOpenStore),
+    });
+    const closeAll = () => {
+        openPersonaList.set(false);
+        openModelPresetList.set(false);
+        openPresetList.set(false);
+        chatBindingDialog.set(null);
+        settingsOpen.set(false);
+        gridOpenStore.set(false);
+    };
+
+    /** The tab selects `a`; chat `k` binds `b`, chat `j` binds nothing; `k` is open. */
+    beforeEach(() => {
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    chatPage: 0,
+                    chats: [chat("k", { promptPresetId: "b" }), chat("j")],
+                },
+            ],
+            botPresets: [
+                { id: "a", name: "A", temperature: 80 },
+                { id: "b", name: "B", temperature: 50 },
+                { id: "c", name: "C", temperature: 30 },
+            ],
+        } as unknown as Database);
+        selectPreset("a");
+        selectCharacter("c");
+        selectChat("c", "k");
+        closeAll();
+        vi.mocked(doingAlert).mockReset().mockReturnValue(false);
+    });
+
+    afterEach(() => {
+        closeAll();
+        selectCharacter(null);
+        document.body.replaceChildren();
+    });
+
+    it("Ctrl+N binds the open chat's prompt preset and leaves the tab's selection; at home it selects for the tab", async () => {
+        press("3");
+        await Promise.resolve();
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "c" });
+        expect(chatEntry(refJ)).not.toHaveProperty("promptPresetId");
+        expect(selection.presetId).toBe("a");
+        expect(activePreset.temperature).toBe(30);
+        expect(alertToast).toHaveBeenLastCalledWith("Changed to Preset: C");
+
+        selectCharacter(null);
+        press("2");
+        await Promise.resolve();
+        expect(selection.presetId).toBe("b");
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "c" });
+        expect(alertToast).toHaveBeenCalledTimes(2);
+    });
+
+    it("Ctrl+N does nothing while a picker list or the binding dialog is open", async () => {
+        for (const open of [
+            () => openPresetList.set(true),
+            () => openModelPresetList.set({ chatRef: refJ }),
+            () => openPersonaList.set(true),
+            () => chatBindingDialog.set(refJ),
+        ]) {
+            closeAll();
+            open();
+            press("3");
+            await Promise.resolve();
+            expect(chatEntry(refK)).toMatchObject({ promptPresetId: "b" });
+            expect(selection.presetId).toBe("a");
+            expect(alertToast).not.toHaveBeenCalled();
+        }
+        closeAll();
+        press("3");
+        await Promise.resolve();
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "c" });
+    });
+
+    it("Escape closes one layer per press, from the top: persona list, model list, preset list, dialog, then settings", () => {
+        openPersonaList.set({ chatRef: refJ });
+        openModelPresetList.set(true);
+        openPresetList.set({ chatRef: refK });
+        chatBindingDialog.set(refJ);
+        settingsOpen.set(true);
+
+        pressPlain("Escape");
+        expect(layers()).toEqual({
+            persona: false,
+            model: true,
+            preset: { chatRef: refK },
+            dialog: refJ,
+            settings: true,
+            grid: false,
+        });
+        pressPlain("Escape");
+        expect(layers()).toMatchObject({ model: false, preset: { chatRef: refK }, dialog: refJ, settings: true });
+        pressPlain("Escape");
+        expect(layers()).toMatchObject({ preset: false, dialog: refJ, settings: true });
+        pressPlain("Escape");
+        expect(layers()).toMatchObject({ dialog: null, settings: true });
+        pressPlain("Escape");
+        expect(layers()).toMatchObject({ dialog: null, settings: false });
+        expect(alertToast).not.toHaveBeenCalled();
+    });
+
+    it("Escape leaves the grid under a layer, and closes it once no layer is open", () => {
+        gridOpenStore.set(true);
+        chatBindingDialog.set(refK);
+        pressPlain("Escape");
+        expect(layers()).toMatchObject({ dialog: null, grid: true });
+        pressPlain("Escape");
+        expect(layers()).toMatchObject({ grid: false });
+    });
+
+    it("Escape closes a list or the dialog from a focused text field, where it closes nothing else", () => {
+        const input = document.createElement("input");
+        document.body.appendChild(input);
+        input.focus();
+        expect(document.activeElement).toBe(input);
+        settingsOpen.set(true);
+        openPresetList.set(true);
+        chatBindingDialog.set(refK);
+
+        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+        expect(layers()).toMatchObject({ preset: false, dialog: refK, settings: true });
+        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+        expect(layers()).toMatchObject({ dialog: null, settings: true });
+        // No layer: the focused-input guard keeps Escape away from the settings, as before.
+        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+        expect(layers()).toMatchObject({ settings: true });
+    });
+
+    it("Escape with an alert open closes the alert and leaves the list, the dialog, and the settings", () => {
+        vi.mocked(doingAlert).mockReturnValue(true);
+        settingsOpen.set(true);
+        openPresetList.set({ chatRef: refK });
+        chatBindingDialog.set(refK);
+        pressPlain("Escape");
+        expect(alertToast).toHaveBeenCalledWith("Alert Closed");
+        expect(layers()).toMatchObject({ preset: { chatRef: refK }, dialog: refK, settings: true });
+
+        // Without a layer, an alert and the settings close together, as before.
+        vi.mocked(alertToast).mockClear();
+        closeAll();
+        settingsOpen.set(true);
+        pressPlain("Escape");
+        expect(alertToast).toHaveBeenCalledWith("Alert Closed");
+        expect(layers()).toMatchObject({ settings: false });
     });
 });

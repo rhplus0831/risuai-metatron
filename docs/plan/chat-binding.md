@@ -1,9 +1,8 @@
 # Chat Binding Plan
 
-Status: slices 1–4 done; slices 5–7 planned. Until slice 5 there is no UI
-to bind a chat's model and prompt presets, so chats without them cannot be
-sent (accepted), and the pickers still change only the tab selection (see
-slice 4). Each chat binds its own **model preset**, **prompt preset**,
+Status: slices 1–5 done; slices 6–7 planned. Until slice 6 a new chat
+starts unbound and an imported chat keeps its ids without a review. Each chat
+binds its own **model preset**, **prompt preset**,
 and **persona**, and a chat cannot be sent until all three are bound. This is
 the "Later: per-chat selection" follow-up of [split-preset.md](split-preset.md),
 with one deliberate change: that section sketched a fallback to the tab
@@ -261,8 +260,8 @@ list them all.
   chat) reads the preset-owned variable defaults and module integration from
   its scope too (`getChatVarOf`/`getModules` take an optional scope), so a
   `presetChain` pick's parse uses the picked preset.
-- **Until slice 5** the pickers still change only the tab selection. With a
-  bound field, a list highlights the bound record and a pick changes nothing
+- **Until slice 5** the pickers changed only the tab selection. With a
+  bound field, a list highlighted the bound record and a pick changed nothing
   visible.
 - **Tests** (`src/ts/storage/tests/chatBindingViews.test.ts` and
   `chatBindingReaders.test.ts`):
@@ -311,6 +310,39 @@ list them all.
 - **i18n.** Add strings to `src/lang/en.ts` and `ko.ts`. Retire the
   `bindPersona`/`doYouWantTo(Un)BindCurrentPersona` strings once nothing uses
   them.
+- **As built** (decided while implementing):
+  - **The pick target.** `pickBinding(field, id, target?)`
+    (`src/ts/storage/chatBindingPick.ts`): a `ChatRef` picks for that chat, `null` for the tab
+    selection, and `undefined` for the open chat at the call, else the tab selection at home. A
+    chat's pick sets only that field: the tab selection and `bindingReview` stay. It does nothing
+    (returns false) for a record or chat that is gone. An action with an await before its pick
+    (persona creation) captures the target first. `changeUserPersona(id, target?)` and the
+    Ctrl+1..9 hotkeys go through it. `changeToPreset`/`changeToModelPreset` stay tab-only, and so
+    does the plugin API's `selectedPersona` setter.
+  - **The picker stores carry the chat.** `openPresetList`, `openModelPresetList`, and
+    `openPersonaList` hold `true` (what the screen shows) or `{ chatRef }` (a panel row). In chat
+    mode a list marks the chat's bound id that exists (`pickedId`), never the view's tab fallback,
+    and names the chat. A list opened for a chat closes when that chat is gone. The PersonaSettings
+    icon grid marks the same way; its editor stays on `activePersona`.
+  - **The panel** (`src/lib/SideBars/ChatBindingPanel.svelte`) sits at the top of
+    `OpenChatPanel.svelte` and in a dialog (`src/lib/Others/ChatBindingDialog.svelte`, store
+    `chatBindingDialog`). The dialog is what the send area and the chat list's "Chat settings" open,
+    since the sidebar's panel cannot be opened from code without forcing the sidebar's local state.
+    It is an ordinary overlay mounted before the picker lists, so a list opened from a row paints on
+    top and alerts stay above both. It closes when its chat is gone. Escape closes only the topmost
+    layer (an alert, else the prompt comparison, else a picker list, else the dialog), also from a
+    text field, and Ctrl+1..9 does nothing while a list or the dialog is open.
+  - **The send area.** An incomplete binding turns the send button into "Set up this chat" (it keeps
+    `button-icon-send`, so the send hotkey opens the setup too). `sendMain`, Continue included, checks
+    the binding after the `/command` branch and before it consumes anything, so the text, the
+    translation draft, and the attachments stay.
+  - **Deletion** counts the chats bound to the record over every character's list entries
+    (`chatsBoundTo`, an untracked snapshot), and moves only the tab selection, and only when the
+    selection named the record. `removeModelPreset` keeps its tab-only repair.
+  - The settings headers show `BindingScopeNote` ("This chat" or "Not set for this chat", nothing at
+    home) for the model preset, the prompt preset, and the persona.
+  - The prompt preset's bias import captures the preset id before its file dialog, as its icon
+    import does.
 
 ### 6. New-chat defaults and imports
 

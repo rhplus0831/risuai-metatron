@@ -1,5 +1,5 @@
 import { type AnyClientCharacter, selectedCharacter } from "./storage/characterStore.svelte";
-import { selectedChat } from "./storage/chatStore.svelte";
+import { selectedChat, type ChatRef } from "./storage/chatStore.svelte";
 import { settings, activePreset } from "./storage/settingsViews.svelte";
 import { writable } from "svelte/store";
 import { type simpleCharacterArgument } from "./parser/parser.svelte";
@@ -31,11 +31,18 @@ export const settingsOpen = writable(false);
 export const gridOpenStore = writable(false);
 export const botMakerMode = writable(false);
 export const moduleBackgroundEmbedding = writable("");
+/**
+ * Whether a picker list is open: `true` opens it for what the screen shows (the open chat's binding,
+ * else the tab's selection), `{ chatRef }` for that chat's binding (the binding panel's rows).
+ */
+export type PickerListState = boolean | { chatRef: ChatRef };
 /** The prompt preset list (`botpreset.svelte`, kind `prompt`). */
-export const openPresetList = writable(false);
+export const openPresetList = writable<PickerListState>(false);
 /** The model preset list (`botpreset.svelte`, kind `model`). */
-export const openModelPresetList = writable(false);
-export const openPersonaList = writable(false);
+export const openModelPresetList = writable<PickerListState>(false);
+export const openPersonaList = writable<PickerListState>(false);
+/** The chat whose binding dialog is open (`ChatBindingDialog.svelte`), or null. */
+export const chatBindingDialog = writable<ChatRef | null>(null);
 export const bookmarkListOpen = writable(false);
 export const SettingsMenuIndex = writable(-1);
 export {

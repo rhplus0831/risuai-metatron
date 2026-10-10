@@ -13,6 +13,7 @@
     import ProfileSlotSelect from "./Model/ProfileSlotSelect.svelte";
     import AuxModelSelectors from "./Model/AuxModelSelectors.svelte";
     import ModelMenuTabs from "./Model/ModelMenuTabs.svelte";
+    import BindingScopeNote from "../BindingScopeNote.svelte";
 
     interface Props {
         /** Rendered in the quick settings panel (`QuickSettingsGUI`), outside the settings screen. */
@@ -32,6 +33,7 @@
 
 <div class="flex items-center gap-2 mb-4 p-2 rounded-md border border-darkborderc">
     <span class="text-textcolor2 text-sm shrink-0">{language.modelPreset}</span>
+    <BindingScopeNote field="modelPresetId" />
     <span class="grow truncate">{activeModelPreset.name}</span>
     <Button size="sm" onclick={() => ($openModelPresetList = true)}><ListIcon size={16} /></Button>
 </div>

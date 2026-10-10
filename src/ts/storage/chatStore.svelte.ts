@@ -649,6 +649,24 @@ export function chatEntry(ref: ChatRef): ChatListEntry | undefined {
     return holding?.ids.includes(ref.chatId) ? listEntry(holding, ref.chatId) : undefined;
 }
 
+/**
+ * How many member chats of every held character pass `test`, each by its list entry (loaded or
+ * summary). Untracked: a snapshot for a confirmation, not a live count.
+ */
+export function countChatEntries(test: (entry: ChatListEntry) => boolean): number {
+    return untrack(() => {
+        let count = 0;
+        for (const holding of Object.values(held)) {
+            for (const id of holding.ids) {
+                if (test(listEntry(holding, id))) {
+                    count += 1;
+                }
+            }
+        }
+        return count;
+    });
+}
+
 function listEntry(holding: HeldChats, id: string): ChatListEntry {
     const chat = holding.chats[slot(id)];
     return { id, ...(chat ? metaOf(chat) : (holding.summaries[slot(id)] ?? metaOf({}))) };
