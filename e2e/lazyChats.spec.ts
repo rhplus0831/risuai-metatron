@@ -291,8 +291,9 @@ test("boot holds summaries, chats load when selected, the trim keeps eight idle 
     expect(a.reads.filter((read) => read.chats.length > 0)).toEqual([]);
     const batchesAtBoot = a.batches;
 
-    // Selecting the character loads its selected chat only, and the chat screen shows it.
+    // Selecting the character loads its selected chat only, and its button on the closed chat opens it.
     await a.page.locator(`[data-char-id="${chaId}"]`).first().click();
+    await a.page.getByRole("button", { name: /Open most recent chat/ }).click();
     await a.page.locator(".default-chat-screen").waitFor({ timeout: 20_000 });
     await a.page.waitForTimeout(500);
     view = await store(a.page, chaId);

@@ -8,6 +8,7 @@
     import { createSimpleCharacter, bookmarkListOpen, ScrollToMessageStore } from "src/ts/stores.svelte";
     import { language } from "src/lang";
     import { alertInput } from "src/ts/alert";
+    import { setChatOpen } from "src/ts/storage/selection.svelte";
     import {
         currentChatRef,
         ensureChatLoaded,
@@ -125,6 +126,8 @@
     }
 
     function goToChat(index: number) {
+        // The list can be opened from the closed chat (the chat list's toolbar): the jump opens it.
+        setChatOpen(true);
         ScrollToMessageStore.value = index;
         close();
     }

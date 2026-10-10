@@ -55,7 +55,7 @@ export type PlaygroundTool = keyof typeof PLAYGROUND_TOOLS;
 export type Route =
     | { kind: "home" }
     | { kind: "realm" }
-    /** `chatId` is null for `/chat/:chaId`, which names no chat yet. */
+    /** `chatId` is null for `/chat/:chaId`, the character with no chat open (its closed-chat screen). */
     | { kind: "chat"; chaId: string; chatId: string | null }
     | { kind: "playground" }
     | { kind: "playgroundTool"; tool: PlaygroundTool }

@@ -5,7 +5,7 @@ import { MODEL_SETTINGS_MENU, PROMPT_SETTINGS_MENU } from "../settingsMenu";
 import { findCharacter } from "../storage/characterStore.svelte";
 import { ensureChat, selectChat, selectedChatId } from "../storage/chatStore.svelte";
 import { characterIndex } from "../storage/records.svelte";
-import { selectCharacter, selection } from "../storage/selection.svelte";
+import { selectCharacter, selection, setChatOpen } from "../storage/selection.svelte";
 import {
     formatRoute,
     parseRoute,
@@ -197,12 +197,17 @@ function canonical(path: string): string | null {
     return route ? formatRoute(route) : null;
 }
 
-/** The base route the stores show (tracked). */
+/**
+ * The base route the stores show (tracked). A character whose chat is not open (`selection.chatOpen`)
+ * is `/chat/:chaId`, its closed-chat screen; the playground chat is always open.
+ */
 export function baseRouteOfState(): Route {
     const chaId = selection.characterId;
+    if (chaId === PLAYGROUND_CHA_ID) {
+        return { kind: "playgroundChat", chatId: selectedChatId(chaId) };
+    }
     if (chaId !== null) {
-        const chatId = selectedChatId(chaId);
-        return chaId === PLAYGROUND_CHA_ID ? { kind: "playgroundChat", chatId } : { kind: "chat", chaId, chatId };
+        return { kind: "chat", chaId, chatId: selection.chatOpen ? selectedChatId(chaId) : null };
     }
     const value = playground.current;
     if (value === 0) {
@@ -265,6 +270,8 @@ function applyBase(route: Route) {
             PlaygroundStore.set(chaId === PLAYGROUND_CHA_ID ? 2 : 0);
             OpenRealmStore.set(false);
             selectCharacter(chaId);
+            // After the selection, which closes the chat of a newly selected character.
+            setChatOpen(route.kind === "chat" && route.chatId !== null);
             return;
         }
         case "realm":
@@ -340,9 +347,13 @@ function replaces(from: Route | null, to: Route): boolean {
     if (from === null) {
         return true;
     }
-    // Switching chats within one character.
+    // Switching chats within one character (opening or closing its chat is a step of its own).
     return (
-        (from.kind === "chat" && to.kind === "chat" && from.chaId === to.chaId) ||
+        (from.kind === "chat" &&
+            to.kind === "chat" &&
+            from.chaId === to.chaId &&
+            from.chatId !== null &&
+            to.chatId !== null) ||
         (from.kind === "playgroundChat" && to.kind === "playgroundChat")
     );
 }

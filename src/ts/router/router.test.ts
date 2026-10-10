@@ -35,7 +35,7 @@ import { MODEL_SETTINGS_MENU, PROMPT_SETTINGS_MENU } from "../settingsMenu";
 import { characterList, removeCharacters } from "../storage/characterStore.svelte";
 import * as chat from "../storage/chatStore.svelte";
 import { initializeRecords, takeRecordFields } from "../storage/records.svelte";
-import { selectCharacter, selection } from "../storage/selection.svelte";
+import { selectCharacter, selection, setChatOpen } from "../storage/selection.svelte";
 import { SETTINGS_PAGES } from "./routes";
 import { browserHistory, type HistoryPort, type NavigationLike, type RouteState, startRouter } from "./router.svelte";
 
@@ -294,15 +294,17 @@ describe("boot", () => {
         expect(history.log).toEqual(["replace /realm"]);
     });
 
-    it("R4: completes /chat/:chaId with the selected chat, and falls back from an unknown chat id", () => {
+    it("applies /chat/:chaId as the closed chat, and R4: falls back from an unknown chat id to the open selected chat", () => {
         chat.selectChat("a", "a2");
         let history = start(new FakeHistory([{ path: "/chat/a" }]));
         expect(screen()).toBe("character=a chat=a2 playground=0 realm=false");
-        expect(history.log).toEqual(["replace /chat/a/a2"]);
+        expect(selection.chatOpen).toBe(false);
+        expect(history.log).toEqual(["replace /chat/a"]);
         stop!();
 
         history = start(new FakeHistory([{ path: "/chat/a/missing", state: STATE }]));
         expect(screen()).toBe("character=a chat=a2 playground=0 realm=false");
+        expect(selection.chatOpen).toBe(true);
         expect(history.log).toEqual(["replace /chat/a/a2"]);
     });
 
@@ -333,7 +335,7 @@ describe("boot", () => {
         // The first router is still running.
         selectCharacter("a");
         flushSync();
-        expect(first.log).toEqual(["replace /", "push /chat/a/a1"]);
+        expect(first.log).toEqual(["replace /", "push /chat/a"]);
 
         stop!();
         stop = null;
@@ -341,7 +343,7 @@ describe("boot", () => {
         selectCharacter("b");
         flushSync();
         first.go(-1);
-        expect(first.log).toEqual(["replace /", "push /chat/a/a1"]);
+        expect(first.log).toEqual(["replace /", "push /chat/a"]);
         expect(screen()).toBe("character=b chat=b1 playground=0 realm=false");
 
         const third = start(new FakeHistory([{ path: "/realm" }]));
@@ -380,8 +382,8 @@ describe("the sync effect (R1)", () => {
         flushSync();
         expect(history.log).toEqual([
             "replace /",
-            "push /chat/a/a1",
-            "push /chat/b/b1",
+            "push /chat/a",
+            "push /chat/b",
             "push /",
             "push /realm",
             "push /",
@@ -399,7 +401,7 @@ describe("the sync effect (R1)", () => {
         selectCharacter("b");
         chat.selectChat("b", "b1");
         flushSync();
-        expect(history.log).toEqual(["replace /chat/a/a1", "push /chat/b/b1"]);
+        expect(history.log).toEqual(["replace /chat/a/a1", "push /chat/b"]);
     });
 
     it("replaces a chat switch within one character", () => {
@@ -506,8 +508,8 @@ describe("the sync effect (R1)", () => {
         // The next store change syncs from the URL the history really shows: a push over the stale entry.
         selectCharacter("b");
         flushSync();
-        expect(history.log.slice(2)).toEqual(["push /chat/b/b1"]);
-        expect(history.paths()).toEqual(["/", "/chat/a/a1", "[/chat/b/b1]"]);
+        expect(history.log.slice(2)).toEqual(["push /chat/b"]);
+        expect(history.paths()).toEqual(["/", "/chat/a/a1", "[/chat/b]"]);
     });
 
     it("sets the playground value 2 to 1 when the selection is cleared, and takes one back for it", () => {
@@ -548,6 +550,77 @@ describe("the sync effect (R1)", () => {
         expect(history.log).toEqual(["replace /chat/a/a1", "replace /"]);
         expect(history.paths()).toEqual(["[/]", "/chat/a/a1"]);
         restorePlayground();
+    });
+});
+
+describe("the closed chat", () => {
+    it("opens a chat with a push, replaces a switch while open, and closes with a back to /chat/:chaId", () => {
+        const history = start(new FakeHistory([{ path: "/", state: STATE }]));
+        selectCharacter("a");
+        flushSync();
+        expect(selection.chatOpen).toBe(false);
+        setChatOpen(true);
+        flushSync();
+        chat.selectChat("a", "a2");
+        flushSync();
+        expect(history.log).toEqual(["replace /", "push /chat/a", "push /chat/a/a1", "replace /chat/a/a2"]);
+        const below = history.keyBelow();
+        // The sidebar's Go Back.
+        setChatOpen(false);
+        flushSync();
+        expect(history.log.slice(4)).toEqual([`traverse ${below}`]);
+        history.land(below);
+        flushSync();
+        expect(history.log.slice(5)).toEqual(["replace /chat/a"]);
+        expect(selection.chatOpen).toBe(false);
+        expect(screen()).toBe("character=a chat=a2 playground=0 realm=false");
+    });
+
+    it("applies the browser's back and forward between the closed and the open chat", () => {
+        const history = start(
+            new FakeHistory([
+                { path: "/chat/a", state: STATE },
+                { path: "/chat/a/a2", state: STATE },
+            ]),
+        );
+        expect(selection.chatOpen).toBe(true);
+        history.go(-1);
+        flushSync();
+        expect(selection.chatOpen).toBe(false);
+        expect(screen()).toBe("character=a chat=a2 playground=0 realm=false");
+        history.go(1);
+        flushSync();
+        expect(selection.chatOpen).toBe(true);
+        expect(history.log).toEqual(["replace /chat/a/a2", "replace /chat/a", "replace /chat/a/a2"]);
+    });
+
+    it("closes the chat when another character is selected, and keeps nothing open at home", () => {
+        const history = start(new FakeHistory([{ path: "/chat/a/a1", state: STATE }], { navigation: false }));
+        selectCharacter("b");
+        flushSync();
+        expect(selection.chatOpen).toBe(false);
+        selectCharacter(null);
+        setChatOpen(true);
+        flushSync();
+        expect(selection.chatOpen).toBe(false);
+        expect(history.log).toEqual(["replace /chat/a/a1", "push /chat/b", "push /"]);
+    });
+
+    it("pushes the close when the entry beneath is not the closed chat (a reload on the open chat)", () => {
+        const history = start(new FakeHistory([{ path: "/chat/a/a1", state: STATE }]));
+        setChatOpen(false);
+        flushSync();
+        expect(history.log).toEqual(["replace /chat/a/a1", "push /chat/a"]);
+    });
+
+    it("leaves the playground chat open whatever the flag", () => {
+        const history = start(new FakeHistory([{ path: "/playground/chat/p1", state: STATE }]));
+        expect(selection.chatOpen).toBe(false);
+        setChatOpen(true);
+        flushSync();
+        setChatOpen(false);
+        flushSync();
+        expect(history.log).toEqual(["replace /playground/chat/p1"]);
     });
 });
 
@@ -651,7 +724,7 @@ describe("R4: a removed character", () => {
         selectCharacter("a");
         flushSync();
         expect(screen()).toBe("character=a chat=a1 playground=0 realm=false");
-        expect(history.log).toEqual(["replace /chat/b/b1", "replace /chat/a/a1"]);
+        expect(history.log).toEqual(["replace /chat/b/b1", "replace /chat/a"]);
         restoreCharacters();
     });
 
@@ -1008,16 +1081,16 @@ describe("the sync effect (layers)", () => {
         selectCharacter("b");
         flushSync();
         expect(history.log.slice(1)).toEqual(["replace /characters"]);
-        expect(history.state).toEqual(layer(1, "/chat/b/b1", { rebased: true }));
+        expect(history.state).toEqual(layer(1, "/chat/b", { rebased: true }));
         // A change that keeps the base takes no step.
         chat.selectChat("a", "a2");
         flushSync();
         expect(history.log).toHaveLength(2);
         gridOpenStore.set(false);
         flushSync();
-        expect(history.log.slice(2)).toEqual(["replace /chat/b/b1"]);
+        expect(history.log.slice(2)).toEqual(["replace /chat/b"]);
         expect(history.state).toEqual(STATE);
-        expect(history.paths()).toEqual(["/chat/a/a1", "[/chat/b/b1]"]);
+        expect(history.paths()).toEqual(["/chat/a/a1", "[/chat/b]"]);
         expect(screen()).toBe(CHAT_B);
     });
 
@@ -1045,7 +1118,9 @@ describe("the sync effect (layers)", () => {
         );
         selectCharacter("b");
         flushSync();
+        // A picked again with its chat open: the base beneath again.
         selectCharacter("a");
+        setChatOpen(true);
         flushSync();
         expect(history.log.slice(1)).toEqual(["replace /characters", "replace /characters"]);
         expect(history.state).toEqual(layer(1, "/chat/a/a1", { rebased: true }));
@@ -1068,18 +1143,18 @@ describe("the sync effect (layers)", () => {
         SettingsMenuIndex.set(-1);
         flushSync();
         expect(history.log.slice(1)).toEqual(["replace /settings"]);
-        expect(history.state).toEqual(layer(2, "/chat/b/b1", { rebased: true }));
+        expect(history.state).toEqual(layer(2, "/chat/b", { rebased: true }));
         // The list → a page still pushes; the page → the list replaces (the list beneath names A).
         SettingsMenuIndex.set(DISPLAY);
         flushSync();
         SettingsMenuIndex.set(-1);
         flushSync();
         expect(history.log.slice(2)).toEqual(["push /settings/display", "replace /settings"]);
-        expect(history.state).toEqual(layer(3, "/chat/b/b1", { rebased: true }));
+        expect(history.state).toEqual(layer(3, "/chat/b", { rebased: true }));
         settingsOpen.set(false);
         flushSync();
-        expect(history.log.slice(4)).toEqual(["replace /chat/b/b1"]);
-        expect(history.paths()).toEqual(["/chat/a/a1", "/settings", "/settings", "[/chat/b/b1]"]);
+        expect(history.log.slice(4)).toEqual(["replace /chat/b"]);
+        expect(history.paths()).toEqual(["/chat/a/a1", "/settings", "/settings", "[/chat/b]"]);
     });
 
     it("R3: switching between settings and the grid replaces at the same depth, before any back", () => {
@@ -1261,10 +1336,10 @@ describe("the root insertion (decision 5, H1)", () => {
         // A plugin or the import selects a character before any activation.
         selectCharacter("a");
         flushSync();
-        expect(history.state).toEqual(layer(1, "/chat/a/a1", { rebased: true, rootPending: true }));
+        expect(history.state).toEqual(layer(1, "/chat/a", { rebased: true, rootPending: true }));
         click();
-        expect(history.paths()).toEqual(["/chat/a/a1", "[/characters]"]);
-        expect(history.state).toEqual(layer(1, "/chat/a/a1"));
+        expect(history.paths()).toEqual(["/chat/a", "[/characters]"]);
+        expect(history.state).toEqual(layer(1, "/chat/a"));
     });
 
     it("follows navigator.userActivation where it exists", () => {
@@ -1395,7 +1470,7 @@ describe("defects found at the slice 4 review", () => {
         flushSync();
         settingsOpen.set(true);
         flushSync();
-        expect(history.paths()).toEqual(["/playground", "/chat/a/a1", "[/settings/model]"]);
+        expect(history.paths()).toEqual(["/playground", "/chat/a", "[/settings/model]"]);
         removeCharacters(["a"]);
         flushSync();
         const observed = { screen: screen(), state: history.state };

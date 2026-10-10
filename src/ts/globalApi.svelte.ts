@@ -12,6 +12,7 @@ import { hasher } from "./parser/parser.svelte";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
 import { chatList, currentChatRef, selectChat, selectedChat } from "./storage/chatStore.svelte";
+import { setChatOpen } from "./storage/selection.svelte";
 import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storage/resourceClient";
 import { readAsset, writeAsset } from "./storage/assetClient";
 import { updateAnimationSpeed } from "./gui/animation";
@@ -1329,13 +1330,14 @@ export function foldChatToMessage(targetMessageIdOrIndex: string | number) {
     };
 }
 
-/** Selects a chat of the selected character by id or by its index in the list (per tab). */
+/** Selects a chat of the selected character by id or by its index in the list (per tab), and opens it. */
 export function changeChatTo(IdOrIndex: string | number) {
     const character = selectedCharacter();
     if (!character) {
         return;
     }
     selectChat(character.chaId, IdOrIndex);
+    setChatOpen(true);
     ReloadGUIPointer.set(Math.random());
 }
 

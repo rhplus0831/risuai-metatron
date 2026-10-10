@@ -66,16 +66,17 @@ Inside `DefaultChatScreen.svelte`:
 
 - No selected character (`currentCharacter === undefined`) and `$PlaygroundStore === 0` → `MainMenu`.
 - `$PlaygroundStore > 0` → lazy `PlaygroundMenu`.
+- A character whose chat is not open (`selection.chatOpen` false; not the playground chat) → `ClosedChatScreen` (its name and an "Open most recent chat" button for its selected chat).
 - Otherwise the chat.
 
 URL routes (`src/ts/router/`). The stores above stay the state; the router keeps the URL and the history in sync with them in both directions. Overlays, modals, the side panel, and the sidebar's open state have no route.
 
-- Base routes (a screen of its own): `/` home, `/realm`, `/chat/:chaId/:chatId`, `/playground`, `/playground/:tool`, `/playground/chat/:chatId` (the `§playground` character, `PlaygroundStore` 2).
+- Base routes (a screen of its own): `/` home, `/realm`, `/chat/:chaId` (the closed chat), `/chat/:chaId/:chatId` (the open chat), `/playground`, `/playground/:tool`, `/playground/chat/:chatId` (the `§playground` character, `PlaygroundStore` 2).
 - Layers over a base route: `/characters` (`gridOpenStore`), `/settings` (the list, index -1; on a screen 700 px or wider it is the model page) and `/settings/:page`. Settings wins over the grid, and open settings closes the grid (one layer at a time).
 - Entry state: `{ v: 1, layerDepth, base?, rebased?, rootPending? }`. A layer entry records how many entries it is above its base route and that base, applied first on a reload.
 - Applying a URL (boot and every `popstate`, the router's own back included) sets the stores (a chat calls `selectChat` before `selectCharacter`; `ensureChat` like `changeChar`), then replaces the entry with the canonical path. A URL that names no record is corrected by a replace: an unknown character or slug goes home, an unknown chat id falls back to the character's selected chat.
 - The sync effect runs on a change of the shown route or of the base route under a layer (store changes that keep both take no step) and takes one step:
-  - between base routes: a push; a replace for a chat switch within one character and for a removed character's entry; a back when the Navigation API lists the entry directly beneath with the target URL;
+  - between base routes: a push (opening or closing a chat too); a replace for a chat switch within one character while its chat is open and for a removed character's entry; a back when the Navigation API lists the entry directly beneath with the target URL;
   - a layer opens with a push (a settings page on a narrow screen pushes the list under it); a close goes back to the base entry `layerDepth` beneath when the Navigation API lists it with the base the stores show, else replaces the layer entry with the base;
   - inside settings: the mobile list → a page and the prompt preset → its template push; a desktop page switch replaces; a back to the entry beneath only when it shows the target and the entry is not `rebased`; settings ↔ grid replaces;
   - a base change under an open layer (a grid pick, the Home hotkey in settings) is written into the layer entry and marks it `rebased`, so the close replaces instead of landing on the old base. A landing above depth 1 is marked `rebased` too.
@@ -91,6 +92,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 - `LoadingStatusState`.
 - Navigation:
   - The selected character is not a store here: it is `selection.characterId` (`storage/selection.svelte.ts`: the selected `chaId` per tab, never stored, `null` at home), set with `selectCharacter(chaId)` and read as `selectedCharacter()`; `selectedIndex()` is its index in the list (a removed selected character selects home).
+  - Whether its chat is open: `selection.chatOpen` (per tab, never stored), set with `setChatOpen`. Selecting another character (every entry point: the sidebar, the grid, the home cards, the hotkeys, imports) closes it, so a character starts on its closed-chat screen; `changeChatTo` (the closed-chat button, the chat lists, a new chat, a JSONL chat import) opens it, and so does a bookmark jump; a JSON or HTML chat import only adds to the list. The chat module's `selectChat` only selects. Auto Mode stops at the end of its current send when the chat closes. The selected chat is still selected and loaded while closed, so readers of `selectedChat()` are unaffected; the playground chat ignores the flag.
   - `settingsOpen`, `SettingsMenuIndex` (not reset on close; the router maps it to `/settings/:page`).
   - `gridOpenStore`: the character grid (`GridChars`) in place of the sidebar and chat screen, opened by the sidebar and the home screen, `/characters`.
   - `sideBarStore`, `DynamicGUI`.
@@ -146,7 +148,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 ## Tests
 
 - None cover boot, screen precedence, platform detection, hotkeys, or `Mutex`.
-- `src/ts/router/routes.test.ts`: the route table (every slug both ways, encoding, unknown input). `src/ts/router/router.test.ts`: the router against a fake `HistoryPort` with the real store graph and Svelte effects: boot with and without state, every `popstate` applied, the R1 steps, backs only to a listed entry and never without the Navigation API, no retry of a back that did nothing, the layers (depths, close by back or replace, R3, R6 and `rebased`, the mobile list), the root insertion and its events, and `browserHistory` against happy-dom and a fake Navigation API. `server/src/tests/app.test.ts` covers the client-route fallback.
+- `src/ts/router/routes.test.ts`: the route table (every slug both ways, encoding, unknown input). `src/ts/router/router.test.ts`: the router against a fake `HistoryPort` with the real store graph and Svelte effects: boot with and without state, every `popstate` applied, the R1 steps, backs only to a listed entry and never without the Navigation API, no retry of a back that did nothing, the closed chat (an open pushes, a switch while open replaces, Go Back goes back, a selection closes, the playground ignores it), the layers (depths, close by back or replace, R3, R6 and `rebased`, the mobile list), the root insertion and its events, and `browserHistory` against happy-dom and a fake Navigation API. `server/src/tests/app.test.ts` covers the client-route fallback.
 - Not covered by unit tests: Chrome's skipping of entries pushed without a user activation, and real Navigation API behavior (checked by hand).
 - `src/ts/observer.test.ts` covers `startObserveDom` under happy-dom with an `Audio` stub and fake timers: BGM marker parsing, selection, grace stop, failure and autoplay retry policy, and the delegated code-block menu. Mutation records are delivered with `takeRecords()` because happy-dom's own timer is not faked.
 - `src/lib/UI/mainMenuProjection.test.ts`: the home screen's recent characters (order, tie by name, limit, the trash, `§playground`, and no stamp left out) and the relative-time text.

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { selectedCharacter, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
+    import { type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { activePersona, currentPersonaRecord } from "src/ts/storage/settingsViews.svelte";
     import { onDestroy, onMount } from "svelte";
     import { v4 } from "uuid";
@@ -27,7 +27,6 @@
     import { findCharacterbyId, sleep, sortableOptions } from "src/ts/util";
     import { bookmarkListOpen } from "src/ts/stores.svelte";
     import { language } from "src/lang";
-    import Toggles from "./Toggles.svelte";
     import { changeChatTo, createChatCopyName } from "src/ts/globalApi.svelte";
     import {
         chatEntry,
@@ -43,7 +42,6 @@
         setChatMeta,
     } from "src/ts/storage/chatStore.svelte";
 
-    const currentCharacter = $derived(selectedCharacter());
     /** Sets a chat's folder (null or undefined: no folder) through the chat module. */
     function setChatFolder(chat: ChatListEntry, folderId: string | null | undefined) {
         const ref = { chaId: chara.chaId, chatId: chat.id };
@@ -84,14 +82,11 @@
                 if (!source) {
                     break;
                 }
-                const created = createChat(
+                createChat(
                     ref.chaId,
                     { ...source, name: createChatCopyName(source.name, "Copy", ref.chaId), id: v4() },
                     { index: 0, select: true },
                 );
-                if (selectedCharacter()?.chaId === ref.chaId) {
-                    changeChatTo(created.id);
-                }
                 break;
             }
             case 1: {
@@ -477,7 +472,6 @@
                                                             return;
                                                         }
                                                         deleteChat(ref);
-                                                        changeChatTo(0);
                                                         $ReloadGUIPointer += 1;
                                                     }
                                                 }}
@@ -593,7 +587,6 @@
                                                 return;
                                             }
                                             deleteChat(ref);
-                                            changeChatTo(0);
                                             $ReloadGUIPointer += 1;
                                         }
                                     }}
@@ -673,10 +666,6 @@
                 <FolderPlusIcon size={18} />
             </button>
         </div>
-
-        {#if currentCharacter?.chaId !== "§playground"}
-            <Toggles {chara} />
-        {/if}
     </div>
     {#if chara.type === "group"}
         <div class="flex mt-2 items-center">

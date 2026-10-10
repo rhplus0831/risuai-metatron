@@ -361,8 +361,9 @@ async function seedChat(s: Session, ui: Record<string, unknown>, memory: Record<
     await s.page.locator(`[data-char-id="${chaId}"]`).first().click();
     await s.page.evaluate(
         async ({ chaId, chatId }) => {
-            const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
-            chatStore.selectChat(chaId, chatId);
+            // Selecting a character shows its closed chat; the chat opens like a pick from the list.
+            const { changeChatTo } = await import("/src/ts/globalApi.svelte.ts");
+            changeChatTo(chatId);
         },
         { chaId, chatId },
     );

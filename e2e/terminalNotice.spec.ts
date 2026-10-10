@@ -152,8 +152,9 @@ async function openChat(page: Page, chaId: string, chatId: string) {
     await page.locator(`[data-char-id="${chaId}"]`).first().click();
     await page.evaluate(
         async ({ chaId, chatId }) => {
-            const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
-            chatStore.selectChat(chaId, chatId);
+            // Selecting a character shows its closed chat; the chat opens like a pick from the list.
+            const { changeChatTo } = await import("/src/ts/globalApi.svelte.ts");
+            changeChatTo(chatId);
         },
         { chaId, chatId },
     );
@@ -207,16 +208,19 @@ test("a refused transform shows the notice, no toast; nothing but its own OK end
             body: JSON.stringify({ error: "EpochMismatch", epoch: "epoch-restored" }),
         });
     });
-    const navigationsBefore = s.navigations.length;
     await page.locator(`[data-char-id="${chaId}"]`).first().dispatchEvent("click");
     await page.evaluate(
         async ({ chaId, chatId }) => {
-            const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
-            chatStore.selectChat(chaId, chatId);
+            // Selecting a character shows its closed chat; the chat opens like a pick from the list.
+            const { changeChatTo } = await import("/src/ts/globalApi.svelte.ts");
+            changeChatTo(chatId);
         },
         { chaId, chatId },
     );
     await expect(notice(page)).toBeVisible({ timeout: 20_000 });
+    // Counted from here: selecting the character and opening its chat are router steps (same-document
+    // navigations), not reloads.
+    const navigationsBefore = s.navigations.length;
     expect(refused).toBeGreaterThan(0);
     let state = await noticeState(page);
     expect(state).toMatchObject({ message: NOTICE, modal: true, focusOnOk: true });

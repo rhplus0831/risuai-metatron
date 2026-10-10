@@ -25,6 +25,13 @@ export interface Selection {
      * the list (a removed one makes it `null`).
      */
     characterId: string | null;
+    /**
+     * Whether the selected character's selected chat is open on the chat screen (per tab, never
+     * stored; the URL holds it). Selecting another character closes it, so a character opens on its
+     * closed-chat screen and a chat opens only when the user picks one (`changeChatTo`). Always false
+     * at home. The playground chat ignores it.
+     */
+    chatOpen: boolean;
 }
 
 const STORAGE_KEY = "risu-selection";
@@ -35,6 +42,7 @@ export const selection: Selection = $state({
     personaId: "",
     loreBookPage: 0,
     characterId: null,
+    chatOpen: false,
 });
 
 function save() {
@@ -131,6 +139,9 @@ export function selectCharacter(chaId: string | null) {
         const changed = selection.characterId !== id;
         selection.characterId = id;
         if (changed) {
+            selection.chatOpen = false;
+        }
+        if (changed) {
             for (const listener of [...changeListeners]) {
                 listener();
             }
@@ -146,6 +157,11 @@ export function selectCharacter(chaId: string | null) {
             listener(id);
         }
     });
+}
+
+/** Opens or closes the selected character's selected chat (`selection.chatOpen`); nothing is open at home. */
+export function setChatOpen(open: boolean) {
+    selection.chatOpen = open && untrack(() => selection.characterId) !== null;
 }
 
 /** Selects the character at `index` of the list (-1 or no character there: home). */
@@ -169,5 +185,6 @@ const selectedIndexState = new SelectedIndexState();
 setCharacterMembershipHook(() => {
     if (selection.characterId !== null && untrack(() => characterIndex(selection.characterId)) === -1) {
         selection.characterId = null;
+        selection.chatOpen = false;
     }
 });

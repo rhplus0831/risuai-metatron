@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { selectCharacter } from "src/ts/storage/selection.svelte";
+    import { selectCharacter, selection } from "src/ts/storage/selection.svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
@@ -39,6 +39,7 @@
     import { checkCharOrder, saveAsset } from "src/ts/globalApi.svelte";
     import { alertInput, alertSelect } from "src/ts/alert";
     import SideChatList from "./SideChatList.svelte";
+    import OpenChatPanel from "./OpenChatPanel.svelte";
     import { sideBarSize } from "src/ts/gui/guisize";
     import DevTool from "./DevTool.svelte";
     import QuickSettingsGui from "../Others/QuickSettingsGUI.svelte";
@@ -1049,6 +1050,8 @@
                 <DevTool />
             {:else if $botMakerMode}
                 <CharConfig />
+            {:else if selection.chatOpen}
+                <OpenChatPanel chara={currentCharacter} />
             {:else}
                 <SideChatList chara={currentCharacter} />
             {/if}

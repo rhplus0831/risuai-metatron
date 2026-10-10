@@ -21,7 +21,7 @@ import {
 const KEY = "risu-selection";
 const stored = (storage: Storage) => JSON.parse(storage.getItem(KEY) ?? "null");
 // The in-memory selection also holds the tab's character (Phase 6 slice 5), which is never stored.
-const empty = { presetId: "", modelPresetId: "", personaId: "", loreBookPage: 0, characterId: null };
+const empty = { presetId: "", modelPresetId: "", personaId: "", loreBookPage: 0, characterId: null, chatOpen: false };
 
 /** Runs `run` while both storages throw on every call (a quota error, a denied private mode). */
 function withThrowingStorages(run: () => void) {
@@ -79,6 +79,7 @@ describe("loadSelection", () => {
             personaId: "last-p",
             loreBookPage: 2,
             characterId: null,
+            chatOpen: false,
         });
 
         sessionStorage.setItem(
@@ -92,6 +93,7 @@ describe("loadSelection", () => {
             personaId: "mine-p",
             loreBookPage: 1,
             characterId: null,
+            chatOpen: false,
         });
         // A selection stored before the preset split names no model preset: it starts empty and the
         // views resolve it against the collection.
@@ -103,6 +105,7 @@ describe("loadSelection", () => {
             personaId: "old-p",
             loreBookPage: 0,
             characterId: null,
+            chatOpen: false,
         });
     });
 
@@ -123,6 +126,7 @@ describe("loadSelection", () => {
             personaId: "",
             loreBookPage: 0,
             characterId: null,
+            chatOpen: false,
         });
         localStorage.setItem(KEY, JSON.stringify({ presetId: "ok", personaId: "ok-p", loreBookPage: 1.5 }));
         loadSelection();
@@ -132,6 +136,7 @@ describe("loadSelection", () => {
             personaId: "ok-p",
             loreBookPage: 0,
             characterId: null,
+            chatOpen: false,
         });
         // A junk sessionStorage entry does not hide a good localStorage one.
         sessionStorage.setItem(KEY, "[]");
@@ -143,6 +148,7 @@ describe("loadSelection", () => {
             personaId: "good-p",
             loreBookPage: 3,
             characterId: null,
+            chatOpen: false,
         });
     });
 
@@ -205,6 +211,7 @@ describe("selectPreset, selectModelPreset, selectPersona, and selectLoreBookPage
                 personaId: "u2",
                 loreBookPage: 1,
                 characterId: null,
+                chatOpen: false,
             });
         });
     });

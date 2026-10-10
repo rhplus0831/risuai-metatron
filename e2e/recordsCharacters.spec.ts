@@ -113,6 +113,9 @@ test("the character flows run through the records without an error, save, and su
         const group = createNewGroup();
         byId(group).name = "The group";
         await changeChar(character);
+        // The creator quote is on the chat screen: open the selected chat.
+        const { setChatOpen } = await import("/src/ts/storage/selection.svelte.ts");
+        setChatOpen(true);
         return { alpha: character, group };
     });
     await settle(page);

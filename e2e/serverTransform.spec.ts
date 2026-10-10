@@ -231,8 +231,9 @@ const row = (page: Page, messageId: string) => page.locator(`.risu-chat[data-cha
 const selectChat = (page: Page, chaId: string, chatId: string) =>
     page.evaluate(
         async ({ chaId, chatId }) => {
-            const chatStore = await import("/src/ts/storage/chatStore.svelte.ts");
-            chatStore.selectChat(chaId, chatId);
+            // Selecting a character shows its closed chat; the chat opens like a pick from the list.
+            const { changeChatTo } = await import("/src/ts/globalApi.svelte.ts");
+            changeChatTo(chatId);
         },
         { chaId, chatId },
     );

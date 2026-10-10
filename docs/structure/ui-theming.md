@@ -30,7 +30,7 @@
 Chat:
 
 - `ChatScreen.svelte`: layout theme switch (`waifu`, classic). Mounts `BackgroundDom`, `TransitionImage`, `ResizeBox`, `ChatList`, and the module menu.
-- `DefaultChatScreen.svelte`: input box, send/reroll (see `chat-pipeline.md`), and menus. Chooses home, playground, or chat.
+- `DefaultChatScreen.svelte`: input box, send/reroll (see `chat-pipeline.md`), and menus. Chooses home, playground, the closed chat (`ClosedChatScreen.svelte`, while `selection.chatOpen` is false), or chat.
   - The `metatron` theme adds `metatron-chat-theme` to the chat scroller; `src/styles.css` styles each message (`.risu-chat`) as a card under it. Any other non-`waifu` theme keeps the classic layout.
   - The chat scroller publishes `settings.ui.chatScreenWidth` (Display, default 900) as `--chat-screen-width`. The transcript (`Chats`), the first greeting (`.default-chat-screen > .risu-chat`), the composer, and the rows around them carry `chat-screen-content-width` (`src/styles.css`): one centered column of `min(--chat-screen-width, 100%)`. A new row in the chat scroller gets the class too.
 - `Chats.svelte`: mounts `Chat` instances imperatively, keyed by message hash.
@@ -43,8 +43,9 @@ Chat:
 
 Sidebar:
 
-- `Sidebar.svelte`: character rail and folders (`characterOrder`, drag/drop with the `RISU_*` MIME types, `checkCharOrder`) plus the settings pane (`SideChatList` | `CharConfig` | `DevTool` | `QuickSettingsGUI`).
-- `SideChatList.svelte`: chat list with SortableJS, folders, new/duplicate/delete/import/export, persona binding, and `Toggles`.
+- `Sidebar.svelte`: character rail and folders (`characterOrder`, drag/drop with the `RISU_*` MIME types, `checkCharOrder`) plus the settings pane (`SideChatList` | `OpenChatPanel` | `CharConfig` | `DevTool` | `QuickSettingsGUI`). The chat tab shows `SideChatList` while the chat is closed and `OpenChatPanel` while it is open; the playground chat always shows the list.
+- `SideChatList.svelte`: chat list with SortableJS, folders, new/duplicate/delete/import/export, and persona binding. A row, New Chat, and a JSONL import open the chat (`changeChatTo`); a JSON or HTML import only adds its chats to the list, and a duplicate and a delete leave it closed.
+- `OpenChatPanel.svelte`: the chat tab while a chat is open: Go Back (`setChatOpen(false)`, back to the list and the closed chat), the chat's author note (`ChatNoteEditor.svelte`, which writes only to the chat it was created for and is recreated for another chat: a focused field commits again on `change` while it is removed after a character hotkey), and `Toggles`.
 - `DevTool.svelte`: prompt preview via `sendChat(-1, {preview})`, token counts, and variables.
 - `Toggles.svelte`: global, module, and character toggles (`getModuleToggles`, `parseToggleSyntax`).
 - Also: `SidebarAvatar.svelte`, `SidebarIndicator.svelte`, `BarIcon.svelte` (legacy), `DropList.svelte`.
@@ -128,7 +129,7 @@ Theme and GUI helpers:
 ## Recipes
 
 - Change message rendering: `DefaultChatScreen` props → `Chats.updateChatBody` (hash and props) → `Chat`/`ChatBody`. Verify streaming, reroll, the first greeting, and custom HTML manually.
-- Add a sidebar chat operation: `SideChatList.svelte`, plus `Chat` in `shared/database.ts` if the shape changes. Write through the chat module, select with `changeChatTo`, and bump `ReloadGUIPointer`.
+- Add a sidebar chat operation: `SideChatList.svelte`, plus `Chat` in `shared/database.ts` if the shape changes. Write through the chat module, open a chat with `changeChatTo` (or only select it with `selectChat`), and bump `ReloadGUIPointer`.
 - Add a form primitive: follow the prop convention in `src/lib/UI/GUI/` and add cases to `guiRendering.test.ts`.
 - Add a popup or portal: a store in `stores.svelte.ts`, then the trigger and host (`PopupButton`/`PopupList` or `Portal`). Clean up mounts and listeners.
 

@@ -60,6 +60,8 @@
     import CreatorQuote from "./CreatorQuote.svelte";
     import { stopTTS } from "src/ts/process/tts";
     import MainMenu from "../UI/MainMenu.svelte";
+    import ClosedChatScreen from "./ClosedChatScreen.svelte";
+    import { selection } from "src/ts/storage/selection.svelte";
     import AssetInput from "./AssetInput.svelte";
     import { aiLawApplies, chatFoldedState, chatFoldedStateMessageIndex, downloadFile } from "src/ts/globalApi.svelte";
     import { v4 } from "uuid";
@@ -99,6 +101,10 @@
     let { openModuleList = $bindable(false), openChatList = $bindable(false), customStyle = "" }: Props = $props();
     let currentCharacter = $derived(selectedCharacter());
     let currentChat = $derived(selectedChat());
+    // The chat is on screen: its chat is open, or it is the playground chat (always open).
+    let chatShown = $derived(
+        currentCharacter !== undefined && (selection.chatOpen || currentCharacter.chaId === "§playground"),
+    );
     // While the selected chat loads (null when it is loaded or nothing is selected).
     let selectedLoad = $derived(selectedChatLoad());
     let messages = $derived(currentChat?.message ?? []);
@@ -447,7 +453,8 @@
         autoMode = true;
         while (autoMode) {
             await sendChatMain();
-            if (selectedChar !== selectedCharacter()?.chaId) {
+            // A switched character or a closed chat (Go Back, the browser's back) ends the loop.
+            if (selectedChar !== selectedCharacter()?.chaId || !selection.chatOpen) {
                 autoMode = false;
             }
         }
@@ -614,7 +621,7 @@
         openMenu = false;
     }}
 >
-    {#if showNewMessageButton}
+    {#if showNewMessageButton && chatShown}
         {#if settings.ui.newMessageButtonStyle === "bottom-center" || !settings.ui.newMessageButtonStyle}
             <button
                 class="absolute bottom-16 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-4 py-2 rounded-full shadow-lg z-50 flex items-center gap-2 hover:bg-blue-600 transition-colors"
@@ -690,6 +697,8 @@
                 <PlaygroundMenu />
             {/await}
         {/if}
+    {:else if !chatShown}
+        <ClosedChatScreen character={currentCharacter} />
     {:else if currentChat}
         <div
             class="h-full w-full flex flex-col-reverse overflow-y-auto relative default-chat-screen"
