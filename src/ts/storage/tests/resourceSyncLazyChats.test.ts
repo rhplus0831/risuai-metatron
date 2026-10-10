@@ -256,13 +256,16 @@ describe("live updates of chats that are not loaded", () => {
         selection.selectCharacter("c");
         await settle(fake);
         fake.requests.length = 0;
-        remoteMeta("c", "n0", { name: "N0 remote", folderId: "g" });
+        // The binding fields travel with the summary too (`docs/plan/chat-binding.md`), `false` kept.
+        remoteMeta("c", "n0", { name: "N0 remote", folderId: "g", modelPresetId: "m1", bindingReview: false });
         await settle(fake);
         expect(chat.chatEntry({ chaId: "c", chatId: "n0" })).toEqual({
             id: "n0",
             name: "N0 remote",
             fmIndex: -1,
             folderId: "g",
+            modelPresetId: "m1",
+            bindingReview: false,
         });
         expect(chat.findChat({ chaId: "c", chatId: "n0" })).toBeUndefined();
         expect(chat.heldChatRevision({ chaId: "c", chatId: "n0" })).toBe(fake.chat("c", "n0")!.revision);

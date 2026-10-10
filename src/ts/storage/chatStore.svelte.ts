@@ -195,7 +195,15 @@ export const streamingState = $state({
 });
 
 /** What a chat list shows of a chat (`ChatListEntry` without the id): its summary while it is not loaded. */
-type ChatEntryMeta = { name: string; folderId?: string; bindedPersona?: string; fmIndex: number };
+type ChatEntryMeta = {
+    name: string;
+    folderId?: string;
+    bindedPersona?: string;
+    promptPresetId?: string;
+    modelPresetId?: string;
+    bindingReview?: boolean;
+    fmIndex: number;
+};
 
 /**
  * One character's chats: the ids in order (its membership), the loaded chats by id, and the summaries
@@ -403,6 +411,9 @@ function metaOf(source: {
     name?: unknown;
     folderId?: unknown;
     bindedPersona?: unknown;
+    promptPresetId?: unknown;
+    modelPresetId?: unknown;
+    bindingReview?: unknown;
     fmIndex?: unknown;
 }): ChatEntryMeta {
     const meta: ChatEntryMeta = {
@@ -414,6 +425,15 @@ function metaOf(source: {
     }
     if (typeof source.bindedPersona === "string") {
         meta.bindedPersona = source.bindedPersona;
+    }
+    if (typeof source.promptPresetId === "string") {
+        meta.promptPresetId = source.promptPresetId;
+    }
+    if (typeof source.modelPresetId === "string") {
+        meta.modelPresetId = source.modelPresetId;
+    }
+    if (typeof source.bindingReview === "boolean") {
+        meta.bindingReview = source.bindingReview;
     }
     return meta;
 }
@@ -603,6 +623,9 @@ export type ChatListEntry = {
     name: string;
     folderId?: string;
     bindedPersona?: string;
+    promptPresetId?: string;
+    modelPresetId?: string;
+    bindingReview?: boolean;
     fmIndex: number;
 };
 
@@ -1527,10 +1550,13 @@ const SERVER_META_DEFAULTS: Readonly<Record<string, () => unknown>> = {
  * The chat fields a chat list writes (`ChatListEntry`'s): `setChatMeta` changes them also in a chat
  * that is not loaded (its summary), with the type the summary holds.
  */
-const SUMMARY_FIELD_TYPES: Readonly<Record<string, "string" | "number">> = {
+const SUMMARY_FIELD_TYPES: Readonly<Record<string, "string" | "number" | "boolean">> = {
     name: "string",
     folderId: "string",
     bindedPersona: "string",
+    promptPresetId: "string",
+    modelPresetId: "string",
+    bindingReview: "boolean",
     fmIndex: "number",
 };
 

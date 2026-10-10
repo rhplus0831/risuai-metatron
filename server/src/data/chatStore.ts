@@ -510,6 +510,15 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         if (typeof meta.bindedPersona === "string") {
             summary.bindedPersona = meta.bindedPersona;
         }
+        if (typeof meta.promptPresetId === "string") {
+            summary.promptPresetId = meta.promptPresetId;
+        }
+        if (typeof meta.modelPresetId === "string") {
+            summary.modelPresetId = meta.modelPresetId;
+        }
+        if (typeof meta.bindingReview === "boolean") {
+            summary.bindingReview = meta.bindingReview;
+        }
         return summary;
     }
 

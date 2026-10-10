@@ -1,3 +1,4 @@
+import { DEFAULT_NEW_CHAT_BINDING, isNewChatBinding } from "../../../../shared/chatBinding.ts";
 import { defaultColorScheme } from "../../../../shared/colorScheme.ts";
 import {
     DEFAULT_CHAT_LOAD_ADDITIONAL_PAGES,
@@ -111,6 +112,7 @@ const spec: SectionSpec<"ui"> = {
     chatLoadAdditionalPages: ["number", 15],
     streamingDisplayOptimizationMode: ["string", "off"],
     createFolderOnBranch: ["boolean", true],
+    newChatBinding: ["string", DEFAULT_NEW_CHAT_BINDING],
     hamburgerButtonBottom: ["boolean", false],
     blockquoteStyling: ["boolean"],
     keepSessionAlive: ["string", "off"],
@@ -131,6 +133,9 @@ export function normalizeUi(input: unknown): SectionResource<"ui"> {
     const source = isPlainObject(input) ? input : {};
     if (!isPlainObject(source.customColorScheme) && record.colorSchemeName === "custom") {
         record.customColorScheme = plainClone(record.colorScheme);
+    }
+    if (!isNewChatBinding(record.newChatBinding)) {
+        record.newChatBinding = DEFAULT_NEW_CHAT_BINDING;
     }
     if (isPlainObject(record.customTextTheme)) {
         record.customTextTheme.FontColorQuote1 ??= "#8BE9FD";

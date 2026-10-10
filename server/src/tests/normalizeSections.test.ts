@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_NEW_CHAT_BINDING } from "../../../shared/chatBinding.ts";
 import { defaultColorScheme } from "../../../shared/colorScheme.ts";
 import { normalizeModelProfile } from "../../../shared/presets.ts";
 import { SECTION_FIELDS, type SectionKind } from "../../../shared/sections.ts";
@@ -110,9 +111,13 @@ describe("every section normalizer", () => {
                     continue;
                 }
                 const value = defaults[field];
+                // An enum field keeps only its own values: its valid alternate stands in for the
+                // generated string (`ui.newChatBinding`; the invalid strings are covered under `ui`).
                 const replacement =
                     valueKindOf(value) === "string"
-                        ? `changed-${field}`
+                        ? field === "newChatBinding"
+                            ? "empty"
+                            : `changed-${field}`
                         : valueKindOf(value) === "number"
                           ? 7
                           : valueKindOf(value) === "boolean"
@@ -351,6 +356,17 @@ describe("ui", () => {
         expect(pages("12", "3")).toEqual([30, 15]);
         expect(pages(undefined, null)).toEqual([30, 15]);
         expectIdempotent(normalizeUi, { chatLoadInitialPages: 2.7, chatLoadAdditionalPages: 0.5 });
+    });
+
+    it("keeps newChatBinding when it is one of its two values and replaces any other string, or another kind, with the default `inherit` (docs/plan/chat-binding.md)", () => {
+        expect(normalizeUi(undefined).newChatBinding).toBe(DEFAULT_NEW_CHAT_BINDING);
+        expect(normalizeUi({ newChatBinding: "inherit" }).newChatBinding).toBe("inherit");
+        expect(normalizeUi({ newChatBinding: "empty" }).newChatBinding).toBe("empty");
+        for (const value of ["", "changed-newChatBinding", "Inherit", "tab", 1, true, null, {}, ["empty"]]) {
+            expect(normalizeUi({ newChatBinding: value }).newChatBinding, JSON.stringify(value)).toBe("inherit");
+        }
+        expectIdempotent(normalizeUi, { newChatBinding: "tab" });
+        expectIdempotent(normalizeUi, { newChatBinding: "empty" });
     });
 });
 

@@ -1,6 +1,6 @@
 # Chat Binding Plan
 
-Status: planned. Each chat binds its own **model preset**, **prompt preset**,
+Status: slice 1 done; slices 2–7 planned. Each chat binds its own **model preset**, **prompt preset**,
 and **persona**, and a chat cannot be sent until all three are bound. This is
 the "Later: per-chat selection" follow-up of [split-preset.md](split-preset.md),
 with one deliberate change: that section sketched a fallback to the tab

@@ -2,6 +2,7 @@
 // compile this folder: keep it free of DOM types, runes, enums, and non-relative imports (see
 // `persistence.md`). Never rename persisted keys (STRUCTURE D3).
 
+import type { NewChatBinding } from "./chatBinding.ts";
 import type { LLMFlags, LLMFormat, LLMTokenizer } from "./llm.ts";
 import type {
     HypaModel,
@@ -518,6 +519,8 @@ export interface Database {
     echoMessage?: string;
     echoDelay?: number;
     createFolderOnBranch?: boolean;
+    /** How a new chat starts its binding (`shared/chatBinding.ts`). */
+    newChatBinding?: NewChatBinding;
     hamburgerButtonBottom?: boolean;
     /** The Iris help dialogue (`IrisModal.svelte`); absent until the first line is saved. */
     irisDialogue?: { speaker: string; text: string; tip?: string }[];
@@ -1136,7 +1139,14 @@ export interface Chat {
     scriptstate?: { [key: string]: string | number | boolean };
     modules?: string[];
     id?: string;
+    /** The persona this chat is bound to (`docs/plan/chat-binding.md`; misspelled name kept, D3). */
     bindedPersona?: string;
+    /** The prompt preset this chat is bound to (`presets`). */
+    promptPresetId?: string;
+    /** The model preset this chat is bound to (`modelPresets`). */
+    modelPresetId?: string;
+    /** Set on an imported chat: its binding needs the user's confirmation before it is sent. */
+    bindingReview?: boolean;
     fmIndex?: number;
     hypaV3Data?: SerializableHypaV3Data;
     folderId?: string;

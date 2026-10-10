@@ -275,6 +275,7 @@ export const SECTION_FIELDS = {
         "chatLoadAdditionalPages",
         "streamingDisplayOptimizationMode",
         "createFolderOnBranch",
+        "newChatBinding",
         "hamburgerButtonBottom",
         "blockquoteStyling",
         "keepSessionAlive",

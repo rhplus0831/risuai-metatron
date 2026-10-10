@@ -85,8 +85,9 @@ const settleMicrotasks = async () => {
  * Boots the module from the summaries the way `loadData` does (`readKinds` with `chatSummaries`,
  * `seedChats`, `assembleChats`, `initializeChats`) against a server holding: `c` with chats `k0`
  * (messages A, B, C) to `k14` (one message each; `k1` with `fmIndex` 2, `k3` in folder `f` bound
- * to persona `p`), `d` with chats `m` and `constructor` (an id named like an `Object.prototype`
- * member), and `e` with its only chat `only`. Nothing is selected.
+ * to persona `p`, prompt preset `pp`, and model preset `mp` with its review pending), `d` with chats
+ * `m` and `constructor` (an id named like an `Object.prototype` member), and `e` with its only chat
+ * `only`. Nothing is selected.
  */
 async function boot() {
     vi.resetModules();
@@ -108,7 +109,15 @@ async function boot() {
                             ? [m("a", "A", "char"), m("b", "B"), m("c", "C", "char")]
                             : [m(`k${i}-0`, `K${i} text`)],
                     ...(i === 1 ? { fmIndex: 2 } : {}),
-                    ...(i === 3 ? { folderId: "f", bindedPersona: "p" } : {}),
+                    ...(i === 3
+                        ? {
+                              folderId: "f",
+                              bindedPersona: "p",
+                              promptPresetId: "pp",
+                              modelPresetId: "mp",
+                              bindingReview: true,
+                          }
+                        : {}),
                 }),
             ),
             create("d", "m", { name: "M", message: [m("x", "X")] }),
@@ -262,7 +271,17 @@ describe("the boot from summaries", () => {
         expect(entries).toHaveLength(C_CHATS);
         expect(entries[0]).toEqual({ id: "k0", name: "K0", fmIndex: -1 });
         expect(entries[1]).toEqual({ id: "k1", name: "K1", fmIndex: 2 });
-        expect(entries[3]).toEqual({ id: "k3", name: "K3", fmIndex: -1, folderId: "f", bindedPersona: "p" });
+        // The binding fields are list fields (`docs/plan/chat-binding.md`): on the summary, as stored.
+        expect(entries[3]).toEqual({
+            id: "k3",
+            name: "K3",
+            fmIndex: -1,
+            folderId: "f",
+            bindedPersona: "p",
+            promptPresetId: "pp",
+            modelPresetId: "mp",
+            bindingReview: true,
+        });
         expect(chat.chatCount("c")).toBe(C_CHATS);
         expect(chat.chatsLoaded("c")).toBe(false);
         expect(entries.every((entry) => chat.findChat(ref("c", entry.id)) === undefined)).toBe(true);
@@ -501,40 +520,62 @@ describe("selection", () => {
 
 describe("list-field writes on unloaded chats", () => {
     it("setChatMeta on a summary sets and unsets the list fields, queues one meta op, skips equal values, and the loaded copy shows them later", async () => {
-        const { server, chat, take, commit, reads } = await boot();
+        const { server, chat, take, commit, reads, summaryList } = await boot();
         const target = kRef(5);
         const before = server.chat("c", "k5")!;
-        chat.setChatMeta(target, { name: "Renamed", folderId: "g", bindedPersona: "q", fmIndex: 1 });
-        expect(chat.chatEntry(target)).toEqual({
-            id: "k5",
+        const listFields = {
             name: "Renamed",
             folderId: "g",
             bindedPersona: "q",
+            promptPresetId: "p2",
+            modelPresetId: "m2",
+            bindingReview: false,
             fmIndex: 1,
-        });
+        };
+        chat.setChatMeta(target, listFields);
+        expect(chat.chatEntry(target)).toEqual({ id: "k5", ...listFields });
         expect(chat.findChat(target)).toBeUndefined();
         expect(reads()).toEqual([]);
         expect(chat.hasChatWork()).toBe(true);
         const { work } = commit();
         expect(work.groups).toHaveLength(1);
-        expect(work.groups[0].ops).toEqual([
-            { op: "meta", set: { name: "Renamed", folderId: "g", bindedPersona: "q", fmIndex: 1 }, unset: [] },
-        ]);
+        expect(work.groups[0].ops).toEqual([{ op: "meta", set: listFields, unset: [] }]);
         expect(work.groups[0].baseRevision).toBe(before.revision);
         const after = server.chat("c", "k5")!;
-        expect(after.data).toMatchObject({ name: "Renamed", folderId: "g", bindedPersona: "q", fmIndex: 1 });
+        expect(after.data).toMatchObject(listFields);
+        // The server's summary of the chat lists the same fields (`bindingReview: false` included).
+        expect(summaryList("c").chats.find((summary) => summary.id === "k5")).toEqual({
+            characterId: "c",
+            id: "k5",
+            revision: after.revision,
+            ...listFields,
+        });
         expect(server.texts("c", "k5")).toEqual(["K5 text"]);
         expect(chat.heldChatRevision(target)).toBe(after.revision);
         expect(chat.hasChatWork()).toBe(false);
 
         // Unsets: the server-defaulted fields go to their defaults, the others are removed.
-        chat.setChatMeta(target, {}, ["folderId", "bindedPersona", "name", "fmIndex"]);
+        chat.setChatMeta(target, {}, [
+            "folderId",
+            "bindedPersona",
+            "promptPresetId",
+            "modelPresetId",
+            "bindingReview",
+            "name",
+            "fmIndex",
+        ]);
         expect(chat.chatEntry(target)).toEqual({ id: "k5", name: "", fmIndex: -1 });
         const second = commit();
         expect(second.work.groups[0].ops).toEqual([
-            { op: "meta", set: { name: "", fmIndex: -1 }, unset: ["folderId", "bindedPersona"] },
+            {
+                op: "meta",
+                set: { name: "", fmIndex: -1 },
+                unset: ["folderId", "bindedPersona", "promptPresetId", "modelPresetId", "bindingReview"],
+            },
         ]);
-        expect(server.chat("c", "k5")!.data).not.toHaveProperty("folderId");
+        for (const field of ["folderId", "bindedPersona", "promptPresetId", "modelPresetId", "bindingReview"]) {
+            expect(server.chat("c", "k5")!.data, field).not.toHaveProperty(field);
+        }
         expect(server.chat("c", "k5")!.data.name).toBe("");
         // Equal values queue nothing.
         chat.setChatMeta(target, { name: "", fmIndex: -1 });
@@ -555,6 +596,8 @@ describe("list-field writes on unloaded chats", () => {
         const target = kRef(6);
         expect(() => chat.setChatMeta(target, { name: "X", note: "n" })).toThrow(/not loaded/);
         expect(() => chat.setChatMeta(target, { fmIndex: "1" as any })).toThrow(/number/);
+        expect(() => chat.setChatMeta(target, { bindingReview: "yes" as any })).toThrow(/boolean/);
+        expect(() => chat.setChatMeta(target, { modelPresetId: 1 as any })).toThrow(/string/);
         expect(() => chat.setChatMeta(target, {}, ["note"])).toThrow(/not loaded/);
         expect(() => chat.setChatMeta(ref("c", "nope"), { name: "X" })).toThrow(/No chat/);
         expect(() => chat.appendMessage(target, m("q", "Q"))).toThrow(/No chat/);
@@ -618,7 +661,14 @@ describe("loading", () => {
         const remote = server.chat("c", "k3")!;
         const loaded = await chat.ensureChatLoaded(target);
         // The copy: the local list fields over the read, the read's revision held, the chat stale.
-        expect(loaded).toMatchObject({ name: "Renamed", folderId: "f", bindedPersona: "p" });
+        expect(loaded).toMatchObject({
+            name: "Renamed",
+            folderId: "f",
+            bindedPersona: "p",
+            promptPresetId: "pp",
+            modelPresetId: "mp",
+            bindingReview: true,
+        });
         expect(texts(loaded)).toEqual(["K3 text"]);
         expect(chat.heldChatRevision(target)).toBe(remote.revision);
         expect(chat.idleChatRefreshes()).toEqual([]);
@@ -631,7 +681,14 @@ describe("loading", () => {
         expect(chat.hasChatWork()).toBe(true);
         // The idle refresh accepts the equal revision and repairs the masked field.
         expect(refreshIdle(target)).toBe(true);
-        expect(chat.findChat(target)).toMatchObject({ name: "Renamed", folderId: "f2", bindedPersona: "p" });
+        expect(chat.findChat(target)).toMatchObject({
+            name: "Renamed",
+            folderId: "f2",
+            bindedPersona: "p",
+            promptPresetId: "pp",
+            modelPresetId: "mp",
+            bindingReview: true,
+        });
         expect(chat.idleChatRefreshes()).toEqual([]);
         expect(chat.hasChatWork()).toBe(false);
         expect(server.chat("c", "k3")!.data).toMatchObject({ name: "Renamed", folderId: "f2" });
@@ -786,6 +843,9 @@ describe("eviction", () => {
             fmIndex: -1,
             folderId: "f",
             bindedPersona: "p",
+            promptPresetId: "pp",
+            modelPresetId: "mp",
+            bindingReview: true,
         });
         expect(chat.heldChatRevision(kRef(1))).toBe(revision);
         expect(chat.chatSaveVersion(kRef(1))).toBe(version);

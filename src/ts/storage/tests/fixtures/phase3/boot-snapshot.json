@@ -615,6 +615,7 @@
   "echoMessage": "Echo Message",
   "echoDelay": 0,
   "createFolderOnBranch": true,
+  "newChatBinding": "inherit",
   "hamburgerButtonBottom": false,
   "dynamicModelRegistry": true,
   "saveSignatures": false,

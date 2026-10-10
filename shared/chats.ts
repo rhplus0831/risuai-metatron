@@ -104,6 +104,9 @@ export type ChatSummary = {
     name: string;
     folderId?: string;
     bindedPersona?: string;
+    promptPresetId?: string;
+    modelPresetId?: string;
+    bindingReview?: boolean;
     fmIndex: number;
 };
 

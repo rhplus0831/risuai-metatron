@@ -16,7 +16,18 @@ import { createResourceTestClient, type ResourceTestClient } from "./testSupport
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const characters = kinds.get("characters")!;
-const SUMMARY_KEYS = ["bindedPersona", "characterId", "fmIndex", "folderId", "id", "name", "revision"];
+const SUMMARY_KEYS = [
+    "bindedPersona",
+    "bindingReview",
+    "characterId",
+    "fmIndex",
+    "folderId",
+    "id",
+    "modelPresetId",
+    "name",
+    "promptPresetId",
+    "revision",
+];
 
 const stores: ResourceStore[] = [];
 const servers: ResourceTestClient[] = [];
@@ -45,6 +56,9 @@ const fullChat = (id: string, name: string) => ({
     localLore: [{ key: "k", content: "lore" }],
     folderId: `folder-${id}`,
     bindedPersona: `persona-${id}`,
+    promptPresetId: `prompt-${id}`,
+    modelPresetId: `model-${id}`,
+    bindingReview: true,
     fmIndex: 2,
     hypaV2Data: { lastMainChunkID: 1, mainChunks: [{ text: "memory" }], chunks: [] },
     hypaV3Data: { summaries: [{ text: "summary", chatMemos: [] }], lastSelectedSummaries: [] },
@@ -90,6 +104,9 @@ describe("the store's summary reads", () => {
                 name: "K",
                 folderId: "folder-k",
                 bindedPersona: "persona-k",
+                promptPresetId: "prompt-k",
+                modelPresetId: "model-k",
+                bindingReview: true,
                 fmIndex: 2,
             },
             { characterId: "c", id: "j", revision: result.chats[1].revision, name: "J", fmIndex: -1 },
@@ -104,6 +121,66 @@ describe("the store's summary reads", () => {
         // The optional fields are absent, not null, when the chat has none.
         expect(summaries[1]).not.toHaveProperty("folderId");
         expect(summaries[1]).not.toHaveProperty("bindedPersona");
+        for (const field of ["promptPresetId", "modelPresetId", "bindingReview"]) {
+            expect(summaries[1], field).not.toHaveProperty(field);
+        }
+    });
+
+    it("projects the binding fields (docs/plan/chat-binding.md) as list fields: string ids only, and bindingReview as either boolean", () => {
+        const store = createResourceStore({ file: ":memory:", kinds });
+        stores.push(store);
+        store.applyChanges({
+            ops: [{ kind: characters, id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+            chats: [
+                group("reviewed", [
+                    create({
+                        id: "reviewed",
+                        name: "Reviewed",
+                        modelPresetId: "m1",
+                        promptPresetId: "p1",
+                        bindedPersona: "u1",
+                        bindingReview: false,
+                        message: [],
+                    }),
+                ]),
+                group("malformed", [
+                    create({
+                        id: "malformed",
+                        name: "Malformed",
+                        modelPresetId: 1,
+                        promptPresetId: null,
+                        bindedPersona: ["u1"],
+                        bindingReview: "true",
+                        message: [],
+                    }),
+                ]),
+                group("padded", [
+                    create({ id: "padded", name: "Padded", modelPresetId: " m1 ", promptPresetId: "", message: [] }),
+                ]),
+            ],
+        });
+        const summaries = store.readKinds([characters], { chatSummaries: true }).chatSummaries!;
+        const byId = Object.fromEntries(summaries.map((summary) => [summary.id, summary]));
+        // `false` is kept: a client preserves either boolean and the resolver blocks only on `true`.
+        expect(byId.reviewed).toMatchObject({
+            modelPresetId: "m1",
+            promptPresetId: "p1",
+            bindedPersona: "u1",
+            bindingReview: false,
+        });
+        for (const field of ["modelPresetId", "promptPresetId", "bindedPersona", "bindingReview"]) {
+            expect(byId.malformed, field).not.toHaveProperty(field);
+        }
+        // Stored as sent (D2): the summary does not trim or drop a blank string; the resolver reads it as unset.
+        expect(byId.padded).toMatchObject({ modelPresetId: " m1 ", promptPresetId: "" });
+        expect(byId.padded).not.toHaveProperty("bindedPersona");
+        expect(byId.padded).not.toHaveProperty("bindingReview");
+        for (const summary of summaries) {
+            expect(
+                Object.keys(summary).every((key) => SUMMARY_KEYS.includes(key)),
+                summary.id,
+            ).toBe(true);
+        }
     });
 
     it("refuses chats together with chatSummaries, and answers neither without the options", () => {
@@ -129,6 +206,9 @@ describe("the store's summary reads", () => {
                     name: chat.data.name,
                     ...(chat.data.folderId ? { folderId: chat.data.folderId } : {}),
                     ...(chat.data.bindedPersona ? { bindedPersona: chat.data.bindedPersona } : {}),
+                    ...(chat.data.promptPresetId ? { promptPresetId: chat.data.promptPresetId } : {}),
+                    ...(chat.data.modelPresetId ? { modelPresetId: chat.data.modelPresetId } : {}),
+                    ...(typeof chat.data.bindingReview === "boolean" ? { bindingReview: chat.data.bindingReview } : {}),
                     fmIndex: chat.data.fmIndex ?? -1,
                 })),
             },
@@ -173,6 +253,9 @@ describe("the routes", () => {
                 name: "K",
                 folderId: "folder-k",
                 bindedPersona: "persona-k",
+                promptPresetId: "prompt-k",
+                modelPresetId: "model-k",
+                bindingReview: true,
                 fmIndex: 2,
             },
             { characterId: "c", id: "j", revision: full.chats![1].revision, name: "J", fmIndex: -1 },
@@ -215,6 +298,9 @@ describe("the routes", () => {
                             name: "K",
                             folderId: "folder-k",
                             bindedPersona: "persona-k",
+                            promptPresetId: "prompt-k",
+                            modelPresetId: "model-k",
+                            bindingReview: true,
                             fmIndex: 2,
                         },
                         {
