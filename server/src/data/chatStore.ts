@@ -8,10 +8,13 @@ import type {
     ChatRecord,
     ChatSummary,
     CheckpointOutcome,
+    TranslationOutcome,
 } from "../../../shared/chats.ts";
 import { CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
-import type { Chat } from "../../../shared/database.ts";
+import type { Chat, MessageTranslation } from "../../../shared/database.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import { isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
 import {
     assertPatchableMetaKeys,
@@ -90,7 +93,8 @@ type PreparedOp =
     | { op: "setMessage"; message: PreparedMessage; generation: Generation | null }
     | { op: "setText"; id: string; text: string; generation: Generation | null }
     | { op: "remove"; ids: string[] }
-    | { op: "begin"; id: string; generationId: string };
+    | { op: "begin"; id: string; generationId: string }
+    | { op: "setTranslation"; id: string; translation: MessageTranslation | null };
 
 type PreparedMessage = { id: string; text: string };
 
@@ -132,6 +136,19 @@ type TokenFunctions = {
     parse(value: string): { seq: number; revision: number } | null;
 };
 
+/** JSON with object keys sorted, for comparing stored values whatever their key order. */
+function sortedJson(value: unknown): string {
+    return JSON.stringify(value, (_key, entry: unknown) =>
+        isPlainObject(entry)
+            ? Object.fromEntries(
+                  Object.keys(entry)
+                      .sort()
+                      .map((key) => [key, entry[key]]),
+              )
+            : entry,
+    );
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -144,8 +161,9 @@ function isPositiveSafeInteger(value: unknown): value is number {
     return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
 }
 
+/** Normalizes the JSON copy of a message (what is stored), not the input: an in-process `toJSON` cannot change it after the check. */
 function prepareMessage(input: unknown): PreparedMessage {
-    const message = normalizeMessage(input);
+    const message = normalizeMessage(serialize(input).stored);
     return { id: message.chatId as string, text: serialize(message).text };
 }
 
@@ -154,7 +172,9 @@ function prepareWholeChat(chat: unknown, chatId: string): { meta: string; messag
         throw new ResourceValidationError("chat must be an object");
     }
     const meta = serialize(normalizeChatMeta(chat, chatId)).text;
-    const messages = normalizeMessageList(chat.message).map((message) => ({
+    // The JSON copy of the messages, as `prepareMessage` checks it.
+    const sent = chat.message === undefined ? undefined : serialize(chat.message).stored;
+    const messages = normalizeMessageList(sent).map((message) => ({
         id: message.chatId as string,
         text: serialize(message).text,
     }));
@@ -274,6 +294,28 @@ function prepareOp(raw: unknown, chatId: string): PreparedOp {
                 throw new ResourceValidationError("begin must be { id, generationId }");
             }
             return { op: "begin", id: raw.id, generationId: raw.generationId };
+        case "setTranslation": {
+            // A non-null value is checked as its JSON copy (detached, what is stored), so an in-process
+            // `toJSON` cannot turn a checked value into another one, or into a clear.
+            // A value that is not JSON at all (undefined, a non-finite number) is refused like a wrong shape.
+            let translation: unknown = null;
+            if (raw.translation !== null) {
+                try {
+                    translation = serialize(raw.translation).stored;
+                } catch (error) {
+                    if (!(error instanceof ResourceValidationError)) {
+                        throw error;
+                    }
+                    translation = undefined;
+                }
+            }
+            if (!isValidResourceId(raw.id) || (translation !== null && !isMessageTranslation(translation))) {
+                throw new ResourceValidationError(
+                    "setTranslation must be { id, translation: MessageTranslation | null }",
+                );
+            }
+            return { op: "setTranslation", id: raw.id, translation };
+        }
         default:
             throw new ResourceValidationError(`unknown op ${raw.op}`);
     }
@@ -417,6 +459,7 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
                 break;
             case "setText":
             case "begin":
+            case "setTranslation":
                 messages.add(op.id);
                 break;
             case "remove":
@@ -670,6 +713,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         let applied = 0;
         let messageIds: string[] | undefined;
         const checkpoints: CheckpointOutcome[] = [];
+        const translations: TranslationOutcome[] = [];
         let deleted = false;
         for (const [opIndex, op] of group.ops.entries()) {
             applyingOp = opIndex;
@@ -808,7 +852,19 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     }
                     let text: string;
                     if (op.op === "setMessage") {
-                        text = op.message.text;
+                        // A stored translation is the `setTranslation` op's: the sent message's own (an
+                        // older copy, or none) never replaces or removes it.
+                        const stored = JSON.parse(existing!.data) as Record<string, unknown>;
+                        const message = JSON.parse(op.message.text) as Record<string, unknown>;
+                        if (Object.hasOwn(message, "translation") || Object.hasOwn(stored, "translation")) {
+                            delete message.translation;
+                            if (Object.hasOwn(stored, "translation")) {
+                                message.translation = stored.translation;
+                            }
+                            text = serialize(message).text;
+                        } else {
+                            text = op.message.text;
+                        }
                     } else {
                         const message = JSON.parse(existing!.data) as Record<string, unknown>;
                         message.data = op.text;
@@ -853,6 +909,40 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     applied += 1;
                     break;
                 }
+                case "setTranslation": {
+                    // Not a text write: the generation fence is left as it is.
+                    const existing = selectMessage.get(chatSeq, op.id) as MessageRow | undefined;
+                    if (!existing) {
+                        conflictHere(row);
+                    }
+                    const message = JSON.parse(existing!.data) as Record<string, unknown>;
+                    if (
+                        op.translation !== null &&
+                        (typeof message.data !== "string" ||
+                            translationSourceHash(message.data) !== op.translation.sourceHash)
+                    ) {
+                        // A translation of a text the message no longer holds.
+                        translations.push("ignored");
+                        break;
+                    }
+                    translations.push("applied");
+                    const had = Object.hasOwn(message, "translation");
+                    if (op.translation === null) {
+                        if (!had) {
+                            break;
+                        }
+                        delete message.translation;
+                    } else {
+                        if (had && sortedJson(message.translation) === sortedJson(op.translation)) {
+                            // The same value in any key order: no write, no revision.
+                            break;
+                        }
+                        message.translation = op.translation;
+                    }
+                    setMessageData.run(serialize(message).text, chatSeq, op.id);
+                    applied += 1;
+                    break;
+                }
             }
         }
         let revision: string | null = null;
@@ -873,6 +963,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         }
         if (checkpoints.length > 0) {
             result.checkpoints = checkpoints;
+        }
+        if (translations.length > 0) {
+            result.translations = translations;
         }
         return { result, applied };
     }

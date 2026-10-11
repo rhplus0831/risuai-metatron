@@ -95,7 +95,8 @@ Data and persistence (details: `docs/structure/persistence.md`)
   copied back from an `$effect` can land after a switch). The boot installs the records as the
   server sent them (`initializeRecords`) and does not normalize. Chat and message fields
   are the exception: they are stored as the client sends them (the server normalizer in
-  `server/src/data/chats.ts` fills only `name`, `note`, `localLore`, and `fmIndex`), so readers default a
+  `server/src/data/chats.ts` fills only `name`, `note`, `localLore`, and `fmIndex`, and drops a message
+  `translation` that is not a `MessageTranslation`, as the tab's chat module does), so readers default a
   missing chat field where they read it.
 - D3. Never rename persisted keys, including misspelled ones: `seperateModels`,
   `seperateParameters`, `moduleIntergration`, `PresensePenalty`. Saved databases and shared files

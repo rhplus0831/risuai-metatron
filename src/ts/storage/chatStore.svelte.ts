@@ -17,9 +17,11 @@ import type { StreamingMessage } from "../../../shared/jobs.ts";
 import { readChatBindingIds } from "../../../shared/chatBinding.ts";
 import { compareRevision } from "../../../shared/resources.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { language } from "src/lang";
 import { alertError } from "../alert";
-import type { character, Chat, groupChat, Message } from "./database.svelte";
+import type { character, Chat, groupChat, Message, MessageTranslation } from "./database.svelte";
 import { characterData, setCharacterChatView } from "./records.svelte";
 import { readRefs } from "./resourceClient";
 
@@ -681,8 +683,14 @@ function projectChat(chat: Chat): Chat {
     return copy;
 }
 
-function ensureMessageIds(messages: Message[], taken: Set<string>) {
+/**
+ * Prepares messages the module takes in (owned copies) as the server's `normalizeMessage` stores
+ * them: a missing or duplicate id is assigned, and a `translation` that is not a `MessageTranslation`
+ * is dropped (`dropInvalidTranslation`), so the mirror holds what the server holds.
+ */
+function prepareMessages(messages: Message[], taken: Set<string>) {
     for (const message of messages) {
+        dropInvalidTranslation(message);
         if (!isValidId(message.chatId) || taken.has(message.chatId)) {
             message.chatId = uuidv4();
         }
@@ -1158,6 +1166,7 @@ export function unloadPendingChatWork(limitBytes: number): { body: string; work:
                 op.op !== "append" &&
                 op.op !== "setText" &&
                 op.op !== "setMessage" &&
+                op.op !== "setTranslation" &&
                 op.op !== "meta" &&
                 !(op.op === "remove" && op.ids.length === 1)
             ) {
@@ -1230,7 +1239,7 @@ export function createChat(
         chat.id = uuidv4();
     }
     chat.message ??= [];
-    ensureMessageIds(chat.message, new Set());
+    prepareMessages(chat.message, new Set());
     const index = Math.max(0, Math.min(options.index ?? ids.length, ids.length));
     const created = insertChat(chaId, index, chat);
     const key = keyOf(chaId, chat.id);
@@ -1484,7 +1493,7 @@ export function appendMessage(
 ): string[] {
     const chat = requireChat(ref);
     const messages = clone<Message[]>(Array.isArray(input) ? input : [input as DeepReadonly<Message>]);
-    ensureMessageIds(messages, new Set(chat.message.map((message) => message.chatId!)));
+    prepareMessages(messages, new Set(chat.message.map((message) => message.chatId!)));
     const anchor = ownAnchor(options.anchor ?? { end: true });
     let position: number;
     if ("start" in anchor) {
@@ -1513,6 +1522,12 @@ export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
         throw new Error(`No message ${message.chatId}`);
     }
     assertUnlocked(ref, [message.chatId]);
+    // The stored translation stays (the server's `setMessage` keeps it); `setMessageTranslation` changes it.
+    delete message.translation;
+    const current = chat.message[index].translation;
+    if (current !== undefined) {
+        message.translation = clone<MessageTranslation>(current);
+    }
     chat.message[index] = message;
     changed(keyOf(ref.chaId, ref.chatId));
     enqueue(ref, { op: "setMessage", message: clone(message) });
@@ -1531,6 +1546,43 @@ export function setMessageText(ref: ChatRef, id: string, text: string) {
         changed(keyOf(ref.chaId, ref.chatId));
     }
     enqueue(ref, { op: "setText", id, text });
+}
+
+/**
+ * Sets (or with `null` clears) a message's stored translation (`docs/plan/translation.md`). A
+ * translation whose `sourceHash` does not match the message's current text is not taken: nothing
+ * changes and false is returned. True means taken here and queued, not saved: the server ignores it
+ * when its copy of the text differs by then (`ChatGroupResult.translations`).
+ */
+export function setMessageTranslation(
+    ref: ChatRef,
+    id: string,
+    translation: DeepReadonly<MessageTranslation> | null,
+): boolean {
+    const chat = requireChat(ref);
+    const index = indexOfMessage(chat, id);
+    if (index === -1) {
+        throw new Error(`No message ${id}`);
+    }
+    // Checked as its JSON copy (what the mirror and the queue hold), never as the caller's object.
+    const value = translation === null ? null : clone<MessageTranslation>(translation);
+    if (value !== null && !isMessageTranslation(value)) {
+        throw new Error("Not a message translation");
+    }
+    assertUnlocked(ref, [id]);
+    const message = chat.message[index];
+    if (value !== null && value.sourceHash !== translationSourceHash(message.data)) {
+        return false;
+    }
+    if (value === null) {
+        delete message.translation;
+    } else {
+        message.translation = clone(value);
+    }
+    changed(keyOf(ref.chaId, ref.chatId));
+    // Never coalesced: a set lands only on a matching text, so dropping an earlier op could change the result.
+    enqueue(ref, { op: "setTranslation", id, translation: value });
+    return true;
 }
 
 /** Removes messages by id. Removing several needs the chat's current revision on the server. */
@@ -1685,7 +1737,7 @@ export function replaceChat(ref: ChatRef, input: DeepReadonly<Chat>) {
     chat.id = ref.chatId;
     prepareChatInput(chat, character);
     chat.message ??= [];
-    ensureMessageIds(chat.message, new Set());
+    prepareMessages(chat.message, new Set());
     delete chat.isStreaming;
     delete chat.activeStreamingDisplayOptimizationMode;
     holdingOf(ref.chaId).chats[slot(ref.chatId)] = chat;
@@ -1736,7 +1788,7 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     prepareChatInput(next, requireCharacter(ref.chaId));
     next.message ??= [];
     const baseMessages = new Map(baseline.chat.message.map((message) => [message.chatId!, message]));
-    ensureMessageIds(next.message, new Set());
+    prepareMessages(next.message, new Set());
     for (const message of next.message) {
         // A new message may not reuse an id the chat already has.
         if (!baseMessages.has(message.chatId!) && indexOfMessage(current, message.chatId!) !== -1) {
@@ -2105,7 +2157,7 @@ function prepareCharacterChats(chats: Chat[], character: { firstMsgIndex?: unkno
         }
         ids.add(chat.id);
         chat.message ??= [];
-        ensureMessageIds(chat.message, new Set());
+        prepareMessages(chat.message, new Set());
         delete chat.isStreaming;
         delete chat.activeStreamingDisplayOptimizationMode;
     }
@@ -2167,7 +2219,7 @@ export function normalizeNewCharacter(chaId: string) {
     for (const chat of chatsOf(chaId)) {
         prepareChatInput(chat, character);
         chat.message ??= [];
-        ensureMessageIds(chat.message, new Set());
+        prepareMessages(chat.message, new Set());
     }
     mutationToken += 1;
     syncSelection(chaId);
@@ -2395,6 +2447,7 @@ function canonicalChat(chat: Chat): string {
     copy.note ??= "";
     copy.localLore ??= [];
     copy.fmIndex ??= -1;
+    copy.message?.forEach((message) => dropInvalidTranslation(message));
     return canonical(copy);
 }
 
@@ -2538,7 +2591,7 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
     const rename = (id: string) => firstRename.get(id) ?? id;
     const entry = pending.get(group.key);
     for (const op of entry?.ops ?? []) {
-        if (op.op === "setText") {
+        if (op.op === "setText" || op.op === "setTranslation") {
             op.id = rename(op.id);
         } else if (op.op === "setMessage") {
             op.message = { ...op.message, chatId: rename(op.message.chatId!) };

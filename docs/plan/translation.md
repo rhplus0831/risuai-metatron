@@ -1,6 +1,6 @@
 # Translation Plan
 
-Status: planned (2026-10-11). Nothing built yet. No open questions.
+Status: slice 1.1 done (2026-10-11). No open questions.
 
 Bring the useful part of the Fastify fork's translation work into metatron:
 translations stored on the message, per-chat translation settings, automatic
@@ -98,10 +98,12 @@ interface MessageTranslation {
 }
 ```
 
-- `translationSourceHash(text)` in `shared/translation/hash.ts`: a synchronous,
-  non-cryptographic 64-bit hash (for example FNV-1a or cyrb53). It must not
-  use `crypto.subtle`: the tab runs it while rendering, and `crypto.subtle`
-  is missing on plain-HTTP origins.
+- `translationSourceHash(text)` in `shared/translation/hash.ts`: cyrb53 with
+  seed 0 over the UTF-16 code units, a 53-bit value written as 14 hex digits.
+  It is synchronous and non-cryptographic. It must not use `crypto.subtle`:
+  the tab runs it while rendering, and `crypto.subtle` is missing on
+  plain-HTTP origins. The algorithm is pinned: changing it makes every stored
+  translation stale.
 - `storedTranslation(message)`: the text when `sourceHash` matches the
   current `data`, else `null`. This read-time check is the only freshness
   rule. No edit path has to remember to clear the field, so server-side edits
@@ -111,12 +113,18 @@ interface MessageTranslation {
   (`shared/chats.ts` `ChatOp`, `server/src/data/chatStore.ts`). It applies only
   when `translation` is null, or when its `sourceHash` matches the stored
   message's current `data`. Otherwise it is `ignored`, so a translation of a
-  text that was edited meanwhile never lands.
-- `setMessage` keeps the stored `translation` when the incoming message has
-  no `translation` key. Only `setTranslation` and `replace` change it. This
-  stops a tab that writes a whole message from a copy older than the
-  translation from dropping it. `setText` leaves it alone (it goes stale by
-  hash).
+  text that was edited meanwhile never lands. The group result reports each
+  one (`translations`: `applied` or `ignored`). The tab never coalesces these
+  ops, since dropping an earlier one could change the result.
+- `setMessage` never changes a stored `translation`: the stored one (or its
+  absence) replaces whatever the sent message carries. Only `setTranslation`
+  and `replace` change it, and `create` / `append` can start one. This stops
+  a tab that writes a whole message from a copy older than the translation
+  from dropping it or putting an older one back. `setText` leaves it alone (it
+  goes stale by hash).
+- A `translation` that is not a `MessageTranslation` (including a Fastify
+  one) is dropped, not refused, by the server's `normalizeMessage` and by the
+  tab's chat module when it takes messages in, so both hold the same copy.
 - Chat fields (phase 2), stored as sent like the binding fields (D2), and
   read as unset when missing:
   `translatorPresetId?: string`, `autoTranslate?: boolean`,

@@ -1,4 +1,4 @@
-import type { Chat, Message } from "./database.ts";
+import type { Chat, Message, MessageTranslation } from "./database.ts";
 
 /**
  * The chat wire contract (Phase 2 of `docs/plan/PLAN.md`). A chat is stored as its metadata plus
@@ -52,7 +52,14 @@ export type ChatOp =
     | { op: "setMessage"; message: Message; generation?: MessageGeneration }
     | { op: "setText"; id: string; text: string; generation?: MessageGeneration }
     | { op: "remove"; ids: string[] }
-    | { op: "begin"; id: string; generationId: string };
+    | { op: "begin"; id: string; generationId: string }
+    /**
+     * Sets or clears a message's stored translation (`docs/plan/translation.md`). A translation lands
+     * only while its `sourceHash` matches the message's current `data`, else the op is `ignored`
+     * (`ChatGroupResult.translations`); `null` always clears. The only op besides `replace` that
+     * changes a stored translation (`setMessage` keeps it).
+     */
+    | { op: "setTranslation"; id: string; translation: MessageTranslation | null };
 
 /** Every change to one chat in one batch. `baseRevision` is null only for a group starting with `create`. */
 export type ChatGroup = { characterId: string; chatId: string; baseRevision: string | null; ops: ChatOp[] };
@@ -67,6 +74,12 @@ export type ChatOrderChange = { characterId: string; baseRevision: string; ids: 
  */
 export type CheckpointOutcome = "applied" | "duplicate" | "ignored";
 
+/**
+ * What a `setTranslation` did: `applied` (stored, cleared, or already stored as given) or `ignored`
+ * (the message's text no longer matches the translation's `sourceHash`).
+ */
+export type TranslationOutcome = "applied" | "ignored";
+
 export type ChatGroupResult = {
     characterId: string;
     id: string;
@@ -76,6 +89,8 @@ export type ChatGroupResult = {
     messageIds?: string[];
     /** One entry per op carrying a `generation`, in op order. */
     checkpoints?: CheckpointOutcome[];
+    /** One entry per `setTranslation` op, in op order. */
+    translations?: TranslationOutcome[];
     /**
      * The group was applied on an older revision (by-id ops allow that): the chat holds changes the
      * client has not seen. The client keeps its older base until an idle read refreshes the mirror

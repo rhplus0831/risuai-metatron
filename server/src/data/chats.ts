@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CHAT_META_FORBIDDEN_KEYS, MAX_TOOL_CALL_RECORD_BYTES } from "../../../shared/chats.ts";
 import { isToolContentEntry } from "../../../shared/llm/validate.ts";
+import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { isValidResourceId, ResourceValidationError } from "./resourceStore.ts";
 
 /**
@@ -105,7 +106,11 @@ export function assertPatchableMetaKeys(keys: readonly string[]) {
     }
 }
 
-/** One message as stored: a `user` or `char` role, string `data`, and a valid `chatId`. */
+/**
+ * One message as stored: a `user` or `char` role, string `data`, and a valid `chatId`. A `translation`
+ * that is not a `MessageTranslation` is dropped (a copy without it is returned), never refused: an
+ * imported chat keeps its messages (the tab's chat module drops it the same way, `prepareMessages`).
+ */
 export function normalizeMessage(input: unknown): Record<string, unknown> {
     if (!isPlainObject(input)) {
         throw new ResourceValidationError("message must be an object");
@@ -118,6 +123,11 @@ export function normalizeMessage(input: unknown): Record<string, unknown> {
     }
     if (!isValidResourceId(input.chatId)) {
         throw new ResourceValidationError("message.chatId must be a valid id");
+    }
+    if (Object.hasOwn(input, "translation") && !isMessageTranslation(input.translation)) {
+        const message = { ...input };
+        dropInvalidTranslation(message);
+        return message;
     }
     return input;
 }

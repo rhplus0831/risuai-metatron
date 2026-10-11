@@ -6,7 +6,10 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp, ChatRecord } from "../../../shared/chats.ts";
+import type { MessageTranslation } from "../../../shared/database.ts";
 import type { BatchConflict } from "../../../shared/resources.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { CHAT_TABLES_SQL, MAX_GENERATION_HISTORY } from "../data/chatStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
@@ -1650,5 +1653,312 @@ describe("meta merge (slice 11b)", () => {
         expect(snapshotState(store)).toBe(before);
         expect(store.writeCount()).toBe(writes);
         expect(text(store, "k", "a")).toBe("A");
+    });
+});
+
+describe("message translations (translation slice 1.1)", () => {
+    const tr = (text: string, source: string, extra: Partial<MessageTranslation> = {}): MessageTranslation => ({
+        text,
+        sourceHash: translationSourceHash(source),
+        targetLanguage: "ko",
+        translatedAt: 1,
+        ...extra,
+    });
+    const setTr = (id: string, translation: MessageTranslation | null): ChatOp => ({
+        op: "setTranslation",
+        id,
+        translation,
+    });
+    const message = (store: ResourceStore, chatId: string, id: string) =>
+        chat(store, chatId)!.data.message.find((x) => x.chatId === id)! as unknown as Record<string, unknown>;
+
+    it("applies a translation of the stored text, ignores a stale one unchanged, clears with null, moves the revision only for a change, reports the outcomes in op order, and applies on an older revision", () => {
+        const store = memoryStore();
+        const tokens = seed(store);
+        const T = tr("ㄱ", "A");
+        let r = store.applyChanges({ chats: [group("k", tokens.chat, [setTr("a", T)])] }).chats[0];
+        expect(r).toEqual({ characterId: "c", id: "k", revision: bumped(tokens.chat, 1), translations: ["applied"] });
+        expect(message(store, "k", "a")).toEqual({ role: "user", data: "A", chatId: "a", translation: T });
+        expect(storedTranslation(message(store, "k", "a") as never)).toBe("ㄱ");
+        let revision = r.revision!;
+
+        // A translation of a text the message does not hold: ignored, nothing written.
+        const state = snapshotState(store);
+        const writes = store.writeCount();
+        r = store.applyChanges({ chats: [group("k", revision, [setTr("a", tr("x", "not A"))])] }).chats[0];
+        expect(r).toEqual({ characterId: "c", id: "k", revision, translations: ["ignored"] });
+        expect(snapshotState(store)).toBe(state);
+        expect(store.writeCount()).toBe(writes);
+        // The identical translation again (a replay): applied, nothing moves.
+        r = store.applyChanges({ chats: [group("k", revision, [setTr("a", T)])] }).chats[0];
+        expect(r).toEqual({ characterId: "c", id: "k", revision, translations: ["applied"] });
+        expect(store.writeCount()).toBe(writes);
+        // A different translation of the same text (an edit by hand) replaces it.
+        const T2 = tr("ㄱ (edited)", "A", { presetId: "p", edited: true });
+        r = store.applyChanges({ chats: [group("k", revision, [setTr("a", T2)])] }).chats[0];
+        expect(r).toEqual({ characterId: "c", id: "k", revision: bumped(revision, 1), translations: ["applied"] });
+        expect(message(store, "k", "a").translation).toEqual(T2);
+        revision = r.revision!;
+
+        // null clears whatever the text is; clearing an absent one is applied without a move.
+        r = store.applyChanges({ chats: [group("k", revision, [setTr("a", null)])] }).chats[0];
+        expect(r).toEqual({ characterId: "c", id: "k", revision: bumped(revision, 1), translations: ["applied"] });
+        expect(message(store, "k", "a")).toEqual({ role: "user", data: "A", chatId: "a" });
+        revision = r.revision!;
+        r = store.applyChanges({ chats: [group("k", revision, [setTr("a", null)])] }).chats[0];
+        expect(r).toEqual({ characterId: "c", id: "k", revision, translations: ["applied"] });
+
+        // One outcome per setTranslation, in op order; the hash is checked against the text as the
+        // group's earlier ops left it; the group named an older revision, so the result says so.
+        r = store.applyChanges({
+            chats: [
+                group("k", tokens.chat, [
+                    { op: "setText", id: "b", text: "B2" },
+                    setTr("b", tr("ㄴ", "B")),
+                    setTr("b", tr("ㄴ2", "B2")),
+                    setTr("c", null),
+                ]),
+            ],
+        }).chats[0];
+        expect(r).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: bumped(revision, 2),
+            translations: ["ignored", "applied", "applied"],
+            stale: true,
+        });
+        expect(message(store, "k", "b")).toEqual({
+            role: "user",
+            data: "B2",
+            chatId: "b",
+            translation: tr("ㄴ2", "B2"),
+        });
+        revision = r.revision!;
+
+        // A missing message is a conflict (the whole batch rolls back).
+        const before = snapshotState(store);
+        expect(
+            conflictsOf(() =>
+                store.applyChanges({
+                    chats: [group("k", revision, [{ op: "meta", set: { note: "n" } }, setTr("zz", null)])],
+                }),
+            ),
+        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision }]);
+        expect(snapshotState(store)).toBe(before);
+    });
+
+    it("setMessage never changes a stored translation or its absence, setText leaves it to go stale by hash, a generation's checkpoints keep it, setTranslation leaves the fence open, and replace writes what it carries", () => {
+        const store = memoryStore();
+        const tokens = seed(store);
+        const T = tr("ㄱ", "A");
+        let revision = store.applyChanges({ chats: [group("k", tokens.chat, [setTr("a", T)])] }).chats[0].revision!;
+
+        // A whole-message write without the key, with an older translation, and with a newer one: T stays.
+        const carried = [
+            { ...m("a", "A"), name: "no key" },
+            { ...m("a", "A"), name: "older", translation: tr("old", "A", { translatedAt: 0 }) },
+            { ...m("a", "A"), name: "newer", translation: tr("new", "A", { translatedAt: 99 }) },
+        ];
+        for (const sent of carried) {
+            revision = store.applyChanges({
+                chats: [group("k", revision, [{ op: "setMessage", message: sent as never }])],
+            }).chats[0].revision!;
+            expect(message(store, "k", "a"), sent.name).toEqual({ ...m("a", "A"), name: sent.name, translation: T });
+        }
+        // A stored absence is kept too: a setMessage cannot introduce a translation.
+        revision = store.applyChanges({
+            chats: [
+                group("k", revision, [
+                    { op: "setMessage", message: { ...m("b", "B"), translation: tr("ㄴ", "B") } as never },
+                ]),
+            ],
+        }).chats[0].revision!;
+        expect(message(store, "k", "b")).toEqual(m("b", "B"));
+
+        // A text edit keeps the field; the translation is stale by hash until the text is back.
+        revision = store.applyChanges({ chats: [group("k", revision, [{ op: "setText", id: "a", text: "A2" }])] })
+            .chats[0].revision!;
+        expect(message(store, "k", "a").translation).toEqual(T);
+        expect(storedTranslation(message(store, "k", "a") as never)).toBeNull();
+        revision = store.applyChanges({ chats: [group("k", revision, [{ op: "setText", id: "a", text: "A" }])] })
+            .chats[0].revision!;
+        expect(storedTranslation(message(store, "k", "a") as never)).toBe("ㄱ");
+
+        // A generation's checkpoint writes (the runner's whole-message writes) keep it as well, and a
+        // setTranslation in between is not a manual write: the fence stays open for the next checkpoint.
+        let r = store.applyChanges({
+            chats: [
+                group("k", revision, [
+                    { op: "begin", id: "a", generationId: "g1" },
+                    { op: "setMessage", message: m("a", "gen 1", "char") as never, generation: { id: "g1", seq: 1 } },
+                ]),
+            ],
+        }).chats[0];
+        expect(r.checkpoints).toEqual(["applied"]);
+        expect(message(store, "k", "a")).toEqual({ ...m("a", "gen 1", "char"), translation: T });
+        revision = r.revision!;
+        const G = tr("생성 1", "gen 1");
+        r = store.applyChanges({ chats: [group("k", revision, [setTr("a", G)])] }).chats[0];
+        expect(r.translations).toEqual(["applied"]);
+        revision = r.revision!;
+        r = store.applyChanges({
+            chats: [
+                group("k", revision, [
+                    { op: "setText", id: "a", text: "gen 2", generation: { id: "g1", seq: 2 } },
+                    {
+                        op: "setMessage",
+                        message: m("a", "gen 3", "char") as never,
+                        generation: { id: "g1", seq: 3, final: true },
+                    },
+                ]),
+            ],
+        }).chats[0];
+        expect(r.checkpoints).toEqual(["applied", "applied"]);
+        expect(message(store, "k", "a")).toEqual({ ...m("a", "gen 3", "char"), translation: G });
+        revision = r.revision!;
+
+        // A whole-chat write is the other writer of the field: it stores what it carries, or nothing.
+        const R = tr("ㄱ (replaced)", "A");
+        revision = store.applyChanges({
+            chats: [
+                group("k", revision, [
+                    {
+                        op: "replace",
+                        chat: {
+                            id: "k",
+                            name: "K",
+                            message: [{ ...m("a", "A"), translation: R }, m("b", "B")],
+                        } as never,
+                    },
+                ]),
+            ],
+        }).chats[0].revision!;
+        expect(message(store, "k", "a")).toEqual({ ...m("a", "A"), translation: R });
+        store.applyChanges({
+            chats: [
+                group("k", revision, [
+                    { op: "replace", chat: { id: "k", name: "K", message: [m("a", "A")] } as never },
+                ]),
+            ],
+        });
+        expect(message(store, "k", "a")).toEqual(m("a", "A"));
+    });
+
+    it("refuses a malformed setTranslation before any write, and drops (never refuses) a message translation that is not a MessageTranslation on create, append, and replace", () => {
+        const store = memoryStore();
+        const tokens = seed(store);
+        const T = tr("ㄱ", "A");
+        const before = snapshotState(store);
+        const writes = store.writeCount();
+        const shape = "setTranslation must be { id, translation: MessageTranslation | null }";
+        const malformed: unknown[] = [
+            undefined,
+            "legacy",
+            { text: "x" },
+            { ...T, sourceHash: "" },
+            { ...T, translatedAt: Number.POSITIVE_INFINITY },
+            { ...T, targetLanguage: 1 },
+        ];
+        for (const translation of malformed) {
+            rejects(
+                () =>
+                    store.applyChanges({
+                        chats: [
+                            group("k", tokens.chat, [
+                                { op: "setText", id: "a", text: "changed" },
+                                { op: "setTranslation", id: "a", translation } as never,
+                            ]),
+                        ],
+                    }),
+                `chats[0].ops[1]: ${shape}`,
+            );
+        }
+        rejects(
+            () =>
+                store.applyChanges({
+                    chats: [group("k", tokens.chat, [{ op: "setTranslation", id: "", translation: T } as never])],
+                }),
+            `chats[0].ops[0]: ${shape}`,
+        );
+        expect(snapshotState(store)).toBe(before);
+        expect(store.writeCount()).toBe(writes);
+
+        // An imported chat keeps its messages: the unsupported translations are dropped, a valid one
+        // (fresh or stale) is kept as sent.
+        const stale = tr("ㄴ", "B before the edit");
+        const created = store.applyChanges({
+            ops: [createCharacter("d")],
+            chats: [
+                group(
+                    "n",
+                    null,
+                    [
+                        {
+                            op: "create",
+                            chat: {
+                                name: "N",
+                                message: [
+                                    { ...m("a", "A"), translation: "legacy string" },
+                                    { ...m("b", "B"), translation: stale },
+                                    { ...m("c", "C"), translation: null },
+                                    { ...m("d", "D"), translation: { text: "no hash" } },
+                                ],
+                            } as never,
+                        },
+                    ],
+                    "d",
+                ),
+            ],
+        }).chats[0];
+        const stored = (id: string) =>
+            store
+                .readRefs([], { chats: [{ characterId: "d", id: "n" }] })
+                .chats[0].data!.message.find((x) => x.chatId === id);
+        expect(stored("a")).toEqual(m("a", "A"));
+        expect(stored("b")).toEqual({ ...m("b", "B"), translation: stale });
+        expect(stored("c")).toEqual(m("c", "C"));
+        expect(stored("d")).toEqual(m("d", "D"));
+        let revision = created.revision!;
+        revision = store.applyChanges({
+            chats: [
+                group(
+                    "n",
+                    revision,
+                    [
+                        {
+                            op: "append",
+                            messages: [
+                                { ...m("e", "E"), translation: 5 },
+                                { ...m("f", "F"), translation: tr("ㅍ", "F") },
+                            ] as never,
+                            anchor: { end: true },
+                        },
+                    ],
+                    "d",
+                ),
+            ],
+        }).chats[0].revision!;
+        expect(stored("e")).toEqual(m("e", "E"));
+        expect(stored("f")).toEqual({ ...m("f", "F"), translation: tr("ㅍ", "F") });
+        store.applyChanges({
+            chats: [
+                group(
+                    "n",
+                    revision,
+                    [
+                        {
+                            op: "replace",
+                            chat: {
+                                id: "n",
+                                name: "N",
+                                message: [{ ...m("a", "A"), translation: ["not", "one"] }],
+                            } as never,
+                        },
+                    ],
+                    "d",
+                ),
+            ],
+        });
+        expect(stored("a")).toEqual(m("a", "A"));
     });
 });

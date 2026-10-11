@@ -1199,6 +1199,26 @@ export interface Message {
     name?: string;
     disabled?: false | true | "allBefore";
     isComment?: boolean;
+    /**
+     * A stored translation of `data` (`docs/plan/translation.md`), shown only while fresh
+     * (`storedTranslation`, `shared/translation/messageTranslation.ts`). Written by the `setTranslation`
+     * chat op; a `setMessage` never changes it.
+     */
+    translation?: MessageTranslation;
+}
+
+/** A translation of a message's `data`, kept while `sourceHash` matches the current `data`. */
+export interface MessageTranslation {
+    text: string;
+    /** `translationSourceHash(data)` (`shared/translation/hash.ts`) of the translated text. */
+    sourceHash: string;
+    /** Informational: the translator preset that produced it. Never decides freshness. */
+    presetId?: string;
+    targetLanguage: string;
+    /** `Date.now()` when it was written. */
+    translatedAt: number;
+    /** True after the user edited the text by hand. */
+    edited?: boolean;
 }
 
 export interface MessageGenerationInfo {

@@ -382,7 +382,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     const touchesGenerating = (ops: ChatOp[], chat: Chat): boolean => {
         const ids: string[] = [];
         for (const op of ops) {
-            if (op.op === "setText") {
+            if (op.op === "setText" || op.op === "setTranslation") {
                 ids.push(op.id);
             } else if (op.op === "setMessage") {
                 ids.push(op.message.chatId!);

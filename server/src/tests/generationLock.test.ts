@@ -11,6 +11,7 @@ import {
     ResourceConflictError,
     ResourceEpochError,
 } from "../data/resourceStore.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
 
 // The generation lock as the resource store's guard (Phase 5 slice 5): a change that rewrites or
@@ -100,6 +101,50 @@ describe("the generation lock guard on chat groups", () => {
             ]);
         }
         expect(state()).toBe(before);
+    });
+
+    it("refuses a setTranslation of an owned message as generating (a clear too), applies one of another message, and applies the owner's with its token", () => {
+        const { store, revisions, token, state, conflictsOf } = setup();
+        const translation = (text: string, source: string) => ({
+            text,
+            sourceHash: translationSourceHash(source),
+            targetLanguage: "ko",
+            translatedAt: 1,
+        });
+        const before = state();
+        for (const value of [translation("ㄴ", "B"), null]) {
+            const conflicts = conflictsOf(() =>
+                store.applyChanges({
+                    chats: [group("k", revisions.k, [{ op: "setTranslation", id: "b", translation: value }])],
+                }),
+            );
+            expect(conflicts, JSON.stringify(value)).toEqual([
+                { kind: "chat", characterId: "c", id: "k", revision: revisions.k, reason: "generating" },
+            ]);
+        }
+        expect(state()).toBe(before);
+        // Another message of the same chat is free.
+        const free = store.applyChanges({
+            chats: [group("k", revisions.k, [{ op: "setTranslation", id: "a", translation: translation("ㄱ", "A") }])],
+        }).chats[0];
+        expect(free.translations).toEqual(["applied"]);
+        // The owner's in-process write carries its token.
+        const own = store.applyChanges(
+            {
+                chats: [
+                    group("k", free.revision!, [
+                        { op: "setTranslation", id: "b", translation: translation("ㄴ", "B") },
+                    ]),
+                ],
+            },
+            { epoch: store.epoch(), jobToken: token },
+        );
+        expect(own.chats[0].translations).toEqual(["applied"]);
+        expect(
+            store
+                .readRefs([], { chats: [{ characterId: "c", id: "k" }] })
+                .chats[0].data!.message.find((x) => x.chatId === "b"),
+        ).toEqual({ ...m("b", "B"), translation: translation("ㄴ", "B") });
     });
 
     it("answers generating before a stale-revision conflict, and before a missing-target one", () => {

@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MessageTranslation } from "../../../../shared/database.ts";
+import { translationSourceHash } from "../../../../shared/translation/hash.ts";
+import { storedTranslation } from "../../../../shared/translation/messageTranslation.ts";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The chat mutation module (`chatStore.svelte.ts`) on a fresh module graph per test, against the real
@@ -1034,5 +1037,173 @@ describe("map merges (slice 11b)", () => {
             },
         ]);
         expect(stored(server)).toEqual({ i: { ...record("i"), response: [{ type: "text", text: "newer" }] } });
+    });
+});
+
+describe("message translations (translation slice 1.1)", () => {
+    const tr = (text: string, source: string, extra: Partial<MessageTranslation> = {}): MessageTranslation => ({
+        text,
+        sourceHash: translationSourceHash(source),
+        targetLanguage: "ko",
+        translatedAt: 1,
+        ...extra,
+    });
+    const stored = (server: Awaited<ReturnType<typeof boot>>["server"], chatId: string, id: string) =>
+        server.chat("c", chatId)!.data.message.find((message) => message.chatId === id) as unknown as Record<
+            string,
+            unknown
+        >;
+    const message = (chat: ChatModule, ref: { chaId: string; chatId: string }, id: string) =>
+        chat.findChat(ref)!.message.find((message) => message.chatId === id) as unknown as Record<string, unknown>;
+
+    it("setMessageTranslation takes a translation of the current text from a detached copy, refuses a stale, malformed, or locked one without changing anything, never coalesces, and the op lands through the batch and the unload request", async () => {
+        const { server, chat, ref, take, commit } = await boot();
+        const T = tr("ㄱ", "A");
+        // Refused: a translation of another text (false, nothing queued), a malformed one, a missing
+        // message, and a message a server job generates.
+        expect(chat.setMessageTranslation(ref, "a", tr("x", "not A"))).toBe(false);
+        expect(() => chat.setMessageTranslation(ref, "a", { text: "x" } as never)).toThrow(/Not a message translation/);
+        expect(() => chat.setMessageTranslation(ref, "zz", T)).toThrow(/No message zz/);
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "b", generationId: "g", text: "partial", seq: 0 });
+        expect(() => chat.setMessageTranslation(ref, "b", tr("x", "partial"))).toThrow(/being generated/);
+        // Nothing was queued; the job's end only asks for the usual idle re-read of its chat.
+        expect(take().groups).toEqual([]);
+        chat.endServerJob("J");
+        expect(chat.idleChatRefreshes()).toEqual([ref]);
+        const afterJob = server.store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0];
+        expect(chat.finishIdleChatRefresh(afterJob as any)).toBe(true);
+        expect(chat.hasChatWork()).toBe(false);
+        expect(message(chat, ref, "a")).not.toHaveProperty("translation");
+        expect(message(chat, ref, "b")).not.toHaveProperty("translation");
+
+        // Taken: from a detached copy; a clear and a set behind it stay separate ops.
+        const input = clone(T);
+        expect(chat.setMessageTranslation(ref, "a", input)).toBe(true);
+        input.text = "mutated after the call";
+        expect(message(chat, ref, "a")).toEqual({ ...m("a", "A", "char"), translation: T });
+        expect(storedTranslation(message(chat, ref, "a") as never)).toBe("ㄱ");
+        expect(chat.setMessageTranslation(ref, "a", null)).toBe(true);
+        expect(message(chat, ref, "a")).not.toHaveProperty("translation");
+        expect(chat.setMessageTranslation(ref, "a", T)).toBe(true);
+        const first = commit();
+        expect(first.work.groups[0].ops).toEqual([
+            { op: "setTranslation", id: "a", translation: T },
+            { op: "setTranslation", id: "a", translation: null },
+            { op: "setTranslation", id: "a", translation: T },
+        ]);
+        expect(first.result.chats[0].translations).toEqual(["applied", "applied", "applied"]);
+        expect(first.result.chats[0].stale).toBeUndefined();
+        expect(stored(server, "k", "a")).toEqual({ ...m("a", "A", "char"), translation: T });
+
+        // A text edit after it leaves the field on both sides, stale by hash.
+        chat.setMessageText(ref, "a", "A2");
+        commit();
+        expect(stored(server, "k", "a")).toEqual({ ...m("a", "A2", "char"), translation: T });
+        expect(storedTranslation(stored(server, "k", "a") as never)).toBeNull();
+        expect(storedTranslation(message(chat, ref, "a") as never)).toBeNull();
+
+        // A pending setTranslation is by-id work: it goes out with the page.
+        const T2 = tr("ㄱ2", "A2");
+        expect(chat.setMessageTranslation(ref, "a", T2)).toBe(true);
+        const [request] = chat.unloadPendingChatWork(60 * 1024);
+        chat.trackUnloadWork(request.work);
+        expect(JSON.parse(request.body).chats[0].ops).toEqual([{ op: "setTranslation", id: "a", translation: T2 }]);
+        const answer = server.store.applyChanges(JSON.parse(request.body));
+        expect(answer.chats[0].translations).toEqual(["applied"]);
+        chat.settleUnloadWork(request.work, answer.chats);
+        expect(stored(server, "k", "a")).toEqual({ ...m("a", "A2", "char"), translation: T2 });
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("replaceMessage keeps the held translation as the server keeps its stored one, and a translation the server ignores leaves the result stale so the idle refresh converges the mirror", async () => {
+        const { server, chat, ref, commit } = await boot();
+        const T = tr("ㄱ", "A");
+        expect(chat.setMessageTranslation(ref, "a", T)).toBe(true);
+        commit();
+
+        // A whole-message write from a copy without the key, then from one with an older translation.
+        chat.replaceMessage(ref, { ...m("a", "A", "char"), name: "n" });
+        expect(message(chat, ref, "a")).toEqual({ ...m("a", "A", "char"), name: "n", translation: T });
+        const replaced = commit();
+        expect(replaced.work.groups[0].ops).toEqual([
+            { op: "setMessage", message: { ...m("a", "A", "char"), name: "n", translation: T } },
+        ]);
+        expect(stored(server, "k", "a")).toEqual({ ...m("a", "A", "char"), name: "n", translation: T });
+        chat.replaceMessage(ref, { ...m("a", "A", "char"), translation: tr("old", "A", { translatedAt: 0 }) });
+        expect(message(chat, ref, "a")).toEqual({ ...m("a", "A", "char"), translation: T });
+        commit();
+        expect(stored(server, "k", "a")).toEqual({ ...m("a", "A", "char"), translation: T });
+
+        // Another tab edits the text; this tab, still showing "A", translates it: taken locally (the
+        // hash matches its copy), ignored by the server, which also says the base is older.
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "setText", id: "a", text: "remote" }],
+            },
+        ]);
+        const T2 = tr("ㄱ2", "A", { translatedAt: 2 });
+        expect(chat.setMessageTranslation(ref, "a", T2)).toBe(true);
+        expect(message(chat, ref, "a")).toEqual({ ...m("a", "A", "char"), translation: T2 });
+        const ignored = commit();
+        expect(ignored.result.chats[0]).toMatchObject({ translations: ["ignored"], stale: true });
+        expect(stored(server, "k", "a")).toEqual({ ...m("a", "remote", "char"), translation: T });
+
+        // The idle re-read replaces the optimistic copy with the server's: the older translation,
+        // stale by hash.
+        expect(chat.idleChatRefreshes()).toEqual([ref]);
+        const refreshed = server.store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0];
+        expect(chat.finishIdleChatRefresh(refreshed as any)).toBe(true);
+        expect(message(chat, ref, "a")).toEqual({ ...m("a", "remote", "char"), translation: T });
+        expect(storedTranslation(message(chat, ref, "a") as never)).toBeNull();
+        expect(chat.hasChatWork()).toBe(false);
+        expect(chat.chatDiscardsSince(0)).toEqual([]);
+    });
+
+    it("drops a translation that is not a MessageTranslation wherever messages come in, so the mirror holds the server's copy and a create whose acknowledgement was lost is recognized with the edit made meanwhile kept", async () => {
+        const { server, chat, take, apply, recover, commit } = await boot();
+        const ref = { chaId: "c", chatId: "n" };
+        const T = tr("ㄷ", "C");
+        const stale = tr("ㅅ", "before the edit");
+        chat.createChat("c", {
+            id: "n",
+            name: "N",
+            message: [
+                { ...m("x", "old"), translation: "legacy string" },
+                { ...m("y", "Y"), translation: null },
+                { ...m("z", "C"), translation: T },
+                { ...m("w", "W"), translation: stale },
+            ],
+        } as any);
+        const translations = (messages: readonly unknown[]) =>
+            messages.map((entry) => (entry as Record<string, unknown>).translation);
+        expect(translations(chat.findChat(ref)!.message)).toEqual([undefined, undefined, T, stale]);
+        expect(message(chat, ref, "x")).not.toHaveProperty("translation");
+        expect(message(chat, ref, "y")).not.toHaveProperty("translation");
+        const sent = take();
+        apply(sent);
+        expect(translations(server.chat("c", "n")!.data.message)).toEqual([undefined, undefined, T, stale]);
+        expect(stored(server, "n", "x")).toEqual(m("x", "old"));
+
+        // The answer was lost; the retry of the create is recognized as landed (the mirror's copy
+        // matches the server's, translations included) and the newer edit goes out after it.
+        chat.setMessageText(ref, "x", "newer edit");
+        chat.requeueChatWork(sent);
+        const { conflicts, reloaded } = recover(take());
+        expect(conflicts).toHaveLength(1);
+        expect(reloaded).toBe(false);
+        const { work } = commit();
+        expect(work.groups[0].ops.map((op) => op.op)).toEqual(["setText"]);
+        expect(server.texts("c", "n")).toEqual(["newer edit", "Y", "C", "W"]);
+        expect(chat.chatDiscardsSince(0)).toEqual([]);
+        expect(chat.hasChatWork()).toBe(false);
+
+        // An appended message is taken in the same way.
+        chat.appendMessage(ref, { ...m("v", "V"), translation: { text: "no hash" } } as any);
+        expect(message(chat, ref, "v")).toEqual(m("v", "V"));
+        commit();
+        expect(stored(server, "n", "v")).toEqual(m("v", "V"));
     });
 });

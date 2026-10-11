@@ -15,7 +15,7 @@ Active planning and implementation:
   done; the manual checks, H1's among them, are open).
 - [Translation](translation.md): translations stored on the message, per-chat
   translation settings, server auto-translation, bilingual display, and
-  multi-step translator presets (planned; nothing built yet).
+  multi-step translator presets (slice 1.1 done).
 
 ## Archived
 
