@@ -2110,15 +2110,18 @@ interface RisuaiPluginAPI {
     unwarpSafeArray<T>(safeArray: SafeClassArray<T>): Promise<T[]>;
 
     /**
-     * Searches the LLM translation cache for entries whose key contains the given partial key
+     * Searches the LLM translation cache for entries whose key contains the given partial key.
+     * Only entries made with the current translator preset, languages, and translator note are
+     * searched; each key is the translated source text.
      * @param partialKey - A substring to match against cache keys
      * @returns Array of matching cache entries with key and value
      */
     searchTranslationCache(partialKey: string): Promise<{key: string, value: string}[]>;
 
     /**
-     * Gets a single entry from the LLM translation cache by exact key
-     * @param key - The exact cache key to look up
+     * Gets a single entry from the LLM translation cache by exact key, as translated with the current
+     * translator preset, languages, and translator note
+     * @param key - The exact cache key to look up (the source text)
      * @returns The cached translation or null if not found
      */
     getTranslationCache(key: string): Promise<string | null>;

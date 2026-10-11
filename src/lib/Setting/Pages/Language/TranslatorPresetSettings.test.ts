@@ -236,3 +236,57 @@ describe("delete while the dialog is open", () => {
         expect(selectedId()).toBe("a");
     });
 });
+
+describe("the first step's editor", () => {
+    const textarea = (page: ReturnType<typeof render>) => page.target.querySelector("textarea")!;
+    const size = (page: ReturnType<typeof render>) =>
+        page.target.querySelector<HTMLInputElement>("input[type=number]")!;
+    const firstStep = (id: string) => settings.translatorPresets.items.find((entry) => entry.id === id)!.steps[0];
+
+    it("shows and edits the selected preset's first step through the preset (translation slice 1.2)", async () => {
+        const page = render();
+        expect(textarea(page).value).toBe("prompt a");
+        expect(size(page).value).toBe("10");
+
+        textarea(page).value = "edited prompt {{slot::content}}";
+        textarea(page).dispatchEvent(new Event("change", { bubbles: true }));
+        size(page).value = "640";
+        size(page).dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+        expect(firstStep("a")).toMatchObject({ prompt: "edited prompt {{slot::content}}", maxResponse: 640 });
+        expect(firstStep("b")).toMatchObject({ prompt: "prompt b", maxResponse: 10 });
+
+        // Another selection edits that preset's first step.
+        settings.translatorPresets.selectedId = "b";
+        flushSync();
+        expect(textarea(page).value).toBe("prompt b");
+        textarea(page).value = "edited b";
+        textarea(page).dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+        expect(firstStep("b").prompt).toBe("edited b");
+        expect(firstStep("a").prompt).toBe("edited prompt {{slot::content}}");
+    });
+
+    it("follows a reload that replaced the steps, and edits the first of several steps", async () => {
+        const page = render();
+        const twoSteps = createTranslatorPreset("A", {
+            id: "a",
+            steps: [
+                { id: "s1", name: "Draft", prompt: "reloaded a", maxResponse: 300 },
+                { id: "s2", name: "Polish", prompt: "second", maxResponse: 400 },
+            ],
+        });
+        reloadFromServer([twoSteps, preset("b", "B")], "a");
+        expect(textarea(page).value).toBe("reloaded a");
+        expect(size(page).value).toBe("300");
+
+        textarea(page).value = "edited after reload";
+        textarea(page).dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+        expect(settings.translatorPresets.items[0].steps.map((step) => step.prompt)).toEqual([
+            "edited after reload",
+            "second",
+        ]);
+        expect(settings.translatorPresets.items[0].steps[1]).toMatchObject({ id: "s2", maxResponse: 400 });
+    });
+});

@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultHotkeys } from "../../../shared/hotkeys.ts";
 import { COLLECTION_KIND, SECTION_KIND } from "../../../shared/sections.ts";
+import { createTranslatorPreset } from "../../../shared/translatorPresets.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
     normalizeAuthRefreshes,
@@ -266,20 +267,106 @@ describe("translatorPresets", () => {
             ],
             selectedId: "y",
         });
+        // The shape before steps (`{ prompt, maxResponse }`) becomes one inherited step; both old
+        // fields are dropped from the record (translation slice 1.2).
+        const oneStep = (prompt: string, maxResponse: number) => [
+            {
+                id: expect.stringMatching(UUID_V4),
+                name: "Step 1",
+                enabled: true,
+                prompt,
+                maxResponse,
+                model: { mode: "inherit" },
+            },
+        ];
         expect(out.items.map((item) => item.name)).toEqual(["A", "Preset 2", "Preset 3", "D"]);
-        expect(out.items[0]).toEqual({ id: "x", name: "A", prompt: "", maxResponse: 7 });
+        expect(out.items[0]).toEqual({ id: "x", name: "A", steps: oneStep("", 7) });
         expect(out.items[1].id).toMatch(UUID_V4);
-        expect(out.items[1]).toMatchObject({ prompt: "p", maxResponse: 1000 });
-        expect(out.items[2]).toEqual({ id: "y", name: "Preset 3", prompt: "", maxResponse: 1000 });
-        expect(out.items[3].id).toMatch(UUID_V4);
+        expect(out.items[1]).toMatchObject({ steps: oneStep("p", 1000) });
+        expect(out.items[2]).toEqual({ id: "y", name: "Preset 3", steps: oneStep("", 1000) });
+        expect(out.items[3]).toMatchObject({ id: expect.stringMatching(UUID_V4), steps: oneStep("q", 3) });
         expect(out.selectedId).toBe("y");
         expect(new Set(out.items.map((item) => item.id)).size).toBe(4);
+        for (const item of out.items) {
+            expect(Object.keys(item).sort()).toEqual(["id", "name", "steps"]);
+        }
 
         const items = [{ name: "A", id: "x" }];
         expect(normalizeTranslatorPresets({ items, selectedId: "nope" }).selectedId).toBe("x");
         expect(normalizeTranslatorPresets({ items, selectedId: 0 }).selectedId).toBe("x");
         expect(normalizeTranslatorPresets({ items }).selectedId).toBe("x");
         expectIdempotent(normalizeTranslatorPresets, { items: [{ name: " ", id: "x" }, { id: "x" }] });
+    });
+
+    it("normalizes the steps: an empty list is one step, the first five are kept, and each step is coerced", () => {
+        const step = (overrides: Record<string, unknown>) => ({
+            id: expect.stringMatching(UUID_V4),
+            name: expect.any(String),
+            enabled: true,
+            prompt: "",
+            maxResponse: 1000,
+            model: { mode: "inherit" },
+            ...overrides,
+        });
+        const out = normalizeTranslatorPresets({
+            items: [
+                { id: "empty", name: "E", steps: [] },
+                { id: "empty-with-old", name: "O", steps: [], prompt: "old", maxResponse: 2 },
+                { id: "six", name: "S", steps: Array.from({ length: 6 }, (_, index) => ({ name: `N${index}` })) },
+                {
+                    id: "mixed",
+                    name: "M",
+                    steps: [
+                        {
+                            id: "a",
+                            name: "First",
+                            enabled: false,
+                            prompt: "{{slot::content}}",
+                            maxResponse: 3,
+                            outputKey: "draft",
+                        },
+                        { id: "a", prompt: 1, model: { mode: "profile", profileId: "pr" }, outputKey: "draft" },
+                        "not a step",
+                    ],
+                },
+            ],
+            selectedId: "mixed",
+        });
+        expect(out.items[0].steps).toEqual([step({ name: "Step 1" })]);
+        // The old fields are read only when there are no steps at all; an empty list reads them too.
+        expect(out.items[1].steps).toEqual([step({ name: "Step 1", prompt: "old", maxResponse: 2 })]);
+        expect(out.items[2].steps.map((entry) => entry.name)).toEqual(["N0", "N1", "N2", "N3", "N4"]);
+        expect(out.items[3].steps).toEqual([
+            {
+                id: "a",
+                name: "First",
+                enabled: false,
+                prompt: "{{slot::content}}",
+                maxResponse: 3,
+                model: { mode: "inherit" },
+                outputKey: "draft",
+            },
+            step({ name: "Step 2", model: { mode: "profile", profileId: "pr" } }),
+            step({ name: "Step 3" }),
+        ]);
+        expect(out.items[3].steps[1].id).not.toBe("a");
+        expect(Object.hasOwn(out.items[3].steps[1], "outputKey")).toBe(false);
+        expectIdempotent(normalizeTranslatorPresets, { items: out.items, selectedId: "mixed" });
+        expectIdempotent(normalizeTranslatorPresets, {
+            items: [{ id: "x", steps: [{ outputKey: "k" }, { id: "d" }, { id: "d" }, 1, 2, 3, 4] }],
+        });
+    });
+
+    it("stores a preset the tab creates with `createTranslatorPreset` as it is", () => {
+        const created = createTranslatorPreset("Two", {
+            steps: [
+                { name: "Draft", prompt: "{{slot::content}}", maxResponse: 300, outputKey: "draft" },
+                { name: "Polish", prompt: "{{slot::prev}}", model: { mode: "profile", profileId: "pr" } },
+            ],
+        });
+        const record = { items: [createTranslatorPreset("Default"), created], selectedId: created.id };
+        const text = serialize(record).text;
+        expect(serialize(normalizeTranslatorPresets(JSON.parse(text))).text).toBe(text);
     });
 
     it("rejects a record without an items list of objects", () => {

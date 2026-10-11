@@ -86,6 +86,20 @@ const withoutId = (value: unknown) => {
     const { id, ...rest } = (value ?? {}) as Record<string, unknown>;
     return rest;
 };
+/** `value` with every `id` removed, at any depth: a translator preset's steps carry generated ids too. */
+function withoutIds(value: unknown): unknown {
+    if (Array.isArray(value)) {
+        return value.map(withoutIds);
+    }
+    if (value && typeof value === "object") {
+        return Object.fromEntries(
+            Object.entries(value)
+                .filter(([key]) => key !== "id")
+                .map(([key, inner]) => [key, withoutIds(inner)]),
+        );
+    }
+    return value;
+}
 
 /** Boots the client the way `loadData` does for the data: read, seed, the real `installBootRecords`. */
 async function bootFresh() {
@@ -202,9 +216,14 @@ describe("the boot snapshot of a fresh store against the fresh-boot fixture", ()
             expect(snapshot.modelPresets).toHaveLength(1);
             expect(withoutId(snapshot.modelPresets[0])).toEqual(withoutId(fixture.modelPresets[0]));
 
-            // (4) The translator and HypaV3 presets ignoring ids; the selection is the first item.
+            // (4) The translator and HypaV3 presets ignoring ids (a translator step's too); the
+            // selection is the first item.
             for (const [list, selectionKey] of Object.entries(COLLECTION_SELECTION_FIELDS)) {
-                expect(snapshot[list].map(withoutId), list).toEqual(fixture[list].map(withoutId));
+                expect(withoutIds(snapshot[list]), list).toEqual(withoutIds(fixture[list]));
+                expect(
+                    snapshot[list].map((entry: { id: unknown }) => entry.id),
+                    list,
+                ).toEqual(snapshot[list].map(() => expect.any(String)));
                 expect(fixture[selectionKey], selectionKey).toBe(0);
                 expect(snapshot[selectionKey], selectionKey).toBe(snapshot[list][0].id);
             }

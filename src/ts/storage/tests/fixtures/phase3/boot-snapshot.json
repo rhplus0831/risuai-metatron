@@ -489,7 +489,14 @@
     }
   ],
   "hypaV3PresetId": 0,
-  "translatorPresets": [{ "name": "Default", "prompt": "", "maxResponse": 1000 }],
+  "translatorPresets": [
+    {
+      "name": "Default",
+      "steps": [
+        { "name": "Step 1", "enabled": true, "prompt": "", "maxResponse": 1000, "model": { "mode": "inherit" } }
+      ]
+    }
+  ],
   "translatorPresetId": 0,
   "translatorPrompt": "",
   "showDeprecatedTriggerV2": false,

@@ -554,11 +554,21 @@ describe("ids", () => {
     });
 
     it("createTranslatorPreset keeps a valid id and assigns one otherwise", () => {
+        // The shape before steps (`prompt`, `maxResponse`) becomes one inherited step with its own id
+        // (translation slice 1.2; `shared/tests/translatorPresets.test.ts` has the step rules).
         expect(createTranslatorPreset("n", { id: "keep", prompt: "p", maxResponse: 5 })).toEqual({
             id: "keep",
             name: "n",
-            prompt: "p",
-            maxResponse: 5,
+            steps: [
+                {
+                    id: expect.stringMatching(UUID_V4),
+                    name: "Step 1",
+                    enabled: true,
+                    prompt: "p",
+                    maxResponse: 5,
+                    model: { mode: "inherit" },
+                },
+            ],
         });
         expect(createTranslatorPreset("n", { id: "" }).id).toMatch(UUID_V4);
         expect(createTranslatorPreset().id).toMatch(UUID_V4);

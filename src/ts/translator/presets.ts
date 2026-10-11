@@ -3,7 +3,12 @@ import * as fflate from "fflate";
 import { decryptBuffer, encryptBuffer } from "src/ts/util";
 import { decodeRPack, encodeRPack } from "src/ts/rpack/rpack_js.js";
 import type { TranslatorPreset } from "../../../shared/settings.ts";
-import { createTranslatorPreset, defaultTranslatorPrompt } from "../../../shared/translatorPresets.ts";
+import {
+    createTranslatorPreset,
+    defaultTranslatorPrompt,
+    isTranslatorPreset,
+} from "../../../shared/translatorPresets.ts";
+import { language } from "src/lang";
 
 export type { TranslatorPreset } from "../../../shared/settings.ts";
 export { createTranslatorPreset, defaultTranslatorPrompt };
@@ -28,7 +33,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null;
 }
 
-function isTranslatorPresetValue(value: unknown): value is TranslatorPreset {
+/** The preset a `.risutl` file (version 1) holds: one prompt and its response size. */
+interface TranslatorPresetFilePayload {
+    name: string;
+    prompt: string;
+    maxResponse: number;
+}
+
+function isTranslatorPresetFilePayload(value: unknown): value is TranslatorPresetFilePayload {
     return (
         isRecord(value) &&
         typeof value.name === "string" &&
@@ -74,9 +86,7 @@ function sanitizeFileNamePart(value: string): string {
  * client's deletion until the next reload). It never writes the state.
  */
 export function getCurrentTranslatorPresetFromState(state: TranslatorPresetStateLike): TranslatorPreset {
-    const presets = Array.isArray(state.translatorPresets)
-        ? state.translatorPresets.filter(isTranslatorPresetValue)
-        : [];
+    const presets = Array.isArray(state.translatorPresets) ? state.translatorPresets.filter(isTranslatorPreset) : [];
     return (
         presets.find((preset) => preset.id === state.translatorPresetId) ??
         presets[0] ??
@@ -120,24 +130,33 @@ async function decodeEncryptedTranslatorPresetFile(data: Uint8Array): Promise<Tr
 
     const parsedPreset: unknown = decodeMsgpack(new Uint8Array(decryptedPreset));
 
-    if (!isTranslatorPresetValue(parsedPreset)) {
+    if (!isTranslatorPresetFilePayload(parsedPreset)) {
         throw new Error("Invalid translator preset file.");
     }
 
-    // An imported preset always gets a fresh id, whatever the file carries.
+    // An imported preset always gets a fresh id, whatever the file carries, and one step.
     return createTranslatorPreset(parsedPreset.name.trim().length > 0 ? parsedPreset.name : "Imported Preset", {
         prompt: parsedPreset.prompt,
         maxResponse: parsedPreset.maxResponse,
     });
 }
 
+/**
+ * The preset as a `.risutl` file. Version 1 holds one prompt, so a preset whose run a single prompt
+ * cannot reproduce (more than one step, or a step on its own model) is refused, not cut down; version
+ * 2 arrives with the step editor (translation slice 3.1).
+ */
 export async function encodeTranslatorPresetFile(preset: TranslatorPreset): Promise<Uint8Array> {
     const normalizedPreset = createTranslatorPreset(preset.name.trim().length > 0 ? preset.name : "Preset", preset);
-    // The `.risutl` format carries no id (D5): only the three shared fields are encoded.
-    const filePreset = {
+    const [step, ...rest] = normalizedPreset.steps;
+    if (rest.length > 0 || step.model.mode !== "inherit") {
+        throw new Error(language.translatorPresetExportUnsupported);
+    }
+    // The `.risutl` format carries no id (D5): only the name and the step's prompt and size are encoded.
+    const filePreset: TranslatorPresetFilePayload = {
         name: normalizedPreset.name,
-        prompt: normalizedPreset.prompt,
-        maxResponse: normalizedPreset.maxResponse,
+        prompt: step.prompt,
+        maxResponse: step.maxResponse,
     };
     const encryptedPreset = new Uint8Array(
         await encryptBuffer(encodeMsgpack(filePreset), translatorPresetEncryptionKey),

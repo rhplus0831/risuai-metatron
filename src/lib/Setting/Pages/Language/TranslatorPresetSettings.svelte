@@ -154,7 +154,9 @@
     </button>
 </div>
 
-{#if settings.translatorPresets.items?.some((entry) => entry.id === current.id)}
+{#if settings.translatorPresets.items?.some((entry) => entry.id === current.id) && current.steps[0]}
+    <!-- One prompt until the step editor (translation slice 3.1): the first step's. Read through the
+         preset at each access, so a conflict reload that replaces the steps is followed. -->
     {@const preset = current}
     <span class="text-textcolor mt-4">{language.translationResponseSize}</span>
     <NumberInput
@@ -162,18 +164,18 @@
         max={2048}
         marginBottom={true}
         bind:value={
-            () => preset.maxResponse,
+            () => preset.steps[0].maxResponse,
             (value) => {
-                preset.maxResponse = value;
+                preset.steps[0].maxResponse = value;
             }
         }
     />
     <span class="text-textcolor mt-4">{language.translatorPrompt} <Help key="translatorPrompt" /></span>
     <TextAreaInput
         bind:value={
-            () => preset.prompt,
+            () => preset.steps[0].prompt,
             (value) => {
-                preset.prompt = value;
+                preset.steps[0].prompt = value;
             }
         }
         placeholder={defaultTranslatorPrompt}

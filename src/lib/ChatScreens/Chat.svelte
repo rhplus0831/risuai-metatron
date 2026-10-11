@@ -94,7 +94,7 @@
     import ChatBody from "./ChatBody.svelte";
     import PopupButton from "../UI/PopupButton.svelte";
     import PartialEditController from "./PartialEditController.svelte";
-    import { getLLMCache, setLLMCache } from "../../ts/translator/translator";
+    import { llmTranslationCacheKey, readLLMCacheEntry, writeLLMCacheEntry } from "../../ts/translator/translator";
 
     let translating = $state(false);
     let editMode = $state(false);
@@ -333,7 +333,7 @@
     }
 
     async function updateTranslationCache(key: string, data: string) {
-        await setLLMCache(key, data);
+        await writeLLMCacheEntry(key, data);
         editTranslationText = data;
         chatBodyRevision += 1;
     }
@@ -347,7 +347,7 @@
         if (!key) {
             return null;
         }
-        const data = await getLLMCache(key);
+        const data = await readLLMCacheEntry(key);
         if (data === null) {
             return null;
         }
@@ -370,14 +370,18 @@
         }
     }
 
+    /**
+     * The full `LLMTranslateCache` key of this message's translation as it is translated now. The
+     * editors keep it and write back to it, so an edit lands on the entry it was read from.
+     */
     async function getTranslationCacheKey(): Promise<string> {
         if (settings.memoryTranslateMedia.translateBeforeHTMLFormatting) {
-            return msgDisplay;
+            return llmTranslationCacheKey(msgDisplay);
         }
-        if (!settings.memoryTranslateMedia.legacyTranslation) {
-            return await ParseMarkdown(msgDisplay, character, "pretranslate", idx, getCbsCondition());
-        }
-        return await ParseMarkdown(msgDisplay, character, "notrim", idx, getCbsCondition());
+        const source = !settings.memoryTranslateMedia.legacyTranslation
+            ? await ParseMarkdown(msgDisplay, character, "pretranslate", idx, getCbsCondition())
+            : await ParseMarkdown(msgDisplay, character, "notrim", idx, getCbsCondition());
+        return llmTranslationCacheKey(source);
     }
 
     async function loadTranslationForEdit() {
@@ -386,7 +390,7 @@
         loadingTranslationEdit = true;
         try {
             const key = await getTranslationCacheKey();
-            const cached = await getLLMCache(key);
+            const cached = await readLLMCacheEntry(key);
             editTranslationKey = key;
             editTranslationText = cached ?? "";
             editTranslationMode = true;

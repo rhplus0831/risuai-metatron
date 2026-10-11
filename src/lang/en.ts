@@ -250,7 +250,7 @@ export const languageEnglish = {
         summarizationPrompt:
             "The prompt that is used for summarization. If it is blank, it will use the default prompt. You can also use ChatML formating with {{slot}} for the chat data.",
         translatorPrompt:
-            "The prompt that is used for translation. If it is blank, it will use the default prompt. You can also use ChatML formating with {{slot}} for the dest language, {{slot::content}} for the content, and {{slot::tnote}} for the translator note.",
+            "The prompt that is used for translation. If it is blank, it will use the default prompt. Slots: {{slot}} for the dest language, {{slot::from}} for the source language, {{slot::content}} for the content, and {{slot::tnote}} for the translator note. You can also use ChatML formating, which sets every message itself. Without ChatML, the prompt is the system message and the content follows as the user message, unless the prompt holds {{slot::content}} (or {{slot::prev}}, or {{slot::out::KEY}}). CBS is not evaluated in this prompt, and `<Thoughts>` and `<think>` blocks are removed from the reply.",
         translateBeforeHTMLFormatting:
             "If enabled, it will translate the text before Regex scripts and HTML formatting. This could make the token lesser but could break the formatting.",
         autoTranslateCachedOnly:
@@ -1429,6 +1429,8 @@ export const languageEnglish = {
     summarizationPrompt: "Summarization Prompt",
     reSummarizationPrompt: "Re-Summarizaion Prompt",
     translatorPrompt: "Translation Prompt",
+    translatorPresetExportUnsupported:
+        "This preset has a step that a .risutl file cannot hold yet (more than one step, or a step with its own model). Only a single-step preset on the translation model can be exported.",
     translateBeforeHTMLFormatting: "Translate Before HTML Formatting",
     retranslate: "Retranslate",
     editTranslation: "Edit Translation",

@@ -84,8 +84,25 @@ export interface TranslatorPreset {
     /** Assigned at creation (`createTranslatorPreset`); never written into a `.risutl` file. */
     id: string;
     name: string;
+    /** 1 to `TRANSLATOR_PRESET_MAX_STEPS` steps (`normalizeTranslatorSteps`, `shared/translatorPresets.ts`). */
+    steps: TranslatorStep[];
+}
+
+/** Which model a translator step calls. Until translation slice 3.1 every step runs on the `translate` slot. */
+export type TranslatorStepModel = { mode: "inherit" } | { mode: "profile"; profileId: string };
+
+/** One request of a translator preset's pipeline (`shared/translation/pipeline.ts`). */
+export interface TranslatorStep {
+    /** Unique within its preset. */
+    id: string;
+    name: string;
+    enabled: boolean;
+    /** Blank runs `defaultTranslatorPrompt`. */
     prompt: string;
     maxResponse: number;
+    model: TranslatorStepModel;
+    /** Names the step's output for `{{slot::out::KEY}}`; unique within its preset. */
+    outputKey?: string;
 }
 
 export interface OnnxModelFiles {

@@ -189,7 +189,7 @@ export const languageKorean = {
         summarizationPrompt:
             "요약에 사용되는 프롬프트입니다. 비어있으면 기본 프롬프트를 사용합니다. 채팅 데이터에 대해 {{slot}}을 사용하여 ChatML 형식을 사용할 수도 있습니다.",
         translatorPrompt:
-            "번역에 사용되는 프롬프트입니다. 비어있으면 기본 프롬프트를 사용합니다. 목적 언어에 대해 {{slot}}, 콘텐츠에 대해 {{slot::content}}, 번역자 노트에 대해 {{slot::tnote}}를 사용하여 ChatML 형식을 사용할 수도 있습니다.",
+            "번역에 사용되는 프롬프트입니다. 비어있으면 기본 프롬프트를 사용합니다. 슬롯: 목적 언어 {{slot}}, 원문 언어 {{slot::from}}, 콘텐츠 {{slot::content}}, 번역자 노트 {{slot::tnote}}. ChatML 형식을 쓰면 모든 메시지를 프롬프트가 직접 정합니다. ChatML이 아니면 프롬프트가 시스템 메시지가 되고 콘텐츠가 사용자 메시지로 이어지는데, 프롬프트에 {{slot::content}}(또는 {{slot::prev}}, {{slot::out::KEY}})가 있으면 이어 보내지 않습니다. 이 프롬프트에서는 CBS가 처리되지 않으며, 응답의 `<Thoughts>`와 `<think>` 블록은 제거됩니다.",
         translateBeforeHTMLFormatting:
             "활성화하면 정규식 스크립트와 HTML 포맷팅 전에 텍스트를 번역합니다. 토큰이 줄어들 수 있지만 포맷이 깨질 수 있습니다.",
         autoTranslateCachedOnly:
@@ -1313,6 +1313,8 @@ export const languageKorean = {
     summarizationPrompt: "요약 프롬프트",
     reSummarizationPrompt: "재요약 프롬프트",
     translatorPrompt: "번역 프롬프트",
+    translatorPresetExportUnsupported:
+        "이 프리셋에는 .risutl 파일에 아직 담을 수 없는 단계가 있습니다(단계가 둘 이상이거나 단계에 별도 모델이 지정됨). 번역 모델을 쓰는 단일 단계 프리셋만 내보낼 수 있습니다.",
     translateBeforeHTMLFormatting: "HTML 포맷 전 번역",
     retranslate: "다시 번역",
     editTranslation: "번역 수정",

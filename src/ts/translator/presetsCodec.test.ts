@@ -48,6 +48,22 @@ vi.mock("src/ts/rpack/rpack_js.js", () => {
 import { decodeRPack } from "src/ts/rpack/rpack_js.js";
 import { decryptBuffer } from "src/ts/util";
 import { createTranslatorPreset, decodeTranslatorPresetFile, encodeTranslatorPresetFile } from "./presets";
+import { language } from "src/lang";
+
+/** `value` with every `id` removed, at any depth (the preset's and its step's are fresh on decode). */
+function withoutIds(value: unknown): unknown {
+    if (Array.isArray(value)) {
+        return value.map(withoutIds);
+    }
+    if (value && typeof value === "object") {
+        return Object.fromEntries(
+            Object.entries(value)
+                .filter(([key]) => key !== "id")
+                .map(([key, inner]) => [key, withoutIds(inner)]),
+        );
+    }
+    return value;
+}
 
 /** The preset payload a `.risutl` file carries, decoded the way `decodeTranslatorPresetFile` decodes it. */
 async function decodeRisutl(bytes: Uint8Array): Promise<Record<string, unknown>> {
@@ -77,18 +93,31 @@ describe(".risutl round trip through the real codecs", () => {
         expect(Object.hasOwn(payload, "id")).toBe(false);
 
         const decoded = await decodeTranslatorPresetFile(bytes);
-        const { id: decodedId, ...decodedWithoutId } = decoded;
-        const { id: originalId, ...presetWithoutId } = preset;
-        expect(decodedWithoutId).toStrictEqual(presetWithoutId);
-        expect(decodedId).toEqual(expect.any(String));
-        expect(decodedId).not.toBe(originalId);
+        // The one step round-trips; the preset id and the step id are fresh on decode.
+        expect(withoutIds(decoded)).toStrictEqual(withoutIds(preset));
+        expect(decoded.steps).toHaveLength(1);
+        expect(decoded.id).toEqual(expect.any(String));
+        expect(decoded.id).not.toBe(preset.id);
+        expect(decoded.steps[0].id).toEqual(expect.any(String));
+        expect(decoded.steps[0].id).not.toBe(preset.steps[0].id);
 
         // The decoded preset exports to the same payload (the codec is a fixed point on the file).
         const again = await encodeTranslatorPresetFile(decoded);
         expect(await decodeRisutl(again)).toStrictEqual(payload);
-        const { id: secondId, ...secondWithoutId } = await decodeTranslatorPresetFile(again);
-        expect(secondWithoutId).toStrictEqual(presetWithoutId);
-        expect(secondId).not.toBe(decodedId);
+        const second = await decodeTranslatorPresetFile(again);
+        expect(withoutIds(second)).toStrictEqual(withoutIds(preset));
+        expect(second.id).not.toBe(decoded.id);
+    });
+
+    it("refuses a preset the version 1 payload cannot hold, through the real codecs", async () => {
+        const twoSteps = createTranslatorPreset("Two", { steps: [{ prompt: "a" }, { prompt: "b" }] });
+        await expect(encodeTranslatorPresetFile(twoSteps)).rejects.toThrow(language.translatorPresetExportUnsupported);
+        const profileStep = createTranslatorPreset("P", {
+            steps: [{ prompt: "a", model: { mode: "profile", profileId: "pr" } }],
+        });
+        await expect(encodeTranslatorPresetFile(profileStep)).rejects.toThrow(
+            language.translatorPresetExportUnsupported,
+        );
     });
 
     it("rejects a file whose payload is not a translator preset, after the real decryption", async () => {

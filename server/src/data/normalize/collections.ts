@@ -3,7 +3,6 @@ import { isRecordId } from "../../../../shared/ids.ts";
 import { defaultHotkeys } from "../../../../shared/hotkeys.ts";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import type { CollectionResource } from "../../../../shared/resources.ts";
-import type { TranslatorPreset } from "../../../../shared/settings.ts";
 import { createTranslatorPreset, getNormalizedTranslatorPresetName } from "../../../../shared/translatorPresets.ts";
 import { ResourceValidationError } from "../resourceStore.ts";
 import { isPlainObject, plainClone, requireArrayOfObjects, requireObject } from "./shared.ts";
@@ -178,10 +177,8 @@ function selectableList<T extends { id: string }>(
 export const normalizeTranslatorPresets: (input: unknown) => CollectionResource<"translatorPresets"> = selectableList(
     "translatorPresets",
     (entry, index, id) =>
-        createTranslatorPreset(getNormalizedTranslatorPresetName(entry.name, index), {
-            ...entry,
-            id,
-        } as Partial<TranslatorPreset>),
+        // `createTranslatorPreset` normalizes the steps, and turns a preset without steps into one step.
+        createTranslatorPreset(getNormalizedTranslatorPresetName(entry.name, index), { ...entry, id }),
     () => createTranslatorPreset("Default"),
 );
 

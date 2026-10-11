@@ -190,8 +190,8 @@ const customRecords: Record<string, unknown> = {
     ],
     translatorPresets: {
         items: [
-            { id: "t1", name: "T1", prompt: "p", maxResponse: 5 },
-            { id: "t2", name: "T2" },
+            createTranslatorPreset("T1", { id: "t1", prompt: "p", maxResponse: 5 }),
+            createTranslatorPreset("T2", { id: "t2" }),
         ],
         selectedId: "t2",
     },
@@ -659,7 +659,9 @@ describe("watchers", () => {
             ["authRefreshes", () => s.authRefreshes.push({ url: "u" })],
             ["globalChatVariables", () => (s.globalChatVariables.x = "1")],
             ["personas", () => (s.personas[0].name = "Renamed")],
-            ["translatorPresets", () => (s.translatorPresets.items[0].prompt = "edited")],
+            // The translator prompt editor writes the first step through the preset (translation slice 1.2).
+            ["translatorPresets", () => (s.translatorPresets.items[0].steps[0].prompt = "edited")],
+            ["translatorPresets", () => (s.translatorPresets.items[0].steps[0].maxResponse = 7)],
             ["hypaV3Presets", () => (s.hypaV3Presets.items[0].settings.queryChatCount = 5)],
             ["customModels", () => s.customModels.push({ id: "m", internalId: "i" })],
             ["enabledModules", () => s.enabledModules.push("mod")],

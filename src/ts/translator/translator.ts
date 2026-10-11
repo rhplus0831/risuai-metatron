@@ -2,13 +2,15 @@ import { getModelInfoForMode } from "../model/modellist";
 import { type AnyClientCharacter, selectedCharacter } from "../storage/characterStore.svelte";
 import { settings, activePreset, readPresetFieldOf } from "../storage/settingsViews.svelte";
 import { get } from "svelte/store";
-import { parseChatML } from "../parser/chatML";
 import { type character, type customscript, type groupChat } from "../storage/database.svelte";
-import { defaultTranslatorPrompt, getCurrentTranslatorPresetFromState, type TranslatorPreset } from "./presets";
+import { getCurrentTranslatorPresetFromState, type TranslatorPreset } from "./presets";
+import type { TranslatorStep } from "../../../shared/settings.ts";
+import { runTranslatorPipeline, translatorPipelineSignature } from "../../../shared/translation/pipeline.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { globalFetch } from "../globalApi.svelte";
 import { alertError } from "../alert";
 import { requestChatData } from "../process/request/request";
-import { doingChat, type OpenAIChat } from "../process/index.svelte";
+import { doingChat } from "../process/index.svelte";
 import { applyMarkdownToNode, risuChatParser, type simpleCharacterArgument } from "../parser/parser.svelte";
 import { getModuleRegexScripts } from "../process/modules";
 import { getNodetextToSentence, sleep } from "../util";
@@ -36,16 +38,19 @@ export function getCurrentTranslatorPreset(): TranslatorPreset {
     });
 }
 
+/**
+ * The in-memory cache below is keyed by the text alone, so the LLM translator skips it: its results
+ * depend on the preset and are cached by `translateLLM` under the pipeline's key.
+ */
+function usesMemoryCache(): boolean {
+    return settings.memoryTranslateMedia.translatorType !== "llm";
+}
+
 export async function translate(text: string, reverse: boolean) {
-    if (!reverse) {
-        const ind = cache.origin.indexOf(text);
+    if (usesMemoryCache()) {
+        const ind = reverse ? cache.trans.indexOf(text) : cache.origin.indexOf(text);
         if (ind !== -1) {
-            return cache.trans[ind];
-        }
-    } else {
-        const ind = cache.trans.indexOf(text);
-        if (ind !== -1) {
-            return cache.origin[ind];
+            return reverse ? cache.origin[ind] : cache.trans[ind];
         }
     }
 
@@ -64,6 +69,9 @@ export async function runTranslator(
     target: string,
     exarg?: { translatorNote?: string },
 ) {
+    // Whether the result may enter the memory cache, decided now: a translator switched meanwhile
+    // must not put an LLM result there.
+    const memoryCache = usesMemoryCache();
     const arg = {
         from: reverse ? from : target,
 
@@ -115,9 +123,11 @@ export async function runTranslator(
 
     const result = fullResult.join("\n").trim();
 
-    cache.origin.push(reverse ? result : text);
+    if (memoryCache && usesMemoryCache()) {
+        cache.origin.push(reverse ? result : text);
 
-    cache.trans.push(reverse ? text : result);
+        cache.trans.push(reverse ? text : result);
+    }
 
     return result;
 }
@@ -125,7 +135,10 @@ export async function runTranslator(
 async function translateMain(text: string, arg: { from: string; to: string; host: string; translatorNote?: string }) {
     if (settings.memoryTranslateMedia.translatorType === "llm") {
         const tr = arg.to || "en";
-        return translateLLM(text, { to: tr, from: arg.from, translatorNote: arg.translatorNote });
+        return translateLLM(
+            text,
+            llmTranslationContext({ to: tr, from: arg.from, translatorNote: arg.translatorNote }),
+        );
     }
     if (settings.memoryTranslateMedia.translatorType === "deepl") {
         const body = {
@@ -288,18 +301,18 @@ export async function translateHTML(
             chaId: "simple",
         };
     }
-    let DoingChat = get(doingChat);
-    if (DoingChat) {
-        if (isExpTranslator()) {
-            if (!(settings.memoryTranslateMedia.translatorType === "llm" && (await getLLMCache(html)) !== null)) {
-                return html;
-            }
+    // The LLM translator's context, read once: the cached-only check while generating and the
+    // translation read the same cache entry.
+    const llmContext = settings.memoryTranslateMedia.translatorType === "llm" ? llmTranslationContext() : null;
+    let cached: string | null = null;
+    if (get(doingChat) && isExpTranslator()) {
+        cached = llmContext ? await readLLMCacheEntry(llmCacheKeyPrefix(llmContext) + html) : null;
+        if (cached === null) {
+            return html;
         }
     }
-    if (settings.memoryTranslateMedia.translatorType === "llm") {
-        const tr = settings.memoryTranslateMedia.translator || "en";
-        const from = settings.memoryTranslateMedia.translatorInputLanguage;
-        const r = await translateLLM(html, { to: tr, from: from, regenerate });
+    if (llmContext) {
+        const r = cached !== null && !regenerate ? cached : await translateLLM(html, llmContext, regenerate);
         if (settings.memoryTranslateMedia.playMessageOnTranslateEnd) {
             const audio = new Audio(sendSound);
             audio.play().catch(() => {});
@@ -517,108 +530,149 @@ function needSuperChunkedTranslate() {
     return settings.memoryTranslateMedia.translatorType === "deeplX";
 }
 
-async function translateLLM(
-    text: string,
-    arg: { to: string; from: string; regenerate?: boolean; translatorNote?: string },
-): Promise<string> {
-    if (!arg.regenerate) {
-        const cacheMatch = await LLMCacheStorage.getItem(text);
+/** What an LLM translation depends on besides its source text: read once, detached, before any await. */
+interface LLMTranslationContext {
+    steps: TranslatorStep[];
+    to: string;
+    from: string;
+    translatorNote: string;
+}
+
+function resolveTranslatorNote(explicit: string | undefined): string {
+    if (explicit) {
+        return explicit;
+    }
+    const currentChar = selectedCharacter();
+    return currentChar?.type === "character" ? (currentChar.translatorNote ?? "") : "";
+}
+
+/**
+ * The selected preset's steps (a plain copy: an edit or a conflict reload during the requests changes
+ * neither the run nor its cache key) and the languages and translator note, each from `arg` when it
+ * names one and otherwise as `translateHTML` resolves it: the language settings and the selected
+ * character's note.
+ */
+function llmTranslationContext(
+    arg: { to?: string; from?: string; translatorNote?: string } = {},
+): LLMTranslationContext {
+    return {
+        steps: JSON.parse(JSON.stringify(getCurrentTranslatorPreset().steps)) as TranslatorStep[],
+        to: arg.to ?? (settings.memoryTranslateMedia.translator || "en"),
+        from: arg.from ?? settings.memoryTranslateMedia.translatorInputLanguage,
+        translatorNote: resolveTranslatorNote(arg.translatorNote),
+    };
+}
+
+/**
+ * The `LLMTranslateCache` key prefix of a context: a hash of the pipeline signature, the languages,
+ * and the note. Another preset, prompt, or language reads and writes other entries; entries from
+ * before the pipeline (keyed by the bare source) are never read again.
+ */
+function llmCacheKeyPrefix(context: LLMTranslationContext): string {
+    const signature = JSON.stringify({
+        pipeline: translatorPipelineSignature(context.steps),
+        to: context.to,
+        from: context.from,
+        translatorNote: context.translatorNote,
+    });
+    return `llm:${translationSourceHash(signature)}:`;
+}
+
+/**
+ * The full `LLMTranslateCache` key of `text` as `translateHTML` translates it now. A caller that
+ * reads an entry and writes it back later (the translation editors) keeps this key, so the edit
+ * lands on the entry it read even if the preset or languages changed meanwhile.
+ */
+export function llmTranslationCacheKey(text: string): string {
+    return llmCacheKeyPrefix(llmTranslationContext()) + text;
+}
+
+export async function readLLMCacheEntry(key: string): Promise<string | null> {
+    return await LLMCacheStorage.getItem<string>(key);
+}
+
+export async function writeLLMCacheEntry(key: string, value: string): Promise<void> {
+    await LLMCacheStorage.setItem(key, value);
+}
+
+/** `text` translated by the pipeline of `context` (`llmTranslationContext`, read before the caller's first await). */
+async function translateLLM(text: string, context: LLMTranslationContext, regenerate = false): Promise<string> {
+    const cacheKey = llmCacheKeyPrefix(context) + text;
+    if (!regenerate) {
+        const cacheMatch = await readLLMCacheEntry(cacheKey);
         if (cacheMatch !== null) {
-            return cacheMatch as string;
+            return cacheMatch;
         }
     }
     const styleDecodeRegex = /\<risu-style\>(.+?)\<\/risu-style\>/gms;
     let styleDecodes: string[] = [];
-    text = text.replace(styleDecodeRegex, (match, p1) => {
+    const sourceText = text.replace(styleDecodeRegex, (match, p1) => {
         styleDecodes.push(p1);
         return `<style-data style-index="${styleDecodes.length - 1}"></style-data>`;
     });
 
-    const currentChar = selectedCharacter();
-    let translatorNote = "";
-    console.log(arg.translatorNote);
-    if (arg.translatorNote) {
-        translatorNote = arg.translatorNote;
-    } else if (currentChar?.type === "character") {
-        translatorNote = currentChar.translatorNote ?? "";
-    } else {
-        translatorNote = "";
-    }
-    console.log(translatorNote);
-
-    let formated: OpenAIChat[] = [];
-    const preset = getCurrentTranslatorPreset();
-    let prompt = preset.prompt || defaultTranslatorPrompt;
-    let parsedPrompt = parseChatML(
-        prompt
-            .replaceAll("{{slot::from}}", arg.from)
-            .replaceAll("{{slot}}", arg.to)
-            .replaceAll("{{solt::content}}", text)
-            .replaceAll("{{slot::content}}", text)
-            .replaceAll("{{slot::tnote}}", translatorNote),
-    );
-    if (parsedPrompt) {
-        formated = parsedPrompt;
-    } else {
-        prompt = prompt
-            .replaceAll("{{slot}}", arg.to)
-            .replaceAll("{{slot::tnote}}", translatorNote)
-            .replaceAll("{{slot::from}}", arg.from);
-        formated = [
+    let output: string;
+    try {
+        output = await runTranslatorPipeline(
             {
-                role: "system",
-                content: prompt,
+                steps: context.steps,
+                sourceText,
+                to: context.to,
+                from: context.from,
+                translatorNote: context.translatorNote,
             },
-            {
-                role: "user",
-                content: text,
+            async ({ messages, maxResponse }) => {
+                // Every step runs on the `translate` slot until steps name their model (translation slice 3.1).
+                const rq = await requestChatData(
+                    {
+                        formated: messages,
+                        bias: {},
+                        useStreaming: false,
+                        noMultiGen: true,
+                        maxTokens: maxResponse,
+                    },
+                    "translate",
+                );
+                if (rq.type === "fail") {
+                    throw new Error(rq.result);
+                }
+                if (rq.type === "streaming" || rq.type === "multiline") {
+                    throw new Error("Unexpected response type");
+                }
+                return rq.result;
             },
-        ];
-    }
-    const rq = await requestChatData(
-        {
-            formated,
-            bias: {},
-            useStreaming: false,
-            noMultiGen: true,
-            maxTokens: preset.maxResponse,
-        },
-        "translate",
-    );
-
-    if (rq.type === "fail") {
-        alertError(rq.result);
+        );
+    } catch (error) {
+        alertError(error instanceof Error ? error.message : String(error));
         return text;
     }
-    if (rq.type === "streaming" || rq.type === "multiline") {
-        alertError("Unexpected response type");
-        return text;
-    }
-    const result = rq.result
+    const result = output
         .replace(/<style-data style-index="(\d+)" ?\/?>/g, (match, p1) => {
             return styleDecodes[parseInt(p1)] ?? "";
         })
         .replace(/<\/style-data>/g, "");
-    await LLMCacheStorage.setItem(text, result);
+    await writeLLMCacheEntry(cacheKey, result);
     return result;
 }
 
+/** The cached translation of `text` as `translateHTML` translates it now (`llmTranslationCacheKey`). */
 export async function getLLMCache(text: string): Promise<string | null> {
-    return await LLMCacheStorage.getItem(text);
+    return await readLLMCacheEntry(llmTranslationCacheKey(text));
 }
 
+/**
+ * The cached translations, as `translateHTML` translates now, whose source contains `partialKey`;
+ * each `key` is the source text (plugin API v3 `searchTranslationCache`).
+ */
 export async function searchLLMCache(partialKey: string): Promise<{ key: string; value: string }[]> {
+    const prefix = llmCacheKeyPrefix(llmTranslationContext());
     const results: { key: string; value: string }[] = [];
     await LLMCacheStorage.iterate<string, void>((value, key) => {
-        if (key.includes(partialKey)) {
-            results.push({ key, value });
+        if (key.startsWith(prefix) && key.slice(prefix.length).includes(partialKey)) {
+            results.push({ key: key.slice(prefix.length), value });
         }
     });
     return results;
-}
-
-export async function setLLMCache(key: string, value: string): Promise<void> {
-    await LLMCacheStorage.setItem(key, value);
 }
 
 export async function exportLLMCacheAsJSON(): Promise<Record<string, string>> {

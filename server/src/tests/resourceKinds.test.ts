@@ -46,6 +46,15 @@ function token(revision: string) {
 
 const masked = (set: boolean, hint = "") => ({ set, hint });
 const anyString = () => expect.any(String) as unknown as string;
+/** One inherited translator step as the normalizer builds it from a prompt and a size (its id is generated). */
+const translatorStep = (prompt: string, maxResponse: number) => ({
+    id: anyString(),
+    name: "Step 1",
+    enabled: true,
+    prompt,
+    maxResponse,
+    model: { mode: "inherit" },
+});
 
 type KindCase = {
     kind: string;
@@ -422,25 +431,51 @@ const CASES: KindCase[] = [
     {
         kind: "translatorPresets",
         fresh: {
-            items: [{ id: anyString(), name: "Default", prompt: "", maxResponse: 1000 }],
+            items: [{ id: anyString(), name: "Default", steps: [translatorStep("", 1000)] }],
             selectedId: anyString(),
         },
         checkFresh: (data) => expect(data.selectedId).toBe(data.items[0].id),
-        // A blank name is numbered, a non-number `maxResponse` takes the default, and an unknown
-        // `selectedId` falls back to the first item.
+        // A blank name is numbered, the shape before steps becomes one step (a non-number
+        // `maxResponse` takes the default), and an unknown `selectedId` falls back to the first item.
         write: { items: [{ id: "t1", name: "", prompt: "p", maxResponse: "x" }], selectedId: "zzz" },
-        stored: { items: [{ id: "t1", name: "Preset 1", prompt: "p", maxResponse: 1000 }], selectedId: "t1" },
+        stored: { items: [{ id: "t1", name: "Preset 1", steps: [translatorStep("p", 1000)] }], selectedId: "t1" },
         update: {
             items: [
                 { id: "t1", name: "T" },
-                { id: "t2", name: "U", prompt: "q", maxResponse: 5 },
+                {
+                    id: "t2",
+                    name: "U",
+                    steps: [
+                        {
+                            id: "s",
+                            name: "Only",
+                            prompt: "q",
+                            maxResponse: 5,
+                            enabled: true,
+                            model: { mode: "inherit" },
+                        },
+                    ],
+                },
             ],
             selectedId: "t2",
         },
         updated: {
             items: [
-                { id: "t1", name: "T", prompt: "", maxResponse: 1000 },
-                { id: "t2", name: "U", prompt: "q", maxResponse: 5 },
+                { id: "t1", name: "T", steps: [translatorStep("", 1000)] },
+                {
+                    id: "t2",
+                    name: "U",
+                    steps: [
+                        {
+                            id: "s",
+                            name: "Only",
+                            prompt: "q",
+                            maxResponse: 5,
+                            enabled: true,
+                            model: { mode: "inherit" },
+                        },
+                    ],
+                },
             ],
             selectedId: "t2",
         },

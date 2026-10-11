@@ -1,6 +1,6 @@
 # Translation Plan
 
-Status: slice 1.1 done (2026-10-11). No open questions.
+Status: slices 1.1–1.2 done (2026-10-11). No open questions.
 
 Bring the useful part of the Fastify fork's translation work into metatron:
 translations stored on the message, per-chat translation settings, automatic
@@ -169,6 +169,33 @@ its `LLMTranslateCache` key includes the pipeline signature.
 `TranslatorPresetSettings.svelte` keeps editing one prompt: the first step's.
 Tests: the pipeline (pure), and the normalizer migration (old shape, empty
 steps, more than five).
+
+As built:
+
+- The pipeline evaluates no CBS. The tab's old ChatML path ran `risuChatParser`
+  on every ChatML message (the substituted source included) and cut
+  `<Thoughts>` out of it; both are gone. A non-ChatML prompt with an input slot
+  is sent as one system message.
+- The slots are filled in one pass, so text filled in is never read for slots.
+- The `LLMTranslateCache` key hashes the pipeline signature, the languages, and
+  the translator note. Entries keyed by the bare source are dropped without a
+  migration (a browser cache, separate from decision 10). The tab's in-memory
+  `translate` cache is skipped for the LLM translator.
+- `.risutl` stays version 1 and holds the single step; exporting a preset with
+  more than one step or a step on a profile is refused until 3.1.
+- The tab's run does not pin the model preset: each step is a chatless request
+  that resolves it when it starts, so switching chats during a multi-step run
+  can move the later steps to another model preset. Nothing creates such a
+  preset before 3.1, and the server runner (1.3) runs every step with the
+  `modelPresetId` it was given. Pinning a chatless request's presets (a
+  captured scope in `request.ts` and `transport.ts`) belongs with 3.1's
+  per-call profile.
+- Tests: `shared/tests/translatorPipeline.test.ts`,
+  `shared/tests/translatorPresets.test.ts`, the migration cases in
+  `server/src/tests/normalizeCollections.test.ts`,
+  `src/ts/translator/translatorLLM.test.ts` (the cache key and the run), the
+  export refusal in the codec tests, and the first step's editor in
+  `TranslatorPresetSettings.test.ts`. The boot fixture carries the steps shape.
 
 1.3 **Server translation runner.** `POST /api/translate/message`
 `{ characterId, chatId, messageId, modelPresetId, force? }`:
