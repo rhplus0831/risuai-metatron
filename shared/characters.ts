@@ -16,6 +16,15 @@ export class CharacterShapeError extends Error {
     }
 }
 
+/**
+ * The owner's memory-toggle count (`supaMemoryOnCount`): a stored nonnegative safe integer, else 0.
+ * The tab's toggles and the server's trim question read it the same way.
+ */
+export function supaMemoryOnCount(owner: { supaMemoryOnCount?: unknown } | undefined): number {
+    const value = owner?.supaMemoryOnCount;
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
 /** The default image-generation prompt table (a fresh copy each call). */
 export function defaultSdData(): [string, string][] {
     return [

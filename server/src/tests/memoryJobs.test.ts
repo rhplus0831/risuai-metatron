@@ -314,13 +314,54 @@ async function seedCharacter(
     expect(res.status, JSON.stringify(res.body).slice(0, 300)).toBe(200);
     return chaId;
 }
-const readChat = async (chaId: string) =>
+const readChat = async (chaId: string, chatId = "k") =>
     (
         await api("/api/resources/read", {
             method: "POST",
-            body: JSON.stringify({ chats: [{ characterId: chaId, id: "k" }] }),
+            body: JSON.stringify({ chats: [{ characterId: chaId, id: chatId }] }),
         })
     ).body.chats[0] as { revision: string; data: any };
+const readCharacter = async (chaId: string) =>
+    (await api(`/api/resources/characters/${chaId}`)).body as { revision: string; data: any };
+/** A plain client write of the owner record (another tab's toggle). */
+async function patchCharacter(chaId: string, patch: Record<string, unknown>) {
+    const current = await readCharacter(chaId);
+    const res = await batch({
+        ops: [{ kind: "characters", id: chaId, baseRevision: current.revision, data: { ...current.data, ...patch } }],
+    });
+    expect(res.status, JSON.stringify(res.body).slice(0, 300)).toBe(200);
+}
+/** Another chat of `chaId`, bound as `seedCharacter`'s, with `count` long messages. */
+async function seedChat(chaId: string, chatId: string, count = 24) {
+    const res = await batch({
+        chats: [
+            {
+                characterId: chaId,
+                chatId,
+                baseRevision: null,
+                ops: [
+                    {
+                        op: "create",
+                        chat: {
+                            id: chatId,
+                            name: chatId,
+                            fmIndex: -1,
+                            modelPresetId,
+                            promptPresetId: presetId,
+                            bindedPersona: personaId,
+                            message: Array.from({ length: count }, (_, i) => ({
+                                role: i % 2 === 0 ? "user" : "char",
+                                data: longText(i),
+                                chatId: `${chatId}-m${i}`,
+                            })),
+                        },
+                    },
+                ],
+            },
+        ],
+    });
+    expect(res.status, JSON.stringify(res.body).slice(0, 300)).toBe(200);
+}
 async function setChatMeta(chaId: string, set: Record<string, unknown>) {
     const chat = await readChat(chaId);
     const res = await batch({
@@ -340,14 +381,19 @@ function cacheRows(): number {
 
 let attach = 0;
 let currentJobId = "";
-/** Creates a job and follows its owner socket to the terminal. */
+/** An `answer` that sends nothing back (the question stays open). */
+const NO_ANSWER = Symbol("no answer");
+/**
+ * Creates a job and follows its owner socket to the terminal. `extra.chatId` runs it on another
+ * chat of the character; `answer` answers each `question` event with its value (`NO_ANSWER`: none).
+ */
 async function job(
     kind: string,
     chaId: string,
     extra: Record<string, unknown> = {},
-    options: { onEvent?: (event: any) => void } = {},
+    options: { onEvent?: (event: any) => void; answer?: (event: any) => unknown | Promise<unknown> } = {},
 ): Promise<{ status: number; body: any; events: any[]; terminal: GenerationTerminalEvent | undefined }> {
-    const chat = await readChat(chaId);
+    const chat = await readChat(chaId, (extra.chatId as string | undefined) ?? "k");
     const created = await api("/api/generations", {
         method: "POST",
         body: JSON.stringify({
@@ -378,7 +424,7 @@ async function job(
     const events: any[] = [];
     await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, 55_000);
-        ws.onmessage = (message) => {
+        ws.onmessage = async (message) => {
             const event = JSON.parse(String(message.data));
             if (event.type === "ping") {
                 return;
@@ -389,6 +435,12 @@ async function job(
                 clearTimeout(timer);
                 resolve();
             }
+            if (event.type === "question" && options.answer) {
+                const value = await options.answer(event);
+                if (value !== NO_ANSWER) {
+                    ws.send(JSON.stringify({ type: "answer", id: event.id, outcome: "answered", value }));
+                }
+            }
         };
     });
     ws.close();
@@ -396,6 +448,10 @@ async function job(
 }
 const summaries = () => upstream.filter((entry) => entry.summary);
 const mains = () => upstream.filter((entry) => !entry.summary);
+const questions = (events: any[]) => events.filter((event) => event.type === "question");
+/** The `resource` events of the owner record `chaId`. */
+const ownerRecords = (events: any[], chaId: string) =>
+    events.filter((event) => event.type === "resource" && event.kind === "characters" && event.id === chaId);
 const memoryCard = (messages: any[]) =>
     messages.find((m) => typeof m.content === "string" && m.content.includes("<Past Events Summary>"));
 
@@ -810,17 +866,323 @@ describe("HypaV2, SupaMemory, Hanurai, and the priority", () => {
     );
 
     it(
-        "a chat without supaMemory on its character runs no algorithm and trims instead",
+        "a chat without supaMemory on its character runs no algorithm and trims instead, once the trim question is answered 'once'",
         async () => {
             await patchSettings({ hypaV3: true });
             const chaId = await seedCharacter({ extra: { supaMemory: false } });
-            const { terminal } = await job("send", chaId, { input: "Hi", userMessageId: "u1" });
+            const { events, terminal } = await job(
+                "send",
+                chaId,
+                { input: "Hi", userMessageId: "u1" },
+                { answer: () => "once" },
+            );
             expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            // One question, with no text of its own (the tab localizes it).
+            expect(questions(events)).toEqual([expect.objectContaining({ kind: "memoryTrim", payload: {} })]);
             expect(summaries()).toHaveLength(0);
             expect(embedCalls).toHaveLength(0);
             const chat = await readChat(chaId);
             expect(chat.data.hypaV3Data).toBeUndefined();
             expect(chat.data.lastMemory).toMatch(/^m\d+$/);
+            // "Once" records nothing: neither on the chat nor on the character.
+            expect(chat.data.memoryTrimAck).toBeUndefined();
+            const owner = (await readCharacter(chaId)).data;
+            expect([owner.supaMemory, owner.supaMemoryOnCount]).toEqual([false, undefined]);
+            expect(ownerRecords(events, chaId)).toHaveLength(0);
+            // The next over-budget send asks again.
+            const again = await job(
+                "send",
+                chaId,
+                { input: "Hi again", userMessageId: "u2" },
+                { answer: () => "once" },
+            );
+            expect(again.terminal?.type, JSON.stringify(again.terminal)).toBe("done");
+            expect(questions(again.events)).toHaveLength(1);
+            expect(summaries()).toHaveLength(0);
+        },
+        SLOW,
+    );
+});
+
+// The no-memory trim question (`docs/structure/memory.md`, "The no-memory trim question"): a memory
+// method is set, the owner's toggle is off, and the trim would drop chat history. The three answers
+// through the owner socket; the per-chat "don't ask again" against the owner's `supaMemoryOnCount`
+// and its invalidation by a later turn-on; the owner read when the answer is applied (a toggle
+// another tab made while the question waited); a group's one question for both speakers; a
+// preview and an overflow the example dialogue absorbs ask nothing; an invalid answer and an abort
+// while waiting end the job without a trim or a preference written.
+describe("the no-memory trim question", () => {
+    it(
+        "'memory' turns the owner's toggle on (counting the transition), emits the record, runs memory in the same send, and is not asked again",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter({ extra: { supaMemory: false } });
+            const { events, terminal } = await job(
+                "send",
+                chaId,
+                { input: "Hello V3", userMessageId: "u1" },
+                { answer: () => "memory" },
+            );
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(questions(events)).toHaveLength(1);
+            // The owner: on, its first off→on transition counted, the record sent to the tab.
+            const owner = (await readCharacter(chaId)).data;
+            expect([owner.supaMemory, owner.supaMemoryOnCount]).toEqual([true, 1]);
+            expect(ownerRecords(events, chaId).map((event) => event.data.supaMemory)).toEqual([true]);
+            // Memory ran in this send: the summaries, the card in the main request, the data stored.
+            expect(summaries().length).toBeGreaterThan(0);
+            expect(mains()).toHaveLength(1);
+            expect(memoryCard(mains()[0].body.messages)?.content).toContain("Summary 1: events happened.");
+            const chat = await readChat(chaId);
+            expect(chat.data.hypaV3Data.summaries.length).toBe(summaries().length);
+            expect(chat.data.memoryTrimAck).toBeUndefined();
+            // The next send finds the owner on: no question, memory again.
+            upstream.length = 0;
+            const next = await job(
+                "send",
+                chaId,
+                { input: "Hello again", userMessageId: "u2" },
+                { answer: () => "once" },
+            );
+            expect(next.terminal?.type, JSON.stringify(next.terminal)).toBe("done");
+            expect(questions(next.events)).toHaveLength(0);
+            expect(memoryCard(mains()[0].body.messages)).toBeDefined();
+        },
+        SLOW,
+    );
+
+    it(
+        "'ignore' trims, records the owner's count on the chat only, and is void once the toggle is turned on again",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter({ extra: { supaMemory: false } });
+            const first = await job("send", chaId, { input: "Hi", userMessageId: "u1" }, { answer: () => "ignore" });
+            expect(first.terminal?.type, JSON.stringify(first.terminal)).toBe("done");
+            expect(questions(first.events)).toHaveLength(1);
+            expect(summaries()).toHaveLength(0);
+            let chat = await readChat(chaId);
+            expect(chat.data.memoryTrimAck).toBe(0);
+            expect(chat.data.lastMemory).toMatch(/^m\d+$/);
+            expect(chat.data.hypaV3Data).toBeUndefined();
+            const owner = (await readCharacter(chaId)).data;
+            expect([owner.supaMemory, owner.supaMemoryOnCount]).toEqual([false, undefined]);
+            // The next over-budget send of this chat trims without asking.
+            const second = await job("send", chaId, { input: "Hi 2", userMessageId: "u2" }, { answer: () => "memory" });
+            expect(second.terminal?.type, JSON.stringify(second.terminal)).toBe("done");
+            expect(questions(second.events)).toHaveLength(0);
+            expect(summaries()).toHaveLength(0);
+            expect((await readCharacter(chaId)).data.supaMemory).toBe(false);
+            // Another chat of the same owner has no acknowledgment: it is asked.
+            await seedChat(chaId, "k2");
+            const other = await job(
+                "send",
+                chaId,
+                { chatId: "k2", input: "Hi other", userMessageId: "u3" },
+                { answer: () => "once" },
+            );
+            expect(other.terminal?.type, JSON.stringify(other.terminal)).toBe("done");
+            expect(questions(other.events)).toHaveLength(1);
+            expect((await readChat(chaId, "k2")).data.memoryTrimAck).toBeUndefined();
+            // The toggle turned on (the tab counts it) and off again: the acknowledgment is void.
+            await patchCharacter(chaId, { supaMemory: true, supaMemoryOnCount: 1 });
+            await patchCharacter(chaId, { supaMemory: false });
+            const third = await job("send", chaId, { input: "Hi 3", userMessageId: "u4" }, { answer: () => "ignore" });
+            expect(third.terminal?.type, JSON.stringify(third.terminal)).toBe("done");
+            expect(questions(third.events)).toHaveLength(1);
+            chat = await readChat(chaId);
+            expect(chat.data.memoryTrimAck).toBe(1);
+            expect(summaries()).toHaveLength(0);
+            const fourth = await job("send", chaId, { input: "Hi 4", userMessageId: "u5" }, { answer: () => "once" });
+            expect(fourth.terminal?.type, JSON.stringify(fourth.terminal)).toBe("done");
+            expect(questions(fourth.events)).toHaveLength(0);
+        },
+        SLOW,
+    );
+
+    it(
+        "a toggle another tab makes while the question waits is read when the answer is applied",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            // Turned on meanwhile (count 5): "memory" keeps that count (no second transition) and runs memory.
+            const turnedOn = await seedCharacter({ extra: { supaMemory: false } });
+            const onMeanwhile = await job(
+                "send",
+                turnedOn,
+                { input: "Hi", userMessageId: "u1" },
+                {
+                    answer: async () => {
+                        await patchCharacter(turnedOn, { supaMemory: true, supaMemoryOnCount: 5 });
+                        return "memory";
+                    },
+                },
+            );
+            expect(onMeanwhile.terminal?.type, JSON.stringify(onMeanwhile.terminal)).toBe("done");
+            expect(questions(onMeanwhile.events)).toHaveLength(1);
+            const owner = (await readCharacter(turnedOn)).data;
+            expect([owner.supaMemory, owner.supaMemoryOnCount]).toEqual([true, 5]);
+            expect(summaries().length).toBeGreaterThan(0);
+            expect((await readChat(turnedOn)).data.hypaV3Data).toBeDefined();
+            // Cycled meanwhile (on with count 5, then off): "ignore" records the count of that moment, not the one before the question.
+            upstream.length = 0;
+            embedCalls.length = 0;
+            const cycled = await seedCharacter({ extra: { supaMemory: false } });
+            const offAgain = await job(
+                "send",
+                cycled,
+                { input: "Hi", userMessageId: "u1" },
+                {
+                    answer: async () => {
+                        await patchCharacter(cycled, { supaMemory: true, supaMemoryOnCount: 5 });
+                        await patchCharacter(cycled, { supaMemory: false });
+                        return "ignore";
+                    },
+                },
+            );
+            expect(offAgain.terminal?.type, JSON.stringify(offAgain.terminal)).toBe("done");
+            expect(summaries()).toHaveLength(0);
+            expect((await readChat(cycled)).data.memoryTrimAck).toBe(5);
+            expect((await readCharacter(cycled)).data.supaMemoryOnCount).toBe(5);
+            const next = await job("send", cycled, { input: "Hi 2", userMessageId: "u2" }, { answer: () => "memory" });
+            expect(next.terminal?.type, JSON.stringify(next.terminal)).toBe("done");
+            expect(questions(next.events)).toHaveLength(0);
+            expect(summaries()).toHaveLength(0);
+        },
+        SLOW,
+    );
+
+    it(
+        "a group send asks once for both speakers, and 'memory' turns the group's toggle on",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            const bob = await seedCharacter({ count: 0, extra: { name: "Bob" } });
+            const cid = await seedCharacter({ count: 0, extra: { name: "Cid" } });
+            const groupOf = (name: string) =>
+                seedCharacter({
+                    messages: Array.from({ length: 24 }, (_, i) => ({
+                        role: i % 2 === 0 ? "user" : "char",
+                        data: longText(i),
+                        chatId: `m${i}`,
+                        ...(i % 2 === 1 ? { saying: i % 4 === 1 ? bob : cid } : {}),
+                    })),
+                    extra: {
+                        name,
+                        type: "group",
+                        supaMemory: false,
+                        characters: [bob, cid],
+                        characterTalks: [1, 1],
+                        characterActive: [true, true],
+                        orderByOrder: true,
+                        firstMessage: "",
+                        desc: "",
+                    },
+                });
+            const once = await groupOf("Once");
+            const trimmed = await job(
+                "group",
+                once,
+                { input: "hello all", userMessageId: "u1" },
+                { answer: () => "once" },
+            );
+            expect(trimmed.terminal?.type, JSON.stringify(trimmed.terminal)).toBe("done");
+            expect(questions(trimmed.events)).toHaveLength(1);
+            expect(mains()).toHaveLength(2);
+            expect(summaries()).toHaveLength(0);
+            expect((await readChat(once)).data.message.slice(-2).map((m: any) => m.saying)).toEqual([bob, cid]);
+            expect((await readCharacter(once)).data.supaMemory).toBe(false);
+            upstream.length = 0;
+            const memory = await groupOf("Memory");
+            const enabled = await job(
+                "group",
+                memory,
+                { input: "hello all", userMessageId: "u1" },
+                { answer: () => "memory" },
+            );
+            expect(enabled.terminal?.type, JSON.stringify(enabled.terminal)).toBe("done");
+            expect(questions(enabled.events)).toHaveLength(1);
+            const group = (await readCharacter(memory)).data;
+            expect([group.type, group.supaMemory, group.supaMemoryOnCount]).toEqual(["group", true, 1]);
+            expect(ownerRecords(enabled.events, memory)).toHaveLength(1);
+            expect(mains()).toHaveLength(2);
+            expect(summaries().length).toBeGreaterThan(0);
+            // Both speakers' requests carried the memory card; neither member's own toggle was touched.
+            expect(mains().every((entry) => memoryCard(entry.body.messages) !== undefined)).toBe(true);
+            expect((await readCharacter(bob)).data.supaMemoryOnCount).toBeUndefined();
+        },
+        SLOW,
+    );
+
+    it(
+        "a preview trims without asking, and an overflow the example dialogue absorbs asks nothing",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter({ extra: { supaMemory: false } });
+            const preview = await job("preview", chaId, {}, { answer: () => "memory" });
+            expect(preview.terminal?.type, JSON.stringify(preview.terminal)).toBe("done");
+            expect(questions(preview.events)).toHaveLength(0);
+            expect(summaries()).toHaveLength(0);
+            const result = (preview.terminal as any).result as { content: string }[];
+            expect(JSON.stringify(result)).not.toContain("Message number 0:");
+            expect(memoryCard(result)).toBeUndefined();
+            expect((await readCharacter(chaId)).data.supaMemory).toBe(false);
+            expect((await readChat(chaId)).data.memoryTrimAck).toBeUndefined();
+            // Two short stored messages after a long example dialogue: the trim drops only examples.
+            const exampleMessage = Array.from({ length: 6 }, (_, i) =>
+                ["<START>", `{{user}}: ${longText(100 + 2 * i)}`, `{{char}}: ${longText(101 + 2 * i)}`].join("\n"),
+            ).join("\n");
+            const examples = await seedCharacter({ count: 2, extra: { supaMemory: false, exampleMessage } });
+            const sent = await job("send", examples, { input: "Hi", userMessageId: "u1" }, { answer: () => "memory" });
+            expect(sent.terminal?.type, JSON.stringify(sent.terminal)).toBe("done");
+            expect(questions(sent.events)).toHaveLength(0);
+            expect(summaries()).toHaveLength(0);
+            const prompt = JSON.stringify(mains().at(-1)!.body.messages);
+            // The history stayed whole (the greeting and both stored messages); the first example did not.
+            expect(prompt).toContain("Greetings.");
+            expect(prompt).toContain("Message number 0:");
+            expect(prompt).toContain("Message number 1:");
+            expect(prompt).not.toContain("Message number 100:");
+            expect((await readCharacter(examples)).data.supaMemory).toBe(false);
+        },
+        SLOW,
+    );
+
+    it(
+        "an invalid answer, and an abort while the question waits, end the job with nothing trimmed or recorded",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            const invalid = await seedCharacter({ extra: { supaMemory: false } });
+            const refused = await job("send", invalid, { input: "Hi", userMessageId: "u1" }, { answer: () => "nope" });
+            expect(refused.terminal).toMatchObject({
+                type: "error",
+                message: expect.stringContaining("The memory question got no valid answer: nope"),
+            });
+            expect(questions(refused.events)).toHaveLength(1);
+            expect(mains()).toHaveLength(0);
+            expect(summaries()).toHaveLength(0);
+            let chat = await readChat(invalid);
+            expect([chat.data.lastMemory, chat.data.memoryTrimAck]).toEqual([undefined, undefined]);
+            // The user message of the input stage stays; the error is the job's, never a chat message.
+            expect(chat.data.message.at(-1).data).toBe("Hi");
+            expect((await readCharacter(invalid)).data.supaMemory).toBe(false);
+            const aborted = await seedCharacter({ extra: { supaMemory: false } });
+            const cancelled = await job(
+                "send",
+                aborted,
+                { input: "Hi", userMessageId: "u1" },
+                {
+                    answer: async () => {
+                        await api(`/api/generations/${currentJobId}?clientId=tab`, { method: "DELETE" });
+                        return NO_ANSWER;
+                    },
+                },
+            );
+            expect(cancelled.terminal?.type, JSON.stringify(cancelled.terminal)).toBe("error");
+            expect((cancelled.terminal as any).message).toMatch(/abort/i);
+            expect(questions(cancelled.events)).toHaveLength(1);
+            await sleep(300);
+            expect(mains()).toHaveLength(0);
+            chat = await readChat(aborted);
+            expect([chat.data.lastMemory, chat.data.memoryTrimAck]).toEqual([undefined, undefined]);
+            expect((await readCharacter(aborted)).data.supaMemory).toBe(false);
         },
         SLOW,
     );

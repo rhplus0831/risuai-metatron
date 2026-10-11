@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { ChatOp, CheckpointOutcome, MessageGeneration } from "../../../shared/chats.ts";
 import type { Chat, character, groupChat, Message, MessageGenerationInfo } from "../../../shared/database.ts";
-import type { CallbackPayloads, CallbackResult } from "../../../shared/jobs.ts";
+import { supaMemoryOnCount } from "../../../shared/characters.ts";
+import {
+    type CallbackPayloads,
+    type CallbackResult,
+    MEMORY_TRIM_CHOICES,
+    type MemoryTrimChoice,
+} from "../../../shared/jobs.ts";
 import type { StreamResponseChunk } from "../../../shared/llm/request.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
@@ -608,6 +614,80 @@ async function runSpeaker(arg: {
     }
 
     /**
+     * `AssemblyHost.memoryTrim.confirm`: none for a preview (it trims as before); "memory" when the user
+     * turned memory on in this job or the owner stored now has it on; the user's answer when this job
+     * already asked; "trim" when this chat said "don't ask again" since the owner's memory was last
+     * turned on (checked anew each time: a turn-on during the job voids it); otherwise the owner's tab
+     * is asked. The owner (a character or a group) is the job's `characterId`, read from the store, not
+     * the job's frozen projection.
+     */
+    async function confirmMemoryTrim(): Promise<"memory" | "trim"> {
+        if (state.memoryTrim === "memory") {
+            return state.memoryTrim;
+        }
+        if (!INPUT_KINDS.has(job.kind)) {
+            return "trim";
+        }
+        const charactersKind = kinds.get(RESOURCE_KIND.characters);
+        if (!charactersKind) {
+            throw new Error(`Unknown resource kind ${RESOURCE_KIND.characters}`);
+        }
+        const readOwner = () => store.get(charactersKind, characterId)?.data as (character | groupChat) | undefined;
+        const owner = readOwner();
+        if (owner?.supaMemory === true) {
+            state.memoryTrim = "memory";
+            return state.memoryTrim;
+        }
+        if (state.memoryTrim === "trim" || chatNow()?.memoryTrimAck === supaMemoryOnCount(owner)) {
+            return "trim";
+        }
+        const answer = await services.ask({ kind: "memoryTrim", payload: {} }, nativeCtx);
+        setup.check();
+        if (typeof answer !== "string" || !MEMORY_TRIM_CHOICES.includes(answer as MemoryTrimChoice)) {
+            throw new SendError(`The memory question got no valid answer: ${String(answer)}`);
+        }
+        const choice = answer as MemoryTrimChoice;
+        if (choice === "memory") {
+            // Read inside the write (it may run again on a conflict): an owner turned on meanwhile is
+            // kept as it is, and only a real off→on transition counts.
+            let found = false;
+            job.write(() => {
+                const row = store.get(charactersKind, characterId);
+                found = !!row;
+                const data = row?.data as (character | groupChat) | undefined;
+                if (!row || !data || data.supaMemory === true) {
+                    return {};
+                }
+                return {
+                    ops: [
+                        {
+                            kind: charactersKind,
+                            id: characterId,
+                            baseRevision: row.revision,
+                            data: { ...data, supaMemory: true, supaMemoryOnCount: supaMemoryOnCount(data) + 1 },
+                        },
+                    ],
+                };
+            });
+            if (!found) {
+                throw new GenerationRunnerError(404, "The job's character no longer exists");
+            }
+            refreshCharacter(store, kinds, scope, characterId);
+            job.emitRecords({ refs: [{ kind: RESOURCE_KIND.characters, id: characterId }] });
+            state.memoryTrim = "memory";
+            return state.memoryTrim;
+        }
+        if (choice === "ignore") {
+            services.writeChat((chat) => {
+                const count = supaMemoryOnCount(readOwner());
+                return chat.memoryTrimAck === count ? null : [{ op: "meta", set: { memoryTrimAck: count } }];
+            }, nativeCtx);
+        }
+        state.memoryTrim = "trim";
+        return state.memoryTrim;
+    }
+
+    /**
      * Closes the generation (its final write, the text as stored when none is given). A final write the
      * store ignored (another write closed the generation first) did not persist the reply: an error.
      */
@@ -807,6 +887,10 @@ async function runSpeaker(arg: {
                             ? [{ op: "meta", set: { lastMemory: memo } }]
                             : [{ op: "meta", unset: ["lastMemory"] }];
                     }, nativeCtx);
+                },
+                memoryTrim: {
+                    enabled: () => state.memoryTrim === "memory",
+                    confirm: confirmMemoryTrim,
                 },
                 memory,
                 writeMemory: (build) => {

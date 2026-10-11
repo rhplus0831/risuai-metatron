@@ -648,8 +648,9 @@ describe("characters another writer created or deleted", () => {
         ] as any;
         settings.hypaV3Presets.selectedId = "h";
         selection.selectCharacterAt(1);
-        // Selecting `d` is a selection: it switches its memory on (a write).
+        // Selecting `d` is a selection: it switches its memory on (a write), counting the turn-on.
         expect(character("d").supaMemory).toBe(true);
+        expect(character("d").supaMemoryOnCount).toBe(1);
         character("d").supaMemory = false;
         await tick();
         await sync.flushResources();

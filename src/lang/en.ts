@@ -1130,6 +1130,11 @@ export const languageEnglish = {
     innerFormat: "Inner Format",
     HypaMemory: "HypaMemory",
     ToggleHypaMemory: "Toggle HypaMemory",
+    memoryTrimWarning:
+        "Long-term memory is set up, but it is off for this chat. The prompt is over the context size, so the oldest messages will be left out of what the model sees.",
+    memoryTrimEnable: "Turn memory on and send",
+    memoryTrimOnce: "Send without them this time",
+    memoryTrimIgnore: "Send without them, and don't ask again in this chat",
     resetPromptTemplateConfirm: "Do you really want to reset prompt template?",
     emotionMethod: "Emotion Method",
     continueResponse: "Continue Response",

@@ -21,6 +21,7 @@
         setGlobalChatVar,
     } from "src/ts/parser/chatVar.svelte";
     import { PinIcon } from "@lucide/svelte";
+    import { supaMemoryOnCount } from "../../../shared/characters.ts";
 
     const currentCharacter = $derived(selectedCharacter());
     interface Props {
@@ -29,6 +30,19 @@
     }
 
     let { chara = $bindable(), noContainer }: Props = $props();
+
+    // Turning memory on counts (`supaMemoryOnCount`): it voids every chat's "don't ask again" answer to
+    // the no-memory trim question.
+    const getMemoryToggle = () => chara?.supaMemory ?? false;
+    const setMemoryToggle = (on: boolean) => {
+        if (!chara) {
+            return;
+        }
+        if (on && !chara.supaMemory) {
+            chara.supaMemoryOnCount = supaMemoryOnCount(chara) + 1;
+        }
+        chara.supaMemory = on;
+    };
 
     const jailbreakToggleToken = "{{jbtoggled}}";
     const usesJailbreakToggle = (value?: string) => typeof value === "string" && value.includes(jailbreakToggleToken);
@@ -215,16 +229,16 @@
         {/if}
 
         {@render toggles(groupedToggles, true)}
-        {#if chara && (settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypaV3)}
+        {#if chara && (settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypav2 || settings.memoryTranslateMedia.hypaV3)}
             <div class="flex mt-2 items-center w-full">
                 <CheckInput
-                    bind:check={chara.supaMemory}
+                    bind:check={getMemoryToggle, setMemoryToggle}
                     reverse
                     name={settings.memoryTranslateMedia.hypaV3
                         ? language.ToggleHypaMemory
                         : settings.memoryTranslateMedia.hanuraiEnable
                           ? language.hanuraiMemory
-                          : settings.memoryTranslateMedia.hypaMemory
+                          : settings.memoryTranslateMedia.hypaMemory || settings.memoryTranslateMedia.hypav2
                             ? language.ToggleHypaMemory
                             : language.ToggleSuperMemory}
                 />
@@ -238,15 +252,15 @@
         </div>
     {/if}
     {@render toggles(groupedToggles)}
-    {#if chara && (settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypaV3)}
+    {#if chara && (settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypav2 || settings.memoryTranslateMedia.hypaV3)}
         <div class="flex mt-2 items-center">
             <CheckInput
-                bind:check={chara.supaMemory}
+                bind:check={getMemoryToggle, setMemoryToggle}
                 name={settings.memoryTranslateMedia.hypaV3
                     ? language.ToggleHypaMemory
                     : settings.memoryTranslateMedia.hanuraiEnable
                       ? language.hanuraiMemory
-                      : settings.memoryTranslateMedia.hypaMemory
+                      : settings.memoryTranslateMedia.hypaMemory || settings.memoryTranslateMedia.hypav2
                         ? language.ToggleHypaMemory
                         : language.ToggleSuperMemory}
             />

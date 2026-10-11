@@ -15,7 +15,12 @@ import type {
     HydrationReceipt,
     ScriptHookMode,
 } from "../../../shared/jobs.ts";
-import { MAX_PROVIDER_TEXT_CHARS, SCRIPT_HOOK_MODES, TAB_MCP_IDENTIFIERS } from "../../../shared/jobs.ts";
+import {
+    MAX_PROVIDER_TEXT_CHARS,
+    MEMORY_TRIM_CHOICES,
+    SCRIPT_HOOK_MODES,
+    TAB_MCP_IDENTIFIERS,
+} from "../../../shared/jobs.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { compareRevision } from "../../../shared/resources.ts";
 import {
@@ -32,6 +37,7 @@ import {
     alertWait,
     waitAlert,
 } from "../alert";
+import { language } from "../../lang";
 import type { MCPClientLike } from "../process/mcp/internalmcp";
 import { registeredCustomPluginMCPs } from "../process/mcp/pluginmcp";
 import type { character } from "../storage/database.svelte";
@@ -292,6 +298,14 @@ async function ask(event: GenerationQuestionEvent): Promise<unknown> {
             return await alertSelectChar();
         case "alertModuleSelect":
             return await alertModuleSelect();
+        case "memoryTrim": {
+            // The buttons answer their index; anything else is no answer (the server ends the send).
+            const picked = await alertSelect(
+                [language.memoryTrimEnable, language.memoryTrimOnce, language.memoryTrimIgnore],
+                language.memoryTrimWarning,
+            );
+            return /^[0-2]$/.test(picked) ? MEMORY_TRIM_CHOICES[Number(picked)] : null;
+        }
     }
 }
 

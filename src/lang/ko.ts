@@ -1053,6 +1053,11 @@ export const languageKorean = {
     innerFormat: "내부 포맷",
     HypaMemory: "하이파메모리",
     ToggleHypaMemory: "하이파메모리 토글",
+    memoryTrimWarning:
+        "장기 메모리가 설정되어 있지만 이 채팅은 메모리가 꺼져 있어요. 프롬프트가 컨텍스트 크기를 넘어서, 가장 오래된 메시지부터 모델에 보내지 않게 돼요.",
+    memoryTrimEnable: "메모리 켜고 전송",
+    memoryTrimOnce: "이번만 잘라서 전송",
+    memoryTrimIgnore: "상관없음 (이 채팅에서는 다시 묻지 않기)",
     resetPromptTemplateConfirm: "정말로 프롬프트 템플릿을 초기화하시겠습니까?",
     emotionMethod: "감정 방식",
     continueResponse: "응답 계속하기",

@@ -310,6 +310,45 @@ describe("notices and questions", () => {
         ]);
     });
 
+    it("shows the memoryTrim question as a localized selection and answers only a button's choice", async () => {
+        // The mocked `language` is the dispatcher's own instance: the strings it shows.
+        const { language } = await import("../../lang");
+        Object.assign(language, {
+            memoryTrimWarning: "memory is off",
+            memoryTrimEnable: "turn on",
+            memoryTrimOnce: "once",
+            memoryTrimIgnore: "ignore",
+        });
+        send(question("q1", "memoryTrim", {}));
+        expect(alert()).toMatchObject({ type: "select", msg: "__DISPLAY__memory is off||turn on||once||ignore" });
+        userAnswers("0");
+        await pump();
+        send(question("q2", "memoryTrim", {}));
+        userAnswers("1");
+        await pump();
+        send(question("q3", "memoryTrim", {}));
+        userAnswers("2");
+        await pump();
+        // Not a button: a closed alert, an index out of range, a choice name typed in.
+        send(question("q4", "memoryTrim", {}));
+        userAnswers("");
+        await pump();
+        send(question("q5", "memoryTrim", {}));
+        userAnswers("3");
+        await pump();
+        send(question("q6", "memoryTrim", {}));
+        userAnswers("memory");
+        await pump();
+        expect(tx.answers).toEqual([
+            { type: "answer", id: "q1", outcome: "answered", value: "memory" },
+            { type: "answer", id: "q2", outcome: "answered", value: "once" },
+            { type: "answer", id: "q3", outcome: "answered", value: "ignore" },
+            { type: "answer", id: "q4", outcome: "answered", value: null },
+            { type: "answer", id: "q5", outcome: "answered", value: null },
+            { type: "answer", id: "q6", outcome: "answered", value: null },
+        ]);
+    });
+
     it("shows a toast at once while idle, awaits a modal notice before a later question, and applies the other effects directly", async () => {
         send(notice("alertToast", { message: "now" }));
         expect(alert()).toMatchObject({ type: "toast", msg: "now" });

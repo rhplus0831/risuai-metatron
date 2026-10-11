@@ -5,7 +5,7 @@ import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 // Before `../stores.svelte`: its module effects read `selectedCharacter()` while this module is still loading.
 import { onCharacterSelected, selectCharacter, selection } from "./selection.svelte";
-import { CharacterShapeError, normalizeCharacter } from "../../../shared/characters.ts";
+import { CharacterShapeError, normalizeCharacter, supaMemoryOnCount } from "../../../shared/characters.ts";
 import { ModuleShapeError, upgradeLorebook } from "../../../shared/modules.ts";
 import type { Chat } from "../../../shared/database.ts";
 import {
@@ -379,18 +379,20 @@ export function selectedCharacter(): AnyClientCharacter | undefined {
     return chaId === null ? undefined : list().find((entry) => entry?.chaId === chaId);
 }
 
-// The HypaV3 preset that turns memory on for every chat does so when a character is selected.
+// The HypaV3 preset that turns memory on for every chat does so when a character is selected (a
+// turn-on that counts, as the toggle's: `supaMemoryOnCount`).
 onCharacterSelected((chaId) => {
     untrack(() => {
+        const found = findCharacter(chaId);
         if (
             settings.memoryTranslateMedia.hypaV3 &&
             selectedHypaV3Preset({
                 hypaV3Presets: settings.hypaV3Presets.items,
                 hypaV3PresetId: settings.hypaV3Presets.selectedId,
             })?.settings?.alwaysToggleOn &&
-            findCharacter(chaId)?.supaMemory !== true
+            found?.supaMemory !== true
         ) {
-            updateCharacter(chaId, { supaMemory: true });
+            updateCharacter(chaId, { supaMemory: true, supaMemoryOnCount: supaMemoryOnCount(found) + 1 });
         }
     });
 });

@@ -688,6 +688,12 @@ export interface character {
         normalize: boolean;
     };
     supaMemory?: boolean;
+    /**
+     * How many times `supaMemory` was turned on (off→on) by the memory toggle, its HypaV3
+     * `alwaysToggleOn`, or the trim question's "turn memory on"; missing is 0. A chat's
+     * `memoryTrimAck` holds only while it equals this (`supaMemoryOnCount` in `shared/characters.ts`).
+     */
+    supaMemoryOnCount?: number;
     additionalAssets?: [string, string, string][];
     ttsReadOnlyQuoted?: boolean;
     replaceGlobalNote: string;
@@ -785,6 +791,8 @@ export interface groupChat {
     firstMsgIndex?: number;
     loreSettings?: loreSettings;
     supaMemory?: boolean;
+    /** The group's `supaMemoryOnCount` (see `character`). */
+    supaMemoryOnCount?: number;
     ttsMode?: string;
     suggestMessages?: string[];
     orderByOrder?: boolean;
@@ -1138,6 +1146,11 @@ export interface Chat {
     supaMemoryData?: string;
     hypaV2Data?: SerializableHypaV2Data;
     lastMemory?: string;
+    /**
+     * The owner's `supaMemoryOnCount` when the user answered "don't ask again" to the no-memory trim
+     * question: the question is skipped for this chat while the owner's count is still this value.
+     */
+    memoryTrimAck?: number;
     suggestMessages?: string[];
     isStreaming?: boolean;
     activeStreamingDisplayOptimizationMode?: StreamingDisplayOptimizationMode;

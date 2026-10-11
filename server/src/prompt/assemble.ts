@@ -82,6 +82,13 @@ export type AssemblyHost = {
     runCurrentChatFunction(): void;
     /** Sets or removes the chat's `lastMemory` (the no-memory trim). */
     setLastMemory(memo: string | undefined): void;
+    /**
+     * The no-memory trim question of the job. `enabled`: the user turned the owner's memory on in
+     * this job (the job's `owner` is a frozen projection). `confirm`: asked when a memory method is
+     * set, the owner's memory is off, and the trim would cut chat history; "memory" to run memory
+     * instead (the toggle is on now), "trim" to trim as before. One answer serves the whole job.
+     */
+    memoryTrim: { enabled(): boolean; confirm(): Promise<"memory" | "trim"> };
     /** The memory algorithms' services of this run (`memory-on-server`). */
     memory: MemoryHost;
     /**
@@ -802,6 +809,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     if (!db.aiModel.startsWith("novelai") && !db?.promptSettings?.trimStartNewChat) {
         chats.push({ role: "system", content: "[Start a new chat]", memo: "NewChat" });
     }
+    // Where the chat history (the greeting, then the stored messages) starts; the example dialogue and
+    // the new-chat marker before it are not history the trim question protects.
+    const historyStart = chats.length;
 
     let msReseted = false;
     const makeMs = (currentChat: Chat) => {
@@ -1012,7 +1022,24 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         currentTokens += await tokenizeChat(chat);
     }
 
-    if (nowChatroom.supaMemory && (db.supaModelType !== "none" || db.hanuraiEnable || db.hypav2 || db.hypaV3)) {
+    const memoryConfigured = db.supaModelType !== "none" || db.hanuraiEnable || db.hypav2 || db.hypaV3;
+    let useMemory = memoryConfigured && (!!nowChatroom.supaMemory || host.memoryTrim.enabled());
+    if (memoryConfigured && !useMemory && currentTokens > maxContextTokens) {
+        // The entries the trim below would drop, counted as it counts them: the question is asked only
+        // when they reach the chat history.
+        let tokens = currentTokens;
+        let dropped = 0;
+        while (tokens > maxContextTokens && chats.length - dropped > 1) {
+            tokens -= await tokenizeChat(chats[dropped]);
+            dropped++;
+        }
+        if (dropped > historyStart) {
+            useMemory = (await host.memoryTrim.confirm()) === "memory";
+            host.fence();
+        }
+    }
+
+    if (useMemory) {
         input.stageTimings.stage1Duration = Date.now() - stage1Start;
         const stage2Start = Date.now();
         // The algorithms count through the job's tokenizer and repair and extend the chat they are

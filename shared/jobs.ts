@@ -239,7 +239,20 @@ export type GenerationQuestion =
     | { kind: "alertSelect"; payload: { options: string[]; display?: string } }
     | { kind: "alertConfirm"; payload: { message: string } }
     | { kind: "alertSelectChar"; payload: Record<string, never> }
-    | { kind: "alertModuleSelect"; payload: Record<string, never> };
+    | { kind: "alertModuleSelect"; payload: Record<string, never> }
+    /**
+     * The no-memory trim question: a memory method is set, the owner's memory toggle is off, and the
+     * prompt is over the context size, so the oldest chat history would be cut. The tab shows its own
+     * localized text and answers a `MemoryTrimChoice`.
+     */
+    | { kind: "memoryTrim"; payload: Record<string, never> };
+
+/**
+ * The answer to `memoryTrim`: turn the owner's memory on and send with it, trim this send only, or
+ * trim and do not ask again in this chat (until the owner's memory is turned on again).
+ */
+export type MemoryTrimChoice = "memory" | "once" | "ignore";
+export const MEMORY_TRIM_CHOICES: readonly MemoryTrimChoice[] = ["memory", "once", "ignore"];
 
 /**
  * The internal MCPs that run in the tab for a job (they need the browser: a directory handle, the

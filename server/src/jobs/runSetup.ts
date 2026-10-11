@@ -80,6 +80,12 @@ export function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promi
  */
 export type JobRunState = {
     budget: LuaBudget;
+    /**
+     * The no-memory trim question's outcome for the job (`AssemblyHost.memoryTrim`): the user's answer
+     * (asked at most once a job), serving every later speaker and round, or "memory" once the owner's
+     * memory was found or turned on. A chat's stored "don't ask again" is not kept here.
+     */
+    memoryTrim?: "memory" | "trim";
     /** The CBS evaluation time of the job, across its runs (`serverCbsLimits`). */
     cbsUsage: CbsUsage;
     effects: { count: number };
