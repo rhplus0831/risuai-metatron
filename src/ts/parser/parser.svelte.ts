@@ -2,6 +2,7 @@ import { untrack } from "svelte";
 import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { type ChatRef, currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
+import { isRecordWrapper } from "../storage/records.svelte";
 import {
     isForwardedPresetRoot,
     scopedPresetRoot,
@@ -458,6 +459,60 @@ type AssetPaths = {
 let assetsCache: AssetPaths | null = null;
 let emoAssetsCache: AssetPaths | null = null;
 
+/** A character asset prepared for `getClosestMatch`: its lower-cased name and `trimmer` of it. */
+type FuzzyAsset = { trimmed: string; path: string; ext: string };
+/** The closest asset to one trimmed reference and its distance; null when there is no asset. */
+type FuzzyMatch = { path: string; ext: string; dist: number } | null;
+type FuzzyIndex = {
+    assets: FuzzyAsset[];
+    /** Trimmed name -> the first asset with it: a distance-0 match without the scan. */
+    exact: Map<string, FuzzyAsset>;
+    /** Trimmed reference -> its closest asset, hits and misses alike (the threshold applies at read). */
+    results: Map<string, FuzzyMatch>;
+};
+
+/** `getClosestMatch`'s index of one asset list, built again when the list or an asset in it changes. */
+class FuzzyIndexSource {
+    #assets: [string, string, string][];
+    readonly index: FuzzyIndex = $derived.by(() => buildFuzzyIndex(this.#assets));
+
+    constructor(assets: [string, string, string][]) {
+        this.#assets = assets;
+    }
+}
+
+/**
+ * The index source per character record's asset list (the list keeps its wrapper). The module root
+ * below creates each one: a derived stops updating once the effect it was created in is destroyed,
+ * and it keeps the component context it was created in, so a rendering message must not own it.
+ */
+const fuzzyIndexes = new WeakMap<object, FuzzyIndexSource>();
+/** Lists a lookup found without a source, with the index it built meanwhile (untracked). */
+let pendingFuzzyLists = new Map<object, FuzzyIndex>();
+let pendingFuzzyVersion = $state(0);
+/** Bumped once the pending lists have their sources; a lookup that found none reads it. */
+let fuzzySourcesVersion = $state(0);
+/** Clears a list's cached results past this many distinct references. */
+const FUZZY_RESULT_LIMIT = 10000;
+
+$effect.root(() => {
+    $effect(() => {
+        pendingFuzzyVersion;
+        untrack(() => {
+            if (pendingFuzzyLists.size === 0) {
+                return;
+            }
+            for (const assets of pendingFuzzyLists.keys()) {
+                if (!fuzzyIndexes.has(assets)) {
+                    fuzzyIndexes.set(assets, new FuzzyIndexSource(assets as [string, string, string][]));
+                }
+            }
+            pendingFuzzyLists = new Map();
+            fuzzySourcesVersion++;
+        });
+    });
+});
+
 export function resetAssetsCache(charAssets: string[][], emoAssets: string[][], moduleAssets: string[][]) {
     const assetPaths: AssetPaths = {};
     const charEmoPaths: AssetPaths = {};
@@ -550,9 +605,7 @@ async function parseAdditionalAssets(
                 return "";
             }
 
-            if (assetPaths) {
-                match = getClosestMatch(char, name, assetPaths);
-            }
+            match = getClosestMatch(char, name);
 
             if (!match) {
                 return "";
@@ -614,40 +667,87 @@ async function parseAdditionalAssets(
     return data;
 }
 
+/**
+ * The character asset closest to `name` (lower-cased) by `getDistance` of the trimmed names, the
+ * first one on a tie; null past `assetMaxDifference`. The result per trimmed name, a miss included,
+ * is cached on the asset list's index, which a change of the list replaces (and a render that read
+ * it reruns).
+ */
 function getClosestMatch(
     char: simpleCharacterArgument | character | AnyClientCharacter,
     name: string,
-    assetPaths: AssetPaths,
-) {
-    if (!char.additionalAssets) return null;
+): AssetPaths[string] | null {
+    const assets = char.additionalAssets;
+    if (!assets) return null;
 
-    let closest = "";
-    let closestDist = 999999;
-    let targetPath = "";
-    let targetExt = "";
-
+    const index = fuzzyIndexOf(assets);
     const trimmedName = trimmer(name);
-    for (const asset of char.additionalAssets) {
-        const key = asset[0].toLocaleLowerCase();
-        const dist = getDistance(trimmedName, trimmer(key));
-        if (dist < closestDist) {
-            closest = key;
-            closestDist = dist;
-            targetPath = asset[1];
-            targetExt = asset[2];
+    let best = index.results.get(trimmedName);
+    if (best === undefined) {
+        best = closestAsset(index, trimmedName);
+        if (index.results.size >= FUZZY_RESULT_LIMIT) {
+            index.results.clear();
         }
+        index.results.set(trimmedName, best);
     }
 
-    if (closestDist > settings.ui.assetMaxDifference) {
+    if (!best || best.dist > settings.ui.assetMaxDifference) {
         return null;
     }
+    return { srcPaths: [best.path], ext: best.ext };
+}
 
-    assetPaths[closest] = {
-        srcPaths: [targetPath],
-        ext: targetExt,
-    };
+/**
+ * A record list's index: its source's, else (until the module root creates the source) one built
+ * untracked, with a dependency that reruns the render once the source exists. Any other list is
+ * built per lookup, tracked (a `$state` array's edit reruns the render).
+ */
+function fuzzyIndexOf(assets: [string, string, string][]): FuzzyIndex {
+    if (!isRecordWrapper(assets)) {
+        return buildFuzzyIndex(assets);
+    }
+    const source = fuzzyIndexes.get(assets);
+    if (source) {
+        return source.index;
+    }
+    fuzzySourcesVersion;
+    let index = pendingFuzzyLists.get(assets);
+    if (!index) {
+        index = untrack(() => buildFuzzyIndex(assets));
+        if (pendingFuzzyLists.size === 0) {
+            // Not from here: a lookup runs inside a render's derived, which must not write state.
+            queueMicrotask(() => pendingFuzzyVersion++);
+        }
+        pendingFuzzyLists.set(assets, index);
+    }
+    return index;
+}
 
-    return assetPaths[closest];
+function buildFuzzyIndex(assets: [string, string, string][]): FuzzyIndex {
+    const index: FuzzyIndex = { assets: [], exact: new Map(), results: new Map() };
+    for (const asset of assets) {
+        const entry: FuzzyAsset = { trimmed: trimmer(asset[0].toLocaleLowerCase()), path: asset[1], ext: asset[2] };
+        index.assets.push(entry);
+        if (!index.exact.has(entry.trimmed)) {
+            index.exact.set(entry.trimmed, entry);
+        }
+    }
+    return index;
+}
+
+function closestAsset(index: FuzzyIndex, trimmedName: string): FuzzyMatch {
+    const exact = index.exact.get(trimmedName);
+    if (exact) {
+        return { path: exact.path, ext: exact.ext, dist: 0 };
+    }
+    let best: FuzzyMatch = null;
+    for (const asset of index.assets) {
+        const dist = getDistance(trimmedName, asset.trimmed);
+        if (!best || dist < best.dist) {
+            best = { path: asset.path, ext: asset.ext, dist };
+        }
+    }
+    return best;
 }
 
 //Levenshtein distance, new with 1d array
