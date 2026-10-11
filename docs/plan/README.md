@@ -10,13 +10,6 @@ When no plans are active, keep the list below set to `None`.
 
 Active planning and implementation:
 
-- [Shared API Keys](shared-api-keys.md): move LLM credentials into a named key
-  list that each model binds to (done; named keys for the auxiliary
-  operations are the open follow-up).
-- [Model Profiles](model-profiles.md): split the model preset into model
-  profiles (model, key, connection options) and the slots that pick them,
-  so each auxiliary model has its own key and endpoint (done; the `submodel`
-  slot and the remaining global provider toggles are the open follow-ups).
 - [URL Routes](url-routes.md): give each screen a history-mode address kept in
   sync with the existing stores, with closes going back in history (slices 1–5
   done; the manual checks, H1's among them, are open).
@@ -32,3 +25,14 @@ Active planning and implementation:
   bound) closed out at commit `809b35cc`; their last versions are in that
   commit's tree. The guides and code comments still name them by path (and
   Chat Binding's decisions by number).
+- Shared API Keys (`shared-api-keys.md`: LLM credentials as a named key list
+  each model binds to) and Model Profiles (`model-profiles.md`: the model
+  preset split into model profiles and the slots that pick them) closed out at
+  commit `317a97ce`; their last versions are in that commit's tree. The guides,
+  code comments, and tests still name them by path (and Model Profiles'
+  decisions as O1–O9). Their open follow-ups: named keys for the `/proxy2`
+  auxiliary operations and `getFreeOpenRouterModels` (`llm-requests.md` "Known
+  Hazards"), the `submodel` mode as its own slot (O3), and the global provider
+  behavior toggles (O7: `openrouterMiddleOut`, `openrouterFallback`, the
+  caching flags, `autofillRequestUrl`, `reverseProxyOobaMode`, `vertexRegion`)
+  moving to the profile.
