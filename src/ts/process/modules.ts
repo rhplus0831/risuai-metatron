@@ -26,6 +26,7 @@ import { get } from "svelte/store";
 import { convertCharacterToModule, convertModuleToCharacter } from "../interchangeability";
 import { exportCharacterCard, importCharacterProcess } from "../characterCards";
 import { upgradeLorebook, type RisuModule } from "../../../shared/modules.ts";
+import { personaLinksModule, personaModuleIdSet } from "../../../shared/personas.ts";
 
 export type { MCPModule, RisuModule } from "../../../shared/modules.ts";
 
@@ -418,9 +419,12 @@ function getModuleById(id: string) {
     return null;
 }
 
-function getModuleByIds(ids: string[]) {
+/** The stored modules `ids` name (by id or namespace) or `personaIds` links (`personaLinksModule`), first of an id. */
+function getModuleByIds(ids: string[], personaIds: ReadonlySet<string> = new Set()) {
     const idSet = new Set(ids);
-    const modules = settings.modules.filter((m) => idSet.has(m.id) || (m.namespace && idSet.has(m.namespace)));
+    const modules = (settings.modules ?? []).filter(
+        (m) => idSet.has(m.id) || (m.namespace && idSet.has(m.namespace)) || personaLinksModule(personaIds, m),
+    );
     return deduplicateModuleById(modules);
 }
 
@@ -445,9 +449,11 @@ export type ModuleChatRef = { chaId: string; chatId: string } | null | undefined
 /**
  * The enabled modules for `chatRef`'s chat and character (default: the selected ones): the global
  * list, the chat's and the character's modules, the bound persona's embedded module, and the
- * prompt preset's integration list: `scope`'s preset (a parse for a captured context, a
- * `presetChain` pick included), else `chatRef`'s display preset (`docs/plan/chat-binding.md`), else
- * the settings view, which follows the selected chat.
+ * prompt preset's integration list, all matched by id or namespace, plus the bound persona's linked
+ * modules, matched apart (by id only, MCP modules excepted: `personaLinksModule`). The integration
+ * list is `scope`'s preset's (a parse for a captured context, a `presetChain` pick included), else
+ * `chatRef`'s display preset's (`docs/plan/chat-binding.md`), else the settings view's, which
+ * follows the selected chat.
  */
 export function getModules(chatRef?: ModuleChatRef, scope?: PresetScope) {
     const character = chatRef ? characterList().find((entry) => entry?.chaId === chatRef.chaId) : selectedCharacter();
@@ -463,6 +469,7 @@ export function getModules(chatRef?: ModuleChatRef, scope?: PresetScope) {
     if (persona && persona.embeddedModule) {
         ids = ids.concat([persona.embeddedModule?.id]);
     }
+    const personaIds = personaModuleIdSet(persona);
     const integration =
         scope || chatRef
             ? (readPresetFieldOf(scope ?? chatDisplayIds(chatRef!), "moduleIntergration") as string | undefined)
@@ -471,12 +478,13 @@ export function getModules(chatRef?: ModuleChatRef, scope?: PresetScope) {
         const intList = integration.split(",").map((s) => s.trim());
         ids = ids.concat(intList);
     }
-    const idsJoined = ids.join("-");
+    // The persona's links resolve apart from the other ids (by id only), so they key apart too.
+    const idsJoined = JSON.stringify([ids, [...personaIds]]);
     if (lastModules === idsJoined) {
         return lastModuleData;
     }
 
-    let modules: RisuModule[] = getModuleByIds(ids);
+    let modules: RisuModule[] = getModuleByIds(ids, personaIds);
     lastModules = idsJoined;
     lastModuleData = modules;
     return modules;
@@ -627,9 +635,8 @@ export function moduleUpdate() {
         }
     });
 
-    if (backgroundEmbedding) {
-        moduleBackgroundEmbedding.set(backgroundEmbedding);
-    }
+    // Also when empty: unlinking the last module with a background clears it.
+    moduleBackgroundEmbedding.set(backgroundEmbedding);
     HideIconStore.set(selectedCharacter()?.hideChatIcon || moduleHideIcon);
 
     if (lastModuleIds !== ids) {

@@ -292,3 +292,143 @@ describe("PersonaSettings with a chat open (slice 5)", () => {
         expect(chatEntry(refK)).toMatchObject({ bindedPersona: "p2" });
     });
 });
+
+// The Module Link section: the linkable list is the catalog's non-MCP modules with a non-blank id,
+// each id once (the first, as the resolvers pick), named by `name` or by the id when the name is
+// blank, sorted by that name and filtered by the search; a duplicate id or a nameless module does not
+// break the render (Astra's challenge points 1 and 2). A row toggles the id on the persona the editor
+// shows (the open chat's bound persona, else the tab's), written in canonical form so the mirror
+// equals what the server stores (D2; point 3): unknown ids stay, blank ones go. An unmatched search
+// says so; a catalog without a linkable module says that instead (point 4).
+describe("PersonaSettings module links", () => {
+    const chat = (id: string, fields: Record<string, unknown> = {}) => ({
+        id,
+        name: id.toUpperCase(),
+        note: "",
+        localLore: [],
+        message: [{ role: "char", data: "hi", chatId: `m-${id}` }],
+        ...fields,
+    });
+    const refK = { chaId: "c", chatId: "k" };
+    const catalog = [
+        { id: "zeta", name: "Zeta", description: "" },
+        { id: "dup", name: "Dup A", description: "" },
+        { id: "dup", name: "Dup B", description: "" },
+        { id: "unnamed", description: "" },
+        { id: "   ", name: "Blank id", description: "" },
+        { id: "mcpmod", name: "Mcp", description: "", mcp: { url: "http://mcp" } },
+    ];
+
+    function renderLinks() {
+        const page = render();
+        const rows = () => [
+            ...page.target.querySelectorAll<HTMLButtonElement>(`button[aria-label^="${language.personaModuleLink}: "]`),
+        ];
+        const names = () => rows().map((row) => row.textContent?.trim());
+        const pressed = () =>
+            rows()
+                .filter((row) => row.getAttribute("aria-pressed") === "true")
+                .map((row) => row.textContent?.trim());
+        const rowNamed = (name: string) => rows().find((row) => row.textContent?.trim() === name)!;
+        const search = (query: string) => {
+            const input = page.target.querySelector<HTMLInputElement>(`input[placeholder="${language.search}"]`)!;
+            input.value = query;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            flushSync();
+        };
+        return { ...page, rows, names, pressed, rowNamed, search };
+    }
+
+    function install(modules: Record<string, unknown>[], personaFields: Record<string, unknown> = {}) {
+        installFlatDatabaseWithChats({
+            characters: [
+                { chaId: "c", type: "character", name: "C", chatPage: 0, chats: [chat("k", { bindedPersona: "p2" })] },
+            ],
+            personas: [
+                { id: "p1", name: "Ann", icon: "", note: "", personaPrompt: "", largePortrait: false },
+                {
+                    id: "p2",
+                    name: "Bob",
+                    icon: "",
+                    note: "",
+                    personaPrompt: "",
+                    largePortrait: false,
+                    ...personaFields,
+                },
+            ],
+            modules,
+        } as unknown as Database);
+        selectPersona("p1");
+        selectCharacter("c");
+        selectChat("c", "k");
+    }
+
+    afterEach(() => {
+        selectCharacter(null);
+    });
+
+    it("renders a catalog with a duplicate id, a nameless module, a blank id, and an MCP module: first of an id, named by id when nameless, the others left out", () => {
+        install(catalog);
+        const page = renderLinks();
+        expect(page.names()).toEqual(["Dup A", "unnamed", "Zeta"]);
+        expect(page.rowNamed("unnamed").getAttribute("aria-label")).toBe(`${language.personaModuleLink}: unnamed`);
+        expect(page.pressed()).toEqual([]);
+        // The search matches the display name, the id for a nameless module included.
+        page.search("UNNAMED");
+        expect(page.names()).toEqual(["unnamed"]);
+        page.search("dup");
+        expect(page.names()).toEqual(["Dup A"]);
+        page.search("");
+        expect(page.names()).toEqual(["Dup A", "unnamed", "Zeta"]);
+    });
+
+    it("a row toggles the id on the open chat's bound persona in canonical form, keeping unknown ids and dropping blank ones; the tab's persona is untouched", () => {
+        install(catalog, { modules: ["missing", "  ", "zeta", "zeta"] });
+        const page = renderLinks();
+        expect(activePersona.id).toBe("p2");
+        expect(page.pressed()).toEqual(["Zeta"]);
+
+        page.rowNamed("Dup A").click();
+        flushSync();
+        expect(persona("p2").modules).toEqual(["missing", "zeta", "dup"]);
+        expect(page.pressed()).toEqual(["Dup A", "Zeta"]);
+        expect(persona("p1")).not.toHaveProperty("modules");
+
+        page.rowNamed("Zeta").click();
+        flushSync();
+        expect(persona("p2").modules).toEqual(["missing", "dup"]);
+        expect(page.pressed()).toEqual(["Dup A"]);
+
+        // With the chat unbound the editor shows the tab's persona, and a toggle writes that one.
+        chatBindingPatch(refK, { personaId: null });
+        flushSync();
+        expect(activePersona.id).toBe("p1");
+        expect(page.pressed()).toEqual([]);
+        page.rowNamed("Zeta").click();
+        flushSync();
+        expect(persona("p1").modules).toEqual(["zeta"]);
+        expect(persona("p2").modules).toEqual(["missing", "dup"]);
+    });
+
+    it("says that no module matches an unmatched search, and that none is linkable when only MCP modules exist", () => {
+        install(catalog);
+        const page = renderLinks();
+        page.search("nothing here");
+        expect(page.names()).toEqual([]);
+        expect(page.target.textContent).toContain(language.noMatchingModules);
+        expect(page.target.textContent).not.toContain(language.noLinkableModules);
+        page.search("");
+        expect(page.names()).toHaveLength(3);
+        expect(page.target.textContent).not.toContain(language.noMatchingModules);
+    });
+
+    it("says that no linkable module is installed for an MCP-only catalog, and for an empty one", () => {
+        install([catalog[5]]);
+        const page = renderLinks();
+        expect(page.names()).toEqual([]);
+        expect(page.target.textContent).toContain(language.noLinkableModules);
+        expect(page.target.textContent).not.toContain(language.noMatchingModules);
+        page.search("mcp");
+        expect(page.target.textContent).toContain(language.noLinkableModules);
+    });
+});

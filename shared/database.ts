@@ -83,6 +83,11 @@ export interface RisuPersona {
     id: string;
     note?: string;
     embeddedModule?: RisuModule;
+    /**
+     * Linked module ids (`normalizePersonaModules`): while a chat is bound to this persona, those
+     * modules are active for it, MCP modules excepted (`personaLinksModule`).
+     */
+    modules?: string[];
 }
 
 export interface Database {

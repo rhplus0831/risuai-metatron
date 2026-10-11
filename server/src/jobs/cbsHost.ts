@@ -7,6 +7,7 @@ import type { CbsHost } from "../../../shared/cbs/evaluator.ts";
 import type { CbsLimits, CbsUsage } from "../../../shared/cbs/limits.ts";
 import type { matcherArg } from "../../../shared/cbs/types.ts";
 import { pickHashRand } from "../../../shared/hashRand.ts";
+import { personaLinksModule, personaModuleIdSet } from "../../../shared/personas.ts";
 import type { GenerationClientEnv } from "../../../shared/jobs.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import type { JobScope } from "./jobScope.ts";
@@ -218,11 +219,17 @@ export function createJobCbsHost(scope: JobScope, options: JobCbsOptions): CbsHo
     };
 }
 
-/** `getModuleByIds` of `src/ts/process/modules.ts`: stored order, by id or namespace, first of an id. */
-function modulesByIds(modules: RisuModule[], ids: string[]): RisuModule[] {
+/**
+ * `getModuleByIds` of `src/ts/process/modules.ts`: stored order, by id or namespace, or linked by
+ * the persona (`personaLinksModule`), first of an id.
+ */
+function modulesByIds(modules: RisuModule[], ids: string[], personaIds: ReadonlySet<string>): RisuModule[] {
     const idSet = new Set(ids);
     const matched = modules.filter(
-        (module) => idSet.has(module.id) || (module.namespace && idSet.has(module.namespace)),
+        (module) =>
+            idSet.has(module.id) ||
+            (module.namespace && idSet.has(module.namespace)) ||
+            personaLinksModule(personaIds, module),
     );
     const seen = new Set<string>();
     const out: RisuModule[] = [];
@@ -238,9 +245,10 @@ function modulesByIds(modules: RisuModule[], ids: string[]): RisuModule[] {
 
 /**
  * `getModules` of `src/ts/process/modules.ts` over the scope: the global enabled list, the chat's and
- * the character's modules, the bound persona's embedded module id, and `moduleIntergration`; each id
- * resolves only to a stored module (so an embedded module resolves only when one with its id is in
- * `modules`, as on the client).
+ * the character's modules, the bound persona's embedded module id, and `moduleIntergration` (by id
+ * or namespace), plus the bound persona's linked modules, matched apart (by id only, MCP modules
+ * excepted: `personaLinksModule`); each id resolves only to a stored module (so an embedded module
+ * resolves only when one with its id is in `modules`, as on the client).
  */
 export function jobModules(scope: JobScope, ref?: ChatRef): RisuModule[] {
     const db = scope.db;
@@ -261,7 +269,7 @@ export function jobModules(scope: JobScope, ref?: ChatRef): RisuModule[] {
     if (db.moduleIntergration) {
         ids = ids.concat(db.moduleIntergration.split(",").map((s) => s.trim()));
     }
-    return modulesByIds(db.modules ?? [], ids);
+    return modulesByIds(db.modules ?? [], ids, personaModuleIdSet(bound));
 }
 
 /** `getModuleLorebooks`: the lore of `jobModules`, in module order. */

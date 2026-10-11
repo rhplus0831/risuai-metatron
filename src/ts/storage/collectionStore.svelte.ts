@@ -26,7 +26,7 @@ import {
 import { isRecordId } from "../../../shared/ids.ts";
 import { ModuleShapeError, normalizeModule, type RisuModule } from "../../../shared/modules.ts";
 import type { RisuPlugin } from "../../../shared/plugins.ts";
-import { normalizePersonas, PERSONA_DEFAULTS } from "../../../shared/personas.ts";
+import { normalizePersonaModules, normalizePersonas, PERSONA_DEFAULTS } from "../../../shared/personas.ts";
 import {
     newPersonaId,
     newPresetId,
@@ -210,7 +210,11 @@ export function addPersona(persona: unknown): string {
     return entry.id;
 }
 
-/** Sets fields of the persona with `id` (not the id itself). Throws `MutationTargetGoneError` when it does not exist. */
+/**
+ * Sets fields of the persona with `id` (not the id itself); `modules` must be a list of strings and
+ * is stored in its canonical form (`normalizePersonaModules`), as the server stores it. Throws
+ * `MutationTargetGoneError` when it does not exist.
+ */
 export function updatePersona(id: string, patch: Record<string, unknown>) {
     const prepared = detachPatch(patch, (field, value) => {
         if (field === "id") {
@@ -219,7 +223,16 @@ export function updatePersona(id: string, patch: Record<string, unknown>) {
         if (Object.hasOwn(PERSONA_DEFAULTS, field) && typeof value !== "string") {
             throw new MutationValidationError(field, "expected a string");
         }
-    });
+        if (
+            field === "modules" &&
+            value !== undefined &&
+            !(Array.isArray(value) && value.every((entry) => typeof entry === "string"))
+        ) {
+            throw new MutationValidationError(field, "expected a list of module ids");
+        }
+    }).map(([field, value]): [string, unknown] =>
+        field === "modules" && value !== undefined ? [field, normalizePersonaModules(value)] : [field, value],
+    );
     const index = (settings.personas ?? []).findIndex((entry) => entry?.id === id);
     if (index === -1) {
         throw new MutationTargetGoneError(`persona ${id}`);

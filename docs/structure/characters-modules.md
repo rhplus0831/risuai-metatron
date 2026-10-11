@@ -96,8 +96,10 @@ Module activation (`getModules`): the union of:
 1. `db.enabledModules` (global),
 2. `chat.modules`,
 3. `character.modules`,
-4. the bound persona's embedded module,
-5. namespace matches in `db.moduleIntergration`.
+4. the bound persona's embedded module (through the id list above, like the others),
+5. the bound persona's linked modules (`RisuPersona.modules`), resolved apart from that list: by id
+   only, never by namespace, and never an MCP module (`personaLinksModule` in `shared/personas.ts`),
+6. namespace matches in `db.moduleIntergration`.
 
 The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `ChatBody`.
 
@@ -111,7 +113,7 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - `groupChat`: `type:'group'`, `characters: string[]`, `characterTalks`, `characterActive`, `autoMode`, `useCharacterLore`.
 - `loreBook`: `key`/`secondkey` (comma-separated), `content`, `insertorder`, `alwaysActive`, `selective`, `mode` (`normal|folder|child|...`), `useRegex`, `id`, `folder`, `bookVersion`.
 - `RisuModule`: `id`, `name`, `lorebook`, `regex`, `trigger`, `assets`, `backgroundEmbedding`, `customModuleToggle`, `namespace`, `lowLevelAccess`, `hideIcon`, `mcp`.
-- `RisuPersona`: `name`, `icon`, `personaPrompt`, `note`, `id`, `largePortrait`, `embeddedModule`. The active persona is mirrored into the legacy DB fields `username`, `userIcon`, `personaPrompt`, `userNote`.
+- `RisuPersona`: `name`, `icon`, `personaPrompt`, `note`, `id`, `largePortrait`, `embeddedModule`, `modules` (linked module ids, canonical by `normalizePersonaModules`: non-blank strings, each once; kept when no module has them, and not carried by the persona PNG export). The active persona is mirrored into the legacy DB fields `username`, `userIcon`, `personaPrompt`, `userNote`.
 
 ## Coupling
 
@@ -126,13 +128,14 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - PNG text size is capped at 5 MiB. CRC is checked only in non-stream reads.
 - `createBaseV2` intentionally omits emotions and additional assets. V3 is the full-fidelity path.
 - Cards and modules with low-level access require confirmation on import.
-- The `getModules` cache (`lastModules`) is keyed by the joined enabled IDs, and only `refreshModules` clears it (`moduleUpdate` reads through it). After editing module contents in place, call `refreshModules`.
+- The `getModules` cache (`lastModules`) is keyed by the enabled IDs and the bound persona's linked IDs, kept apart (`JSON.stringify([ids, [...personaIds]])`), and only `refreshModules` clears it (`moduleUpdate` reads through it). After editing module contents in place, call `refreshModules`.
 - `getModuleTriggers` mutates the triggers' `lowLevelAccess`. Aggregate order follows the DB module order.
 - Keep `character.modules`, `chat.modules`, `enabledModules`, and `moduleIntergration` (which matches namespaces) distinct.
 - `LoreBookList` must rebuild its Svelte arrays after SortableJS DOM moves. Old lorebook entries (below `bookVersion` 2) are converted only as they enter: a character's creation (`prepareNewCharacter`), a lorebook file imported into a character (`importLoreBook`), and the module import paths (`upgradeLorebook`, `shared/modules.ts`); later updates keep their content.
 - `chaId` and chat IDs must be unique. The installation (`initializeRecords`) gives a character without a valid or unique id a new one, and a character's id never changes afterwards; chat and message ids are assigned by the chat module (`createChat`, `appendMessage`) and kept unique by the server.
 - An import path adds a character only through `addCharacter` (and modules, personas, and presets through the collection module). The core-app creators (`createNewCharacter`, `createNewGroup`) add through it too.
 - A character's chats are created through the chat module once it is in the mirror: `importChat` calls `createChat` (a copy gets a fresh chat id and keeps its message ids), and `changeChar` calls `ensureChat` for a character without one. A character that is not yet added (a new card, an import) carries its initial chats in its input; its creation (`prepareNewCharacter`) gives it a first chat when it has none, each chat its `fmIndex` (the character's `firstMsgIndex`) and `localLore` (`prepareChatInput`), and moves `postHistoryInstructions` into the note of the chat at `chatPage`; `addCharacter`/`replaceCharacterAt` then hand the chats to the chat module (`installCharacterChats`: the record holds none) and the save loop creates them with the character.
+- Persona module links activate only through the chat's bound persona (`checkPersonaBinded`, `chat.bindedPersona` on the server), never the tab's selected persona; the tab's `getModules` and the server's `jobModules` resolve them alike (`personaModuleIdSet`, `personaLinksModule`). `PersonaSettings.svelte` edits the links of the persona the editor shows (`currentPersonaRecord`); `ModuleChatMenu.svelte` labels a module the bound persona links, beside its chat and character toggles. Deleting a module leaves its id in persona links, as in `chat.modules` and `character.modules`.
 - `changeUserPersona(id)` with an id that is not in `settings.personas`, or for a chat that is gone, does nothing and returns false. `PersonaSettings.svelte` creation captures its target before its dialog; a deletion moves only the tab's selection, never a chat's binding.
 
 ## Recipes
@@ -151,6 +154,7 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - `src/ts/process/modulesImport.test.ts`: `importModule` for `.risum`, CharX, module JSON, lore, and regex files, and a refused CharX module.
 - `src/ts/personaImport.test.ts` and `src/ts/process/lorebookImport.test.ts`: the persona import's id and icon order, the persona export keeping the persona selected at its start while the selection and the name change during its awaits, and the global lore import by the captured id.
 - Not tested: the editors, card export round trips.
+- `shared/tests/personaModules.test.ts`, `server/src/tests/jobModules.test.ts`, and `src/ts/storage/tests/personaModuleLinks.test.ts`: persona module links: the canonical `modules` (`normalizePersonaModules`, `normalizePersonas`, `updatePersona`), id-only and non-MCP matching beside the legacy id list, the bound persona only (unbound, deleted, another chat by ref, a group's chat), duplicate ids, the `getModules` cache key and reactivity, and the background cleared on unlink, on the tab and the server alike. `src/lib/Setting/Pages/PersonaSettings.test.ts` (`PersonaSettings module links`): the editor's list (first of a duplicate id, a nameless module by its id, no blank-id or MCP module), its canonical write to the persona the editor shows, and its two empty states.
 - Adjacent: `mcp/risuaccess/tests/modules.test.ts`.
 - Not tested: the character lorebook drag's cost (the list rebuilds and Sortable is recreated after the write); measured by hand (`measureCharacters.mjs`): 104–112 ms against 100.5–105.5 ms before the character records (commit `139fc73b`), within about 7%.
 

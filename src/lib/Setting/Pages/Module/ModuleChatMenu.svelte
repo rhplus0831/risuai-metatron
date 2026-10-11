@@ -11,9 +11,13 @@
     import { ReloadGUIPointer } from "src/ts/stores.svelte";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import { SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
+    import { checkPersonaBinded } from "src/ts/util";
+    import { personaLinksModule, personaModuleIdSet } from "../../../../../shared/personas.ts";
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
+    // The modules the selected chat's bound persona links: active for this chat besides its own toggles.
+    const personaLinked = $derived(personaModuleIdSet(checkPersonaBinded()));
     interface Props {
         close?: any;
         alertMode?: boolean;
@@ -72,7 +76,10 @@
                         {:else}
                             <span class="">{rmodule.name}</span>
                         {/if}
-                        <div class="grow flex justify-end">
+                        <div class="grow flex justify-end items-center">
+                            {#if !alertMode && personaLinksModule(personaLinked, rmodule)}
+                                <span class="mr-2 text-xs text-primary-400">{language.personaModuleLinkActive}</span>
+                            {/if}
                             {#if alertMode}
                                 <button
                                     class={"text-textcolor2 mr-2 cursor-pointer hover:text-blue-500 transition-colors"}

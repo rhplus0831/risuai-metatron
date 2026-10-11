@@ -363,6 +363,8 @@ interface Persona {
     id?: string;
     /** Persona note */
     note?: string;
+    /** Linked module IDs, active in the chats bound to this persona (MCP modules excepted) */
+    modules?: string[];
 }
 
 /**

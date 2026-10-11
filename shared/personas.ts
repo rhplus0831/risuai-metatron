@@ -25,7 +25,8 @@ export function defaultPersona(): RisuPersona {
  * default persona, so a selection always has a record), every entry with the four
  * `PERSONA_DEFAULTS` fields as strings (a missing or wrong-typed one gets its default, appended
  * after the entry's own keys) and a valid id not used by an earlier entry (a backstop: the client
- * assigns ids at creation). Other keys (`largePortrait`, `embeddedModule`, ...) are kept. Entries
+ * assigns ids at creation). `modules`, when present, is cleaned by `normalizePersonaModules` (an
+entry without it stays without it). Other keys (`largePortrait`, `embeddedModule`, ...) are kept. Entries
  * that are not objects are dropped (the server rejects them before this runs). The input is not
  * mutated and must be plain data.
  */
@@ -43,7 +44,36 @@ export function normalizePersonas(input: unknown): RisuPersona[] {
             persona.id = newPersonaId();
         }
         seen.add(persona.id as string);
+        if (Object.hasOwn(persona, "modules")) {
+            persona.modules = normalizePersonaModules(persona.modules);
+        }
         return persona as unknown as RisuPersona;
     });
     return personas.length > 0 ? personas : [defaultPersona()];
+}
+
+/**
+ * A persona's `modules` (the linked module ids) in canonical form: the non-blank strings of a list,
+ * each once, in first-occurrence order; anything that is not a list becomes `[]`. Ids are kept
+ * whether or not a module has them (the collection does not see the module list).
+ */
+export function normalizePersonaModules(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return [...new Set(value.filter((id): id is string => typeof id === "string" && id.trim() !== ""))];
+}
+
+/**
+ * The module ids `persona` links, as an id set for the module resolvers (`getModules` on the tab,
+ * `jobModules` on the server). A linked id matches a stored module by its `id` only (never by
+ * `namespace`), and never an MCP module: the resolvers check `personaLinksModule`.
+ */
+export function personaModuleIdSet(persona: Pick<RisuPersona, "modules"> | null | undefined): ReadonlySet<string> {
+    return new Set(normalizePersonaModules(persona?.modules));
+}
+
+/** Whether a persona link (`personaModuleIdSet`) activates `module`: by id, and not an MCP module. */
+export function personaLinksModule(linked: ReadonlySet<string>, module: { id: string; mcp?: unknown }): boolean {
+    return !module.mcp && linked.has(module.id);
 }

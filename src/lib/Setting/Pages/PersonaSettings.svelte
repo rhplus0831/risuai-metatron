@@ -17,6 +17,8 @@
     import { chatsBoundTo, pickedId } from "src/ts/storage/chatBinding.svelte";
     import { selectPersona, selection } from "src/ts/storage/selection.svelte";
     import BindingScopeNote from "../BindingScopeNote.svelte";
+    import { CircleCheckIcon } from "@lucide/svelte";
+    import { normalizePersonaModules } from "../../../../shared/personas.ts";
 
     let stb: Sortable = null;
     let ele: HTMLDivElement = $state();
@@ -24,6 +26,44 @@
     // Read once per render, not once per row. The ring marks the open chat's bound persona (none
     // when unset or deleted), else at home the tab's; the editor below edits `activePersona`.
     const selectedPersonaId = $derived(pickedId("personaId", currentChatRef(), activePersona.id));
+    let moduleSearch = $state("");
+    // The modules a persona can link: not MCP, with a non-blank id (`normalizePersonaModules` keeps
+    // no other), each id once (the first, as the resolvers pick), shown by name, else by id.
+    const linkableModules = $derived.by(() => {
+        const seen = new Set<string>();
+        const out: { id: string; name: string }[] = [];
+        for (const module of settings.modules ?? []) {
+            const id = module?.id;
+            if (module.mcp || typeof id !== "string" || id.trim() === "" || seen.has(id)) {
+                continue;
+            }
+            seen.add(id);
+            out.push({ id, name: typeof module.name === "string" && module.name.trim() !== "" ? module.name : id });
+        }
+        return out.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    });
+    const shownModules = $derived.by(() => {
+        const query = moduleSearch.trim().toLowerCase();
+        return query === ""
+            ? linkableModules
+            : linkableModules.filter((module) => module.name.toLowerCase().includes(query));
+    });
+    const linkedModuleIds = $derived(new Set(normalizePersonaModules(currentPersonaRecord()?.modules)));
+
+    // Written to the persona the editor shows (`currentPersonaRecord`, read at the click), adding or
+    // removing only this id (ids of modules not installed stay), in canonical form as the server
+    // stores it.
+    function togglePersonaModule(moduleId: string) {
+        const persona = currentPersonaRecord();
+        if (!persona) {
+            return;
+        }
+        const current = normalizePersonaModules(persona.modules);
+        persona.modules = normalizePersonaModules(
+            current.includes(moduleId) ? current.filter((id) => id !== moduleId) : [...current, moduleId],
+        );
+    }
+
     const createStb = () => {
         stb = Sortable.create(ele, {
             // The selection is by id, so a reorder leaves it on the same persona.
@@ -171,6 +211,36 @@
             bind:value={activePersona.personaPrompt}
             placeholder={`Put the description of this persona here.\nExample: [<user> is a 20 year old girl.]`}
         />
+        <div class="mt-4 flex flex-col gap-2">
+            <span class="text-sm text-textcolor">{language.personaModuleLink}</span>
+            <span class="text-sm text-textcolor2">{language.personaModuleLinkInfo}</span>
+            <TextInput placeholder={language.search} bind:value={moduleSearch} />
+            <div class="max-h-64 overflow-y-auto rounded-md border border-darkborderc">
+                {#if linkableModules.length === 0}
+                    <div class="p-3 text-sm text-textcolor2">{language.noLinkableModules}</div>
+                {:else if shownModules.length === 0}
+                    <div class="p-3 text-sm text-textcolor2">{language.noMatchingModules}</div>
+                {:else}
+                    {#each shownModules as linkable, index (linkable.id)}
+                        <button
+                            type="button"
+                            class="flex w-full items-center gap-3 p-3 text-left text-textcolor hover:bg-selected cursor-pointer"
+                            class:border-t={index !== 0}
+                            class:border-darkborderc={index !== 0}
+                            aria-pressed={linkedModuleIds.has(linkable.id)}
+                            aria-label={`${language.personaModuleLink}: ${linkable.name}`}
+                            onclick={() => togglePersonaModule(linkable.id)}
+                        >
+                            <CircleCheckIcon
+                                size={18}
+                                class={linkedModuleIds.has(linkable.id) ? "text-primary-500" : "text-textcolor2"}
+                            />
+                            <span class="min-w-0 grow truncate">{linkable.name}</span>
+                        </button>
+                    {/each}
+                {/if}
+            </div>
+        </div>
         <div class="flex gap-2 mt-4 max-w-full flex-wrap">
             <Button onclick={exportUserPersona}>{language.export}</Button>
             <Button onclick={importUserPersona}>{language.import}</Button>
