@@ -13,6 +13,9 @@ Active planning and implementation:
 - [URL Routes](url-routes.md): give each screen a history-mode address kept in
   sync with the existing stores, with closes going back in history (slices 1–5
   done; the manual checks, H1's among them, are open).
+- [Translation](translation.md): translations stored on the message, per-chat
+  translation settings, server auto-translation, bilingual display, and
+  multi-step translator presets (planned; nothing built yet).
 
 ## Archived
 
