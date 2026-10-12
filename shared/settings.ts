@@ -92,6 +92,12 @@ export interface TranslatorPreset {
      * normalizer drops any other value), so an absent field is off.
      */
     sendTextAsIs?: boolean;
+    /**
+     * Exclude Chain-of-Thought (`docs/plan/translation.md` slice 3.4): `<Thoughts>` and `<think>`
+     * blocks are removed from the source and the history slots before they are sent. Only `true` is
+     * stored, like `sendTextAsIs`.
+     */
+    excludeThoughts?: boolean;
 }
 
 /** Which model a translator step calls: the `translate` slot of the model preset, or a model profile (`RequestArgs.profileId`). */

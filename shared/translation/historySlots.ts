@@ -44,12 +44,15 @@ export interface TranslatorHistoryEntry {
 /**
  * Up to `count` entries before `messages[messageIndex]`, oldest first: walking back from the message
  * before it, a row with `disabled: "allBefore"` ends the walk (it is not taken, comment or not), and
- * a disabled row (`disabled: true`) or a comment row (`isComment`) is skipped.
+ * a disabled row (`disabled: true`) or a comment row (`isComment`) is skipped. `transformText` (Exclude
+ * Chain-of-Thought, slice 3.4) is applied to each entry's source and to its translation, after the
+ * translation's freshness is read from the stored message.
  */
 export function collectTranslatorHistory(
     messages: readonly Message[],
     messageIndex: number,
     count: number,
+    transformText: (text: string) => string = (text) => text,
 ): TranslatorHistoryEntry[] {
     const newestFirst: TranslatorHistoryEntry[] = [];
     for (let index = Math.min(messageIndex, messages.length) - 1; index >= 0; index--) {
@@ -66,8 +69,8 @@ export function collectTranslatorHistory(
         const translated = storedTranslation(message);
         newestFirst.push({
             role: message.role === "user" ? "user" : "char",
-            source: message.data,
-            ...(translated !== null ? { translated } : {}),
+            source: transformText(message.data),
+            ...(translated !== null ? { translated: transformText(translated) } : {}),
         });
     }
     return newestFirst.reverse();
@@ -85,7 +88,8 @@ export function translatorHistoryBlock(role: TranslatorHistoryEntry["role"], bod
  * source block plus its translation block, an empty one when it has no translation (the block
  * `{{slot::historytrans::N}}` shows for it), so both slots list the same entries. The budget is per
  * count and covers these blocks only, not the rest of the request. Each entry's tokens are counted
- * once, one after another; an error from `countTokens` ends the build.
+ * once, one after another; an error from `countTokens` ends the build. `transformText` goes to
+ * `collectTranslatorHistory`, so the blocks are counted as they are shown.
  */
 export async function buildTranslatorHistory(input: {
     messages: readonly Message[];
@@ -93,13 +97,19 @@ export async function buildTranslatorHistory(input: {
     counts: readonly number[];
     maxTokens: unknown;
     countTokens: (text: string) => Promise<number>;
+    transformText?: (text: string) => string;
 }): Promise<TranslatorHistory> {
     const counts = [...new Set(input.counts.filter((count) => translatorHistoryCount(String(count)) === count))];
     if (counts.length === 0) {
         return () => "";
     }
     const maxTokens = translatorHistoryMaxTokens(input.maxTokens);
-    const entries = collectTranslatorHistory(input.messages, input.messageIndex, Math.max(...counts));
+    const entries = collectTranslatorHistory(
+        input.messages,
+        input.messageIndex,
+        Math.max(...counts),
+        input.transformText,
+    );
     const tokens: number[] = [];
     for (const entry of entries) {
         tokens.push(

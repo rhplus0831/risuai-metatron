@@ -257,3 +257,41 @@ describe("sendTextAsIs", () => {
         }
     });
 });
+
+// Translation slice 3.4: Exclude Chain-of-Thought is stored only as `true`, after `sendTextAsIs` and
+// independent of it; the normalizer drops any other value, and the guard reads a boolean or nothing.
+describe("excludeThoughts", () => {
+    it("is kept by createTranslatorPreset only as true, after sendTextAsIs and independent of it, and is absent otherwise", () => {
+        const on = createTranslatorPreset("On", { id: "on", prompt: "p", maxResponse: 5, excludeThoughts: true });
+        expect(on).toEqual({
+            id: "on",
+            name: "On",
+            steps: [inherited({ prompt: "p", maxResponse: 5 })],
+            excludeThoughts: true,
+        });
+        expect(Object.keys(on)).toEqual(["id", "name", "steps", "excludeThoughts"]);
+        const both = createTranslatorPreset("Both", { id: "both", sendTextAsIs: true, excludeThoughts: true });
+        expect(Object.keys(both)).toEqual(["id", "name", "steps", "sendTextAsIs", "excludeThoughts"]);
+        for (const off of [false, undefined, null, "true", 1, {}, [true]]) {
+            const preset = createTranslatorPreset("Off", { id: "off", sendTextAsIs: true, excludeThoughts: off });
+            expect(Object.hasOwn(preset, "excludeThoughts"), JSON.stringify(off)).toBe(false);
+            expect(Object.keys(preset), JSON.stringify(off)).toEqual(["id", "name", "steps", "sendTextAsIs"]);
+        }
+        // A fixed point with the option on, alone or with Send Text As-Is.
+        for (const preset of [on, both]) {
+            const stored = createTranslatorPreset(preset.name, JSON.parse(JSON.stringify(preset)));
+            expect(JSON.stringify(stored)).toBe(JSON.stringify(preset));
+            expect(isTranslatorPreset(preset)).toBe(true);
+        }
+    });
+
+    it("passes isTranslatorPreset when absent or a boolean, and fails it for any other value", () => {
+        const valid = createTranslatorPreset("V", { id: "v" });
+        expect(isTranslatorPreset({ ...valid, excludeThoughts: true })).toBe(true);
+        expect(isTranslatorPreset({ ...valid, excludeThoughts: false })).toBe(true);
+        expect(isTranslatorPreset({ ...valid, excludeThoughts: undefined })).toBe(true);
+        for (const broken of [null, "true", 1, 0, {}, []]) {
+            expect(isTranslatorPreset({ ...valid, excludeThoughts: broken }), JSON.stringify(broken)).toBe(false);
+        }
+    });
+});

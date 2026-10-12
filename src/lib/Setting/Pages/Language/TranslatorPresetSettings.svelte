@@ -48,6 +48,17 @@
             delete preset.sendTextAsIs;
         }
     }
+
+    /** Turns Exclude Chain-of-Thought (slice 3.4) on or off for the preset `presetId`, as `setSendTextAsIs`. */
+    function setExcludeThoughts(presetId: string, value: boolean) {
+        const preset = settings.translatorPresets.items.find((entry) => entry.id === presetId);
+        if (!preset) return;
+        if (value) {
+            preset.excludeThoughts = true;
+        } else {
+            delete preset.excludeThoughts;
+        }
+    }
 </script>
 
 <span class="text-textcolor mt-4">Preset</span>
@@ -187,6 +198,14 @@
             bind:check={() => preset.sendTextAsIs === true, (value) => setSendTextAsIs(preset.id, value)}
         >
             <Help key="translatorSendTextAsIs" />
+        </CheckInput>
+    </div>
+    <div class="flex items-center mt-2">
+        <CheckInput
+            name={language.translatorExcludeThoughts}
+            bind:check={() => preset.excludeThoughts === true, (value) => setExcludeThoughts(preset.id, value)}
+        >
+            <Help key="translatorExcludeThoughts" />
         </CheckInput>
     </div>
     <span class="text-textcolor mt-4">{language.translatorSteps.title} <Help key="translatorSteps" /></span>

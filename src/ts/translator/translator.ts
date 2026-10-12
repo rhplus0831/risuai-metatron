@@ -13,7 +13,11 @@ import { type character, type customscript, type groupChat } from "../storage/da
 import type { TranslatorPreset } from "./presets";
 import { currentTranslatorPreset, globalTranslatorPreset } from "./chatTranslation.svelte";
 import type { TranslatorStep } from "../../../shared/settings.ts";
-import { runTranslatorPipeline, translatorPipelineSignature } from "../../../shared/translation/pipeline.ts";
+import {
+    runTranslatorPipeline,
+    stripTranslatorReasoning,
+    translatorPipelineSignature,
+} from "../../../shared/translation/pipeline.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { globalFetch } from "../globalApi.svelte";
 import { alertError } from "../alert";
@@ -99,10 +103,19 @@ export async function runTranslator(
     };
     // Send Text As-Is (slice 3.2): the LLM translator takes the whole text in one pipeline run and its
     // reply is returned as it is (a failure already alerted and returned the text).
-    if (settings.memoryTranslateMedia.translatorType === "llm" && arg.preset.sendTextAsIs === true) {
+    const llm = settings.memoryTranslateMedia.translatorType === "llm";
+    if (llm && arg.preset.sendTextAsIs === true) {
         return await translateMain(text, arg);
     }
-    const texts = text.split("\n");
+    // Exclude Chain-of-Thought (slice 3.4): the reasoning blocks leave the whole text before it is cut
+    // into lines (a block may span several), and the chunks go out as prepared, not stripped again.
+    // A chunk's failure (alerted by `translateLLM`) returns the text as it was given, not the
+    // stripped text.
+    const excludeThoughts = llm && arg.preset.excludeThoughts === true;
+    const source = excludeThoughts ? stripTranslatorReasoning(text) : text;
+    const failure = { failed: false };
+    const chunkArg = excludeThoughts ? { ...arg, inputPrepared: true, failure } : arg;
+    const texts = source.split("\n");
     let chunks: [string, boolean][] = [["", true]];
 
     for (let i = 0; i < texts.length; i++) {
@@ -129,7 +142,10 @@ export async function runTranslator(
                 fullResult.push(chunk[0]);
                 continue;
             }
-            const result = await translateMain(trimed, arg);
+            const result = await translateMain(trimed, chunkArg);
+            if (failure.failed) {
+                return text;
+            }
 
             if (result.startsWith("ERR::")) {
                 alertError(result);
@@ -162,6 +178,10 @@ async function translateMain(
         translatorNote?: string;
         preset: TranslatorPreset;
         requestIds: ChatContextIds;
+        /** The text is already stripped of its reasoning blocks (`runTranslator`'s chunks). */
+        inputPrepared?: boolean;
+        /** Set when the LLM translator failed (it alerted and returned the text). */
+        failure?: { failed: boolean };
     },
 ) {
     if (settings.memoryTranslateMedia.translatorType === "llm") {
@@ -174,7 +194,10 @@ async function translateMain(
                 translatorNote: arg.translatorNote,
                 preset: arg.preset,
                 requestIds: arg.requestIds,
+                inputPrepared: arg.inputPrepared,
             }),
+            false,
+            arg.failure,
         );
     }
     if (settings.memoryTranslateMedia.translatorType === "deepl") {
@@ -547,6 +570,10 @@ interface LLMTranslationContext {
     steps: TranslatorStep[];
     /** The preset's Send Text As-Is (slice 3.2): no `<risu-style>` placeholders, the reply kept as it is. */
     sendTextAsIs: boolean;
+    /** The preset's Exclude Chain-of-Thought (slice 3.4): part of the cache key. */
+    excludeThoughts: boolean;
+    /** Whether `translateLLM` strips the reasoning blocks of its text (on, unless the caller did). */
+    stripInput: boolean;
     to: string;
     from: string;
     translatorNote: string;
@@ -580,12 +607,16 @@ function llmTranslationContext(
         translatorNote?: string;
         preset?: TranslatorPreset;
         requestIds?: ChatContextIds;
+        inputPrepared?: boolean;
     } = {},
 ): LLMTranslationContext {
     const preset = arg.preset ?? getCurrentTranslatorPreset();
+    const excludeThoughts = preset.excludeThoughts === true;
     return {
         steps: JSON.parse(JSON.stringify(preset.steps)) as TranslatorStep[],
         sendTextAsIs: preset.sendTextAsIs === true,
+        excludeThoughts,
+        stripInput: excludeThoughts && arg.inputPrepared !== true,
         to: arg.to ?? (settings.memoryTranslateMedia.translator || "en"),
         from: arg.from ?? settings.memoryTranslateMedia.translatorInputLanguage,
         translatorNote: resolveTranslatorNote(arg.translatorNote),
@@ -604,9 +635,10 @@ function chatlessRequestIds(): ChatContextIds {
 
 /**
  * The `LLMTranslateCache` key prefix of a context: a hash of the pipeline signature, the languages,
- * the note, and Send Text As-Is when it is on (so the keys of a preset without it are those from
- * before slice 3.2). Another preset, prompt, or language reads and writes other entries; entries from
- * before the pipeline (keyed by the bare source) are never read again.
+ * the note, and Send Text As-Is and Exclude Chain-of-Thought each when it is on (so the keys of a
+ * preset without them are those from before slices 3.2 and 3.4), plus `inputPrepared` for a text the
+ * caller stripped. The key's text is the caller's, before any reasoning strip. Another preset, prompt, or language reads and writes other entries;
+ * entries from before the pipeline (keyed by the bare source) are never read again.
  */
 function llmCacheKeyPrefix(context: LLMTranslationContext): string {
     const signature = JSON.stringify({
@@ -615,6 +647,10 @@ function llmCacheKeyPrefix(context: LLMTranslationContext): string {
         from: context.from,
         translatorNote: context.translatorNote,
         ...(context.sendTextAsIs ? { sendTextAsIs: true } : {}),
+        ...(context.excludeThoughts ? { excludeThoughts: true } : {}),
+        // A prepared text (already stripped) is sent as it is, so it never shares an entry with the
+        // same raw text, which would be stripped first (the strip is not idempotent).
+        ...(context.excludeThoughts && !context.stripInput ? { inputPrepared: true } : {}),
     });
     return `llm:${translationSourceHash(signature)}:`;
 }
@@ -637,7 +673,13 @@ export async function writeLLMCacheEntry(key: string, value: string): Promise<vo
 }
 
 /** `text` translated by the pipeline of `context` (`llmTranslationContext`, read before the caller's first await). */
-async function translateLLM(text: string, context: LLMTranslationContext, regenerate = false): Promise<string> {
+async function translateLLM(
+    text: string,
+    context: LLMTranslationContext,
+    regenerate = false,
+    /** Set to failed when a step fails (the alert is shown and the text returned). */
+    failure?: { failed: boolean },
+): Promise<string> {
     const cacheKey = llmCacheKeyPrefix(context) + text;
     if (!regenerate) {
         const cacheMatch = await readLLMCacheEntry(cacheKey);
@@ -645,12 +687,20 @@ async function translateLLM(text: string, context: LLMTranslationContext, regene
             return cacheMatch;
         }
     }
+    // Exclude Chain-of-Thought (slice 3.4): the reasoning blocks leave the text before anything else;
+    // a text left blank is an empty translation, cached without a request. A failure below still
+    // returns the text as it was given.
+    const requestText = context.stripInput ? stripTranslatorReasoning(text) : text;
+    if (context.stripInput && requestText.trim() === "") {
+        await writeLLMCacheEntry(cacheKey, "");
+        return "";
+    }
     // Without Send Text As-Is, each `<risu-style>` block is sent as a placeholder and put back after.
     const styleDecodeRegex = /\<risu-style\>(.+?)\<\/risu-style\>/gms;
     let styleDecodes: string[] = [];
     const sourceText = context.sendTextAsIs
-        ? text
-        : text.replace(styleDecodeRegex, (match, p1) => {
+        ? requestText
+        : requestText.replace(styleDecodeRegex, (match, p1) => {
               styleDecodes.push(p1);
               return `<style-data style-index="${styleDecodes.length - 1}"></style-data>`;
           });
@@ -690,6 +740,9 @@ async function translateLLM(text: string, context: LLMTranslationContext, regene
         );
     } catch (error) {
         alertError(error instanceof Error ? error.message : String(error));
+        if (failure) {
+            failure.failed = true;
+        }
         return text;
     }
     const result = context.sendTextAsIs

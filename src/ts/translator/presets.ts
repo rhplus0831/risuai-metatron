@@ -44,13 +44,15 @@ interface TranslatorPresetFilePayload {
 }
 
 /**
- * A version 1 payload. Other keys are tolerated (older writers), except `sendTextAsIs`, which version
- * 1 cannot hold: a file carrying it is refused rather than imported with the option off.
+ * A version 1 payload. Other keys are tolerated (older writers), except `sendTextAsIs` and
+ * `excludeThoughts`, which version 1 cannot hold: a file carrying one is refused rather than imported
+ * with the option off.
  */
 function isTranslatorPresetFilePayload(value: unknown): value is TranslatorPresetFilePayload {
     return (
         isRecord(value) &&
         !Object.hasOwn(value, "sendTextAsIs") &&
+        !Object.hasOwn(value, "excludeThoughts") &&
         typeof value.name === "string" &&
         typeof value.prompt === "string" &&
         typeof value.maxResponse === "number" &&
@@ -69,13 +71,14 @@ interface TranslatorStepFilePayload {
 }
 
 /**
- * The preset a `.risutl` version 2 file holds: its name, 1 to 5 steps, and Send Text As-Is (an
- * optional boolean, written only when it is on).
+ * The preset a `.risutl` version 2 file holds: its name, 1 to 5 steps, and Send Text As-Is and
+ * Exclude Chain-of-Thought (optional booleans, each written only when it is on).
  */
 interface TranslatorPresetFilePayloadV2 {
     name: string;
     steps: TranslatorStepFilePayload[];
     sendTextAsIs?: boolean;
+    excludeThoughts?: boolean;
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []) {
@@ -110,16 +113,17 @@ function isStepFilePayload(value: unknown): value is TranslatorStepFilePayload {
 }
 
 /**
- * A version 2 payload, checked at every level: exactly `name`, `steps`, and an optional boolean
- * `sendTextAsIs` (a payload of another shape, such as the Fastify fork's, is refused, decision 8), 1
+ * A version 2 payload, checked at every level: exactly `name`, `steps`, and the optional booleans
+ * `sendTextAsIs` and `excludeThoughts` (a payload of another shape, such as the Fastify fork's, is refused, decision 8), 1
  * to 5 steps of exactly the step fields, and no output key used twice (a file whose
  * `{{slot::out::KEY}}` would break is refused, not repaired).
  */
 function isTranslatorPresetFilePayloadV2(value: unknown): value is TranslatorPresetFilePayloadV2 {
     if (
         !isRecord(value) ||
-        !hasOnlyKeys(value, ["name", "steps"], ["sendTextAsIs"]) ||
+        !hasOnlyKeys(value, ["name", "steps"], ["sendTextAsIs", "excludeThoughts"]) ||
         (Object.hasOwn(value, "sendTextAsIs") && typeof value.sendTextAsIs !== "boolean") ||
+        (Object.hasOwn(value, "excludeThoughts") && typeof value.excludeThoughts !== "boolean") ||
         typeof value.name !== "string" ||
         !Array.isArray(value.steps) ||
         value.steps.length === 0 ||
@@ -241,6 +245,7 @@ async function decodeEncryptedTranslatorPresetFile(data: Uint8Array): Promise<Tr
             ...(step.outputKey === undefined ? {} : { outputKey: step.outputKey }),
         })),
         sendTextAsIs: parsedPreset.sendTextAsIs,
+        excludeThoughts: parsedPreset.excludeThoughts,
     });
 }
 
@@ -251,13 +256,14 @@ function importedName(name: string): string {
 
 /**
  * Whether version 1 (`{ name, prompt, maxResponse }`) holds the preset without loss: Send Text As-Is
- * off, and one step on the `translate` slot, enabled, without an output key, and with the name a
+ * and Exclude Chain-of-Thought off, and one step on the `translate` slot, enabled, without an output key, and with the name a
  * version 1 import gives it.
  */
 function fitsVersion1(preset: TranslatorPreset): boolean {
     const [step, ...rest] = preset.steps;
     return (
         preset.sendTextAsIs !== true &&
+        preset.excludeThoughts !== true &&
         rest.length === 0 &&
         step.model.mode === "inherit" &&
         step.enabled &&
@@ -293,6 +299,7 @@ export async function encodeTranslatorPresetFile(preset: TranslatorPreset): Prom
                 ...(step.outputKey === undefined ? {} : { outputKey: step.outputKey }),
             })),
             ...(normalizedPreset.sendTextAsIs === true ? { sendTextAsIs: true } : {}),
+            ...(normalizedPreset.excludeThoughts === true ? { excludeThoughts: true } : {}),
         };
     }
     const encryptedPreset = new Uint8Array(

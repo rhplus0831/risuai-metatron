@@ -1330,6 +1330,179 @@ describe("createTranslationRunner over a fake request layer", () => {
         await until(() => runner.workingCount() === 0);
     });
 
+    // `docs/plan/translation.md` slice 3.4: a preset on Exclude Chain-of-Thought strips the reasoning
+    // blocks from the whole source once, before the As-Is run or the line cut, and from each history
+    // entry's source and fresh translation after the freshness check; a source left blank stores an
+    // empty translation without a request or a count; `sourceHash` stays the stored text's.
+    /** The challenge's non-idempotent text: one strip leaves `<think>secret</think>visible`. */
+    const NONIDEM = "<thi<think>x</think>nk>secret</think>visible";
+    const EX_STEPS = [
+        { prompt: "A {{slot::content}}", outputKey: "draft" },
+        { prompt: "B {{slot::prev}} [{{slot::out::draft}}]" },
+    ];
+    /** Selects an `ex` preset of `steps` on Exclude Chain-of-Thought (and Send Text As-Is when asked). */
+    function useExcludePreset(
+        steps: NonNullable<Parameters<typeof createTranslatorPreset>[1]>["steps"],
+        sendTextAsIs?: boolean,
+    ) {
+        patch("translatorPresets", {
+            items: [createTranslatorPreset("Ex", { id: "ex", steps, sendTextAsIs, excludeThoughts: true })],
+            selectedId: "ex",
+        });
+    }
+
+    it("strips the whole source exactly once before the line cut (a block spanning blank and asset lines leaves whole), joins a part's lines with newlines as before, and stores under the stored text's hash", async () => {
+        build({ now: () => 9 });
+        useExcludePreset(EX_STEPS);
+        const raw = `${NONIDEM}\n<Thoughts>\nhidden\n\n{{img::h}}\n</Thoughts>\nfirst\nsecond\n\n{{img::pic}}\nthird`;
+        chatBatch([{ op: "append", messages: [m("x", raw, "char")], anchor: { end: true } }]);
+        answer = async () => ({ type: "success", result: `o${calls.length}` });
+        expect(await runner.translate(req("x"))).toEqual({
+            ok: true,
+            outcome: "applied",
+            translation: {
+                text: "o2\n\no4\n\n\n{{img::pic}}\no6",
+                sourceHash: translationSourceHash(raw),
+                presetId: "ex",
+                targetLanguage: "ko",
+                translatedAt: 9,
+            },
+        });
+        expect(contents()).toEqual([
+            "A <think>secret</think>visible",
+            "B o1 [o1]",
+            "A first\nsecond",
+            "B o3 [o3]",
+            "A third",
+            "B o5 [o5]",
+        ]);
+        expect(new Set(calls.map((call) => call.jobId)).size).toBe(1);
+        expect(message("x").translation?.text).toBe("o2\n\no4\n\n\n{{img::pic}}\no6");
+        expect(runner.workingCount()).toBe(0);
+
+        // The flag is read from the stored preset: without it the same source goes as it is.
+        patch("translatorPresets", {
+            items: [createTranslatorPreset("Ex", { id: "ex", steps: EX_STEPS })],
+            selectedId: "ex",
+        });
+        calls = [];
+        expect(await runner.translate(req("x", { force: true }))).toMatchObject({ ok: true, outcome: "applied" });
+        expect(contents()).toHaveLength(6);
+        expect(contents()[0]).toBe(`A ${NONIDEM}\n<Thoughts>\nhidden`);
+        expect(contents()[2]).toBe("A </Thoughts>\nfirst\nsecond");
+    });
+
+    it("with Send Text As-Is sends the stripped source whole and trimmed in one run and stores the reply as it is; a source without an opening tag goes as it is", async () => {
+        build();
+        useExcludePreset(EX_STEPS, true);
+        const raw = "  <think>\nhidden\n</think>  Hello\n\n{{img::pic}}  ";
+        chatBatch([
+            {
+                op: "append",
+                messages: [m("x", raw, "char"), m("y", "  plain </think> ", "char")],
+                anchor: { end: true },
+            },
+        ]);
+        answer = async () => ({ type: "success", result: calls.length === 1 ? "d" : " r " });
+        expect(await runner.translate(req("x"))).toMatchObject({
+            ok: true,
+            outcome: "applied",
+            translation: { text: " r ", sourceHash: translationSourceHash(raw), presetId: "ex" },
+        });
+        expect(contents()).toEqual(["A Hello\n\n{{img::pic}}", "B d [d]"]);
+        expect(await runner.translate(req("y"))).toMatchObject({ ok: true, outcome: "applied" });
+        expect(contents()[2]).toBe("A   plain </think> ");
+        expect(runner.workingCount()).toBe(0);
+    });
+
+    it("a source the strip leaves blank stores an empty translation under the stored text's hash (a forced run replacing the old one), without a request or a history count; one left with protected lines alone stores them without a request", async () => {
+        build({ now: () => 3 });
+        useExcludePreset([{ prompt: "A[{{slot::history::10}}] {{slot::content}}" }]);
+        const only = "<Thoughts>\nonly\n</Thoughts>\n";
+        chatBatch([
+            {
+                op: "append",
+                messages: [
+                    { ...m("o", only, "char"), translation: tr("old", only) },
+                    m("p", "<think>x</think>\n{{img::a}}\n<think>y</think>", "char"),
+                ],
+                anchor: { end: true },
+            },
+        ]);
+        expect(await runner.translate(req("o", { force: true }))).toEqual({
+            ok: true,
+            outcome: "applied",
+            translation: {
+                text: "",
+                sourceHash: translationSourceHash(only),
+                presetId: "ex",
+                targetLanguage: "ko",
+                translatedAt: 3,
+            },
+        });
+        expect(message("o").translation?.text).toBe("");
+        // Fresh now: an unforced request runs nothing more.
+        expect(await runner.translate(req("o"))).toMatchObject({ ok: true, outcome: "fresh" });
+        expect(await runner.translate(req("p"))).toMatchObject({
+            ok: true,
+            outcome: "applied",
+            translation: {
+                text: "{{img::a}}",
+                sourceHash: translationSourceHash("<think>x</think>\n{{img::a}}\n<think>y</think>"),
+            },
+        });
+        expect(calls).toEqual([]);
+        expect(counts).toEqual([]);
+        expect(runner.workingCount()).toBe(0);
+    });
+
+    it("strips each history entry's source and fresh translation after the freshness check (a translation of the stripped text is stale), keeps an entry left empty, and counts the stripped blocks once for every part and step", async () => {
+        build();
+        useExcludePreset([
+            { prompt: "A[{{slot::history::10}}] {{slot::content}}", outputKey: "draft" },
+            { prompt: "B[{{slot::historytrans::10}}] {{slot::prev}}" },
+        ]);
+        chatBatch([
+            {
+                op: "append",
+                messages: [
+                    { ...m("cut", "cut here"), disabled: "allBefore" },
+                    {
+                        ...m("h0", "hello <think>hh</think>"),
+                        translation: tr("안녕 <think>tt</think>", "hello <think>hh</think>"),
+                    },
+                    m("h1", "<think>only</think>", "char"),
+                    { ...m("h2", "<think>s</think>stale"), translation: tr("오래", "stale") },
+                    m("t", "<think>t</think>target\n\nsecond", "char"),
+                ],
+                anchor: { end: true },
+            },
+        ]);
+        answer = async () => ({ type: "success", result: `o${calls.length}` });
+        expect(await runner.translate(req("t"))).toMatchObject({
+            ok: true,
+            outcome: "applied",
+            translation: { text: "o2\n\no4", sourceHash: translationSourceHash("<think>t</think>target\n\nsecond") },
+        });
+        const history = "user: hello\n\n---\n\nchar: \n\n---\n\nuser: stale\n\n---\n\n";
+        const historyTrans = "user: 안녕\n\n---\n\nchar: \n\n---\n\nuser: \n\n---\n\n";
+        expect(contents()).toEqual([
+            `A[${history}] target`,
+            `B[${historyTrans}] o1`,
+            `A[${history}] second`,
+            `B[${historyTrans}] o3`,
+        ]);
+        expect(counts.map((entry) => entry.text)).toEqual([
+            "user: hello\n\n---\n\n",
+            "user: 안녕\n\n---\n\n",
+            "char: \n\n---\n\n",
+            "char: \n\n---\n\n",
+            "user: stale\n\n---\n\n",
+            "user: \n\n---\n\n",
+        ]);
+        expect(runner.workingCount()).toBe(0);
+    });
+
     // `docs/plan/translation.md` slice 3.3: the history slots. The runner builds the history of the
     // message from the run's chat copy once, when the first pipeline run starts, with `tokens` in the
     // main model's scope, and hands it to every part and step in both modes; a text that sends nothing

@@ -80,6 +80,7 @@ vi.mock("src/ts/util", () => ({
 
 import { get } from "svelte/store";
 import type { Chat as ChatRecord } from "../../../shared/database.ts";
+import { globalFetch } from "src/ts/globalApi.svelte";
 import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import { assembleChats, chatEntry, seedChats, selectChat } from "src/ts/storage/chatStore.svelte";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
@@ -95,6 +96,7 @@ import {
     searchLLMCache,
     translate,
     translateHTML,
+    writeLLMCacheEntry,
 } from "./translator";
 
 const KEY = /^llm:[0-9a-f]{14}:/;
@@ -760,5 +762,304 @@ describe("the history slots in the tab", () => {
         await expect(translateHTML("Hello", false, "", -1)).resolves.toBe("NEW");
         expect(request.requestChatData).toHaveBeenCalledTimes(2);
         expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+});
+
+// `docs/plan/translation.md` slice 3.4: a preset on Exclude Chain-of-Thought strips the `<Thoughts>`
+// and `<think>` blocks of the text once before it is sent (`translateLLM` for an As-Is `runTranslator`
+// call and for `translateHTML`; the protected `runTranslator` strips the whole text before its line
+// cut and passes the chunks as prepared), a text left blank is an empty translation, a failure
+// returns the text as given, and the cache key carries `excludeThoughts: true` only when on, after
+// the existing fields, plus `inputPrepared: true` for the prepared chunks, so a prepared text and
+// the same raw text (which would be stripped again: the strip is not idempotent) never share an entry.
+describe("Exclude Chain-of-Thought", () => {
+    /** The challenge's non-idempotent text: one strip leaves `ONCE`, a second would leave `visible`. */
+    const NONIDEM = "<thi<think>x</think>nk>secret</think>visible";
+    const ONCE = "<think>secret</think>visible";
+    const one = () => settings.translatorPresets.items.find((entry) => entry.id === "one")!;
+    const setExclude = (on: boolean) => {
+        if (on) {
+            one().excludeThoughts = true;
+        } else {
+            delete one().excludeThoughts;
+        }
+    };
+    const setAsIs = (on: boolean) => {
+        if (on) {
+            one().sendTextAsIs = true;
+        } else {
+            delete one().sendTextAsIs;
+        }
+    };
+    /** The `one` preset's key of `text` under the signature fields `extra` appended in order. */
+    const keyOf = (extra: Record<string, true>, text: string) =>
+        `llm:${translationSourceHash(
+            JSON.stringify({
+                pipeline: translatorPipelineSignature(oneStep().steps),
+                to: "ko",
+                from: "en",
+                translatorNote: "",
+                ...extra,
+            }),
+        )}:${text}`;
+    const ON = { excludeThoughts: true } as const;
+    const PREPARED = { excludeThoughts: true, inputPrepared: true } as const;
+    const contents = () => requests().map((entry) => entry.messages[0].content);
+
+    beforeEach(() => {
+        settings.translatorPresets.selectedId = "one";
+        setExclude(true);
+    });
+
+    it("keys the cache by the old formula while off (a stray false included), appends excludeThoughts: true after sendTextAsIs when on, and keys the protected chunks apart with inputPrepared: true", async () => {
+        setExclude(false);
+        expect(llmTranslationCacheKey("Hello")).toBe(keyOf({}, "Hello"));
+        one().excludeThoughts = false;
+        expect(llmTranslationCacheKey("Hello")).toBe(keyOf({}, "Hello"));
+        setAsIs(true);
+        expect(llmTranslationCacheKey("Hello")).toBe(keyOf({ sendTextAsIs: true }, "Hello"));
+        setExclude(true);
+        expect(llmTranslationCacheKey("Hello")).toBe(keyOf({ sendTextAsIs: true, excludeThoughts: true }, "Hello"));
+        setAsIs(false);
+        expect(llmTranslationCacheKey("Hello")).toBe(keyOf(ON, "Hello"));
+        expect(llmTranslationCacheKey("Hello")).toMatch(KEY);
+
+        // A protected chunk's entry: the chunk of the stripped text under the prepared signature.
+        succeed("안녕");
+        await expect(runTranslator("<think>r</think>Hello", false, "ko", "en")).resolves.toBe("안녕");
+        expect(await exportLLMCacheAsJSON()).toEqual({ [keyOf(PREPARED, "Hello")]: "안녕" });
+        // Neither the public key nor the plugin reads see it: the rendered path strips the raw text.
+        expect(await getLLMCache("Hello")).toBeNull();
+        expect(await getLLMCache("<think>r</think>Hello")).toBeNull();
+        expect(await searchLLMCache("Hello")).toEqual([]);
+    });
+
+    it("keeps a prepared chunk and the same raw text apart in both population orders: each path sends its own request text, and the editors' key is the raw one", async () => {
+        // Protected first: the whole text stripped once, the chunk sent as it is (not stripped again).
+        succeed("PROTECTED");
+        await expect(runTranslator(NONIDEM, false, "ko", "en")).resolves.toBe("PROTECTED");
+        expect(contents()).toEqual([`Other ${ONCE}`]);
+        expect(await exportLLMCacheAsJSON()).toEqual({ [keyOf(PREPARED, ONCE)]: "PROTECTED" });
+        // The chunk's text on the direct path is raw text: stripped once more, its own request and entry.
+        succeed("DIRECT");
+        await expect(translateHTML(ONCE, false, "", -1)).resolves.toBe("DIRECT");
+        expect(contents()).toEqual([`Other ${ONCE}`, "Other visible"]);
+        expect(await exportLLMCacheAsJSON()).toEqual({
+            [keyOf(PREPARED, ONCE)]: "PROTECTED",
+            [keyOf(ON, ONCE)]: "DIRECT",
+        });
+        expect(llmTranslationCacheKey(ONCE)).toBe(keyOf(ON, ONCE));
+        expect(await getLLMCache(ONCE)).toBe("DIRECT");
+        expect(await searchLLMCache("secret")).toEqual([{ key: ONCE, value: "DIRECT" }]);
+        // An editor's write lands on the raw entry and never reaches the protected run.
+        await writeLLMCacheEntry(llmTranslationCacheKey(ONCE), "EDITED");
+        await expect(translateHTML(ONCE, false, "", -1)).resolves.toBe("EDITED");
+        await expect(runTranslator(NONIDEM, false, "ko", "en")).resolves.toBe("PROTECTED");
+        expect(request.requestChatData).toHaveBeenCalledTimes(2);
+
+        // Direct first: the protected run still makes its own request with the prepared text.
+        store.clear();
+        vi.clearAllMocks();
+        succeed("DIRECT2");
+        await expect(translateHTML(ONCE, false, "", -1)).resolves.toBe("DIRECT2");
+        succeed("PROTECTED2");
+        await expect(runTranslator(NONIDEM, false, "ko", "en")).resolves.toBe("PROTECTED2");
+        expect(contents()).toEqual(["Other visible", `Other ${ONCE}`]);
+        expect(await exportLLMCacheAsJSON()).toEqual({
+            [keyOf(ON, ONCE)]: "DIRECT2",
+            [keyOf(PREPARED, ONCE)]: "PROTECTED2",
+        });
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+
+    it("with Send Text As-Is strips the whole text exactly once in translateLLM, keyed by the original text: whitespace kept without a tag, trimmed after a block, the original returned on failure", async () => {
+        setAsIs(true);
+        succeed("ONCE");
+        await expect(runTranslator(NONIDEM, false, "ko", "en")).resolves.toBe("ONCE");
+        expect(contents()).toEqual([`Other ${ONCE}`]);
+        expect(await exportLLMCacheAsJSON()).toEqual({
+            [keyOf({ sendTextAsIs: true, excludeThoughts: true }, NONIDEM)]: "ONCE",
+        });
+        expect(await getLLMCache(NONIDEM)).toBe("ONCE");
+        await expect(runTranslator(NONIDEM, false, "ko", "en")).resolves.toBe("ONCE");
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+
+        // No opening tag: the text goes as it is, surrounding whitespace and a stray closing tag included.
+        succeed(" kept ");
+        await expect(runTranslator("  Hello </think> \n", false, "ko", "en")).resolves.toBe(" kept ");
+        expect(contents()[1]).toBe("Other   Hello </think> \n");
+        // A block spanning blank and asset lines leaves whole, and the rest is trimmed.
+        succeed("T");
+        await expect(
+            runTranslator("  <THINK a='b'>\nx\n\n{{img::x}}\n</think>  Hello \n", false, "ko", "en"),
+        ).resolves.toBe("T");
+        expect(contents()[2]).toBe("Other Hello");
+
+        // A failed step: one alert, the text as given (not the stripped text), nothing cached.
+        request.requestChatData.mockResolvedValueOnce({ type: "fail", result: "provider down" });
+        await expect(runTranslator("<think>r</think>Hello", false, "ko", "en")).resolves.toBe("<think>r</think>Hello");
+        expect(alerts.alertError).toHaveBeenCalledTimes(1);
+        expect(alerts.alertError).toHaveBeenCalledWith("provider down");
+        expect(await getLLMCache("<think>r</think>Hello")).toBeNull();
+        expect(Object.keys(await exportLLMCacheAsJSON())).toHaveLength(3);
+    });
+
+    it("without Send Text As-Is strips the whole text before the line cut (a block spanning blank and asset lines leaves whole), joins adjacent lines as before, and keys each chunk of the stripped text as prepared", async () => {
+        const text = "intro\n<Thoughts>\nline a\n\n{{img::x}}\nline b\n</Thoughts>\nfirst\nsecond\n\n{{img::y}}\nthird";
+        succeed("I", "FS", "T");
+        await expect(runTranslator(text, false, "ko", "en")).resolves.toBe("I\n\nFS\n\n\n{{img::y}}\nT");
+        // The tab's chunking concatenates adjacent lines (the server's joins them with a newline).
+        expect(contents()).toEqual(["Other intro", "Other firstsecond", "Other third"]);
+        expect(await exportLLMCacheAsJSON()).toEqual({
+            [keyOf(PREPARED, "intro")]: "I",
+            [keyOf(PREPARED, "firstsecond")]: "FS",
+            [keyOf(PREPARED, "third")]: "T",
+        });
+        // Served from those entries again; the raw path reads none of them.
+        await expect(runTranslator(text, false, "ko", "en")).resolves.toBe("I\n\nFS\n\n\n{{img::y}}\nT");
+        expect(request.requestChatData).toHaveBeenCalledTimes(3);
+        expect(await getLLMCache("intro")).toBeNull();
+        expect(await searchLLMCache("intro")).toEqual([]);
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+
+    it("translateHTML strips before the <risu-style> placeholders, so a style inside a removed block cannot come back from the style table; raw tags go, a rendered <details> stays", async () => {
+        const html = "<think>secret <risu-style>.x{}</risu-style></think><p>Hi</p><risu-style>.b{}</risu-style>";
+        succeed('<p>안녕</p><style-data style-index="0"></style-data><style-data style-index="1"></style-data>');
+        await expect(translateHTML(html, false, "", -1)).resolves.toBe("<p>안녕</p>.b{}");
+        expect(contents()).toEqual(['Other <p>Hi</p><style-data style-index="0"></style-data>']);
+        expect(await exportLLMCacheAsJSON()).toEqual({ [keyOf(ON, html)]: "<p>안녕</p>.b{}" });
+
+        // The accepted scope: the markdown step has already turned `<Thoughts>` into `<details>` on
+        // the rendered path, which is kept; only raw tags (translateBeforeHTMLFormatting's text) go.
+        const rendered = "<details><summary>Thoughts</summary>secret</details><p>Hi</p>";
+        succeed("R");
+        await expect(translateHTML(rendered, false, "", -1)).resolves.toBe("R");
+        expect(contents()[1]).toBe(`Other ${rendered}`);
+        succeed("W");
+        await expect(translateHTML("<Thoughts>raw</Thoughts>\n<p>Hi</p>", false, "", -1)).resolves.toBe("W");
+        expect(contents()[2]).toBe("Other <p>Hi</p>");
+    });
+
+    it("reports a chunk's failure to the protected runTranslator, which returns its whole text as given: the first chunk, a later one after an unchanged success, a later step; one alert, the failed chunk uncached", async () => {
+        const text = "<think>r</think>Hello\n\nWorld";
+        // The first chunk fails: the second is never sent.
+        request.requestChatData.mockResolvedValueOnce({ type: "fail", result: "provider down" });
+        await expect(runTranslator(text, false, "ko", "en")).resolves.toBe(text);
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        expect(alerts.alertError).toHaveBeenCalledTimes(1);
+        expect(await exportLLMCacheAsJSON()).toEqual({});
+
+        // A later chunk fails after a success whose reply equals its input (equality is not failure).
+        succeed("Hello");
+        request.requestChatData.mockResolvedValueOnce({ type: "fail", result: "second down" });
+        await expect(runTranslator(text, false, "ko", "en")).resolves.toBe(text);
+        expect(contents().slice(1)).toEqual(["Other Hello", "Other World"]);
+        expect(alerts.alertError).toHaveBeenCalledTimes(2);
+        expect(alerts.alertError).toHaveBeenLastCalledWith("second down");
+        expect(await exportLLMCacheAsJSON()).toEqual({ [keyOf(PREPARED, "Hello")]: "Hello" });
+
+        // A later step fails (the two-step preset): the first chunk's draft is not a translation.
+        settings.translatorPresets.items[0].excludeThoughts = true;
+        settings.translatorPresets.selectedId = "two";
+        succeed("D");
+        request.requestChatData.mockResolvedValueOnce({ type: "fail", result: "polish down" });
+        await expect(runTranslator(text, false, "ko", "en")).resolves.toBe(text);
+        expect(request.requestChatData).toHaveBeenCalledTimes(5);
+        expect(alerts.alertError).toHaveBeenCalledTimes(3);
+        expect(Object.keys(await exportLLMCacheAsJSON())).toHaveLength(1);
+
+        // Without the option a chunk's failure keeps the old behavior: the chunk's text joined in.
+        settings.translatorPresets.selectedId = "one";
+        setExclude(false);
+        request.requestChatData.mockResolvedValueOnce({ type: "fail", result: "old way" });
+        succeed("W");
+        await expect(runTranslator(text, false, "ko", "en")).resolves.toBe("<think>r</think>Hello\n\nW");
+        expect(contents().slice(5)).toEqual(["Other <think>r</think>Hello", "Other World"]);
+        expect(alerts.alertError).toHaveBeenCalledTimes(4);
+    });
+
+    it('a text the strip leaves blank is an empty translation: cached as "" under the original key on the As-Is and direct paths (a regeneration replacing a manual entry, the next read a hit), returned without a request or an entry by the protected path', async () => {
+        const only = "<Thoughts>\nonly\n</Thoughts>";
+        await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
+        expect(request.requestChatData).not.toHaveBeenCalled();
+        expect(await exportLLMCacheAsJSON()).toEqual({ [keyOf(ON, only)]: "" });
+        expect(await getLLMCache(only)).toBe("");
+        await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
+        // A manual entry (the editors) is served until a regeneration replaces it with "".
+        await writeLLMCacheEntry(llmTranslationCacheKey(only), "MANUAL");
+        await expect(translateHTML(only, false, "", -1)).resolves.toBe("MANUAL");
+        await expect(translateHTML(only, false, "", -1, true)).resolves.toBe("");
+        expect(await getLLMCache(only)).toBe("");
+        await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
+        // While a chat generates, the entry is served; without one the html stays, nothing written.
+        doingChat.set(true);
+        await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
+        await expect(translateHTML("<think>other</think>", false, "", -1)).resolves.toBe("<think>other</think>");
+        expect(Object.keys(await exportLLMCacheAsJSON())).toHaveLength(1);
+        doingChat.set(false);
+
+        setAsIs(true);
+        await expect(runTranslator(only, false, "ko", "en")).resolves.toBe("");
+        expect(await exportLLMCacheAsJSON()).toEqual({
+            [keyOf(ON, only)]: "",
+            [keyOf({ sendTextAsIs: true, excludeThoughts: true }, only)]: "",
+        });
+        setAsIs(false);
+        store.clear();
+        await expect(runTranslator(only, false, "ko", "en")).resolves.toBe("");
+        await expect(runTranslator("<think>a</think>\n\n<think>b</think>", false, "ko", "en")).resolves.toBe("");
+        expect(await exportLLMCacheAsJSON()).toEqual({});
+        expect(request.requestChatData).not.toHaveBeenCalled();
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+
+    it("captures the option when a call starts: flipped during the first chunk's request, the later chunks and the keys stay with the captured mode in both directions", async () => {
+        const onKeys = () => [keyOf(PREPARED, "first"), keyOf(PREPARED, "second")];
+        request.requestChatData.mockImplementationOnce(async () => {
+            setExclude(false);
+            return { type: "success", result: "F" };
+        });
+        succeed("S");
+        await expect(runTranslator("<think>a</think>first\n\n<think>b</think>second", false, "ko", "en")).resolves.toBe(
+            "F\n\nS",
+        );
+        expect(contents()).toEqual(["Other first", "Other second"]);
+        expect(await exportLLMCacheAsJSON()).toEqual({ [onKeys()[0]]: "F", [onKeys()[1]]: "S" });
+        // Off now: the raw path reads none of them.
+        expect(await getLLMCache("second")).toBeNull();
+
+        // Turned on during an off call: the second chunk keeps its block and the off keys.
+        request.requestChatData.mockImplementationOnce(async () => {
+            setExclude(true);
+            return { type: "success", result: "F2" };
+        });
+        succeed("S2");
+        await expect(runTranslator("first\n\n<think>b</think>second", false, "ko", "en")).resolves.toBe("F2\n\nS2");
+        expect(contents().slice(2)).toEqual(["Other first", "Other <think>b</think>second"]);
+        expect(await exportLLMCacheAsJSON()).toMatchObject({
+            [keyOf({}, "first")]: "F2",
+            [keyOf({}, "<think>b</think>second")]: "S2",
+        });
+        expect(await getLLMCache("<think>b</think>second")).toBeNull();
+        setExclude(false);
+        expect(await getLLMCache("<think>b</think>second")).toBe("S2");
+    });
+
+    it("leaves another translator alone: DeepL gets the text with its blocks", async () => {
+        installFlatDatabase({
+            characters: [],
+            translatorPresets: [twoSteps(), { ...oneStep(), excludeThoughts: true }],
+            translatorPresetId: "one",
+            translatorType: "deepl",
+            translator: "ko",
+            translatorInputLanguage: "en",
+            deeplOptions: { key: "k", freeApi: true },
+        } as any);
+        vi.mocked(globalFetch).mockResolvedValueOnce({ ok: true, data: { translations: [{ text: "X" }] } } as never);
+        await expect(runTranslator("<think>r</think>Hello", false, "ko", "en")).resolves.toBe("X");
+        expect(vi.mocked(globalFetch).mock.calls[0][1]).toMatchObject({ body: { text: ["<think>r</think>Hello"] } });
+        expect(request.requestChatData).not.toHaveBeenCalled();
+        expect(await exportLLMCacheAsJSON()).toEqual({});
     });
 });

@@ -12,6 +12,7 @@ import { storedTranslation } from "../../../shared/translation/messageTranslatio
 import { buildTranslatorHistory, type TranslatorHistory } from "../../../shared/translation/historySlots.ts";
 import {
     runTranslatorPipeline,
+    stripTranslatorReasoning,
     translateProtectingLines,
     translatorHistorySlotCounts,
 } from "../../../shared/translation/pipeline.ts";
@@ -248,6 +249,10 @@ export function createTranslationRunner(deps: {
         });
 
         const translatorNote = translatorNoteOf(scope);
+        // Exclude Chain-of-Thought (slice 3.4): the reasoning blocks leave the source (once, the whole
+        // text, before the line protection cuts it) and every history entry.
+        const excludeThoughts = preset.excludeThoughts === true;
+        const sourceText = excludeThoughts ? stripTranslatorReasoning(message.data) : message.data;
         // The history slots of the message (slice 3.3), from the scope's chat copy (the one `message`
         // comes from), built once for every part and step, when the first pipeline run starts: a text
         // that sends nothing counts nothing. Each count yields a turn and checks the run before and
@@ -267,6 +272,7 @@ export function createTranslationRunner(deps: {
                     messageIndex: messages.indexOf(message),
                     counts: historyCounts,
                     maxTokens: scope.db.translatorHistoryMaxTokens,
+                    ...(excludeThoughts ? { transformText: stripTranslatorReasoning } : {}),
                     countTokens: async (text) => {
                         await new Promise<void>((resolve) => setImmediate(resolve));
                         assertLive(life);
@@ -333,11 +339,14 @@ export function createTranslationRunner(deps: {
                 },
             );
         // Send Text As-Is (slice 3.2): the whole source in one run, the reply stored as it is; else
-        // the source chunk by chunk around its asset and blank lines, one after another.
+        // the source chunk by chunk around its asset and blank lines, one after another. A source the
+        // reasoning strip left blank is an empty translation, without a request.
         const text =
-            preset.sendTextAsIs === true
-                ? await translateText(message.data)
-                : await translateProtectingLines(message.data, translateText);
+            excludeThoughts && sourceText.trim() === ""
+                ? ""
+                : preset.sendTextAsIs === true
+                  ? await translateText(sourceText)
+                  : await translateProtectingLines(sourceText, translateText);
 
         const translation: MessageTranslation = {
             text,

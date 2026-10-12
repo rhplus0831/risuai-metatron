@@ -1,6 +1,6 @@
 # Translation Plan
 
-Status: slices 1.1–1.5, 2.1–2.4, and 3.1–3.3 done (2026-10-12). No open questions.
+Status: slices 1.1–1.5, 2.1–2.4, and 3.1–3.4 done (2026-10-12); phase 4 is optional. No open questions.
 
 Bring the useful part of the Fastify fork's translation work into metatron:
 translations stored on the message, per-chat translation settings, automatic
@@ -648,6 +648,55 @@ As built:
 3.4 **Chain of thought.** A preset option that also strips `<Thoughts>` and
 `<think>` from the source and the history before sending. Output stripping is
 always on (1.2).
+
+As built:
+
+- `TranslatorPreset.excludeThoughts` (Exclude Chain-of-Thought), stored only as `true` like
+  `sendTextAsIs`; the preset page's second check writes `true` or deletes it. It does not depend on
+  Send Text As-Is (Fastify's `translatorExcludeThoughts` was a global setting that applied only with
+  it): without As-Is the strip runs on the whole text before the line cut, so a block spanning
+  paragraphs leaves whole.
+- The strip is `stripTranslatorReasoning`, the output strip's rule: any case, attributes allowed,
+  nested blocks counted, an unclosed block hidden to the end, a stray closing tag kept; a text with no
+  opening tag is unchanged, else the rest is trimmed. Each text is stripped once (the rule is not
+  idempotent: removing a block can join two fragments into a new tag). A source the strip leaves
+  blank sends nothing: the server stores an empty translation; the tab's `translateLLM` (As-Is
+  `runTranslator`, `translateHTML`) caches and returns `""` under the original text's key, and the
+  protected `runTranslator` returns `""` without a request or a cache entry (no part is left).
+- The server runner strips `message.data` once, before the As-Is run or `translateProtectingLines`,
+  and each history entry's source and fresh translation (`collectTranslatorHistory`'s
+  `transformText`, after the freshness check, so the budget counts the stripped blocks).
+  `sourceHash` stays the stored text's.
+- The tab: `translateLLM` strips after its cache read and before the `<risu-style>` placeholders
+  (As-Is `runTranslator`, `translateHTML`); the protected `runTranslator` strips the whole text
+  before its line cut and passes the chunks as prepared. A failure returns the text as given:
+  `translateLLM` returns its own text and reports the failure to the protected `runTranslator`
+  (`failure`), which then returns its whole text unstripped (without the option, a chunk failure
+  keeps the old behavior). The `LLMTranslateCache` key gains `excludeThoughts: true` only when on,
+  after the existing fields, and `inputPrepared: true` for the protected chunks (a prepared text and
+  the same raw text, which would be stripped first, never share an entry); its text is the caller's
+  (before the strip), the protected chunks' being the chunks of the stripped text.
+- Limits, in the help: on the rendered path the markdown step has already turned `<Thoughts>` into
+  `<details>`, so their text is translated (only `translateBeforeHTMLFormatting`'s raw text is
+  stripped); the playground's bulk mode strips each of its parts on its own, and its Keep Context
+  notes carry the earlier parts as typed, thought blocks included.
+- `.risutl`: version 1 only with the option off (a version 1 payload carrying `excludeThoughts` is
+  refused); version 2 carries an optional boolean `excludeThoughts`, written only when on.
+- Tests: `src/ts/translator/translatorLLM.test.ts` (the keys: the off-mode formula unchanged,
+  `excludeThoughts: true` appended after `sendTextAsIs`, `inputPrepared: true` for the protected
+  chunks; a prepared chunk and the same raw text kept apart in both population orders, the request
+  text of each path asserted; the As-Is call stripped exactly once under the original text's key;
+  the protected call stripped whole before the line cut; `translateHTML` stripping before the
+  `<risu-style>` placeholders and keeping a rendered `<details>`; a chunk's failure returning the
+  whole text as given; a blank text cached as `""` on the As-Is and direct paths and returned
+  without a request or an entry by the protected path; the option captured when a call starts;
+  DeepL untouched), `server/src/tests/translate.test.ts` (the source stripped once before the line
+  cut or the As-Is run, a blank source stored empty under the stored text's hash without a request
+  or a count, the history entries stripped after the freshness check and counted once),
+  `shared/tests/translatorHistorySlots.test.ts` (`transformText`), `shared/tests/translatorPresets.test.ts`,
+  `server/src/tests/normalizeCollections.test.ts`, `src/ts/translator/presets.test.ts`,
+  `src/ts/translator/presetsCodec.test.ts` (the field kept only as `true` after `sendTextAsIs`, the
+  `.risutl` rules), and `src/lib/Setting/Pages/Language/TranslatorPresetSettings.test.ts` (the check).
 
 ### Phase 4. Optional
 

@@ -208,6 +208,52 @@ describe(".risutl round trip through the real codecs", () => {
         });
     });
 
+    // Translation slice 3.4: Exclude Chain-of-Thought rides in version 2 as `excludeThoughts: true`,
+    // written only when on, after `sendTextAsIs`.
+    it("carries Exclude Chain-of-Thought in version 2 as exactly excludeThoughts: true, alone or after sendTextAsIs, and decodes it back, over two cycles", async () => {
+        const preset = createTranslatorPreset("Thoughts ✓", {
+            prompt: "T {{slot::content}}",
+            maxResponse: 9,
+            excludeThoughts: true,
+        });
+        const bytes = await encodeTranslatorPresetFile(preset);
+        const payload = await decodeRisutl(bytes, 2);
+        expect(payload).toStrictEqual({
+            name: "Thoughts ✓",
+            steps: [
+                {
+                    name: "Step 1",
+                    enabled: true,
+                    prompt: "T {{slot::content}}",
+                    maxResponse: 9,
+                    model: { mode: "inherit" },
+                },
+            ],
+            excludeThoughts: true,
+        });
+        const decoded = await decodeTranslatorPresetFile(bytes);
+        expect(decoded.excludeThoughts).toBe(true);
+        expect(withoutIds(decoded)).toStrictEqual(withoutIds(preset));
+        const again = await encodeTranslatorPresetFile(decoded);
+        expect(await decodeRisutl(again, 2)).toStrictEqual(payload);
+        expect(withoutIds(await decodeTranslatorPresetFile(again))).toStrictEqual(withoutIds(preset));
+
+        const both = createTranslatorPreset("Both", {
+            prompt: "T",
+            maxResponse: 1,
+            sendTextAsIs: true,
+            excludeThoughts: true,
+        });
+        const bothBytes = await encodeTranslatorPresetFile(both);
+        expect(Object.keys(await decodeRisutl(bothBytes, 2))).toEqual([
+            "name",
+            "steps",
+            "sendTextAsIs",
+            "excludeThoughts",
+        ]);
+        expect(withoutIds(await decodeTranslatorPresetFile(bothBytes))).toStrictEqual(withoutIds(both));
+    });
+
     // Translation slice 3.3: the history slots are prompt text; the budget is a global setting, so a
     // file carries no budget field and the version rules do not change.
     it("round-trips prompts with history slots through both versions as prompt text alone, without a budget field", async () => {

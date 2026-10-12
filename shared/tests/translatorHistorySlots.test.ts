@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Message, MessageTranslation } from "../database.ts";
 import { translationSourceHash } from "../translation/hash.ts";
+import { stripTranslatorReasoning } from "../translation/pipeline.ts";
 import {
     buildTranslatorHistory,
     collectTranslatorHistory,
@@ -296,5 +297,81 @@ describe("buildTranslatorHistory", () => {
             }),
         ).rejects.toThrow("tokenizer down");
         expect(failing).toHaveBeenCalledTimes(2);
+    });
+});
+
+// `docs/plan/translation.md` slice 3.4: `transformText` (Exclude Chain-of-Thought) is applied by
+// the collector to each entry's source and fresh translation, once each, after the freshness check
+// on the stored text; the build forwards it, so the blocks are rendered and counted as transformed.
+describe("transformText", () => {
+    const rows: Message[] = [
+        msg("hello <think>h</think>", "user", {
+            translation: fresh("안녕 <think>t</think>", "hello <think>h</think>"),
+        }),
+        msg("<think>only</think>", "char"),
+        // A translation hashed on the stripped text: stale, since freshness is the stored text's.
+        msg("<think>s</think>stale", "user", { translation: fresh("오래", "stale") }),
+        msg("e", "char", { translation: fresh("", "e") }),
+        msg("t"),
+    ];
+
+    it("collectTranslatorHistory applies it to each source and fresh translation once, after the freshness check: a translation of the stripped text is stale, an entry left empty is kept", () => {
+        const strip = vi.fn(stripTranslatorReasoning);
+        expect(collectTranslatorHistory(rows, 4, 10, strip)).toEqual([
+            { role: "user", source: "hello", translated: "안녕" },
+            { role: "char", source: "" },
+            { role: "user", source: "stale" },
+            { role: "char", source: "e", translated: "" },
+        ]);
+        expect(strip.mock.calls.map(([text]) => text).sort()).toEqual(
+            [
+                "hello <think>h</think>",
+                "안녕 <think>t</think>",
+                "<think>only</think>",
+                "<think>s</think>stale",
+                "e",
+                "",
+            ].sort(),
+        );
+        // Without it, the texts as stored.
+        expect(collectTranslatorHistory(rows, 4, 10).map((entry) => entry.source)).toEqual([
+            "hello <think>h</think>",
+            "<think>only</think>",
+            "<think>s</think>stale",
+            "e",
+        ]);
+    });
+
+    it("buildTranslatorHistory hands it to the collection, so the blocks are rendered and counted as transformed", async () => {
+        const length = vi.fn(async (text: string) => text.length);
+        const two: Message[] = [
+            msg("aa <think>x</think>", "user", { translation: fresh("bb <think>y</think>", "aa <think>x</think>") }),
+            msg("<think>c</think>cccc", "char"),
+            msg("t"),
+        ];
+        const build = (maxTokens: number, transformText?: (text: string) => string) =>
+            buildTranslatorHistory({
+                messages: two,
+                messageIndex: 2,
+                counts: [10],
+                maxTokens,
+                countTokens: length,
+                transformText,
+            });
+        // The stripped blocks cost 15 + 15 and 17 + 13: a budget of 60 keeps both entries.
+        const both = await build(60, stripTranslatorReasoning);
+        expect(both("history", 10)).toBe("user: aa\n\n---\n\nchar: cccc\n\n---\n\n");
+        expect(both("historytrans", 10)).toBe("user: bb\n\n---\n\nchar: \n\n---\n\n");
+        expect(length.mock.calls.map(([text]) => text)).toEqual([
+            "user: aa\n\n---\n\n",
+            "user: bb\n\n---\n\n",
+            "char: cccc\n\n---\n\n",
+            "char: \n\n---\n\n",
+        ]);
+        const oneShort = await build(59, stripTranslatorReasoning);
+        expect(bodies(oneShort("history", 10))).toEqual(["char: cccc"]);
+        // Without it the stored blocks (32 + 32 and 33 + 13) are what is counted: 60 keeps the newest alone.
+        const raw = await build(60);
+        expect(bodies(raw("history", 10))).toEqual(["char: <think>c</think>cccc"]);
     });
 });

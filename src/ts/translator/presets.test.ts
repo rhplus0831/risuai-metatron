@@ -337,6 +337,75 @@ describe("translator preset file codec", () => {
         }
     });
 
+    // Translation slice 3.4: Exclude Chain-of-Thought rides in version 2 as Send Text As-Is does,
+    // written only when on and after it; version 1 cannot hold it.
+    it("writes excludeThoughts: true as version 2, even for the lone default step, after sendTextAsIs when both are on, reads it back, and writes nothing of it when off", async () => {
+        const on = createTranslatorPreset("On", { prompt: "a", maxResponse: 7, excludeThoughts: true });
+        const encoded = await encodeTranslatorPresetFile(on);
+        const file = fileOf(encoded);
+        expect(file.version).toBe(2);
+        expect(file.payload).toStrictEqual({
+            name: "On",
+            steps: [{ name: "Step 1", enabled: true, prompt: "a", maxResponse: 7, model: { mode: "inherit" } }],
+            excludeThoughts: true,
+        });
+        const decoded = await decodeTranslatorPresetFile(encoded);
+        expect(decoded.excludeThoughts).toBe(true);
+        expect(Object.hasOwn(decoded, "sendTextAsIs")).toBe(false);
+        expect(withoutIds(decoded)).toStrictEqual(withoutIds(on));
+        expect(fileOf(await encodeTranslatorPresetFile(decoded)).payload).toStrictEqual(file.payload);
+
+        const both = createTranslatorPreset("Both", {
+            prompt: "a",
+            maxResponse: 7,
+            sendTextAsIs: true,
+            excludeThoughts: true,
+        });
+        const bothEncoded = await encodeTranslatorPresetFile(both);
+        expect(Object.keys(fileOf(bothEncoded).payload)).toEqual(["name", "steps", "sendTextAsIs", "excludeThoughts"]);
+        expect(withoutIds(await decodeTranslatorPresetFile(bothEncoded))).toStrictEqual(withoutIds(both));
+
+        // Off, a stray `false` included: the version 1 file of before for the default lone step, and
+        // no key at all in a version 2 payload.
+        const off = { ...createTranslatorPreset("Off", { prompt: "a", maxResponse: 7 }), excludeThoughts: false };
+        expect(fileOf(await encodeTranslatorPresetFile(off))).toMatchObject({
+            version: 1,
+            payload: { name: "Off", prompt: "a", maxResponse: 7 },
+        });
+        const twoOff = createTranslatorPreset("Two", { steps: [{ prompt: "a" }, { prompt: "b" }] });
+        expect(Object.hasOwn(fileOf(await encodeTranslatorPresetFile(twoOff)).payload, "excludeThoughts")).toBe(false);
+    });
+
+    it("reads a version 2 excludeThoughts only as a boolean (false is off), refuses an own undefined, null, or other value, and refuses a version 1 payload carrying it", async () => {
+        const valid = { name: "V2", steps: [stepPayload()] };
+        expect(
+            (await decodeTranslatorPresetFile(fileWith(2, { ...valid, excludeThoughts: true }))).excludeThoughts,
+        ).toBe(true);
+        const off = await decodeTranslatorPresetFile(fileWith(2, { ...valid, excludeThoughts: false }));
+        expect(Object.hasOwn(off, "excludeThoughts")).toBe(false);
+        expect(withoutIds(off)).toStrictEqual(withoutIds(createTranslatorPreset("V2", { steps: valid.steps })));
+        const invalid: Record<string, unknown> = {
+            undefined: undefined,
+            null: null,
+            number: 1,
+            string: "true",
+            object: {},
+        };
+        for (const [label, value] of Object.entries(invalid)) {
+            await expect(
+                decodeTranslatorPresetFile(fileWith(2, { ...valid, excludeThoughts: value })),
+                label,
+            ).rejects.toThrow(INVALID);
+        }
+        const v1 = { name: "V1", prompt: "p", maxResponse: 1 };
+        for (const value of [true, false, undefined, null]) {
+            await expect(
+                decodeTranslatorPresetFile(fileWith(1, { ...v1, excludeThoughts: value })),
+                String(value),
+            ).rejects.toThrow(INVALID);
+        }
+    });
+
     it("rejects plain JSON translator preset payloads", async () => {
         const plainJsonPayload = new TextEncoder().encode(
             JSON.stringify({

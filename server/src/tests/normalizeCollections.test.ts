@@ -400,6 +400,40 @@ describe("translatorPresets", () => {
         expect(serialize(normalizeTranslatorPresets(JSON.parse(text))).text).toBe(text);
     });
 
+    // Translation slice 3.4: Exclude Chain-of-Thought is stored only as `true`, after `sendTextAsIs`
+    // and independent of it.
+    it("stores excludeThoughts only as true, after sendTextAsIs and independent of it, drops any other value, and leaves a preset without it as it was", () => {
+        const out = normalizeTranslatorPresets({
+            items: [
+                { id: "on", name: "On", steps: [{ prompt: "p" }], excludeThoughts: true },
+                { id: "both", name: "B", steps: [{ prompt: "p" }], excludeThoughts: true, sendTextAsIs: true },
+                { id: "false", name: "F", steps: [{ prompt: "p" }], excludeThoughts: false },
+                { id: "string", name: "S", steps: [{ prompt: "p" }], excludeThoughts: "true" },
+                { id: "null", name: "N", steps: [{ prompt: "p" }], excludeThoughts: null, sendTextAsIs: true },
+                { id: "old", name: "Old", prompt: "p", maxResponse: 3 },
+            ],
+            selectedId: "on",
+        });
+        expect(out.items[0]).toMatchObject({ id: "on", excludeThoughts: true });
+        expect(Object.keys(out.items[0])).toEqual(["id", "name", "steps", "excludeThoughts"]);
+        expect(Object.keys(out.items[1])).toEqual(["id", "name", "steps", "sendTextAsIs", "excludeThoughts"]);
+        for (const item of out.items.slice(2)) {
+            expect(Object.hasOwn(item, "excludeThoughts"), item.id).toBe(false);
+        }
+        expect(Object.keys(out.items[4])).toEqual(["id", "name", "steps", "sendTextAsIs"]);
+        expect(Object.keys(out.items[5])).toEqual(["id", "name", "steps"]);
+        expectIdempotent(normalizeTranslatorPresets, { items: out.items, selectedId: "on" });
+        // A preset the tab turns on with `createTranslatorPreset` is stored as it is.
+        const created = createTranslatorPreset("Thoughts", {
+            steps: [{ prompt: "{{slot::content}}" }],
+            excludeThoughts: true,
+        });
+        const record = { items: [created], selectedId: created.id };
+        const text = serialize(record).text;
+        expect(text).toContain('"excludeThoughts":true');
+        expect(serialize(normalizeTranslatorPresets(JSON.parse(text))).text).toBe(text);
+    });
+
     it("rejects a record without an items list of objects", () => {
         for (const input of [[], null, "x"]) {
             rejects(normalizeTranslatorPresets, input, "translatorPresets must be an object");

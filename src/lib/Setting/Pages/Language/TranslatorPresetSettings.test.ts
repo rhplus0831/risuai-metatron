@@ -787,3 +787,73 @@ describe("Send Text As-Is", () => {
         expect(alerts.error).not.toHaveBeenCalled();
     });
 });
+
+// Translation slice 3.4: the Exclude Chain-of-Thought check writes `true` to the selected preset,
+// found by id at each write, or deletes the field (never `false`), independent of Send Text As-Is;
+// it follows the selection and a reload that replaced the objects.
+describe("Exclude Chain-of-Thought", () => {
+    type Page = ReturnType<typeof render>;
+    const checkbox = (page: Page, name: string) => {
+        const label = [...page.target.querySelectorAll("label")].find((entry) => entry.textContent?.includes(name));
+        expect(label, `the ${name} check`).toBeDefined();
+        return label!.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    };
+    const exclude = (page: Page) => checkbox(page, language.translatorExcludeThoughts);
+    const asIs = (page: Page) => checkbox(page, language.translatorSendTextAsIs);
+    const toggle = (input: HTMLInputElement, checked: boolean) => {
+        input.checked = checked;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+    };
+    const presetById = (id: string) => settings.translatorPresets.items.find((entry) => entry.id === id)!;
+    const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+
+    it("is off without the field, writes true on check and deletes the field on uncheck, on the selected preset alone, with Send Text As-Is its own field", () => {
+        const page = render();
+        expect(exclude(page).checked).toBe(false);
+        toggle(exclude(page), true);
+        expect(presetById("a").excludeThoughts).toBe(true);
+        expect(Object.keys(plain(presetById("a")))).toEqual(["id", "name", "steps", "excludeThoughts"]);
+        expect(Object.hasOwn(plain(presetById("b")), "excludeThoughts")).toBe(false);
+        expect(exclude(page).checked).toBe(true);
+        expect(asIs(page).checked).toBe(false);
+        // Send Text As-Is on and off again leaves the other check as it is.
+        toggle(asIs(page), true);
+        expect(plain(presetById("a"))).toMatchObject({ sendTextAsIs: true, excludeThoughts: true });
+        expect(exclude(page).checked).toBe(true);
+        toggle(asIs(page), false);
+        expect(Object.keys(plain(presetById("a")))).toEqual(["id", "name", "steps", "excludeThoughts"]);
+        expect(exclude(page).checked).toBe(true);
+        // The other preset shows its own state; back on `a`, the check is still on.
+        settings.translatorPresets.selectedId = "b";
+        flushSync();
+        expect(exclude(page).checked).toBe(false);
+        settings.translatorPresets.selectedId = "a";
+        flushSync();
+        expect(exclude(page).checked).toBe(true);
+        toggle(exclude(page), false);
+        expect(Object.hasOwn(plain(presetById("a")), "excludeThoughts")).toBe(false);
+        expect(Object.keys(plain(presetById("a")))).toEqual(["id", "name", "steps"]);
+        expect(exclude(page).checked).toBe(false);
+        expect(isTranslatorPreset(plain(presetById("a")))).toBe(true);
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("follows a reload that replaced the objects and the selection, and writes to the live preset found by id", () => {
+        const page = render();
+        reloadFromServer([{ ...preset("a", "A"), excludeThoughts: true }, preset("c", "C")], "c");
+        expect(exclude(page).checked).toBe(false);
+        settings.translatorPresets.selectedId = "a";
+        flushSync();
+        expect(exclude(page).checked).toBe(true);
+        toggle(exclude(page), false);
+        expect(Object.hasOwn(plain(presetById("a")), "excludeThoughts")).toBe(false);
+        expect(Object.hasOwn(plain(presetById("c")), "excludeThoughts")).toBe(false);
+        reloadFromServer([{ ...preset("a", "A"), sendTextAsIs: true, excludeThoughts: true }], "a");
+        expect(exclude(page).checked).toBe(true);
+        expect(asIs(page).checked).toBe(true);
+        toggle(exclude(page), true);
+        expect(Object.keys(plain(presetById("a")))).toEqual(["id", "name", "steps", "sendTextAsIs", "excludeThoughts"]);
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+});
