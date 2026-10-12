@@ -920,7 +920,6 @@ export const languageSpanish = {
     showMenuChatList: "Mostrar Menú de Lista de Chats",
     translatorLanguage: "Idioma del Traductor",
     translatorType: "Tipo de Traductor",
-    htmlTranslation: "Traducción de HTML",
     deeplKey: "Clave API de DeepL",
     deeplFreeKey: "Clave API Gratis de DeepL",
     deeplXUrl: "URL de DeepLX",

@@ -1,6 +1,5 @@
 # Search-only ignores for tracked static/vendor payloads.
 # These stay in git, but should not dominate rg/fd/Codex file searches.
-public/assets/
 public/plugin_start.7z
 public/token/
 src/etc/docs/

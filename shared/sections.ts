@@ -150,7 +150,6 @@ export const SECTION_FIELDS = {
         "emotionProcesser",
         "translatorType",
         "translatorInputLanguage",
-        "htmlTranslation",
         "removePunctuationHypa",
         "noWaitForTranslate",
         "maxSupaChunkSize",
@@ -501,6 +500,7 @@ export const DROPPED_FIELDS = [
     "formatversion",
     "realmDirectOpen",
     "auxModelUnderModelSettings",
+    "htmlTranslation",
 ] as const satisfies readonly (keyof Database | "modelCredentials")[];
 
 /** The Phase 1 collection fields (`presets`, `modules`, `plugins`, `pluginStorage`, `characters`). */

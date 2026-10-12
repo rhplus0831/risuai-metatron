@@ -389,6 +389,55 @@ describe("the run as a whole", () => {
     });
 });
 
+describe("the Bergamot model store (docs/plan/translation.md slice 1.5)", () => {
+    type Request = { onerror: ((event: Event) => void) | null; onsuccess: unknown; onblocked: unknown };
+    const request = (): Request => ({ onerror: null, onsuccess: null, onblocked: null });
+
+    it("asks IndexedDB to delete `firefox-translations-models` without waiting for the request, and swallows its error event", async () => {
+        // The request never completes (another tab holds the database open): the import still ends.
+        const pending = request();
+        const deleteDatabase = vi.fn(() => pending);
+        vi.stubGlobal("indexedDB", { deleteDatabase });
+        await importer.importBrowserLocalData();
+        expect(deleteDatabase).toHaveBeenCalledTimes(1);
+        expect(deleteDatabase).toHaveBeenCalledWith("firefox-translations-models");
+        // The old caches of the same block were dropped before it.
+        expect(localStorage.getItem("risuauth")).toBeNull();
+        expect(forage.has("dropped:risuSaveCache")).toBe(true);
+        // A later error event is handled: its default (an uncaught error report) is prevented.
+        const preventDefault = vi.fn();
+        expect(pending.onerror).toBeTypeOf("function");
+        pending.onerror!({ preventDefault } as unknown as Event);
+        expect(preventDefault).toHaveBeenCalledTimes(1);
+    });
+
+    it("ends the import when IndexedDB is missing, or when the delete throws", async () => {
+        // happy-dom has no IndexedDB: the plain run is the missing-global case.
+        expect(typeof indexedDB).toBe("undefined");
+        await expect(importer.importBrowserLocalData()).resolves.toBeUndefined();
+
+        const deleteDatabase = vi.fn(() => {
+            throw new DOMException("denied", "SecurityError");
+        });
+        vi.stubGlobal("indexedDB", { deleteDatabase });
+        await expect(importer.importBrowserLocalData()).resolves.toBeUndefined();
+        expect(deleteDatabase).toHaveBeenCalledWith("firefox-translations-models");
+
+        // A global whose access itself throws (a sandboxed frame) is a throw inside the guard too.
+        Object.defineProperty(globalThis, "indexedDB", {
+            configurable: true,
+            get() {
+                throw new DOMException("denied", "SecurityError");
+            },
+        });
+        try {
+            await expect(importer.importBrowserLocalData()).resolves.toBeUndefined();
+        } finally {
+            delete (globalThis as { indexedDB?: unknown }).indexedDB;
+        }
+    });
+});
+
 describe("sameLocalValue", () => {
     it("compares Blobs by type and bytes and objects structurally", async () => {
         const { sameLocalValue } = importer;

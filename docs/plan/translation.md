@@ -1,6 +1,6 @@
 # Translation Plan
 
-Status: slices 1.1–1.4 done (2026-10-12). No open questions.
+Status: slices 1.1–1.5 done (2026-10-12). No open questions.
 
 Bring the useful part of the Fastify fork's translation work into metatron:
 translations stored on the message, per-chat translation settings, automatic
@@ -323,6 +323,29 @@ As built:
 The `memoryTranslateMedia` normalizer maps `translatorType: "bergamot"` to
 `"none"`. Update `media-aux.md` and `persistence.md` (the
 `firefox-translations-models` store; deleting it once at boot is optional).
+
+As built:
+
+- The normalizer maps `"bergamot"` to `"google"`, not `"none"`: `"none"` has
+  no branch in `translateMain` and reaches Google too, with a blank select.
+  It also empties `translator` (translation off) and turns off
+  `autoTranslate` and `useAutoTranslateInput`, because those two run
+  without checking the target language. A user who chose a local translator
+  sends nothing to an online one until they turn translation on again. The
+  server normalizes and persists the section at startup, and the tab writes
+  the whole record, so the mapping does not run again once the user picks a
+  translator.
+- `htmlTranslation` (Bergamot's HTML option, no other reader) is a
+  `DROPPED_FIELDS` entry; its settings item and label are removed. The boot
+  fixture keeps its old value as legacy input.
+- All of `public/assets/` is removed (the two workers and the 5 MB wasm),
+  with its `.ignore` and `STRUCTURE.md` entries.
+- `importBrowserLocalData` attempts
+  `indexedDB.deleteDatabase("firefox-translations-models")` at every boot
+  without waiting for it (another open tab can block it).
+- Tests: the migration in `server/src/tests/normalizeSections.test.ts`,
+  the boot deletion in `src/ts/storage/tests/browserLocalImport.test.ts`,
+  the select without Bergamot in `src/ts/setting/languageSettingsData.test.ts`.
 
 ### Phase 2. Per-chat settings and automatic translation
 

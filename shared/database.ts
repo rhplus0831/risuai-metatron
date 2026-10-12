@@ -256,9 +256,9 @@ export interface Database {
     mancerHeader: string;
     emotionProcesser: "submodel" | "embedding";
     showMenuChatList?: boolean;
-    translatorType: "google" | "deepl" | "none" | "llm" | "deeplX" | "bergamot";
+    translatorType: "google" | "deepl" | "none" | "llm" | "deeplX";
     translatorInputLanguage?: string;
-    htmlTranslation?: boolean;
+    htmlTranslation?: boolean; // legacy (Bergamot)
     NAIadventure?: boolean;
     NAIappendName?: boolean;
     deeplOptions: {

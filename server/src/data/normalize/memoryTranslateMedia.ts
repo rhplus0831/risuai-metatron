@@ -72,7 +72,6 @@ const spec: SectionSpec<"memoryTranslateMedia"> = {
     emotionProcesser: ["string", "submodel"],
     translatorType: ["string", "google"],
     translatorInputLanguage: ["string", "auto"],
-    htmlTranslation: ["boolean", false],
     removePunctuationHypa: ["boolean", true],
     noWaitForTranslate: ["boolean"],
     maxSupaChunkSize: ["number", 1200],
@@ -110,6 +109,15 @@ const spec: SectionSpec<"memoryTranslateMedia"> = {
 
 export function normalizeMemoryTranslateMedia(input: unknown): SectionResource<"memoryTranslateMedia"> {
     const record = normalizeSection("memoryTranslateMedia", spec, input);
+    // `docs/plan/translation.md` slice 1.5: Bergamot (a local translator) was removed. Its users get
+    // Google with translation and both automatic translations off, so nothing they write is sent to
+    // an online translator until they turn translation on again.
+    if ((record.translatorType as string) === "bergamot") {
+        record.translatorType = "google";
+        record.translator = "";
+        record.autoTranslate = false;
+        record.useAutoTranslateInput = false;
+    }
     // `docs/plan/translation.md` decision 9: anything but the two targets reads as the default.
     if (record.llmTranslationTarget !== "message" && record.llmTranslationTarget !== "rendered") {
         record.llmTranslationTarget = "message";

@@ -401,6 +401,78 @@ describe("memoryTranslateMedia", () => {
         expectIdempotent(normalizeMemoryTranslateMedia, { llmTranslationTarget: "rendered" });
     });
 
+    it("turns a stored `bergamot` translator into Google with translation and both automatic translations off, keeps the rest, and drops `htmlTranslation` (docs/plan/translation.md slice 1.5)", () => {
+        const bergamot = {
+            translatorType: "bergamot",
+            translator: "ko",
+            autoTranslate: true,
+            useAutoTranslateInput: true,
+            htmlTranslation: true,
+            // Unrelated settings of the same record.
+            translatorInputLanguage: "ja",
+            legacyTranslation: true,
+            combineTranslation: true,
+            llmTranslationTarget: "rendered",
+            noWaitForTranslate: true,
+            loreBookDepth: 9,
+        };
+        const migrated = normalizeMemoryTranslateMedia(deepFreeze(structuredClone(bergamot)));
+        expect(migrated).toMatchObject({
+            translatorType: "google",
+            translator: "",
+            autoTranslate: false,
+            useAutoTranslateInput: false,
+            translatorInputLanguage: "ja",
+            legacyTranslation: true,
+            combineTranslation: true,
+            llmTranslationTarget: "rendered",
+            noWaitForTranslate: true,
+            loreBookDepth: 9,
+        });
+        expect(Object.hasOwn(migrated, "htmlTranslation")).toBe(false);
+        for (const key of Object.keys(migrated)) {
+            expect(SECTION_FIELDS.memoryTranslateMedia, key).toContain(key);
+        }
+        // The migrated record reads as a Google record from then on: the mapping does not run again.
+        expectIdempotent(normalizeMemoryTranslateMedia, bergamot);
+        expect(serialize(normalizeMemoryTranslateMedia(migrated)).text).toBe(serialize(migrated).text);
+        // Bergamot without a target or the automatic translations is mapped the same way.
+        expect(normalizeMemoryTranslateMedia({ translatorType: "bergamot" })).toMatchObject({
+            translatorType: "google",
+            translator: "",
+            autoTranslate: false,
+            useAutoTranslateInput: false,
+        });
+
+        // Every other provider keeps its target and its automatic translations, `none` and an
+        // unknown string included (the spec checks the kind, not the value).
+        for (const translatorType of ["google", "deepl", "deeplX", "llm", "none", "Bergamot", "bergamot "]) {
+            const kept = normalizeMemoryTranslateMedia({
+                ...bergamot,
+                translatorType,
+            });
+            expect(kept, translatorType).toMatchObject({
+                translatorType,
+                translator: "ko",
+                autoTranslate: true,
+                useAutoTranslateInput: true,
+            });
+            expect(Object.hasOwn(kept, "htmlTranslation"), translatorType).toBe(false);
+        }
+        // A missing or wrong-kind provider reads as the default without touching the flags.
+        for (const translatorType of [undefined, null, 3, ["bergamot"]]) {
+            expect(
+                normalizeMemoryTranslateMedia({ ...bergamot, translatorType }),
+                JSON.stringify(translatorType),
+            ).toMatchObject({
+                translatorType: "google",
+                translator: "ko",
+                autoTranslate: true,
+                useAutoTranslateInput: true,
+            });
+        }
+    });
+
     it("adds the NAI v4 fields to a config saved before them, and leaves a v4 config alone", () => {
         const legacy: unknown = normalizeMemoryTranslateMedia({
             NAIImgConfig: { width: 1, autoSmea: true },

@@ -83,6 +83,19 @@ describe("the language page's stored-translation items", () => {
         expect(visible({ translator: "", translatorType: "google", llmTranslationTarget: "message" })).toEqual([]);
     });
 
+    it("offers the four remaining translators and no Bergamot item (docs/plan/translation.md slice 1.5)", () => {
+        expect(item("lang.translatorType").options?.selectOptions?.map((option) => option.value)).toEqual([
+            "google",
+            "deepl",
+            "llm",
+            "deeplX",
+        ]);
+        expect(languageSettingsItems.some((entry) => entry.id === "lang.bergamotHtml")).toBe(false);
+        // `bindKey` is typed by the settings root keys, so a build fails on the dropped field already.
+        expect(languageSettingsItems.some((entry) => (entry.bindKey as string) === "htmlTranslation")).toBe(false);
+        expect(Object.hasOwn(languageEnglish, "htmlTranslation")).toBe(false);
+    });
+
     it("keeps the auto-translate toggle and the cache buttons for the LLM translator on either target", () => {
         for (const target of ["message", "rendered"]) {
             const media = { translator: "ko", translatorType: "llm", llmTranslationTarget: target };

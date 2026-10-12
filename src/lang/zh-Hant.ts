@@ -958,7 +958,6 @@ export const languageChineseTraditional = {
     showMenuChatList: "在選單顯示對話清單",
     translatorLanguage: "翻譯語言",
     translatorType: "翻譯器類型",
-    htmlTranslation: "HTML 翻譯",
     deeplKey: "DeepL API 金鑰",
     deeplFreeKey: "DeepL Free API 金鑰",
     deeplXUrl: "DeepLX URL",

@@ -23,7 +23,6 @@
     "@adobe/css-tools": "4.4.4",
     "@aws-crypto/sha256-js": "^5.2.0",
     "@breezystack/lamejs": "^1.2.7",
-    "@browsermt/bergamot-translator": "^0.4.9",
     "@dqbd/tiktoken": "^1.0.22",
     "@hono/node-server": "^2.1.1",
     "@huggingface/jinja": "^0.2.2",

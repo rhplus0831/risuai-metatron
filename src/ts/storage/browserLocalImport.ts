@@ -285,4 +285,12 @@ export async function importBrowserLocalData() {
     try {
         localStorage.removeItem("risuauth");
     } catch {}
+    // The models of the removed Bergamot translator. Not awaited: another open tab can block the
+    // delete, and boot must not wait for it (a later boot tries again).
+    try {
+        if (typeof indexedDB !== "undefined") {
+            const request = indexedDB.deleteDatabase("firefox-translations-models");
+            request.onerror = (event) => event.preventDefault();
+        }
+    } catch {}
 }

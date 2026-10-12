@@ -23,8 +23,6 @@ let cache = {
     trans: [""],
 };
 
-let bergamotTranslate: (text: string, from: string, to: string, html?: boolean) => Promise<string> | null = null;
-
 export const LLMCacheStorage = localforage.createInstance({
     name: "LLMTranslateCache",
 });
@@ -197,14 +195,6 @@ async function translateMain(text: string, arg: { from: string; to: string; host
 
         return f.data.data;
     }
-    if (settings.memoryTranslateMedia.translatorType == "bergamot") {
-        if (!bergamotTranslate) {
-            const bergamotTranslator = await import("./bergamotTranslator");
-            bergamotTranslate = bergamotTranslator.bergamotTranslate;
-        }
-
-        return bergamotTranslate(text, arg.from, arg.to, false);
-    }
     if (settings.memoryTranslateMedia.useExperimentalGoogleTranslator) {
         try {
             const ua = navigator.userAgent;
@@ -319,23 +309,6 @@ export async function translateHTML(
         }
 
         return applyEdittransRegex(r, charArg, alwaysExistChar, chatID, transform);
-    }
-    if (settings.memoryTranslateMedia.translatorType == "bergamot" && settings.memoryTranslateMedia.htmlTranslation) {
-        const from = getModelInfoForMode("model", transform?.context).id.startsWith("novellist") ? "ja" : "en";
-        const to = settings.memoryTranslateMedia.translator || "en";
-
-        if (!bergamotTranslate) {
-            const bergamotTranslator = await import("./bergamotTranslator");
-            bergamotTranslate = bergamotTranslator.bergamotTranslate;
-        }
-
-        return applyEdittransRegex(
-            await bergamotTranslate(html, from, to, true),
-            charArg,
-            alwaysExistChar,
-            chatID,
-            transform,
-        );
     }
     const dom = new DOMParser().parseFromString(html, "text/html");
     console.log(html);

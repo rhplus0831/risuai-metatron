@@ -914,7 +914,6 @@ export const languageVietnamese = {
     showMenuChatList: "Hiển thị Menu Danh sách Trò chuyện",
     translatorLanguage: "Ngôn ngữ dịch",
     translatorType: "Loại dịch giả",
-    htmlTranslation: "Dịch HTML",
     deeplKey: "Khóa API deepL",
     deeplFreeKey: "Khóa API miễn phí deepL",
     deeplXUrl: "deepLX URL",
