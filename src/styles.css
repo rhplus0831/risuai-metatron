@@ -250,6 +250,43 @@ body {
     color: var(--FontColorStandard);
 }
 
+/* The bilingual display (`docs/plan/translation.md` slice 2.4): a source unit and its translation as one pair. */
+.chattext .x-risu-bilingual-pair {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2em;
+    margin: 0;
+}
+
+.chattext .x-risu-bilingual-pair + .x-risu-bilingual-pair {
+    margin-top: 1.3em;
+}
+
+.chattext .x-risu-bilingual-pair > * {
+    margin-block: 0;
+}
+
+.chattext .x-risu-bilingual-pair > div > :first-child {
+    margin-top: 0;
+}
+
+.chattext .x-risu-bilingual-pair > div > :last-child {
+    margin-bottom: 0;
+}
+
+/* The side the chat does not emphasize. */
+.chattext .x-risu-bilingual-muted {
+    padding-left: 0.6rem;
+    border-left: 2px solid var(--risu-theme-darkborderc);
+    border-radius: 0;
+    font-size: 0.875em;
+    filter: saturate(0.4) opacity(0.7);
+}
+
+.chattext .x-risu-bilingual-muted pre {
+    font-size: 1.142857em;
+}
+
 .chattext2 pre {
     background-color: var(--risu-theme-bgcolor);
     padding: 0.5rem;

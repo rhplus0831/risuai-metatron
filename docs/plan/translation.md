@@ -1,6 +1,6 @@
 # Translation Plan
 
-Status: slices 1.1–1.5 and 2.1–2.3 done (2026-10-12). No open questions.
+Status: slices 1.1–1.5 and 2.1–2.4 done (2026-10-12). No open questions.
 
 Bring the useful part of the Fastify fork's translation work into metatron:
 translations stored on the message, per-chat translation settings, automatic
@@ -471,6 +471,35 @@ As built:
 - Tests: both helpers (pure).
 - Manual check: a card whose `editdisplay` regexes and display triggers
   match whole messages. The wrappers sit between the lines the scripts see.
+
+As built:
+
+- `src/ts/translator/bilingualInterleave.ts` (`bilingualInterleave`,
+  `pruneEmptyBilingualPairs`) and `src/ts/parser/sentenceBreaks.ts`
+  (`insertSentenceParagraphBreaks`, capped at `MAX_BILINGUAL_SENTENCES`) are
+  the Fastify helpers. The pruning parses a `<template>` fragment (Fastify's
+  document parse dropped a leading `<style>`), so both stay in the tab.
+- `Chat.svelte` passes the pairing (`bilingualDisplay`: the stored message's
+  text after the row's display CBS pre-pass, as the translation gets it, the
+  emphasis, and the sentence count) to `ChatBody` while the stored
+  translation is shown and the chat's `bilingualDisplay` is on. `ChatBody`
+  applies the `edittrans` scripts to the translation, interleaves it with the
+  source, then runs the display path, and prunes empty pairs on every
+  rendered body. The pair classes carry the sanitizer's `x-risu-` prefix,
+  and their CSS is in `src/styles.css` under `.chattext`.
+- Partial edit is off on a row that shows a bilingual pair, until the
+  phase 4 "Bilingual partial edit". The full translation editor still edits
+  the translation alone.
+- The panel shows the bilingual check with the stored translation (LLM on
+  `"message"`), and its emphasis and pairing selects (line, or 1–10
+  sentences) while it is on. The defaults are unset fields.
+- Tests: `src/ts/translator/bilingualInterleave.test.ts` (Fastify's pairing
+  cases, and the pruning: no pair, an empty side, an empty pair, an
+  image-only pair, a leading `<style>` kept),
+  `src/ts/parser/tests/sentenceBreaks.test.ts`, and the bilingual rows in
+  `src/lib/SideBars/ChatTranslationPanel.test.ts`. The row's render through
+  `Chat.svelte` and `ChatBody` has no test.
+- The manual check is not done yet.
 
 ### Phase 3. LLM translation quality
 

@@ -3,7 +3,7 @@
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `docs/plan/translation.md` slices 2.1 and 2.2: the chat panel's translation section
+// `docs/plan/translation.md` slices 2.1–2.4: the chat panel's translation section
 // (`ChatTranslationPanel.svelte`) shows a chat's auto-translate flag and, for the LLM translator, its
 // translator preset from the chat's list entry: "Global (<name>)" for a chat without its own, the
 // preset by name, or "Deleted, using global" for one that is gone (shown until it is back). The
@@ -186,7 +186,8 @@ describe("ChatTranslationPanel", () => {
 
     it("the bot-only row (slice 2.3) shows with the stored translation and auto-translate on, writes true or unsets, and hides for the rendered target or another translator", () => {
         const panel = renderPanel(refK);
-        expect(panel.checkboxes()).toHaveLength(2);
+        // Auto-translate, bot-only, and the bilingual display (slice 2.4) on the stored path.
+        expect(panel.checkboxes()).toHaveLength(3);
         expect(panel.target.textContent).toContain(strings.botOnly);
         expect(panel.checkboxes()[1].checked).toBe(false);
         panel.checkboxes()[1].click();
@@ -203,13 +204,13 @@ describe("ChatTranslationPanel", () => {
         flushSync();
         panel.checkbox().click();
         flushSync();
-        expect(panel.checkboxes()).toHaveLength(1);
+        expect(panel.checkboxes()).toHaveLength(2);
         expect(panel.target.textContent).not.toContain(strings.botOnly);
         expect(chatEntry(refK)).toMatchObject({ translateBotOnly: true });
         expect(chatEntry(refK)).not.toHaveProperty("autoTranslate");
         panel.checkbox().click();
         flushSync();
-        expect(panel.checkboxes()).toHaveLength(2);
+        expect(panel.checkboxes()).toHaveLength(3);
         expect(panel.checkboxes()[1].checked).toBe(true);
 
         // The rendered target and another translator have no automatic requests to limit.
@@ -222,11 +223,11 @@ describe("ChatTranslationPanel", () => {
         expect(panel.checkboxes()).toHaveLength(1);
         settings.memoryTranslateMedia.translatorType = "llm";
         flushSync();
-        expect(panel.checkboxes()).toHaveLength(2);
+        expect(panel.checkboxes()).toHaveLength(3);
 
         // A chat without auto-translate starts without the row.
         const off = renderPanel(refP);
-        expect(off.checkboxes()).toHaveLength(1);
+        expect(off.checkboxes()).toHaveLength(2);
     });
 
     it("another translator hides the preset row and keeps the checkbox; the LLM translator brings it back", () => {
@@ -253,5 +254,49 @@ describe("ChatTranslationPanel", () => {
 
         const never = renderPanel({ chaId: "c", chatId: "nope" });
         expect(never.panel()).toBeNull();
+    });
+
+    it("the bilingual rows (slice 2.4): the check writes true or unsets; while on, the emphasis and pairing selects write or unset; hidden off the stored path", () => {
+        const panel = renderPanel(refP);
+        const selects = () => [...panel.target.querySelectorAll<HTMLSelectElement>("select")];
+        const pick = (element: HTMLSelectElement, value: string) => {
+            element.value = value;
+            element.dispatchEvent(new Event("change", { bubbles: true }));
+            flushSync();
+        };
+        // Auto-translate and the bilingual check; only the preset select.
+        expect(panel.checkboxes()).toHaveLength(2);
+        expect(panel.target.textContent).toContain(strings.bilingual);
+        expect(selects()).toHaveLength(1);
+
+        panel.checkboxes()[1].click();
+        flushSync();
+        expect(chatEntry(refP)).toMatchObject({ bilingualDisplay: true });
+        const [emphasis, pairing] = selects();
+        expect(selects()).toHaveLength(3);
+        expect(emphasis.value).toBe("original");
+        expect(pairing.value).toBe("0");
+        expect([...pairing.options].map((option) => option.value)).toEqual([
+            "0",
+            ...Array.from({ length: 10 }, (_, index) => String(index + 1)),
+        ]);
+
+        pick(emphasis, "translation");
+        pick(pairing, "3");
+        expect(chatEntry(refP)).toMatchObject({ bilingualEmphasis: "translation", bilingualSentences: 3 });
+        pick(selects()[0], "original");
+        pick(selects()[1], "0");
+        expect(chatEntry(refP)).not.toHaveProperty("bilingualEmphasis");
+        expect(chatEntry(refP)).not.toHaveProperty("bilingualSentences");
+
+        panel.checkboxes()[1].click();
+        flushSync();
+        expect(chatEntry(refP)).not.toHaveProperty("bilingualDisplay");
+        expect(selects()).toHaveLength(1);
+
+        // The rendered target has no stored translation to pair.
+        settings.memoryTranslateMedia.llmTranslationTarget = "rendered";
+        flushSync();
+        expect(panel.target.textContent).not.toContain(strings.bilingual);
     });
 });

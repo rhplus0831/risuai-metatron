@@ -14,6 +14,11 @@
         type simpleCharacterArgument,
     } from "../../ts/parser/parser.svelte";
     import { applyEdittransToStoredTranslation, getLLMCache, translateHTML } from "../../ts/translator/translator";
+    import {
+        bilingualInterleave,
+        type BilingualInterleaveOptions,
+        pruneEmptyBilingualPairs,
+    } from "../../ts/translator/bilingualInterleave";
     import { type CapturedTransform, captureTransform } from "../../ts/parser/transformClient";
     import { getModuleAssets } from "src/ts/process/modules";
     import { getFileSrc } from "src/ts/globalApi.svelte";
@@ -44,6 +49,12 @@
         /** On the stored path: a translation the row shows is being requested (the loading state). */
         storedPending?: boolean;
         /**
+         * On the stored path, with the stored translation shown: the chat's bilingual display
+         * (`docs/plan/translation.md` slice 2.4). The translation (after its `edittrans` scripts) is
+         * interleaved with `source` before the display transform. Null: the translation alone.
+         */
+        bilingual?: { source: string; options: BilingualInterleaveOptions } | null;
+        /**
          * The row's chat's `autoTranslate` (`docs/plan/translation.md` slice 2.1): on the rendered path,
          * the row starts translated (or with the cached translation only, `autoTranslateCachedOnly`).
          */
@@ -67,6 +78,7 @@
         storedPath = false,
         storedTranslationShown = false,
         storedPending = false,
+        bilingual = null,
         autoTranslate = false,
     }: Props = $props();
 
@@ -108,7 +120,11 @@
         /** A retry's: the operation's own capture (a retry keeps the chat, preset, and persona it began with). */
         retryTransform?: CapturedTransform | null,
         /** A retry's: the stored-path state its operation began with. */
-        retryStored?: { stored: boolean; shownStored: boolean },
+        retryStored?: {
+            stored: boolean;
+            shownStored: boolean;
+            pairing: { source: string; options: BilingualInterleaveOptions } | null;
+        },
     ) => {
         // track 'translated' and 'retranslate' state
         translated;
@@ -116,6 +132,7 @@
         // The stored path, read once for this render (a switch renders again).
         const stored = retryStored ? retryStored.stored : storedPath;
         const shownStored = retryStored ? retryStored.shownStored : storedTranslationShown;
+        const pairing = retryStored ? retryStored.pairing : bilingual;
         // The server transform's context, captured once for every stage and retry of this render (flag on).
         const transform = retryTransform !== undefined ? retryTransform : captureTransform(chatID);
         const preservePendingContent = lastRenderedRevision !== null && requestedRevision !== lastRenderedRevision;
@@ -124,7 +141,11 @@
         try {
             if (stored) {
                 // The normal display path; a stored translation takes the `edittrans` scripts first.
-                const text = shownStored ? applyEdittransToStoredTranslation(data, charArg, chatID, transform) : data;
+                let text = shownStored ? applyEdittransToStoredTranslation(data, charArg, chatID, transform) : data;
+                if (shownStored && pairing) {
+                    // The display scripts see the pairs' wrappers between the lines (slice 2.4).
+                    text = bilingualInterleave(pairing.source, text, pairing.options);
+                }
                 const marked = await ParseMarkdown(text, charArg, mode, chatID, getCbsCondition(), transform);
                 lastParsedQueue = marked;
                 return marked;
@@ -247,6 +268,7 @@
             const retried = await markParsing(data, charArg, chatID, requestedRevision, (tries ?? 0) + 1, transform, {
                 stored,
                 shownStored,
+                pairing,
             });
             if (retried !== undefined) {
                 lastParsedQueue = retried;
@@ -352,8 +374,8 @@
     {@html LOADING_HTML}
 {:else}
     {#await markParsingResult}
-        {@html addMetadataToElement(trimMarkdown(lastParsed), modelShortName)}
+        {@html addMetadataToElement(pruneEmptyBilingualPairs(trimMarkdown(lastParsed)), modelShortName)}
     {:then md}
-        {@html addMetadataToElement(trimMarkdown(md), modelShortName)}
+        {@html addMetadataToElement(pruneEmptyBilingualPairs(trimMarkdown(md)), modelShortName)}
     {/await}
 {/if}

@@ -108,7 +108,8 @@
         type StoredTranslationEdit,
         usesStoredTranslation,
     } from "../../ts/translator/storedTranslation.svelte";
-    import { chatAutoTranslate } from "../../ts/translator/chatTranslation.svelte";
+    import { chatAutoTranslate, chatTranslationSettings } from "../../ts/translator/chatTranslation.svelte";
+    import type { BilingualInterleaveOptions } from "../../ts/translator/bilingualInterleave";
 
     let translating = $state(false);
     let editMode = $state(false);
@@ -217,6 +218,31 @@
     );
     /** The stored translation is what the row shows. */
     let storedShown = $derived(storedWanted && storedFresh !== null);
+    /**
+     * The chat's bilingual display (slice 2.4): with the stored translation shown, the row renders it
+     * interleaved with the message's text, by line or every `bilingualSentences` sentences, with the
+     * chat's emphasis. Null: off, or nothing shown.
+     */
+    let storedBilingual = $derived.by(() => {
+        if (!storedShown || !storedMessage || !displayedChat) {
+            return null;
+        }
+        const chatSettings = chatTranslationSettings(displayedChat);
+        if (!chatSettings.bilingualDisplay) {
+            return null;
+        }
+        return {
+            source: storedMessage.data,
+            options: {
+                emphasize: chatSettings.bilingualEmphasis,
+                ...(chatSettings.bilingualSentences > 0
+                    ? { sentenceBreaks: { sentencesPerParagraph: chatSettings.bilingualSentences } }
+                    : {}),
+            },
+        };
+    });
+    /** `storedBilingual` with its source after the display CBS pre-pass (`displaya`), as `ChatBody` takes it. */
+    let bilingualDisplay = $state<{ source: string; options: BilingualInterleaveOptions } | null>(null);
     /** The translation view is on: shown, or asked for and being requested (the toggle's highlight). */
     let translationViewOn = $derived(storedPath ? storedShown || (storedWanted && storedPending) : translated);
     let translationEditControlDisabled = $derived(
@@ -559,14 +585,27 @@
         editTranslationMode = false;
     }
 
-    function displaya(message: string) {
-        msgDisplay = risuChatParser(message, {
+    /** The display CBS pre-pass of the row (`displaya`). */
+    function displayPrePass(text: string): string {
+        return risuChatParser(text, {
             chara: name,
             chatID: idx,
             rmVar: true,
             visualize: true,
             cbsConditions: getCbsCondition(),
         });
+    }
+
+    /** The bilingual pairs' source side takes the same pre-pass as the translation (slice 2.4). */
+    function updateBilingualDisplay() {
+        bilingualDisplay = storedBilingual
+            ? { source: displayPrePass(storedBilingual.source), options: storedBilingual.options }
+            : null;
+    }
+
+    function displaya(message: string) {
+        msgDisplay = displayPrePass(message);
+        updateBilingualDisplay();
     }
 
     const setStatusMessage = (message: string, timeout: number = 0) => {
@@ -588,6 +627,9 @@
 
     function updateDisplayedMessage() {
         if (renderRawStreaming) {
+            // A shown stored translation still renders while the text streams (a Continue): its
+            // bilingual settings stay current.
+            updateBilingualDisplay();
             return;
         }
         displaya(displayMessage);
@@ -916,10 +958,11 @@
                     autoTranslate={chatAutoShow}
                     storedTranslationShown={storedShown}
                     storedPending={storedPending && storedWanted}
+                    bilingual={bilingualDisplay}
                 />
             {/key}
         </span>
-        {#if idx >= 0 && !editMode && !editTranslationMode && !isOptimizedStreamingMessage && !locked && partialEditEnabled && (settings.ui.enableBlockPartialEdit || settings.ui.enableDragPartialEdit)}
+        {#if idx >= 0 && !editMode && !editTranslationMode && !isOptimizedStreamingMessage && !locked && partialEditEnabled && storedBilingual === null && (settings.ui.enableBlockPartialEdit || settings.ui.enableDragPartialEdit)}
             <PartialEditController
                 messageData={message}
                 chatIndex={idx}
