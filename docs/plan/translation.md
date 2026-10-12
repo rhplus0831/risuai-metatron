@@ -1,6 +1,6 @@
 # Translation Plan
 
-Status: slices 1.1–1.5, 2.1–2.4, and 3.1 done (2026-10-12). No open questions.
+Status: slices 1.1–1.5, 2.1–2.4, 3.1, and 3.2 done (2026-10-12). No open questions.
 
 Bring the useful part of the Fastify fork's translation work into metatron:
 translations stored on the message, per-chat translation settings, automatic
@@ -551,6 +551,46 @@ As built:
 3.2 **Send Text As-Is.** A preset option: the whole source goes into
 `{{slot::content}}` in one request, without line protection or style
 placeholders, and the reply is stored as is.
+
+As built:
+
+- `TranslatorPreset.sendTextAsIs`: only `true` is stored (`createTranslatorPreset`, the server's
+  normalizer, drops anything else), so every existing preset reads as off. The preset page's check
+  writes `true` or deletes the field.
+- The server runner, decided with the user (Fastify parity): with the option on, the whole
+  `message.data` goes through one pipeline run (one request per step that runs) and its reply is
+  stored as is (what 1.3 built). With it off, the default, the runner protects lines as Fastify's
+  server did (`translateProtectingLines`, `shared/translation/pipeline.ts`): the text is cut at
+  exactly empty lines and at asset lines (`{{img`, `{{raw`, `{{video`, `{{audio …}}`), each other part
+  is trimmed and goes through its own pipeline run, and the parts are joined with `\n` (an empty part
+  follows each protected line, so two protected lines in a row get an extra blank line between
+  them) and trimmed. So the default stored path
+  now sends one run per paragraph. The parts run one after another under the message's one
+  controller, deadline, CBS budget, and write; any failure stores nothing. The server's automatic
+  translation (2.3) uses the same run.
+- The tab: on, `translateLLM` sends no `<risu-style>` placeholders and returns the reply as is, and
+  `runTranslator` (input, suggestion, TTS, and playground translation) sends the whole text in one
+  call without its own line chunking. `translateHTML`'s LLM branch (the rendered path and the summary
+  translation) already sent the whole text; only the placeholders change there. Off keeps both as
+  before. The `LLMTranslateCache` key
+  gains the flag only when it is on, so the keys of presets without it did not change.
+- "As is" means without the line splitting and style substitution: the reasoning blocks are still
+  removed from every step's output, a ChatML prompt still trims its messages, and the `edittrans`
+  scripts still apply at display on both paths (Fastify skipped them on its rendered path; here the
+  stored path applies them at display, and the two paths stay alike).
+- `.risutl`: version 1 only with the option off; version 2 carries an optional boolean
+  `sendTextAsIs`, written only when on. A version 1 payload carrying `sendTextAsIs` is refused.
+- Tests: `shared/tests/translatorPipeline.test.ts` (`isProtectedTranslationLine`,
+  `translateProtectingLines`: the parts, the whitespace examples, a protected-only text, the order
+  and the first error), `shared/tests/translatorPresets.test.ts` and
+  `server/src/tests/normalizeCollections.test.ts` (`true` only, a preset without it unchanged),
+  `server/src/tests/translate.test.ts` (one run per part under one job id with its own named
+  outputs, the As-Is run stored untrimmed, a later part's failure and the deadline during a later
+  part storing nothing, the hand-off in both modes), `src/ts/translator/translatorLLM.test.ts`
+  (the off-mode key unchanged, the on-mode key apart, the As-Is run and `translateHTML` in both
+  modes, the mode captured when a call starts), `src/ts/translator/presets.test.ts` and
+  `presetsCodec.test.ts` (the codec and its refusals), and
+  `src/lib/Setting/Pages/Language/TranslatorPresetSettings.test.ts` (the check's writes).
 
 3.3 **History slots.** `{{slot::history::N}}` (source text) and
 `{{slot::historytrans::N}}` (fresh stored translations), N from 1 to 50:

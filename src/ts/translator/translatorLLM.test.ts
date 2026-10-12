@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import { translatorPipelineSignature } from "../../../shared/translation/pipeline.ts";
 import { createTranslatorPreset } from "../../../shared/translatorPresets.ts";
 
 // Translation slice 1.2 (`docs/plan/translation.md`): the tab's LLM translator runs the selected
@@ -549,5 +551,156 @@ describe("the request ids and the step's profile", () => {
                 .slice(6)
                 .map((entry) => entry.requestIds),
         ).toEqual([IDS_2, IDS_2]);
+    });
+});
+
+// `docs/plan/translation.md` slice 3.2: a preset on Send Text As-Is sends the whole text of a
+// `runTranslator` call in one pipeline run (no line chunking), and `translateLLM` keeps the text and
+// the reply as they are (no `<risu-style>` placeholders, no `ERR::` check, no trim). The cache key
+// carries the flag only when it is on, so the keys of every preset without it are those from before
+// the option; the mode is captured with the context when a call starts.
+describe("Send Text As-Is", () => {
+    const SOURCE = "first <risu-style>.a{color:red}</risu-style>\n\n{{img::x}}\nsecond ";
+    const turnOn = () => {
+        settings.translatorPresets.items[0].sendTextAsIs = true;
+    };
+    const turnOff = () => {
+        delete settings.translatorPresets.items[0].sendTextAsIs;
+    };
+
+    it("keys the cache by exactly the pipeline, the languages, and the note while the option is off (a stray false included), and by another key while it is on", async () => {
+        const off = llmTranslationCacheKey("Hello");
+        // The formula from before the option: a preset without it reads and writes its old entries.
+        const signature = JSON.stringify({
+            pipeline: translatorPipelineSignature(twoSteps().steps),
+            to: "ko",
+            from: "en",
+            translatorNote: "",
+        });
+        expect(off).toBe(`llm:${translationSourceHash(signature)}:Hello`);
+        settings.translatorPresets.items[0].sendTextAsIs = false;
+        expect(llmTranslationCacheKey("Hello")).toBe(off);
+        turnOn();
+        const on = llmTranslationCacheKey("Hello");
+        expect(on).toMatch(KEY);
+        expect(on).not.toBe(off);
+        expect(on.endsWith(":Hello")).toBe(true);
+
+        // Each mode reads, lists, and writes its own entries.
+        succeed("D", "ON");
+        await expect(runTranslator("Hello", false, "ko", "en")).resolves.toBe("ON");
+        expect(await getLLMCache("Hello")).toBe("ON");
+        turnOff();
+        expect(await getLLMCache("Hello")).toBeNull();
+        expect(await searchLLMCache("Hello")).toEqual([]);
+        succeed("D", "OFF");
+        await expect(runTranslator("Hello", false, "ko", "en")).resolves.toBe("OFF");
+        expect(await getLLMCache("Hello")).toBe("OFF");
+        turnOn();
+        expect(await getLLMCache("Hello")).toBe("ON");
+        expect(await searchLLMCache("Hello")).toEqual([{ key: "Hello", value: "ON" }]);
+        expect(await exportLLMCacheAsJSON()).toEqual({ [off]: "OFF", [on]: "ON" });
+    });
+
+    it("sends the whole text of a runTranslator call in one run, <risu-style> blocks included, and returns the reply as it is: untrimmed, an ERR:: or <style-data> text kept, nothing alerted", async () => {
+        turnOn();
+        const reply = ' ERR:: <style-data style-index="0"></style-data> 둘째\n';
+        succeed("D", reply);
+        await expect(runTranslator(SOURCE, false, "ko", "en")).resolves.toBe(reply);
+        expect(requests()).toEqual([
+            {
+                mode: "translate",
+                maxTokens: 11,
+                messages: [{ role: "system", content: `Draft ${SOURCE} into ko from en` }],
+            },
+            { mode: "translate", maxTokens: 22, messages: [{ role: "system", content: "Polish D (draft D; note )" }] },
+        ]);
+        expect(alerts.alertError).not.toHaveBeenCalled();
+        expect(await getLLMCache(SOURCE)).toBe(reply);
+        // Served from the cache as it is; a failed step still alerts and gives the text back.
+        await expect(runTranslator(SOURCE, false, "ko", "en")).resolves.toBe(reply);
+        expect(request.requestChatData).toHaveBeenCalledTimes(2);
+        request.requestChatData.mockResolvedValueOnce({ type: "fail", result: "provider down" });
+        await expect(runTranslator("Other", false, "ko", "en")).resolves.toBe("Other");
+        expect(alerts.alertError).toHaveBeenCalledWith("provider down");
+        expect(await getLLMCache("Other")).toBeNull();
+
+        // Off: the same text goes part by part as before, the <risu-style> block as a placeholder
+        // restored in the reply, each part trimmed, the parts joined around the kept lines.
+        turnOff();
+        succeed("D1", ' <style-data style-index="0"></style-data> 첫째 ', "D2", "둘째");
+        await expect(runTranslator(SOURCE, false, "ko", "en")).resolves.toBe(
+            ".a{color:red} 첫째\n\n\n{{img::x}}\n둘째",
+        );
+        expect(
+            requests()
+                .slice(3)
+                .map((entry) => entry.messages[0].content),
+        ).toEqual([
+            'Draft first <style-data style-index="0"></style-data> into ko from en',
+            "Polish D1 (draft D1; note )",
+            "Draft second into ko from en",
+            "Polish D2 (draft D2; note )",
+        ]);
+    });
+
+    it("translateHTML sends the whole html in both modes: as it is with the option, its <risu-style> blocks as placeholders without it", async () => {
+        const html = "<p>Hi</p><risu-style>.b{}</risu-style>\n\n<p>There</p>";
+        turnOn();
+        succeed("D", " <p>안녕</p> ");
+        await expect(translateHTML(html, false, "", -1)).resolves.toBe(" <p>안녕</p> ");
+        expect(requests()[0].messages[0].content).toBe(`Draft ${html} into ko from en`);
+        turnOff();
+        succeed("D", '<p>안녕</p><style-data style-index="0"></style-data>');
+        await expect(translateHTML(html, false, "", -1)).resolves.toBe("<p>안녕</p>.b{}");
+        expect(requests()[2].messages[0].content).toBe(
+            'Draft <p>Hi</p><style-data style-index="0"></style-data>\n\n<p>There</p> into ko from en',
+        );
+        expect(request.requestChatData).toHaveBeenCalledTimes(4);
+    });
+
+    it("captures the mode when a call starts: a flag changed during a request governs neither the processing of that call nor the key its entries are written under", async () => {
+        turnOn();
+        const on = llmTranslationCacheKey(SOURCE);
+        request.requestChatData.mockImplementationOnce(async () => {
+            // The preset page (or another tab's update) turns the option off during the first step.
+            turnOff();
+            return { type: "success", result: "D" };
+        });
+        succeed(" raw ");
+        await expect(runTranslator(SOURCE, false, "ko", "en")).resolves.toBe(" raw ");
+        expect(requests()).toHaveLength(2);
+        expect(requests()[0].messages[0].content).toBe(`Draft ${SOURCE} into ko from en`);
+        // Written under the on-mode key the call started with: the off mode selected now reads nothing.
+        expect(await exportLLMCacheAsJSON()).toEqual({ [on]: " raw " });
+        expect(await getLLMCache(SOURCE)).toBeNull();
+        turnOn();
+        expect(await getLLMCache(SOURCE)).toBe(" raw ");
+
+        // The other direction: turned on during an off call's first part, the second part still runs
+        // off (the captured copy), and both parts are written under the off-mode keys.
+        turnOff();
+        const offKey = (text: string) => llmTranslationCacheKey(text);
+        const [keyA, keyB] = [offKey("a"), offKey("b")];
+        request.requestChatData.mockImplementationOnce(async () => {
+            turnOn();
+            return { type: "success", result: "DA" };
+        });
+        succeed("A", "DB", "B");
+        await expect(runTranslator("a\n\nb", false, "ko", "en")).resolves.toBe("A\n\nB");
+        expect(
+            requests()
+                .slice(2)
+                .map((entry) => entry.messages[0].content),
+        ).toEqual([
+            "Draft a into ko from en",
+            "Polish DA (draft DA; note )",
+            "Draft b into ko from en",
+            "Polish DB (draft DB; note )",
+        ]);
+        expect(await exportLLMCacheAsJSON()).toEqual({ [on]: " raw ", [keyA]: "A", [keyB]: "B" });
+        expect(await getLLMCache("b")).toBeNull();
+        turnOff();
+        expect(await getLLMCache("b")).toBe("B");
     });
 });

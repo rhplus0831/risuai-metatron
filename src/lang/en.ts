@@ -251,6 +251,8 @@ export const languageEnglish = {
             "The prompt that is used for summarization. If it is blank, it will use the default prompt. You can also use ChatML formating with {{slot}} for the chat data.",
         translatorSteps:
             "A preset runs its enabled steps in order (at most 5), each one a request; when no step is enabled, the first step runs. Each step runs on the translation slot of the model preset, or on a connection of its own. A step's prompt can use {{slot::prev}} for the previous step's output (the content for the first step) and {{slot::out::KEY}} for the output of an earlier step whose output key is KEY. The last step's output is the translation.",
+        translatorSendTextAsIs:
+            "When on, the LLM translator sends the whole text through the preset's steps once (one request per step) and keeps the reply as it is. When off, a message's stored translation is made paragraph by paragraph: the text is cut at empty lines and at asset lines ({{img, {{raw, {{video, {{audio}}), which are kept untranslated, and each part is translated on its own; two kept lines in a row get an extra blank line between them, and the text is trimmed. The input, suggestion, and TTS translations then also go part by part, and the translation of the rendered output and of summaries keeps <risu-style> blocks out of the request. The reasoning blocks are removed from the reply and the translation display scripts apply either way.",
         translatorPrompt:
             "The prompt that is used for translation. If it is blank, it will use the default prompt. Slots: {{slot}} for the dest language, {{slot::from}} for the source language, {{slot::content}} for the content, and {{slot::tnote}} for the translator note. You can also use ChatML formating, which sets every message itself. Without ChatML, the prompt is the system message and the content follows as the user message, unless the prompt holds {{slot::content}} (or {{slot::prev}}, or {{slot::out::KEY}}). CBS is not evaluated in this prompt, and `<Thoughts>` and `<think>` blocks are removed from the reply.",
         translateBeforeHTMLFormatting:
@@ -1452,6 +1454,7 @@ export const languageEnglish = {
         noneEnabled: "No step is enabled, so the first step runs.",
     },
     translatorPrompt: "Translation Prompt",
+    translatorSendTextAsIs: "Send Text As-Is",
     translateBeforeHTMLFormatting: "Translate Before HTML Formatting",
     retranslate: "Retranslate",
     retranslateConfirm: "Translate this message again? The current translation is replaced.",

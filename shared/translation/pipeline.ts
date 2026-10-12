@@ -178,6 +178,60 @@ export function stripTranslatorReasoning(text: string): string {
     return visible.trim();
 }
 
+/**
+ * Whether a source line is kept out of translation when a preset does not send its text as is
+ * (`translateProtectingLines`): an exactly empty line, or an asset line (`{{img`, `{{raw`, `{{video` at
+ * its start, or `{{audio` … `}}` as the whole line). Case-sensitive, as the tab's `runTranslator`.
+ */
+export function isProtectedTranslationLine(line: string): boolean {
+    return (
+        line.startsWith("{{img") ||
+        line.startsWith("{{raw") ||
+        line.startsWith("{{video") ||
+        (line.startsWith("{{audio") && line.endsWith("}}")) ||
+        line.length === 0
+    );
+}
+
+/**
+ * `text` translated chunk by chunk around its protected lines (`isProtectedTranslationLine`), the
+ * Fastify fork's rule (`docs/plan/translation.md` slice 3.2, a preset without Send Text As-Is): the
+ * lines between two protected lines are one chunk (joined with `\n`), translated trimmed by
+ * `translateChunk` and trimmed again; a protected line is kept as it is, and each one is followed by
+ * an empty chunk, so the parts joined with `\n` put an extra blank line between two protected lines
+ * in a row (`{{img::a}}\n{{img::b}}` gets one, three newlines become four). A blank or
+ * whitespace-only chunk is kept without a call. The whole result is trimmed. Chunks run one after another; an error from `translateChunk` ends the run.
+ */
+export async function translateProtectingLines(
+    text: string,
+    translateChunk: (chunk: string) => Promise<string>,
+): Promise<string> {
+    const chunks: { text: string; translatable: boolean }[] = [{ text: "", translatable: true }];
+    for (const line of text.split("\n")) {
+        if (isProtectedTranslationLine(line)) {
+            chunks.push({ text: line, translatable: false }, { text: "", translatable: true });
+            continue;
+        }
+        const current = chunks[chunks.length - 1];
+        current.text += current.text.length === 0 ? line : `\n${line}`;
+    }
+
+    const translated: string[] = [];
+    for (const chunk of chunks) {
+        if (!chunk.translatable) {
+            translated.push(chunk.text);
+            continue;
+        }
+        const trimmed = chunk.text.trim();
+        if (trimmed.length === 0) {
+            translated.push(chunk.text);
+            continue;
+        }
+        translated.push((await translateChunk(trimmed)).trim());
+    }
+    return translated.join("\n").trim();
+}
+
 /** What decides a pipeline's result besides its input: the steps that run, by their request fields. */
 export function translatorPipelineSignature(steps: readonly TranslatorStep[]) {
     return translatorStepsToRun(steps).map((step) => ({

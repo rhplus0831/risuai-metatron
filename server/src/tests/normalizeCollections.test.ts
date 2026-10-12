@@ -369,6 +369,37 @@ describe("translatorPresets", () => {
         expect(serialize(normalizeTranslatorPresets(JSON.parse(text))).text).toBe(text);
     });
 
+    // Translation slice 3.2: Send Text As-Is is stored only as `true`; a preset from before the option
+    // (no field) and one carrying any other value are stored without it.
+    it("stores sendTextAsIs only as true, drops any other value, and leaves a preset without it as it was", () => {
+        const out = normalizeTranslatorPresets({
+            items: [
+                { id: "on", name: "On", steps: [{ prompt: "p" }], sendTextAsIs: true },
+                { id: "false", name: "F", steps: [{ prompt: "p" }], sendTextAsIs: false },
+                { id: "string", name: "S", steps: [{ prompt: "p" }], sendTextAsIs: "true" },
+                { id: "null", name: "N", steps: [{ prompt: "p" }], sendTextAsIs: null },
+                { id: "old", name: "Old", prompt: "p", maxResponse: 3 },
+            ],
+            selectedId: "on",
+        });
+        expect(out.items[0]).toMatchObject({ id: "on", sendTextAsIs: true });
+        expect(Object.keys(out.items[0])).toEqual(["id", "name", "steps", "sendTextAsIs"]);
+        for (const item of out.items.slice(1)) {
+            expect(Object.hasOwn(item, "sendTextAsIs"), item.id).toBe(false);
+            expect(Object.keys(item), item.id).toEqual(["id", "name", "steps"]);
+        }
+        expectIdempotent(normalizeTranslatorPresets, { items: out.items, selectedId: "on" });
+        // A preset the tab turns on with `createTranslatorPreset` is stored as it is.
+        const created = createTranslatorPreset("As-Is", {
+            steps: [{ prompt: "{{slot::content}}" }],
+            sendTextAsIs: true,
+        });
+        const record = { items: [created], selectedId: created.id };
+        const text = serialize(record).text;
+        expect(text).toContain('"sendTextAsIs":true');
+        expect(serialize(normalizeTranslatorPresets(JSON.parse(text))).text).toBe(text);
+    });
+
     it("rejects a record without an items list of objects", () => {
         for (const input of [[], null, "x"]) {
             rejects(normalizeTranslatorPresets, input, "translatorPresets must be an object");

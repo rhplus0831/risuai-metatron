@@ -5,9 +5,11 @@ import { defaultTranslatorPrompt } from "../translatorPresets.ts";
 import {
     buildTranslatorStepMessages,
     fillTranslatorSlots,
+    isProtectedTranslationLine,
     parseTranslatorChatML,
     runTranslatorPipeline,
     stripTranslatorReasoning,
+    translateProtectingLines,
     translatorPipelineSignature,
     translatorStepsToRun,
     type TranslatorSlotValues,
@@ -300,5 +302,112 @@ describe("runTranslatorPipeline", () => {
         ];
         await expect(runTranslatorPipeline({ steps, ...input }, runStep)).resolves.toBe("out2");
         expect(seen).toEqual(["A SOURCE", "B [out1] [] []"]);
+    });
+});
+
+// `docs/plan/translation.md` slice 3.2: the server runner's line protection when a preset does not
+// send its text as is, the Fastify fork's `translatePreservingRawBlocks` exactly (the user's parity
+// decision): each run of lines between protected lines is one trimmed chunk, a protected line is kept
+// and followed by an empty chunk, and the parts are joined with `\n` and trimmed.
+describe("isProtectedTranslationLine", () => {
+    it("protects an exactly empty line and an asset line at column zero, case-sensitively; audio needs the closing braces at the end", () => {
+        for (const line of ["", "{{img::a.png}}", "{{img", "{{raw::x}} tail", "{{video::v}}", "{{audio::a}}"]) {
+            expect(isProtectedTranslationLine(line), JSON.stringify(line)).toBe(true);
+        }
+        for (const line of [
+            " ",
+            "\t",
+            "\r",
+            " {{img::a}}",
+            "{{IMG::a}}",
+            "{{image::a}}",
+            "{{audio::a}} tail",
+            "{{audio::a}",
+            "{{inlay::a}}",
+            "text {{img::a}}",
+        ]) {
+            expect(isProtectedTranslationLine(line), JSON.stringify(line)).toBe(false);
+        }
+    });
+});
+
+describe("translateProtectingLines", () => {
+    const upper = vi.fn(async (chunk: string) => chunk.toUpperCase());
+    const identity = async (chunk: string) => chunk;
+
+    it("translates each run of lines between protected lines as one trimmed chunk, keeps the protected lines, trims each result and the whole", async () => {
+        upper.mockClear();
+        await expect(
+            translateProtectingLines("  first line\nsecond  \n{{img::x}}\nthird\n{{audio::a}}\nfourth \n", upper),
+        ).resolves.toBe("FIRST LINE\nSECOND\n{{img::x}}\nTHIRD\n{{audio::a}}\nFOURTH");
+        expect(upper.mock.calls.map(([chunk]) => chunk)).toEqual(["first line\nsecond", "third", "fourth"]);
+        // A chunk's result is trimmed, and so is the whole.
+        await expect(translateProtectingLines("a\n\nb", async (chunk) => `  ${chunk}!\n`)).resolves.toBe("a!\n\nb!");
+    });
+
+    it("keeps an interior blank line and one protected line as they are, and gives two protected lines in a row an extra blank line", async () => {
+        // The four examples of Astra's challenge (`docs/plan/translation.md` slice 3.2 As built).
+        await expect(translateProtectingLines("a\n{{img::x}}\nb", identity)).resolves.toBe("a\n{{img::x}}\nb");
+        await expect(translateProtectingLines("a\n\nb", identity)).resolves.toBe("a\n\nb");
+        await expect(translateProtectingLines("{{img::a}}\n{{img::b}}", identity)).resolves.toBe(
+            "{{img::a}}\n\n{{img::b}}",
+        );
+        await expect(translateProtectingLines("a\n\n\nb", identity)).resolves.toBe("a\n\n\n\nb");
+        // A blank line before an asset line is two protected lines in a row too.
+        await expect(translateProtectingLines("a\n\n{{img::x}}\nb", identity)).resolves.toBe("a\n\n\n{{img::x}}\nb");
+    });
+
+    it("makes no call for an empty, blank, or protected-only text and returns it trimmed", async () => {
+        const never = vi.fn(async () => "NEVER");
+        await expect(translateProtectingLines("", never)).resolves.toBe("");
+        await expect(translateProtectingLines("\n\n", never)).resolves.toBe("");
+        await expect(translateProtectingLines("   \n\t", never)).resolves.toBe("");
+        await expect(translateProtectingLines("{{img::a}}", never)).resolves.toBe("{{img::a}}");
+        await expect(translateProtectingLines("\n{{img::a}}\n{{raw::b}}\n", never)).resolves.toBe(
+            "{{img::a}}\n\n{{raw::b}}",
+        );
+        expect(never).not.toHaveBeenCalled();
+    });
+
+    it("treats only an exactly empty line as a separator: a whitespace-only line and a CRLF blank line stay inside their chunk", async () => {
+        upper.mockClear();
+        await expect(translateProtectingLines("a\n \nb", upper)).resolves.toBe("A\n \nB");
+        await expect(translateProtectingLines("a\r\n\r\nb", upper)).resolves.toBe("A\r\n\r\nB");
+        // A CRLF `{{img` line is still protected (its start decides); a CRLF `{{audio …}}` line is
+        // not (the `}}` must end the line). The chunk before a protected line loses its `\r` to the trim.
+        await expect(translateProtectingLines("a\r\n{{img::x}}\r\nb", upper)).resolves.toBe("A\n{{img::x}}\r\nB");
+        await expect(translateProtectingLines("a\r\n{{audio::x}}\r\nb", upper)).resolves.toBe("A\r\n{{AUDIO::X}}\r\nB");
+        expect(upper.mock.calls.map(([chunk]) => chunk)).toEqual([
+            "a\n \nb",
+            "a\r\n\r\nb",
+            "a",
+            "b",
+            "a\r\n{{audio::x}}\r\nb",
+        ]);
+    });
+
+    it("runs the chunks one after another, and the first error ends the run before the later chunks are requested", async () => {
+        const order: string[] = [];
+        let inFlight = 0;
+        const sequential = async (chunk: string) => {
+            expect(inFlight).toBe(0);
+            inFlight++;
+            order.push(`start ${chunk}`);
+            await new Promise((resolve) => setTimeout(resolve, 1));
+            order.push(`end ${chunk}`);
+            inFlight--;
+            return chunk;
+        };
+        await expect(translateProtectingLines("a\n\nb\n\nc", sequential)).resolves.toBe("a\n\nb\n\nc");
+        expect(order).toEqual(["start a", "end a", "start b", "end b", "start c", "end c"]);
+
+        const failing = vi.fn(async (chunk: string) => {
+            if (chunk === "b") {
+                throw new Error("provider down");
+            }
+            return chunk;
+        });
+        await expect(translateProtectingLines("a\n\nb\n\nc", failing)).rejects.toThrow("provider down");
+        expect(failing.mock.calls.map(([chunk]) => chunk)).toEqual(["a", "b"]);
     });
 });

@@ -190,6 +190,8 @@ export const languageKorean = {
             "요약에 사용되는 프롬프트입니다. 비어있으면 기본 프롬프트를 사용합니다. 채팅 데이터에 대해 {{slot}}을 사용하여 ChatML 형식을 사용할 수도 있습니다.",
         translatorSteps:
             "프리셋은 사용 중인 단계를 순서대로(최대 5개) 실행하며, 단계마다 요청을 하나씩 보냅니다. 사용 중인 단계가 없으면 첫 번째 단계가 실행됩니다. 각 단계는 모델 프리셋의 번역 슬롯이나 단계에 지정한 연결로 실행됩니다. 단계 프롬프트에서 {{slot::prev}}는 이전 단계의 출력(첫 단계에서는 콘텐츠)이고, {{slot::out::KEY}}는 출력 키가 KEY인 앞 단계의 출력입니다. 마지막 단계의 출력이 번역문이 됩니다.",
+        translatorSendTextAsIs:
+            "켜면 LLM 번역기가 텍스트 전체를 프리셋의 단계에 한 번 보내고(단계마다 요청 하나) 응답을 그대로 씁니다. 끄면 메시지의 저장 번역을 문단별로 만듭니다. 빈 줄과 에셋 줄({{img, {{raw, {{video, {{audio}})에서 텍스트를 나누고, 이 줄은 번역하지 않고 그대로 두며, 나머지 부분을 하나씩 따로 번역합니다. 그대로 둔 줄이 연달아 있으면 그 사이에 빈 줄이 하나 더 생기고, 앞뒤 공백은 잘립니다. 이때 입력·추천 답변·TTS 번역도 부분별로 번역하고, 렌더링 결과와 요약을 번역할 때는 <risu-style> 블록을 요청에서 빼 둡니다. 어느 쪽이든 응답의 추론 블록은 제거되고 번역 표시 스크립트는 적용됩니다.",
         translatorPrompt:
             "번역에 사용되는 프롬프트입니다. 비어있으면 기본 프롬프트를 사용합니다. 슬롯: 목적 언어 {{slot}}, 원문 언어 {{slot::from}}, 콘텐츠 {{slot::content}}, 번역자 노트 {{slot::tnote}}. ChatML 형식을 쓰면 모든 메시지를 프롬프트가 직접 정합니다. ChatML이 아니면 프롬프트가 시스템 메시지가 되고 콘텐츠가 사용자 메시지로 이어지는데, 프롬프트에 {{slot::content}}(또는 {{slot::prev}}, {{slot::out::KEY}})가 있으면 이어 보내지 않습니다. 이 프롬프트에서는 CBS가 처리되지 않으며, 응답의 `<Thoughts>`와 `<think>` 블록은 제거됩니다.",
         translateBeforeHTMLFormatting:
@@ -1335,6 +1337,7 @@ export const languageKorean = {
         noneEnabled: "사용 중인 단계가 없어 첫 번째 단계가 실행됩니다.",
     },
     translatorPrompt: "번역 프롬프트",
+    translatorSendTextAsIs: "텍스트 원문 그대로 전송",
     translateBeforeHTMLFormatting: "HTML 포맷 전 번역",
     retranslate: "다시 번역",
     retranslateConfirm: "이 메시지를 다시 번역할까요? 지금 번역은 새 번역으로 바뀝니다.",

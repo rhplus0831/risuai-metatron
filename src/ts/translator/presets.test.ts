@@ -269,6 +269,74 @@ describe("translator preset file codec", () => {
         await expect(decodeTranslatorPresetFile(fileWith(2, "not a record"))).rejects.toThrow(INVALID);
     });
 
+    // Translation slice 3.2: version 2 carries Send Text As-Is as an optional boolean, written only
+    // when it is on; version 1 cannot hold it, so a version 1 payload carrying it is refused.
+    it("writes sendTextAsIs: true as version 2, even for the lone default step, reads it back, and writes nothing of it when off", async () => {
+        const on = createTranslatorPreset("On", { prompt: "a", maxResponse: 7, sendTextAsIs: true });
+        const encoded = await encodeTranslatorPresetFile(on);
+        const file = fileOf(encoded);
+        expect(file.version).toBe(2);
+        expect(file.payload).toStrictEqual({
+            name: "On",
+            steps: [{ name: "Step 1", enabled: true, prompt: "a", maxResponse: 7, model: { mode: "inherit" } }],
+            sendTextAsIs: true,
+        });
+        const decoded = await decodeTranslatorPresetFile(encoded);
+        expect(decoded.sendTextAsIs).toBe(true);
+        expect(withoutIds(decoded)).toStrictEqual(withoutIds(on));
+        expect(fileOf(await encodeTranslatorPresetFile(decoded)).payload).toStrictEqual(file.payload);
+
+        // Off, a stray `false` included: the version 1 file of before for the default lone step, and
+        // no key at all in a version 2 payload.
+        const off = { ...createTranslatorPreset("Off", { prompt: "a", maxResponse: 7 }), sendTextAsIs: false };
+        expect(fileOf(await encodeTranslatorPresetFile(off))).toMatchObject({
+            version: 1,
+            payload: { name: "Off", prompt: "a", maxResponse: 7 },
+        });
+        const twoOff = createTranslatorPreset("Two", { steps: [{ prompt: "a" }, { prompt: "b" }] });
+        expect(Object.hasOwn(fileOf(await encodeTranslatorPresetFile(twoOff)).payload, "sendTextAsIs")).toBe(false);
+    });
+
+    it("reads a version 2 flag only as a boolean (false is off), refuses an own undefined, null, or other value, and refuses a version 1 payload carrying it while tolerating other extra keys", async () => {
+        const valid = { name: "V2", steps: [stepPayload()] };
+        expect((await decodeTranslatorPresetFile(fileWith(2, { ...valid, sendTextAsIs: true }))).sendTextAsIs).toBe(
+            true,
+        );
+        const off = await decodeTranslatorPresetFile(fileWith(2, { ...valid, sendTextAsIs: false }));
+        expect(Object.hasOwn(off, "sendTextAsIs")).toBe(false);
+        expect(withoutIds(off)).toStrictEqual(withoutIds(createTranslatorPreset("V2", { steps: valid.steps })));
+        // msgpack keeps an own key whose value is undefined: present, so not a boolean.
+        expect(Object.hasOwn(decodeMsgpack(encodeMsgpack({ ...valid, sendTextAsIs: undefined })), "sendTextAsIs")).toBe(
+            true,
+        );
+        const invalid: Record<string, unknown> = {
+            undefined: undefined,
+            null: null,
+            number: 1,
+            string: "true",
+            object: {},
+        };
+        for (const [label, value] of Object.entries(invalid)) {
+            await expect(
+                decodeTranslatorPresetFile(fileWith(2, { ...valid, sendTextAsIs: value })),
+                label,
+            ).rejects.toThrow(INVALID);
+        }
+
+        // Version 1: an id or another extra key of an older writer is tolerated; the flag is not,
+        // whatever its value (the file would otherwise import with the option silently off).
+        const v1 = { name: "V1", prompt: "p", maxResponse: 1 };
+        expect(withoutIds(await decodeTranslatorPresetFile(fileWith(1, { ...v1, id: "old", extra: 1 })))).toStrictEqual(
+            withoutIds(createTranslatorPreset("V1", v1)),
+        );
+        for (const value of [true, false, undefined, null]) {
+            await expect(
+                decodeTranslatorPresetFile(fileWith(1, { ...v1, sendTextAsIs: value })),
+                String(value),
+            ).rejects.toThrow(INVALID);
+        }
+    });
+
     it("rejects plain JSON translator preset payloads", async () => {
         const plainJsonPayload = new TextEncoder().encode(
             JSON.stringify({

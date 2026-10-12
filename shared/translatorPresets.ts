@@ -19,6 +19,7 @@ export interface TranslatorPresetInput {
     readonly steps?: unknown;
     readonly prompt?: unknown;
     readonly maxResponse?: unknown;
+    readonly sendTextAsIs?: unknown;
 }
 
 export function getNormalizedTranslatorPresetName(name: unknown, index: number): string {
@@ -106,14 +107,16 @@ export function normalizeTranslatorSteps(source: TranslatorPresetInput): Transla
 /**
  * A translator preset with its steps normalized from `existing` (`normalizeTranslatorSteps`: its
  * steps, or one step from its `prompt` and `maxResponse`). `existing.id` is kept when it is a valid
- * record id; otherwise a new id is assigned. This is the server's normalizer of each preset too, so
- * a preset the tab creates with it is stored as it is.
+ * record id; otherwise a new id is assigned. `sendTextAsIs` is kept only when it is `true` (absent
+ * otherwise). This is the server's normalizer of each preset too, so a preset the tab creates with it
+ * is stored as it is.
  */
 export function createTranslatorPreset(name = "New Preset", existing: TranslatorPresetInput = {}): TranslatorPreset {
     return {
         id: isRecordId(existing.id) ? existing.id : newId(),
         name,
         steps: normalizeTranslatorSteps(existing),
+        ...(existing.sendTextAsIs === true ? { sendTextAsIs: true } : {}),
     };
 }
 
@@ -138,12 +141,16 @@ export function isTranslatorStep(value: unknown): value is TranslatorStep {
     );
 }
 
-/** Whether `value` has the shape of a `TranslatorPreset` (1 to `TRANSLATOR_PRESET_MAX_STEPS` valid steps). */
+/**
+ * Whether `value` has the shape of a `TranslatorPreset` (1 to `TRANSLATOR_PRESET_MAX_STEPS` valid
+ * steps, `sendTextAsIs` absent or a boolean: a `false` the normalizer would drop still reads as off).
+ */
 export function isTranslatorPreset(value: unknown): value is TranslatorPreset {
     return (
         isPlainObject(value) &&
         isRecordId(value.id) &&
         typeof value.name === "string" &&
+        (value.sendTextAsIs === undefined || typeof value.sendTextAsIs === "boolean") &&
         Array.isArray(value.steps) &&
         value.steps.length > 0 &&
         value.steps.length <= TRANSLATOR_PRESET_MAX_STEPS &&

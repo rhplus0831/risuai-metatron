@@ -97,6 +97,11 @@ export async function runTranslator(
         // The LLM requests' ids, read once too, so a chat switch between chunks moves none of them.
         requestIds: chatlessRequestIds(),
     };
+    // Send Text As-Is (slice 3.2): the LLM translator takes the whole text in one pipeline run and its
+    // reply is returned as it is (a failure already alerted and returned the text).
+    if (settings.memoryTranslateMedia.translatorType === "llm" && arg.preset.sendTextAsIs === true) {
+        return await translateMain(text, arg);
+    }
     const texts = text.split("\n");
     let chunks: [string, boolean][] = [["", true]];
 
@@ -540,6 +545,8 @@ function needSuperChunkedTranslate() {
 /** What an LLM translation depends on besides its source text: read once, detached, before any await. */
 interface LLMTranslationContext {
     steps: TranslatorStep[];
+    /** The preset's Send Text As-Is (slice 3.2): no `<risu-style>` placeholders, the reply kept as it is. */
+    sendTextAsIs: boolean;
     to: string;
     from: string;
     translatorNote: string;
@@ -575,8 +582,10 @@ function llmTranslationContext(
         requestIds?: ChatContextIds;
     } = {},
 ): LLMTranslationContext {
+    const preset = arg.preset ?? getCurrentTranslatorPreset();
     return {
-        steps: JSON.parse(JSON.stringify((arg.preset ?? getCurrentTranslatorPreset()).steps)) as TranslatorStep[],
+        steps: JSON.parse(JSON.stringify(preset.steps)) as TranslatorStep[],
+        sendTextAsIs: preset.sendTextAsIs === true,
         to: arg.to ?? (settings.memoryTranslateMedia.translator || "en"),
         from: arg.from ?? settings.memoryTranslateMedia.translatorInputLanguage,
         translatorNote: resolveTranslatorNote(arg.translatorNote),
@@ -595,7 +604,8 @@ function chatlessRequestIds(): ChatContextIds {
 
 /**
  * The `LLMTranslateCache` key prefix of a context: a hash of the pipeline signature, the languages,
- * and the note. Another preset, prompt, or language reads and writes other entries; entries from
+ * the note, and Send Text As-Is when it is on (so the keys of a preset without it are those from
+ * before slice 3.2). Another preset, prompt, or language reads and writes other entries; entries from
  * before the pipeline (keyed by the bare source) are never read again.
  */
 function llmCacheKeyPrefix(context: LLMTranslationContext): string {
@@ -604,6 +614,7 @@ function llmCacheKeyPrefix(context: LLMTranslationContext): string {
         to: context.to,
         from: context.from,
         translatorNote: context.translatorNote,
+        ...(context.sendTextAsIs ? { sendTextAsIs: true } : {}),
     });
     return `llm:${translationSourceHash(signature)}:`;
 }
@@ -634,12 +645,15 @@ async function translateLLM(text: string, context: LLMTranslationContext, regene
             return cacheMatch;
         }
     }
+    // Without Send Text As-Is, each `<risu-style>` block is sent as a placeholder and put back after.
     const styleDecodeRegex = /\<risu-style\>(.+?)\<\/risu-style\>/gms;
     let styleDecodes: string[] = [];
-    const sourceText = text.replace(styleDecodeRegex, (match, p1) => {
-        styleDecodes.push(p1);
-        return `<style-data style-index="${styleDecodes.length - 1}"></style-data>`;
-    });
+    const sourceText = context.sendTextAsIs
+        ? text
+        : text.replace(styleDecodeRegex, (match, p1) => {
+              styleDecodes.push(p1);
+              return `<style-data style-index="${styleDecodes.length - 1}"></style-data>`;
+          });
 
     let output: string;
     try {
@@ -678,11 +692,13 @@ async function translateLLM(text: string, context: LLMTranslationContext, regene
         alertError(error instanceof Error ? error.message : String(error));
         return text;
     }
-    const result = output
-        .replace(/<style-data style-index="(\d+)" ?\/?>/g, (match, p1) => {
-            return styleDecodes[parseInt(p1)] ?? "";
-        })
-        .replace(/<\/style-data>/g, "");
+    const result = context.sendTextAsIs
+        ? output
+        : output
+              .replace(/<style-data style-index="(\d+)" ?\/?>/g, (match, p1) => {
+                  return styleDecodes[parseInt(p1)] ?? "";
+              })
+              .replace(/<\/style-data>/g, "");
     await writeLLMCacheEntry(cacheKey, result);
     return result;
 }

@@ -9,7 +9,7 @@ import { SECTION_KIND } from "../../../shared/sections.ts";
 import type { TranslatorPreset } from "../../../shared/settings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
-import { runTranslatorPipeline } from "../../../shared/translation/pipeline.ts";
+import { runTranslatorPipeline, translateProtectingLines } from "../../../shared/translation/pipeline.ts";
 import { readChatTranslationSettings, resolveTranslatorPreset } from "../../../shared/translation/chatSettings.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { ResourceBatchConflictError, ResourceEpochError, type ResourceStore } from "../data/resourceStore.ts";
@@ -237,54 +237,64 @@ export function createTranslationRunner(deps: {
             signal,
         });
 
-        const text = await runTranslatorPipeline(
-            {
-                steps: preset.steps,
-                sourceText: message.data,
-                to,
-                from,
-                translatorNote: translatorNoteOf(scope),
-            },
-            async ({ messages, maxResponse, model }) => {
-                assertLive(life);
-                // A step on a profile runs on that profile (a missing one fails the run), an
-                // inheriting step on the `translate` slot of the run's model preset.
-                const response: requestDataResponse = await requestChatDataOuter(
-                    {
-                        formated: messages,
-                        bias: {},
-                        useStreaming: false,
-                        noMultiGen: true,
-                        maxTokens: maxResponse,
-                        ...(model.mode === "profile" ? { profileId: model.profileId } : {}),
-                    },
-                    "translate",
-                    {
-                        db,
-                        signal,
-                        attempt: async (arg) => {
-                            // A turn of the event loop before each attempt: the outer loop retries
-                            // some answers at once, and timers and other requests must still run.
-                            await new Promise<void>((resolve) => setImmediate(resolve));
-                            assertLive(life);
-                            return llm.runInJob(spec(arg));
+        const translatorNote = translatorNoteOf(scope);
+        // One pipeline run over `sourceText`. Every run of this message shares the controller, the
+        // deadline, the job id, the CBS budget, and the single write below.
+        const translateText = (sourceText: string) =>
+            runTranslatorPipeline(
+                {
+                    steps: preset.steps,
+                    sourceText,
+                    to,
+                    from,
+                    translatorNote,
+                },
+                async ({ messages, maxResponse, model }) => {
+                    assertLive(life);
+                    // A step on a profile runs on that profile (a missing one fails the run), an
+                    // inheriting step on the `translate` slot of the run's model preset.
+                    const response: requestDataResponse = await requestChatDataOuter(
+                        {
+                            formated: messages,
+                            bias: {},
+                            useStreaming: false,
+                            noMultiGen: true,
+                            maxTokens: maxResponse,
+                            ...(model.mode === "profile" ? { profileId: model.profileId } : {}),
                         },
-                    },
-                );
-                if (response.type === "streaming") {
-                    await response.result.cancel().catch(() => {});
-                }
-                // An ended run reports its own end, not the request layer's failure it caused.
-                assertLive(life);
-                if (response.type === "fail") {
-                    throw new TranslationEnd(502, redactor.text(response.result));
-                }
-                if (response.type !== "success") {
-                    throw new TranslationEnd(502, "The translation model answered in an unexpected form");
-                }
-                return response.result;
-            },
-        );
+                        "translate",
+                        {
+                            db,
+                            signal,
+                            attempt: async (arg) => {
+                                // A turn of the event loop before each attempt: the outer loop retries
+                                // some answers at once, and timers and other requests must still run.
+                                await new Promise<void>((resolve) => setImmediate(resolve));
+                                assertLive(life);
+                                return llm.runInJob(spec(arg));
+                            },
+                        },
+                    );
+                    if (response.type === "streaming") {
+                        await response.result.cancel().catch(() => {});
+                    }
+                    // An ended run reports its own end, not the request layer's failure it caused.
+                    assertLive(life);
+                    if (response.type === "fail") {
+                        throw new TranslationEnd(502, redactor.text(response.result));
+                    }
+                    if (response.type !== "success") {
+                        throw new TranslationEnd(502, "The translation model answered in an unexpected form");
+                    }
+                    return response.result;
+                },
+            );
+        // Send Text As-Is (slice 3.2): the whole source in one run, the reply stored as it is; else
+        // the source chunk by chunk around its asset and blank lines, one after another.
+        const text =
+            preset.sendTextAsIs === true
+                ? await translateText(message.data)
+                : await translateProtectingLines(message.data, translateText);
 
         const translation: MessageTranslation = {
             text,

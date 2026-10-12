@@ -3,6 +3,7 @@
     import { DownloadIcon, HardDriveUploadIcon, PencilIcon, PlusIcon, TrashIcon } from "@lucide/svelte";
     import Help from "src/lib/Others/Help.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
+    import CheckInput from "src/lib/UI/GUI/CheckInput.svelte";
     import TranslatorStepEditor from "./TranslatorStepEditor.svelte";
     import { alertConfirm, alertError, alertInput, alertNormal } from "src/ts/alert";
     import { downloadFile } from "src/ts/globalApi.svelte";
@@ -31,6 +32,20 @@
         const steps = settings.translatorPresets.items.find((entry) => entry.id === presetId)?.steps;
         if (steps && steps.length < TRANSLATOR_PRESET_MAX_STEPS) {
             steps.push(createTranslatorStep(steps.length));
+        }
+    }
+
+    /**
+     * Turns Send Text As-Is (slice 3.2) on or off for the preset `presetId` (found again by id). Off
+     * deletes the field: the normalizer stores only `true`, and the tab holds the server's text.
+     */
+    function setSendTextAsIs(presetId: string, value: boolean) {
+        const preset = settings.translatorPresets.items.find((entry) => entry.id === presetId);
+        if (!preset) return;
+        if (value) {
+            preset.sendTextAsIs = true;
+        } else {
+            delete preset.sendTextAsIs;
         }
     }
 </script>
@@ -166,6 +181,14 @@
     <!-- The steps of the selected preset (translation slice 3.1). Each editor finds its step by the
          preset's id and its own, so a conflict reload that replaces the steps is followed. -->
     {@const preset = current}
+    <div class="flex items-center mt-2">
+        <CheckInput
+            name={language.translatorSendTextAsIs}
+            bind:check={() => preset.sendTextAsIs === true, (value) => setSendTextAsIs(preset.id, value)}
+        >
+            <Help key="translatorSendTextAsIs" />
+        </CheckInput>
+    </div>
     <span class="text-textcolor mt-4">{language.translatorSteps.title} <Help key="translatorSteps" /></span>
     {#each preset.steps as step, index (step.id)}
         <TranslatorStepEditor presetId={preset.id} stepId={step.id} {index} count={preset.steps.length} />

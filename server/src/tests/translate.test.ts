@@ -1171,4 +1171,149 @@ describe("createTranslationRunner over a fake request layer", () => {
         expect(calls).toHaveLength(3);
         expect(runner.runningCount()).toBe(0);
     });
+
+    // `docs/plan/translation.md` slice 3.2: without Send Text As-Is (every preset from before the
+    // option) the runner protects lines as the Fastify fork's server did (`translateProtectingLines`):
+    // one pipeline run per part between the empty and asset lines, one after another, under the
+    // message's one job id, controller, deadline, and write; with it, one run over the whole source,
+    // the reply stored as it is. The automatic hand-off (slice 2.3) is the same run.
+    const PARTS = "  one\ntwo \n\n{{img::pic}}\n{{raw::x}}\nthree\n";
+    const partsPreset = (sendTextAsIs?: boolean) =>
+        createTranslatorPreset("Parts", {
+            id: "parts",
+            steps: [
+                { prompt: "A {{slot::content}}", outputKey: "draft" },
+                { prompt: "B {{slot::prev}} [{{slot::out::draft}}]" },
+            ],
+            sendTextAsIs,
+        });
+    /** Selects the two-step `parts` preset and appends message `p` holding `PARTS` to chat `k`. */
+    function usePartsPreset(sendTextAsIs?: boolean) {
+        patch("translatorPresets", { items: [partsPreset(sendTextAsIs)], selectedId: "parts" });
+        chatBatch([{ op: "append", messages: [m("p", PARTS, "char")], anchor: { end: true } }]);
+    }
+    const contents = () => calls.map((call) => call.arg.formated[0].content);
+
+    it("protects lines by default: one pipeline run per part between the empty and asset lines, in order, each part's named outputs its own, the parts trimmed and joined around the kept lines, under one job id", async () => {
+        build({ now: () => 7 });
+        usePartsPreset();
+        const outputs = ["d1", "<think>plan</think>\n f1 ", "d2", "f2"];
+        answer = async () => ({ type: "success", result: outputs[calls.length - 1] });
+        const text = "f1\n\n\n{{img::pic}}\n\n{{raw::x}}\nf2";
+        expect(await runner.translate(req("p"))).toEqual({
+            ok: true,
+            outcome: "applied",
+            translation: {
+                text,
+                sourceHash: translationSourceHash(PARTS),
+                presetId: "parts",
+                targetLanguage: "ko",
+                translatedAt: 7,
+            },
+        });
+        // Part by part, each part through both steps before the next; the second part's step 2 reads
+        // the second part's draft, never the first's.
+        expect(contents()).toEqual(["A one\ntwo", "B d1 [d1]", "A three", "B d2 [d2]"]);
+        expect(new Set(calls.map((call) => call.jobId)).size).toBe(1);
+        expect(message("p").translation?.text).toBe(text);
+        expect(runner.workingCount()).toBe(0);
+
+        // A source of protected lines alone stores them trimmed, without a request.
+        chatBatch([{ op: "append", messages: [m("q", "\n{{img::a}}\n{{img::b}}\n", "char")], anchor: { end: true } }]);
+        expect(await runner.translate(req("q"))).toMatchObject({
+            outcome: "applied",
+            translation: {
+                text: "{{img::a}}\n\n{{img::b}}",
+                sourceHash: translationSourceHash("\n{{img::a}}\n{{img::b}}\n"),
+            },
+        });
+        expect(calls).toHaveLength(4);
+    });
+
+    it("sends the whole source in one run with Send Text As-Is and stores the reply as it is, untrimmed", async () => {
+        build();
+        usePartsPreset(true);
+        const reply = "  f\n\n{{img::pic}}\n  ";
+        answer = async () => ({ type: "success", result: calls.length === 1 ? "d" : reply });
+        expect(await runner.translate(req("p"))).toMatchObject({
+            ok: true,
+            outcome: "applied",
+            translation: { text: reply, presetId: "parts", sourceHash: translationSourceHash(PARTS) },
+        });
+        expect(contents()).toEqual([`A ${PARTS}`, "B d [d]"]);
+        expect(message("p").translation?.text).toBe(reply);
+        // The flag is read from the stored preset: off again, the next run goes part by part.
+        patch("translatorPresets", { items: [partsPreset()], selectedId: "parts" });
+        answer = async () => ({ type: "success", result: "x" });
+        expect(await runner.translate(req("p", { force: true }))).toMatchObject({
+            outcome: "applied",
+            translation: { text: "x\n\n\n{{img::pic}}\n\n{{raw::x}}\nx" },
+        });
+        expect(calls).toHaveLength(6);
+    });
+
+    it("a later part's failure ends the run (502), and the deadline during a later part ends it (504): the earlier parts' answers are discarded and nothing is stored", async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        build();
+        usePartsPreset();
+        answer = async () =>
+            calls.length === 3
+                ? { type: "fail", result: "second part failed", noRetry: true }
+                : { type: "success", result: "ok" };
+        expect(await runner.translate(req("p"))).toEqual({ ok: false, status: 502, error: "second part failed" });
+        expect(calls).toHaveLength(3);
+        expect(message("p").translation).toBeUndefined();
+        expect(runner.workingCount()).toBe(0);
+
+        calls = [];
+        const pending = pendingAnswers();
+        const start = Date.now();
+        const result = runner.translate(req("p"));
+        await until(() => pending.length === 1);
+        pending[0].resolve({ type: "success", result: "d1" });
+        await until(() => pending.length === 2);
+        pending[1].resolve({ type: "success", result: "f1" });
+        await until(() => pending.length === 3);
+        // The first part is done when the message's one deadline passes during the second part's request.
+        vi.setSystemTime(start + TRANSLATION_DEADLINE_MS);
+        pending[2].resolve({ type: "success", result: "d2" });
+        expect(await result).toEqual({ ok: false, status: 504, error: "The translation took too long" });
+        expect(calls).toHaveLength(3);
+        expect(calls[2].signal.aborted).toBe(true);
+        await until(() => runner.workingCount() === 0);
+        expect(message("p").translation).toBeUndefined();
+    });
+
+    it("the automatic hand-off translates in the preset's mode too: part by part by default, the whole reply as it is with Send Text As-Is", async () => {
+        build();
+        enableAutoTranslation();
+        chatBatch([
+            { op: "setText", id: "r1", text: "reply one\n\nmore" },
+            { op: "setText", id: "r2", text: "reply two\n\nmore" },
+        ]);
+        const pending = pendingAnswers();
+        expect(runner.handOff(target(), ["r1"])).toEqual(["r1"]);
+        await until(() => pending.length === 1);
+        expect(calls[0].arg.formated.at(-1)).toEqual({ role: "user", content: "reply one" });
+        pending[0].resolve({ type: "success", result: "하나" });
+        await until(() => pending.length === 2);
+        expect(calls[1].arg.formated.at(-1)).toEqual({ role: "user", content: "more" });
+        pending[1].resolve({ type: "success", result: " 더 " });
+        await until(() => runner.runningCount() === 0);
+        expect(message("r1").translation).toMatchObject({
+            text: "하나\n\n더",
+            sourceHash: translationSourceHash("reply one\n\nmore"),
+        });
+
+        const asIs = createTranslatorPreset("As-Is", { id: "asis", prompt: "T {{slot::content}}", sendTextAsIs: true });
+        patch("translatorPresets", { items: [asIs], selectedId: "asis" });
+        expect(runner.handOff(target(), ["r2"])).toEqual(["r2"]);
+        await until(() => pending.length === 3);
+        expect(calls[2].arg.formated).toEqual([{ role: "system", content: "T reply two\n\nmore" }]);
+        pending[2].resolve({ type: "success", result: " 둘 " });
+        await until(() => runner.runningCount() === 0);
+        expect(message("r2").translation).toMatchObject({ text: " 둘 ", presetId: "asis" });
+        expect(calls).toHaveLength(3);
+        await until(() => runner.workingCount() === 0);
+    });
 });

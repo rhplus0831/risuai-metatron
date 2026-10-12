@@ -171,6 +171,43 @@ describe(".risutl round trip through the real codecs", () => {
         });
     });
 
+    // Translation slice 3.2: Send Text As-Is rides in version 2 as `sendTextAsIs: true`, written only when on.
+    it("carries Send Text As-Is in version 2 as exactly sendTextAsIs: true beside name and steps, and decodes it back, over two cycles", async () => {
+        const preset = createTranslatorPreset("As-Is ✓", {
+            prompt: "T {{slot::content}}",
+            maxResponse: 9,
+            sendTextAsIs: true,
+        });
+        const bytes = await encodeTranslatorPresetFile(preset);
+        const payload = await decodeRisutl(bytes, 2);
+        expect(payload).toStrictEqual({
+            name: "As-Is ✓",
+            steps: [
+                {
+                    name: "Step 1",
+                    enabled: true,
+                    prompt: "T {{slot::content}}",
+                    maxResponse: 9,
+                    model: { mode: "inherit" },
+                },
+            ],
+            sendTextAsIs: true,
+        });
+        const decoded = await decodeTranslatorPresetFile(bytes);
+        expect(decoded.sendTextAsIs).toBe(true);
+        expect(withoutIds(decoded)).toStrictEqual(withoutIds(preset));
+        const again = await encodeTranslatorPresetFile(decoded);
+        expect(await decodeRisutl(again, 2)).toStrictEqual(payload);
+        expect(withoutIds(await decodeTranslatorPresetFile(again))).toStrictEqual(withoutIds(preset));
+        // The same step with the option off is the version 1 file of before.
+        const off = createTranslatorPreset("As-Is ✓", { prompt: "T {{slot::content}}", maxResponse: 9 });
+        expect(await decodeRisutl(await encodeTranslatorPresetFile(off), 1)).toStrictEqual({
+            name: "As-Is ✓",
+            prompt: "T {{slot::content}}",
+            maxResponse: 9,
+        });
+    });
+
     it("rejects a file whose payload is not a translator preset, after the real decryption", async () => {
         const preset = createTranslatorPreset("P", { prompt: "x", maxResponse: 1 });
         const bytes = await encodeTranslatorPresetFile(preset);

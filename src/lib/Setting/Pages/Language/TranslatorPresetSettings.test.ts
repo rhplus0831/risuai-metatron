@@ -726,3 +726,64 @@ describe("the step editor", () => {
         expect(alerts.error).not.toHaveBeenCalled();
     });
 });
+
+// Translation slice 3.2: the Send Text As-Is check writes `true` to the selected preset, found by id
+// at each write, or deletes the field (never `false`), so the tab's text stays the server's; it
+// follows the selection and a reload that replaced the objects.
+describe("Send Text As-Is", () => {
+    type Page = ReturnType<typeof render>;
+    const checkbox = (page: Page) => {
+        const label = [...page.target.querySelectorAll("label")].find((entry) =>
+            entry.textContent?.includes(language.translatorSendTextAsIs),
+        );
+        expect(label, "the Send Text As-Is check").toBeDefined();
+        return label!.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    };
+    const toggle = (input: HTMLInputElement, checked: boolean) => {
+        input.checked = checked;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+    };
+    const presetById = (id: string) => settings.translatorPresets.items.find((entry) => entry.id === id)!;
+    const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+
+    it("is off for a preset without the field, writes true on check, and deletes the field on uncheck, on the selected preset alone", () => {
+        const page = render();
+        expect(checkbox(page).checked).toBe(false);
+        toggle(checkbox(page), true);
+        expect(presetById("a").sendTextAsIs).toBe(true);
+        expect(Object.keys(plain(presetById("a")))).toEqual(["id", "name", "steps", "sendTextAsIs"]);
+        expect(Object.hasOwn(plain(presetById("b")), "sendTextAsIs")).toBe(false);
+        expect(checkbox(page).checked).toBe(true);
+        // The other preset shows its own state; back on `a`, the check is still on.
+        settings.translatorPresets.selectedId = "b";
+        flushSync();
+        expect(checkbox(page).checked).toBe(false);
+        settings.translatorPresets.selectedId = "a";
+        flushSync();
+        expect(checkbox(page).checked).toBe(true);
+        toggle(checkbox(page), false);
+        expect(Object.hasOwn(plain(presetById("a")), "sendTextAsIs")).toBe(false);
+        expect(Object.keys(plain(presetById("a")))).toEqual(["id", "name", "steps"]);
+        expect(checkbox(page).checked).toBe(false);
+        expect(isTranslatorPreset(plain(presetById("a")))).toBe(true);
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("follows a reload that replaced the objects and the selection, and writes to the live preset found by id", () => {
+        const page = render();
+        reloadFromServer([{ ...preset("a", "A"), sendTextAsIs: true }, preset("c", "C")], "c");
+        expect(checkbox(page).checked).toBe(false);
+        settings.translatorPresets.selectedId = "a";
+        flushSync();
+        expect(checkbox(page).checked).toBe(true);
+        toggle(checkbox(page), false);
+        expect(Object.hasOwn(plain(presetById("a")), "sendTextAsIs")).toBe(false);
+        expect(Object.hasOwn(plain(presetById("c")), "sendTextAsIs")).toBe(false);
+        reloadFromServer([{ ...preset("a", "A"), sendTextAsIs: true }], "a");
+        expect(checkbox(page).checked).toBe(true);
+        toggle(checkbox(page), true);
+        expect(plain(presetById("a")).sendTextAsIs).toBe(true);
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+});

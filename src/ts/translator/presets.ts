@@ -43,9 +43,14 @@ interface TranslatorPresetFilePayload {
     maxResponse: number;
 }
 
+/**
+ * A version 1 payload. Other keys are tolerated (older writers), except `sendTextAsIs`, which version
+ * 1 cannot hold: a file carrying it is refused rather than imported with the option off.
+ */
 function isTranslatorPresetFilePayload(value: unknown): value is TranslatorPresetFilePayload {
     return (
         isRecord(value) &&
+        !Object.hasOwn(value, "sendTextAsIs") &&
         typeof value.name === "string" &&
         typeof value.prompt === "string" &&
         typeof value.maxResponse === "number" &&
@@ -63,10 +68,14 @@ interface TranslatorStepFilePayload {
     outputKey?: string;
 }
 
-/** The preset a `.risutl` version 2 file holds: its name and 1 to 5 steps. */
+/**
+ * The preset a `.risutl` version 2 file holds: its name, 1 to 5 steps, and Send Text As-Is (an
+ * optional boolean, written only when it is on).
+ */
 interface TranslatorPresetFilePayloadV2 {
     name: string;
     steps: TranslatorStepFilePayload[];
+    sendTextAsIs?: boolean;
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []) {
@@ -101,15 +110,16 @@ function isStepFilePayload(value: unknown): value is TranslatorStepFilePayload {
 }
 
 /**
- * A version 2 payload, checked at every level: exactly `name` and `steps` (a payload of another
- * shape, such as the Fastify fork's, is refused, decision 8), 1 to 5 steps of exactly the step
- * fields, and no output key used twice (a file whose `{{slot::out::KEY}}` would break is refused,
- * not repaired).
+ * A version 2 payload, checked at every level: exactly `name`, `steps`, and an optional boolean
+ * `sendTextAsIs` (a payload of another shape, such as the Fastify fork's, is refused, decision 8), 1
+ * to 5 steps of exactly the step fields, and no output key used twice (a file whose
+ * `{{slot::out::KEY}}` would break is refused, not repaired).
  */
 function isTranslatorPresetFilePayloadV2(value: unknown): value is TranslatorPresetFilePayloadV2 {
     if (
         !isRecord(value) ||
-        !hasOnlyKeys(value, ["name", "steps"]) ||
+        !hasOnlyKeys(value, ["name", "steps"], ["sendTextAsIs"]) ||
+        (Object.hasOwn(value, "sendTextAsIs") && typeof value.sendTextAsIs !== "boolean") ||
         typeof value.name !== "string" ||
         !Array.isArray(value.steps) ||
         value.steps.length === 0 ||
@@ -230,6 +240,7 @@ async function decodeEncryptedTranslatorPresetFile(data: Uint8Array): Promise<Tr
                     : { mode: "inherit" },
             ...(step.outputKey === undefined ? {} : { outputKey: step.outputKey }),
         })),
+        sendTextAsIs: parsedPreset.sendTextAsIs,
     });
 }
 
@@ -239,12 +250,14 @@ function importedName(name: string): string {
 }
 
 /**
- * Whether version 1 (`{ name, prompt, maxResponse }`) holds the preset without loss: one step on the
- * `translate` slot, enabled, without an output key, and with the name a version 1 import gives it.
+ * Whether version 1 (`{ name, prompt, maxResponse }`) holds the preset without loss: Send Text As-Is
+ * off, and one step on the `translate` slot, enabled, without an output key, and with the name a
+ * version 1 import gives it.
  */
 function fitsVersion1(preset: TranslatorPreset): boolean {
     const [step, ...rest] = preset.steps;
     return (
+        preset.sendTextAsIs !== true &&
         rest.length === 0 &&
         step.model.mode === "inherit" &&
         step.enabled &&
@@ -279,6 +292,7 @@ export async function encodeTranslatorPresetFile(preset: TranslatorPreset): Prom
                         : { mode: "inherit" },
                 ...(step.outputKey === undefined ? {} : { outputKey: step.outputKey }),
             })),
+            ...(normalizedPreset.sendTextAsIs === true ? { sendTextAsIs: true } : {}),
         };
     }
     const encryptedPreset = new Uint8Array(

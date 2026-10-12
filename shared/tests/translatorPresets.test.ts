@@ -223,3 +223,37 @@ describe("isTranslatorStep and isTranslatorPreset", () => {
         }
     });
 });
+
+// Translation slice 3.2: Send Text As-Is is stored only as `true`. `createTranslatorPreset` (the
+// server's per-preset normalizer) drops any other value, so every preset from before the option
+// keeps its text, and `isTranslatorPreset` (the selection's guard) still reads a stray `false` as off.
+describe("sendTextAsIs", () => {
+    it("is kept by createTranslatorPreset only as true, after the steps, and is absent otherwise", () => {
+        const on = createTranslatorPreset("On", { id: "on", prompt: "p", maxResponse: 5, sendTextAsIs: true });
+        expect(on).toEqual({
+            id: "on",
+            name: "On",
+            steps: [inherited({ prompt: "p", maxResponse: 5 })],
+            sendTextAsIs: true,
+        });
+        expect(Object.keys(on)).toEqual(["id", "name", "steps", "sendTextAsIs"]);
+        for (const off of [false, undefined, null, "true", 1, {}, [true]]) {
+            const preset = createTranslatorPreset("Off", { id: "off", sendTextAsIs: off });
+            expect(Object.hasOwn(preset, "sendTextAsIs"), JSON.stringify(off)).toBe(false);
+            expect(Object.keys(preset), JSON.stringify(off)).toEqual(["id", "name", "steps"]);
+        }
+        // A fixed point with the option on, so a preset the tab turns on is stored as it is.
+        const stored = createTranslatorPreset(on.name, JSON.parse(JSON.stringify(on)));
+        expect(JSON.stringify(stored)).toBe(JSON.stringify(on));
+    });
+
+    it("passes isTranslatorPreset when absent or a boolean, and fails it for any other value", () => {
+        const valid = createTranslatorPreset("V", { id: "v" });
+        expect(isTranslatorPreset({ ...valid, sendTextAsIs: true })).toBe(true);
+        expect(isTranslatorPreset({ ...valid, sendTextAsIs: false })).toBe(true);
+        expect(isTranslatorPreset({ ...valid, sendTextAsIs: undefined })).toBe(true);
+        for (const broken of [null, "true", 1, 0, {}, []]) {
+            expect(isTranslatorPreset({ ...valid, sendTextAsIs: broken }), JSON.stringify(broken)).toBe(false);
+        }
+    });
+});
