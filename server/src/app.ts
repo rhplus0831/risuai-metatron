@@ -30,6 +30,8 @@ import { createAuthStore } from "./routes/auth.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { registerGenerationRoutes } from "./routes/generations.ts";
 import { registerTransformRoutes, TRANSFORM_PATHS } from "./routes/transform.ts";
+import { registerTranslateRoutes, TRANSLATE_MESSAGE_PATH } from "./routes/translate.ts";
+import { createTranslationRunner } from "./translation/runner.ts";
 import { createTransformService } from "./prompt/transform.ts";
 import { registerLlmRoutes } from "./routes/llm.ts";
 import { registerLlmSecretRoutes } from "./routes/llmSecrets.ts";
@@ -97,6 +99,14 @@ export function createServerContext(options: {
         intervalMs: options.snapshotIntervalMs,
     });
     const maxImportBytes = options.maxImportBytes ?? parseMaxImportBytes(process.env.RISU_MAX_IMPORT_BYTES);
+    // The server translations' maintenance listener is the first one (the runner is built below; a
+    // maintenance runs only once the context exists): admission closes and every run ends (503)
+    // before the jobs' listener waits for their end, and before the request layer's pause fails a
+    // run's request.
+    snapshots.onMaintenance(async () => {
+        translationRunner.pause("The server data is being replaced");
+        return () => translationRunner.resume();
+    });
     const generationJobs = createGenerationJobs({
         store: resources,
         kinds: resourceKinds,
@@ -129,6 +139,15 @@ export function createServerContext(options: {
         localGeneration: (text, model, config, signal) => transformers.runTextGeneration(text, model, config, signal),
         parentCallback: (jobId, clientId, callbackId, onSettled) =>
             generationJobs.parentCallback(jobId, clientId, callbackId, onSettled),
+    });
+    // The server translations (`POST /api/translate/message`) run through the request layer.
+    const translationRunner = createTranslationRunner({
+        store: resources,
+        kinds: resourceKinds,
+        gate: snapshots.gate,
+        lock: generationLock,
+        llm: llmRequests,
+        rootDir: options.rootDir,
     });
     // A restore or an import replaces the settings: live requests end, new ones wait (503).
     snapshots.onMaintenance(async () => {
@@ -199,6 +218,7 @@ export function createServerContext(options: {
         shuttingDown = true;
         // Time zero of every job's abort deadline; `dispose` waits for them to end.
         generationJobs.beginShutdown();
+        translationRunner.beginShutdown();
         llmRequests.beginShutdown();
         for (const [server, listener] of upgradeListeners) {
             server.off("upgrade", listener);
@@ -256,10 +276,12 @@ export function createServerContext(options: {
         maxSize: MAX_BODY_BYTES,
         onError: (c) => c.json({ error: "Request body too large" }, 413),
     });
-    // The script transform's routes authenticate first and cap their bodies themselves (8 MiB).
+    // The script transform's and the translation's routes authenticate first and cap their bodies
+    // themselves (8 MiB, 16 KiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
-        return c.req.method === "POST" && (route === BACKUP_IMPORT_PATH || TRANSFORM_PATHS.includes(route))
+        return c.req.method === "POST" &&
+            (route === BACKUP_IMPORT_PATH || route === TRANSLATE_MESSAGE_PATH || TRANSFORM_PATHS.includes(route))
             ? next()
             : limitBody(c, next);
     });
@@ -299,6 +321,12 @@ export function createServerContext(options: {
     registerGenerationRoutes(app, { jobs: generationJobs, auth, limiter: authenticatedRouteLimiter.middleware });
     registerTransformRoutes(app, {
         transforms,
+        store: resources,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+    });
+    registerTranslateRoutes(app, {
+        runner: translationRunner,
         store: resources,
         auth,
         limiter: authenticatedRouteLimiter.middleware,
@@ -346,6 +374,7 @@ export function createServerContext(options: {
         beginShutdown,
         generationJobs,
         llmRequests,
+        translationRunner,
         eventSockets,
         /**
          * Installs the one `upgrade` dispatcher: generation jobs, the live-update socket, else the
@@ -378,7 +407,12 @@ export function createServerContext(options: {
          */
         dispose: () => {
             beginShutdown();
-            disposing ??= Promise.all([generationJobs.drain(), llmRequests.dispose(), transforms.close()])
+            disposing ??= Promise.all([
+                generationJobs.drain(),
+                translationRunner.drain(),
+                llmRequests.dispose(),
+                transforms.close(),
+            ])
                 .then(() => generationJobs.dispose())
                 .then(() => tokenizers.dispose())
                 .then(() => scriptWorkers.dispose())

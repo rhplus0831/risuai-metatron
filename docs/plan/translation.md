@@ -1,6 +1,6 @@
 # Translation Plan
 
-Status: slices 1.1–1.2 done (2026-10-11). No open questions.
+Status: slices 1.1–1.3 done (2026-10-12). No open questions.
 
 Bring the useful part of the Fastify fork's translation work into metatron:
 translations stored on the message, per-chat translation settings, automatic
@@ -219,6 +219,36 @@ As built:
 
 Server tests use the `Echo` model: a stored write, a stale source (edited
 during the request) ignored, a join, a locked message refused.
+
+As built:
+
+- The body is `{ characterId, chatId, messageId, presetId, modelPresetId,
+personaId, force? }`: the server's request settings also need a prompt
+  preset and a persona, so the tab sends the chat's three display ids
+  (`chatDisplayIds`), as for a script transform. The runner loads the chat
+  under the display rule: a field bound to an existing record must be sent as
+  bound (409 `chatBindingMismatch`); an unset or deleted one takes the sent id,
+  whose record must exist (404). Slice 1.4's caller sends these ids.
+- The answer is `{ outcome, translation }`: `applied`, `ignored` (the text
+  changed during the run; `translation: null`, translate again), or `fresh` (a
+  fresh stored translation, not forced). Errors: 404, 409 `generating` or
+  `chatBindingMismatch` or a replaced chat, 429 (16 running), 502 (the request
+  failed), 503 (maintenance, shutdown), 504 (10-minute deadline).
+- A request for a message in flight joins its run after its own ids pass the
+  display rule; `force` neither cancels nor queues behind it.
+- The run is a detached in-process job without a tab: no plugin interceptor,
+  plugin provider, `request` trigger, tool, or inlay. Its CBS (stop strings)
+  runs over the chat with one budget and writes nothing. The source is sent
+  without the tab's `<risu-style>` protection.
+- At most 16 runs' work may be unsettled (429), ended runs whose request has
+  not stopped included. The 10-minute deadline is read from the clock at every
+  check, and each attempt yields to the event loop first.
+- An ended run (deadline, maintenance, shutdown) settles its callers at once
+  and never writes: the write checks the run's signal, shutdown, the
+  maintenance gate, and the epoch in the call that applies it.
+- Tests: `server/src/tests/translate.test.ts` (the four `Echo` cases of the
+  slice text, the route's admission, maintenance, shutdown, a disconnected
+  tab, and the runner's lifecycle over a fake request layer).
 
 1.4 **Display and controls.**
 
