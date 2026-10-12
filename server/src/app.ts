@@ -36,6 +36,8 @@ import { createTransformService } from "./prompt/transform.ts";
 import { registerLlmRoutes } from "./routes/llm.ts";
 import { registerLlmSecretRoutes } from "./routes/llmSecrets.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
+import { PUSH_SUBSCRIPTION_PATH, registerPushRoutes } from "./routes/push.ts";
+import { createPushService, type PushTransport } from "./push/pushService.ts";
 import { createEventSockets } from "./routes/events.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
 import { registerStorageRoutes } from "./routes/storage.ts";
@@ -67,6 +69,8 @@ export function createServerContext(options: {
     generationRunner?: GenerationRunner;
     /** The default runner's random source (`presetChain`, the group order); default `Math.random`. */
     generationRandom?: () => number;
+    /** Web Push delivery (tests inject one; the default is `web-push`). */
+    pushTransport?: PushTransport;
 }) {
     const savePath = path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
@@ -169,6 +173,12 @@ export function createServerContext(options: {
     const upgradeListeners = new Map<http.Server, (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void>();
     // Workers start on the first task: Lua buttons and manual triggers (`command` jobs) run there.
     const scriptWorkers = createScriptWorkerPool({ rootDir: options.rootDir });
+    // Web Push for chat completions (`docs/plan/web-push.md`): its keys and subscriptions live in
+    // `save/server/`, beside the password.
+    const push = createPushService({
+        savePath,
+        ...(options.pushTransport ? { transport: options.pushTransport } : {}),
+    });
     const runnerDeps: GenerationRunnerDeps = {
         store: resources,
         kinds: resourceKinds,
@@ -182,6 +192,7 @@ export function createServerContext(options: {
         mcp: mcpRegistry,
         lock: generationLock,
         translations: translationRunner,
+        push,
         ...(options.generationRandom ? { random: options.generationRandom } : {}),
     };
     const defaultRunner = createGenerationRunner(runnerDeps);
@@ -222,6 +233,7 @@ export function createServerContext(options: {
         generationJobs.beginShutdown();
         translationRunner.beginShutdown();
         llmRequests.beginShutdown();
+        push.close();
         for (const [server, listener] of upgradeListeners) {
             server.off("upgrade", listener);
         }
@@ -278,14 +290,17 @@ export function createServerContext(options: {
         maxSize: MAX_BODY_BYTES,
         onError: (c) => c.json({ error: "Request body too large" }, 413),
     });
-    // The script transform's and the translation's routes authenticate first and cap their bodies
-    // themselves (8 MiB, 16 KiB).
+    // The script transform's, the translation's, and the push subscription's routes authenticate
+    // first and cap their bodies themselves (8 MiB, 16 KiB, 16 KiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
-        return c.req.method === "POST" &&
-            (route === BACKUP_IMPORT_PATH || route === TRANSLATE_MESSAGE_PATH || TRANSFORM_PATHS.includes(route))
-            ? next()
-            : limitBody(c, next);
+        const ownLimit =
+            (c.req.method === "POST" &&
+                (route === BACKUP_IMPORT_PATH ||
+                    route === TRANSLATE_MESSAGE_PATH ||
+                    TRANSFORM_PATHS.includes(route))) ||
+            ((c.req.method === "PUT" || c.req.method === "DELETE") && route === PUSH_SUBSCRIPTION_PATH);
+        return ownLimit ? next() : limitBody(c, next);
     });
 
     // Serves the client with the flag that makes `isNodeServer` true. Without it the client shows only a
@@ -333,6 +348,7 @@ export function createServerContext(options: {
         auth,
         limiter: authenticatedRouteLimiter.middleware,
     });
+    registerPushRoutes(app, { push, auth, limiter: authenticatedRouteLimiter.middleware });
     registerLlmRoutes(app, {
         requests: llmRequests,
         store: resources,
@@ -377,6 +393,7 @@ export function createServerContext(options: {
         generationJobs,
         llmRequests,
         translationRunner,
+        push,
         eventSockets,
         /**
          * Installs the one `upgrade` dispatcher: generation jobs, the live-update socket, else the

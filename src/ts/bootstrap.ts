@@ -116,6 +116,11 @@ export async function loadData() {
             loadedStore.set(true);
             // The URL picks the screen (a reload keeps it); from here on the history follows the stores.
             startRouter();
+            // Web Push (`docs/plan/web-push.md`): this browser's subscription kept in line, and the
+            // one-time banner offered. Nothing here asks for the permission.
+            void import("./network/pushNotifications")
+                .then(({ startPushNotifications }) => startPushNotifications())
+                .catch((error) => console.error("[Push]", error));
             // A server job of this tab that a reload interrupted (a Lua button, Phase 5 slice 8a)
             // is attached again; nothing is sent when the tab has none.
             void import("./process/serverCommands")

@@ -29,6 +29,7 @@ import type { MessageGuard } from "./generationLock.ts";
 import { type JobScope, refreshChat, scopeChat } from "./jobScope.ts";
 import { createJobToolState, type JobToolState } from "../mcp/jobTools.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
+import type { PushService } from "../push/pushService.ts";
 import type { TranslationRunner } from "../translation/runner.ts";
 
 export type GenerationRunnerDeps = {
@@ -51,6 +52,8 @@ export type GenerationRunnerDeps = {
     random?: () => number;
     /** The translation runner a send hands its messages to (slice 2.3 of `docs/plan/translation.md`). */
     translations?: Pick<TranslationRunner, "handOff">;
+    /** Web Push for chat completions (`docs/plan/web-push.md`); without it only the tab is notified. */
+    push?: Pick<PushService, "send">;
 };
 
 /** Rejects with the signal's reason when it aborts first. */

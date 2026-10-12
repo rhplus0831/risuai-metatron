@@ -7,6 +7,7 @@ import path from "node:path";
 import { createServerContext } from "../app.ts";
 import type { ResourceKind } from "../data/kinds.ts";
 import type { GenerationRunner } from "../jobs/generationJobs.ts";
+import type { PushTransport } from "../push/pushService.ts";
 
 export const TEST_INDEX_HTML = '<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body></body></html>';
 
@@ -23,6 +24,8 @@ export type TestServerOptions = {
     generationRunner?: GenerationRunner;
     /** The default runner's random source (`presetChain`, the group order; Phase 5 slice 9). */
     generationRandom?: () => number;
+    /** The Web Push transport (`docs/plan/web-push.md`); the default is the real `web-push`. */
+    pushTransport?: PushTransport;
     /** Reuse an existing root (a restart); `password` is ignored then. */
     rootDir?: string;
 };
@@ -47,6 +50,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         maxImportBytes: options.maxImportBytes,
         generationRunner: options.generationRunner,
         generationRandom: options.generationRandom,
+        pushTransport: options.pushTransport,
     });
     return {
         rootDir,

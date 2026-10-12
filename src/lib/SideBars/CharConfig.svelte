@@ -405,6 +405,9 @@
             </button>
         </div>
     {/if}
+    <!-- Local to this server, never in a card (`docs/plan/web-push.md`), so a private card shows it too. -->
+    <span class="text-textcolor">{language.customNotificationMessage} <Help key="customNotificationMessage" /></span>
+    <TextAreaInput margin="both" autocomplete="off" bind:value={currentCharacter.customNotificationMessage} />
     <!-- The chat's fields wait while the selected chat loads. -->
     {#if currentChat}
         <span class="text-textcolor">{language.authorNote} <Help key="chatNote" /></span>

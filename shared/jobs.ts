@@ -228,7 +228,14 @@ export type GenerationNotice =
     | { kind: "emotion"; payload: { chaId: string; name: string; image: string } }
     | { kind: "progress"; payload: { open: boolean; miniMsg: string; msg: string; subMsg: string } }
     | { kind: "tts"; payload: { chaId: string; text: string } }
-    | { kind: "notification"; payload: { chaId: string; body: string } }
+    /**
+     * A reply finished (`docs/plan/web-push.md`): `chaId`/`chatId` are the job's chat (a group's, not
+     * the speaking member's); the text is the server's (`shared/notifications.ts`).
+     */
+    | {
+          kind: "notification";
+          payload: { chaId: string; chatId: string; title: string; body: string; url: string; tag: string };
+      }
     /** Opens a web page in the tab (an MCP server's OAuth authorization page, slice 12); `http(s)` only. */
     | { kind: "openURL"; payload: { url: string } }
     /**

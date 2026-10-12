@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ChatOp, CheckpointOutcome, MessageGeneration } from "../../../shared/chats.ts";
 import type { Chat, character, groupChat, Message, MessageGenerationInfo } from "../../../shared/database.ts";
 import { supaMemoryOnCount } from "../../../shared/characters.ts";
+import { completionNotification } from "../../../shared/notifications.ts";
 import {
     type CallbackPayloads,
     type CallbackResult,
@@ -602,6 +603,37 @@ async function runSpeaker(arg: {
     arg.onSetup(setup);
     const { bindings, nativeCtx } = setup;
     const { services, evaluator } = bindings;
+
+    /**
+     * The completion notification (`docs/plan/web-push.md`): the tab's notice and Web Push, both naming
+     * the job's chat and its owner (a group's name and message, not the speaking member's). A failure
+     * here never changes the reply.
+     */
+    function notifyCompletion() {
+        try {
+            const notification = completionNotification({
+                name: owner.name,
+                customMessage: owner.customNotificationMessage,
+                language: db.language,
+                chaId: characterId,
+                chatId,
+            });
+            services.notice({
+                kind: "notification",
+                payload: {
+                    chaId: characterId,
+                    chatId,
+                    title: notification.title,
+                    body: notification.body,
+                    url: notification.url,
+                    tag: notification.tag,
+                },
+            });
+            deps.push?.send(notification).catch((error) => console.error("[Push]", error));
+        } catch (error) {
+            console.error("[Push] The completion notification failed", error);
+        }
+    }
 
     /** `throwError`: into the chat with `inlayErrorResponse` (the last reply or a new message), else the job's error. */
     function throwError(error: string): SpeakerResult {
@@ -1460,7 +1492,7 @@ async function runSpeaker(arg: {
         }
 
         if (db.notification) {
-            services.notice({ kind: "notification", payload: { chaId: currentChar.chaId, body: result } });
+            notifyCompletion();
         }
 
         if (req.special?.emotion) {

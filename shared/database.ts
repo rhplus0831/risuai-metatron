@@ -744,6 +744,8 @@ export interface character {
     imported?: boolean;
     trashTime?: number;
     nickname?: string;
+    /** The completion notification's body for this character (`docs/plan/web-push.md`); local, never in a card. */
+    customNotificationMessage?: string;
     source?: string[];
     group_only_greetings?: string[];
     creation_date?: number;
@@ -814,6 +816,8 @@ export interface groupChat {
     lorePlus?: boolean;
     trashTime?: number;
     nickname?: string;
+    /** The completion notification's body for this group (`docs/plan/web-push.md`); local. */
+    customNotificationMessage?: string;
     defaultVariables?: string;
     lowLevelAccess?: boolean;
     hideChatIcon?: boolean;

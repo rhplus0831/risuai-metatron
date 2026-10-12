@@ -50,7 +50,7 @@
 - `interchangeability.ts`: `convertModuleToCharacter`, `convertCharacterToModule`, persona↔character, persona↔module (an embedded module ID is normalized to `$embedded`).
 - `persona.ts`: `changeUserPersona(id, target?)` (picks the persona where the screen shows it, through `pickBinding`: with a chat open it binds that chat, at home it selects for this client; `target` names a chat or `null` for the tab; the persona fields are forwarded, so nothing is copied), `selectUserImg` (captures the selected persona before the file dialog and sets its icon, keeping its id, so bound chats stay bound). `exportUserPersona`/`importUserPersona` use a PNG `persona` tEXt chunk.
 - UI:
-  - `CharConfig.svelte`: the main editor, binding the selected character's record (`currentCharacter`, `$derived(selectedCharacter())`). Tabs cover identity, greetings, images, emotions, assets, lore, regex, triggers, TTS, export, and delete.
+  - `CharConfig.svelte`: the main editor, binding the selected character's record (`currentCharacter`, `$derived(selectedCharacter())`). Tabs cover identity, greetings, images, emotions, assets, lore, regex, triggers, TTS, export, and delete. The first tab also edits `customNotificationMessage` (a character's or a group's completion notification text, `docs/plan/web-push.md`), outside the card-license guard: it is local, and `createBaseV2`/`createBaseV3` and the card import never carry it.
   - Lorebook:
     - `LoreBookSetting.svelte`: tabs for character, chat, and settings.
     - `LoreBookList.svelte`: SortableJS lists and folders.

@@ -1,12 +1,15 @@
 // @vitest-environment node
+import { randomBytes } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
+import webPush from "web-push";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
-import { createSigner, createTestServer, json, sleep } from "./testSupport.ts";
+import type { PushTransport } from "../push/pushService.ts";
+import { createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
 // Phase 5 slice 11a: the tail of a reply inside a send job (`server/src/prompt/runner.ts` `runSpeaker`
 // and `runSend`, `server/src/prompt/postProcess.ts`, `server/src/prompt/scripts.ts` `editoutput`),
@@ -89,6 +92,16 @@ const embedder = http.createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ data: input.map((text) => ({ embedding: EMBED_VECTORS[text] ?? [1, 0, 0] })) }));
 });
+
+/** The Web Push deliveries (`docs/plan/web-push.md`): the fake transport records them instead of posting. */
+const pushes: { endpoint: string; payload: string }[] = [];
+const PUSH_ENDPOINT = "https://fcm.googleapis.com/fcm/send/tail-browser";
+const pushTransport: PushTransport = {
+    sendNotification: (async (subscription: { endpoint: string }, payload: unknown) => {
+        pushes.push({ endpoint: subscription.endpoint, payload: String(payload) });
+        return { statusCode: 201, body: "", headers: {} };
+    }) as unknown as PushTransport["sendNotification"],
+};
 
 let rootDir = "";
 let server: ReturnType<typeof createTestServer>;
@@ -393,7 +406,7 @@ beforeAll(async () => {
     // A stored image inlay the `generateImage` callback can answer with.
     mkdirSync(path.join(rootDir, "save", "assets"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "assets", "inlay_cat.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-    server = createTestServer({ rootDir, generationRandom: () => 0 });
+    server = createTestServer({ rootDir, generationRandom: () => 0, pushTransport });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
     server.context.attachWebSocket(node);
@@ -517,6 +530,22 @@ describe("the streaming tail", () => {
             await withSettings({ ttsAutoSpeech: true, notification: true }, async () => {
                 answers = [{ chunks: ["Hel", "lo", " there"] }];
                 const before = bodies.length;
+                // A browser registered for Web Push (`routes/push.ts`): the completion reaches it too.
+                pushes.length = 0;
+                const registered = await api("/api/push/subscription", {
+                    method: "PUT",
+                    body: JSON.stringify({
+                        subscription: {
+                            endpoint: PUSH_ENDPOINT,
+                            expirationTime: null,
+                            keys: {
+                                p256dh: webPush.generateVAPIDKeys().publicKey,
+                                auth: randomBytes(16).toString("base64url"),
+                            },
+                        },
+                    }),
+                });
+                expect(registered.status).toBe(204);
                 const { events, terminal } = await job(
                     "send",
                     chaId,
@@ -544,14 +573,33 @@ describe("the streaming tail", () => {
                     { text: "Hello there [lua]" },
                 ]);
                 // The listeners get the reply's id and the speaker, after the edit hook; TTS carries the
-                // raw result (the tab's `result`), the notification the same.
+                // raw result (the tab's `result`); the notification never carries the reply
+                // (`docs/plan/web-push.md`): the server's sentence for the chat, and the same text goes
+                // out as Web Push to the registered browser.
                 expect(callbacks(events, "chatOutput").map((event) => event.payload)).toEqual([
                     { messageId: reply.chatId, speakerId: chaId },
                 ]);
                 expect(notices(events, "tts").map((event) => event.payload)).toEqual([{ chaId, text: "Hello there" }]);
-                expect(notices(events, "notification").map((event) => event.payload)).toEqual([
-                    { chaId, body: "Hello there" },
-                ]);
+                const notification = {
+                    chaId,
+                    chatId: "k",
+                    title: "Risuai",
+                    body: "Ann's message has been processed.",
+                    url: `/chat/${chaId}/k`,
+                    tag: "risuai-chat-completion",
+                };
+                expect(notices(events, "notification").map((event) => event.payload)).toEqual([notification]);
+                await waitFor(() => pushes.length === 1);
+                expect(pushes[0].endpoint).toBe(PUSH_ENDPOINT);
+                expect(JSON.parse(pushes[0].payload)).toEqual({
+                    title: notification.title,
+                    body: notification.body,
+                    url: notification.url,
+                    tag: notification.tag,
+                    icon: "/logo_192.png",
+                    badge: "/logo_192.png",
+                });
+                expect(pushes[0].payload).not.toContain("Hello there");
                 const editAt = indexOf(events, (e) => e.type === "callback" && e.name === "editoutput");
                 const listenersAt = indexOf(events, (e) => e.type === "callback" && e.name === "chatOutput");
                 const ttsAt = indexOf(events, (e) => e.type === "notice" && e.kind === "tts");
@@ -565,6 +613,11 @@ describe("the streaming tail", () => {
                 expect(reply.generationInfo.stageTiming.stage3).toBeGreaterThanOrEqual(CHUNK_DELAY_MS);
                 expect(terminal).toMatchObject({ messageId: reply.chatId, alternatives: ["Hello there"] });
                 expect(await clientSetText(chaId, reply.chatId, "edited by the tab")).toBe(200);
+                const removed = await api("/api/push/subscription", {
+                    method: "DELETE",
+                    body: JSON.stringify({ endpoint: PUSH_ENDPOINT }),
+                });
+                expect(removed.status).toBe(204);
             });
         },
         SLOW,

@@ -23,6 +23,7 @@
     import ChatScreen from "./lib/ChatScreens/ChatScreen.svelte";
     import AlertComp from "./lib/Others/AlertComp.svelte";
     import TerminalNotice from "./lib/Others/TerminalNotice.svelte";
+    import PushPrompt from "./lib/Others/PushPrompt.svelte";
     import RealmPopUp from "./lib/UI/Realm/RealmPopUp.svelte";
     import GridChars from "./lib/Others/GridCatalog.svelte";
     import WelcomeRisu from "./lib/Others/WelcomeRisu.svelte";
@@ -272,6 +273,9 @@
         <AlertComp />
     {/if}
     <TerminalNotice />
+    {#if $loadedStore}
+        <PushPrompt />
+    {/if}
     {#if $showRealmInfoStore}
         <RealmPopUp bind:openedData={$showRealmInfoStore} />
     {/if}

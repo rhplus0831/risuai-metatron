@@ -51,16 +51,21 @@ toggle reconciliation (`75e939bba`, `01cce4235`, `5f7713c89`).
    to exported cards and not read from imported ones (D5).
 5. **The tab notification uses the same text.** It no longer shows the reply,
    so reply text does not appear on lock screens. The tab notification and the
-   push notification share one `tag` (`risuai-chat-completion`), so one
-   replaces the other instead of stacking.
+   push notification share one `tag` (`risuai-chat-completion`), and a browser
+   subscribed to push does not show the tab notification at all, so the two do
+   not stack.
 6. **The icon is the app logo for now.**
    - The payload still carries `icon` and `badge`.
    - The service worker falls back to the logo when `showNotification` fails.
    - A character avatar icon comes later, after the thumbnail work, as a
      signed URL route. Nothing in this plan builds it.
 7. **The server sends on every completion while the switch is on.** It does
-   not check whether a tab is attached. The service worker drops the
-   notification when a window of the app is visible or focused.
+   not check whether a tab is attached. The service worker shows every push,
+   also while a window of the app is in front: Safari revokes the permission
+   of a site whose pushes show nothing, Chrome shows its own generic notice
+   instead, and Firefox counts them against a quota. (Changed during
+   implementation from "drop it while a window is visible".) The page closes
+   the tagged notifications whenever it is shown.
 8. **Subscriptions are not resources.** They are per browser, so they are not
    synced to other clients, not in backups, and not in snapshots. They live
    under `save/server/`, next to the password, where the storage routes cannot
@@ -134,9 +139,15 @@ toggle reconciliation (`75e939bba`, `01cce4235`, `5f7713c89`).
   Rules:
   - Without keys, the service is disabled: `publicKey()` is `null` and
     `send` does nothing.
-  - Validate a subscription before storing it:
-    - the endpoint is an `https:` URL of at most 4096 characters;
-    - `keys.p256dh` and `keys.auth` are non-empty strings;
+  - Validate a subscription before storing it, and again when the file is read:
+    - the endpoint is an `https:` URL of at most 4096 characters, on the
+      default port, without credentials or a fragment, whose host is a known
+      push service (`fcm.googleapis.com`, `android.googleapis.com`,
+      `updates.push.services.mozilla.com`, `web.push.apple.com`,
+      `*.push.apple.com`, `*.notify.windows.com`, plus
+      `RISU_WEB_PUSH_ALLOWED_HOSTS`);
+    - `keys.p256dh` is a 65-byte uncompressed P-256 point and `keys.auth` 16
+      bytes, both base64url;
     - at most 50 subscriptions; the oldest by `updatedAt` is dropped.
       The server POSTs to whatever endpoint it stores, so the endpoint is never
       taken unchecked.
@@ -232,10 +243,8 @@ In `public/sw.js`:
 - `push`:
   - Read and validate the payload. Unknown or missing fields fall back to the
     logo, `Risuai`, and `/`.
-  - Return without showing anything when any window client is focused or
-    visible.
-  - Otherwise call `showNotification`, and retry with the logo icon when that
-    throws.
+  - Always call `showNotification` (decision 7), and retry with the text alone
+    when that throws.
 - `notificationclick`:
   - Close the notification.
   - If a window of this origin is open, focus it and `postMessage({ type:
@@ -269,7 +278,8 @@ In `public/sw.js`:
   - Prompt shown once. "Later" keeps it hidden on reload.
   - "Receive" subscribes.
   - A reply with the tab hidden or closed shows the push.
-  - A reply with the tab visible shows nothing extra.
+  - A reply with the tab visible still shows the push (decision 7), and the
+    tab shows no second notification of its own.
   - Clicking a notification opens the chat.
 - Firefox: the same, especially the click-only permission request.
 - Android Chrome over HTTPS, as an installed PWA.

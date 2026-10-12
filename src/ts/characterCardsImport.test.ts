@@ -175,6 +175,25 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(selectionModule.selectedIndex()).toBe(-1);
     });
 
+    // `docs/plan/web-push.md` decision 4: the custom notification message is local, so a card that
+    // carries one (at the top level or in the risuai extension) does not set it on the import.
+    it("a V3 card's customNotificationMessage is not read from the card or its risuai extension", async () => {
+        const { cards, ids, added } = await boot();
+        const before = ids();
+        const card = cardV3(
+            "Pushy",
+            { customNotificationMessage: "from the card" },
+            { customNotificationMessage: "from the extension" },
+        );
+        await cards.importCharacterProcess({ name: "card.json", data: encode(card) });
+        const { character, record } = await added(before);
+        expect(character.name).toBe("Pushy");
+        expect(character).not.toHaveProperty("customNotificationMessage");
+        expect(record).not.toHaveProperty("customNotificationMessage");
+        expect(JSON.stringify(record)).not.toContain("from the card");
+        expect(JSON.stringify(record)).not.toContain("from the extension");
+    });
+
     it("a card is prepared as a creation (Phase 6 slice 5b): the defaults, the time, the lore conversion; the record is the server's normalized text", async () => {
         const { cards, ids, added, fake, sync } = await boot();
         const before = ids();

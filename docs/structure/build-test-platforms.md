@@ -68,7 +68,7 @@ Environment variables:
 Web:
 
 - There is no mobile (Capacitor) build. Installation is only through the PWA manifest.
-- `public/sw.js`: Cache Storage `risuCache`. Routes `/sw/check`, `/sw/img/<hex>`, `/sw/register`, `/sw/init`, `/sw/share/{character,preset,module}`. Registered by `bootstrap.ts:registerSw`, read by `globalApi.getFileSrc` and `characterCards.characterURLImport`.
+- `public/sw.js`: Cache Storage `risuCache`. Routes `/sw/check`, `/sw/img/<hex>`, `/sw/register`, `/sw/init`, `/sw/share/{character,preset,module}`. Registered by `bootstrap.ts:registerSw`, read by `globalApi.getFileSrc` and `characterCards.characterURLImport`. A new worker takes over at once (`skipWaiting`, `clients.claim`). Web Push (`docs/plan/web-push.md`): `push` shows every completion (also with a window in front: Safari requires it) with the logo and the fixed tag, the title and body from the payload, and a click URL that must be a same-origin `/chat/<chaId>/<chatId>` route, else `/`; `notificationclick` focuses a window of the app and posts `risu-open-route` (answered through a `MessageChannel` within 2 s, else the window is navigated), or opens a window. `pushsubscriptionchange` is not handled: the page registers the new subscription when it opens.
 - `public/manifest.json`: PWA manifest. `file_handlers` for `.charx`, `.risup`, `.risum` go through `launchQueue` to `characterURLImport`. `share_target` posts to `/receive-files/`, which has no in-repo handler.
 - `util/risuUserscript.user.js`: exposes `GM_fetch` as `unsafeWindow.userScriptFetch`, which `globalFetch` uses when present.
 

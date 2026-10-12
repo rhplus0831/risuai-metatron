@@ -603,6 +603,23 @@ function settleRootInsertion() {
 }
 
 /**
+ * Shows the base route at `path` (a notification's chat): closes the layers and applies it to the
+ * stores; the router's effect then pushes the URL. A path that is not a base route, or a call before
+ * the router started, does nothing and returns false.
+ */
+export function openRoute(path: string): boolean {
+    const route = parseRoute(path);
+    if (!port || !route || isLayer(route)) {
+        return false;
+    }
+    untrack(() => {
+        applyLayer(null);
+        applyBase(route);
+    });
+    return true;
+}
+
+/**
  * Starts the router (once, at the end of `loadData`): applies the current URL to the stores,
  * corrects the entry (R4), then follows the stores and `popstate`. Returns the stop (tests).
  */

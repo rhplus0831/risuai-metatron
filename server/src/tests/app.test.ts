@@ -298,6 +298,8 @@ describe("storage key codec", () => {
             "assets/",
             "server/password",
             "server/known_public_key_hashes.json",
+            "server/web_push_vapid.json",
+            "server/push_subscriptions.json",
             ".tmp/x",
             "Assets/x.png",
             "legacy/avatar.png",
@@ -404,6 +406,8 @@ describe("storage routes", () => {
             "remotes/cha-1.local.bin",
             "server/password",
             "server/known_public_key_hashes.json",
+            "server/web_push_vapid.json",
+            "server/push_subscriptions.json",
             ".tmp/x",
             "../server/password",
             "legacy/avatar.png",
@@ -426,9 +430,11 @@ describe("storage routes", () => {
         }
         expect(readFileSync(path.join(s.savePath, "server", "password"), "utf-8")).toBe("pw");
         expect(readdirSync(s.savePath).sort()).toEqual([".tmp", "backups", "data", "server"]);
+        // `web_push_vapid.json` is the server's Web Push key pair, generated at start (`docs/plan/web-push.md`).
         expect(readdirSync(path.join(s.savePath, "server")).sort()).toEqual([
             "known_public_key_hashes.json",
             "password",
+            "web_push_vapid.json",
         ]);
     });
 

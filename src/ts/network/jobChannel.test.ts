@@ -33,6 +33,7 @@ const deps = vi.hoisted(() => ({
     chats: {} as Record<string, { chatPage?: number; chats: { id: string; message?: { chatId: string }[] }[] }>,
     mcps: new Map<string, { callTool: (tool: string, args: unknown) => Promise<unknown> }>(),
     sayTTS: vi.fn(),
+    showCompletion: vi.fn(async (_payload: unknown) => {}),
     followTranslations: vi.fn<(ref: unknown, ids: unknown, follow: { report: (message: string) => void }) => void>(),
     stableDiff: vi.fn<(char: unknown, text: string, target: { check?: () => void }) => Promise<unknown>>(),
     getModelInfo: vi.fn((id: string) => ({
@@ -109,6 +110,7 @@ vi.mock("../util", () => ({ sleep: (ms: number) => new Promise((resolve) => setT
 vi.mock("../../lang", () => ({ language: {} }));
 vi.mock("../storage/database.svelte", () => ({}));
 vi.mock("../process/tts", () => ({ sayTTS: deps.sayTTS }));
+vi.mock("./pushNotifications", () => ({ showCompletionNotification: deps.showCompletion }));
 vi.mock("../translator/storedTranslation.svelte", () => ({
     followStoredTranslations: (ref: unknown, ids: unknown, follow: { report: (message: string) => void }) =>
         deps.followTranslations(ref, ids, follow),
@@ -237,6 +239,7 @@ beforeEach(async () => {
     deps.contexts.length = 0;
     deps.mcps.clear();
     deps.sayTTS.mockReset();
+    deps.showCompletion.mockReset();
     deps.stableDiff.mockReset();
     deps.followTranslations.mockReset();
     stores = await import("../stores.svelte");
@@ -389,6 +392,28 @@ describe("notices and questions", () => {
         await pump();
         expect(deps.sayTTS).toHaveBeenCalledTimes(1);
         expect(deps.sayTTS.mock.calls[0][1]).toBe("hello");
+    });
+
+    it("a notification notice (docs/plan/web-push.md) shows the server's completion text through pushNotifications while the setting is on, and nothing asks for the permission here", async () => {
+        const { settings } = await import("../storage/settingsViews.svelte");
+        const payload = {
+            chaId: "c",
+            chatId: "k",
+            title: "Risuai",
+            body: "Ann's message has been processed.",
+            url: "/chat/c/k",
+            tag: "risuai-chat-completion",
+        };
+        settings.ui.notification = false;
+        send(notice("notification", payload));
+        await pump();
+        expect(deps.showCompletion).not.toHaveBeenCalled();
+        settings.ui.notification = true;
+        send(notice("notification", payload));
+        await pump();
+        expect(deps.showCompletion).toHaveBeenCalledTimes(1);
+        expect(deps.showCompletion).toHaveBeenCalledWith(payload);
+        expect(typeof Notification).toBe("undefined");
     });
 
     it("a translating notice (slice 2.3) starts following the named messages, with a reporter whose failures queue behind a question like an alertError notice; a malformed payload is dropped", async () => {

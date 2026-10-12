@@ -37,7 +37,14 @@ import * as chat from "../storage/chatStore.svelte";
 import { initializeRecords, takeRecordFields } from "../storage/records.svelte";
 import { selectCharacter, selection, setChatOpen } from "../storage/selection.svelte";
 import { SETTINGS_PAGES } from "./routes";
-import { browserHistory, type HistoryPort, type NavigationLike, type RouteState, startRouter } from "./router.svelte";
+import {
+    browserHistory,
+    type HistoryPort,
+    type NavigationLike,
+    openRoute,
+    type RouteState,
+    startRouter,
+} from "./router.svelte";
 
 const PLAYGROUND = "§playground";
 const STATE: RouteState = { v: 1, layerDepth: 0 };
@@ -1424,6 +1431,44 @@ describe("the root insertion (decision 5, H1)", () => {
         click();
         expect(history.paths()).toEqual(["[/settings/model]"]);
         expect(history.log).toHaveLength(2);
+    });
+});
+
+describe("openRoute (a notification's chat, docs/plan/web-push.md)", () => {
+    it("applies a chat route to the stores and the effect pushes its URL", () => {
+        const history = start(new FakeHistory([{ path: "/" }]));
+        expect(openRoute("/chat/b/b1")).toBe(true);
+        flushSync();
+        expect(screen()).toBe(CHAT_B);
+        expect(history.path).toBe("/chat/b/b1");
+        expect(history.log).toEqual(["replace /", "push /chat/b/b1"]);
+    });
+
+    it("closes an open layer before showing the chat", () => {
+        start(new FakeHistory([{ path: "/" }]));
+        gridOpenStore.set(true);
+        flushSync();
+        expect(get(gridOpenStore)).toBe(true);
+        expect(openRoute("/chat/a/a2")).toBe(true);
+        flushSync();
+        expect(screen()).toBe("character=a chat=a2 playground=0 realm=false");
+        expect(get(gridOpenStore)).toBe(false);
+        expect(get(settingsOpen)).toBe(false);
+    });
+
+    it("ignores a layer route, an unknown path, and a call before the router started", () => {
+        const history = start(new FakeHistory([{ path: "/" }]));
+        expect(openRoute("/settings")).toBe(false);
+        expect(openRoute("/nope/x")).toBe(false);
+        expect(openRoute("https://evil.test/chat/a/a1")).toBe(false);
+        flushSync();
+        expect(screen()).toBe(HOME);
+        expect(get(settingsOpen)).toBe(false);
+        expect(history.paths()).toEqual(["[/]"]);
+        stop!();
+        stop = null;
+        expect(openRoute("/chat/a/a1")).toBe(false);
+        expect(screen()).toBe(HOME);
     });
 });
 

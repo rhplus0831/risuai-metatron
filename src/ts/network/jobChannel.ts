@@ -260,15 +260,11 @@ function applyEffect(jobId: string, notice: GenerationNotice) {
             return;
         }
         case "notification":
+            // The permission is asked only from a click (`pushNotifications.ts`), never here.
             if (settings.ui.notification) {
-                void Notification.requestPermission()
-                    .then((permission) => {
-                        if (permission === "granted") {
-                            const shown = new Notification("Risuai", { body: notice.payload.body });
-                            shown.onclick = () => window.focus();
-                        }
-                    })
-                    .catch(() => {});
+                void import("./pushNotifications")
+                    .then(({ showCompletionNotification }) => showCompletionNotification(notice.payload))
+                    .catch(console.error);
             }
             return;
         case "translating": {

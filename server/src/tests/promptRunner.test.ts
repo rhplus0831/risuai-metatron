@@ -170,6 +170,8 @@ async function seedCharacter(options: {
     customscript?: unknown[];
     /** More fields of the chat (its translation settings). */
     chat?: Record<string, unknown>;
+    /** More fields of the character or group (`customNotificationMessage`). */
+    extra?: Record<string, unknown>;
 }) {
     const chaId = `send-${++seeded}`;
     const res = await batch({
@@ -195,6 +197,7 @@ async function seedCharacter(options: {
                               desc: "",
                           }
                         : {}),
+                    ...(options.extra ?? {}),
                 },
             },
         ],
@@ -635,6 +638,62 @@ describe("a send", () => {
             } finally {
                 onRequest = null;
                 await patchPreset("modelProfiles", profileId, { customProxyRequestModel: "m" });
+            }
+        },
+        SLOW,
+    );
+
+    it(
+        "a group send's completion notifications name the group's chat and use the group's name and custom message, not the speaking member's (docs/plan/web-push.md)",
+        async () => {
+            const bob = await seedCharacter({ name: "Bob", extra: { customNotificationMessage: "Bob's own" } });
+            const cid = await seedCharacter({ name: "Cid" });
+            const grp = await seedCharacter({
+                name: "The Crew",
+                type: "group",
+                members: [bob, cid],
+                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
+                extra: { customNotificationMessage: "  Crew is done  " },
+            });
+            mode = { chunks: ["Reply."], delayMs: 0 };
+            const ui = await single("ui");
+            await patchSection("ui", { notification: true, language: "ko" });
+            try {
+                const first = await job("group", grp);
+                expect(first.terminal?.type, JSON.stringify(first.terminal)).toBe("done");
+                const custom = {
+                    chaId: grp,
+                    chatId: "k",
+                    title: "Risuai",
+                    body: "Crew is done",
+                    url: `/chat/${grp}/k`,
+                    tag: "risuai-chat-completion",
+                };
+                // One per member's reply; neither names the member nor carries the reply.
+                expect(notices(first.events, "notification").map((event) => event.payload)).toEqual([custom, custom]);
+
+                // Without a custom message: the default sentence of the language setting, naming the group.
+                const current = (await api(`/api/resources/characters/${grp}`)).body;
+                const cleared = await batch({
+                    ops: [
+                        {
+                            kind: "characters",
+                            id: grp,
+                            baseRevision: current.revision,
+                            data: { ...current.data, customNotificationMessage: "" },
+                        },
+                    ],
+                });
+                expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+                const second = await job("group", grp);
+                expect(second.terminal?.type, JSON.stringify(second.terminal)).toBe("done");
+                const sentence = { ...custom, body: "The Crew의 메시지 처리가 완료되었습니다" };
+                expect(notices(second.events, "notification").map((event) => event.payload)).toEqual([
+                    sentence,
+                    sentence,
+                ]);
+            } finally {
+                await patchSection("ui", { notification: false, language: ui.data.language });
             }
         },
         SLOW,

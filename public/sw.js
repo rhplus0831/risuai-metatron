@@ -131,3 +131,116 @@ async function registerCache(urlr, buffer, noContentType = false){
         "done": true
     }))
 }
+// Web Push for chat completions (`docs/plan/web-push.md`). A new worker takes over at once, so an
+// installed app gets these handlers without closing every tab; the cache routes above keep working
+// (they read `risuCache`, which outlives the worker). A rotated subscription (`pushsubscriptionchange`)
+// is not handled here: the worker has no credentials, and the page registers it again when it opens.
+const NOTIFICATION_LOGO = '/logo_192.png'
+const COMPLETION_TAG = 'risuai-chat-completion'
+
+self.addEventListener('install', (event) => {
+    event.waitUntil(self.skipWaiting())
+})
+
+self.addEventListener('activate', (event) => {
+    event.waitUntil(self.clients.claim())
+})
+
+// Every push is shown, also while a window is in front: Safari revokes the permission of a site whose
+// pushes show nothing, and Chrome shows its own notice instead. The page closes them when it is shown.
+self.addEventListener('push', (event) => {
+    event.waitUntil(showPush(event))
+})
+
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close()
+    event.waitUntil(openFromNotification(safeRoute(event.notification.data && event.notification.data.url)))
+})
+
+/** A same-origin chat route or `/`: nothing from a payload is opened unchecked. */
+function safeRoute(value){
+    if(typeof value !== 'string' || value.length > 4096){
+        return '/'
+    }
+    try {
+        const url = new URL(value, self.location.origin)
+        if(url.origin === self.location.origin && /^\/chat\/[^/]+\/[^/]+$/.test(url.pathname)){
+            return url.pathname
+        }
+    } catch {}
+    return '/'
+}
+
+function readPush(event){
+    let data = null
+    try {
+        data = event.data ? event.data.json() : null
+    } catch {}
+    const text = (value, fallback, max) => typeof value === 'string' && value.trim() ? value.slice(0, max) : fallback
+    return {
+        title: text(data && data.title, 'Risuai', 200),
+        body: text(data && data.body, 'Chat processing complete.', 2000),
+        url: safeRoute(data && data.url),
+    }
+}
+
+async function showPush(event){
+    const push = readPush(event)
+    const options = {
+        body: push.body,
+        tag: COMPLETION_TAG,
+        icon: NOTIFICATION_LOGO,
+        badge: NOTIFICATION_LOGO,
+        data: { url: push.url },
+    }
+    try {
+        await self.registration.showNotification(push.title, options)
+    } catch {
+        // A browser that rejects an option (a badge, an icon it cannot load): the text alone.
+        await self.registration.showNotification(push.title, { body: push.body, tag: COMPLETION_TAG, data: { url: push.url } })
+    }
+}
+
+/**
+ * Focuses a window of the app and asks it to open the chat (`pushNotifications.ts` answers whether it
+ * did); a window that does not answer (still loading) is navigated, and with no window one is opened.
+ */
+async function openFromNotification(route){
+    const windows = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
+        .filter((client) => new URL(client.url).origin === self.location.origin)
+    const target = windows.find((client) => client.focused) ||
+        windows.find((client) => client.visibilityState === 'visible') ||
+        windows[0]
+    if(!target){
+        if(self.clients.openWindow){
+            await self.clients.openWindow(route)
+        }
+        return
+    }
+    try {
+        await target.focus()
+    } catch {}
+    if(route === '/' || await askToOpen(target, route)){
+        return
+    }
+    try {
+        await target.navigate(route)
+    } catch {}
+}
+
+function askToOpen(client, route){
+    return new Promise((resolve) => {
+        const channel = new MessageChannel()
+        const timer = setTimeout(() => resolve(false), 2000)
+        channel.port1.onmessage = (event) => {
+            clearTimeout(timer)
+            resolve(!!(event.data && event.data.opened))
+        }
+        try {
+            client.postMessage({ type: 'risu-open-route', url: route }, [channel.port2])
+        } catch {
+            clearTimeout(timer)
+            resolve(false)
+        }
+    })
+}
